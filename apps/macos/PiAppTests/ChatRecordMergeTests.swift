@@ -12,12 +12,12 @@ final class ChatRecordMergeTests: XCTestCase {
     func testACopyOlderThanTheChatsOrganizationTakesItBack() {
         var held = chat(); held.organizationRevision = 5
         held.pinnedAt = Date(timeIntervalSince1970: 100); held.archivedAt = Date(timeIntervalSince1970: 200)
-        held.topicID = "topic"; held.manualSidebarOrder = 3; held.titleWasEdited = true; held.title = "Renamed"
+        held.topicID = "topic"; held.titleWasEdited = true; held.title = "Renamed"
         var stale = chat(); stale.organizationRevision = 4; stale.path = "/journal.jsonl"
         let written = stale.merged(over: held)
         XCTAssertEqual(written.path, "/journal.jsonl", "The copy's own update is written")
         XCTAssertEqual(written.pinnedAt, held.pinnedAt); XCTAssertEqual(written.archivedAt, held.archivedAt)
-        XCTAssertEqual(written.topicID, "topic"); XCTAssertEqual(written.manualSidebarOrder, 3)
+        XCTAssertEqual(written.topicID, "topic")
         XCTAssertEqual(written.titleWasEdited, true); XCTAssertEqual(written.title, "Renamed")
         XCTAssertEqual(written.organizationRevision, 5)
 
@@ -51,6 +51,18 @@ final class ChatRecordMergeTests: XCTestCase {
         copy.sidebarOrder = 7; copy.parentSessionID = "other"
         XCTAssertEqual(copy.merged(over: held).sidebarOrder, 7, "A copy's own order is written")
         XCTAssertEqual(copy.merged(over: held).parentSessionID, "other")
+    }
+
+    /// The last activity only moves forward: a copy read before a reply or a
+    /// send landed does not move the chat back down the sidebar (0.1.122).
+    func testACopyCannotTakeTheChatsLastActivityBack() {
+        var held = chat(); held.lastActivityAt = 500
+        var copy = chat(); copy.lastActivityAt = nil
+        XCTAssertEqual(copy.merged(over: held).lastActivityAt, 500)
+        copy.lastActivityAt = 300
+        XCTAssertEqual(copy.merged(over: held).lastActivityAt, 500)
+        copy.lastActivityAt = 900
+        XCTAssertEqual(copy.merged(over: held).lastActivityAt, 900, "A newer activity is written")
     }
 
     func testTheTitleClaimIsDroppedOnlyOnPurpose() {

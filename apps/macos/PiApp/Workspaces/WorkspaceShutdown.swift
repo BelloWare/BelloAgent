@@ -18,6 +18,7 @@ extension WorkspaceModel {
             try await moveUnsavedSideDraftsToParents()
             try await flushDrafts()
             for host in hosts.values { try await host.shutdownAndWait() }
+            await flushRunHolds()
             guard await flushProjectSidebarState() else { throw HostError.failure("Project preferences could not be saved in time. Retry the update after storage becomes available.") }
             guard await flushTopicChanges() else { throw HostError.failure("Topic changes could not be saved in time. Retry the update after storage becomes available.") }
             guard await flushReadStates() else { throw HostError.failure("Unread state could not be saved in time. Retry the update after storage becomes available.") }
@@ -53,6 +54,7 @@ extension WorkspaceModel {
         for task in titleGenerationTasks.values { task.cancel() }
         titleGenerationTasks.removeAll()
         journalSlimming?.cancel()
+        sidebarSearchStorage?.shutdown()
         for task in webhookTasks.values { task.cancel() }
         webhookTasks.removeAll()
         isShutDown = true

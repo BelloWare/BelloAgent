@@ -251,6 +251,19 @@ final class SidesPanelTests: XCTestCase {
         XCTAssertFalse(model.sidesPanelActivity(of: "P").unread, "The side on screen is no news")
         model.unreadStates["S2"] = SessionReadState(id: "S2", observedAssistantCount: 1, unreadOutputs: 1)
         XCTAssertTrue(model.sidesPanelActivity(of: "P").unread, "A new reply in the other side is")
+        XCTAssertFalse(model.sidesPanelActivity(of: "P").unreadMarkedOnly)
+        // Marked unread by the reader, with no reply: the handle and the row say so.
+        model.unreadStates["S2"] = SessionReadState(id: "S2", observedAssistantCount: 1, latestAssistantID: nil, markedUnread: true)
+        let marked = model.sidesPanelActivity(of: "P")
+        XCTAssertTrue(marked.unread); XCTAssertTrue(marked.unreadMarkedOnly)
+        let handle = SidesPanelHandleView(); handle.activity = marked
+        XCTAssertEqual(handle.accessibilityLabel(), "2 sides, one marked unread. Rest the pointer on the window's right edge to show them.")
+        let entry = try XCTUnwrap(model.sidesPanelEntries(of: "P").first { $0.id == "S2" })
+        let content = SidesPanelRowView.Content(entry: entry, stats: ChatRowStats(totals: nil), unread: true, failed: false, enabled: true, markedUnread: true)
+        XCTAssertEqual(content.lead, "Unread")
+        let words = SidesPanelRowWords(); words.update(content)
+        XCTAssertEqual(words.subviews.compactMap { $0 as? UnreadDotView }.first?.accessibilityLabel(), "Unread")
+        model.unreadStates["S2"] = SessionReadState(id: "S2", observedAssistantCount: 1, unreadOutputs: 1)
         model.unreadStates["S2"]?.unreadFailure = true
         XCTAssertTrue(model.sidesPanelActivity(of: "P").failed, "and so is its failure")
         let working = SessionDisplay(id: "S2"); working.state = "running"; model.displays["S2"] = working

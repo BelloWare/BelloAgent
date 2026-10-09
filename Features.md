@@ -211,12 +211,26 @@ disclosure survive restarts. Missing topic metadata must never hide history.
 Filtering finds topic names and chat titles; choosing a chat reveals its topic.
 Topics are organization metadata, not filesystem folders or permission scopes.
 
-Drag above/below a session to persist manual order within its topic/project,
-parent and pinned group. Show an insertion line. Marked sessions retain their
-relative order; moving a parent keeps children nested. New sessions appear above
-an ordered group. Topic-header drops still move complete branches. Rank updates
-are atomic organization writes and survive late title/model/path updates and
-restarts; pin/archive/topic moves reset only the moved session's old rank.
+Every sidebar group lists its sessions newest activity first (0.1.122; the
+owner chose this over a switch): the last message sent or queued, edit, saved
+queued rewrite, or run change (started, stopped, cut off, finished); never per
+token, and not opening a chat. Pinned sessions stay on top, newest activity
+first among them. A family ranks by its newest member and keeps its children
+nested. There is no manual order any more: a row dropped on another row goes to
+that row's topic or project, as a topic-header drop does, and records saved with
+a manual rank still load (the rank is ignored). Rows do not move under the
+reader: while the pointer is over the list, a row's menu is open or a row is
+dragged, a session with new activity keeps its place until that ends or the app
+goes to the background. Next/Previous Chat step through the chats in the
+sidebar's order (newest activity first, as held while the reader reaches for a row).
+
+The sidebar also shows, per row (0.1.122): an unread dot for a chat the reader
+marked unread (Mark as Unread in the row, marked-rows and File menus; counted
+like an unread reply, Dock badge included; cleared by opening the chat); the
+"Paused" state of a chat whose run was stopped, cut off or holds queued work,
+after a restart too and before it is opened; a fading accent wash on the chats
+opened most recently (by order of opening, kept across relaunch); and a pencil
+for a chat whose composer holds an unsent draft.
 
 A turn exposes **Copy Turn Info** as a clipboard action and context-menu item.
 Copy timing, validated call counts, usage, model reports and reporting coverage;

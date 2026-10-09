@@ -110,6 +110,64 @@ final class GitPanelRedrawTests: GitPanelTestCase {
         XCTAssertEqual(chosen["GitPanelToolbar", default: 0], 0, "A commit draws no toolbar: \(chosen)")
     }
 
+    /// A keystroke measures the message and nothing else. Each one measured
+    /// the commit box's tabs, amend row, hint and button again, three times
+    /// over; and the first, whose hint loses a line and so the box its
+    /// height, measured the whole toolbar again as the panel laid its parts
+    /// out. Typing 21 characters beside a long diff held the main thread for
+    /// 27 to 34 ms in a Debug build, against a 30 ms bound
+    /// (`ChangesTabFrameTests`). The box still grows and moves its parts
+    /// with a message that wraps.
+    @MainActor func testTypingMeasuresTheMessageAndNothingElse() async throws {
+        let root = try fixture("git-typing-measures")
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let controller = GitController(roots: [root.path])
+        let window = host(GitPanelView(controller: controller))
+        defer { window.contentView = nil; window.close() }
+        try await eventually("the complete first read") {
+            controller.status.entries.count == 12 && !controller.diff.isEmpty && !controller.diffLoading && !controller.loading
+        }
+        try await settle(window)
+        let content = try XCTUnwrap(window.contentView)
+        let box = try XCTUnwrap(descendants(GitCommitBox.self, in: content).first, "The commit box")
+        let commit = try XCTUnwrap(descendants(NSView.self, in: box).first { $0.accessibilityIdentifier() == "git-commit" }, "The commit button")
+        let empty = box.frame.height
+        RedrawCounter.recording = true
+        defer { RedrawCounter.recording = false; RedrawCounter.reset() }
+
+        RedrawCounter.reset()
+        controller.commitMessage = "T"
+        try await draw(window)
+        let first = RedrawCounter.counts
+        XCTAssertNotEqual(box.frame.height, empty, "The first character takes a line off the hint, and the box changes height")
+        XCTAssertGreaterThanOrEqual(first["GitCommitBox measured", default: 0], 1, "The new hint is measured: \(first)")
+        XCTAssertEqual(first["GitPanelToolbar measured", default: 0], 0, "The panel lays its parts out again, the toolbar unmeasured: \(first)")
+
+        RedrawCounter.reset()
+        for character in "idy the panel" { controller.commitMessage.append(character); try await draw(window) }
+        let typing = RedrawCounter.counts
+        XCTAssertGreaterThanOrEqual(typing["GitCommitBox", default: 0], 12, "Each keystroke reaches the box: \(typing)")
+        XCTAssertEqual(typing["GitCommitBox measured", default: 0], 0, "Typing measures nothing below the message: \(typing)")
+        XCTAssertEqual(typing["GitPanelToolbar measured", default: 0], 0, "Typing measures no toolbar: \(typing)")
+
+        // A message that wraps: the field grows, and the box and its button with it.
+        let field = box.message.frame.height, box2 = box.frame.height, button = commit.frame.minY
+        controller.commitMessage = String(repeating: "Tidy the panel and the rows beside it. ", count: 6)
+        try await settle(window)
+        let grown = box.message.frame.height - field
+        XCTAssertGreaterThan(grown, 0, "A long message takes more lines")
+        XCTAssertEqual(box.frame.height - box2, grown, accuracy: 0.5, "The box grows by as much")
+        XCTAssertEqual(commit.frame.minY - button, grown, accuracy: 0.5, "and the button moves down by as much")
+        controller.commitMessage = "Tidy the panel"
+        try await settle(window)
+        XCTAssertEqual(box.message.frame.height, field, accuracy: 0.5, "Back to its lines")
+        XCTAssertEqual(commit.frame.minY, button, accuracy: 0.5, "and the button to its place")
+    }
+
+    @MainActor private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+        ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { descendants(type, in: $0) }
+    }
+
     /// Resizing the panel draws none of its parts while the list stays where
     /// it is; crossing from beside the diff to above it draws the toolbar,
     /// which takes a second row, and nothing else.

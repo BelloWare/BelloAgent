@@ -451,6 +451,16 @@ enum TranscriptCardFaces {
         }()
     }
     func height(width: CGFloat) -> CGFloat { rowHeights(width: width).reduce(0, +) }
+    /// The text view drawing line `index`, while it is built.
+    func builtText(at index: Int) -> NSTextView? { built[index]?.text }
+    /// Where line `index` stands among these lines, whether or not it is
+    /// built: a find goes there, and the line is built as it comes into view.
+    func lineRect(at index: Int) -> CGRect? {
+        guard bounds.width > 0, lines.indices.contains(index) else { return nil }
+        let rows = rowHeights(width: bounds.width)
+        guard index < rows.count else { return nil }
+        return CGRect(x: 0, y: rows[..<index].reduce(0, +), width: bounds.width, height: rows[index])
+    }
     override func layout() {
         super.layout()
         mountVisibleRows()

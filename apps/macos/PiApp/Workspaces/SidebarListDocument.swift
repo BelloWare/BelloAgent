@@ -34,9 +34,41 @@ import QuartzCore
         self.model = model
         super.init(frame: .zero)
         registerForDraggedTypes([NSPasteboard.PasteboardType(TopicSessionDrag.type.identifier)])
+        // Selector observers go with the view; nothing to remove by hand.
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationResigned), name: NSApplication.didResignActiveNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(applicationActivated), name: NSApplication.didBecomeActiveNotification, object: nil)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
+
+    // MARK: Holding the order
+
+    /// While the pointer is over the list, activity does not move its rows
+    /// (`WorkspaceActivityOrder.swift`).
+    static let pointerTracking: NSTrackingArea.Options = [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect, .enabledDuringMouseDrag]
+    @objc private func applicationResigned() { model.releaseSidebarOrder() }
+    @objc private func applicationActivated() { recheckPointer() }
+    private var pointerArea: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerArea { removeTrackingArea(pointerArea) }
+        // Only while the app is in front: a pointer resting over the list of
+        // an app in the background is not the reader reaching for a row.
+        let area = NSTrackingArea(rect: .zero, options: SidebarListDocument.pointerTracking, owner: self)
+        addTrackingArea(area); pointerArea = area
+    }
+    override func mouseEntered(with event: NSEvent) { model.setSidebarOrderHold(.pointer, true) }
+    override func mouseExited(with event: NSEvent) { model.setSidebarOrderHold(.pointer, false) }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { model.releaseSidebarOrder() } else { recheckPointer() }
+    }
+    /// Whether the pointer is over the list's visible part now: after a menu
+    /// or a drag, which take the pointer's comings and goings for themselves.
+    func recheckPointer() {
+        guard let window, window.isVisible, NSApp.isActive else { model.setSidebarOrderHold(.pointer, false); return }
+        model.setSidebarOrderHold(.pointer, visibleRect.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)))
+    }
 
     // MARK: Contents
 
@@ -106,6 +138,8 @@ import QuartzCore
         case .side(let state):
             measuringBody.update(SidebarSideRowView.content(model: model, state: state))
             return measuringRow.height(forWidth: max(0, width - state.indent))
+        case .searchSnippet(let state):
+            return SidebarSearchSnippetView.height(of: state, width: width)
         case .projectHeader, .topicHeader:
             let kind = entry.id.hasPrefix("project|") ? "project" : "topic"
             if let known = headerHeights[kind] { return known }
@@ -221,6 +255,11 @@ import QuartzCore
             return SidebarChatRowView(model: model, chat: chat, state: state, projectID: projectID, glide: glide)
         case .side(let state):
             return SidebarSideRowView(model: model, state: state, glide: glide)
+        case .searchSnippet(let state):
+            let view = SidebarSearchSnippetView(state: state)
+            let model = self.model, id = state.chatID
+            view.open = { Task { await model.openFromSidebar(id) } }
+            return view
         case .pagination(let groupID, let projectID, let hidden, let shown, let indent):
             let view = SidebarPaginationView(groupID: groupID)
             view.update(hiddenRoots: hidden, shownRoots: shown, indent: indent)
@@ -249,6 +288,7 @@ import QuartzCore
         case .archiveHeading(_, let count, let indent): (view as? SidebarArchiveHeadingView)?.update(count: count, indent: indent)
         case .chat(let chat, let state, let projectID): (view as? SidebarChatRowView)?.apply(chat: chat, state: state, projectID: projectID)
         case .side(let state): (view as? SidebarSideRowView)?.apply(state)
+        case .searchSnippet(let state): (view as? SidebarSearchSnippetView)?.apply(state)
         case .pagination(_, _, let hidden, let shown, let indent): (view as? SidebarPaginationView)?.update(hiddenRoots: hidden, shownRoots: shown, indent: indent)
         case .empty(_, let text, let indent): (view as? SidebarNoteView)?.update(text: text, leading: indent + 20)
         case .projectUnavailable, .nothing: break
@@ -290,20 +330,16 @@ import QuartzCore
 
     // MARK: Dropping chats
 
-    /// What a drag over `point` would do: move the chats before or after a
-    /// row it is over, or into the topic or project whose area it is in.
+    /// What a drag over `point` would do: move the chats into the topic or
+    /// project whose area it is in. A row is its group's area: the sidebar
+    /// keeps its own order (newest activity first), so there is no place
+    /// between two rows to drop on.
     enum DropTarget: Equatable {
-        case row(id: String, projectID: String, after: Bool)
         case group(projectID: String, topicID: String?)
     }
     func dropTarget(at point: CGPoint) -> DropTarget? {
         guard let index = frames.firstIndex(where: { $0.minY <= point.y && point.y < $0.maxY + SidebarListContents.rowSpacing }) else {
             return projectArea(at: point)
-        }
-        // Over the row itself, not the indent beside it: that is the group's.
-        if case .chat(let chat, let state, let projectID) = contents.entries[index], state.draggable,
-           point.x >= frames[index].minX + state.indent, frames[index].contains(CGPoint(x: min(point.x, frames[index].maxX - 0.5), y: point.y)) {
-            return .row(id: chat.id, projectID: projectID, after: point.y > frames[index].midY)
         }
         let owner = contents.owners[index]
         if let topic = owner.topic { return .group(projectID: owner.project, topicID: topic) }
@@ -320,9 +356,7 @@ import QuartzCore
     private var shownTarget: DropTarget?
     private func show(_ target: DropTarget?) {
         guard target != shownTarget else { return }
-        if case .row(let id, _, _) = shownTarget { (views["chat|" + id] as? SidebarChatRowView)?.insertionAfter = nil }
         shownTarget = target
-        if case .row(let id, _, let after) = target { (views["chat|" + id] as? SidebarChatRowView)?.insertionAfter = after }
         if case .group(let project, let topic) = target { dropTargetChanged?((project, topic)) } else { dropTargetChanged?(nil) }
     }
     private func accepts(_ info: NSDraggingInfo) -> Bool {
@@ -333,11 +367,7 @@ import QuartzCore
         guard accepts(sender), inheritedEnabled else { show(nil); return [] }
         let target = dropTarget(at: convert(sender.draggingLocation, from: nil))
         show(target)
-        switch target {
-        case .row: return .move
-        case .group: return .copy
-        case nil: return []
-        }
+        return target == nil ? [] : .copy
     }
     override func draggingExited(_ sender: NSDraggingInfo?) { show(nil) }
     override func draggingEnded(_ sender: NSDraggingInfo) { show(nil) }
@@ -345,17 +375,8 @@ import QuartzCore
         guard inheritedEnabled else { show(nil); return false }
         let target = dropTarget(at: convert(sender.draggingLocation, from: nil))
         show(nil)
-        let model = self.model
-        switch target {
-        case .row(let id, let projectID, let after):
-            return TopicSessionDrag.accept(sender.draggingPasteboard, in: projectID) { ids in
-                try await model.reorderSessions(ids, relativeTo: id, after: after, in: projectID)
-            } failure: { model.error = $0 }
-        case .group(let projectID, let topicID):
-            return TopicSessionDrag.acceptSidebarDrop(sender.draggingPasteboard, model: model, projectID: projectID, topicID: topicID)
-        case nil:
-            return false
-        }
+        guard case .group(let projectID, let topicID) = target else { return false }
+        return TopicSessionDrag.acceptSidebarDrop(sender.draggingPasteboard, model: model, projectID: projectID, topicID: topicID)
     }
 }
 

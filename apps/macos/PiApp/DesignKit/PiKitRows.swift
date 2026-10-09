@@ -20,6 +20,17 @@ extension PiKit {
         let contentView: NSView
         var selected: Bool { didSet { if oldValue != selected { selectionChanged() } } }
         var marked: Bool { didSet { refreshFace() } }
+        /// How much of the open row's wash a row opened recently keeps, 0 to
+        /// 1 (`recencyTint(rank:)`): the more recently opened, the more.
+        var recencyTint: CGFloat = 0 { didSet { if oldValue != recencyTint { refreshFace() } } }
+        /// The wash for the chat opened `rank` openings ago: 0 is the open
+        /// one, whose selection fill is the whole wash; four more steps fade
+        /// it out, and older ones are plain.
+        static let recencyLadder: [CGFloat] = [1, 0.75, 0.5, 0.3, 0.15]
+        static func recencyTint(rank: Int?) -> CGFloat {
+            guard let rank, recencyLadder.indices.contains(rank) else { return 0 }
+            return recencyLadder[rank]
+        }
         var doubleClick: (() -> Void)?
         /// Shared by the rows of one list, so the highlight glides between them.
         var glide: SelectionGlide?
@@ -75,7 +86,13 @@ extension PiKit {
                                        height: max(0, bounds.height - Self.padding.top - Self.padding.bottom))
         }
         override func styleFace() {
-            fill.backgroundColor = piCGColor(selected ? .piAccentSoft : marked || hovering ? .piFill : .clear)
+            if !selected, !marked, !hovering, recencyTint > 0 {
+                // The open row's own wash, fainter: never stronger than it.
+                let wash = piCGColor(.piAccentSoft)
+                fill.backgroundColor = wash.copy(alpha: wash.alpha * min(1, recencyTint)) ?? wash
+            } else {
+                fill.backgroundColor = piCGColor(selected ? .piAccentSoft : marked || hovering ? .piFill : .clear)
+            }
             stroke.borderColor = marked && !selected ? piCGColor(NSColor.piAccent.withAlphaComponent(0.55)) : CGColor.clear
         }
         private func selectionChanged() {

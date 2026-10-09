@@ -47,7 +47,38 @@ private final class MetadataDatabase {
 
 // Native is SQLite's only writer. JSON documents are small desktop metadata;
 // authoritative conversation messages and raw capture bodies never enter this database.
+/// Told of every committed draft write (`MetadataStore`): the chat, whether
+/// its draft now holds unsent work, and the write's place in the order of
+/// writes. The sidebar's draft marker follows these (`WorkspaceDraftMarks.swift`).
+final class DraftWriteEvents: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: (@Sendable (String, Bool, Int) -> Void)?
+    func observe(_ handler: @escaping @Sendable (String, Bool, Int) -> Void) { lock.lock(); self.handler = handler; lock.unlock() }
+    func send(_ id: String, _ holdsDraft: Bool, _ sequence: Int) {
+        lock.lock(); let handler = handler; lock.unlock()
+        handler?(id, holdsDraft, sequence)
+    }
+}
+
 actor MetadataStore {
+    nonisolated let draftWrites = DraftWriteEvents()
+    /// Draft writes so far, and those of a transaction not yet committed.
+    private var draftSequence = 0
+    private var transactionDrafts: [(String, Bool)]?
+    private func noteDraftWrite(_ id: String, _ holdsDraft: Bool) {
+        if transactionDrafts != nil { transactionDrafts?.append((id, holdsDraft)); return }
+        draftSequence += 1; draftWrites.send(id, holdsDraft, draftSequence)
+    }
+    private func flushTransactionDrafts() {
+        let drafts = transactionDrafts ?? []; transactionDrafts = nil
+        for (id, holds) in drafts { noteDraftWrite(id, holds) }
+    }
+    /// Which chats' saved drafts hold unsent work, as of the write numbered
+    /// `sequence`: launch's starting point for the draft markers.
+    func draftMarks() throws -> (ids: Set<String>, sequence: Int) {
+        let drafts = try list(DraftRecord.self, kind: "draft")
+        return (Set(drafts.filter(\.holdsUnsentDraft).map(\.id)), draftSequence)
+    }
     private let url: URL
     private var connection: MetadataDatabase?
     private var attempted = false
@@ -128,6 +159,7 @@ actor MetadataStore {
         sqlite3_bind_int64(statement, 4, savedRevision)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
         guard sqlite3_changes(database) == 1 else { throw StoreError.staleRevision }
+        if kind == "draft", let draft = value as? DraftRecord { noteDraftWrite(id, draft.holdsUnsentDraft) }
         if kind.hasPrefix("receipt:") { try prune(kind: kind, keeping: 128) }
     }
     /// Freeze the previous sidebar order once when upgrading older records.
@@ -230,10 +262,8 @@ actor MetadataStore {
             guard !chat.isBackgroundTask else { throw StoreError.invalidRecord }
             chat.title = try ChatRecord.normalizedTitle(title); chat.titleWasEdited = true; chat.titleWasGenerated = nil
         case .pinned(let pinned):
-            if chat.isPinned != pinned { chat.manualSidebarOrder = nil }
             chat.pinnedAt = pinned ? (chat.pinnedAt ?? now) : nil
         case .archived(let archived):
-            if chat.isArchived != archived { chat.manualSidebarOrder = nil }
             chat.archivedAt = archived ? (chat.archivedAt ?? now) : nil
         }
     }
@@ -319,7 +349,7 @@ actor MetadataStore {
             }
             var chats = selected.values.sorted { $0.id < $1.id }
             for index in chats.indices where chats[index].topicID != topicID {
-                chats[index].topicID = topicID; chats[index].manualSidebarOrder = nil
+                chats[index].topicID = topicID
                 chats[index].organizationRevision = try nextOrganizationRevision(chats[index])
             }
             for chat in chats { try put(chat, kind: "chat", id: chat.id) }
@@ -327,29 +357,12 @@ actor MetadataStore {
         }
     }
 
-    /// A single atomic organization update; later stale title/path writes keep
-    /// these ranks through applyOrganization, just as they preserve pin/archive.
-    func reorderChats(_ ids: [String], relativeTo targetID: String, after: Bool, workspaceID: String) throws -> [ChatRecord] {
+    /// A chat's last activity, moved forward only (`ChatRecord.lastActivityAt`).
+    func noteChatActivity(id: String, at stamp: Int64) throws {
         try transaction {
-            guard !ids.isEmpty, !ids.contains(targetID), Set(ids).count == ids.count,
-                  let target = try get(ChatRecord.self, kind: "chat", id: targetID), target.workspaceID == workspaceID,
-                  !target.isUtilityChat else { throw StoreError.invalidRecord }
-            let selected = Set(ids)
-            var group = try organizationRows().filter {
-                $0.workspaceID == workspaceID && $0.groupable && $0.topicID == target.topicID &&
-                ($0.pinnedAt != nil || $0.parentSessionID == target.parentSessionID) &&
-                ($0.pinnedAt != nil) == target.isPinned && ($0.archivedAt != nil) == target.isArchived
-            }.compactMap { try? get(ChatRecord.self, kind: "chat", id: $0.id) }.sorted(by: ChatRecord.sidebarPrecedes)
-            guard selected.isSubset(of: Set(group.map(\.id))) else { throw HostError.failure("Reorder chats within the same topic, parent and pinned group. Drop on a topic header to move between topics.") }
-            let moving = group.filter { selected.contains($0.id) }; group.removeAll { selected.contains($0.id) }
-            guard let index = group.firstIndex(where: { $0.id == targetID }) else { throw StoreError.invalidRecord }
-            group.insert(contentsOf: moving, at: index + (after ? 1 : 0))
-            for index in group.indices {
-                group[index].manualSidebarOrder = index
-                group[index].organizationRevision = try nextOrganizationRevision(group[index])
-                try put(group[index], kind: "chat", id: group[index].id)
-            }
-            return group
+            guard var chat = try get(ChatRecord.self, kind: "chat", id: id), stamp > (chat.lastActivityAt ?? .min) else { return }
+            chat.lastActivityAt = stamp
+            try put(chat, kind: "chat", id: id)
         }
     }
 
@@ -360,7 +373,7 @@ actor MetadataStore {
             guard let topic = try get(TopicRecord.self, kind: TopicRecord.recordKind, id: id), topic.isValid else { throw StoreError.invalidRecord }
             var members = try organizationRows().filter { $0.topicID == id }.compactMap { try get(ChatRecord.self, kind: "chat", id: $0.id) }
             for index in members.indices {
-                members[index].topicID = nil; members[index].manualSidebarOrder = nil
+                members[index].topicID = nil
                 members[index].organizationRevision = try nextOrganizationRevision(members[index])
             }
             let revision = try reserveRevision(kind: TopicRecord.recordKind, id: id)
@@ -374,11 +387,14 @@ actor MetadataStore {
     private func transaction<T>(_ operation: () throws -> T) throws -> T {
         let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        // Draft writes are told once they are committed, and not at all if rolled back.
+        transactionDrafts = []
         do {
             let result = try operation()
             guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            flushTransactionDrafts()
             return result
-        } catch { sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+        } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
     }
 
     /// Just enough of every chat to decide membership: id, project, group and
@@ -472,6 +488,7 @@ actor MetadataStore {
         let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
         sqlite3_bind_text(statement, 1, kind, -1, transient); sqlite3_bind_text(statement, 2, id, -1, transient)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw StoreError.unavailable }
+        if kind == "draft" { noteDraftWrite(id, false) }
     }
     func close() { attempted = true; connection?.close(); connection = nil }
     func removeAll(kind: String) throws { try prune(kind: kind, keeping: 0) }
@@ -511,6 +528,7 @@ actor MetadataStore {
     @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord) throws -> ChatRecord {
         let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        transactionDrafts = []  // told once committed (`transaction`)
         do {
             var chat = proposed
             if let existing = try get(ChatRecord.self, kind: "chat", id: chat.id) {
@@ -527,19 +545,22 @@ actor MetadataStore {
             try put(chat, kind: "chat", id: chat.id); try put(draft, kind: "draft", id: chat.id); try remove(kind: "side-keep", id: chat.id)
             guard let saved = try get(ChatRecord.self, kind: "chat", id: chat.id) else { throw StoreError.invalidRecord }
             guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            flushTransactionDrafts()
             return saved
-        } catch { sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+        } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
     }
     /// A handoff must never reappear as an empty chat after a partial write.
     func commitPortableHandoff(_ chat: ChatRecord, draft: DraftRecord, provenance: WireValue?) throws {
         let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        transactionDrafts = []  // told once committed (`transaction`)
         do {
             try put(chat, kind: "chat", id: chat.id)
             try put(draft, kind: "draft", id: chat.id)
             if let provenance { try put(provenance, kind: "handoff", id: chat.id) }
             guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
-        } catch { sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+            flushTransactionDrafts()
+        } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
     }
     /// Current and future chat choices commit together. A storage failure must
     /// not leave the picker and next-chat defaults disagreeing after restart.
@@ -648,8 +669,13 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     /// Older records stored catalog ceilings in maxOutputTokens. New records separate them.
     var outputBudgetVersion: Int? = 1
     /// Optional for records created before session organization was introduced.
+    /// When the chat was made (µs since 1970); for records older than that,
+    /// fixed once from the store's revision (`loadChats`).
     var sidebarOrder: Int64? = Int64(Date().timeIntervalSince1970 * 1_000_000)
-    var manualSidebarOrder: Int?
+    /// When the chat last had a message, a reply or a run change (µs since
+    /// 1970), nil until it has. Only ever moves forward
+    /// (`ChatRecordMerge.swift`, `MetadataStore.noteChatActivity`).
+    var lastActivityAt: Int64?
     var pinnedAt: Date?
     var archivedAt: Date?
     var titleWasEdited: Bool?
@@ -706,16 +732,20 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
         }
         outputBudgetVersion = 1
     }
+    /// When anything last happened in this chat, for the sidebar's order:
+    /// its last message, reply or run change, or else when it was made.
+    var activityStamp: Int64 { max(lastActivityAt ?? 0, sidebarOrder ?? 0) }
+    /// The sidebar's order, the same in every group: pinned chats first, then
+    /// newest activity first (`activityStamp`). There is no order of the
+    /// reader's own any more: records written while there was keep a
+    /// `manualSidebarOrder` key, which nothing reads.
     static func sidebarPrecedes(_ lhs: ChatRecord, _ rhs: ChatRecord) -> Bool {
+        sidebarPrecedes(lhs, rhs, activity: lhs.activityStamp, rhs.activityStamp)
+    }
+    /// The same order, with the activity each side is sorted by given: the
+    /// sidebar holds a chat's place while the reader is pointing at it.
+    static func sidebarPrecedes(_ lhs: ChatRecord, _ rhs: ChatRecord, activity a: Int64, _ b: Int64) -> Bool {
         if lhs.isPinned != rhs.isPinned { return lhs.isPinned }
-        if lhs.manualSidebarOrder != nil || rhs.manualSidebarOrder != nil {
-            // Newly created chats remain above an explicitly ordered group.
-            if lhs.manualSidebarOrder == nil { return true }
-            if rhs.manualSidebarOrder == nil { return false }
-            if lhs.manualSidebarOrder != rhs.manualSidebarOrder { return lhs.manualSidebarOrder! < rhs.manualSidebarOrder! }
-        }
-        if let a = lhs.pinnedAt, let b = rhs.pinnedAt, a != b { return a < b }
-        let a = lhs.sidebarOrder ?? 0, b = rhs.sidebarOrder ?? 0
         if a != b { return a > b }
         return lhs.id < rhs.id
     }
@@ -732,7 +762,7 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
         connectionRevision = other.connectionRevision; journalRebind = other.journalRebind
     }
     mutating func applyOrganization(from other: ChatRecord) {
-        pinnedAt = other.pinnedAt; archivedAt = other.archivedAt; topicID = other.topicID; manualSidebarOrder = other.manualSidebarOrder
+        pinnedAt = other.pinnedAt; archivedAt = other.archivedAt; topicID = other.topicID
         titleWasEdited = other.titleWasEdited; titleWasGenerated = other.titleWasGenerated; organizationRevision = other.organizationRevision
         if other.titleWasEdited == true || other.titleWasGenerated == true { title = other.title }
     }
@@ -754,6 +784,15 @@ struct DraftRecord: Codable, Sendable {
     /// typed so far, which a reopen reconciles with the helper's hold. The
     /// record's own text, images and skills are the draft set aside for it.
     var queuedEdit: QueuedEditDraft?
+    /// Unsent work the sidebar marks (a draft marker): text, an image or a
+    /// skill in the composer, the draft an edit of an earlier message set
+    /// aside, or a queued message being rewritten (not merely opened).
+    var holdsUnsentDraft: Bool {
+        if !isBlank { return true }
+        if edit != nil, !displaced.isBlank { return true }
+        if let queued = queuedEdit, queued.beginOnly != true, !queued.isOriginal(queued.rewrite) { return true }
+        return false
+    }
     /// Nothing typed: no text but spaces, no image, no skill.
     var isBlank: Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && (attachments ?? []).isEmpty && (skills ?? []).isEmpty }
     /// `other` added to this draft: its text after this one's, a blank line

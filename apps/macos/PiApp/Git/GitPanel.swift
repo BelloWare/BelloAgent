@@ -492,6 +492,7 @@ enum GitPanelSplit {
         let proposal = layoutProposalWidth ?? bounds.width
         let previousWidth = width(forProposal: proposal)
         inputs = next; self.wide = wide
+        measures = nil
         RedrawCounter.note("GitPanelToolbar")
         if next.roots.count > 1 {
             let items = next.roots.map { ($0, ($0 as NSString).lastPathComponent) }
@@ -568,7 +569,32 @@ enum GitPanelSplit {
         return max(first, second) + PiSpacing.lg * 2
     }
 
+    /// The toolbar's last measured width and height, for one proposal at one
+    /// scale. The panel lays its parts out again whenever any of them changes
+    /// size (a commit message's first character changes the commit box's),
+    /// and measuring the toolbar's rows afresh each time cost more than the
+    /// rest of that pass. Kept until the toolbar's inputs change or one of its
+    /// parts reports a new size (`PiKit.sizeChanged` invalidates each
+    /// container on its way up).
+    private struct Measures { var scale: CGFloat; var width: (proposal: CGFloat, value: CGFloat)? = nil; var height: (width: CGFloat, value: CGFloat)? = nil }
+    private var measures: Measures?
+    override func invalidateIntrinsicContentSize() { measures = nil; super.invalidateIntrinsicContentSize() }
+    /// The measures kept at the current scale, dropping them if it changed.
+    private var currentMeasures: Measures {
+        let scale = piScale
+        if let measures, measures.scale == scale { return measures }
+        return Measures(scale: scale)
+    }
+
     func width(forProposal width: CGFloat) -> CGFloat {
+        var kept = currentMeasures
+        if let measured = kept.width, measured.proposal == width { return measured.value }
+        let value = measureWidth(forProposal: width)
+        RedrawCounter.note("GitPanelToolbar measured")
+        kept.width = (width, value); measures = kept
+        return value
+    }
+    private func measureWidth(forProposal width: CGFloat) -> CGFloat {
         let inner = max(0, width - PiSpacing.lg * 2)
         let first = StackLayout.width(firstRow(), spacing: PiSpacing.sm, proposal: inner)
         let second = wide ? 0 : StackLayout.width(secondRow(), spacing: PiSpacing.sm, proposal: inner)
@@ -576,6 +602,14 @@ enum GitPanelSplit {
     }
 
     func height(forWidth width: CGFloat) -> CGFloat {
+        var kept = currentMeasures
+        if let measured = kept.height, measured.width == width { return measured.value }
+        let value = measureHeight(forWidth: width)
+        RedrawCounter.note("GitPanelToolbar measured")
+        kept.height = (width, value); measures = kept
+        return value
+    }
+    private func measureHeight(forWidth width: CGFloat) -> CGFloat {
         let inner = width - PiSpacing.lg * 2
         var height = StackLayout.height(firstRow(), spacing: PiSpacing.sm, width: inner)
         if !wide { height += PiSpacing.sm + StackLayout.height(secondRow(), spacing: PiSpacing.sm, width: inner) }
@@ -1193,6 +1227,8 @@ extension SymbolButton {
 
     func apply(_ next: Inputs) {
         guard next != inputs else { return }
+        // A keystroke changes the message and nothing else the box measures.
+        let onlyMessage = inputs.map { previous in var same = next; same.message = previous.message; return same == previous } ?? false
         inputs = next
         RedrawCounter.note("GitCommitBox")
         let shown = Self.presentation(next)
@@ -1203,11 +1239,38 @@ extension SymbolButton {
         reword.line.color = shown.rewordEnabled ? .piAccent : .piInkTertiary
         reword.isEnabled = shown.rewordEnabled
         discardAll.isHidden = next.entries == 0
+        let sameHint = hint.text == shown.hint, sameTitle = commit.title == shown.title
         hint.text = shown.hint
         commit.title = shown.title
         commit.isEnabled = shown.commitEnabled
+        if !(onlyMessage && sameHint && sameTitle) { measures = nil; placed = nil }
         needsLayout = true
         if bounds.width > 0, height(forWidth: bounds.width) != bounds.height { PiKit.sizeChanged(self) }
+    }
+
+    /// What the rows below the message take at one width and scale. Typing
+    /// changes only the message, so a keystroke measures the message alone;
+    /// measuring the tabs, the amend row, the hint and the button again for
+    /// each one cost most of a keystroke. Dropped when anything else changes,
+    /// or when a part reports a new size (`PiKit.sizeChanged` invalidates
+    /// each container on its way up).
+    private struct Measures { var width: CGFloat, scale: CGFloat, tabs: CGSize, amendRow: CGFloat, hint: CGFloat, commit: CGSize }
+    private var measures: Measures?
+    /// The size and row heights the parts were last placed for: a layout pass
+    /// that would place them the same way leaves them be.
+    private var placed: (size: CGSize, rows: [CGFloat])?
+    override func invalidateIntrinsicContentSize() { measures = nil; placed = nil; super.invalidateIntrinsicContentSize() }
+    override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); measures = nil; placed = nil }
+    private func measured(_ width: CGFloat) -> Measures {
+        let scale = piScale
+        if let measures, measures.width == width, measures.scale == scale { return measures }
+        RedrawCounter.note("GitCommitBox measured")
+        let inner = width - PiSpacing.md * 2
+        let next = Measures(width: width, scale: scale, tabs: scopeTabs.intrinsicContentSize,
+                            amendRow: StackLayout.height(amendRow(), spacing: PiSpacing.sm, width: inner),
+                            hint: hint.height(forWidth: inner), commit: commit.intrinsicContentSize)
+        measures = next
+        return next
     }
 
     private func amendRow() -> [StackLayout.Item] {
@@ -1216,9 +1279,8 @@ extension SymbolButton {
         return items
     }
     private func heights(_ width: CGFloat) -> [CGFloat] {
-        let inner = width - PiSpacing.md * 2
-        return [message.height(forWidth: inner), scopeTabs.intrinsicContentSize.height,
-                StackLayout.height(amendRow(), spacing: PiSpacing.sm, width: inner), hint.height(forWidth: inner), commit.intrinsicContentSize.height]
+        let inner = width - PiSpacing.md * 2, rest = measured(width)
+        return [message.height(forWidth: inner), rest.tabs.height, rest.amendRow, rest.hint, rest.commit.height]
     }
     func height(forWidth width: CGFloat) -> CGFloat { heights(width).reduce(0, +) + PiSpacing.sm * 4 + PiSpacing.md * 2 }
     /// Its height with the message at its fewest lines.
@@ -1228,13 +1290,16 @@ extension SymbolButton {
     override func layout() {
         super.layout()
         let inner = bounds.width - PiSpacing.md * 2, rows = heights(bounds.width), scale = piScale
+        if let placed, placed.size == bounds.size, placed.rows == rows { return }
+        placed = (bounds.size, rows)
+        let rest = measured(bounds.width)
         var y = PiSpacing.md
         message.frame = CGRect(x: PiSpacing.md, y: y, width: inner, height: rows[0]); y += rows[0] + PiSpacing.sm
-        let tabs = scopeTabs.intrinsicContentSize
+        let tabs = rest.tabs
         scopeTabs.frame = CGRect(x: PiSpacing.md, y: y, width: min(tabs.width, inner), height: rows[1]); y += rows[1] + PiSpacing.sm
         StackLayout.place(amendRow(), spacing: PiSpacing.sm, in: CGRect(x: PiSpacing.md, y: y, width: inner, height: rows[2]), scale: scale); y += rows[2] + PiSpacing.sm
         hint.frame = CGRect(x: PiSpacing.md, y: y, width: inner, height: rows[3]); y += rows[3] + PiSpacing.sm
-        let size = commit.intrinsicContentSize
+        let size = rest.commit
         commit.frame = CGRect(x: PiSpacing.md + inner - size.width, y: y, width: size.width, height: size.height)
     }
 }

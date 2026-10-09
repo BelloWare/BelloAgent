@@ -10,7 +10,20 @@ extension NativeTranscriptPane {
         onReadReply = { [weak model] sessionID, messageID in model?.acknowledgeVisibleReply(sessionID: sessionID, messageID: messageID) }
         onLoadEarlier = { [weak model] in model?.loadEarlier(sessionID: $0) }
         onLoadNewer = { [weak model] in model?.loadNewer(sessionID: $0) }
+        onPrefetchEarlier = { [weak model] in model?.loadEarlier(sessionID: $0, automatic: true) }
+        onPrefetchNewer = { [weak model] in model?.loadNewer(sessionID: $0, automatic: true) }
         onLatest = { [weak model] in model?.latest(sessionID: $0) }
+        onStart = { [weak model] id in Task { await model?.revealStartOfChat(sessionID: id) } }
+        find.search = { [weak model] id, query, start in
+            guard let model else { throw CancellationError() }
+            return try await model.searchConversation(id, query: query, start: start)
+        }
+        find.reveal = { [weak model] id, messageID in await model?.revealInTranscript(sessionID: id, messageID: messageID, fromFind: true) ?? false }
+        isFocusedConversation = { [weak model, weak self] in
+            // Not while the report or a sheet covers the chats.
+            guard let model, model.conversationCommandsEnabled, let id = self?.session?.id else { return false }
+            return (model.focusedSessionID ?? model.selectedID) == id
+        }
         onViewportReady = { [weak model] in model?.historyViewportReady($0, generation: $1) }
         var environment = TranscriptRowEnvironment(view: self)
         environment.isEnabled = enabled; environment.forks = canFork; environment.opensFiles = true

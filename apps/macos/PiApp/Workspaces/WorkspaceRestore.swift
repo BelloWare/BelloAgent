@@ -39,6 +39,8 @@ extension WorkspaceModel {
             await nameUnnamedJournals()
             try await restoreTopics()
             try await restoreReadStates()
+            await restoreRunHolds()
+            await restoreDraftMarks()
             await restoreContextReadings()
             await reconcileSideKeeps()
             try await restoreProjectSidebarStates()

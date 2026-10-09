@@ -1,11 +1,26 @@
 import Foundation
 
-struct ContentHit: Codable, Sendable, Identifiable { var id: String; var position: Int; var preview: String }
+struct ContentHit: Codable, Sendable, Identifiable {
+    var id: String; var position: Int; var preview: String
+    /// How many times the query occurs in the record's text (nil from a
+    /// source that does not count; read as one).
+    var count: Int? = nil
+}
 struct ContentSearch: Codable, Sendable { var hits: [ContentHit]; var total: Int; var next: Int?; var revision: String }
 struct ContentCursor: Codable, Sendable { var index: Int; var offset: Int }
 struct ContentPage: Codable, Sendable { var text: String; var next: ContentCursor? }
 
 enum ConversationContent {
+    /// Case-insensitive occurrences of `query` in `text`, as the find bar
+    /// and the content search count them.
+    static func occurrences(of query: String, in text: String) -> Int {
+        guard !query.isEmpty else { return 0 }
+        var count = 0, from = text.startIndex
+        while let found = text.range(of: query, options: [.caseInsensitive], range: from..<text.endIndex) {
+            count += 1; from = found.upperBound
+        }
+        return count
+    }
     static func text(_ entry: [String: WireValue]) -> String {
         if entry["type"]?.string == "compaction" { return "## Compaction\n\n\(entry["summary"]?.string ?? "")\n\n" }
         let message = entry["message"]?.object ?? [:], content = message["content"]

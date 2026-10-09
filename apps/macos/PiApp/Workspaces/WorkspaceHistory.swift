@@ -1,9 +1,14 @@
 import Foundation
 
+/// What the history-window test seam is handed as `around` for a read of
+/// the chat's first page (`readConversationWindow(start:)`).
+enum HistoryWindowEdge { static let start = "\u{0}start" }
+
 extension WorkspaceModel {
+    /// `start`: the chat's first page (Home), read in place of `around`.
     func readConversationWindow(_ item: ChatRecord, cursor: ConversationCursor?, newer: Bool = false,
-                                around: String? = nil) async throws -> ConversationHistoryPage {
-        if let historyWindowLoader { return try await historyWindowLoader(item.id, cursor, newer, around) }
+                                around: String? = nil, start: Bool = false) async throws -> ConversationHistoryPage {
+        if let historyWindowLoader { return try await historyWindowLoader(item.id, cursor, newer, start ? HistoryWindowEdge.start : around) }
         try Task.checkCancellation()
         if opened.contains(item.id), let host = hosts[item.workspaceID] {
             var params: [String: WireValue] = ["version": .number(2), "direction": .string(newer ? "newer" : "older")]
@@ -15,6 +20,7 @@ extension WorkspaceModel {
                 } else { params["cursor"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(cursor)) }
             }
             if let around { params["around"] = .string(around) }
+            if start { params["edge"] = .string("start") }
             let result = try await host.request("session.history", sessionID: item.id, params: params)
             try Task.checkCancellation()
             return try ConversationHistoryPage(result)
@@ -28,7 +34,7 @@ extension WorkspaceModel {
                 return try ConversationHistoryPage(page)
             }
             let display = displays[item.id], generation = display?.presentationGeneration
-            return try ConversationHistoryPage(await history.window(path: path, cursor: cursor, newer: newer, around: around, progress: { [weak display] records, bytes, total in
+            return try ConversationHistoryPage(await history.window(path: path, cursor: cursor, newer: newer, around: around, start: start, progress: { [weak display] records, bytes, total in
                 Task { @MainActor [weak display] in
                     guard let display, display.presentationGeneration == generation, display.historyState == .loading else { return }
                     display.historyProgress = "Reading history · \(records.formatted()) records · \(Int(Double(bytes) / Double(max(1, total)) * 100))%"
@@ -40,7 +46,8 @@ extension WorkspaceModel {
             "incarnation": .string("new:" + item.id), "lineage": .string("root"), "older": .null, "newer": .null]))
     }
 
-    func adoptInitialHistory(_ page: ConversationHistoryPage, into view: SessionDisplay, around: String? = nil) {
+    /// `landing`: how far below the viewport's top the `around` row lands.
+    func adoptInitialHistory(_ page: ConversationHistoryPage, into view: SessionDisplay, around: String? = nil, landing: Double = 0) {
         view.beginTranscriptBatch()
         if view.taskPresentation?.active == nil {
             view.taskPresentation = .init(sessionID:view.id, epoch:page.incarnation, timeline:page.lineage, sequence:0, sourceRevision:page.revision?.stamp ?? "history", active:nil, recent:page.taskRecords)
@@ -50,7 +57,7 @@ extension WorkspaceModel {
         view.presentation.partialTurnInput = page.partialTurnInput
         view.olderPage = .init(cursor: page.older); view.newerPage = .init(cursor: page.newer)
         view.before = page.older?.entry; view.hostBefore = nil; view.historyRevision = page.revision
-        if let around { view.scrollAnchor = .init(id: around, offset: 0, followsBottom: false) }
+        if let around { view.scrollAnchor = .init(id: around, offset: landing, followsBottom: false) }
         else if let anchor = view.scrollAnchor, !anchor.followsBottom, !page.messages.contains(where: { $0.id == anchor.id }) { view.scrollAnchor = nil }
         view.browsingHistory = page.newer != nil
         view.projectedRows = []; view.projectionRevision = nil
@@ -61,7 +68,13 @@ extension WorkspaceModel {
             observeAssistantOutputs(sessionID: view.id, snapshot: ["assistantMessageCount": .number(Double(count)),
                 "latestAssistantMessageId": page.latestAssistantID.map(WireValue.string) ?? .null])
         }
+        // What the journal says happened before is not activity now.
+        quietActivity.insert(view.id); defer { quietActivity.remove(view.id) }
         view.observeRetainedFailure(page.failure); view.observeRetainedRun(page)
+        // The journal said what was unfinished: the chat's hold follows it.
+        // (Not while a run or an opening is under way: the journal is not read
+        // over those, and the helper's next snapshot says.)
+        if page.fromJournal, !view.busy, !view.loading { view.runStateKnown = true; reconcileRunHold(view.id, isActivity: false) }
         if let notice = page.notice { view.notice = notice }
         view.endTranscriptBatch()
         // The request goes after the rows it is for. Asked inside the batch,
@@ -137,8 +150,12 @@ extension WorkspaceModel {
             catch { if !Task.isCancelled, view.presentationGeneration == generation { view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false } }
         }
     }
-    func loadEarlier(sessionID: String? = nil) { Task { _ = await loadEarlierPage(sessionID: sessionID) } }
-    func loadNewer(sessionID: String) { Task { _ = await loadHistoryPage(sessionID, newer: true) } }
+    /// `automatic`: the page reading ahead of the reader on its own, which
+    /// never lets go of the rows on their screen (`loadHistoryPage`).
+    func loadEarlier(sessionID: String? = nil, automatic: Bool = false) {
+        Task { guard let id = sessionID ?? selectedID else { return }; _ = await loadHistoryPage(id, newer: false, automatic: automatic) }
+    }
+    func loadNewer(sessionID: String, automatic: Bool = false) { Task { _ = await loadHistoryPage(sessionID, newer: true, automatic: automatic) } }
     /// A live page that does not join the rows a chat shows leaves a gap. A
     /// reply longer than the page starts it after the message it answers,
     /// and a chat that sent that message a moment ago may not have its row
@@ -167,7 +184,7 @@ extension WorkspaceModel {
         guard let id = sessionID ?? selectedID else { return false }
         return await loadHistoryPage(id, newer: false)
     }
-    @discardableResult func loadHistoryPage(_ id: String, newer: Bool) async -> Bool {
+    @discardableResult func loadHistoryPage(_ id: String, newer: Bool, automatic: Bool = false) async -> Bool {
         guard let view = displays[id], let item = record(id), !view.historyState.loading else { return false }
         let boundary = newer ? view.newerPage : view.olderPage
         guard let cursor = boundary.cursor, !boundary.loading else { return false }
@@ -221,11 +238,32 @@ extension WorkspaceModel {
                 }
                 var joined = newer ? view.messages + added : added + view.messages
                 // Keep the requested side, evict only the far opposite edge.
-                let bounded = TranscriptPaging.window(joined, keepingEarlier: !newer)
-                let evicted = bounded.count != joined.count
+                var bounded = TranscriptPaging.window(joined, keepingEarlier: !newer)
+                var evicted = bounded.count != joined.count
+                // Read ahead on its own, a page never lets go of what the
+                // reader can see now, whatever the last reported anchor says
+                // (it is reported a moment after the reader moves): in a
+                // window too short for the page and the screen both, the
+                // page's farthest rows wait instead, and its cursor stays on
+                // them. A page none of whose rows fit waits whole.
+                var trimmedFar = false
+                let onScreen = automatic ? (view.visibleMessageIDs?() ?? []).intersection(known) : []
+                if !onScreen.isSubset(of: Set(bounded.map(\.id))) {
+                    guard let kept = TranscriptPaging.window(joined, keeping: onScreen, keepingEarlier: !newer),
+                          added.contains(where: { row in kept.contains { $0.id == row.id } }) else { return false }
+                    trimmedFar = newer ? kept.last?.id != joined.last?.id : kept.first?.id != joined.first?.id
+                    evicted = newer ? kept.first?.id != joined.first?.id : kept.last?.id != joined.last?.id
+                    bounded = kept
+                }
                 var pinned = view.pinnedHistoryIDs
-                if let anchor = view.scrollAnchor, !anchor.followsBottom, known.contains(anchor.id) { pinned.insert(anchor.id) }
+                // A read the page made on its own keeps what is on screen
+                // (above); the anchor last reported trails the reader and
+                // would hold a row they have already left.
+                if !automatic, let anchor = view.scrollAnchor, !anchor.followsBottom, known.contains(anchor.id) { pinned.insert(anchor.id) }
                 guard pinned.isSubset(of: Set(bounded.map(\.id))) else {
+                    // Nobody asked for this page: it waits for the selection
+                    // to go, rather than saying so at the edge.
+                    if automatic { return false }
                     throw HostError.failure("The selected text is at the display boundary. Clear the selection to load more history.")
                 }
                 joined = bounded
@@ -244,10 +282,12 @@ extension WorkspaceModel {
                 for index in joined.indices { joined[index].accounting = view.messageAccounting[joined[index].id] }
                 if newer {
                     view.newerPage = .init(cursor: page.newer)
+                    if trimmedFar, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge) }
                     if evicted, let first = joined.first { var edge = page.older ?? page.newer ?? cursor; edge.entry = first.id; view.olderPage = .init(cursor: edge) }
                 } else {
                     view.olderPage = .init(cursor: page.older)
-                    view.presentation.partialTurnInput = page.partialTurnInput
+                    if trimmedFar, let first = joined.first { var edge = page.older ?? page.newer ?? cursor; edge.entry = first.id; view.olderPage = .init(cursor: edge) }
+                    view.presentation.partialTurnInput = trimmedFar ? nil : page.partialTurnInput
                     if evicted, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge) }
                 }
                 view.before = view.olderPage.cursor?.entry
@@ -284,6 +324,7 @@ extension WorkspaceModel {
     }
     func latest(sessionID: String? = nil) {
         if let id = sessionID ?? selectedID, let view = displays[id] {
+            view.abandonReveal()
             view.scrollAnchor = .init(id: "", offset: 0, followsBottom: true)
             anchorChanged(view); reloadHistory(id)
         }

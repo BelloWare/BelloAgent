@@ -24,6 +24,23 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     func chatRecord(_ id: String) -> ChatRecord? { sidebarIndex.chat(id, in: chats) }
     @Published var unreadStates: [String: SessionReadState] = [:] { didSet { readBadgeCache = nil; noteActivityChanged() } }
     var readBadgeCache: SidebarReadCounts?
+    /// Owned by `WorkspaceRunHolds.swift`: chats whose run waits for Resume
+    /// (or was under way when last seen), kept across relaunches.
+    @Published var runHolds: [String: RunHoldRecord] = [:] {
+        didSet { menuBarProjection.dirty.formUnion(oldValue.keys); menuBarProjection.dirty.formUnion(runHolds.keys); activityChanged.send() }
+    }
+    var dirtyRunHolds: Set<String> = []
+    var runHoldWrites: [String: Task<Void, Never>] = [:]
+    /// Launch's reading of the journals the holds name (tests wait on it).
+    var runHoldVerification: Task<Void, Never>?
+    /// Owned by `WorkspaceActivityOrder.swift`: what holds the sidebar's order
+    /// still, and the activity held chats are sorted by meanwhile.
+    var sidebarOrderHolds: Set<SidebarOrderHold> = []
+    /// Chats whose state is being read from their journal, which is not activity.
+    var quietActivity: Set<String> = []
+    @Published var heldActivity: [String: Int64] = [:] { didSet { if heldActivity != oldValue { sidebarIndex.invalidate() } } }
+    /// Test seam: hold writes fail, as a full or locked store would.
+    var runHoldWritesFail = false
     /// Owned by `WorkspaceReadState.swift`: replies that finished in the chat
     /// the reader is looking at, waiting for the page's own read check.
     var heldUnread: [String: HeldUnread] = [:]
@@ -37,6 +54,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     }
     /// Invalidates delayed report-to-message navigation when another target wins.
     var messageNavigationRevision = 0
+    /// Counts `revealInTranscript` requests (`TranscriptReveal.serial`).
+    var revealSerial = 0
     var sessionReferenceCopyRevision = 0
     /// Owned by `WorkspaceSelection.swift`: which `select` call is current, so
     /// a slower one cannot finish over a newer selection.
@@ -57,7 +76,42 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var archiveStopWorkers = 0
     /// Optional delayed writer used by race/failure fixtures, never by production.
     var organizationWrite: (([String], ChatOrganizationChange) async throws -> ChatOrganizationBatch)?
-    @Published var focusedSessionID: String? { didSet { if focusedSessionID != oldValue { organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } } }
+    @Published var focusedSessionID: String? {
+        didSet {
+            // A focus a navigation gives a parent on its way to a side is
+            // passed over once, even when the parent already had it.
+            let passedOver = focusedSessionID.map { recencyPassing.remove($0) != nil } ?? false
+            guard focusedSessionID != oldValue else { return }
+            // Recorded before the selection is written: it is written with it.
+            if let id = focusedSessionID, !passedOver { noteOpened(id) }
+            organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged()
+            // The reader came to this chat: a Mark as Unread on it is done
+            // with. Not the chat a launch reopens by itself, nor a parent
+            // passed through on the way to its side.
+            if let id = focusedSessionID {
+                if launchFocus == id { launchFocus = nil }
+                else if passedOver { }
+                else if readStatesRestored { clearManualUnread(sessionID: id) } else { openedBeforeReadStates.insert(id) }
+            }
+        }
+    }
+    /// The chat (or side) launch is about to focus, reopening it as it was at
+    /// the last quit (`reopenRememberedSelection`): that one focus is not the
+    /// reader opening it. Taken by the focus it is for.
+    var launchFocus: String?
+    /// Owned by `WorkspaceRecency.swift`: chats by order of opening, the
+    /// open one first, and those focused only on the way to a side.
+    @Published var recentlyOpened: [String] = []
+    /// Owned by `WorkspaceDraftMarks.swift`: chats whose saved draft holds
+    /// unsent work, and the store's write each was last decided by.
+    @Published var draftChatIDs: Set<String> = []
+    var draftMarkSequences: [String: Int] = [:]
+    var draftMarksRestoredAt = 0
+    var recencyPassing: Set<String> = []
+    /// Mark as Unread waits for the saved read states (`restoreReadStates`);
+    /// chats the reader opens before then have their mark cleared once read.
+    var readStatesRestored = false
+    var openedBeforeReadStates: Set<String> = []
     @Published var selected: SessionDisplay?
     @Published var error: String?
     /// Projects whose folder was not found when a helper was to start in it,
@@ -97,6 +151,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// what the filter left on screen. Not published: the sidebar owns the
     /// field, and typing must not redraw the conversation pane behind it.
     var sidebarFilter = "" { didSet { if sidebarFilter != oldValue { sidebarIndex.invalidate() } } }
+    /// Owned by `SidebarSearch.swift`: the filter's search inside chats,
+    /// made when the sidebar first asks for it.
+    var sidebarSearchStorage: SidebarSearch?
     /// Chats whose side chats are folded away. Owned here rather than by the
     /// group's own `@State`, which forgot the fold whenever the project was
     /// collapsed, the archive filter flipped or the sidebar was rebuilt. Both
@@ -231,11 +288,15 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var menuBarActivityChanges: AnyPublisher<Void, Never> { activityChanged.eraseToAnyPublisher() }
     func noteActivityChanged(_ id: String? = nil) {
         if let id { menuBarProjection.dirty.insert(id) }
-        else { menuBarProjection.dirty.formUnion(displays.keys); menuBarProjection.dirty.formUnion(unreadStates.keys); menuBarProjection.dirty.formUnion(menuBarProjection.rows.keys) }
+        else {
+            menuBarProjection.dirty.formUnion(displays.keys); menuBarProjection.dirty.formUnion(unreadStates.keys)
+            menuBarProjection.dirty.formUnion(runHolds.keys); menuBarProjection.dirty.formUnion(menuBarProjection.rows.keys)
+        }
         activityChanged.send()
         // Read only the affected committed phase, never text or the chat array.
         if let id, let view = displays[id], let item = record(id) {
             liveActivity.phase(view.activityPhase, workspace: item.workspaceID, session: id)
+            if view.runStateKnown { reconcileRunHold(id) }
         }
     }
     private var activityObservers: [ObjectIdentifier: AnyCancellable] = [:]
@@ -396,6 +457,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         liveExporter = TraceArchive(root: FileManager.default.temporaryDirectory.appendingPathComponent("BelloAgent-Export-" + UUID().uuidString))
         store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         report.attach(self)
+        observeDraftWrites()
         TranscriptKeptRows.policy = self
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
         ChangesTab.resolveProject = { [weak self] id in self?.changesProject(id) }

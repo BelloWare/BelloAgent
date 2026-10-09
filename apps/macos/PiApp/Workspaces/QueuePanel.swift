@@ -282,6 +282,8 @@ extension WorkspaceModel {
         guard text.contains(where: { !$0.isWhitespace }) || view.queueEditKeepsInput else { view.notice = "Type the message, or Cancel to keep it as it was."; return }
         resolveQueuedEdit(view, editID: editID, operation: "save", sent: text) { [weak self] reply in
             guard let self else { return }
+            // A rewritten message is a message: the chat moves up its sidebar group.
+            self.noteChatActivity(view.id)
             // Typed after Save was pressed: kept, ahead of the draft set aside.
             let newer = view.draft == text ? nil : view.draft
             self.finishQueuedEdit(view)

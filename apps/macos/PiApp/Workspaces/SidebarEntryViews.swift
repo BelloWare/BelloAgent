@@ -21,9 +21,6 @@ import Combine
     let body = ChatRowBodyView()
     let row: PiKit.SelectableRow
     private var surface: TopicSessionDragSurfaceView?
-    private let insertion = CALayer()
-    /// Where a chat dragged over this row would land: before it, after it, or nowhere.
-    var insertionAfter: Bool? { didSet { if oldValue != insertionAfter { updateInsertion() } } }
     private var sourceWatch: AnyCancellable?
     private var minuteWatch: AnyCancellable?
     /// The live page this row last read its figures from.
@@ -40,8 +37,6 @@ import Combine
         super.init(frame: .zero)
         wantsLayer = true
         addSubview(row)
-        layer?.addSublayer(insertion)
-        insertion.isHidden = true
         row.onPress = { [weak self] in self?.click(NSEvent.modifierFlags) }
         // Archive's confirmation is wider than the button it replaces: the
         // surface's cut-outs follow it at once.
@@ -80,6 +75,7 @@ import Combine
         self.chat = chat; self.state = state; self.projectID = projectID
         row.selected = state.selected
         row.marked = state.marked
+        row.recencyTint = PiKit.SelectableRow.recencyTint(rank: state.recency)
         row.showsPointer = !state.draggable
         watchSource()
         refreshBody()
@@ -90,8 +86,8 @@ import Combine
             surface = view
         } else if !state.draggable, let surface { surface.removeFromSuperview(); self.surface = nil }
         surface?.actions = TopicSessionRowActions(item: { [weak self] in self?.dragItem() }, image: { [weak self] in self?.dragImage() },
-                                                  click: { [weak self] in self?.click($0) }, doubleClick: { [weak self] in self?.rename() })
-        row.setAccessibilityLabel(chat.title)
+                                                  click: { [weak self] in self?.click($0) }, doubleClick: { [weak self] in self?.rename() },
+                                                  dragging: dragHold.callback(model: model, list: { [weak self] in self?.superview as? SidebarListDocument }))
         needsLayout = true
     }
 
@@ -140,10 +136,13 @@ import Combine
     static func content(model: WorkspaceModel, chat: ChatRecord, state: SidebarChatRowState,
                         display: SessionDisplay?, retained: CachedSessionAccounting?) -> ChatRowBodyView.Content {
         let now = SidebarMinute.shared.now
-        let stats = display.map { liveStats($0, now: now) }
+        var stats = display.map { liveStats($0, now: now) }
             ?? ChatRowStats(totals: (retained ?? model.chatAccounting.row(for: chat.id)).totals, now: now)
+        // Paused before a restart, and not opened since: the saved hold says so.
+        if display?.runStateKnown != true, let held = state.heldRun { stats.updateActivity(state: held, loading: false, activity: [:]) }
         return ChatRowBodyView.Content(stats: stats, title: chat.title, subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
-                                       unreadCount: state.unreadCount, unreadFailure: state.unreadFailure, hasSide: state.hasSide,
+                                       unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
+                                       markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft, hasSide: state.hasSide,
                                        expanded: state.expanded, pinned: chat.isPinned, archived: chat.isArchived,
                                        archivable: !chat.isUtilityChat, available: state.available)
     }
@@ -153,7 +152,9 @@ import Combine
     }
     private func refreshBody() {
         let height = bounds.width > 0 ? entryHeight(width: bounds.width) : nil
-        body.update(Self.content(model: model, chat: chat, state: state, display: watchedDisplay, retained: retained))
+        let content = Self.content(model: model, chat: chat, state: state, display: watchedDisplay, retained: retained)
+        body.update(content)
+        if row.accessibilityLabel() != content.accessibilityLabel { row.setAccessibilityLabel(content.accessibilityLabel) }
         // A line more or less under the title: the list lays out again.
         if let height, entryHeight(width: bounds.width) != height { (superview as? SidebarListDocument)?.entryChangedHeight() }
     }
@@ -179,10 +180,18 @@ import Combine
     // MARK: Menu
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        if state.anyMarked && state.marked { return PiMenus.menu(MarkedSessionActions.entries(model: model)) }
-        let model = self.model, chat = self.chat, state = self.state
-        return PiMenus.menu(Self.entries(model: model, chat: chat, state: state))
+        let menu: NSMenu
+        if state.anyMarked && state.marked { menu = PiMenus.menu(MarkedSessionActions.entries(model: model)) }
+        else {
+            let model = self.model, chat = self.chat, state = self.state
+            menu = PiMenus.menu(Self.entries(model: model, chat: chat, state: state))
+        }
+        // The rows stay where they are while the menu is open.
+        menuHold.hold(menu, model: model, list: superview as? SidebarListDocument)
+        return menu
     }
+    private let menuHold = SidebarMenuOrderHold()
+    private let dragHold = SidebarDragOrderHold()
     @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, chat: ChatRecord, state: SidebarChatRowState) -> [PiMenuEntry] {
         if chat.parentSessionID != nil {
             PiMenuEntry.button("Open on Its Own", systemImage: "rectangle.expand.vertical") { Task { await model.select(chat.id) } }
@@ -194,6 +203,9 @@ import Combine
         if state.offersMarkAsRead {
             PiMenuEntry.divider
             PiMenuEntry.button("Mark as Read") { model.markSessionRead(chat.id) }
+        } else if model.canMarkSessionUnread(chat.id) {
+            PiMenuEntry.divider
+            PiMenuEntry.button("Mark as Unread", identifier: "markSessionUnread") { model.markSessionUnread(chat.id) }
         }
     }
 
@@ -211,16 +223,6 @@ import Combine
             row.layoutSubtreeIfNeeded()
             surface.controls = body.controlFrames.map { body.convert($0, to: surface) }
         }
-        updateInsertion()
-    }
-    /// A 2-point accent line along the edge a dropped chat would land on.
-    private func updateInsertion() {
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        insertion.isHidden = insertionAfter == nil
-        insertion.backgroundColor = piCGColor(.piAccent)
-        let y = insertionAfter == true ? row.frame.maxY - 2 : row.frame.minY
-        insertion.frame = CGRect(x: row.frame.minX, y: y, width: row.frame.width, height: 2)
-        CATransaction.commit()
     }
 }
 
@@ -254,6 +256,7 @@ import Combine
         SidebarChatRowView.builds &+= 1
         state = new
         row.selected = new.selected
+        row.recencyTint = PiKit.SelectableRow.recencyTint(rank: new.recency)
         if let display = new.liveIdentity == nil ? nil : model.displays[new.id] {
             sourceWatch = display.objectWillChange.merge(with: display.footer.objectWillChange)
                 .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleBody() } }
@@ -291,12 +294,16 @@ import Combine
     }
     override func menu(for event: NSEvent) -> NSMenu? {
         let model = self.model, state = self.state
-        return PiMenus.menu(Self.entries(model: model, state: state))
+        let menu = PiMenus.menu(Self.entries(model: model, state: state))
+        menuHold.hold(menu, model: model, list: superview as? SidebarListDocument)
+        return menu
     }
+    private let menuHold = SidebarMenuOrderHold()
     @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, state: SidebarSideRowState) -> [PiMenuEntry] {
         if state.kept, let record = model.record(state.id) { SessionOrganizationActions.entries(model: model, chat: record) }
         SessionReferenceActions.entries(model: model, sessionID: state.id)
         if state.unreadCount > 0 { PiMenuEntry.button("Mark as Read") { model.markSessionRead(state.id) } }
+        else if model.canMarkSessionUnread(state.id) { PiMenuEntry.button("Mark as Unread", identifier: "markSessionUnread") { model.markSessionUnread(state.id) } }
     }
     func entryHeight(width: CGFloat) -> CGFloat { row.height(forWidth: max(0, width - state.indent)) }
     override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); needsLayout = true }
@@ -492,7 +499,9 @@ enum MarkedSessionActions {
     @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel) -> [PiMenuEntry] {
         let marked = model.markedChats
         let archived = marked.filter(\.isArchived).count
-        let unread = marked.filter { model.unreadOutputCount(sessionID: $0.id) > 0 }.count
+        // A failure mark is cleared by Mark as Read too, so it counts here.
+        let unread = marked.filter { model.offersMarkSessionRead($0.id) }.count
+        let read = marked.filter { model.canMarkSessionUnread($0.id) }.count
         PiMenuEntry.note("\(marked.count) chats selected")
         PiMenuEntry.divider
         PiMenuEntry.button("Copy Session References", systemImage: "doc.on.doc", identifier: "copyMarkedSessionReferences",
@@ -521,10 +530,9 @@ enum MarkedSessionActions {
                 }
             }
         }
-        if unread > 0 {
-            PiMenuEntry.divider
-            PiMenuEntry.button("Mark \(unread) as Read") { model.markMarkedSessionsRead() }
-        }
+        if unread > 0 || read > 0 { PiMenuEntry.divider }
+        if unread > 0 { PiMenuEntry.button("Mark \(unread) as Read") { model.markMarkedSessionsRead() } }
+        if read > 0 { PiMenuEntry.button("Mark \(read) as Unread", identifier: "markMarkedSessionsUnread") { model.markMarkedSessionsUnread() } }
         PiMenuEntry.divider
         PiMenuEntry.button("Clear Selection", systemImage: "xmark.circle") { model.clearSessionMarks() }
     }

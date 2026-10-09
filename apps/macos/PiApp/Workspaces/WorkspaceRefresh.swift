@@ -46,6 +46,7 @@ struct TaskPresentationDecoder: Sendable {
 
 extension WorkspaceModel {
     func refresh(_ id: String) {
+        sidebarSearchStorage?.journalChanged()
         guard let item = record(id), let host = hosts[item.workspaceID], opened.contains(id) else { return }
         // Written only when new: every write runs `displays`' observers, which
         // scan every display, and this runs on every event of every chat.
@@ -237,6 +238,8 @@ extension WorkspaceModel {
         if let mode = result["captureMode"]?.string, mode != view.captureMode { view.captureMode = mode }
         view.displayObservedAt = result["displayObservedAt"]?.number.map { $0 + clockOffset }
         if let start = view.displayObservedAt { PerformanceProbe.shared.observe("deltaToNativeSnapshotMs", milliseconds: PerformanceProbe.now - start) }
+        // The helper has said what the run is doing: the chat's hold follows it.
+        view.runStateKnown = true; reconcileRunHold(id)
         return queued
     }
     /// A snapshot's rows, merged into the chat's window, and the window's

@@ -250,7 +250,7 @@ extension WorkspaceModel {
             return
         }
         if revealInSidebar { quietSidebarReveal = [] }
-        if selectedID != info.parentID { await select(info.parentID, revealInSidebar: revealInSidebar, focusesComposer: false) }
+        if selectedID != info.parentID { await passingThrough(info.parentID) { await select(info.parentID, revealInSidebar: revealInSidebar, focusesComposer: false) } }
         guard selectedID == info.parentID, side(id) != nil else { return }
         page = .chats; focusedSessionID = id
         if revealInSidebar, let child = record(id) { revealProjectChat(child) }
@@ -264,6 +264,12 @@ extension WorkspaceModel {
     /// side list the reader folded, a collapsed topic of the chat a side
     /// belongs to and the archive switch all stay as they were.
     func openFromSidebar(_ id: String) async {
+        // A chat the filter listed for its messages opens at its match.
+        let hit = sidebarSearchHit(id), opening = beginSidebarOpen()
+        await openSidebarRow(id)
+        await revealSidebarSearchHit(id, hit: hit, opening: opening)
+    }
+    private func openSidebarRow(_ id: String) async {
         quietSidebarReveal = sidebarLineage(of: id)
         if side(id) != nil { await selectSide(id, revealInSidebar: false); return }
         guard let chat = record(id) else { return }

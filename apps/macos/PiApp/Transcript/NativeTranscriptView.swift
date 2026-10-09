@@ -29,7 +29,7 @@ final class TranscriptSurfaceMarker: NSView {
 /// The rows beyond either edge are read as the reader reaches them, and
 /// the edges float over the conversation: what comes and goes there never
 /// changes the transcript's frame, so no row moves for it.
-@MainActor final class NativeTranscriptPane: NSView {
+@MainActor final class NativeTranscriptPane: NSView, TranscriptFindHost {
     let page = TranscriptPage()
     let scrollView = TranscriptNativeScrollView()
     let document: TranscriptNativeDocument
@@ -41,7 +41,21 @@ final class TranscriptSurfaceMarker: NSView {
     var onReadReply: (String, String) -> Void = { _, _ in }
     var onLoadEarlier: (String) -> Void = { _ in }
     var onLoadNewer: (String) -> Void = { _ in }
+    /// The page reading ahead of the reader on its own, at either edge.
+    var onPrefetchEarlier: (String) -> Void = { _ in }
+    var onPrefetchNewer: (String) -> Void = { _ in }
     var onLatest: (String) -> Void = { _ in }
+    /// Home: the chat's first message, read in when the window starts later.
+    var onStart: (String) -> Void = { _ in }
+    /// ⌘F's bar over the transcript while it is open, and its matches.
+    private(set) var findBar: TranscriptFindBar?
+    private(set) lazy var find = TranscriptFindController(pane: self)
+    var findIsOpen: Bool { findBar != nil && window != nil }
+    private var handledFind = 0, handledReveal = 0, stoppedFocusFor = 0
+    private var findSessionID: String?
+    /// Whether this pane's chat is the one the conversation menu acts on,
+    /// and the menu acts on a chat at all (the chats page, no sheet).
+    var isFocusedConversation: () -> Bool = { false }
     var onViewportReady: (String, UUID) -> Void = { _, _ in }
     private(set) var environment = TranscriptRowEnvironment()
     private(set) var reduceMotion = false
@@ -91,6 +105,20 @@ final class TranscriptSurfaceMarker: NSView {
         scrollView.borderType = .noBorder
         scrollView.horizontalScrollElasticity = .none
         scrollView.documentView = document
+        // Home and End go to the chat's own ends, not the window's: a window
+        // with rows past the edge reads the first page, or the latest.
+        scrollView.edgeKey = { [weak self] move in
+            guard let self, let session = self.session else { return false }
+            // The reader's own key wins over a reveal still being read.
+            session.abandonReveal(); self.document.focusPending = false
+            switch move {
+            case .top where session.olderPage.cursor != nil:
+                self.onStart(session.id); return true
+            case .bottom where session.browsingHistory || session.newerPage.available:
+                self.onLatest(session.id); return true
+            default: return false
+            }
+        }
         addSubview(scrollView)
         for view in [earlierSlot, partialSlot, aboveSlot] as [NSView] { addSubview(view) }
         addSubview(latestBox)
@@ -186,12 +214,17 @@ final class TranscriptSurfaceMarker: NSView {
         // shown before for the frames in between (`TranscriptSwitchFirstFrameTests`).
         if boundSession != ObjectIdentifier(session) || boundGeneration != session.presentationGeneration {
             boundSession = ObjectIdentifier(session); boundGeneration = session.presentationGeneration
-            page.onAnchorChanged = onAnchorChanged; page.onReadReply = onReadReply; page.onLoadEarlier = onLoadEarlier; page.onLoadNewer = onLoadNewer
+            page.onAnchorChanged = onAnchorChanged; page.onReadReply = onReadReply; page.onLoadEarlier = onPrefetchEarlier; page.onLoadNewer = onPrefetchNewer
             page.onViewportReady = onViewportReady
             page.state = session.state
             page.bind(session)
+            // A new page (another chat, or this one read again for Latest)
+            // takes the reader where it was asked to: a place still being
+            // brought into view on the page before does not pull them back.
+            document.focusPending = false
         }
         watchSlowReads(session)
+        applyFind(session)
         document.update(snapshot: page.snapshot, actions: actions, environment: environment,
                         disclosure: page.disclosure, toolInputs: page.toolInputs)
         updateNote()
@@ -297,6 +330,7 @@ final class TranscriptSurfaceMarker: NSView {
         let wanted = (!page.atBottom || session.newerPage.available) && page.snapshot?.items.isEmpty == false
         latestBox.action = { [weak self] in
             guard let self, let session = self.session else { return }
+            session.abandonReveal(); self.document.focusPending = false
             if session.browsingHistory || session.newerPage.available { self.onLatest(session.id) } else { self.page.jumpToLatest() }
         }
         if wanted != latestShown {
@@ -460,6 +494,93 @@ final class TranscriptSurfaceMarker: NSView {
             if liveArrivalPending { liveArrivalPending = false; arrive(liveBar) }
         }
         layoutEdges(in: surface)
+        if let findBar {
+            let width = min(TranscriptFindBar.size.width, max(160, surface.width - 24))
+            findBar.frame = TranscriptMotion.pixelAligned(CGRect(x: surface.maxX - width - 12, y: surface.minY + 6, width: width, height: TranscriptFindBar.size.height), scale: scale)
+        }
+    }
+
+    // MARK: Find
+
+    /// The menu's find commands for this chat, and a reveal with a range to
+    /// mark (`revealInTranscript`), as the session carries them.
+    private func applyFind(_ session: SessionDisplay) {
+        if findSessionID != session.id {
+            // Another chat: its own find starts closed.
+            if findBar != nil { closeFind(focusing: false) }
+            document.highlights = TranscriptHighlights()
+            findSessionID = session.id
+            handledFind = session.findCommand?.serial ?? 0
+            handledReveal = session.reveal?.serial ?? 0
+        }
+        if let command = session.findCommand, command.serial != handledFind {
+            handledFind = command.serial
+            switch command.kind {
+            case .show: showFind()
+            case .next: if findBar == nil { showFind() } else { find.step(1) }
+            case .previous: if findBar == nil { showFind() } else { find.step(-1) }
+            }
+        }
+        // A reveal (`revealInTranscript`): once the page holds the message, the
+        // turn that folded it away opens, and a range asked for is marked
+        // and brought into view.
+        // A new request stops whatever earlier place was still being brought
+        // into view, at once, not when its own message arrives.
+        if let reveal = session.reveal, reveal.serial != handledReveal, reveal.serial != stoppedFocusFor, !reveal.fromFind {
+            stoppedFocusFor = reveal.serial; document.focusPending = false
+        }
+        if let reveal = session.reveal, reveal.serial != handledReveal,
+           let message = session.messages.first(where: { $0.id == reveal.messageID }) {
+            let place = reveal.mark?.place(in: message)
+            if let drawing = page.revealContent(of: reveal.messageID, needle: place?.needle ?? find.query, call: place?.scopeCall) {
+                handledReveal = reveal.serial
+                // Each reveal replaces the last one's place, marked or not: an
+                // earlier mark still being brought into view must not pull
+                // the reader back after this one lands.
+                if place == nil, !reveal.fromFind { document.highlights = TranscriptHighlights(query: find.query) }
+                if let place {
+                    document.highlights = TranscriptHighlights(query: find.query, focus: .init(messageID: drawing, needle: place.needle,
+                                                                                              occurrence: place.occurrence, serial: reveal.serial,
+                                                                                              scopeCall: place.scopeCall ?? (drawing == message.id ? nil : message.toolCallID),
+                                                                                              proseOnly: place.scopeCall == nil && drawing == message.id,
+                                                                                              scopeInput: place.input, flexibleSpace: reveal.mark?.isExcerpt == true,
+                                                                                              lead: reveal.mark?.context.lead ?? "", trail: reveal.mark?.context.trail ?? ""))
+                }
+            }
+        }
+    }
+    func showFind() {
+        if findBar == nil {
+            document.onFocusResolved = { [weak self] id, needle, rendered in self?.find.reconcile(id, needle: needle, rendered: rendered) }
+            let bar = TranscriptFindBar(query: { [weak self] in self?.find.setQuery($0) },
+                                        step: { [weak self] in self?.find.step($0) },
+                                        dismiss: { [weak self] in self?.closeFind(focusing: true) })
+            findBar = bar
+            session?.findHost = self
+            addSubview(bar)
+            needsLayout = true; layoutSubtreeIfNeeded()
+            bar.show(current: find.current, total: find.matches.count, searching: find.searching, query: find.query)
+        }
+        guard let findBar else { return }
+        window?.makeFirstResponder(findBar.field.field)
+        findBar.field.field.currentEditor()?.selectAll(nil)
+    }
+    /// ⇧⌘G steps back through the matches while the bar is open in the
+    /// focused chat, before the menu's Changes and History, which has the
+    /// same keys (and keeps them while no find bar is open).
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if findBar != nil, !isHiddenOrHasHiddenAncestor, event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.capsLock) == [.command, .shift],
+           event.charactersIgnoringModifiers?.lowercased() == "g", isFocusedConversation(), !WorkspaceModel.typingInATab(in: window) {
+            find.step(-1); return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+    func closeFind(focusing: Bool) {
+        find.clear()
+        document.onFocusResolved = nil
+        let hadFocus = findBar.map { bar in (window?.firstResponder as? NSView)?.isDescendant(of: bar) == true } ?? false
+        findBar?.removeFromSuperview(); findBar = nil
+        if focusing, hadFocus { window?.makeFirstResponder(scrollView) }
     }
 
     private func layoutEdges(in surface: CGRect) {
