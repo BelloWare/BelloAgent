@@ -267,7 +267,7 @@ impl AgentView {
             .find(|record| record.id == panel.target)
             .map(|record| self.sidebar_title(record).to_owned())
             .unwrap_or_else(|| "Chat no longer available".into());
-        body = body.child(div().text_size(px(12.)).child(format!("Move chat: {target_title}")))
+        body = body.child(div().debug_selector(|| "topics-chat-title".into()).text_size(px(12.)).truncate().child(format!("Move chat: {}", target_title.replace('\n', " "))))
             .child(div().text_size(px(12.)).child("Topics organize this project's chats. Deleting a topic keeps its chats at project top level."));
         let save_label = if panel.renaming.is_some() {
             "Save name"

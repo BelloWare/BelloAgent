@@ -331,7 +331,11 @@ trait VaultStorage: Send + Sync {
 pub(crate) enum AuthorityProvenance {
     #[default]
     Unavailable,
-    #[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+    // Constructed only by the explicit native macOS adapter or unit-test storage.
+    #[cfg_attr(
+        not(any(all(target_os = "macos", feature = "native-authority"), test)),
+        allow(dead_code)
+    )]
     Production,
     #[cfg(feature = "synthetic-authority")]
     Fixture,

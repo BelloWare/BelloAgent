@@ -46,6 +46,8 @@ mod sidebar_actions;
 mod sidebar_activity;
 mod sidebar_read_state;
 mod sidebar_run_state;
+#[cfg(test)]
+mod sidebar_title_tests;
 mod stop_shortcut;
 mod theme;
 mod tool_timing_presentation;
@@ -2879,6 +2881,10 @@ impl AgentView {
             list = list.child(
                 div()
                     .id(SharedString::from(format!("chat-row-{id}")))
+                    .debug_selector({
+                        let id = id.clone();
+                        move || format!("chat-row-{id}")
+                    })
                     .mx(px(4.))
                     .px(px(10.))
                     .py(px(9.))
@@ -2940,11 +2946,15 @@ impl AgentView {
                                     .min_w_0()
                                     .child(
                                         div()
+                                            .debug_selector({
+                                                let id = record.id.clone();
+                                                move || format!("chat-title-{id}")
+                                            })
                                             .min_w_0()
                                             .text_size(px(13.))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .truncate()
-                                            .child(title.to_owned()),
+                                            .child(title.replace('\n', " ")),
                                     )
                                     .when(record.pinned_at.is_some(), |row| {
                                         row.child(self.icon("pin", 9.).text_color(rgb(p.tertiary)))
@@ -2965,6 +2975,7 @@ impl AgentView {
         let selected_unread = !self.can_read_action(&self.record.id, false);
         let selected_read_enabled = self.can_read_action(&self.record.id, selected_unread);
         let mut footer = div()
+            .debug_selector(|| "sidebar-title-test-footer".into())
             .h(px(41.))
             .flex_shrink_0()
             .border_t_1()
