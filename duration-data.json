@@ -3,7 +3,7 @@
   "evidence_cutoff_utc": "2026-10-09T06:00:00Z",
   "schema_version": 1,
   "repository": "BelloWare/BelloAgent",
-  "as_of_utc": "2026-10-09T12:40:00Z",
+  "as_of_utc": "2026-10-09T12:54:00Z",
   "source_commit": "885a5bcf6e608361692e877d7c77941b0db2f4d8",
   "summary": {
     "window_start_utc": "2026-10-04T05:13:30Z",
@@ -55517,6 +55517,250 @@
         }
       ],
       "steps_added_to_total": false
+    },
+    {
+      "id": "20261009-1254-prior-timing-preparation-0",
+      "repository_assignment": "BelloAgent",
+      "activity": "Prepare incremental timing checkpoint, verify evidence and create source-preserving candidates",
+      "category": "review/publication/waiting (mixed)",
+      "start_utc": "2026-10-09T12:33:28Z",
+      "end_utc": "2026-10-09T12:43:22Z",
+      "duration_seconds": 594,
+      "source": [
+        {
+          "receipt_sha256": "3a4337ecc2bdb29931ae1c58c74f0f9696ce0ed5aaba2053d2599e9251060aad",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1254",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals."
+    },
+    {
+      "id": "20261009-1254-prior-paired-publication",
+      "repository_assignment": "BelloAgent",
+      "activity": "Publish paired12:40 timing checkpoint (shared once)",
+      "category": "publication (mixed)",
+      "start_utc": "2026-10-09T12:43:32Z",
+      "end_utc": "2026-10-09T12:44:23Z",
+      "duration_seconds": 51,
+      "source": [
+        {
+          "receipt_sha256": "ff5e488335ebdcdc046151d0ae0d0df2dbf7438c9a1a131898f3fb47f15b6721",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1254",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "nested_tool_seconds": [
+        28.4,
+        0.8
+      ],
+      "nested_tool_added_to_totals": false
+    },
+    {
+      "id": "20261009-1254-integration-initial-review",
+      "repository_assignment": "BelloAgent",
+      "activity": "Initial mutable source integration review and coordination (not final review)",
+      "category": "review (mixed)",
+      "start_utc": "2026-10-09T12:49:55Z",
+      "end_utc": "2026-10-09T12:51:27Z",
+      "duration_seconds": 92.0,
+      "source": [
+        {
+          "receipt_sha256": "2c56de6baa6207c90317dd4500e421650d8cd59e88d43ce06a85f551cf2b4f50",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated"
+        }
+      ],
+      "outcome": "completed",
+      "accounting_group": "task_window",
+      "include_in_totals": false,
+      "resource": "mixed task window",
+      "duration_basis": "Observed mixed task/workflow interval includes tools, coordination and waiting; overlaps command resources and other workers",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1254",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time."
+    },
+    {
+      "id": "20261009-1254-ci-113816987041",
+      "repository_assignment": "BelloAgent",
+      "activity": "Rust macOS native checks / apple-silicon",
+      "category": "CI runner",
+      "start_utc": "2026-10-09T12:23:12Z",
+      "end_utc": "2026-10-09T12:48:57Z",
+      "duration_seconds": 1545.0,
+      "source": [
+        {
+          "receipt_sha256": "785fd5c0f71d434a499f10ef96be7db2d0418032320bcbd47e4c720203f20609",
+          "provenance": "Retained timing receipt; local observation unless public service record explicitly indicated",
+          "url": "https://github.com/BelloWare/BelloAgent/actions/runs/37929661429/job/113816987041"
+        }
+      ],
+      "outcome": "success",
+      "accounting_group": "catchup_ci_job",
+      "include_in_totals": true,
+      "resource": "CI runner",
+      "duration_basis": "GitHub job start/end; nested steps not additive; previous open snapshot was not counted",
+      "parent_id": null,
+      "prospective": true,
+      "checkpoint": "20261009-1254",
+      "inference_duration_seconds": null,
+      "inference_status": "unavailable",
+      "uncertainty": "Partial selected evidence; parallel resources and nested/mixed windows must not be summed as project elapsed time.",
+      "job_id": 113816987041,
+      "run_id": 37929661429,
+      "source_commit": "4bde7489a19974ca4d250209f8cc0b05d3afb340",
+      "coverage_note": "Late-added earlier evidence, deduplicated against all prior timed intervals.",
+      "nested_steps": [
+        {
+          "name": "Set up job",
+          "number": 1,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:23:14Z",
+          "completed_at": "2026-10-09T12:23:15Z"
+        },
+        {
+          "name": "Run actions/checkout@v4",
+          "number": 2,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:23:15Z",
+          "completed_at": "2026-10-09T12:23:19Z"
+        },
+        {
+          "name": "Verify native Apple toolchain",
+          "number": 3,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:23:19Z",
+          "completed_at": "2026-10-09T12:23:25Z"
+        },
+        {
+          "name": "Install pinned Rust toolchain",
+          "number": 4,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:23:25Z",
+          "completed_at": "2026-10-09T12:23:35Z"
+        },
+        {
+          "name": "Compile and link all native test targets",
+          "number": 5,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:23:35Z",
+          "completed_at": "2026-10-09T12:28:09Z"
+        },
+        {
+          "name": "Verify and transport same-build UTF-8 decoder bundle",
+          "number": 6,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:28:09Z",
+          "completed_at": "2026-10-09T12:33:32Z"
+        },
+        {
+          "name": "Run pure domain and filesystem tests",
+          "number": 7,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:33:32Z",
+          "completed_at": "2026-10-09T12:36:41Z"
+        },
+        {
+          "name": "Retain project skill source and Darwin alias characterization",
+          "number": 8,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:36:41Z",
+          "completed_at": "2026-10-09T12:36:49Z"
+        },
+        {
+          "name": "Trusted Bash full feature suites and exact Swift process oracle",
+          "number": 9,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:36:49Z",
+          "completed_at": "2026-10-09T12:41:48Z"
+        },
+        {
+          "name": "Project authority fixture contracts and native type checks",
+          "number": 10,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:41:48Z",
+          "completed_at": "2026-10-09T12:44:39Z"
+        },
+        {
+          "name": "Synthetic native file tools through fake-platform transcript",
+          "number": 11,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:44:39Z",
+          "completed_at": "2026-10-09T12:44:40Z"
+        },
+        {
+          "name": "Explicit native authority host with fake storage",
+          "number": 12,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:44:40Z",
+          "completed_at": "2026-10-09T12:48:12Z"
+        },
+        {
+          "name": "Build native applications without launching",
+          "number": 13,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:48:12Z",
+          "completed_at": "2026-10-09T12:48:37Z"
+        },
+        {
+          "name": "Test native lifecycle harness policy",
+          "number": 14,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:48:37Z",
+          "completed_at": "2026-10-09T12:48:37Z"
+        },
+        {
+          "name": "Build explicitly enabled native lifecycle probe",
+          "number": 15,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:48:37Z",
+          "completed_at": "2026-10-09T12:48:49Z"
+        },
+        {
+          "name": "Observe isolated native own-window lifecycle",
+          "number": 16,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:48:49Z",
+          "completed_at": "2026-10-09T12:48:52Z"
+        },
+        {
+          "name": "Post Run actions/checkout@v4",
+          "number": 32,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:48:52Z",
+          "completed_at": "2026-10-09T12:48:53Z"
+        },
+        {
+          "name": "Complete job",
+          "number": 33,
+          "conclusion": "success",
+          "started_at": "2026-10-09T12:48:53Z",
+          "completed_at": "2026-10-09T12:48:55Z"
+        }
+      ],
+      "steps_added_to_total": false
     }
   ],
   "unattributed_ci_gaps": [
@@ -59222,15 +59466,15 @@
         }
       },
       "catchup_ci_job": {
-        "count": 11,
-        "known_duration_count": 11,
-        "resource_seconds_sum": 11145.0,
-        "wall_coverage_seconds": 7679.0,
+        "count": 12,
+        "known_duration_count": 12,
+        "resource_seconds_sum": 12690.0,
+        "wall_coverage_seconds": 8705.0,
         "category_seconds": {
-          "CI runner": 11145.0
+          "CI runner": 12690.0
         },
         "resource_seconds": {
-          "CI runner": 11145.0
+          "CI runner": 12690.0
         }
       },
       "catchup_native_command": {
@@ -59537,6 +59781,38 @@
         "build/test/check (combined)": 438.0,
         "build": 23.0,
         "CI reporting": 0.0
+      }
+    },
+    {
+      "checkpoint": "20261009-1254",
+      "through_utc": "2026-10-09T12:54:00Z",
+      "coverage_window_start_utc": "2026-10-09T12:40:00Z",
+      "new_items": 4,
+      "groups": {
+        "catchup_ci_job": {
+          "count": 1,
+          "known_duration_count": 1,
+          "resource_seconds_sum": 1545.0,
+          "wall_coverage_seconds": 1545.0,
+          "category_seconds": {
+            "CI runner": 1545.0
+          },
+          "resource_seconds": {
+            "CI runner": 1545.0
+          },
+          "known_endpoint_items": 1,
+          "known_endpoint_resource_seconds": 1545.0
+        }
+      },
+      "ci_coverage_within_window_seconds": 537.0,
+      "window_seconds": 840.0,
+      "outside_selected_ci_job_intervals_seconds": 303.0,
+      "warning": "Outside selected CI intervals includes other productive work and unobserved periods; never classify as idle or inference. Selected receipt coverage remains incomplete.",
+      "nested_ci_step_seconds": {
+        "CI orchestration": 8.0,
+        "dependency/environment setup": 16.0,
+        "build/test/check (combined)": 1492.0,
+        "build": 25.0
       }
     }
   ]
