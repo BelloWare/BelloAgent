@@ -17,6 +17,7 @@ pub(crate) struct RestoredDraft<'a> {
 pub(crate) struct ChatSource {
     pub record: ChatRecord,
     pub workspace: Arc<Mutex<WorkspaceStore>>,
+    pub read_states: crate::sidebar_read_state::SharedReadStates,
 }
 
 pub struct ChatState {
@@ -68,6 +69,8 @@ pub struct ChatState {
     pub activity_write: crate::sidebar_activity::ActivityWriteState,
     pub _activity_poll: Task<()>,
     activity_workspace: Arc<Mutex<WorkspaceStore>>,
+    read_states: crate::sidebar_read_state::SharedReadStates,
+    _read_poll: Task<()>,
 }
 impl ChatState {
     pub fn new(
@@ -82,6 +85,7 @@ impl ChatState {
         let ChatSource {
             mut record,
             workspace: activity_workspace,
+            read_states,
         } = source;
         let RestoredDraft {
             draft,
@@ -90,6 +94,12 @@ impl ChatState {
         let mut activity_write = crate::sidebar_activity::ActivityWriteState::for_record(&record);
         crate::sidebar_activity::capture_current(&mut record, &mut activity_write, &controller);
         let activity_poll = crate::sidebar_activity::subscribe(
+            &controller,
+            &record,
+            activity_workspace.clone(),
+            cx,
+        );
+        let read_poll = crate::sidebar_read_state::subscribe(
             &controller,
             &record,
             activity_workspace.clone(),
@@ -228,6 +238,8 @@ impl ChatState {
             activity_write,
             activity_workspace,
             _activity_poll: activity_poll,
+            read_states,
+            _read_poll: read_poll,
         }
     }
     fn subscribe(
@@ -256,6 +268,30 @@ impl ChatState {
     /// Presentation replacement only. The owner must explicitly retire/join
     /// any outgoing runtime before transferring persistent-store authority.
     pub fn replace_controller(&mut self, controller: Arc<Controller>, cx: &mut Context<AgentView>) {
+        if self.controller.is_persistent()
+            && let Err(error) = self.read_states.lock().unwrap().observe(
+                &self.record,
+                &self.controller.read_observation(),
+                false,
+            )
+        {
+            self.error = Some(crate::sidebar_read_state::read_error_notice(&error));
+        }
+        self._read_poll = crate::sidebar_read_state::subscribe(
+            &controller,
+            &self.record,
+            self.activity_workspace.clone(),
+            cx,
+        );
+        let workspace = self.activity_workspace.clone();
+        let owner = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = owner.update(cx, |view, cx| {
+                if Arc::ptr_eq(&view.workspace, &workspace) {
+                    view.flush_read_states(cx);
+                }
+            });
+        });
         if self.activity_write.adopt_record(&self.record) {
             crate::sidebar_activity::capture_current(
                 &mut self.record,

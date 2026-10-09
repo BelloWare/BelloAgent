@@ -721,6 +721,17 @@ pub(crate) struct TranscriptView {
 }
 
 impl TranscriptView {
+    pub(crate) fn follows_bottom(&self) -> bool {
+        let viewport = self.viewport.borrow();
+        viewport.pending_scroll.is_none()
+            && self
+                .presentation
+                .rows
+                .len()
+                .checked_sub(1)
+                .and_then(|index| viewport.list.bounds_for_item(index))
+                .is_some_and(|row| reply_end_visible(row, viewport.list.viewport_bounds()))
+    }
     pub(crate) fn new(parent: WeakEntity<AgentView>, input: TranscriptInput) -> Self {
         let presentation = Rc::new(Presentation::new(input));
         Self {
@@ -1485,6 +1496,52 @@ impl Element for ViewportList {
         });
         self.list
             .paint(id, inspector_id, bounds, state, &mut prepaint.0, window, cx);
+        let list = self.viewport.borrow().list.clone();
+        // List has completed layout/paint. Bounds may include overdraw, so
+        // only the actual end of the last projected row of the exact newest
+        // accepted output can constitute visibility evidence.
+        if self.viewport.borrow().pending_scroll.is_none()
+            && let Some(controller) = self.presentation.input.controller.upgrade()
+            && let observation = controller.published_read_observation()
+            && observation.source_revision == self.presentation.input.session.revision
+            && let bello_agent_core::read_observation::OutputProjection::Known(summary) =
+                observation.history
+            && let Some(target) = summary.latest_id
+            && let Some(index) = self.presentation.rows.iter().rposition(|row| {
+                row.message_index
+                    .is_some_and(|i| self.presentation.input.session.messages[i].id == target)
+            })
+            && let Some(row) = list.bounds_for_item(index)
+            && reply_end_visible(row, list.viewport_bounds())
+        {
+            let parent = self.parent.clone();
+            let child = self.child.clone();
+            let presentation = self.presentation.clone();
+            let offset = list.logical_scroll_top();
+            let viewport = self.viewport.clone();
+            window.defer(cx, move |window, cx| {
+                let current = child
+                    .upgrade()
+                    .is_some_and(|child| Rc::ptr_eq(&child.read(cx).presentation, &presentation))
+                    && viewport.borrow().pending_scroll.is_none()
+                    && {
+                        let now = viewport.borrow().list.logical_scroll_top();
+                        now.item_ix == offset.item_ix && now.offset_in_item == offset.offset_in_item
+                    };
+                let _ = parent.update(cx, |view, cx| {
+                    view.acknowledge_reply_end(
+                        &presentation.input.chat_id,
+                        &presentation.input.controller,
+                        &target,
+                        presentation.input.session.revision,
+                        &observation.generation,
+                        current,
+                        window,
+                        cx,
+                    )
+                });
+            });
+        }
         let removed_focused = self
             .removed_tool_focus
             .borrow_mut()
@@ -1512,6 +1569,29 @@ impl Element for ViewportList {
             self.focus.focus(window);
         }
     }
+}
+
+/// Measured/painted overdraw alone is insufficient; require a finite real
+/// viewport and the end (including the copy band) inside its vertical extent.
+pub(crate) fn reply_end_visible(row: Bounds<Pixels>, viewport: Bounds<Pixels>) -> bool {
+    [
+        row.left(),
+        row.right(),
+        row.bottom(),
+        viewport.left(),
+        viewport.right(),
+        viewport.top(),
+        viewport.bottom(),
+    ]
+    .iter()
+    .all(|v| v.to_f64().is_finite())
+        && viewport.size.width > px(0.)
+        && viewport.size.height > px(0.)
+        && row.size.height > px(0.)
+        && row.left() >= viewport.left()
+        && row.right() <= viewport.right()
+        && row.bottom() > viewport.top()
+        && row.bottom() <= viewport.bottom()
 }
 
 impl Render for TranscriptView {

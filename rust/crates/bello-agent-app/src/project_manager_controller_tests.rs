@@ -462,6 +462,7 @@ fn active_inactive_and_recovery_state_refuse_before_save(cx: &mut TestAppContext
                 crate::chat::ChatSource {
                     record: record.clone(),
                     workspace: view.workspace.clone(),
+                    read_states: view.read_states.clone(),
                 },
                 crate::chat::RestoredDraft {
                     draft: DraftRecord::default(),
@@ -865,6 +866,7 @@ async fn completed_save_preserves_both_chat_drafts_after_newer_selection(cx: &mu
                 crate::chat::ChatSource {
                     record: record.clone(),
                     workspace: view.workspace.clone(),
+                    read_states: view.read_states.clone(),
                 },
                 crate::chat::RestoredDraft {
                     draft: DraftRecord {

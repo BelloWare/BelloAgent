@@ -2506,3 +2506,74 @@ mod live_terminal_ui;
 
 #[path = "transcript_tool_timing_tests.rs"]
 mod tool_timing_ui;
+
+#[::core::prelude::v1::test]
+fn unread_reply_end_requires_real_finite_viewport_not_first_line_or_overdraw() {
+    use crate::transcript_view::reply_end_visible;
+    let viewport = Bounds::new(point(px(10.), px(20.)), size(px(500.), px(300.)));
+    let row = |top, height| Bounds::new(point(px(10.), px(top)), size(px(500.), px(height)));
+    assert!(reply_end_visible(row(100., 220.), viewport));
+    assert!(
+        reply_end_visible(row(-100., 300.), viewport),
+        "end visible even when first line is above viewport"
+    );
+    assert!(
+        !reply_end_visible(row(30., 1000.), viewport),
+        "first line of long reply is insufficient"
+    );
+    assert!(
+        !reply_end_visible(row(321., 40.), viewport),
+        "materialized lower overdraw is not seen"
+    );
+    assert!(
+        !reply_end_visible(row(-80., 100.), viewport),
+        "end exactly above viewport is not seen"
+    );
+    assert!(!reply_end_visible(row(0., f32::NAN), viewport));
+    assert!(!reply_end_visible(row(30., 40.), Bounds::default()));
+}
+
+#[gpui::test]
+fn unread_reply_end_uses_postlayout_measured_long_reply_and_rejects_overdraw(
+    cx: &mut TestAppContext,
+) {
+    let mut rows = messages(25);
+    rows[0] = message(
+        "long-first",
+        "assistant",
+        &("A long readable line\n".repeat(100)),
+    );
+    let (_dir, _window, root) = fixture_with_visible(cx, rows, 0, Some(usize::MAX));
+    let child = transcript(&root, cx);
+    jump_to(&child, 0, 0., cx);
+    let list = scroll(&child, cx);
+    let viewport = list.viewport_bounds();
+    let first = list
+        .bounds_for_item(0)
+        .expect("first long reply is measured");
+    assert!(first.top() < viewport.bottom());
+    assert!(first.bottom() > viewport.bottom());
+    assert!(!crate::transcript_view::reply_end_visible(first, viewport));
+    jump_to(
+        &child,
+        0,
+        (first.size.height - viewport.size.height / 2.).to_f64() as f32,
+        cx,
+    );
+    let list = scroll(&child, cx);
+    let end = list
+        .bounds_for_item(0)
+        .expect("same long reply end is measured");
+    assert!(crate::transcript_view::reply_end_visible(
+        end,
+        list.viewport_bounds()
+    ));
+    let overdraw = (1..25)
+        .filter_map(|i| list.bounds_for_item(i))
+        .find(|row| row.top() >= list.viewport_bounds().bottom())
+        .expect("List measured its lower overdraw");
+    assert!(!crate::transcript_view::reply_end_visible(
+        overdraw,
+        list.viewport_bounds()
+    ));
+}

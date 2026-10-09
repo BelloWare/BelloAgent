@@ -336,6 +336,7 @@ fn loaded_controller_always_wins_over_saved_ready_and_stale_completion(cx: &mut 
             view.sidebar_run_states.observations.insert(
                 record.id.clone(),
                 Observation {
+                    file_identity: None,
                     record: record.clone(),
                     state: SavedRunState::Ready,
                 },

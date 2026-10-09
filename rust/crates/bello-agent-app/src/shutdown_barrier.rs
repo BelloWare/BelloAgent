@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 pub(super) struct ShutdownPlan {
     pub drafts: Vec<(ChatRecord, DraftRecord)>,
     pub controllers: Vec<Arc<Controller>>,
+    pub read_states: Option<crate::sidebar_read_state::SharedReadStates>,
+    pub read_controllers: Vec<(ChatRecord, Arc<Controller>)>,
     pub selected: String,
     pub selection_revision: u64,
     pub workspace: Arc<Mutex<WorkspaceStore>>,
@@ -92,6 +94,13 @@ impl ShutdownPlan {
                     if final_stamp > 0 {
                         store.record_activity(&record.id, &record.snapshot, final_stamp)?;
                     }
+                }
+                if let Some(read_states) = &self.read_states {
+                    crate::sidebar_read_state::capture_and_flush(
+                        read_states,
+                        store,
+                        &self.read_controllers,
+                    )?;
                 }
                 Ok(())
             });

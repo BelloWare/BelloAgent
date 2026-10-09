@@ -486,6 +486,7 @@ fn held_draft_reopen_retains_ordinary_images_and_cancel_restores_them(cx: &mut T
                 crate::chat::ChatSource {
                     record: view.record.clone(),
                     workspace: view.workspace.clone(),
+                    read_states: view.read_states.clone(),
                 },
                 crate::chat::RestoredDraft {
                     draft: saved,

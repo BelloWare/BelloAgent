@@ -13,6 +13,7 @@ pub mod project_authority;
 pub mod project_resources;
 pub mod provider;
 pub mod provider_failure;
+pub mod read_observation;
 pub mod runtime;
 pub mod saved_runtime;
 pub mod session;
@@ -29,6 +30,7 @@ pub mod tool_timing;
 pub mod tools;
 pub mod user_content;
 pub mod workspace;
+pub mod workspace_read_state;
 
 pub use profile::{Credential, Profile};
 pub use provider::{Delta, Reply, ResponsesClient};

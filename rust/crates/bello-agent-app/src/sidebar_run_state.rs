@@ -54,8 +54,8 @@ impl SavedRunState {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-struct FileIdentity {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FileIdentity {
     length: u64,
     modified: SystemTime,
     #[cfg(unix)]
@@ -64,7 +64,7 @@ struct FileIdentity {
     inode: u64,
 }
 impl FileIdentity {
-    fn read(path: &Path) -> Option<Self> {
+    pub(crate) fn read(path: &Path) -> Option<Self> {
         let metadata = fs::symlink_metadata(path).ok()?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return None;
@@ -82,31 +82,43 @@ impl FileIdentity {
     }
 }
 
+#[cfg(test)]
 fn inspect(record: &ChatRecord) -> SavedRunState {
     inspect_then(record, || {})
 }
-
-// The completion hook makes the post-read replacement race deterministic in
-// tests. All metadata and checkpoint/journal reads happen on the background
-// executor. This is a point-in-time observation, never a durability receipt.
+#[cfg(test)]
 fn inspect_then(record: &ChatRecord, after_read: impl FnOnce()) -> SavedRunState {
+    inspect_summary_then(record, after_read).0
+}
+
+// One lease, one parse, small output summary. Never acquire a second scanner.
+fn inspect_summary_then(
+    record: &ChatRecord,
+    after_read: impl FnOnce(),
+) -> (
+    SavedRunState,
+    bello_agent_core::read_observation::OutputProjection,
+    Option<FileIdentity>,
+) {
+    use bello_agent_core::read_observation::{OutputProjection, project_outputs};
+    let unknown = || (SavedRunState::Unknown, OutputProjection::Unknown, None);
     if record.materialization != ChatMaterialization::CheckpointRequired {
-        return SavedRunState::Unknown;
+        return unknown();
     }
     let Some(before) = FileIdentity::read(&record.snapshot) else {
-        return SavedRunState::Unknown;
+        return unknown();
     };
     let Ok(lease) = SessionInspectionLease::acquire(&record.snapshot, &record.id) else {
-        return SavedRunState::Unknown;
+        return unknown();
     };
     let state = SavedRunState::from_session(lease.snapshot());
-    // Drop parsed history promptly, before returning even the small result.
+    let summary = project_outputs(lease.snapshot());
     drop(lease);
     after_read();
     if FileIdentity::read(&record.snapshot).as_ref() != Some(&before) {
-        SavedRunState::Unknown
+        unknown()
     } else {
-        state
+        (state, summary, Some(before))
     }
 }
 
@@ -139,6 +151,7 @@ impl Scope {
 struct Observation {
     record: ChatRecord,
     state: SavedRunState,
+    file_identity: Option<FileIdentity>,
 }
 #[derive(Default)]
 pub(crate) struct SidebarRunStates {
@@ -207,11 +220,35 @@ impl AgentView {
         let record = target.record.clone();
         let task = cx
             .background_executor()
-            .spawn(async move { inspect(&record) });
+            .spawn(async move { inspect_summary_then(&record, || {}) });
         cx.spawn(async move |view, cx| {
-            let state = task.await;
+            let (state, summary, file_identity) = task.await;
             let _ = view.update(cx, |view, cx| {
-                view.finish_sidebar_run_state(target, state);
+                let record = target.record.clone();
+                let accepted = view.finish_sidebar_run_state(target, state);
+                if accepted
+                    && let Some(observation) =
+                        view.sidebar_run_states.observations.get_mut(&record.id)
+                {
+                    observation.file_identity = file_identity;
+                }
+                if accepted
+                    && view.chat_ref(&record.id).is_none()
+                    && view
+                        .sidebar_run_states
+                        .observations
+                        .get(&record.id)
+                        .is_some_and(|o| o.record == record)
+                    && let bello_agent_core::read_observation::OutputProjection::Known(summary) =
+                        summary
+                {
+                    view.inspect_read_baseline(
+                        &record,
+                        &summary,
+                        state != SavedRunState::Interrupted,
+                        cx,
+                    );
+                }
                 view.refresh_sidebar_run_states(cx);
                 cx.notify();
             });
@@ -219,9 +256,9 @@ impl AgentView {
         .detach();
     }
 
-    fn finish_sidebar_run_state(&mut self, target: Target, state: SavedRunState) {
+    fn finish_sidebar_run_state(&mut self, target: Target, state: SavedRunState) -> bool {
         if self.sidebar_run_states.in_flight != Some(target.request) {
-            return;
+            return false;
         }
         self.sidebar_run_states.in_flight = None;
         if self.shutting_down
@@ -236,15 +273,48 @@ impl AgentView {
             || self.chat_ref(&target.record.id).is_some()
             || !self.records.iter().any(|record| record == &target.record)
         {
-            return;
+            return false;
         }
         self.sidebar_run_states.observations.insert(
             target.record.id.clone(),
             Observation {
                 record: target.record,
                 state,
+                file_identity: None,
             },
         );
+        true
+    }
+
+    pub(crate) fn sidebar_saved_identity(&self, record: &ChatRecord) -> Option<FileIdentity> {
+        if self.shutting_down
+            || self.close_ready
+            || self.known_catalog_uncertainty
+            || self.chat_ref(&record.id).is_some()
+            || self
+                .sidebar_run_states
+                .scope
+                .as_ref()
+                .is_none_or(|scope| !scope.matches(self))
+        {
+            return None;
+        }
+        self.sidebar_run_states
+            .observations
+            .get(&record.id)
+            .filter(|o| o.record == *record && o.state != SavedRunState::Unknown)
+            .and_then(|o| o.file_identity.clone())
+    }
+    pub(crate) fn invalidate_saved_read_target(&mut self, record: &ChatRecord) {
+        if let Some(observation) = self
+            .sidebar_run_states
+            .observations
+            .get_mut(&record.id)
+            .filter(|o| o.record == *record)
+        {
+            observation.state = SavedRunState::Unknown;
+            observation.file_identity = None;
+        }
     }
 
     pub(crate) fn sidebar_run_status(&self, record: &ChatRecord) -> &'static str {

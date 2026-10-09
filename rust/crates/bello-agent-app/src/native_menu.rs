@@ -58,6 +58,8 @@ fn selected_action(selected: u8, pinned: bool) -> Option<SidebarAction> {
         1 => Some(pin_command(pinned).action),
         2 => Some(SidebarAction::ToggleArchived),
         3 => Some(copy_id_command().action),
+        4 => Some(SidebarAction::MarkRead),
+        5 => Some(SidebarAction::MarkUnread),
         _ => None,
     }
 }
@@ -173,14 +175,17 @@ fn gpui_child_index(content_attached: bool, children: &[ViewCategory]) -> Option
     Some(index)
 }
 
+#[cfg(all(target_os = "macos", not(test)))]
+pub(crate) use native::{application_active, readable_window};
 #[cfg(target_os = "macos")]
 pub(crate) use native::{current_sidebar_pointer, show_sidebar_menu};
 
 #[cfg(target_os = "macos")]
 mod native {
     use super::{
-        SidebarAction, Tracking, ViewCategory, anchor_in_view, archive_command, copy_id_command,
-        finish_if_open, gpui_child_index, pin_command, pointer_from_view, selected_action,
+        MenuCommand, SidebarAction, Tracking, ViewCategory, anchor_in_view, archive_command,
+        copy_id_command, finish_if_open, gpui_child_index, pin_command, pointer_from_view,
+        selected_action,
     };
     use cocoa::{
         base::{BOOL, NO, YES, id, nil},
@@ -205,6 +210,8 @@ mod native {
         position: Point<Pixels>,
         pinned: bool,
         archived: bool,
+        can_read: bool,
+        can_unread: bool,
         completion: Completion,
     }
 
@@ -232,6 +239,7 @@ mod native {
         position: Point<Pixels>,
         pinned: bool,
         archived: bool,
+        read_actions: (bool, bool),
         completion: impl FnOnce(Option<SidebarAction>, Option<Point<Pixels>>, &mut App) + 'static,
     ) {
         let request = Box::new(Request {
@@ -240,6 +248,8 @@ mod native {
             position,
             pinned,
             archived,
+            can_read: read_actions.0,
+            can_unread: read_actions.1,
             completion: Box::new(completion),
         });
         // Do not use cx.defer: deferred GPUI work still owns the App borrow.
@@ -307,6 +317,61 @@ mod native {
         }
     }
 
+    #[cfg(not(test))]
+    pub(crate) fn application_active() -> bool {
+        unsafe {
+            let app: id = msg_send![class!(NSApplication), sharedApplication];
+            if app == nil {
+                return false;
+            }
+            let active: BOOL = msg_send![app, isActive];
+            active == YES
+        }
+    }
+
+    /// Read-only exact-window evidence. Native execution/occlusion acceptance
+    /// remains a separate gate; missing properties or identity fail closed.
+    #[cfg(not(test))]
+    pub(crate) fn readable_window(window: AnyWindowHandle, cx: &App) -> bool {
+        unsafe {
+            let Some(_pool) = OwnedObject::from_owned(msg_send![class!(NSAutoreleasePool), new])
+            else {
+                return false;
+            };
+            let Some(native) = retained_active_window(window.window_id(), cx) else {
+                return false;
+            };
+            let Some((_, view)) = retained_content_views(&native) else {
+                return false;
+            };
+            let hidden: BOOL = msg_send![view.0, isHiddenOrHasHiddenAncestor];
+            let rect: NSRect = msg_send![view.0, visibleRect];
+            let app: id = msg_send![class!(NSApplication), sharedApplication];
+            let active: BOOL = msg_send![app, isActive];
+            let key: BOOL = msg_send![native.0, isKeyWindow];
+            let visible: BOOL = msg_send![native.0, isVisible];
+            let minimized: BOOL = msg_send![native.0, isMiniaturized];
+            let occlusion: usize = msg_send![native.0, occlusionState];
+            let sheet: id = msg_send![native.0, attachedSheet];
+            crate::sidebar_read_state::NativeReadEvidence {
+                active: active == YES,
+                key: key == YES,
+                visible: visible == YES,
+                minimized: minimized == YES,
+                occlusion_visible: (occlusion & (1 << 1)) != 0,
+                attached_sheet: sheet != nil,
+                hidden_view: hidden == YES,
+                view_rect: [
+                    rect.origin.x,
+                    rect.origin.y,
+                    rect.size.width,
+                    rect.size.height,
+                ],
+            }
+            .readable()
+        }
+    }
+
     fn retained_active_window(expected: WindowId, cx: &App) -> Option<OwnedObject> {
         if !cx.windows().iter().any(|window| window.window_id() == expected)
             // Pinned GPUI MacWindow::active_window reads NSApp.mainWindow,
@@ -368,6 +433,16 @@ mod native {
                     select_copy_id as extern "C" fn(&mut Object, Sel, id),
                 );
             }
+            unsafe {
+                class.add_method(
+                    sel!(selectMarkRead:),
+                    select_mark_read as extern "C" fn(&mut Object, Sel, id),
+                );
+                class.add_method(
+                    sel!(selectMarkUnread:),
+                    select_mark_unread as extern "C" fn(&mut Object, Sel, id),
+                );
+            }
             Some(class.register())
         })
     }
@@ -385,6 +460,13 @@ mod native {
     extern "C" fn select_copy_id(target: &mut Object, _: Sel, _: id) {
         // Like Pin, defer all GPUI/clipboard work until native tracking ends.
         unsafe { target.set_ivar(SELECTED_IVAR, 3u8) };
+    }
+
+    extern "C" fn select_mark_read(target: &mut Object, _: Sel, _: id) {
+        unsafe { target.set_ivar(SELECTED_IVAR, 4u8) };
+    }
+    extern "C" fn select_mark_unread(target: &mut Object, _: Sel, _: id) {
+        unsafe { target.set_ivar(SELECTED_IVAR, 5u8) };
     }
 
     unsafe fn track_menu(request: &Request, window: &OwnedObject) -> Option<MenuResult> {
@@ -420,6 +502,16 @@ mod native {
                 pin_command(request.pinned),
                 archive_command(request.archived),
                 copy_id_command(),
+                MenuCommand {
+                    title: "Mark as Read",
+                    symbol: "checkmark",
+                    action: SidebarAction::MarkRead,
+                },
+                MenuCommand {
+                    title: "Mark as Unread",
+                    symbol: "circle.fill",
+                    action: SidebarAction::MarkUnread,
+                },
             ]
             .into_iter()
             .enumerate()
@@ -435,6 +527,8 @@ mod native {
                     SidebarAction::TogglePinned => sel!(selectPin:),
                     SidebarAction::ToggleArchived => sel!(selectArchive:),
                     SidebarAction::CopySessionId => sel!(selectCopySessionId:),
+                    SidebarAction::MarkRead => sel!(selectMarkRead:),
+                    SidebarAction::MarkUnread => sel!(selectMarkUnread:),
                 };
                 let item: id = msg_send![class!(NSMenuItem), alloc];
                 let item = OwnedObject::from_owned(msg_send![item,
@@ -444,7 +538,12 @@ mod native {
                 // as in PiMenu.swift; no item or callback is owned by the target.
                 let _: () = msg_send![item.0, setTarget: target.0];
                 let _: () = msg_send![item.0, setRepresentedObject: target.0];
-                let _: () = msg_send![item.0, setEnabled: YES];
+                let enabled = match command.action {
+                    SidebarAction::MarkRead => request.can_read,
+                    SidebarAction::MarkUnread => request.can_unread,
+                    _ => true,
+                };
+                let _: () = msg_send![item.0, setEnabled: if enabled { YES } else { NO }];
                 let image: id = msg_send![class!(NSImage),
                     imageWithSystemSymbolName: symbol.0 accessibilityDescription: nil
                 ];
@@ -634,7 +733,8 @@ mod tests {
                 selected_action(2, pinned),
                 Some(SidebarAction::ToggleArchived)
             );
-            assert_eq!(selected_action(4, pinned), None);
+            assert_eq!(selected_action(4, pinned), Some(SidebarAction::MarkRead));
+            assert_eq!(selected_action(5, pinned), Some(SidebarAction::MarkUnread));
             assert_eq!(selected_action(u8::MAX, pinned), None);
         }
     }

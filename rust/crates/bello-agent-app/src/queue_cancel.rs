@@ -257,6 +257,7 @@ impl AgentView {
         }
         let project = self.project.clone();
         let workspace = self.workspace.clone();
+        let read_states = self.read_states.clone();
         let Some(chat) = self.chat_mut(id) else {
             return;
         };
@@ -279,6 +280,7 @@ impl AgentView {
             return;
         };
         chat.draft_revision = next;
+        let record = chat.record.clone();
         let draft = chat.saved_draft(cx);
         let captured_revision = draft.revision;
         let key = Key {
@@ -312,7 +314,16 @@ impl AgentView {
         let task = cx.background_executor().spawn(async move {
             let mut observed = None;
             let prepared = crate::chat_organization::catalog_operation(&workspace, |store| {
-                let result = store.prepare_queued_cancel(&worker_id, pending.clone(), draft);
+                let result = store
+                    .prepare_queued_cancel(&worker_id, pending.clone(), draft)
+                    .and_then(|()| {
+                        crate::sidebar_read_state::prepare_admission(
+                            &read_states,
+                            store,
+                            &record,
+                            &worker,
+                        )
+                    });
                 observed = store
                     .snapshot()
                     .queued_cancellations

@@ -235,6 +235,7 @@ impl AgentView {
                     crate::chat::ChatSource {
                         record: record.clone(),
                         workspace: self.workspace.clone(),
+                        read_states: self.read_states.clone(),
                     },
                     chat::RestoredDraft {
                         draft: DraftRecord::default(),
@@ -319,6 +320,7 @@ impl AgentView {
             self.set_archive_visibility(true, cx);
         }
         if explicit && self.record.id == id {
+            self.reader_opened(id, false, cx);
             self.resume_durable_cancel_explicit(id, cx);
         }
         if self.record.id == id {
@@ -333,6 +335,9 @@ impl AgentView {
         }
         if let Some(chat) = self.inactive.remove(id) {
             self.install_chat(chat, window, cx);
+            if explicit {
+                self.reader_opened(id, true, cx);
+            }
             if self.load_failed {
                 self.load_chat(id, cx);
             }
@@ -355,6 +360,7 @@ impl AgentView {
             crate::chat::ChatSource {
                 record: record.clone(),
                 workspace: self.workspace.clone(),
+                read_states: self.read_states.clone(),
             },
             chat::RestoredDraft {
                 draft,
@@ -366,6 +372,9 @@ impl AgentView {
             cx,
         );
         self.install_chat(chat, window, cx);
+        if explicit {
+            self.reader_opened(id, true, cx);
+        }
         self.load_chat(id, cx);
     }
     pub(super) fn load_chat(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -530,24 +539,32 @@ impl AgentView {
         let project = self.project.clone();
         let workspace = self.workspace.clone();
         let receipt = intent.clone();
+        let read_states = self.read_states.clone();
         let task = cx.background_executor().spawn(async move {
             let prepare = catalog_operation(&workspace, |store| {
                 store.register(record.clone(), captured.clone())?;
                 store.save_draft(&record.id, captured)?;
+                crate::sidebar_read_state::prepare_admission(
+                    &read_states,
+                    store,
+                    &record,
+                    &controller,
+                )?;
                 store.begin_submission(intent.clone())?;
                 Ok(())
             });
             let catalog_uncertain = prepare.uncertain;
-            let outcome = match prepare.result {
+            let (outcome, dispatch_started) = match prepare.result {
                 Ok(()) => match controller.materialize(&record.snapshot) {
-                    Ok(()) => {
+                    Ok(()) => (
                         controller
                             .submit_identified_with_inputs(item, selections)
-                            .await
-                    }
-                    Err(error) => Err(error),
+                            .await,
+                        true,
+                    ),
+                    Err(error) => (Err(error), false),
                 },
-                Err(error) => Err(error),
+                Err(error) => (Err(error), false),
             };
             let registered = workspace
                 .lock()
@@ -565,6 +582,7 @@ impl AgentView {
                         warning.is_some(),
                         warning,
                         catalog_uncertain || ack_uncertain,
+                        dispatch_started,
                     )
                 }
                 Err(error) => {
@@ -580,13 +598,14 @@ impl AgentView {
                             catalog_uncertain,
                         )),
                         catalog_uncertain,
+                        dispatch_started,
                     )
                 }
             }
         });
         let id = receipt.chat_id.clone();
         cx.spawn(async move |view, cx| {
-            let (accepted, registered, uncertain, error, catalog_uncertain) = task.await;
+            let (accepted, registered, uncertain, error, catalog_uncertain, dispatch_started) = task.await;
             let _ = view.update(cx, move |view, cx| {
                 if view.project != project { return; }
                 view.observe_catalog_uncertainty(catalog_uncertain, cx);
@@ -608,7 +627,10 @@ impl AgentView {
                     chat.session = chat.controller.snapshot_shared();
                     // An uncertain acceptance lives only in its durable receipt.
                     // Re-inserting it now could duplicate an accepted input on reopen.
-                    if !accepted && !uncertain {
+                    if !accepted && (!uncertain || !dispatch_started) {
+                        // A catalog/baseline failure happened before dispatch.
+                        // Restore the composer even when catalog durability is
+                        // uncertain; keep its existing receipt/admission fence.
                         match bello_agent_core::attachments::restore(&receipt.attachments,&chat.attachments) {
                             Ok(restored)=>chat.attachments=restored,
                             Err(error)=>{chat.error=Some(error.to_string());revision_exhausted=true;chat.busy=false;}
@@ -1054,6 +1076,7 @@ impl AgentView {
         if !self.chat_mode_operations.is_empty()
             || !self.organization_operations.is_empty()
             || self.archive_visibility_writes != 0
+            || !self.read_manual_operations.is_empty()
             || self.topic_write.is_some()
             || self.busy
             || self.loading
@@ -1113,7 +1136,13 @@ impl AgentView {
         self.shutdown_operation = Some(operation);
         let binding = self.window_binding;
         let window_handle = window.window_handle();
+        let read_controllers = std::iter::once(&self.chat)
+            .chain(self.inactive.values())
+            .map(|chat| (chat.record.clone(), chat.controller.clone()))
+            .collect();
         let plan = crate::shutdown_barrier::ShutdownPlan {
+            read_states: Some(self.read_states.clone()),
+            read_controllers,
             drafts,
             controllers,
             selected,

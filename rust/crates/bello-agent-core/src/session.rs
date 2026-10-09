@@ -694,7 +694,7 @@ impl Session {
             state,
         })
     }
-    fn validate_checkpoint(&self) -> Result<()> {
+    pub(crate) fn validate_checkpoint(&self) -> Result<()> {
         self.validate_compaction()?;
         self.validate_context_recoveries()?;
         self.validate_tool_history()?;
@@ -1085,6 +1085,7 @@ pub(crate) fn verify_inspection_file(
 }
 
 pub struct SessionStore {
+    read_observation: crate::read_observation::AcceptedReadObservation,
     #[cfg(test)]
     pub(crate) fault: WriteFault,
     path: PathBuf,
@@ -1108,6 +1109,7 @@ impl SessionStore {
             fault: WriteFault::None,
             path: PathBuf::new(),
             _lock: None,
+            read_observation: crate::read_observation::AcceptedReadObservation::initial(&session),
             session,
             uncertain: false,
             retired: false,
@@ -1154,7 +1156,11 @@ impl SessionStore {
             ));
         }
         match Self::open_seeded(path.as_ref(), Some(self.session.clone())) {
-            Ok(store) => {
+            Ok(mut store) => {
+                // An unmaterialized store cannot accept transactions or deltas;
+                // it therefore has no terminal/failure sequence to carry. The
+                // same Controller lifetime survives this first materialization.
+                store.read_observation.generation = self.read_observation.generation.clone();
                 *self = store;
                 Ok(())
             }
@@ -1314,6 +1320,7 @@ impl SessionStore {
             fault: WriteFault::None,
             path,
             _lock: Some(lock),
+            read_observation: crate::read_observation::AcceptedReadObservation::initial(&session),
             session,
             uncertain: false,
             retired: false,
@@ -1361,6 +1368,13 @@ impl SessionStore {
             return Err(invalid("This session writer is permanently retired"));
         }
         Ok(())
+    }
+    pub(crate) fn read_observation(&self) -> crate::read_observation::AcceptedReadObservation {
+        let mut observation = self.read_observation.clone();
+        if self.uncertain {
+            observation.invalidate();
+        }
+        observation
     }
     pub fn snapshot_revision(&self) -> u64 {
         self.session.revision
@@ -1432,6 +1446,7 @@ impl SessionStore {
                 return Err(error);
             }
         };
+        self.read_observation.accept(&self.session, &next);
         self.session = next;
         self.encoded_bytes = encoded_bytes;
         self.journal = None;

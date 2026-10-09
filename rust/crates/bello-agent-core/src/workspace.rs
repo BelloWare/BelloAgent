@@ -1,5 +1,6 @@
 //! Rust-only chat catalog and small draft records. This is intentionally separate
 //! from streamed transcripts: typing never rewrites a whole conversation.
+use crate::workspace_read_state::ChatReadState;
 use crate::{Error, Lane, Result, invalid};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -12,7 +13,7 @@ use uuid::Uuid;
 const MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHATS: usize = 512;
 const MAX_DRAFT_BYTES: usize = 262_144;
-const CURRENT_VERSION: u32 = 11;
+const CURRENT_VERSION: u32 = 12;
 
 #[path = "workspace_topics.rs"]
 mod topics;
@@ -20,6 +21,9 @@ pub use topics::TopicRecord;
 #[cfg(test)]
 #[path = "workspace_activity_tests.rs"]
 mod activity_tests;
+#[cfg(test)]
+#[path = "workspace_read_catalog_tests.rs"]
+mod read_catalog_tests;
 #[cfg(test)]
 #[path = "workspace_topics_tests.rs"]
 mod topics_tests;
@@ -234,6 +238,17 @@ pub struct ActivityChange {
     pub last_activity_at: Option<u64>,
     pub changed: bool,
 }
+/// Exact read-column receipt. Apply it only to the matching workspace/chat/path
+/// and desired revision; an older success cannot clear a newer dirty value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadStateChange {
+    pub project: PathBuf,
+    pub project_id: Option<String>,
+    pub id: String,
+    pub snapshot: PathBuf,
+    pub state: ChatReadState,
+    pub changed: bool,
+}
 pub fn organization_timestamp() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -327,6 +342,9 @@ impl QueuedCancelReceipt {
 }
 #[derive(Clone, Debug, Serialize)]
 pub struct WorkspaceSnapshot {
+    /// Small read metadata only; mutations never replace organization rows.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub read_states: BTreeMap<String, ChatReadState>,
     pub version: u32,
     pub project: PathBuf,
     /// Absent until an explicit, freshly confirmed SavedProject binding. This
@@ -360,6 +378,8 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Record {
+            #[serde(default, deserialize_with = "present_topics")]
+            read_states: Option<Box<serde_json::value::RawValue>>,
             version: u32,
             project: PathBuf,
             #[serde(default, deserialize_with = "present_project_id")]
@@ -432,6 +452,17 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
                 "Unsupported Rust workspace catalog version",
             ));
         }
+        if record.version < 12 && record.read_states.is_some() {
+            return Err(serde::de::Error::custom(
+                "Read metadata requires Rust workspace catalog version 12",
+            ));
+        }
+        let read_states = record
+            .read_states
+            .map(|raw| serde_json::from_str::<BTreeMap<String, ChatReadState>>(raw.get()))
+            .transpose()
+            .map_err(serde::de::Error::custom)?
+            .unwrap_or_default();
         if record.version < 11 {
             for raw in &record.chats {
                 let fields: BTreeMap<String, Box<serde_json::value::RawValue>> =
@@ -547,7 +578,19 @@ impl<'de> Deserialize<'de> for WorkspaceSnapshot {
             })
             .collect::<std::result::Result<BTreeMap<_, _>, _>>()
             .map_err(serde::de::Error::custom)?;
+        for (id, state) in &read_states {
+            if Uuid::parse_str(id).is_err()
+                || state.revision == 0
+                || !chats.iter().any(|chat: &ChatRecord| &chat.id == id)
+            {
+                return Err(serde::de::Error::custom(
+                    "Invalid read-state chat identity or revision",
+                ));
+            }
+            state.validate().map_err(serde::de::Error::custom)?;
+        }
         Ok(Self {
+            read_states,
             version: record.version,
             project: record.project,
             project_id: record.project_id,
@@ -591,6 +634,7 @@ impl WorkspaceSnapshot {
     fn new(project: PathBuf) -> Self {
         Self {
             version: 1,
+            read_states: BTreeMap::new(),
             project,
             project_id: None,
             revision: 0,
@@ -608,6 +652,10 @@ impl WorkspaceSnapshot {
     }
     fn validate(&self) -> Result<()> {
         self.validate_topics()?;
+        if (self.version < 12 && !self.read_states.is_empty()) || self.read_states.len() > MAX_CHATS
+        {
+            return Err(invalid("Unsupported or oversized workspace read metadata"));
+        }
         if self.version < 11
             && self
                 .chats
@@ -702,6 +750,14 @@ impl WorkspaceSnapshot {
                 return Err(invalid("Invalid Rust chat catalog record"));
             }
         }
+        for (id, read_state) in &self.read_states {
+            if !ids.contains(id) || read_state.revision == 0 {
+                return Err(invalid(
+                    "Read state names an unknown chat or invalid revision",
+                ));
+            }
+            read_state.validate()?;
+        }
         if self.drafts.keys().any(|id| !ids.contains(id))
             || self.selected.as_ref().is_some_and(|id| !ids.contains(id))
         {
@@ -783,14 +839,17 @@ pub struct WorkspaceStore {
     _lock: WorkspaceLock,
     state: WorkspaceSnapshot,
     uncertain: bool,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "synthetic-authority"))]
     fault: Fault,
+    #[cfg(feature = "synthetic-authority")]
+    synthetic_read_state_after_rename: bool,
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "synthetic-authority"))]
 #[derive(Default, Clone, Copy)]
 enum Fault {
     #[default]
     None,
+    #[cfg(test)]
     BeforeRename,
     AfterRename,
 }
@@ -850,8 +909,10 @@ impl WorkspaceStore {
             _lock: lock,
             state,
             uncertain: false,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "synthetic-authority"))]
             fault: Fault::None,
+            #[cfg(feature = "synthetic-authority")]
+            synthetic_read_state_after_rename: false,
         })
     }
 
@@ -867,6 +928,15 @@ impl WorkspaceStore {
     /// catalog uncertain; callers must not infer certainty from that error alone.
     pub fn is_uncertain(&self) -> bool {
         self.uncertain
+    }
+    /// Explicit synthetic QA only: fail the next changed read-state commit at
+    /// the real post-rename boundary. Other catalog operations and no-ops do not
+    /// consume this hook. It never clears the store's resulting uncertainty.
+    #[cfg(feature = "synthetic-authority")]
+    pub fn synthetic_fail_next_read_state_commit_after_rename(&mut self) -> Result<()> {
+        self.ensure_certain()?;
+        self.synthetic_read_state_after_rename = true;
+        Ok(())
     }
     /// Consume fresh metadata confirmation minted outside the catalog mutex.
     /// This does not write authority, relocate roots, or grant runtime tools.
@@ -982,6 +1052,69 @@ impl WorkspaceStore {
             state.chats.push(chat);
             Ok(())
         })
+    }
+    /// Persist only the read map, against exact workspace and registered chat
+    /// identity and current per-chat revision. Memory-only baselines and
+    /// coalesced optimistic mutations may advance by more than one revision.
+    /// Registered Pending chats may save a baseline without materialization.
+    pub fn save_read_state(
+        &mut self,
+        expected_project: &Path,
+        expected_project_id: Option<&str>,
+        id: &str,
+        expected_snapshot: &Path,
+        expected_revision: Option<u64>,
+        next: &ChatReadState,
+    ) -> Result<ReadStateChange> {
+        self.ensure_certain()?;
+        if self.state.project != expected_project
+            || self.state.project_id.as_deref() != expected_project_id
+        {
+            return Err(invalid("Read state belongs to another workspace"));
+        }
+        let chat = self
+            .state
+            .chats
+            .iter()
+            .find(|chat| chat.id == id)
+            .ok_or_else(|| invalid("Read state has no registered chat"))?;
+        if chat.snapshot != expected_snapshot {
+            return Err(invalid("Read state belongs to another chat path"));
+        }
+        let current = self.state.read_states.get(id);
+        if current.map(|state| state.revision) != expected_revision {
+            return Err(invalid("Read-state revision changed before persistence"));
+        }
+        next.validate()?;
+        let receipt = ReadStateChange {
+            project: self.state.project.clone(),
+            project_id: self.state.project_id.clone(),
+            id: id.to_owned(),
+            snapshot: expected_snapshot.to_owned(),
+            state: next.clone(),
+            changed: false,
+        };
+        if current == Some(next) {
+            return Ok(receipt);
+        }
+        if next.revision <= current.map_or(0, |state| state.revision) {
+            return Err(invalid("Read-state mutation must advance its revision"));
+        }
+        #[cfg(feature = "synthetic-authority")]
+        let previous_fault = std::mem::take(&mut self.synthetic_read_state_after_rename)
+            .then(|| std::mem::replace(&mut self.fault, Fault::AfterRename));
+        let result = self.transact(|state| {
+            state.read_states.insert(id.to_owned(), next.clone());
+            Ok(ReadStateChange {
+                changed: true,
+                ..receipt
+            })
+        });
+        #[cfg(feature = "synthetic-authority")]
+        if let Some(previous_fault) = previous_fault {
+            self.fault = previous_fault;
+        }
+        result
     }
     /// Patch only confirmed activity for an already registered identity. Callers
     /// serialize this operation with the same catalog mutex as all other writers.
@@ -1651,7 +1784,7 @@ impl WorkspaceStore {
                 return Err(std::io::Error::other("injected catalog failure").into());
             }
             fs::rename(&temporary, &self.path)?;
-            #[cfg(test)]
+            #[cfg(any(test, feature = "synthetic-authority"))]
             if matches!(self.fault, Fault::AfterRename) {
                 return Err(Error::PersistenceUncertain(
                     "injected catalog uncertainty".into(),

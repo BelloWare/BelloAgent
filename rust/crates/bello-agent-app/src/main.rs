@@ -44,6 +44,7 @@ mod saved_runtime_adapter;
 mod shutdown_barrier;
 mod sidebar_actions;
 mod sidebar_activity;
+mod sidebar_read_state;
 mod sidebar_run_state;
 mod stop_shortcut;
 mod theme;
@@ -166,6 +167,9 @@ struct AgentView {
     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
     sidebar_activity_hold: sidebar_activity::SidebarActivityHold,
     sidebar_run_states: sidebar_run_state::SidebarRunStates,
+    read_states: sidebar_read_state::SharedReadStates,
+    read_write_inflight: bool,
+    read_manual_operations: BTreeMap<String, uuid::Uuid>,
     compaction_menu: Option<compaction_actions::CompactionMenu>,
     conversation_content: Option<conversation_content_view::ContentSheet>,
     #[cfg(not(target_os = "macos"))]
@@ -243,6 +247,7 @@ impl AgentView {
             .parent()
             .unwrap()
             .to_owned();
+        let read_states = sidebar_read_state::ReadCoordinator::restore(&state);
         let mut records = state.chats.clone();
         // Legacy catalogs appended records in creation order. Recover a stable
         // ordering for presentation without rewriting those files on open.
@@ -280,6 +285,7 @@ impl AgentView {
             crate::chat::ChatSource {
                 record,
                 workspace: workspace.clone(),
+                read_states: read_states.clone(),
             },
             chat::RestoredDraft {
                 draft,
@@ -431,6 +437,9 @@ impl AgentView {
             sidebar_menu: None,
             sidebar_activity_hold: Default::default(),
             sidebar_run_states: Default::default(),
+            read_states,
+            read_write_inflight: false,
+            read_manual_operations: BTreeMap::new(),
             compaction_menu: None,
             conversation_content: None,
             #[cfg(not(target_os = "macos"))]
@@ -628,6 +637,8 @@ impl AgentView {
         let id = self.record.id.clone();
         let controller = self.controller.clone();
         let workspace = self.workspace.clone();
+        let read_record = self.record.clone();
+        let read_states = self.read_states.clone();
         let flush_id = id.clone();
         let identity_controller = controller.clone();
         let identity_project = self.project.clone();
@@ -646,6 +657,18 @@ impl AgentView {
             } else {
                 None
             };
+            let baseline = chat_organization::catalog_operation(&workspace, |store| {
+                // Existing command routes can Resume/Retry or release queued work.
+                crate::sidebar_read_state::prepare_admission(
+                    &read_states,
+                    store,
+                    &read_record,
+                    &controller,
+                )
+            });
+            if let Err(error) = baseline.result {
+                return (flushed, Err(error), baseline.uncertain);
+            }
             (flushed, command(controller), false)
         });
         cx.spawn(async move |view, cx| {
@@ -2705,7 +2728,15 @@ impl AgentView {
                             .flex_1()
                             .text_size(px(12.))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child(name),
+                            .child(format!(
+                                "{}{}",
+                                name,
+                                if self.records.iter().any(|r| self.read_attention(r).1) {
+                                    " · Attention"
+                                } else {
+                                    ""
+                                }
+                            )),
                     )
                     .child(
                         self.button("project-topics", "Topics")
@@ -2751,7 +2782,21 @@ impl AgentView {
                     list = list.child(
                         self.button(
                             SharedString::from(format!("topic-header-{id}")),
-                            format!("{} {}", if expanded { "▾" } else { "▸" }, topic.title),
+                            format!(
+                                "{} {}{}",
+                                if expanded { "▾" } else { "▸" },
+                                topic.title,
+                                if self
+                                    .records
+                                    .iter()
+                                    .any(|r| self.effective_topic_id(r) == Some(topic.id.as_str())
+                                        && self.read_attention(r).1)
+                                {
+                                    " · Attention"
+                                } else {
+                                    ""
+                                }
+                            ),
                         )
                         .on_click(cx.listener(move |view, _, _, cx| {
                             if view.launch_topic_reveal.as_deref() == Some(id.as_str()) {
@@ -2797,6 +2842,7 @@ impl AgentView {
             let move_id = id.clone();
             let menu_id = id.clone();
             let status = self.sidebar_run_status(record);
+            let attention = self.read_status(record);
             list = list.child(
                 div()
                     .id(SharedString::from(format!("chat-row-{id}")))
@@ -2805,6 +2851,9 @@ impl AgentView {
                     .py(px(9.))
                     .rounded(px(8.))
                     .when(selected, |d| d.bg(p.accent_soft()))
+                    .when(attention.is_some(), |d| {
+                        d.border_l_2().border_color(rgb(p.accent))
+                    })
                     .flex()
                     .gap(px(8.))
                     .items_center()
@@ -2872,11 +2921,16 @@ impl AgentView {
                                 div()
                                     .text_size(px(10.5))
                                     .text_color(rgb(p.secondary))
-                                    .child(status),
+                                    .child(match &attention {
+                                        Some(attention) => format!("{status} · {attention}"),
+                                        None => status.to_owned(),
+                                    }),
                             ),
                     ),
             );
         }
+        let selected_unread = !self.can_read_action(&self.record.id, false);
+        let selected_read_enabled = self.can_read_action(&self.record.id, selected_unread);
         let mut footer = div()
             .h(px(41.))
             .flex_shrink_0()
@@ -2887,6 +2941,28 @@ impl AgentView {
             .flex()
             .gap(px(2.))
             .items_center();
+        let selected_read_id = self.record.id.clone();
+        let selected_read_path = self.record.snapshot.clone();
+        let selected_read_controller = Arc::downgrade(&self.controller);
+        let read_action = div().px(px(8.)).py(px(3.)).child(
+            self.button(
+                "selected-mark-read-state",
+                if selected_unread {
+                    "Mark as Unread"
+                } else {
+                    "Mark as Read"
+                },
+            )
+            .opacity(if selected_read_enabled { 1. } else { 0.45 })
+            .on_click(cx.listener(move |view, _, _, cx| {
+                if view.record.id == selected_read_id
+                    && view.record.snapshot == selected_read_path
+                    && selected_read_controller.ptr_eq(&Arc::downgrade(&view.controller))
+                {
+                    view.mark_chat_read_state(&selected_read_id, selected_unread, cx);
+                }
+            })),
+        );
         for (id, icon) in [
             ("report", "chart"),
             ("inspector", "bug"),
@@ -3012,6 +3088,7 @@ impl AgentView {
                     ),
             )
             .child(self.activity_held_sidebar_list(list, cx))
+            .child(read_action)
             .child(footer)
     }
 }

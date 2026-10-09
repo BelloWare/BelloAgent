@@ -52,6 +52,12 @@ fn install_menu(view: &mut AgentView, id: &str) -> uuid::Uuid {
     view.sidebar_menu = Some(SidebarMenu {
         token,
         chat_id: id.into(),
+        snapshot: view
+            .records
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.snapshot.clone())
+            .unwrap_or_default(),
         project: view.project.clone(),
         binding: view.window_binding,
         pinned: false,

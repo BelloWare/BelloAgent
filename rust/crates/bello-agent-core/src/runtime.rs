@@ -147,6 +147,7 @@ pub struct Controller {
     published: tokio::sync::watch::Sender<Arc<Session>>,
     published_revision: AtomicU64,
     semantic_activity: tokio::sync::watch::Sender<SemanticActivity>,
+    accepted_read: tokio::sync::watch::Sender<crate::read_observation::AcceptedReadObservation>,
     active_cancel: RwLock<Option<CancellationToken>>,
     stop_requested: AtomicBool,
     stop_epoch: AtomicU64,
@@ -256,6 +257,7 @@ impl Controller {
         };
         let initial = Arc::new(store.snapshot());
         Ok(Arc::new(Self {
+            accepted_read: tokio::sync::watch::channel(store.read_observation()).0,
             published: tokio::sync::watch::channel(initial).0,
             published_revision: AtomicU64::new(0),
             semantic_activity: tokio::sync::watch::channel(SemanticActivity::default()).0,
@@ -438,6 +440,24 @@ impl Controller {
         let _publication = self.inner.lock().expect("session mutex poisoned");
         self.worker_active.load(Ordering::Acquire)
     }
+    /// Captures final accepted evidence directly, including after worker joins.
+    pub fn read_observation(&self) -> crate::read_observation::AcceptedReadObservation {
+        self.inner
+            .lock()
+            .expect("session mutex poisoned")
+            .store
+            .read_observation()
+    }
+    /// Nonblocking last publication for rendering; use read_observation after
+    /// joins/admission when the exact latest accepted actor boundary is needed.
+    pub fn published_read_observation(&self) -> crate::read_observation::AcceptedReadObservation {
+        self.accepted_read.borrow().clone()
+    }
+    pub fn subscribe_read_observation(
+        &self,
+    ) -> tokio::sync::watch::Receiver<crate::read_observation::AcceptedReadObservation> {
+        self.accepted_read.subscribe()
+    }
     pub fn revision(&self) -> u64 {
         self.published_revision.load(Ordering::Acquire)
     }
@@ -481,6 +501,14 @@ impl Controller {
         snapshot
     }
     fn publish(&self, inner: &Inner) {
+        let observation = inner.store.read_observation();
+        self.accepted_read.send_if_modified(|current| {
+            if *current == observation {
+                return false;
+            }
+            *current = observation;
+            true
+        });
         let stop = self.stop_epoch.load(Ordering::Acquire);
         self.publish_prepared(self.display_snapshot(inner), stop, false);
     }
@@ -2504,3 +2532,7 @@ mod configuration_tests;
 #[cfg(all(test, feature = "synthetic-authority"))]
 #[path = "worker_tail_test_gate.rs"]
 pub(crate) mod worker_tail_test_gate;
+
+#[cfg(test)]
+#[path = "runtime_read_observation_tests.rs"]
+mod read_observation_tests;

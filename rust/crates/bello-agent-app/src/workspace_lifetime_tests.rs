@@ -1199,6 +1199,7 @@ fn shortcut_run_with_partial(
                 crate::chat::ChatSource {
                     record,
                     workspace: view.workspace.clone(),
+                    read_states: view.read_states.clone(),
                 },
                 crate::chat::RestoredDraft {
                     draft: DraftRecord {

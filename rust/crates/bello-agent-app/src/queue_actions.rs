@@ -81,14 +81,27 @@ impl AgentView {
         let worker = controller.clone();
         let chat_id = chat_id.to_owned();
         let project = self.project.clone();
+        let read_states = self.read_states.clone();
+        let workspace = self.workspace.clone();
+        let record = self.record.clone();
         let task = cx.background_executor().spawn(async move {
-            worker
-                .resume()
-                .map_err(|error| format!("Queued messages could not be resumed: {error}"))
+            let baseline = crate::chat_organization::catalog_operation(&workspace, |store| {
+                crate::sidebar_read_state::prepare_admission(&read_states, store, &record, &worker)
+            });
+            let uncertain = baseline.uncertain;
+            let result = baseline.display_result().and_then(|()| {
+                worker
+                    .resume()
+                    .map_err(|error| format!("Queued messages could not be resumed: {error}"))
+            });
+            (result, uncertain)
         });
         cx.spawn(async move |view, cx| {
-            let result = task.await;
+            let (result, uncertain) = task.await;
             let _ = view.update(cx, |view, cx| {
+                if view.project == project {
+                    view.observe_catalog_uncertainty(uncertain, cx);
+                }
                 view.finish_queue_operation(&chat_id, &project, &controller, operation, result, cx)
             });
         })

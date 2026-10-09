@@ -15,12 +15,15 @@ pub(crate) enum SidebarAction {
     TogglePinned,
     ToggleArchived,
     CopySessionId,
+    MarkRead,
+    MarkUnread,
 }
 
 #[derive(Clone)]
 pub(crate) struct SidebarMenu {
     pub(super) token: uuid::Uuid,
     chat_id: String,
+    snapshot: PathBuf,
     project: PathBuf,
     binding: Option<WindowBinding>,
     pinned: bool,
@@ -147,6 +150,7 @@ impl AgentView {
         let menu = SidebarMenu {
             token: uuid::Uuid::new_v4(),
             chat_id: id.into(),
+            snapshot: record.snapshot.clone(),
             project: self.project.clone(),
             binding: self.window_binding,
             pinned: record.pinned_at.is_some(),
@@ -188,6 +192,10 @@ impl AgentView {
                 position,
                 menu.pinned,
                 menu.archived,
+                (
+                    self.can_read_action(id, false),
+                    self.can_read_action(id, true),
+                ),
                 move |choice, pointer, cx| {
                     let _ = owner.update(cx, |view, cx| {
                         if view
@@ -225,6 +233,10 @@ impl AgentView {
         #[cfg(not(target_os = "macos"))]
         self.restore_sidebar_popup_focus(&menu, cx);
         if menu.project == self.project
+            && self
+                .records
+                .iter()
+                .any(|record| record.id == menu.chat_id && record.snapshot == menu.snapshot)
             && menu.binding == self.window_binding
             && !self.shutting_down
             && let Some(action) = choice
@@ -245,6 +257,8 @@ impl AgentView {
                     }
                 }
                 SidebarAction::CopySessionId => self.copy_sidebar_session_id(&menu.chat_id, cx),
+                SidebarAction::MarkRead => self.mark_chat_read_state(&menu.chat_id, false, cx),
+                SidebarAction::MarkUnread => self.mark_chat_read_state(&menu.chat_id, true, cx),
             }
         }
         cx.notify();
@@ -310,6 +324,8 @@ impl AgentView {
                         SidebarAction::TogglePinned,
                         SidebarAction::ToggleArchived,
                         SidebarAction::CopySessionId,
+                        SidebarAction::MarkRead,
+                        SidebarAction::MarkUnread,
                     ];
                     let index = actions
                         .iter()
@@ -391,10 +407,27 @@ impl AgentView {
                     "number",
                     "Copy Session ID",
                 ),
+                (
+                    SidebarAction::MarkRead,
+                    "sidebar-mark-read",
+                    "check",
+                    "Mark as Read",
+                ),
+                (
+                    SidebarAction::MarkUnread,
+                    "sidebar-mark-unread",
+                    "chat",
+                    "Mark as Unread",
+                ),
             ] {
                 if action == SidebarAction::CopySessionId {
                     body = body.child(div().h(px(1.)).my(px(4.)).bg(p.hairline()));
                 }
+                let enabled = match action {
+                    SidebarAction::MarkRead => self.can_read_action(&menu.chat_id, false),
+                    SidebarAction::MarkUnread => self.can_read_action(&menu.chat_id, true),
+                    _ => true,
+                };
                 body = body.child(
                     div()
                         .id(id)
@@ -408,6 +441,7 @@ impl AgentView {
                         .text_size(px(13.))
                         .text_color(rgb(p.ink))
                         .cursor_pointer()
+                        .opacity(if enabled { 1. } else { 0.45 })
                         .when(menu.selected == action, |style| style.bg(p.accent_soft()))
                         .on_hover(cx.listener(move |view, hover, _, cx| {
                             if *hover

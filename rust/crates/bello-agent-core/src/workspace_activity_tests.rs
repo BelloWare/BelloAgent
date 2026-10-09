@@ -104,7 +104,7 @@ fn activity_all_old_versions_read_sort_and_noop_without_rewrite_then_promote() {
 fn activity_version_gate_rejects_presence_including_null_and_malformed_values() {
     let (_dir, mut store, chat) = fixture();
     store.register(chat, DraftRecord::default()).unwrap();
-    for version in 1..CURRENT_VERSION {
+    for version in 1..11 {
         for activity in [
             serde_json::json!(null),
             serde_json::json!(0),
