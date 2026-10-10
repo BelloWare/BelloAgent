@@ -1,4 +1,4 @@
-//! Connections-only Settings surface, following ProfileSettings.swift and
+//! Connections and completion-sound Settings surface, following ProfileSettings.swift and
 //! ConnectionSettingsController.swift. The owner retains drafts and serializes
 //! vault/runtime work. This view never reads credentials, saves, or sends requests.
 //!
@@ -21,7 +21,7 @@ use std::{cell::Cell, collections::BTreeMap, fmt, rc::Rc};
 
 const FIXTURE_NOTICE: &str = "Fixture-only · In-memory connections. Use only numeric loopback URLs, the key synthetic-project-fixture-only, and header values synthetic-header-fixture-only. Do not enter real keys. Nothing is saved to Keychain.";
 const NATIVE_NOTICE: &str = "Experimental native authority · Connections are stored in the separate Bello Agent Rust Keychain vault. No Swift settings are imported. Native signing, credential input and no-prompt acceptance remain under validation. Chats send to your explicitly saved endpoint, and in a trusted project they offer its tools (read-only or editing, by the chat's mode), MCP and project instructions and skills, as Swift does.";
-const SCOPE_NOTICE: &str = "This Rust preview covers Connections only. Catalog-assisted setup is fixture-only. Mini models, routing/reasoning controls and the other Settings sections are not available here. Saving does not send a request; send explicitly from a chat.";
+const SCOPE_NOTICE: &str = "This Rust preview covers Connections and task completion sound. Catalog-assisted setup is fixture-only. Mini models, routing/reasoning controls and the other Settings sections are not available here. Saving does not send a request; send explicitly from a chat.";
 
 /// Only user-typed replacements belong in key/headers. Never populate these
 /// fields from saved authority, including the synthetic saved authority.
@@ -127,6 +127,8 @@ pub(crate) struct ConnectionSettingsPresentation {
     pub(crate) tabs: Vec<ConnectionTab>,
     pub(crate) active: Option<ConnectionForm>,
     pub(crate) dirty: bool,
+    pub(crate) completion_sound_enabled: bool,
+    pub(crate) completion_sound_dirty: bool,
     pub(crate) confirmation: ConnectionConfirmation,
     pub(crate) notice: Option<ConnectionSettingsNotice>,
 }
@@ -134,6 +136,8 @@ pub(crate) struct ConnectionSettingsPresentation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ConnectionSettingsIntent {
     Edited,
+    ToggleCompletionSound,
+    PreviewCompletionSound,
     BrowseCatalog,
     RefreshCatalog,
     CloseCatalog,
@@ -192,8 +196,23 @@ impl ConnectionSettingsPresentation {
     pub(crate) fn allows(&self, intent: &ConnectionSettingsIntent) -> bool {
         use ConnectionConfirmation as Confirmation;
         use ConnectionSettingsIntent as Intent;
+        if matches!(
+            intent,
+            Intent::ToggleCompletionSound | Intent::PreviewCompletionSound
+        ) {
+            return cfg!(target_os = "macos")
+                && !self.saving
+                && self.confirmation == Confirmation::None;
+        }
         if self.saving {
             return false;
+        }
+        if matches!(intent, Intent::SaveAll | Intent::SaveAndClose)
+            && self.completion_sound_dirty
+            && !self.tabs.iter().any(|tab| tab.dirty)
+            && matches!(self.confirmation, Confirmation::None | Confirmation::Close)
+        {
+            return true;
         }
         if matches!(intent, Intent::RequestClose | Intent::Cancel) {
             return self.confirmation == Confirmation::None;
@@ -916,6 +935,12 @@ impl ConnectionSettingsView {
             .iter()
             .map(|tab| Control::Intent(Intent::Select(tab.id.clone())))
             .collect();
+        if cfg!(target_os = "macos") {
+            controls.extend([
+                Control::Intent(Intent::ToggleCompletionSound),
+                Control::Intent(Intent::PreviewCompletionSound),
+            ]);
+        }
         controls.extend([
             Control::Intent(Intent::New),
             Control::Intent(Intent::Reload),
@@ -1787,7 +1812,7 @@ impl Render for ConnectionSettingsView {
             }
             ConnectionConfirmation::Close => {
                 footer = footer.child(div().id("settings-unsaved-question").debug_selector(|| "settings-unsaved-question".into()).text_size(px(12.))
-                    .child("Save your Settings changes? Unsaved changes in Connections. Discarding keeps the saved connections."));
+                    .child("Save your Settings changes? Unsaved Settings changes. Discarding keeps the saved settings."));
                 vec![
                     (
                         "settings-keep-editing",
@@ -1927,6 +1952,37 @@ impl Render for ConnectionSettingsView {
                                 presentation.tabs.iter().filter(|tab| tab.saved).count()
                             )),
                     )
+                    .when(cfg!(target_os = "macos"), |header| {
+                        let enabled = presentation.completion_sound_enabled;
+                        header.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .flex_wrap()
+                                .gap(px(8.))
+                                .child(self.button(
+                                    "settings-completion-sound",
+                                    if enabled {
+                                        "Play task completion sound: On"
+                                    } else {
+                                        "Play task completion sound: Off"
+                                    },
+                                    ConnectionSettingsIntent::ToggleCompletionSound,
+                                    false,
+                                    false,
+                                    cx,
+                                ).debug_selector(|| "settings-completion-sound".into()))
+                                .child(self.button(
+                                    "settings-completion-preview",
+                                    "Preview",
+                                    ConnectionSettingsIntent::PreviewCompletionSound,
+                                    false,
+                                    false,
+                                    cx,
+                                ).debug_selector(|| "settings-completion-preview".into()))
+                                .child(div().text_size(px(11.)).child("Play a short chime when a chat finishes its task, even in the background.")),
+                        )
+                    })
                     .child(tab_bar),
             )
             .child(body)

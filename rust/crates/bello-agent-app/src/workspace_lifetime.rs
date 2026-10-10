@@ -43,6 +43,21 @@ fn options(cx: &App) -> WindowOptions {
 }
 
 impl WorkspaceLifetime {
+    /// Global menu Quit also works while an inspector owns the key window.
+    /// It still passes through the workspace's save/stop/dirty-close policy.
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn request_quit(cx: &mut App) {
+        if !cx.has_global::<Self>() {
+            return;
+        }
+        let window = cx.global::<Self>().window;
+        let _ = window.update(cx, |view, window, cx| {
+            if view.request_close(window, cx) {
+                cx.quit();
+            }
+        });
+    }
+
     pub(crate) fn launch(
         launch: LaunchState,
         cx: &mut App,

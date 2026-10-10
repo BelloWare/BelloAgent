@@ -36,6 +36,9 @@ pub struct AcceptedReadObservation {
     /// Cumulative accepted transitions into Error; never reset by Retry/opening.
     /// Consumers remember a per-generation consumed sequence when clearing it.
     pub failure_sequence: u64,
+    /// Confirmed successful task finishes, retained across a fast follow-up.
+    /// Tool rounds, compaction, stop, failure and restored history are neutral.
+    pub completed_task_sequence: u64,
 }
 
 /// Exact count/latest identity for authoritative, validated retained history.
@@ -139,6 +142,7 @@ impl AcceptedReadObservation {
             busy: session.state == RunState::Running,
             terminal: None,
             failure_sequence: 0,
+            completed_task_sequence: 0,
         }
     }
     /// Only SessionStore's confirmed-checkpoint success branch calls this.
@@ -157,6 +161,27 @@ impl AcceptedReadObservation {
         }
         self.history = project_outputs(after);
         self.busy = after.state == RunState::Running;
+        // Session::finish clears the active submission only for a final reply.
+        // Tool continuation keeps it, compaction has no submission, and Stop
+        // and failure finish in Paused/Error rather than Idle. Count only the
+        // confirmed checkpoint; live publications and refused writes cannot cue.
+        let completed = before.state == RunState::Running
+            && before.active.is_some()
+            && before.active_reply.as_ref().is_some_and(|id| {
+                after.messages.iter().any(|row| {
+                    &row.id == id
+                        && row.role == "assistant"
+                        && row.replay_eligible
+                        && row.tool_record.is_none()
+                        && row.compaction.is_none()
+                        && matches!(row.state.as_str(), "completed" | "incomplete")
+                })
+            })
+            && after.state == RunState::Idle
+            && after.active.is_none();
+        if completed {
+            self.completed_task_sequence = self.completed_task_sequence.saturating_add(1);
+        }
         let failed = before.state != RunState::Error && after.state == RunState::Error;
         let terminal = (before.state == RunState::Running && !self.busy) || failed;
         if failed {

@@ -76,6 +76,7 @@ pub struct ChatState {
     activity_workspace: Arc<Mutex<WorkspaceStore>>,
     read_states: crate::sidebar_read_state::SharedReadStates,
     _read_poll: Task<()>,
+    _completion_poll: Task<()>,
 }
 impl ChatState {
     pub fn new(
@@ -104,6 +105,8 @@ impl ChatState {
             activity_workspace.clone(),
             cx,
         );
+        let completion_poll =
+            crate::notifications::subscribe(&controller, &record, activity_workspace.clone(), cx);
         let read_poll = crate::sidebar_read_state::subscribe(
             &controller,
             &record,
@@ -252,6 +255,7 @@ impl ChatState {
             _activity_poll: activity_poll,
             read_states,
             _read_poll: read_poll,
+            _completion_poll: completion_poll,
         }
     }
     fn subscribe(
@@ -290,6 +294,12 @@ impl ChatState {
         {
             self.error = Some(crate::sidebar_read_state::read_error_notice(&error));
         }
+        self._completion_poll = crate::notifications::subscribe(
+            &controller,
+            &self.record,
+            self.activity_workspace.clone(),
+            cx,
+        );
         self._read_poll = crate::sidebar_read_state::subscribe(
             &controller,
             &self.record,

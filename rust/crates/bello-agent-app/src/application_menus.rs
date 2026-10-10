@@ -59,7 +59,9 @@ pub(crate) fn install(cx: &mut App) {
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
     cx.on_action(|_: &About, _| native_application("orderFrontStandardAboutPanel:"));
     cx.on_action(|_: &BringAllToFront, _| native_application("arrangeInFront:"));
+    cx.on_action(|_: &Quit, cx| crate::workspace_lifetime::WorkspaceLifetime::request_quit(cx));
     cx.set_menus(menus());
+    native_system_menus();
 }
 
 fn menu(name: &'static str, items: Vec<MenuItem>) -> Menu {
@@ -169,12 +171,8 @@ impl AgentView {
             || self.connections.picker
             || self.projects.view.read(cx).is_open()
             || self.quick_open.read(cx).is_open();
-        let conversation = !modal
-            && !self.show_files
-            && !self.changes_open
-            && !self.loading
-            && !self.load_failed
-            && self.record.archived_at.is_none();
+        let conversation =
+            !modal && !self.show_files && !self.changes_open && !self.loading && !self.load_failed;
         let editor = window.focused(cx).is_some_and(|focus| {
             window
                 .highest_precedence_binding_for_action_in(&EditorTarget, &focus)
@@ -253,10 +251,15 @@ impl AgentView {
             |v: &mut Self, w: &mut Window, cx: &mut Context<Self>| v.show_transcript_find(w, cx)
         );
         route!(
-            conversation && self.transcript_find.is_some(),
+            conversation,
             FindNext,
-            |v: &mut Self, _: &mut Window, cx: &mut Context<Self>| v
-                .step_transcript_find(false, cx)
+            |v: &mut Self, w: &mut Window, cx: &mut Context<Self>| {
+                if v.transcript_find.is_some() {
+                    v.step_transcript_find(false, cx);
+                } else {
+                    v.show_transcript_find(w, cx);
+                }
+            }
         );
         route!(
             conversation && self.transcript_find.is_some(),
@@ -299,3 +302,43 @@ fn native_application(_: &str) {}
 #[cfg(test)]
 #[path = "application_menus_tests.rs"]
 mod tests;
+
+// GPUI 0.2.2 only declares the Services menu and does not assign windowsMenu.
+// AppKit expects the actual submenu for both registrations, not its parent item.
+#[cfg(all(target_os = "macos", not(test)))]
+fn native_system_menus() {
+    use cocoa::{
+        base::{id, nil},
+        foundation::NSString,
+    };
+    use objc::{class, msg_send, sel, sel_impl};
+    unsafe {
+        let app: id = msg_send![class!(NSApplication), sharedApplication];
+        let main: id = msg_send![app, mainMenu];
+        if main == nil {
+            return;
+        }
+        let window_name = NSString::alloc(nil).init_str("Window");
+        let app_name = NSString::alloc(nil).init_str("Bello Agent");
+        let services_name = NSString::alloc(nil).init_str("Services");
+        let window_item: id = msg_send![main, itemWithTitle: window_name];
+        if window_item != nil {
+            let submenu: id = msg_send![window_item, submenu];
+            let _: () = msg_send![app, setWindowsMenu: submenu];
+        }
+        let app_item: id = msg_send![main, itemWithTitle: app_name];
+        if app_item != nil {
+            let app_menu: id = msg_send![app_item, submenu];
+            let services: id = msg_send![app_menu, itemWithTitle: services_name];
+            if services != nil {
+                let submenu: id = msg_send![services, submenu];
+                let _: () = msg_send![app, setServicesMenu: submenu];
+            }
+        }
+        let _: () = msg_send![window_name, release];
+        let _: () = msg_send![app_name, release];
+        let _: () = msg_send![services_name, release];
+    }
+}
+#[cfg(any(not(target_os = "macos"), test))]
+fn native_system_menus() {}

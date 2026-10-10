@@ -128,6 +128,7 @@ pub(crate) struct ConnectionSettingsController {
     pub presentation: ConnectionSettingsPresentation,
     authority: Arc<ProjectAuthority>,
     loaded: Option<LoadedConnections>,
+    completion_sound_baseline: bool,
     forms: BTreeMap<String, RetainedForm>,
     catalogs: BTreeMap<String, CatalogState>,
     draft_notice_owner: Option<String>,
@@ -172,6 +173,9 @@ impl ConnectionSettingsController {
                 }
                 crate::launch_authority::AuthorityMode::Unavailable
             });
+        let completion_sound_enabled = cx
+            .try_global::<crate::notifications::Notifications>()
+            .is_none_or(|n| n.enabled());
         let presentation = ConnectionSettingsPresentation {
             revision: 1,
             mode,
@@ -180,6 +184,8 @@ impl ConnectionSettingsController {
             tabs: vec![],
             active: None,
             dirty: false,
+            completion_sound_enabled,
+            completion_sound_dirty: false,
             confirmation: ConnectionConfirmation::None,
             notice: None,
         };
@@ -189,6 +195,7 @@ impl ConnectionSettingsController {
             presentation,
             authority,
             loaded: None,
+            completion_sound_baseline: completion_sound_enabled,
             forms: BTreeMap::new(),
             catalogs: BTreeMap::new(),
             draft_notice_owner: None,
@@ -256,7 +263,10 @@ impl ConnectionSettingsController {
                     .map(|source| source.name.clone()),
             })
         });
-        self.presentation.dirty = self.forms.values().any(RetainedForm::dirty);
+        self.presentation.completion_sound_dirty =
+            self.presentation.completion_sound_enabled != self.completion_sound_baseline;
+        self.presentation.dirty = self.forms.values().any(RetainedForm::dirty)
+            || self.presentation.completion_sound_dirty;
         let p = self.presentation.clone();
         self.view.update(cx, |v, cx| v.set_presentation(p, cx));
         cx.notify();
@@ -411,6 +421,12 @@ impl AgentView {
         {
             return;
         }
+        if !self.connections.open {
+            let enabled = cx.global::<crate::notifications::Notifications>().enabled();
+            self.connections.completion_sound_baseline = enabled;
+            self.connections.presentation.completion_sound_enabled = enabled;
+            self.connections.presentation.completion_sound_dirty = false;
+        }
         self.connections.picker = false;
         self.connections.open = true;
         self.cancel_queue_drag(window, cx);
@@ -475,6 +491,8 @@ impl AgentView {
         self.connections.open = false;
         self.connections.presentation.confirmation = ConnectionConfirmation::None;
         if discard {
+            self.connections.presentation.completion_sound_enabled =
+                self.connections.completion_sound_baseline;
             if let Some(loaded) = self.connections.loaded.clone() {
                 self.connections.install(loaded, true);
             } else {
@@ -515,6 +533,14 @@ impl AgentView {
         use ConnectionSettingsIntent::*;
         match intent {
             Edited => {}
+            ToggleCompletionSound => {
+                self.connections.presentation.completion_sound_enabled =
+                    !self.connections.presentation.completion_sound_enabled;
+            }
+            PreviewCompletionSound => {
+                cx.global_mut::<crate::notifications::Notifications>()
+                    .play();
+            }
             BrowseCatalog | RefreshCatalog => {
                 self.load_connection_catalog(matches!(intent, RefreshCatalog), cx);
                 return;
@@ -563,7 +589,9 @@ impl AgentView {
                 return;
             }
             RequestClose => {
-                if self.connections.forms.values().any(RetainedForm::dirty) {
+                if self.connections.forms.values().any(RetainedForm::dirty)
+                    || self.connections.presentation.completion_sound_dirty
+                {
                     self.connections.presentation.confirmation = ConnectionConfirmation::Close;
                 } else {
                     self.close_connections(false, window, cx);
@@ -572,7 +600,9 @@ impl AgentView {
             }
             Keep | KeepEditing => {}
             Reload => {
-                if self.connections.forms.values().any(RetainedForm::dirty) {
+                if self.connections.forms.values().any(RetainedForm::dirty)
+                    || self.connections.presentation.completion_sound_dirty
+                {
                     self.connections.presentation.confirmation = ConnectionConfirmation::Reload;
                 } else {
                     self.reload_connections(true, cx);
@@ -580,6 +610,8 @@ impl AgentView {
                 }
             }
             DiscardAndReload => {
+                self.connections.presentation.completion_sound_enabled =
+                    self.connections.completion_sound_baseline;
                 self.reload_connections(true, cx);
                 return;
             }
@@ -629,6 +661,30 @@ impl AgentView {
             .collect()
     }
     fn save_connections(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.connections.operation.is_some() || self.shutting_down {
+            return;
+        }
+        let sound_dirty = self.connections.presentation.completion_sound_dirty;
+        if sound_dirty {
+            let enabled = self.connections.presentation.completion_sound_enabled;
+            if let Err(error) = cx
+                .global_mut::<crate::notifications::Notifications>()
+                .set_enabled(enabled)
+            {
+                self.connections.notice(
+                    format!("Completion sound could not be saved: {error}"),
+                    true,
+                );
+                self.connections.publish(cx);
+                return;
+            }
+            self.connections.completion_sound_baseline = enabled;
+            self.connections.presentation.completion_sound_dirty = false;
+            if !self.connections.forms.values().any(RetainedForm::dirty) {
+                self.close_connections(false, window, cx);
+                return;
+            }
+        }
         {
             if !self.connections.presentation.mode.editable() {
                 return;

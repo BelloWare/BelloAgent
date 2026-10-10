@@ -465,6 +465,8 @@ fn successful_manual_compaction_retains_output_count_and_latest_identity() {
     session
         .begin_compaction("compact", &profile(), false)
         .unwrap();
+    let before = session.clone();
+    let mut observation = AcceptedReadObservation::initial(&session);
     let source_ids = crate::compaction::active_context(&session.messages)
         .unwrap()
         .iter()
@@ -487,6 +489,8 @@ fn successful_manual_compaction_retains_output_count_and_latest_identity() {
         .adopt_compaction("compact", summary, &reply("summary", "completed"))
         .unwrap();
     expect(&session, 1, Some(&id));
+    observation.accept(&before, &session);
+    assert_eq!(observation.completed_task_sequence, 0);
 }
 #[test]
 fn failed_retry_preserves_each_retained_partial_and_failure_occurrence() {
@@ -597,4 +601,89 @@ fn original_v3_tool_writer_shape_is_supported_but_inert_or_contradictory_shapes_
         assert!(crate::tool_history::validate(&invalid.messages).is_ok());
         assert_eq!(project_outputs(&invalid), OutputProjection::Unknown);
     }
+}
+
+#[test]
+fn task_completion_sequence_survives_followup_and_reopen_is_silent() {
+    let (dir, mut store, id) = store();
+    assert_eq!(store.read_observation().completed_task_sequence, 0);
+    store
+        .transact(|s| s.finish(&id, Ok(reply("", "completed"))))
+        .unwrap();
+    store
+        .transact(|s| {
+            start(s);
+            Ok(())
+        })
+        .unwrap();
+    let next = store.read_observation();
+    assert!(next.busy);
+    assert_eq!(next.completed_task_sequence, 1);
+    let id = store.snapshot().active_reply.unwrap();
+    store
+        .transact(|s| s.finish(&id, Ok(reply("limited", "incomplete"))))
+        .unwrap();
+    assert_eq!(store.read_observation().completed_task_sequence, 2);
+    drop(store);
+    let reopened = SessionStore::open(dir.path().join("session.json")).unwrap();
+    assert_eq!(reopened.read_observation().completed_task_sequence, 0);
+}
+
+#[test]
+fn task_completion_sequence_ignores_stream_tool_round_failure_stop_and_refused_write() {
+    let (_dir, mut store, id) = store();
+    store
+        .append_delta(&id, Delta::Text("partial".into()))
+        .unwrap();
+    assert_eq!(store.read_observation().completed_task_sequence, 0);
+    let mut response = reply("", "completed");
+    response.calls.push(crate::provider::ToolCall {
+        id: "call".into(),
+        name: "ls".into(),
+        arguments: json!({}),
+    });
+    store
+        .transact(|s| s.begin_tools(&id, &response, &profile()))
+        .unwrap();
+    assert_eq!(store.read_observation().completed_task_sequence, 0);
+    store
+        .transact(|s| {
+            s.settle_tools(
+                &id,
+                vec![tool_result(
+                    "Stopped".into(),
+                    crate::tool_history::ToolOutcome::Cancelled,
+                )],
+                true,
+            )
+        })
+        .unwrap();
+    assert_eq!(store.read_observation().completed_task_sequence, 0);
+    store
+        .transact(|s| {
+            s.resume()?;
+            start(s);
+            Ok(())
+        })
+        .unwrap();
+    let id = store.snapshot().active_reply.unwrap();
+    store
+        .transact(|s| s.finish(&id, Err(crate::invalid("fixture failure"))))
+        .unwrap();
+    assert_eq!(store.read_observation().completed_task_sequence, 0);
+    store
+        .transact(|s| {
+            s.resume()?;
+            start(s);
+            Ok(())
+        })
+        .unwrap();
+    let id = store.snapshot().active_reply.unwrap();
+    store.fault = crate::session::WriteFault::BeforeRename;
+    assert!(
+        store
+            .transact(|s| s.finish(&id, Ok(reply("done", "completed"))))
+            .is_err()
+    );
+    assert_eq!(store.read_observation().completed_task_sequence, 0);
 }

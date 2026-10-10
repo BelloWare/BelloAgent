@@ -1,0 +1,105 @@
+[
+  {
+    "check": "fmt",
+    "command": [
+      "cargo",
+      "fmt",
+      "--all",
+      "--",
+      "--check"
+    ],
+    "exit_code": 0,
+    "seconds": 2.31,
+    "summaries": []
+  },
+  {
+    "check": "clippy-app-default",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "bello-agent-app",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 15.94,
+    "summaries": []
+  },
+  {
+    "check": "clippy-app-synthetic",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "bello-agent-app",
+      "--all-targets",
+      "--features",
+      "synthetic-authority",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 7.69,
+    "summaries": []
+  },
+  {
+    "check": "clippy-app-native",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "bello-agent-app",
+      "--all-targets",
+      "--features",
+      "native-authority",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 15.21,
+    "summaries": []
+  },
+  {
+    "check": "clippy-app-both",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "-p",
+      "bello-agent-app",
+      "--all-targets",
+      "--features",
+      "native-authority,synthetic-authority",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 37.44,
+    "summaries": []
+  },
+  {
+    "check": "clippy-workspace",
+    "command": [
+      "cargo",
+      "clippy",
+      "--locked",
+      "--workspace",
+      "--all-targets",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "exit_code": 0,
+    "seconds": 9.52,
+    "summaries": []
+  }
+]

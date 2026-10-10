@@ -16,6 +16,7 @@ fn observation(count: u64, id: &str) -> AcceptedReadObservation {
         history: OutputProjection::Known(summary(count, id)),
         busy: false,
         terminal: None,
+        completed_task_sequence: 0,
         failure_sequence: 0,
     }
 }

@@ -164,6 +164,9 @@ impl ReadCoordinator {
     ) -> Result<bool> {
         self.apply(record, ReadEvent::Baseline(summary), false, false)
     }
+    pub(crate) fn dock_badge(&self, records: &[ChatRecord]) -> Option<String> {
+        crate::notifications::dock_badge(records.iter().map(|r| (r, self.presentation(r))))
+    }
     fn presentation(&self, record: &ChatRecord) -> Option<ChatReadState> {
         let entry = self.entry(record)?;
         let mut state = entry.state.clone();

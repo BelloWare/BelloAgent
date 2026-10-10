@@ -28,6 +28,7 @@ fn observation(
             source_revision: sequence + 1,
             history: OutputProjection::Known(summary(count)),
         }),
+        completed_task_sequence: 0,
         failure_sequence: failure,
     }
 }

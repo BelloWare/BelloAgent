@@ -28,6 +28,7 @@ mod mcp_inspector_view;
 mod native_menu;
 #[cfg(feature = "native-lifecycle-smoke")]
 mod native_smoke;
+mod notifications;
 mod project_host;
 mod project_manager_controller;
 mod project_manager_view;
@@ -256,6 +257,9 @@ impl AgentView {
             draft,
             pending,
         } = launch;
+        if !cx.has_global::<notifications::Notifications>() {
+            cx.set_global(notifications::Notifications::new(None));
+        }
         let palette = current_palette(window);
         let mut state = workspace.lock().expect("workspace lock").snapshot();
         state
@@ -1177,7 +1181,7 @@ impl AgentView {
             cx.stop_propagation();
             cx.notify();
         } else if command && event.keystroke.key == "w" {
-            if self.show_files {
+            if self.show_files && !cfg!(target_os = "macos") {
                 self.close_selected_tab(window, cx);
             } else if self.request_close(window, cx) {
                 window.remove_window();
@@ -3285,6 +3289,8 @@ impl Render for AgentView {
         self.resume_sidebar_reveal(cx);
         self.refresh_sidebar_search(cx);
         self.refresh_sidebar_run_states(cx);
+        let badge = self.read_states.lock().unwrap().dock_badge(&self.records);
+        cx.global_mut::<notifications::Notifications>().badge(badge);
         let palette = current_palette(window);
         if self.palette != palette {
             self.palette = palette;
@@ -4014,6 +4020,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             bello_workbench_ui::init(cx);
+            cx.set_global(notifications::Notifications::new(Some(
+                default_session()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("notifications.json"),
+            )));
             #[cfg(target_os = "macos")]
             application_menus::install(cx);
             cx.set_global(connection_settings_controller::LaunchLegacyConfiguration(
