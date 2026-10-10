@@ -47,7 +47,7 @@ jobs:
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Core and integration tests
-        run: cargo test --locked --workspace
+        run: scripts/annotate-test-failures.sh cargo test --locked --workspace
       - name: Verify pinned sidebar SQLite and synthetic privacy fixtures
         # Owned temporary fixtures only. Production cache readiness stays closed.
         # The macOS run exercises native ACL/VFS code, not TCC or GUI acceptance.

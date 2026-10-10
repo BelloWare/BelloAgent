@@ -47,7 +47,7 @@ jobs:
         # No GPUI application launch, permissions, keychain, capture or updater actions.
         run: |
           set -o pipefail
-          cargo test --locked -p bello-agent-core 2>&1 | tee "$RUNNER_TEMP/bello-agent-core-native.log"
+          scripts/annotate-test-failures.sh cargo test --locked -p bello-agent-core 2>&1 | tee "$RUNNER_TEMP/bello-agent-core-native.log"
       - name: Bound native Core diagnostic text
         if: always()
         run: |
