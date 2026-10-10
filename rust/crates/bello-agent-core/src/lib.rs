@@ -28,6 +28,7 @@ pub mod skills;
 pub mod source_admission;
 pub mod sse;
 mod stream_journal;
+pub mod syntax;
 #[cfg(feature = "synthetic-authority")]
 pub mod synthetic_project_runtime;
 pub mod tool_content;
