@@ -68,6 +68,14 @@ Parity defects found by this run (both reproducible from `harness/`):
    `localizedCaseInsensitiveCompare`; Trim and Remove Empty use Swift's
    whitespace set); the sort timing above predates that change.
 
+### Box JSON Tools (end-to-end, external measurement)
+
+Recorded in full in the BelloBox `rust` branch copy of this file (`box-e2e/`,
+`dd110fc`). Paste -> pretty-printed result shown, p50, shipped Swift Box 0.0.77
+vs Rust `d3fd43a`: 30 KB 2,264 vs 256 ms; 100 KB 24,571 vs 259 ms; 296 KB
+~88,900 ms (n=2, the result never draws) vs 260 ms. Both debounce input by
+220 ms; Swift draws its result as one SwiftUI `Text` on the main thread.
+
 ### Agent interaction and streaming (end-to-end, external measurement)
 
 Same Mac, same loopback gateway (`harness/benchgw.py`: one 96,000-character
@@ -152,8 +160,9 @@ as Swift's `followsBottom`, instead of inferring it from the last frame.
   read otherwise blocks on a password prompt on this Mac).
 - Agent interaction results are single sessions per app (n=40 per latency
   series, n=1 for Find and each streaming run); Swift ran as an XCTest-hosted
-  Release build, not the shipped bundle. Not yet measured: Box tool-window and
-  image/GIF end-to-end workflows.
+  Release build, not the shipped bundle. Box end-to-end covers JSON Tools only (see
+  above); Text Tools, the image editor and Box typing latency are not yet
+  measured, and movie-to-GIF cannot be compared (Rust's movie reader is closed).
 
 ## Reproduce
 
