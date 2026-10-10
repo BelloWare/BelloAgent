@@ -32,11 +32,18 @@ jobs:
           rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy
           rustup override set 1.99.0
       - name: Prepare private synthetic fixture parent
-        # Create only a fresh task-owned directory; never change existing runner ACLs.
+        # Create only fresh task-owned directories; never change existing runner ACLs.
+        # Failures are repeated as an annotation, which is readable without log access.
         run: |
-          fixture="$(sudo python3 scripts/sidebar-ci-fixture.py create --uid "$(id -u)" --gid "$(id -g)" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT")"
+          annotate() { echo "::error title=$1::$(tail -c 900 "$2" | tr '\r\n' '  ')"; }
+          if ! fixture="$(sudo python3 scripts/sidebar-ci-fixture.py create --uid "$(id -u)" --gid "$(id -g)" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" 2> "$RUNNER_TEMP/fixture-create.err")"; then
+            annotate "Synthetic fixture parent creation" "$RUNNER_TEMP/fixture-create.err"; exit 1
+          fi
           echo "BELLO_SYNTHETIC_TEST_FIXTURE_PARENT=$fixture" >> "$GITHUB_ENV"
-          python3 scripts/sidebar-ci-fixture.py self-test --test-parent "$fixture"
+          if ! python3 scripts/sidebar-ci-fixture.py self-test --test-parent "$fixture" > "$RUNNER_TEMP/fixture-self-test.log" 2>&1; then
+            annotate "Synthetic fixture self-test" "$RUNNER_TEMP/fixture-self-test.log"; exit 1
+          fi
+          cat "$RUNNER_TEMP/fixture-self-test.log"
       - name: Formatting
         run: cargo fmt --all -- --check
       - name: Core and integration tests

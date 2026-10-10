@@ -41,9 +41,11 @@ fn private_root() -> tempfile::TempDir {
 }
 fn fixture(text: &str) -> Fixture {
     let source = tempfile::tempdir().unwrap();
+    // macOS reaches $TMPDIR through the /var -> /private/var symlink, and observed
+    // sources refuse aliased ancestors; use the canonical root, as unloaded_tests does.
+    let root = source.path().canonicalize().unwrap();
     let cache = private_root();
-    let mut owner =
-        WorkspaceStore::open(source.path().join("catalog.json"), source.path()).unwrap();
+    let mut owner = WorkspaceStore::open(root.join("catalog.json"), &root).unwrap();
     let id = uuid::Uuid::new_v4().to_string();
     let path = owner.chat_path(&id).unwrap();
     let mut session = SessionStore::pending_with_id(&id).unwrap();

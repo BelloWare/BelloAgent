@@ -10,6 +10,10 @@ import stat
 import tempfile
 
 MARKER = '.bello-agent-ci-fixture.json'
+# GitHub's Ubuntu image runs `chmod -R 777 /opt` (runner-images
+# images/ubuntu/scripts/build/configure-system.sh), which the ancestor policy
+# below rightly rejects. Use a dedicated root-owned 0755 parent instead.
+CI_PARENT = pathlib.Path('/bello-agent-ci')
 ATTRIBUTES = ('system.posix_acl_access', 'system.posix_acl_default')
 
 
@@ -97,6 +101,19 @@ def create(parent, uid, gid, run_id, attempt):
         raise
     finally:
         os.close(parent_fd)
+
+
+def ensure_ci_parent(uid):
+    """Create the CI parent exclusively as root; an existing one must pass the same checks."""
+    if os.geteuid() != 0:
+        raise ValueError('CI fixture parent creation requires root')
+    try:
+        os.mkdir(CI_PARENT, 0o755)
+        os.chmod(CI_PARENT, 0o755)  # Only the directory this call just created.
+    except FileExistsError:
+        pass
+    os.close(open_directory(CI_PARENT, uid))
+    return CI_PARENT
 
 
 def cleanup(root, uid, gid, run_id, attempt):
@@ -231,11 +248,15 @@ def main():
     if None in (args.uid, args.gid, args.run_id, args.attempt):
         parser.error('explicit uid/gid/run/attempt required')
     if args.action == 'create':
-        print(create(pathlib.Path('/opt'), args.uid, args.gid, args.run_id, args.attempt))
+        print(create(ensure_ci_parent(args.uid), args.uid, args.gid, args.run_id, args.attempt))
     else:
-        if not args.root or pathlib.Path(args.root).parent != pathlib.Path('/opt'):
-            parser.error('cleanup root must be the created /opt fixture')
+        if not args.root or pathlib.Path(args.root).parent != CI_PARENT:
+            parser.error(f'cleanup root must be the created {CI_PARENT} fixture')
         cleanup(pathlib.Path(args.root), args.uid, args.gid, args.run_id, args.attempt)
+        try:
+            os.rmdir(CI_PARENT)  # Only when empty; another fixture keeps it.
+        except OSError:
+            pass
 
 
 if __name__ == '__main__':
