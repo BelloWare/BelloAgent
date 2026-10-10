@@ -187,3 +187,50 @@ fn revealing_a_folded_result_opens_its_turn_and_its_card(cx: &mut TestAppContext
         "the card opens"
     );
 }
+
+#[gpui::test]
+fn an_open_fold_stays_open_through_a_retry_of_its_turn(cx: &mut TestAppContext) {
+    let mut rows = finished_turns();
+    rows.truncate(rows.len() - 2);
+    let (_directory, mut visual, child, mut input) = host_rows(rows, RunState::Paused, cx);
+    let control = bounds(&mut visual, FOLD).unwrap();
+    visual.simulate_click(control.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(cx.read(|cx| child.read(cx).fold_lines())[0].1);
+    // While the turn runs again it has no fold; once it ends, the reader's
+    // choice is still there.
+    for state in [RunState::Running, RunState::Paused] {
+        let mut session = (*input.session).clone();
+        session.state = state;
+        input.session = Arc::new(session);
+        child.update(cx, |view, cx| view.update_inputs(input.clone(), cx));
+        cx.run_until_parked();
+    }
+    assert!(cx.read(|cx| child.read(cx).fold_lines())[0].1);
+}
+
+#[gpui::test]
+fn an_open_standalone_result_stays_open_when_its_call_comes_onto_the_page(cx: &mut TestAppContext) {
+    crate::transcript_view::loose_turns_for_test();
+    let mut rows = with_calls(message("caller", "assistant", ""), &[("c0", "bash")]);
+    rows.push(message("after", "assistant", "Done."));
+    let (_directory, _window, root) = fixture(cx, messages(1), 0);
+    let mut changed = input(&root, cx);
+    let mut session = (*changed.session).clone();
+    session.messages = rows;
+    changed.session = Arc::new(session);
+    // The page starts at the result: its call is off the page.
+    changed.visible_messages = 2;
+    let (mut visual, child) = host(&root, changed.clone(), cx);
+    let result = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    let line = bounds(&mut visual, &format!("{result}-disclosure")).unwrap();
+    visual.simulate_click(line.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert!(bounds(&mut visual, &format!("{result}-card")).is_some());
+    changed.visible_messages = usize::MAX;
+    child.update(cx, |view, cx| view.update_inputs(changed.clone(), cx));
+    cx.run_until_parked();
+    let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    assert!(selector.contains("Tool"), "the call's card: {selector}");
+    assert!(bounds(&mut visual, &format!("{selector}-card")).is_some());
+}

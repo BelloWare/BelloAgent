@@ -230,8 +230,12 @@ pub(crate) fn parts(tool: &ToolFacts) -> Parts {
             }
         }
         "bash" => {
-            let raw = raw_input(tool.arguments);
-            let command = first_line(member(tool.arguments, "command").unwrap_or(&raw), 96);
+            // The whole document is serialized only when it has no command:
+            // a heredoc's body is never copied to draw its first line.
+            let command = match member(tool.arguments, "command") {
+                Some(command) => first_line(command, 96),
+                None => first_line(&raw_input(tool.arguments), 96),
+            };
             let object = if command.is_empty() {
                 "command".into()
             } else {

@@ -1654,13 +1654,53 @@ impl TranscriptView {
             );
             self.tool_editors.borrow_mut().entries.clear();
         }
+        // A standalone result the reader opened stays open when paging
+        // brings its call onto the page and the result joins the call's card.
+        let open_results: HashSet<String> = self
+            .presentation
+            .all_rows()
+            .filter(|row| {
+                matches!(row.projected, Some(ProjectedRow::Result(_)))
+                    && self.opened.contains(&row.key)
+            })
+            .filter_map(|row| row.message_index)
+            .map(|index| self.presentation.input.session.messages[index].id.clone())
+            .collect();
         self.presentation = Rc::new(Presentation::with_disclosure(
             input,
             &self.opened,
             &self.expanded_reads,
         ));
+        if !open_results.is_empty() {
+            let session = self.presentation.input.session.clone();
+            let joined: Vec<RowKey> = self
+                .presentation
+                .all_rows()
+                .filter(|row| {
+                    matches!(row.projected, Some(ProjectedRow::Call { result: Some(result), .. })
+                        if open_results.contains(&session.messages[result].id))
+                })
+                .map(|row| row.key.clone())
+                .collect();
+            let mut changed = false;
+            for key in joined {
+                changed |= self.opened.insert(key);
+            }
+            if changed {
+                self.presentation = Rc::new(Presentation::with_disclosure(
+                    self.presentation.input.clone(),
+                    &self.opened,
+                    &self.expanded_reads,
+                ));
+            }
+        }
         let keys: HashSet<_> = self.presentation.all_rows().map(|row| &row.key).collect();
-        self.opened.retain(|key| keys.contains(key));
+        // A fold's choice lasts as long as its question: a retry runs the turn
+        // again and its control comes back with the reader's choice.
+        self.opened.retain(|key| match key {
+            RowKey::Fold(question) => keys.contains(question.as_ref()),
+            key => keys.contains(key),
+        });
         let read_keys: HashSet<_> = self
             .presentation
             .all_rows()
