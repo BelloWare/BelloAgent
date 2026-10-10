@@ -330,6 +330,7 @@ pub struct CatalogRequest {
     remote: Option<(CatalogUrl, Option<Credential>)>,
     binding: Option<CatalogBinding>,
     publication: Option<CatalogPublication>,
+    join: bool,
 }
 
 /// Authority-local metadata only. Fingerprints include the credential only for
@@ -345,8 +346,19 @@ struct CachedCatalog {
     generation: uuid::Uuid,
     loading: bool,
     fetched: Option<std::time::Instant>,
-    failed: bool,
+    error: Option<CatalogError>,
     models: Arc<Vec<ModelDescriptor>>,
+}
+/// What a source's shared entry can answer without a request: a list
+/// fetched within five minutes, or a failure within its thirty-second retry
+/// beside the last good list.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SharedCatalog {
+    Fresh(Vec<ModelDescriptor>),
+    Failed {
+        models: Vec<ModelDescriptor>,
+        error: CatalogError,
+    },
 }
 struct CatalogPublication {
     cache: Arc<CatalogCache>,
@@ -397,7 +409,7 @@ impl CatalogBinding {
             generation,
             loading: false,
             fetched: None,
-            failed: false,
+            error: None,
             models: Arc::new(vec![]),
         });
         entry.generation = generation;
@@ -424,19 +436,34 @@ impl CatalogBinding {
         !entry.loading
             && entry.fetched.is_none_or(|fetched| {
                 fetched.elapsed()
-                    >= if entry.failed {
+                    >= if entry.error.is_some() {
                         CATALOG_FAILURE_RETRY
                     } else {
                         CATALOG_TTL
                     }
             })
     }
-    fn fresh_models(&self) -> Option<Vec<ModelDescriptor>> {
+    fn shared(&self) -> Option<SharedCatalog> {
         let identity = self.identity?;
         let entries = self.cache.0.lock().ok()?;
         let entry = entries.get(&identity)?;
-        (!entry.failed && entry.fetched?.elapsed() < CATALOG_TTL)
-            .then(|| entry.models.as_ref().clone())
+        let age = entry.fetched?.elapsed();
+        match &entry.error {
+            None if age < CATALOG_TTL => Some(SharedCatalog::Fresh(entry.models.as_ref().clone())),
+            Some(error) if age < CATALOG_FAILURE_RETRY => Some(SharedCatalog::Failed {
+                models: entry.models.as_ref().clone(),
+                error: error.clone(),
+            }),
+            _ => None,
+        }
+    }
+    fn loading(&self) -> bool {
+        self.identity.is_some_and(|identity| {
+            self.cache
+                .0
+                .lock()
+                .is_ok_and(|entries| entries.get(&identity).is_some_and(|entry| entry.loading))
+        })
     }
     pub(crate) fn same_source(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.cache, &other.cache) && self.identity == other.identity
@@ -475,11 +502,11 @@ impl CatalogPublication {
                 Some(Ok(models)) => {
                     entry.models = Arc::new(models.clone());
                     entry.fetched = Some(std::time::Instant::now());
-                    entry.failed = false;
+                    entry.error = None;
                 }
-                Some(Err(_)) => {
+                Some(Err(error)) => {
                     entry.fetched = Some(std::time::Instant::now());
-                    entry.failed = true;
+                    entry.error = Some(error.clone());
                 }
                 None => {}
             }
@@ -498,6 +525,7 @@ impl CatalogRequest {
             remote: None,
             binding: None,
             publication: None,
+            join: false,
         }
     }
     pub(crate) fn fixture(
@@ -519,6 +547,7 @@ impl CatalogRequest {
             remote: Some((url, key)),
             binding: None,
             publication: None,
+            join: false,
         })
     }
     pub(crate) fn native(
@@ -532,13 +561,20 @@ impl CatalogRequest {
             remote: Some((url, key)),
             binding: Some(binding),
             publication: None,
+            join: false,
         }
     }
-    /// The shared list for this request's source when it is fresh (listed
-    /// successfully within five minutes), so an unforced Settings listing
-    /// reuses what a chat listed, as Swift's shared catalog entry does.
-    pub fn fresh_models(&self) -> Option<Vec<ModelDescriptor>> {
-        self.binding.as_ref()?.fresh_models()
+    /// What this request's source already has, so an unforced listing (Settings
+    /// Choose model) shows the list or failure a chat or another form fetched,
+    /// as Swift's shared catalog entry does. Bundled requests have none.
+    pub fn shared(&self) -> Option<SharedCatalog> {
+        self.binding.as_ref()?.shared()
+    }
+    /// An unforced listing: if the source is already being fetched, wait for
+    /// that fetch and answer with its result instead of superseding it.
+    pub fn joining(mut self) -> Self {
+        self.join = true;
+        self
     }
     /// Claim the source's listing now, so a passive caller is joined rather
     /// than repeated before this request starts loading.
@@ -587,6 +623,23 @@ impl CatalogRequest {
         let Some((url, key)) = self.remote else {
             return bundled();
         };
+        if self.join
+            && self.publication.is_none()
+            && let Some(binding) = &self.binding
+        {
+            while binding.loading() {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(CatalogError::Cancelled),
+                    _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+                }
+            }
+            match binding.shared() {
+                Some(SharedCatalog::Fresh(models)) => return Ok(models),
+                Some(SharedCatalog::Failed { error, .. }) => return Err(error),
+                None => {}
+            }
+        }
         // The newest listing for a source owns its shared entry from here.
         let publication = self
             .publication

@@ -14,6 +14,8 @@ pub(crate) struct ConnectionLease {
     /// Metadata only. Resolved again when the chat lists, as Swift resolves
     /// `catalogProfile(for:)` from the current saved connections each time.
     catalog: Option<std::sync::Mutex<CatalogBinding>>,
+    /// The saved connections' revision the catalog source was resolved at.
+    resolved: std::sync::atomic::AtomicI64,
 }
 impl ConnectionLease {
     /// Swift's `modelInput(for:)` and `applyModelChoice`: the chat's model is
@@ -91,21 +93,31 @@ impl ConnectionLease {
             .ok()
             .map(|binding| binding.clone())
     }
-    pub(crate) fn catalog_stale(&self) -> bool {
-        self.check().is_ok() && self.binding().is_some_and(|binding| binding.needs_load())
+    fn needs_resync(&self, revision: Option<i64>) -> bool {
+        revision.is_some_and(|revision| revision != self.resolved.load(Ordering::Acquire))
+    }
+    /// Whether `catalog_request` could list now: the source's list is not
+    /// fresh, or the saved connections changed since this chat resolved its
+    /// source (a followed connection may have a new URL or key).
+    pub(crate) fn catalog_stale(&self, revision: Option<i64>) -> bool {
+        self.check().is_ok()
+            && self
+                .binding()
+                .is_some_and(|binding| binding.needs_load() || self.needs_resync(revision))
     }
     /// A passive listing for this chat's catalog source, as Swift's model
     /// pill lists when a chat shows: nothing for the bundled catalog, a fresh
-    /// or loading list, a fixture, or a revoked runtime. `resync` first
-    /// resolves the source again from the vault (a followed connection's URL
-    /// or key may have changed); otherwise an unchanged fresh source reads
+    /// or loading list, a fixture, or a revoked runtime. When `revision` (the
+    /// saved connections the caller last read) is newer than this chat's,
+    /// the source is first resolved again from the vault, as Swift resolves
+    /// `catalogProfile(for:)`; otherwise an unchanged fresh source reads
     /// nothing. The source's key is read only for a same-origin catalog.
     pub(crate) fn catalog_request(
         &self,
-        resync: bool,
+        revision: Option<i64>,
     ) -> Option<crate::model_catalog::CatalogRequest> {
         let binding = self.binding()?;
-        if self.check().is_err() || !resync && !binding.needs_load() {
+        if self.check().is_err() || !self.needs_resync(revision) && !binding.needs_load() {
             return None;
         }
         let current = self.authority.load_connections().ok()?;
@@ -114,6 +126,7 @@ impl ConnectionLease {
         if !current_binding.same_source(&binding) {
             *self.catalog.as_ref()?.lock().ok()? = current_binding.clone();
         }
+        self.resolved.store(current.revision(), Ordering::Release);
         if self.check().is_err() || !current_binding.needs_load() {
             return None;
         }
@@ -249,6 +262,7 @@ impl SavedConnectionRuntime {
             profile: profile.clone(),
             live: AtomicBool::new(true),
             catalog,
+            resolved: std::sync::atomic::AtomicI64::new(expected.revision()),
         });
         let configuration = Arc::new(Configuration::saved_connection(
             profile,

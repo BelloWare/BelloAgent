@@ -139,32 +139,34 @@ impl AgentView {
             (None, None) => true,
             _ => false,
         };
-        let resync = revision.is_some() && revision != listing.revision;
+        let revised = revision.is_some() && revision != listing.revision;
         if revision.is_some() {
             listing.revision = revision;
         }
-        if same_controller && same_configuration && !resync {
+        if same_controller && same_configuration && !revised {
             return;
         }
         listing.controller = Some(Arc::downgrade(&controller));
         listing.configuration = configuration.as_ref().map(Arc::downgrade);
-        // Resolving the source again reads the vault; otherwise a fresh or
-        // bundled source is settled without leaving the UI thread.
-        if configuration.is_none() || !resync && !controller.model_catalog_stale() {
+        // Each chat remembers the saved revision it resolved its source at, so
+        // a source changed while this chat was hidden is resolved again when
+        // it shows. Otherwise a fresh or bundled source is settled without
+        // leaving the UI thread.
+        if configuration.is_none() || !controller.model_catalog_stale(revision) {
             return;
         }
         let cancel = listing.cancel.clone();
         cx.spawn(async move |view, cx| {
-            // Preparing reads the vault for a same-origin key: off the UI thread.
+            // Resolving reads the vault (a same-origin key): off the UI thread.
             let request = cx
                 .background_executor()
-                .spawn(async move { controller.model_catalog_request(resync) })
+                .spawn(async move { controller.model_catalog_request(revision) })
                 .await;
-            if let Some(request) = request
-                && request.load(cancel).await.is_ok()
-            {
-                let _ = view.update(cx, |_, cx| cx.notify());
+            if let Some(request) = request {
+                let _ = request.load(cancel).await;
             }
+            // Resolving alone can rebind the source to a list already held.
+            let _ = view.update(cx, |_, cx| cx.notify());
         })
         .detach();
     }

@@ -40,7 +40,12 @@ fn stale_success(root: &Entity<AgentView>, old: &Pending, cx: &mut TestAppContex
             old.generation,
             &old.identity,
             old.binding,
-            Ok(bello_agent_core::model_catalog::bundled().unwrap()),
+            Listing::Listed {
+                bundled: true,
+                inherited: false,
+                retained: None,
+                result: Ok(bello_agent_core::model_catalog::bundled().unwrap()),
+            },
             cx,
         );
     });
