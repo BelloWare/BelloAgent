@@ -30,7 +30,7 @@ pub(super) struct Shaped {
 
 struct Entry {
     text: SharedString,
-    run: TextRun,
+    runs: Vec<TextRun>,
     font_size: Pixels,
     line_clamp: Option<usize>,
     shaped: Rc<Shaped>,
@@ -58,7 +58,7 @@ impl ShapeCache {
         owner: &SharedString,
         ordinal: usize,
         text: &SharedString,
-        run: &TextRun,
+        runs: &[TextRun],
         font_size: Pixels,
         line_height: Pixels,
         line_clamp: Option<usize>,
@@ -73,7 +73,7 @@ impl ShapeCache {
         );
         if let Some(entry) = self.entries.get_mut(&slot)
             && entry.text == *text
-            && entry.run == *run
+            && entry.runs == runs
             && entry.font_size == font_size
             && entry.line_clamp == line_clamp
             && entry.shaped.line_height == line_height
@@ -85,13 +85,7 @@ impl ShapeCache {
         self.shaped.push(ordinal);
         let lines = window
             .text_system()
-            .shape_text(
-                text.clone(),
-                font_size,
-                std::slice::from_ref(run),
-                wrap_width,
-                line_clamp,
-            )
+            .shape_text(text.clone(), font_size, runs, wrap_width, line_clamp)
             .unwrap_or_default();
         let mut size = Size::<Pixels>::default();
         for line in &lines {
@@ -124,7 +118,7 @@ impl ShapeCache {
             slot,
             Entry {
                 text: text.clone(),
-                run: run.clone(),
+                runs: runs.to_vec(),
                 font_size,
                 line_clamp,
                 shaped: shaped.clone(),
@@ -172,8 +166,93 @@ pub(super) fn message_text(
             owner: owner.clone(),
             ordinal,
             text: SharedString::from(text[range].to_owned()),
+            styled: None,
         })
         .collect()
+}
+
+/// Text in explicit runs at its own size (rendered Markdown), set in lines as
+/// TextKit sets Swift's reply text: each line `line_height` tall with
+/// `line_spacing` below it, and its glyphs standing on TextKit's baseline,
+/// the line's height less its rounded descent, rather than centred as GPUI
+/// centres them. GPUI shapes one text at one size.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Styled {
+    pub runs: Vec<TextRun>,
+    pub font_size: Pixels,
+    pub line_height: Pixels,
+    pub line_spacing: Pixels,
+    /// The text's last lines: no spacing below the last of them, which
+    /// TextKit leaves after every line but a paragraph's last.
+    pub last: bool,
+}
+
+impl Styled {
+    fn pitch(&self) -> Pixels {
+        self.line_height + self.line_spacing
+    }
+}
+
+/// One styled text element; `owner` must be unique within the transcript.
+pub(super) fn styled_text(
+    cache: &Rc<RefCell<ShapeCache>>,
+    owner: SharedString,
+    text: SharedString,
+    styled: Styled,
+) -> ShapedText {
+    ShapedText {
+        cache: cache.clone(),
+        owner,
+        ordinal: 0,
+        text,
+        styled: Some(Rc::new(styled)),
+    }
+}
+
+/// Long text as stacked runs of lines like `message_text` (a code block that
+/// grows re-shapes only its last run). `styled.runs` cover all of `text`;
+/// each run of lines takes its share, and only the last ends without spacing.
+pub(super) fn styled_lines(
+    cache: &Rc<RefCell<ShapeCache>>,
+    owner: SharedString,
+    text: &str,
+    styled: Styled,
+) -> Vec<ShapedText> {
+    let ranges = run_ranges(text);
+    let count = ranges.len();
+    ranges
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, range)| ShapedText {
+            cache: cache.clone(),
+            owner: owner.clone(),
+            ordinal,
+            styled: Some(Rc::new(Styled {
+                runs: runs_within(&styled.runs, range.clone()),
+                last: ordinal + 1 == count && styled.last,
+                ..styled.clone()
+            })),
+            text: SharedString::from(text[range].to_owned()),
+        })
+        .collect()
+}
+
+/// The parts of `runs` (laid end to end from byte 0) that fall in `range`.
+fn runs_within(runs: &[TextRun], range: std::ops::Range<usize>) -> Vec<TextRun> {
+    let mut within = Vec::new();
+    let mut start = 0;
+    for run in runs {
+        let end = start + run.len;
+        let overlap = end.min(range.end).saturating_sub(start.max(range.start));
+        if overlap > 0 {
+            within.push(TextRun {
+                len: overlap,
+                ..run.clone()
+            });
+        }
+        start = end;
+    }
+    within
 }
 
 pub(super) struct ShapedText {
@@ -181,6 +260,7 @@ pub(super) struct ShapedText {
     owner: SharedString,
     ordinal: usize,
     text: SharedString,
+    styled: Option<Rc<Styled>>,
 }
 
 impl IntoElement for ShapedText {
@@ -211,11 +291,27 @@ impl Element for ShapedText {
         _cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
         let text_style = window.text_style();
-        let font_size = text_style.font_size.to_pixels(window.rem_size());
-        let line_height = text_style
-            .line_height
-            .to_pixels(font_size.into(), window.rem_size());
-        let run = text_style.to_run(self.text.len());
+        // Lines are shaped at their pitch; the spacing below the text's last
+        // line is no part of its size.
+        let trim = self
+            .styled
+            .as_ref()
+            .filter(|styled| styled.last)
+            .map_or(Pixels::ZERO, |styled| styled.line_spacing);
+        let (runs, font_size, line_height) = match &self.styled {
+            Some(styled) => (styled.runs.clone(), styled.font_size, styled.pitch()),
+            None => {
+                let font_size = text_style.font_size.to_pixels(window.rem_size());
+                let line_height = text_style
+                    .line_height
+                    .to_pixels(font_size.into(), window.rem_size());
+                (
+                    vec![text_style.to_run(self.text.len())],
+                    font_size,
+                    line_height,
+                )
+            }
+        };
         let wraps = text_style.white_space == WhiteSpace::Normal;
         let line_clamp = text_style.line_clamp;
         let state = Rc::new(RefCell::new(None::<Rc<Shaped>>));
@@ -224,6 +320,10 @@ impl Element for ShapedText {
         let owner = self.owner.clone();
         let ordinal = self.ordinal;
         let text = self.text.clone();
+        let trimmed = move |size: Size<Pixels>| Size {
+            width: size.width,
+            height: (size.height - trim).max(Pixels::ZERO),
+        };
         let layout_id = window.request_measured_layout(
             Style::default(),
             move |known_dimensions, available_space, window, _cx| {
@@ -240,13 +340,13 @@ impl Element for ShapedText {
                 if let Some(shaped) = measured.borrow().as_ref()
                     && (wrap_width.is_none() || wrap_width == shaped.wrap_width)
                 {
-                    return shaped.size;
+                    return trimmed(shaped.size);
                 }
                 let shaped = cache.borrow_mut().shaped(
                     &owner,
                     ordinal,
                     &text,
-                    &run,
+                    &runs,
                     font_size,
                     line_height,
                     line_clamp,
@@ -255,7 +355,7 @@ impl Element for ShapedText {
                 );
                 let size = shaped.size;
                 *measured.borrow_mut() = Some(shaped);
-                size
+                trimmed(size)
             },
         );
         (layout_id, state)
@@ -290,7 +390,15 @@ impl Element for ShapedText {
         for line in &shaped.lines {
             let _ =
                 line.paint_background(origin, shaped.line_height, align, Some(bounds), window, cx);
-            let _ = line.paint(origin, shaped.line_height, align, Some(bounds), window, cx);
+            // GPUI centres a line's glyphs in its pitch; TextKit stands them
+            // on the line's height less its rounded descent, the spacing below.
+            let lift = self.styled.as_ref().map_or(Pixels::ZERO, |styled| {
+                let layout = &line.unwrapped_layout;
+                (shaped.line_height - layout.ascent - layout.descent) / 2. + layout.ascent
+                    - (styled.line_height - layout.descent.round())
+            });
+            let glyphs = gpui::point(origin.x, origin.y - lift);
+            let _ = line.paint(glyphs, shaped.line_height, align, Some(bounds), window, cx);
             origin.y += line.size(shaped.line_height).height;
         }
     }
@@ -299,7 +407,9 @@ impl Element for ShapedText {
 #[cfg(test)]
 mod tests {
     use super::{RUN_LINES, ShapeCache, message_text, run_ranges};
-    use gpui::{Context, TestAppContext, VisualTestContext, Window, div, prelude::*, px, size};
+    use gpui::{
+        Context, TestAppContext, TextRun, VisualTestContext, Window, div, prelude::*, px, size,
+    };
     use std::{cell::RefCell, rc::Rc};
 
     struct Host {
@@ -388,6 +498,75 @@ mod tests {
             visual.debug_bounds("runs").unwrap().size,
             visual.debug_bounds("whole").unwrap().size
         );
+    }
+
+    /// Lines set as TextKit sets a reply's: 18 pt lines with 5.075 below
+    /// each but the last, across the cached runs of a long fence too.
+    #[gpui::test]
+    fn styled_lines_keep_textkit_spacing_across_runs(cx: &mut TestAppContext) {
+        struct Lines {
+            cache: Rc<RefCell<ShapeCache>>,
+            text: String,
+        }
+        impl Render for Lines {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let styled = super::Styled {
+                    runs: vec![TextRun {
+                        len: self.text.len(),
+                        font: gpui::font("Helvetica"),
+                        color: gpui::black(),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }],
+                    font_size: px(14.5),
+                    line_height: px(18.),
+                    line_spacing: px(5.075),
+                    last: true,
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .child(div().w(px(600.)).debug_selector(|| "runs".into()).children(
+                        super::styled_lines(
+                            &self.cache,
+                            "fence".into(),
+                            &self.text,
+                            styled.clone(),
+                        ),
+                    ))
+                    .child(div().w(px(600.)).debug_selector(|| "one".into()).child(
+                        super::styled_text(
+                            &self.cache,
+                            "paragraph".into(),
+                            "one line".into(),
+                            super::Styled {
+                                runs: vec![TextRun {
+                                    len: "one line".len(),
+                                    ..styled.runs[0].clone()
+                                }],
+                                ..styled
+                            },
+                        ),
+                    ))
+            }
+        }
+        let cache = Rc::new(RefCell::new(ShapeCache::default()));
+        let text = (0..30)
+            .map(|line| format!("line {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let window = cx.add_window(|_, _| Lines { cache, text });
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_resize(size(px(800.), px(2000.)));
+        cx.run_until_parked();
+        // 30 lines in two runs: 30 × 23.075 − 5.075, on whole points.
+        assert_eq!(
+            visual.debug_bounds("runs").unwrap().size.height,
+            px((30. * 23.075_f32 - 5.075).round())
+        );
+        assert_eq!(visual.debug_bounds("one").unwrap().size.height, px(18.));
     }
 
     fn lines(text: &str) -> Vec<&str> {

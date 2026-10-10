@@ -137,6 +137,31 @@ to 10% and the UI thread's waits for the controller lock from 7.2% to 0.9%;
 CPU stayed at 14.5% p50 (`after-barrier-sync-cpu.json`), since sync waits are
 not CPU time.
 
+Then the transcript drew replies as Markdown, as Swift does (headings in New
+York, code in SF Mono on a full-width panel with Swift's colours, TextKit's
+line spacing; `rust-markdown-*.jpg`). Drawn whole, the same stream cost 54.6 /
+101.7 / 102.9% CPU (p50 / p90 / max, `streaming-markdown/whole-reply-cpu.json`),
+climbing with the reply, and a mid-stream `sample` put the main thread in
+building, laying out and painting every block of the reply each frame (taffy
+layout alone 31%; parsing 1%, colouring code 1%): GPUI lays out a list row
+whole. The reply now draws only the blocks within a viewport's height of the
+screen; the rest stand aside as one spacer of the height they were last drawn
+at (kept per block while it and every block before it are unchanged, at the
+same width). Visibility is predicted from the scroll top the list is about to
+lay out and the rows' last heights; after layout, a spacer found on screen
+makes the next frame draw that reply whole, so no gap is ever left showing.
+
+| Rust build | CPU p50 / p90 / max, one core | Peak footprint |
+|---|---|---|
+| plain text (shaped-text runs) | 14.7 / 17.6 / 19.1% | 119 MB |
+| Markdown, reply drawn whole | 54.6 / 101.7 / 102.9% | 185 MB |
+| Markdown, blocks near the viewport | 17.9 / 18.9 / 19.6% (15–20% each second) | 142 MB |
+
+Swift drew the same reply at 37.9 / 41.1% and peaked at 132 MB (app + helper).
+`harness/follow-check.sh` on the same build: the chat opens at question 399,
+the reply is followed while it streams, a reader 3000 pt up the reply sees it
+drawn (`rust-markdown-04-scrolled-up.jpg`) and following resumes at the end.
+
 Behavior observed while measuring (screens in `interaction/screens/`): the Rust
 transcript shows Markdown as raw text; it opens a chat at the top of its loaded
 100-message window and does not follow a streaming reply (it is created with

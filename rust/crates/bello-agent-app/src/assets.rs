@@ -62,6 +62,11 @@ impl AssetSource for Assets {
             "play" => r#"<path d="m8 4 12 8-12 8z" fill="black" stroke="none"/>"#,
             "stop" => r#"<rect x="6" y="6" width="12" height="12" rx="1" fill="black"/>"#,
             "close" => r#"<path d="m6 6 12 12M6 18 18 6"/>"#,
+            // SF Symbols doc.on.doc and checkmark at the copy button's medium weight.
+            "doc.on.doc" => {
+                r#"<rect x="8" y="8" width="12" height="13" rx="2.5" stroke-width="2"/><path d="M16 8V5.5A2.5 2.5 0 0 0 13.5 3h-7A2.5 2.5 0 0 0 4 5.5v8A2.5 2.5 0 0 0 6.5 16H8" stroke-width="2"/>"#
+            }
+            "checkmark" => r#"<path d="m5 12.5 4.5 4.5L19 7" stroke-width="2.4"/>"#,
             "terminal" => {
                 r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m6 8 4 4-4 4M13 16h5"/>"#
             }

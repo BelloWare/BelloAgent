@@ -294,7 +294,8 @@ mod tests {
                     message(
                         "assistant",
                         "assistant",
-                        "**Copy source**\nAssistant reply with é and 日本語.\nTrailing spaces  ",
+                        // Markdown hard breaks: three lines in a reply.
+                        "**Copy source**  \nAssistant reply with é and 日本語.  \nTrailing spaces  ",
                     ),
                 ];
                 Ok(())

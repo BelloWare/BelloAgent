@@ -951,7 +951,8 @@ fn reorder_and_anchor_deletion_use_stable_identity_then_surviving_neighbor(
 fn deleting_last_anchor_falls_back_to_previous_surviving_row(cx: &mut TestAppContext) {
     let mut rows = messages(100);
     rows[98].text = "previous tall row\n".repeat(100);
-    rows[99].text = "last tall row\n".repeat(100);
+    // A reply joins single newlines (Markdown); hard breaks keep 100 lines.
+    rows[99].text = "last tall row  \n".repeat(100);
     let (_directory, _window, root) = fixture(cx, rows, 0);
     let child = transcript(&root, cx);
     jump_to(&child, 99, 9., cx);
@@ -1417,7 +1418,7 @@ fn fresh_session_arc_same_ids_reasoning_state_and_order_invalidate(cx: &mut Test
         .size
         .height;
     snapshot_change(&root, cx, |session| {
-        session.messages[1].text = "Second\nnew line\nthird line".into()
+        session.messages[1].text = "Second  \nnew line  \nthird line".into()
     });
     assert!(renders(&child, cx) > count);
     assert!(
@@ -2015,7 +2016,7 @@ fn estimated_target_normalizes_real_height_without_losing_residual(cx: &mut Test
     let mut rows: Vec<_> = (0..220)
         .map(|index| message(&format!("mixed-{index}"), "assistant", "one line"))
         .collect();
-    rows[20].text = "short\nrow".into();
+    rows[20].text = "short  \nrow".into();
     let (_directory, _window, root) = fixture_with_visible(cx, rows, 0, Some(usize::MAX));
     let (_visual, child) = host(&root, input(&root, cx), cx);
     let height = scroll(&child, cx).bounds_for_item(0).unwrap().size.height;
@@ -2032,7 +2033,9 @@ fn estimated_target_normalizes_real_height_without_losing_residual(cx: &mut Test
     let handle = scroll(&child, cx);
     let offset = handle.logical_scroll_top();
     assert!(offset.item_ix > 20);
-    let actual = height + px(21.);
+    // A reply's second line adds 23.075 (18 and 5.075 of spacing); the
+    // row lands on whole points.
+    let actual = height + px(23.);
     let travelled = height * (offset.item_ix - 1) as f32 + actual + offset.offset_in_item;
     assert_eq!(travelled, height * 20. + px(150.));
     assert!(offset.offset_in_item < handle.bounds_for_item(offset.item_ix).unwrap().size.height);
@@ -2047,7 +2050,8 @@ fn native_large_wheel_preserves_mixed_height_distance(cx: &mut TestAppContext) {
                 &format!("mixed-{index}"),
                 if index % 2 == 0 { "user" } else { "assistant" },
                 if index % 3 == 0 {
-                    "one\ntwo\nthree"
+                    // Hard breaks: three lines in a reply too (Markdown).
+                    "one  \ntwo  \nthree"
                 } else {
                     "one"
                 },
@@ -2066,9 +2070,12 @@ fn native_large_wheel_preserves_mixed_height_distance(cx: &mut TestAppContext) {
         });
         cx.run_until_parked();
         let offset = scroll(&child, cx).logical_scroll_top();
+        // A message the reader sent: 21 pt lines in an 18 pt taller bubble;
+        // a reply: 18 pt lines 23.075 apart (Markdown), on whole points.
         let prefix: f32 = (0..offset.item_ix)
-            .map(|index| {
-                77. + if index % 2 == 0 { 18. } else { 0. } + if index % 3 == 0 { 42. } else { 0. }
+            .map(|index| match (index % 2 == 0, index % 3 == 0) {
+                (true, three) => 95. + if three { 42. } else { 0. },
+                (false, three) => 74. + if three { 46. } else { 0. },
             })
             .sum();
         assert_eq!(px(prefix) + offset.offset_in_item, px(expected));
@@ -3035,3 +3042,161 @@ fn unread_geometry_repaints_cached_child_on_late_observation_and_surface_reveal(
 
 #[path = "transcript_find_ui_tests.rs"]
 mod find_ui;
+
+/// Swift reads only replies as Markdown; a message the reader sent shows the
+/// characters they typed (`TranscriptPlainTextView`), markup and all.
+#[gpui::test]
+fn only_replies_are_read_as_markdown(cx: &mut TestAppContext) {
+    let rows = vec![
+        message("sent", "user", "**not bold** `not code`\n# not a heading"),
+        message("reply", "assistant", "# Heading\n\n**bold** and `code`"),
+    ];
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let (_visual, child) = host(&root, input(&root, cx), cx);
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| child.read(cx).markdown_owners()),
+        ["transcript-row-reply"]
+    );
+}
+
+/// A fence's Copy puts its code on the clipboard and reads "Copied" for two
+/// seconds, or until another fence is copied (`TranscriptCopyButton`).
+#[gpui::test]
+fn copying_a_fence_reads_copied_for_two_seconds(cx: &mut TestAppContext) {
+    let rows = vec![message("reply", "assistant", "```swift\nlet a = 1\n```")];
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let (_visual, child) = host(&root, input(&root, cx), cx);
+    let copy = cx.read(|cx| child.read(cx).copy_handler(child.downgrade()));
+    cx.update(|cx| copy("first".into(), "let a = 1", cx));
+    assert_eq!(
+        cx.read(|cx| cx.read_from_clipboard().unwrap().text()),
+        Some("let a = 1".into())
+    );
+    assert_eq!(
+        cx.read(|cx| child.read(cx).copied_code()),
+        Some("first".into())
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(1500));
+    cx.update(|cx| copy("second".into(), "let b = 2", cx));
+    // The first press's reset leaves the second press's mark.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(600));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| child.read(cx).copied_code()),
+        Some("second".into())
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(1500));
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| child.read(cx).copied_code()), None);
+}
+
+/// GPUI lays out a list row whole. A long reply draws the blocks within a
+/// viewport of the screen and stands spacers of their drawn height in for
+/// the rest, so its row keeps its height and what is on screen is drawn.
+#[gpui::test]
+fn a_long_reply_draws_only_the_blocks_near_the_viewport(cx: &mut TestAppContext) {
+    use crate::transcript_view::MarkdownChild;
+    let reply = (0..300)
+        .map(|index| format!("Paragraph {index} of a long reply."))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let rows = vec![
+        message("question", "user", "Write a long reply"),
+        message("reply", "assistant", &reply),
+    ];
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let (_visual, child) = host(&root, input(&root, cx), cx);
+    let height = |cx: &TestAppContext| {
+        scroll(&child, cx)
+            .bounds_for_item(1)
+            .map(|bounds| bounds.size.height)
+    };
+    // Each jump lands, then a frame draws from where it landed.
+    let land = |offset: f32, cx: &mut TestAppContext| {
+        jump_to(&child, 1, offset, cx);
+        child.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+    };
+    land(0., cx);
+    let whole_height = height(cx).unwrap();
+    for offset in [0., 4000., 2500., 6500.] {
+        land(offset, cx);
+        let crate::transcript_view::ReplyLayout {
+            slots,
+            text_top,
+            children,
+            whole,
+        } = cx.read(|cx| child.read(cx).reply_layout("transcript-row-reply"));
+        assert!(!whole, "no spacer was on screen at {offset}");
+        let drawn: Vec<usize> = children
+            .iter()
+            .filter_map(|child| match child {
+                MarkdownChild::Block(index) => Some(*index),
+                MarkdownChild::Spacer => None,
+            })
+            .collect();
+        assert!(
+            drawn.len() < 120 && children.contains(&MarkdownChild::Spacer),
+            "at {offset}: {} of 300 blocks drawn",
+            drawn.len()
+        );
+        // Every block on screen is drawn.
+        let top = text_top.unwrap();
+        let screen = offset - top..offset - top + 620.;
+        for (index, slot) in slots.iter().enumerate() {
+            let (start, end) = slot.unwrap();
+            if end > screen.start && start < screen.end {
+                assert!(
+                    drawn.contains(&index),
+                    "block {index} on screen at {offset}"
+                );
+            }
+        }
+        assert_eq!(height(cx), Some(whole_height), "at {offset}");
+    }
+}
+
+/// A long reply streaming at the end of a followed chat draws only its end:
+/// each delta lays out what is near the viewport, not the whole reply.
+#[gpui::test]
+fn a_long_streaming_reply_draws_only_its_end(cx: &mut TestAppContext) {
+    use crate::transcript_view::MarkdownChild;
+    let paragraph = |index: usize| format!("Paragraph {index} of a long reply.\n\n");
+    let mut rows = messages(2);
+    rows[1].text = (0..300).map(paragraph).collect();
+    rows[1].state = "streaming".into();
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let running = |root: &Entity<AgentView>, text: &str, cx: &TestAppContext| {
+        let mut opened = input(root, cx);
+        let mut session = (*opened.session).clone();
+        session.state = RunState::Running;
+        session.messages[1].text = text.to_owned();
+        opened.session = Arc::new(session);
+        opened
+    };
+    let mut reply: String = (0..300).map(paragraph).collect();
+    let (mut visual, child) = host_as_opened(&root, running(&root, &reply, cx), cx);
+    for index in 300..306 {
+        reply.push_str(&paragraph(index));
+        let grown = running(&root, &reply, cx);
+        child.update(cx, |view, cx| view.update_inputs(grown, cx));
+        cx.run_until_parked();
+        assert_end_followed(&mut visual, &child, "message-1", cx);
+        let crate::transcript_view::ReplyLayout {
+            children, whole, ..
+        } = cx.read(|cx| child.read(cx).reply_layout("transcript-row-message-1"));
+        let drawn = children
+            .iter()
+            .filter(|child| matches!(child, MarkdownChild::Block(_)))
+            .count();
+        assert!(
+            !whole && drawn < 120,
+            "{drawn} of {} blocks drawn",
+            index + 1
+        );
+    }
+}

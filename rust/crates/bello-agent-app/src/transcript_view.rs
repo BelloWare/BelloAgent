@@ -6,6 +6,10 @@ use bello_agent_core::{Controller, RunState, Session};
 use bello_workbench_ui::{EditorAppearance, EditorView, TextDecoration, TextPresentation};
 #[path = "transcript_edit_presentation.rs"]
 mod edit_presentation;
+#[path = "transcript_markdown.rs"]
+mod markdown_view;
+#[cfg(test)]
+pub(crate) use markdown_view::Child as MarkdownChild;
 #[path = "transcript_read_presentation.rs"]
 mod read_presentation;
 #[path = "transcript_shaped_text.rs"]
@@ -380,6 +384,10 @@ struct ViewportState {
     presentation: Rc<Presentation>,
     buffer: Pixels,
     heights: HashMap<RowKey, Pixels>,
+    /// Each row's last drawn height, kept while its content changes (a
+    /// streaming reply): close enough to tell which of a long reply's blocks
+    /// are near the viewport before the row is measured again.
+    drawn_heights: HashMap<RowKey, Pixels>,
     pending_scroll: Option<ListOffset>,
     reveal: Option<RowKey>,
     painted_scroll: ListOffset,
@@ -400,6 +408,9 @@ struct ViewportState {
     /// The last laid-out frame had the end within the follow band. Anywhere
     /// else the transcript offers Swift's "Jump to the latest message" circle.
     end_shown: bool,
+    /// The frame being laid out: what a long reply needs to draw only the
+    /// blocks near the viewport.
+    frame: Frame,
     #[cfg(test)]
     target_preflights: Vec<usize>,
     #[cfg(test)]
@@ -408,6 +419,54 @@ struct ViewportState {
 
 /// Swift's `TranscriptPage.followThreshold` plus its rounding point.
 const FOLLOW_BAND: Pixels = px(25.);
+
+/// A frame as the list is about to lay it out.
+#[derive(Default)]
+struct Frame {
+    number: u64,
+    /// The scroll top the list lays out from (past the last row: the end).
+    top: Option<ListOffset>,
+    bounds: Bounds<Pixels>,
+}
+
+/// The part of row `index` the viewport shows this frame, in the row's own
+/// coordinates, from the scroll top the list lays out from and the rows'
+/// last heights; None where a height is unknown.
+fn row_visible(
+    viewport: &ViewportState,
+    presentation: &Presentation,
+    index: usize,
+) -> Option<std::ops::Range<f32>> {
+    let top = viewport.frame.top?;
+    let view = f32::from(viewport.frame.bounds.size.height);
+    let rows = &presentation.rows;
+    let height = |row: usize| {
+        let key = &rows[row].key;
+        let height = viewport
+            .heights
+            .get(key)
+            .or(viewport.drawn_heights.get(key));
+        height.map(|height| f32::from(*height))
+    };
+    let mut row_top = -f32::from(top.offset_in_item);
+    if top.item_ix >= rows.len() {
+        // Following: the last row ends at the viewport's bottom, above the
+        // list's 13 pt padding.
+        row_top = view - 13.;
+        for row in (index..rows.len()).rev() {
+            row_top -= height(row)?;
+        }
+    } else if index >= top.item_ix {
+        for row in top.item_ix..index {
+            row_top += height(row)?;
+        }
+    } else {
+        for row in index..top.item_ix {
+            row_top -= height(row)?;
+        }
+    }
+    Some(-row_top..view - row_top)
+}
 
 /// One past the last row: GPUI's top-aligned list clamps this to the real
 /// bottom while filling the viewport upward, so it shows the newest content.
@@ -432,6 +491,7 @@ impl ViewportState {
             list,
             buffer,
             heights: HashMap::new(),
+            drawn_heights: HashMap::new(),
             pending_scroll: None,
             reveal: None,
             #[cfg(test)]
@@ -441,6 +501,7 @@ impl ViewportState {
             painted_scroll: end,
             follows_end: true,
             end_shown: true,
+            frame: Frame::default(),
             reader_landing: false,
             opening: presentation.input.session.state != RunState::Running,
             presentation,
@@ -500,8 +561,11 @@ impl ViewportState {
             || old.input.palette != next.input.palette
         {
             self.heights.clear();
+            self.drawn_heights.clear();
             self.pending_scroll = None;
         } else if changed {
+            let keys: HashSet<&RowKey> = next.rows.iter().map(|row| &row.key).collect();
+            self.drawn_heights.retain(|key, _| keys.contains(key));
             #[cfg(test)]
             let previous_tool_heights = self
                 .heights
@@ -665,8 +729,22 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
             * line_height
     };
     let text = crate::composer_attachments::message_label(message);
-    let mut height =
-        12. + 6. + transcript_actions::ACTION_BAND_HEIGHT + gap + plain(&text, 14.5, 21.);
+    let body = if message.role != "assistant" {
+        plain(&text, 14.5, 21.)
+    } else if message.text.is_empty() {
+        // The waiting dots' line before a reply's first token.
+        if message.state == "streaming" {
+            WAITING_HEIGHT
+        } else {
+            0.
+        }
+    } else {
+        // A reply's lines as its Markdown sets them, without the spacing
+        // below the last.
+        let (line, spacing) = markdown_view::body_line(bello_agent_core::markdown::Style::PROSE);
+        plain(&message.text, 14.5, line + spacing) - spacing
+    };
+    let mut height = 12. + 6. + transcript_actions::ACTION_BAND_HEIGHT + gap + body;
     if user {
         height += 18.;
         if let Some(content) = &message.user_content {
@@ -683,7 +761,42 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
     if message.state == "interrupted" {
         height += 6. + 17.25;
     }
-    px(height)
+    // Layout lands on whole points.
+    px(height.round())
+}
+
+/// Swift's `TranscriptReplyRow.waitingHeight`: the line the waiting dots take.
+const WAITING_HEIGHT: f32 = 22.;
+
+/// Swift's `TranscriptWaitingDots`: before a reply's first token, three 7 pt
+/// dots 12 apart, lit one more every 0.4 s and then all dim again.
+fn waiting_dots(owner: &str, p: Palette) -> Div {
+    let muted = rgb(if p.dark { 0xa9a59b } else { 0x6e6a61 });
+    div()
+        .h(px(WAITING_HEIGHT))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(5.))
+        .children((0..3).map(|index| {
+            div()
+                .flex_none()
+                .size(px(7.))
+                .rounded_full()
+                .bg(muted)
+                .with_animation(
+                    SharedString::from(format!("{owner}-waiting-{index}")),
+                    Animation::new(std::time::Duration::from_millis(1600)).repeat(),
+                    move |dot, progress| {
+                        let phase = ((progress * 4.) as usize).min(3);
+                        dot.opacity(if phase != 0 && index < phase {
+                            1.
+                        } else {
+                            0.25
+                        })
+                    },
+                )
+        }))
 }
 
 // Preserve the original vertical-only Div scroller's native input semantics:
@@ -1753,6 +1866,46 @@ impl TranscriptView {
     pub(crate) fn materialized_texts(&self) -> Vec<(usize, String)> {
         self.materialized.borrow().texts.clone()
     }
+    /// The rows whose text was read as Markdown.
+    #[cfg(test)]
+    pub(crate) fn markdown_owners(&self) -> Vec<String> {
+        let mut owners: Vec<String> = self
+            .tool_editors
+            .borrow()
+            .markdown
+            .keys()
+            .map(ToString::to_string)
+            .collect();
+        owners.sort();
+        owners
+    }
+    /// What a fence's Copy does, as its button calls it (outside any update).
+    #[cfg(test)]
+    pub(crate) fn copy_handler(&self, transcript: WeakEntity<Self>) -> markdown_view::CopyCode {
+        copy_code(&self.tool_editors, &transcript)
+    }
+    /// A reply's slots, its column's top in its row, the children its last
+    /// frame drew, and whether it is to be drawn whole.
+    #[cfg(test)]
+    pub(crate) fn reply_layout(&self, owner: &str) -> ReplyLayout {
+        let editors = self.tool_editors.borrow();
+        let place = &editors.markdown[owner].place;
+        ReplyLayout {
+            slots: place.slots.clone(),
+            text_top: place.text_top,
+            children: place.children.clone(),
+            whole: place.whole,
+        }
+    }
+    /// The fence whose Copy reads "Copied".
+    #[cfg(test)]
+    pub(crate) fn copied_code(&self) -> Option<String> {
+        self.tool_editors
+            .borrow()
+            .copied_code
+            .as_ref()
+            .map(|(key, _)| key.to_string())
+    }
     #[cfg(test)]
     pub(crate) fn presentation_identity(&self) -> usize {
         Rc::as_ptr(&self.presentation) as usize
@@ -1838,6 +1991,8 @@ impl ViewportList {
                             parent: &self.parent,
                             child: &self.child,
                             tool_editors: &self.tool_editors,
+                            visible: None,
+                            frame: 0,
                         },
                         bounds.size.width,
                         window,
@@ -1883,6 +2038,13 @@ impl ViewportList {
         #[cfg(test)]
         let materialized = self.materialized.clone();
         list(state, move |index, window, cx| {
+            let (visible, frame) = {
+                let viewport = viewport.borrow();
+                (
+                    row_visible(&viewport, &presentation, index),
+                    viewport.frame.number,
+                )
+            };
             let mut row = materialize_row(
                 &presentation,
                 index,
@@ -1890,6 +2052,8 @@ impl ViewportList {
                     parent: &parent,
                     child: &child,
                     tool_editors: &tool_editors,
+                    visible,
+                    frame,
                 },
                 width,
                 window,
@@ -1905,10 +2069,10 @@ impl ViewportList {
                 window,
                 cx,
             );
-            viewport
-                .borrow_mut()
-                .heights
-                .insert(presentation.rows[index].key.clone(), measured.height);
+            let key = &presentation.rows[index].key;
+            let mut viewport = viewport.borrow_mut();
+            viewport.heights.insert(key.clone(), measured.height);
+            viewport.drawn_heights.insert(key.clone(), measured.height);
             row
         })
         .w_full()
@@ -1918,11 +2082,15 @@ impl ViewportList {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct RowRenderContext<'a> {
     parent: &'a WeakEntity<AgentView>,
     child: &'a WeakEntity<TranscriptView>,
     tool_editors: &'a Rc<RefCell<ToolEditors>>,
+    /// The row's part on screen this frame, when the list draws it: a long
+    /// reply then draws only the blocks near it. None draws every block.
+    visible: Option<std::ops::Range<f32>>,
+    frame: u64,
 }
 
 // Both List's normal renderer and the single-row clamp preflight use this
@@ -2043,6 +2211,8 @@ impl Element for ViewportList {
                     parent: &self.parent,
                     child: &self.child,
                     tool_editors: &self.tool_editors,
+                    visible: None,
+                    frame: 0,
                 },
                 bounds.size.width,
                 window,
@@ -2125,6 +2295,8 @@ impl Element for ViewportList {
                     parent: &self.parent,
                     child: &self.child,
                     tool_editors: &self.tool_editors,
+                    visible: None,
+                    frame: 0,
                 },
                 bounds.size.width,
                 window,
@@ -2185,12 +2357,25 @@ impl Element for ViewportList {
             .borrow_mut()
             .target_preflights
             .push(target_preflights);
+        {
+            let mut viewport = self.viewport.borrow_mut();
+            viewport.frame.number += 1;
+            viewport.frame.top = Some(viewport.list.logical_scroll_top());
+            viewport.frame.bounds = bounds;
+        }
         self.list = self.build_list(bounds.size.width);
         let prepaint = self
             .list
             .prepaint(id, inspector_id, bounds, state, window, cx);
         let mut viewport = self.viewport.borrow_mut();
         viewport.painted_scroll = viewport.list.logical_scroll_top();
+        if self.tool_editors.borrow_mut().settle_replies(
+            viewport.frame.number,
+            bounds,
+            &viewport.list,
+        ) {
+            window.request_animation_frame();
+        }
         // The reader's downward movement has landed: standing within the band
         // pins the page to the newest row, anywhere else leaves it unpinned.
         if viewport.reader_landing && viewport.pending_scroll.is_none() {
@@ -2630,6 +2815,8 @@ fn render_row(
         parent,
         child,
         tool_editors,
+        visible,
+        frame,
     } = context;
     let input = &presentation.input;
     let row = &presentation.rows[index];
@@ -2691,10 +2878,13 @@ fn render_row(
                     format!("transcript-row-{}", message.id)
                 };
                 let user = message.role == "user";
+                // A reply's Markdown caps its own prose at 640 pt; its code
+                // and tables run the row's width, as Swift's do.
+                let reply = message.role == "assistant";
                 let mut body = div()
                     .min_w_0()
                     .when(!user, |d| d.w_full())
-                    .max_w(px(640.))
+                    .when(!reply, |d| d.max_w(px(640.)))
                     .flex()
                     .flex_col()
                     .gap(px(6.))
@@ -2739,8 +2929,14 @@ fn render_row(
                         .text_size(px(14.5))
                         .line_height(px(21.))
                         .children({
-                            let text =
-                                crate::composer_attachments::message_label(message).into_owned();
+                            // A reply is its own text (the waiting dots stand in
+                            // for it before its first token); a message the reader
+                            // sent reads as its input label.
+                            let text = if reply {
+                                message.text.clone()
+                            } else {
+                                crate::composer_attachments::message_label(message).into_owned()
+                            };
                             if !ambiguous
                                 && text == message.text
                                 && let Some(find) = tool_editors.borrow().active_find()
@@ -2748,7 +2944,66 @@ fn render_row(
                                 && find.matches_binding(input.find_binding.as_ref())
                                 && find.scope_matches(message)
                             {
-                                vec![find.prose(&message.id, text, index).into_any_element()]
+                                vec![
+                                    div()
+                                        .max_w(px(markdown_view::PROSE_WIDTH))
+                                        .child(find.prose(&message.id, text, index))
+                                        .into_any_element(),
+                                ]
+                            } else if reply && text.is_empty() && message.state == "streaming" {
+                                vec![waiting_dots(&selector, p).into_any_element()]
+                            } else if reply {
+                                // A reply's Markdown as Swift draws it (a message
+                                // the reader sent reads literally, as there). The
+                                // parse and shaped lines are reused while unchanged,
+                                // so a streaming reply redoes its tail.
+                                let style = bello_agent_core::markdown::Style::PROSE;
+                                let owner = SharedString::from(selector.clone());
+                                let (blocks, (slots, text_top, whole), shapes, copied) = {
+                                    let mut editors = tool_editors.borrow_mut();
+                                    let blocks = editors.markdown(&owner, &text, style);
+                                    (
+                                        blocks,
+                                        editors.placement(&owner, width),
+                                        editors.shaped_text.clone(),
+                                        editors.copied_code.as_ref().map(|(key, _)| key.clone()),
+                                    )
+                                };
+                                // A viewport's height of blocks above and below
+                                // the screen is drawn; the rest stands aside.
+                                let visible = visible.clone().filter(|_| !whole).zip(text_top).map(
+                                    |(row, top)| {
+                                        let margin = row.end - row.start;
+                                        row.start - top - margin..row.end - top + margin
+                                    },
+                                );
+                                let (column, children) = markdown_view::render(
+                                    &blocks,
+                                    style,
+                                    &markdown_view::Context {
+                                        cache: &shapes,
+                                        owner: &selector,
+                                        palette: p,
+                                        window,
+                                        prose_width: Some(markdown_view::PROSE_WIDTH),
+                                        copied,
+                                        on_copy: copy_code(tool_editors, child),
+                                    },
+                                    &markdown_view::Placement {
+                                        slots: &slots,
+                                        visible,
+                                    },
+                                );
+                                let editors = tool_editors.clone();
+                                vec![
+                                    column
+                                        .on_children_prepainted(move |bounds, _, _| {
+                                            record_reply_slots(
+                                                &editors, &owner, &children, &bounds, frame, index,
+                                            )
+                                        })
+                                        .into_any_element(),
+                                ]
                             } else {
                                 // Shaped lines are reused across frames, so a
                                 // streaming reply re-shapes only its tail.
@@ -2841,8 +3096,136 @@ struct ToolEditors {
     entries: HashMap<(RowKey, &'static str), ToolEditor>,
     edit_previews: edit_presentation::EditCache,
     shaped_text: Rc<RefCell<shaped_text::ShapeCache>>,
+    markdown: HashMap<SharedString, MarkdownEntry>,
+    /// The fence whose Copy was pressed last and the press's number: it
+    /// reads "Copied" for two seconds, as Swift's button does.
+    copied_code: Option<(SharedString, u64)>,
+    copy_presses: u64,
     tick: u64,
 }
+/// Where a reply's drawn blocks landed (their slots, from the column's top)
+/// and where its spacers and column are, for the frame's settling.
+fn record_reply_slots(
+    editors: &Rc<RefCell<ToolEditors>>,
+    owner: &SharedString,
+    children: &[markdown_view::Child],
+    bounds: &[Bounds<Pixels>],
+    frame: u64,
+    row: usize,
+) {
+    let Some(column_top) = bounds.first().map(|first| first.top()) else {
+        return;
+    };
+    let mut editors = editors.borrow_mut();
+    let Some(entry) = editors.markdown.get_mut(owner) else {
+        return;
+    };
+    let mut spacers = Vec::new();
+    for (child, bounds) in children.iter().zip(bounds) {
+        let slot = (
+            f32::from(bounds.top() - column_top),
+            f32::from(bounds.bottom() - column_top),
+        );
+        match child {
+            markdown_view::Child::Block(index) => {
+                if let Some(known) = entry.place.slots.get_mut(*index) {
+                    *known = Some(slot);
+                }
+            }
+            markdown_view::Child::Spacer => spacers.push(slot),
+        }
+    }
+    entry.place.drawn = (frame > 0).then_some(Drawn {
+        frame,
+        row,
+        column_top,
+        spacers,
+    });
+    #[cfg(test)]
+    {
+        entry.place.children = children.to_vec();
+    }
+}
+
+/// A fence's Copy: the code to the clipboard, and the button reads "Copied"
+/// until two seconds pass or another fence is copied.
+fn copy_code(
+    editors: &Rc<RefCell<ToolEditors>>,
+    transcript: &WeakEntity<TranscriptView>,
+) -> markdown_view::CopyCode {
+    let (editors, transcript) = (editors.clone(), transcript.clone());
+    Rc::new(move |key, code, cx| {
+        cx.write_to_clipboard(ClipboardItem::new_string(code.to_owned()));
+        let press = {
+            let mut editors = editors.borrow_mut();
+            editors.copy_presses += 1;
+            editors.copied_code = Some((key, editors.copy_presses));
+            editors.copy_presses
+        };
+        let _ = transcript.update(cx, |_, cx| cx.notify());
+        let (editors, transcript) = (editors.clone(), transcript.clone());
+        let reset = cx
+            .background_executor()
+            .timer(std::time::Duration::from_secs(2));
+        cx.spawn(async move |cx| {
+            reset.await;
+            let current = editors
+                .borrow()
+                .copied_code
+                .as_ref()
+                .is_some_and(|(_, at)| *at == press);
+            if current {
+                editors.borrow_mut().copied_code = None;
+                let _ = transcript.update(cx, |_, cx| cx.notify());
+            }
+        })
+        .detach();
+    })
+}
+/// A row's parsed Markdown, kept while its text and style are unchanged.
+struct MarkdownEntry {
+    text: String,
+    style: bello_agent_core::markdown::Style,
+    blocks: Rc<Vec<bello_agent_core::markdown::Block>>,
+    used: u64,
+    place: ReplyPlace,
+}
+/// A frame that drew a reply: its row, the column's top in the window, and
+/// the spacers it drew (column coordinates).
+struct Drawn {
+    frame: u64,
+    row: usize,
+    column_top: Pixels,
+    spacers: Vec<(f32, f32)>,
+}
+
+/// What a reply's last frame drew, for tests.
+#[cfg(test)]
+pub(crate) struct ReplyLayout {
+    pub slots: Vec<markdown_view::Slot>,
+    pub text_top: Option<f32>,
+    pub children: Vec<markdown_view::Child>,
+    pub whole: bool,
+}
+
+/// Where a reply's top-level blocks were drawn, for drawing only those near
+/// the viewport. Slots stay while their block and every block before it are
+/// unchanged and the width is the same.
+#[derive(Default)]
+struct ReplyPlace {
+    width: Option<Pixels>,
+    slots: Vec<markdown_view::Slot>,
+    /// The column's top from its row's top.
+    text_top: Option<f32>,
+    /// The last frame that drew the reply.
+    drawn: Option<Drawn>,
+    /// A spacer was on screen: the next frame draws every block.
+    whole: bool,
+    /// What the last frame drew: each child of the column.
+    #[cfg(test)]
+    children: Vec<markdown_view::Child>,
+}
+const MARKDOWN_LIMIT: usize = 256;
 struct ToolEditor {
     row_index: usize,
     editor: Entity<EditorView>,
@@ -2858,6 +3241,108 @@ struct ToolEditorStyle {
 impl ToolEditors {
     fn active_find(&self) -> Option<Rc<crate::transcript_find_presentation::FindPaint>> {
         self.sidebar.clone().or_else(|| self.find.clone())
+    }
+    /// `text` read as Markdown, parsed again only when it changed (a reply
+    /// still streaming), least recently drawn rows forgotten first.
+    fn markdown(
+        &mut self,
+        owner: &SharedString,
+        text: &str,
+        style: bello_agent_core::markdown::Style,
+    ) -> Rc<Vec<bello_agent_core::markdown::Block>> {
+        self.tick += 1;
+        if let Some(entry) = self.markdown.get_mut(owner)
+            && entry.style == style
+            && entry.text == text
+        {
+            entry.used = self.tick;
+            return entry.blocks.clone();
+        }
+        let blocks = Rc::new(bello_agent_core::markdown::parse(text, style));
+        // A reply that grew keeps the slots of the blocks before its change.
+        let place = match self.markdown.remove(owner) {
+            Some(old) if old.style == style => {
+                let mut place = old.place;
+                let same = old
+                    .blocks
+                    .iter()
+                    .zip(blocks.iter())
+                    .take_while(|(old, new)| old == new)
+                    .count();
+                place.slots.truncate(same);
+                place
+            }
+            _ => ReplyPlace::default(),
+        };
+        if self.markdown.len() >= MARKDOWN_LIMIT {
+            let oldest = self
+                .markdown
+                .iter()
+                .min_by_key(|(_, entry)| entry.used)
+                .map(|(key, _)| key.clone());
+            if let Some(oldest) = oldest {
+                self.markdown.remove(&oldest);
+            }
+        }
+        self.markdown.insert(
+            owner.clone(),
+            MarkdownEntry {
+                text: text.to_owned(),
+                style,
+                blocks: blocks.clone(),
+                used: self.tick,
+                place,
+            },
+        );
+        blocks
+    }
+    /// The slots a reply's blocks were last drawn in at this width, where its
+    /// column sits in its row, and whether it must be drawn whole.
+    fn placement(
+        &mut self,
+        owner: &SharedString,
+        width: Pixels,
+    ) -> (Vec<markdown_view::Slot>, Option<f32>, bool) {
+        let Some(entry) = self.markdown.get_mut(owner) else {
+            return (Vec::new(), None, true);
+        };
+        let place = &mut entry.place;
+        if place.width != Some(width) {
+            *place = ReplyPlace {
+                width: Some(width),
+                ..ReplyPlace::default()
+            };
+        }
+        place.slots.resize(entry.blocks.len(), None);
+        (place.slots.clone(), place.text_top, place.whole)
+    }
+    /// After the list's layout: where each reply drawn this frame sits in its
+    /// row, and whether a spacer of one turned out to be on screen (the
+    /// reply is then drawn whole on the next frame, which this asks for).
+    fn settle_replies(&mut self, frame: u64, viewport: Bounds<Pixels>, list: &ListState) -> bool {
+        let mut missed = false;
+        for entry in self.markdown.values_mut() {
+            let place = &mut entry.place;
+            let Some(Drawn {
+                row,
+                column_top,
+                spacers,
+                ..
+            }) = place.drawn.take_if(|drawn| drawn.frame == frame)
+            else {
+                continue;
+            };
+            if let Some(item) = list.bounds_for_item(row) {
+                place.text_top = Some(f32::from(column_top - item.top()));
+            }
+            let visible =
+                f32::from(viewport.top() - column_top)..f32::from(viewport.bottom() - column_top);
+            place.whole = spacers
+                .iter()
+                .any(|&(top, bottom)| bottom > visible.start && top < visible.end);
+            missed |= place.whole;
+        }
+        missed
     }
     fn section(
         &mut self,
