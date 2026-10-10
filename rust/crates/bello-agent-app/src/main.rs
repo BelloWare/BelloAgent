@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "macos", test))]
+mod application_menus;
 mod assets;
 #[cfg(all(feature = "synthetic-authority", debug_assertions))]
 mod attachment_fixture;
@@ -3454,6 +3456,13 @@ impl Render for AgentView {
             .child(sidebar)
             .child(self.resize_handle("sidebar-resize", true, cx))
             .child(content)
+            .map(|element| {
+                #[cfg(target_os = "macos")]
+                let element = self.menu_actions(element, window, cx);
+                #[cfg(all(test, not(target_os = "macos")))]
+                let element = self.menu_actions(element, window, cx);
+                element
+            })
             .capture_key_down(cx.listener(Self::global_key))
             .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, window, cx| {
                 if event.dragging()
@@ -4005,6 +4014,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_assets(assets::Assets)
         .run(move |cx: &mut App| {
             bello_workbench_ui::init(cx);
+            #[cfg(target_os = "macos")]
+            application_menus::install(cx);
             cx.set_global(connection_settings_controller::LaunchLegacyConfiguration(
                 legacy_configuration,
             ));

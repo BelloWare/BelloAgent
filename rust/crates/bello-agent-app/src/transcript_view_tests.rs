@@ -60,7 +60,7 @@ fn fixture_with_visible(
     fixture_with(cx, rows, queued, visible_messages, false)
 }
 
-fn fixture_with(
+pub(crate) fn fixture_with(
     cx: &mut TestAppContext,
     rows: Vec<Message>,
     queued: usize,
