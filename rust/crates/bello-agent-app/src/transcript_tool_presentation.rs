@@ -165,6 +165,8 @@ pub(super) enum Status {
     Running,
 }
 impl Status {
+    /// The old card's status words, kept for the projection tests.
+    #[cfg(test)]
     pub(super) fn label(self, name: &str) -> &'static str {
         match (self, name == "ls") {
             (Self::Completed, true) => "Listed directory",

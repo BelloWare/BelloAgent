@@ -2,8 +2,9 @@
 //! (`TranscriptNativeWorkLine`): `[icon] Title · summary   suffix  0.4s`, 24
 //! points tall, the whole line a button. Under the pointer the icon gives way
 //! to the chevron and the line takes the panel; an open row is the chevron
-//! outright. A failed row shows its dot in the icon's place, a running one
-//! tints its icon with the accent.
+//! outright. A failed (red) or stopped (amber) row shows its dot in the icon's
+//! place, a running one tints its icon with the accent. A row whose summary is
+//! its file's path opens the file from the summary.
 use gpui::{
     App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Transformation, Window, div, prelude::FluentBuilder, px,
@@ -20,6 +21,7 @@ pub(crate) const INDENT: f32 = LEADING + 6.;
 pub(crate) enum WorkState {
     Ok,
     Running,
+    Stopped,
     Failed,
 }
 
@@ -28,6 +30,8 @@ pub(crate) struct WorkLine {
     pub icon: &'static str,
     pub title: SharedString,
     pub summary: SharedString,
+    /// The change size and an unknown outcome, outside the ellipsized summary.
+    pub suffix: Option<SharedString>,
     pub state: WorkState,
     pub expandable: bool,
     pub open: bool,
@@ -43,6 +47,7 @@ struct Colors {
     faint: Hsla,
     accent: Hsla,
     danger: Hsla,
+    warning: Hsla,
     panel: Hsla,
 }
 
@@ -56,8 +61,39 @@ impl Colors {
             faint: pick(0x9b968c, 0x78746b),
             accent: rgb(palette.accent).into(),
             danger: rgb(palette.danger).into(),
+            warning: pick(0xb97a1e, 0xe3b15c),
             panel: rgba(if palette.dark { 0xffffff0b } else { 0x00000009 }).into(),
         }
+    }
+}
+
+/// What a row's file link does when its summary is pressed.
+pub(crate) type Link = Box<dyn Fn(&mut Window, &mut App)>;
+
+/// The colours a work row's card is drawn in (`TranscriptNSPalette`).
+pub(crate) struct CardColors {
+    pub text: Hsla,
+    pub muted: Hsla,
+    pub faint: Hsla,
+    pub hair: Hsla,
+    pub code_background: Hsla,
+    pub danger: Hsla,
+    pub warning: Hsla,
+    pub success: Hsla,
+}
+
+pub(crate) fn card_colors(palette: &crate::Palette) -> CardColors {
+    let colors = Colors::new(palette);
+    let dark = palette.dark;
+    CardColors {
+        text: colors.text,
+        muted: colors.muted,
+        danger: colors.danger,
+        warning: colors.warning,
+        success: rgb(if dark { 0x7cc48f } else { 0x3d8a57 }).into(),
+        faint: colors.faint,
+        hair: rgba(if dark { 0xffffff17 } else { 0x00000014 }).into(),
+        code_background: rgb(if dark { 0x211d1a } else { 0xf6f1ea }).into(),
     }
 }
 
@@ -66,11 +102,16 @@ pub(crate) fn work_line(
     line: &WorkLine,
     palette: &crate::Palette,
     toggle: impl Fn(&mut Window, &mut App) + 'static,
+    link: Option<Link>,
 ) -> impl IntoElement {
     let id = id.into();
     let group = SharedString::from(format!("work-line-{id}"));
+    // Each piece answers to the line's id and its name, for checks.
+    let piece = |name: &str| format!("{id}-{name}");
+    let (title_selector, summary_selector) = (piece("title"), piece("summary"));
+    let (suffix_selector, trailing_selector) = (piece("suffix"), piece("trailing"));
     let colors = Colors::new(palette);
-    let marked = line.state == WorkState::Failed;
+    let marked = matches!(line.state, WorkState::Failed | WorkState::Stopped);
     let icon_tint = if line.state == WorkState::Running {
         colors.accent
     } else {
@@ -85,7 +126,12 @@ pub(crate) fn work_line(
         .items_center()
         .justify_center();
     if marked {
-        leading = leading.child(div().size(px(7.)).rounded_full().bg(colors.danger));
+        let dot = if line.state == WorkState::Failed {
+            colors.danger
+        } else {
+            colors.warning
+        };
+        leading = leading.child(div().size(px(7.)).rounded_full().bg(dot));
     } else {
         let hides = line.expandable;
         leading = leading.child(
@@ -140,6 +186,7 @@ pub(crate) fn work_line(
         .child(
             div()
                 .flex_none()
+                .debug_selector(move || title_selector)
                 .text_size(px(13.))
                 .text_color(colors.muted)
                 .group_hover(group.clone(), {
@@ -172,12 +219,31 @@ pub(crate) fn work_line(
                         .bg(colors.faint),
                 ),
             )
-            .child(summary(line, summary_color));
+            .child(
+                div()
+                    .debug_selector(move || summary_selector)
+                    .min_w_0()
+                    .flex_shrink()
+                    .child(summary(line, summary_color, link)),
+            );
+    }
+    if let Some(suffix) = line.suffix.clone() {
+        row = row.child(
+            div()
+                .debug_selector(move || suffix_selector)
+                .flex_none()
+                .pl(px(8.))
+                .text_size(px(12.5))
+                .text_color(colors.faint)
+                .whitespace_nowrap()
+                .child(suffix),
+        );
     }
     row = row.child(div().flex_1().min_w(px(4.)));
     if let Some(trailing) = line.trailing.clone().filter(|text| !text.is_empty()) {
         row = row.child(
             div()
+                .debug_selector(move || trailing_selector)
                 .flex_none()
                 .text_size(px(11.5))
                 .text_color(colors.faint)
@@ -188,24 +254,43 @@ pub(crate) fn work_line(
 }
 
 /// The summary gives way first: cut at its end, or, for a line still being
-/// written, clipped from its start so its newest words stay in view.
-fn summary(line: &WorkLine, color: Hsla) -> impl IntoElement {
+/// written, clipped from its start so its newest words stay in view. A path
+/// that is the row's file is its own press target, underlined under the
+/// pointer.
+fn summary(line: &WorkLine, color: Hsla, link: Option<Link>) -> impl IntoElement {
     let text = div()
         .text_size(px(12.5))
         .text_color(color)
         .whitespace_nowrap()
         .child(line.summary.clone());
     if line.follow {
-        div()
+        return div()
             .min_w_0()
             .flex_shrink()
             .overflow_hidden()
             .flex()
             .justify_end()
             .child(text.flex_none())
-    } else {
-        div().min_w_0().flex_shrink().child(text.truncate())
+            .into_any_element();
     }
+    let text = text.truncate();
+    let Some(link) = link else {
+        return div().min_w_0().flex_shrink().child(text).into_any_element();
+    };
+    div()
+        .min_w_0()
+        .flex_shrink()
+        .child(
+            text.id("work-line-link")
+                .cursor_pointer()
+                .hover(|text| text.underline())
+                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    link(window, cx)
+                }),
+        )
+        .into_any_element()
 }
 
 /// Swift's `thinkSummary`: what a Think row says of its reasoning. While it

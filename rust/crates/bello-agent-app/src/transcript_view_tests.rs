@@ -1008,6 +1008,8 @@ fn loading_retry_earlier_and_streaming_rows_have_distinct_logical_slots(cx: &mut
 
 #[gpui::test]
 fn duplicate_legacy_ids_keep_separate_rows_and_exact_source(cx: &mut TestAppContext) {
+    // About the rows themselves, not how a finished turn folds them.
+    crate::transcript_view::loose_turns_for_test();
     let rows = vec![
         message("duplicate", "user", "first duplicate"),
         message("unique", "assistant", "unique row"),
@@ -1193,6 +1195,8 @@ fn wheel_between_new_input_and_prepaint_uses_live_old_mapping_then_reconciles(
 
 #[gpui::test]
 fn huge_unicode_row_is_materialized_without_truncating_source(cx: &mut TestAppContext) {
+    // About the rows themselves, not how a finished turn folds them.
+    crate::transcript_view::loose_turns_for_test();
     let source = "  **source** 你好 👩🏽‍💻 e\u{301}\r\n\t".repeat(4_096);
     let mut rows = messages(100);
     rows[50].text = source.clone();
@@ -1380,6 +1384,8 @@ fn same_size_composer_and_root_notifications_reuse_populated_transcript(cx: &mut
 
 #[gpui::test]
 fn fresh_session_arc_same_ids_reasoning_state_and_order_invalidate(cx: &mut TestAppContext) {
+    // About the rows themselves, not how a finished turn folds them.
+    crate::transcript_view::loose_turns_for_test();
     let (_directory, window, root) = fixture(
         cx,
         vec![
@@ -2388,6 +2394,7 @@ pub(crate) fn retained_tool_rows(count: usize, output: &str) -> Vec<Message> {
 fn retained_tool_cards_pair_and_cap_selectable_sections_without_eager_editors(
     cx: &mut TestAppContext,
 ) {
+    crate::transcript_view::open_tool_rows_for_test();
     let (_directory, _window, root) = fixture(cx, messages(1), 0);
     let mut changed = input(&root, cx);
     let mut session = (*changed.session).clone();
@@ -2475,6 +2482,7 @@ fn retained_tool_cards_pair_and_cap_selectable_sections_without_eager_editors(
 fn retained_tool_record_edits_and_disclosure_remeasure_without_losing_anchor(
     cx: &mut TestAppContext,
 ) {
+    crate::transcript_view::open_tool_rows_for_test();
     use bello_agent_core::tool_history::{ToolOutcome, ToolRecord};
     let (_directory, _window, root) = fixture(cx, messages(1), 0);
     let mut changed = input(&root, cx);
@@ -2563,6 +2571,7 @@ fn retained_tool_page_reveal_translates_standalone_result_anchor(cx: &mut TestAp
 
 #[gpui::test]
 fn retained_tool_collapse_keeps_window_shortcuts_routable(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let (_directory, window, root) = fixture(cx, retained_tool_rows(2, "selectable result"), 0);
     let child = transcript(&root, cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
@@ -2590,6 +2599,7 @@ fn retained_tool_collapse_keeps_window_shortcuts_routable(cx: &mut TestAppContex
 
 #[gpui::test]
 fn retained_tool_scroll_away_keeps_window_shortcuts_routable(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let (_directory, window, root) = fixture_with_visible(
         cx,
         retained_tool_rows(100, "selectable result"),
@@ -2620,6 +2630,7 @@ fn retained_tool_scroll_away_keeps_window_shortcuts_routable(cx: &mut TestAppCon
 
 #[gpui::test]
 fn retained_tool_page_repair_keeps_window_shortcuts_routable(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let (_directory, window, root) =
         fixture_with_visible(cx, retained_tool_rows(40, "selectable result"), 0, Some(61));
     let child = transcript(&root, cx);
@@ -2650,6 +2661,7 @@ fn retained_tool_page_repair_keeps_window_shortcuts_routable(cx: &mut TestAppCon
 
 #[gpui::test]
 fn retained_tool_removed_output_keeps_window_shortcuts_routable(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let (_directory, window, root) = fixture(cx, retained_tool_rows(2, "selectable result"), 0);
     let child = transcript(&root, cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
@@ -2765,19 +2777,23 @@ fn retained_tool_detail_restore_case(
 
 #[gpui::test]
 fn retained_tool_detail_removed_output_restores_visible_owner(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     retained_tool_detail_restore_case(cx, false, false, false);
 }
 #[gpui::test]
 fn retained_tool_detail_evicted_preview_restores_visible_owner(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     retained_tool_detail_restore_case(cx, true, false, false);
 }
 #[gpui::test]
 fn retained_tool_detail_newer_composer_focus_wins(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     retained_tool_detail_restore_case(cx, false, true, false);
 }
 
 #[gpui::test]
 fn retained_tool_detail_replaced_child_cannot_restore_old_editor(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     retained_tool_detail_restore_case(cx, false, false, true);
 }
 
@@ -2791,6 +2807,7 @@ mod edit_ui_tests;
 fn live_bash_output_remeasures_existing_card_then_settles_to_retained_result(
     cx: &mut TestAppContext,
 ) {
+    crate::transcript_view::open_tool_rows_for_test();
     use bello_agent_core::tool_history::{LiveToolView, ToolOutcome, ToolRecord};
     let (_directory, _window, root) = fixture(cx, messages(1), 0);
     let mut changed = input(&root, cx);
@@ -2851,6 +2868,10 @@ mod live_terminal_ui;
 
 #[path = "transcript_tool_timing_tests.rs"]
 mod tool_timing_ui;
+#[path = "transcript_turn_fold_ui_tests.rs"]
+mod turn_fold_ui;
+#[path = "transcript_work_rows_ui_tests.rs"]
+mod work_rows_ui;
 
 #[::core::prelude::v1::test]
 fn unread_reply_end_requires_real_finite_viewport_not_first_line_or_overdraw() {
