@@ -8,6 +8,8 @@ use bello_workbench_ui::{EditorAppearance, EditorView, TextDecoration, TextPrese
 mod edit_presentation;
 #[path = "transcript_read_presentation.rs"]
 mod read_presentation;
+#[path = "transcript_shaped_text.rs"]
+mod shaped_text;
 #[path = "transcript_tool_presentation.rs"]
 mod tool_presentation;
 use gpui::{prelude::*, *};
@@ -2642,7 +2644,7 @@ fn render_row(
                         .max_w_full()
                         .text_size(px(14.5))
                         .line_height(px(21.))
-                        .child({
+                        .children({
                             let text =
                                 crate::composer_attachments::message_label(message).into_owned();
                             if !ambiguous
@@ -2652,9 +2654,15 @@ fn render_row(
                                 && find.matches_binding(input.find_binding.as_ref())
                                 && find.scope_matches(message)
                             {
-                                find.prose(&message.id, text, index).into_any_element()
+                                vec![find.prose(&message.id, text, index).into_any_element()]
                             } else {
-                                text.into_any_element()
+                                // Shaped lines are reused across frames, so a
+                                // streaming reply re-shapes only its tail.
+                                let shapes = tool_editors.borrow().shaped_text.clone();
+                                shaped_text::message_text(&shapes, selector.clone().into(), &text)
+                                    .into_iter()
+                                    .map(IntoElement::into_any_element)
+                                    .collect()
                             }
                         }),
                 );
@@ -2738,6 +2746,7 @@ struct ToolEditors {
     find: Option<Rc<crate::transcript_find_presentation::FindPaint>>,
     entries: HashMap<(RowKey, &'static str), ToolEditor>,
     edit_previews: edit_presentation::EditCache,
+    shaped_text: Rc<RefCell<shaped_text::ShapeCache>>,
     tick: u64,
 }
 struct ToolEditor {

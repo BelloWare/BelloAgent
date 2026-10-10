@@ -102,6 +102,24 @@ Rust's streaming cost grows with the reply's length. A mid-stream `sample`
    ~50 times per second. Swift writes run records unsynced and synchronizes when
    the turn settles (`SessionJournal.append(flush:)`, `journalFlushesEachRecord`).
 
+After these measurements the Rust transcript stopped re-shaping unchanged text
+(`transcript_shaped_text.rs`: message text in runs of 24 lines, each run's
+shaped lines reused across frames while its text, style and wrap width are
+unchanged). `harness/stream-profile.sh` (same gateway, chat and reply, followed
+on screen; per-second samples in `interaction/streaming-shaped-text/`):
+
+| Rust build | CPU p50 / p90 / max, one core | Over the 60 s reply |
+|---|---|---|
+| `9a5c960b` (whole reply shaped every frame) | 31.5 / 60.8 / 82.5% | climbs 11% → 82% |
+| shaped-text runs | 14.7 / 17.6 / 19.1% | 11% → 19% |
+
+A mid-stream `sample` before the change put 37% of the main thread in GPUI's
+`shape_text`, three quarters of it copying `WrappedLine`s (each carries an
+inline 32-entry decoration array) into a vector that grows by doubling. After
+it, the main thread is idle 79% of the time; ~7% is spent waiting for the
+controller lock that the runtime holds while it synchronizes each delta to disk.
+The opening frame of the follow check is byte-identical before and after.
+
 Behavior observed while measuring (screens in `interaction/screens/`): the Rust
 transcript shows Markdown as raw text; it opens a chat at the top of its loaded
 100-message window and does not follow a streaming reply (it is created with
