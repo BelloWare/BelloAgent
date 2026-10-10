@@ -611,6 +611,16 @@ fn native_settings_catalog_browse_refresh_choose_and_save_are_explicit_and_fixtu
     act(window, Intent::SaveAll, cx);
     assert_eq!(gateway.count("get"), 2, "Save never refreshes the catalog");
     assert_eq!(gateway.count("post"), 0);
+    root.update(cx, |view, cx| {
+        view.chat_models = Default::default();
+        view.list_chat_models(cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        gateway.count("get"),
+        2,
+        "fixture-provenance chats never list their catalog passively"
+    );
     let saved = control.authority().load_connections().unwrap();
     let model = saved
         .profiles()

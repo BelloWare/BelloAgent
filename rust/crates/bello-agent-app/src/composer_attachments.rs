@@ -99,7 +99,52 @@ impl Render for TextHint {
     }
 }
 
+/// The shown chat's passive model listing, as Swift's model pill lists when a
+/// chat appears: once per installed runtime, and only when its saved native
+/// connection uses a custom catalog that is not fresh. The list it loads tells
+/// the composer whether the chat's model takes images. Nothing is saved and
+/// no turn is sent. Replacing the runtime or the view drops the listing.
+#[derive(Default)]
+pub(crate) struct ChatModelListing {
+    listed: Option<Weak<Controller>>,
+    task: Option<Task<()>>,
+}
+
 impl AgentView {
+    pub(crate) fn list_chat_models(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            self.chat_models = Default::default();
+            return;
+        }
+        if self
+            .chat_models
+            .listed
+            .as_ref()
+            .is_some_and(|listed| std::ptr::eq(listed.as_ptr(), Arc::as_ptr(&self.controller)))
+        {
+            return;
+        }
+        self.chat_models.listed = Some(Arc::downgrade(&self.controller));
+        self.chat_models.task = None;
+        if !self.controller.model_catalog_stale() {
+            return;
+        }
+        let controller = self.controller.clone();
+        self.chat_models.task = Some(cx.spawn(async move |view, cx| {
+            // Preparing reads the vault for a same-origin key: off the UI thread.
+            let request = cx
+                .background_executor()
+                .spawn(async move { controller.model_catalog_request() })
+                .await;
+            let Some(request) = request else {
+                return;
+            };
+            let _ = request
+                .load(bello_agent_core::model_catalog::CancellationToken::new())
+                .await;
+            let _ = view.update(cx, |_, cx| cx.notify());
+        }));
+    }
     pub(crate) fn picker_owns_chat(&self, chat: &str) -> bool {
         self.attachment_picker
             .as_ref()

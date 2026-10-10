@@ -685,12 +685,37 @@ fn native_cache_fences_old_publication_keys_and_authorities_without_exposing_sec
     let profile = profile();
     let url = CatalogUrl::parse("http://127.0.0.1:3333/catalog?fake=1").unwrap();
     let binding = CatalogBinding::new(cache.clone(), Some(&url), &profile, "fake-key-one");
+    assert!(binding.needs_load());
     let old = binding.begin().unwrap();
     let current = binding.begin().unwrap();
+    assert!(
+        !binding.needs_load(),
+        "a listing in flight is joined, not repeated"
+    );
     let rows = decode(json!([{"id":"old","input":["image"]}])).unwrap();
-    old.publish(&rows);
+    old.finish(Some(&Ok(rows.clone())));
     assert!(binding.descriptor("old").is_none());
-    current.publish(&rows);
+    drop(old);
+    assert!(
+        !binding.needs_load(),
+        "a superseded listing does not end the newest"
+    );
+    current.finish(Some(&Ok(rows.clone())));
+    assert!(binding.descriptor("old").is_some());
+    assert!(
+        !binding.needs_load(),
+        "a fresh list is reused for five minutes"
+    );
+    // A failed refresh keeps the last good list; a cancelled one records nothing.
+    let failed = binding.begin().unwrap();
+    failed.finish(Some(&Err(CatalogError::Http)));
+    assert!(binding.descriptor("old").is_some());
+    assert!(
+        !binding.needs_load(),
+        "a failure is not retried for thirty seconds"
+    );
+    drop(binding.begin().unwrap());
+    assert!(!binding.needs_load());
     assert!(binding.descriptor("old").is_some());
     let changed_key = CatalogBinding::new(cache, Some(&url), &profile, "fake-key-two");
     assert!(changed_key.descriptor("old").is_none());

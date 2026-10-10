@@ -335,8 +335,16 @@ pub struct CatalogRequest {
 /// same-origin catalogs, without retaining another copy of its plaintext.
 #[derive(Default)]
 pub(crate) struct CatalogCache(Mutex<BTreeMap<[u8; 32], CachedCatalog>>);
+/// Swift's ModelCatalog.Entry freshness: a listing is reused for five minutes,
+/// a failure is not retried for thirty seconds unless forced, and a failed
+/// refresh keeps the last good list beside it.
+pub(crate) const CATALOG_TTL: Duration = Duration::from_secs(300);
+pub(crate) const CATALOG_FAILURE_RETRY: Duration = Duration::from_secs(30);
 struct CachedCatalog {
     generation: uuid::Uuid,
+    loading: bool,
+    fetched: Option<std::time::Instant>,
+    failed: bool,
     models: Arc<Vec<ModelDescriptor>>,
 }
 struct CatalogPublication {
@@ -386,14 +394,44 @@ impl CatalogBinding {
         }
         let entry = entries.entry(identity).or_insert_with(|| CachedCatalog {
             generation,
+            loading: false,
+            fetched: None,
+            failed: false,
             models: Arc::new(vec![]),
         });
         entry.generation = generation;
+        entry.loading = true;
         Some(CatalogPublication {
             cache: self.cache.clone(),
             identity,
             generation,
         })
+    }
+    /// A custom catalog that a passive (unforced) listing would fetch now:
+    /// never listed, stale, or past its failure retry, and not already loading.
+    /// The bundled catalog needs no request.
+    pub(crate) fn needs_load(&self) -> bool {
+        let Some(identity) = self.identity else {
+            return false;
+        };
+        let Ok(entries) = self.cache.0.lock() else {
+            return false;
+        };
+        let Some(entry) = entries.get(&identity) else {
+            return true;
+        };
+        !entry.loading
+            && entry.fetched.is_none_or(|fetched| {
+                fetched.elapsed()
+                    >= if entry.failed {
+                        CATALOG_FAILURE_RETRY
+                    } else {
+                        CATALOG_TTL
+                    }
+            })
+    }
+    pub(crate) fn same_source(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cache, &other.cache) && self.identity == other.identity
     }
     pub(crate) fn descriptor(&self, model: &str) -> Option<ModelDescriptor> {
         if let Some(identity) = self.identity {
@@ -416,13 +454,33 @@ impl CatalogBinding {
     }
 }
 impl CatalogPublication {
-    fn publish(self, models: &[ModelDescriptor]) {
+    /// Only the newest listing for a source writes its entry. A cancelled or
+    /// abandoned listing writes nothing but stops counting as in flight.
+    fn finish(&self, result: Option<&Result<Vec<ModelDescriptor>, CatalogError>>) {
         if let Ok(mut entries) = self.cache.0.lock()
             && let Some(entry) = entries.get_mut(&self.identity)
             && entry.generation == self.generation
+            && entry.loading
         {
-            entry.models = Arc::new(models.to_vec());
+            entry.loading = false;
+            match result {
+                Some(Ok(models)) => {
+                    entry.models = Arc::new(models.clone());
+                    entry.fetched = Some(std::time::Instant::now());
+                    entry.failed = false;
+                }
+                Some(Err(_)) => {
+                    entry.fetched = Some(std::time::Instant::now());
+                    entry.failed = true;
+                }
+                None => {}
+            }
         }
+    }
+}
+impl Drop for CatalogPublication {
+    fn drop(&mut self) {
+        self.finish(None);
     }
 }
 impl CatalogRequest {
@@ -514,10 +572,10 @@ impl CatalogRequest {
         if cancel.is_cancelled() {
             return Err(CatalogError::Cancelled);
         }
-        if let Ok(models) = &result
-            && let Some(publication) = self.publication
+        if let Some(publication) = &self.publication
+            && !matches!(result, Err(CatalogError::Cancelled))
         {
-            publication.publish(models);
+            publication.finish(Some(&result));
         }
         result
     }

@@ -368,7 +368,11 @@ async fn native_inherited_catalog_uses_source_credential_and_keeps_route_and_dec
     let effective = runtime.configuration().effective_profile(None);
     assert_eq!(effective.base_url, route.profile.base_url);
     assert_eq!(effective.id, route.profile.id);
-    assert_eq!(effective.input, ["image", "text"]);
+    assert_eq!(
+        effective.input,
+        ["text", "image"],
+        "Swift orders merged kinds"
+    );
     // Invalid typed native key falls back to the saved key by id, as Swift does.
     // Typing a replacement detaches the inherited listing from its source.
     let mut own = linked.edit(&source.profile.id).unwrap();
@@ -382,4 +386,137 @@ async fn native_inherited_catalog_uses_source_credential_and_keeps_route_and_dec
     );
     assert!(result.is_ok());
     assert!(headers.contains("authorization: bearer fake-source-key"));
+}
+
+#[tokio::test]
+async fn native_chat_lists_its_custom_catalog_passively_once_per_freshness_window() {
+    let (authority, _) = setup();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let mut form = draft(1);
+    form.profile.base_url = base.clone();
+    form.catalog_url = format!("{base}/chat-catalog");
+    form.headers_input = r#"{"X-Provider-Only":"fake-header"}"#.into();
+    let saved = authority
+        .save_connection(&authority.load_connections().unwrap(), &form)
+        .unwrap();
+    let runtime =
+        SavedConnectionRuntime::confirm(&authority, &saved.loaded, &form.profile.id).unwrap();
+    let controller = runtime
+        .open(SessionStore::pending(), Default::default())
+        .unwrap();
+    assert!(!controller.supports_image_attachments());
+    assert!(
+        timeout(Duration::from_millis(40), listener.accept())
+            .await
+            .is_err(),
+        "opening a chat sends nothing by itself"
+    );
+    assert!(controller.model_catalog_stale());
+    let request = controller.model_catalog_request().unwrap();
+    assert!(
+        !controller.model_catalog_stale(),
+        "a listing in flight is joined"
+    );
+    assert!(controller.model_catalog_request().is_none());
+    let (result, headers) = tokio::join!(
+        request.load(CancellationToken::new()),
+        catalog_reply(&listener, r#"[{"id":"fixture","input":["text","image"]}]"#)
+    );
+    assert!(result.is_ok());
+    assert!(headers.starts_with("get /chat-catalog http/1.1"));
+    assert!(headers.contains("authorization: bearer synthetic-project-fixture-only"));
+    assert!(!headers.contains("x-provider-only"));
+    assert!(controller.supports_image_attachments());
+    assert_eq!(
+        runtime.configuration().effective_profile(None).input,
+        ["text", "image"]
+    );
+    assert!(!controller.model_catalog_stale(), "fresh for five minutes");
+    assert!(controller.model_catalog_request().is_none());
+    // Another chat on the same source shares the list without a request.
+    let other = SavedConnectionRuntime::confirm(&authority, &saved.loaded, &form.profile.id)
+        .unwrap()
+        .open(SessionStore::pending(), Default::default())
+        .unwrap();
+    assert!(other.supports_image_attachments() && !other.model_catalog_stale());
+    // A failed passive listing keeps the list and waits before retrying.
+    let mut changed = saved.loaded.edit(&form.profile.id).unwrap();
+    changed.catalog_url = format!("{base}/changed-catalog");
+    let changed = authority.save_connection(&saved.loaded, &changed).unwrap();
+    let changed_runtime =
+        SavedConnectionRuntime::confirm(&authority, &changed.loaded, &form.profile.id).unwrap();
+    let changed_chat = changed_runtime
+        .open(SessionStore::pending(), Default::default())
+        .unwrap();
+    assert!(
+        !changed_chat.supports_image_attachments(),
+        "a new URL lists anew"
+    );
+    let request = changed_chat.model_catalog_request().unwrap();
+    let (result, _) = tokio::join!(
+        request.load(CancellationToken::new()),
+        catalog_reply(&listener, "not a catalog")
+    );
+    assert!(result.is_err());
+    assert!(!changed_chat.model_catalog_stale(), "failure retry is 30 s");
+    // The older runtime's source is no longer saved: it never lists it again.
+    assert!(controller.model_catalog_request().is_none() || controller.is_retired());
+    // Bundled-catalog chats never list over the network; revoked ones never list.
+    let mut bundled = draft(2);
+    bundled.catalog_url.clear();
+    let bundled = authority
+        .save_connection(&changed.loaded, &bundled)
+        .unwrap();
+    let bundled_chat = SavedConnectionRuntime::confirm(
+        &authority,
+        &bundled.loaded,
+        "00000000-0000-4000-8000-000000000002",
+    )
+    .unwrap()
+    .open(SessionStore::pending(), Default::default())
+    .unwrap();
+    assert!(!bundled_chat.model_catalog_stale());
+    assert!(bundled_chat.model_catalog_request().is_none());
+    let mut public = draft(3);
+    public.catalog_url = "https://catalog.invalid/never".into();
+    let public = authority.save_connection(&bundled.loaded, &public).unwrap();
+    let revoked = SavedConnectionRuntime::confirm(
+        &authority,
+        &public.loaded,
+        "00000000-0000-4000-8000-000000000003",
+    )
+    .unwrap();
+    let revoked_chat = revoked
+        .open(SessionStore::pending(), Default::default())
+        .unwrap();
+    assert!(revoked_chat.model_catalog_stale());
+    revoked.revoke();
+    assert!(!revoked_chat.model_catalog_stale());
+    assert!(revoked_chat.model_catalog_request().is_none());
+    assert!(
+        timeout(Duration::from_millis(40), listener.accept())
+            .await
+            .is_err()
+    );
+    #[cfg(feature = "synthetic-authority")]
+    {
+        let (fixture, _) = ProjectAuthority::with_synthetic_bytes(None).unwrap();
+        let mut fixture_form = draft(4);
+        fixture_form.profile.base_url = base.clone();
+        fixture_form.catalog_url = format!("{base}/fixture");
+        let saved = fixture
+            .save_connection(&fixture.load_connections().unwrap(), &fixture_form)
+            .unwrap();
+        let chat =
+            SavedConnectionRuntime::confirm(&fixture, &saved.loaded, &fixture_form.profile.id)
+                .unwrap()
+                .open(SessionStore::pending(), Default::default())
+                .unwrap();
+        assert!(
+            !chat.model_catalog_stale(),
+            "fixture chats keep declared input"
+        );
+        assert!(chat.model_catalog_request().is_none());
+    }
 }

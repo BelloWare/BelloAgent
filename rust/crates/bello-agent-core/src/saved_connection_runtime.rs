@@ -14,6 +14,11 @@ pub(crate) struct ConnectionLease {
     catalog: Option<CatalogBinding>,
 }
 impl ConnectionLease {
+    /// Swift's `modelInput(for:)` and `applyModelChoice`: the chat's model is
+    /// its own choice or the connection's. Declared input always applies and
+    /// the catalog's input for that model adds to it. Only a chosen model takes
+    /// the catalog's limits and a compatible effort; the connection's own
+    /// model keeps the limits and reasoning saved with it.
     pub(crate) fn effective_profile(
         &self,
         base: &Profile,
@@ -23,37 +28,77 @@ impl ConnectionLease {
             return crate::runtime::tool_runtime::effective_profile(base, item);
         };
         let mut profile = base.clone();
-        if let Some(model) = item.and_then(|item| item.model.as_ref()) {
+        let chosen = item.and_then(|item| item.model.as_ref());
+        if let Some(model) = chosen {
             profile.model_id.clone_from(model);
-        }
-        if let Some(descriptor) = catalog.descriptor(&profile.model_id) {
-            if profile.model_id != base.model_id {
-                descriptor.applying(&mut profile);
-            }
-            if let Some(input) = descriptor.input {
-                for kind in input {
-                    if !profile.input.contains(&kind) {
-                        profile.input.push(kind);
-                    }
-                }
-            }
-            if let Some(reasoning) = descriptor.reasoning {
-                profile.reasoning = !reasoning.is_empty();
-                let effort = item
-                    .and_then(|item| item.effort.as_ref())
-                    .unwrap_or(&profile.thinking_level);
-                profile.thinking_level = if effort == "default" || reasoning.contains(effort) {
-                    effort.clone()
-                } else {
-                    "default".into()
-                };
-                return profile;
-            }
         }
         if let Some(effort) = item.and_then(|item| item.effort.as_ref()) {
             profile.thinking_level.clone_from(effort);
         }
+        let Some(descriptor) = catalog.descriptor(&profile.model_id) else {
+            return profile;
+        };
+        if chosen.is_some() {
+            if descriptor.context_window.is_some() || descriptor.max_output_tokens.is_some() {
+                let mut limits = base.clone();
+                descriptor.applying(&mut limits);
+                profile.context_window = limits.context_window;
+                profile.max_output_tokens = limits.max_output_tokens;
+                profile.model_output_limit = limits.model_output_limit;
+            }
+            if let Some(efforts) = &descriptor.reasoning {
+                profile.reasoning = !efforts.is_empty();
+                if efforts.is_empty()
+                    || profile.thinking_level != "default"
+                        && !efforts.contains(&profile.thinking_level)
+                {
+                    profile.thinking_level = "default".into();
+                }
+            }
+        }
+        if let Some(listed) = descriptor.input {
+            profile.input = ["text", "image"]
+                .into_iter()
+                .filter(|kind| {
+                    profile.input.iter().any(|declared| declared == kind)
+                        || listed.iter().any(|listed| listed == kind)
+                })
+                .map(str::to_owned)
+                .collect();
+        }
         profile
+    }
+    /// A passive listing for this chat's catalog source, as Swift's model
+    /// pill lists when a chat shows: nothing for the bundled catalog, a fresh
+    /// or loading list, a fixture, or a revoked runtime. The source's key is
+    /// read from the vault only now, and only when the catalog shares the
+    /// gateway's origin. A changed source yields nothing: the saved
+    /// connection's next runtime lists its own.
+    pub(crate) fn catalog_stale(&self) -> bool {
+        self.check().is_ok()
+            && self
+                .catalog
+                .as_ref()
+                .is_some_and(CatalogBinding::needs_load)
+    }
+    pub(crate) fn catalog_request(&self) -> Option<crate::model_catalog::CatalogRequest> {
+        let binding = self.catalog.as_ref()?;
+        if self.check().is_err() || !binding.needs_load() {
+            return None;
+        }
+        let current = self.authority.load_connections().ok()?;
+        let (current_binding, request) =
+            catalog_source(&self.authority, &current, &self.profile.id).ok()?;
+        if !current_binding.same_source(binding) {
+            return None;
+        }
+        let (source_id, url, key) = request?;
+        Some(crate::model_catalog::CatalogRequest::native(
+            Some(source_id),
+            url,
+            key,
+            current_binding,
+        ))
     }
     pub(crate) fn check(&self) -> Result<()> {
         if self.live.load(Ordering::Acquire) {
@@ -107,6 +152,39 @@ impl ConnectionLease {
     }
 }
 
+type SourceRequest = (String, CatalogUrl, Option<Credential>);
+/// The catalog a saved route lists through (its own or its recorded source)
+/// and, for a custom URL, what a listing would send. A gateway key goes only
+/// to the gateway's own origin, as Swift's `usesGatewayCredential`.
+fn catalog_source(
+    authority: &ProjectAuthority,
+    loaded: &LoadedConnections,
+    id: &str,
+) -> AuthorityResult<(CatalogBinding, Option<SourceRequest>)> {
+    let source = loaded.catalog_source(id)?;
+    let key = match &source.catalog_url {
+        Some(url) if url.uses_gateway_credential(&source.profile) => Some(field::<String>(
+            &loaded.entries[loaded.index(&source.profile.id)?],
+            "apiKey",
+        )?),
+        _ => None,
+    };
+    let binding = CatalogBinding::new(
+        authority.catalogs.clone(),
+        source.catalog_url.as_ref(),
+        &source.profile,
+        key.as_deref().unwrap_or(""),
+    );
+    let request = match (&source.catalog_url, key) {
+        (None, _) => None,
+        (Some(url), None) => Some((source.profile.id.clone(), url.clone(), None)),
+        (Some(url), Some(key)) => Credential::new(key)
+            .ok()
+            .map(|key| (source.profile.id.clone(), url.clone(), Some(key))),
+    };
+    Ok((binding, request))
+}
+
 /// Shared immediate revocation plus an opaque confirmed configuration. A saved
 /// update creates a fresh runtime; it never reactivates an older revoked handle.
 #[derive(Clone)]
@@ -129,30 +207,11 @@ impl SavedConnectionRuntime {
         profile.headers = headers;
         validate_connection(authority, &profile, &key).map_err(|e| invalid(e.to_string()))?;
         let catalog = if authority.provenance == super::super::AuthorityProvenance::Production {
-            let source = expected
-                .catalog_source(id)
-                .map_err(|e| invalid(e.to_string()))?;
-            let source_key = if source
-                .catalog_url
-                .as_ref()
-                .is_some_and(|url| url.uses_gateway_credential(&source.profile))
-            {
-                field::<String>(
-                    &expected.entries[expected
-                        .index(&source.profile.id)
-                        .map_err(|e| invalid(e.to_string()))?],
-                    "apiKey",
-                )
-                .map_err(|e| invalid(e.to_string()))?
-            } else {
-                String::new()
-            };
-            Some(CatalogBinding::new(
-                authority.catalogs.clone(),
-                source.catalog_url.as_ref(),
-                &source.profile,
-                &source_key,
-            ))
+            Some(
+                catalog_source(authority, expected, id)
+                    .map_err(|e| invalid(e.to_string()))?
+                    .0,
+            )
         } else {
             None
         };

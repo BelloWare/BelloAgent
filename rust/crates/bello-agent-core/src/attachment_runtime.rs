@@ -195,6 +195,25 @@ impl Controller {
                 .configuration()
                 .is_some_and(|config| config.effective_profile(None).supports_images())
     }
+    /// The passive model listing for this chat's saved native connection, or
+    /// None when nothing needs fetching. Reads the vault: call it off the UI
+    /// thread. Loading the request publishes its list to the chat, so
+    /// `supports_image_attachments` then reflects the catalog's input.
+    pub fn model_catalog_request(&self) -> Option<crate::model_catalog::CatalogRequest> {
+        if self.is_retired() {
+            return None;
+        }
+        self.configuration()?.connection.as_ref()?.catalog_request()
+    }
+    /// Cheap and lock-only: whether `model_catalog_request` could return a
+    /// request now. Never reads the vault.
+    pub fn model_catalog_stale(&self) -> bool {
+        !self.is_retired()
+            && self
+                .configuration()
+                .and_then(|config| config.connection.clone())
+                .is_some_and(|lease| lease.catalog_stale())
+    }
     fn use_fixture_images(&self, config: &Configuration) -> bool {
         #[cfg(all(not(target_os = "macos"), any(test, feature = "synthetic-authority")))]
         {
