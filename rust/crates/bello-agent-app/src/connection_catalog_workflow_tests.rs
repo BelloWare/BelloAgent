@@ -571,3 +571,65 @@ fn catalog_refresh_detecting_external_vault_revision_clears_stale_choices(cx: &m
     });
     act(window, Intent::Cancel, cx);
 }
+
+#[gpui::test]
+fn native_settings_catalog_browse_refresh_choose_and_save_are_explicit_and_fixture_safe(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, control, window, root, _id) = native_mode_saved_fixture(cx);
+    let gateway = Gateway::new();
+    window
+        .update(cx, |view, window, cx| view.open_connections(window, cx))
+        .unwrap();
+    edit(&root, cx, |f| {
+        f.base_url = gateway.url.clone();
+        f.catalog_url = format!("{}/catalog", gateway.url);
+        f.key = SYNTHETIC_KEY.into();
+    });
+    assert_eq!(gateway.count("get"), 0);
+    act(window, Intent::BrowseCatalog, cx);
+    loaded(&root, cx);
+    assert_eq!(gateway.count("get"), 1);
+    assert_eq!(catalog(&root, cx).total, 169);
+    choose(&root, window, "fixture-model-169", cx);
+    act(window, Intent::RefreshCatalog, cx);
+    loaded(&root, cx);
+    assert_eq!(gateway.count("get"), 2);
+    cx.read(|cx| {
+        let view = root.read(cx);
+        let draft = view.connections.forms[view.connections.active.as_ref().unwrap()]
+            .capture()
+            .unwrap();
+        assert_eq!(draft.profile.model_id, "fixture-model-169");
+        assert_eq!(draft.profile.model_output_limit, Some(8192));
+        assert_eq!(
+            draft.profile.input,
+            ["text"],
+            "catalog capability is not persisted as declared input"
+        );
+    });
+    act(window, Intent::SaveAll, cx);
+    assert_eq!(gateway.count("get"), 2, "Save never refreshes the catalog");
+    assert_eq!(gateway.count("post"), 0);
+    root.update(cx, |view, cx| {
+        view.chat_models = Default::default();
+        view.list_chat_models(cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        gateway.count("get"),
+        2,
+        "fixture-provenance chats never list their catalog passively"
+    );
+    let saved = control.authority().load_connections().unwrap();
+    let model = saved
+        .profiles()
+        .iter()
+        .find(|saved| saved.profile.model_id == "fixture-model-169")
+        .unwrap();
+    assert_eq!(model.profile.model_output_limit, Some(8192));
+    assert!(
+        !model.profile.supports_images(),
+        "Native presentation never relaxes fixture provenance"
+    );
+}

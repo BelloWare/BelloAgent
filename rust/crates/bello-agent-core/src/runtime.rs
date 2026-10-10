@@ -91,6 +91,12 @@ pub struct Configuration {
     connection: Option<Arc<crate::project_authority::connections::ConnectionLease>>,
 }
 impl Configuration {
+    pub(crate) fn effective_profile(&self, item: Option<&Submission>) -> Profile {
+        match &self.connection {
+            Some(connection) => connection.effective_profile(&self.profile, item),
+            None => tool_runtime::effective_profile(&self.profile, item),
+        }
+    }
     pub(crate) fn saved_connection(
         profile: Profile,
         credential: Credential,

@@ -35,6 +35,7 @@ struct RetainedForm {
     draft: ConnectionDraft,
     fields: ConnectionFields,
     baseline: ConnectionFields,
+    preserve_declared_input: bool,
 }
 impl RetainedForm {
     fn new(draft: ConnectionDraft) -> Self {
@@ -43,6 +44,7 @@ impl RetainedForm {
             draft,
             baseline: fields.clone(),
             fields,
+            preserve_declared_input: false,
         }
     }
     fn dirty(&self) -> bool {
@@ -58,7 +60,9 @@ impl RetainedForm {
         if fields.model != self.fields.model {
             self.draft.profile.model_id = fields.model.clone();
             self.draft.profile.model_output_limit = None;
-            self.draft.profile.input = vec!["text".into()];
+            if !self.preserve_declared_input {
+                self.draft.profile.input = vec!["text".into()];
+            }
         }
         self.fields = fields;
     }
@@ -81,7 +85,9 @@ impl RetainedForm {
         draft.catalog_url = self.fields.catalog_url.clone();
         if draft.profile.model_id != self.fields.model {
             draft.profile.model_output_limit = None;
-            draft.profile.input = vec!["text".into()];
+            if !self.preserve_declared_input {
+                draft.profile.input = vec!["text".into()];
+            }
         }
         draft.profile.model_id = self.fields.model.clone();
         draft.profile.context_window = self
@@ -120,7 +126,9 @@ fn new_form(mode: crate::launch_authority::AuthorityMode) -> RetainedForm {
         profile.model_id.clear();
     }
     // Establish the actual blank Native baseline before metadata dirty tracking.
-    RetainedForm::new(ConnectionDraft::new(profile, "New connection".into()))
+    let mut form = RetainedForm::new(ConnectionDraft::new(profile, "New connection".into()));
+    form.preserve_declared_input = mode == crate::launch_authority::AuthorityMode::Native;
+    form
 }
 
 pub(crate) struct ConnectionSettingsController {
@@ -290,6 +298,10 @@ impl ConnectionSettingsController {
             self.draft_notice_owner = None;
         }
     }
+    /// The saved connections' revision this window last read, if any.
+    pub(crate) fn saved_revision(&self) -> Option<i64> {
+        self.loaded.as_ref().map(LoadedConnections::revision)
+    }
     fn install(&mut self, loaded: LoadedConnections, discard: bool) {
         if discard {
             self.catalogs.clear();
@@ -299,8 +311,10 @@ impl ConnectionSettingsController {
             if (discard || self.forms.get(&p.profile.id).is_none_or(|f| !f.dirty()))
                 && let Ok(draft) = loaded.edit(&p.profile.id)
             {
-                self.forms
-                    .insert(p.profile.id.clone(), RetainedForm::new(draft));
+                let mut form = RetainedForm::new(draft);
+                form.preserve_declared_input =
+                    self.presentation.mode == crate::launch_authority::AuthorityMode::Native;
+                self.forms.insert(p.profile.id.clone(), form);
             }
         }
         self.forms.retain(|id, form| {

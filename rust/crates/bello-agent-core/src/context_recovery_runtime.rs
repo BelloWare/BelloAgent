@@ -608,7 +608,7 @@ impl Controller {
         previous_instructions: &str,
         definitions: &[crate::tools::ToolDefinition],
     ) -> Result<()> {
-        let profile = tool_runtime::effective_profile(&configuration.profile, Some(item));
+        let profile = configuration.effective_profile(Some(item));
         let instructions = applied
             .map(|value| value.instructions.as_str())
             .unwrap_or(previous_instructions);

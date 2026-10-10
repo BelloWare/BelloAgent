@@ -463,6 +463,7 @@ fn failed_and_possible_commit_saves_preserve_draft_and_baseline() {
         let authority = ProjectAuthority {
             provenance: super::super::AuthorityProvenance::Production,
             storage: Some(storage),
+            ..ProjectAuthority::default()
         };
         let mut draft = authority.load().unwrap().edit();
         let project = draft.trust_project(ID, directory.path(), &[]).unwrap();
@@ -531,6 +532,7 @@ fn update_that_mutates_before_authentication_failure_retains_uncertainty() {
     let authority = ProjectAuthority {
         provenance: super::super::AuthorityProvenance::Production,
         storage: Some(storage),
+        ..ProjectAuthority::default()
     };
     let mut draft = authority.load().unwrap().edit();
     let project = draft.trust_project(ID, directory.path(), &[]).unwrap();

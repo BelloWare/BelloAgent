@@ -1020,42 +1020,63 @@ fn catalog_query_values_are_redacted_in_form_event_and_presentation_debug() {
 }
 
 #[gpui::test]
-fn native_form_keeps_manual_controls_without_hidden_catalog_focus_targets(cx: &mut TestAppContext) {
+fn native_form_exposes_catalog_fields_and_actions_without_losing_manual_alias(
+    cx: &mut TestAppContext,
+) {
     let mut p = ready();
     p.mode = crate::launch_authority::AuthorityMode::Native;
-    p.active.as_mut().unwrap().catalog.opened = true;
+    let model = bello_agent_core::model_catalog::bundled()
+        .unwrap()
+        .remove(0);
+    let catalog = &mut p.active.as_mut().unwrap().catalog;
+    catalog.opened = true;
+    catalog.pages = 1;
+    catalog.models = vec![model.clone()];
+    let generation = catalog.generation;
     let (window, root, events) = fixture(cx, p);
     root.update(cx, |host, cx| {
         host.panel.update(cx, |panel, cx| {
             let controls = panel.current_controls();
-            for field in [Field::CatalogUrl, Field::CatalogSearch] {
-                assert!(!controls.contains(&Control::Field(field)));
-                assert!(!panel.control_enabled(&Control::Field(field)));
+            for field in [Field::CatalogUrl, Field::CatalogSearch, Field::Model] {
+                assert!(controls.contains(&Control::Field(field)));
+                assert!(panel.control_enabled(&Control::Field(field)));
             }
             for intent in [
                 ConnectionSettingsIntent::BrowseCatalog,
                 ConnectionSettingsIntent::RefreshCatalog,
                 ConnectionSettingsIntent::CloseCatalog,
-                ConnectionSettingsIntent::CatalogPage(0),
                 ConnectionSettingsIntent::ChooseCatalog {
-                    id: "model".into(),
-                    generation: uuid::Uuid::new_v4(),
+                    id: model.id.clone(),
+                    generation,
                 },
             ] {
-                assert!(!panel.presentation.allows(&intent));
-                panel.dispatch(panel.token(), intent, cx);
+                assert!(panel.presentation.allows(&intent));
+                assert!(controls.contains(&Control::Intent(intent)));
             }
-            assert!(controls.contains(&Control::Field(Field::Model)));
             assert!(
                 panel
                     .presentation
                     .allows(&ConnectionSettingsIntent::SaveAll)
             );
+            panel.dispatch(panel.token(), ConnectionSettingsIntent::BrowseCatalog, cx);
         })
     });
     cx.run_until_parked();
-    assert!(events.borrow().is_empty());
+    assert_eq!(events.borrow().len(), 1);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    assert!(visual.debug_bounds("settings-catalog-url").is_none());
-    assert!(visual.debug_bounds("settings-browse-models").is_none());
+    assert!(visual.debug_bounds("settings-catalog-url").is_some());
+    cx.read(|cx| {
+        let panel = root.read(cx).panel.read(cx);
+        let browse = panel
+            .controls
+            .iter()
+            .find(|control| {
+                control.control == Control::Intent(ConnectionSettingsIntent::BrowseCatalog)
+            })
+            .unwrap();
+        assert!(
+            browse.bounds.get().is_some(),
+            "the native catalog button was laid out"
+        );
+    });
 }

@@ -193,7 +193,35 @@ impl Controller {
         !self.is_retired()
             && self
                 .configuration()
-                .is_some_and(|config| config.profile.supports_images())
+                .is_some_and(|config| config.effective_profile(None).supports_images())
+    }
+    /// The passive model listing for this chat's saved native connection, or
+    /// None when nothing needs fetching. Reads the vault: call it off the UI
+    /// thread. Loading the request publishes its list to the chat, so
+    /// `supports_image_attachments` then reflects the catalog's input.
+    /// `saved_revision` is the saved connections' revision the caller last
+    /// read; when it is newer than this chat's, the chat's catalog source is
+    /// resolved from the vault again.
+    pub fn model_catalog_request(
+        &self,
+        saved_revision: Option<i64>,
+    ) -> Option<crate::model_catalog::CatalogRequest> {
+        if self.is_retired() {
+            return None;
+        }
+        self.configuration()?
+            .connection
+            .as_ref()?
+            .catalog_request(saved_revision)
+    }
+    /// Cheap and lock-only: whether `model_catalog_request` could return a
+    /// request now. Never reads the vault.
+    pub fn model_catalog_stale(&self, saved_revision: Option<i64>) -> bool {
+        !self.is_retired()
+            && self
+                .configuration()
+                .and_then(|config| config.connection.clone())
+                .is_some_and(|lease| lease.catalog_stale(saved_revision))
     }
     fn use_fixture_images(&self, config: &Configuration) -> bool {
         #[cfg(all(not(target_os = "macos"), any(test, feature = "synthetic-authority")))]
@@ -227,7 +255,7 @@ impl Controller {
         if item.attachments.is_empty() && item.frozen_skills.is_empty() {
             return Ok(None);
         }
-        let profile = super::tool_runtime::effective_profile(&config.profile, Some(item));
+        let profile = config.effective_profile(Some(item));
         if !item.attachments.is_empty() && !profile.supports_images() {
             return Err(invalid(crate::attachments::IMAGES_UNSUPPORTED));
         }

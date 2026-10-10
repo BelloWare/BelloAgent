@@ -344,6 +344,7 @@ pub(crate) enum AuthorityProvenance {
 pub struct ProjectAuthority {
     storage: Option<Arc<dyn VaultStorage>>,
     provenance: AuthorityProvenance,
+    catalogs: Arc<crate::model_catalog::CatalogCache>,
 }
 impl ProjectAuthority {
     pub fn new() -> Self {
@@ -369,6 +370,7 @@ impl ProjectAuthority {
         let authority = Self {
             storage: Some(control.storage.clone()),
             provenance: AuthorityProvenance::Fixture,
+            ..Self::default()
         };
         Ok((authority, control))
     }
@@ -377,6 +379,7 @@ impl ProjectAuthority {
         Self {
             storage: Some(storage),
             provenance: AuthorityProvenance::Production,
+            ..Self::default()
         }
     }
     fn storage(&self) -> AuthorityResult<&dyn VaultStorage> {
@@ -652,6 +655,7 @@ pub mod synthetic {
             ProjectAuthority {
                 storage: Some(self.storage.clone()),
                 provenance: AuthorityProvenance::Fixture,
+                ..ProjectAuthority::default()
             }
         }
         pub(super) fn new(bytes: Option<Vec<u8>>) -> AuthorityResult<Self> {

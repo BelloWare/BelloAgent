@@ -2408,29 +2408,34 @@ fn unavailable_receipt_non_not_found_metadata_error_is_not_absence(cx: &mut Test
 mod catalog_workflow;
 
 #[gpui::test]
-fn native_catalog_intents_never_read_vault_or_create_catalog_work(cx: &mut TestAppContext) {
+fn native_catalog_preparation_failure_reads_saved_authority_and_keeps_draft(
+    cx: &mut TestAppContext,
+) {
     let (_dir, control, window, root, _id) = native_mode_saved_fixture(cx);
     window
         .update(cx, |view, window, cx| view.open_connections(window, cx))
         .unwrap();
     control.fail_next_read(AuthorityError::Denied).unwrap();
-    root.update(cx, |view, cx| {
-        assert!(view.connections.presentation.mode.editable());
-        assert!(!view.connections.presentation.mode.is_fixture());
-        view.load_connection_catalog(false, cx);
-        view.load_connection_catalog(true, cx);
-        view.choose_connection_model("must-not-apply", uuid::Uuid::new_v4());
-        assert!(view.connections.catalogs.is_empty());
+    act(window, Intent::BrowseCatalog, cx);
+    cx.read(|cx| {
+        let view = root.read(cx);
+        let state = view
+            .connections
+            .presentation
+            .active
+            .as_ref()
+            .unwrap()
+            .catalog
+            .clone();
+        assert!(state.opened && !state.loading);
+        assert!(state.error.is_some());
+        assert!(state.models.is_empty());
         assert!(!view.connections.presentation.dirty);
         assert!(view.connections.operation.is_none());
     });
-    cx.run_until_parked();
     assert!(
-        matches!(
-            control.authority().load_connections(),
-            Err(AuthorityError::Denied)
-        ),
-        "catalog actions must leave the pending read failure untouched"
+        control.authority().load_connections().is_ok(),
+        "explicit browse consumed the saved-authority read failure"
     );
 }
 

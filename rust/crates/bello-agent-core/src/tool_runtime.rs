@@ -47,7 +47,7 @@ impl RuntimeOptions {
 
 /// Submission overrides apply only after delivery, including an explicit Retry.
 /// Preview and dispatch use this same profile selection.
-pub(super) fn effective_profile(base: &Profile, item: Option<&Submission>) -> Profile {
+pub(crate) fn effective_profile(base: &Profile, item: Option<&Submission>) -> Profile {
     let mut profile = base.clone();
     if let Some(item) = item {
         if let Some(model) = &item.model {
@@ -472,7 +472,7 @@ impl Controller {
                 .active_reply
                 .clone()
                 .expect("active reply assigned");
-            let profile = effective_profile(&config.profile, Some(&item));
+            let profile = config.effective_profile(Some(&item));
             let callback_id = reply_id.clone();
             let callback_self = Arc::clone(self);
             let instructions = self.turn_instructions(&item);

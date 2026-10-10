@@ -1,6 +1,8 @@
 //! Read-only request inspection, following SessionContext.swift's prepared
 //! request contract. No preview is stored in the session or sent to a provider.
-use super::{Controller, tool_runtime::effective_profile};
+use super::Controller;
+#[cfg(test)]
+use super::tool_runtime::effective_profile;
 use crate::{Message, Result, Session, invalid};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -219,10 +221,8 @@ impl Controller {
             authority.confirm()?;
         }
         config.confirm(!active)?;
-        let profile = effective_profile(
-            &config.profile,
-            active.then_some(snapshot.active.as_ref()).flatten(),
-        );
+        let profile =
+            config.effective_profile(active.then_some(snapshot.active.as_ref()).flatten());
         let boundary = preview_messages(&snapshot, active);
         let context_messages = crate::compaction::active_context(boundary)?.len();
         let mut messages = Cow::Borrowed(boundary);

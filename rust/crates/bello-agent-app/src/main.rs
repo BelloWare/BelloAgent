@@ -155,6 +155,7 @@ struct LaunchState {
 struct AgentView {
     chat: ChatState,
     attachment_picker: Option<composer_attachments::PickerOperation>,
+    chat_models: composer_attachments::ChatModelListing,
     skill_picker: Option<project_skills_view::SkillPicker>,
     inactive: BTreeMap<String, ChatState>,
     records: Vec<ChatRecord>,
@@ -437,6 +438,7 @@ impl AgentView {
         let launch_topic_reveal = state.effective_topic_id(&chat.record).map(str::to_owned);
         let mut view = Self {
             attachment_picker: None,
+            chat_models: Default::default(),
             skill_picker: None,
             chat,
             inactive: BTreeMap::new(),
@@ -3315,6 +3317,7 @@ impl Render for AgentView {
         self.refresh_dock_badge(cx);
         #[cfg(any(target_os = "macos", test))]
         self.sync_menus(cx);
+        self.list_chat_models(cx);
         let palette = current_palette(window);
         if self.palette != palette {
             self.palette = palette;

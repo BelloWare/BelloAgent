@@ -103,7 +103,11 @@ impl Controller {
             });
             let result = admitted.and_then(|()| {
                 inner.store.transact(|session| {
-                    session.begin_compaction(&operation_id, &configuration.profile, release_queue)
+                    session.begin_compaction(
+                        &operation_id,
+                        &configuration.effective_profile(None),
+                        release_queue,
+                    )
                 })
             });
             inner.compaction_pending = false;
@@ -176,7 +180,7 @@ impl Controller {
             })
             .unwrap_or_else(|| self.options.instructions.clone());
         let definitions = self.options.definitions();
-        let preparation_profile = configuration.profile.clone();
+        let preparation_profile = configuration.effective_profile(None);
         let preparation_instructions = instructions.clone();
         let preparation_definitions = definitions.clone();
         let preparation_id = operation_id.clone();
@@ -234,7 +238,7 @@ impl Controller {
                 self.publish(&inner);
             }
             let (candidate, observation) = self.summarize_prepared(
-                &configuration, &prepared, &configuration.profile, &instructions,
+                &configuration, &prepared, &configuration.effective_profile(None), &instructions,
                 &session_id, &definitions, &format!("compaction:{operation_id}"),
                 cancel.clone(), |delta| self.stream_delta(&reply_id, delta),
             ).await;

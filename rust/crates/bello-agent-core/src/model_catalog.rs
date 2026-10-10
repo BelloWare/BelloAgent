@@ -1,9 +1,14 @@
-//! Bounded operator catalog metadata. Catalogs never discover provider models,
-//! grant model inputs, or change runtime routing. Remote transport is fixture-only.
+//! Bounded operator catalog metadata. Explicit catalog URLs never discover
+//! provider models or change routing. Native inputs merge with declared inputs.
 use crate::{Credential, Profile};
 use futures_util::StreamExt;
 use serde_json::{Map, Value};
-use std::{collections::HashSet, fmt, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
 pub use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -77,12 +82,15 @@ impl CatalogUrl {
             return Err(CatalogError::Url);
         }
         let url = Url::parse(value).map_err(|_| CatalogError::Url)?;
-        let loopback = match url.host() {
-            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-            None => false,
-        };
+        // Swift permits these explicit HTTP hosts, not alternate numeric forms
+        // which URL parsers can normalize to 127.0.0.1 (e.g. 127.1).
+        let host = authority
+            .strip_prefix('[')
+            .and_then(|value| value.split_once(']').map(|(host, _)| host))
+            .unwrap_or_else(|| authority.split(':').next().unwrap_or_default());
+        let loopback = ["localhost", "127.0.0.1", "::1"]
+            .iter()
+            .any(|allowed| host.eq_ignore_ascii_case(allowed));
         if !(url.scheme() == "https" || url.scheme() == "http" && loopback)
             || url.host().is_none()
             || !url.username().is_empty()
@@ -156,7 +164,14 @@ pub enum CatalogError {
 }
 
 pub fn bundled() -> Result<Vec<ModelDescriptor>, CatalogError> {
-    parse(BUNDLED).map_err(|_| CatalogError::BundledUnavailable)
+    bundled_models().cloned()
+}
+fn bundled_models() -> Result<&'static Vec<ModelDescriptor>, CatalogError> {
+    static MODELS: OnceLock<Result<Vec<ModelDescriptor>, CatalogError>> = OnceLock::new();
+    MODELS
+        .get_or_init(|| parse(BUNDLED).map_err(|_| CatalogError::BundledUnavailable))
+        .as_ref()
+        .map_err(Clone::clone)
 }
 fn text(value: Option<&Value>, clean: bool) -> String {
     let Some(mut value) = value.and_then(Value::as_str) else {
@@ -309,16 +324,208 @@ pub fn parse(body: &[u8]) -> Result<Vec<ModelDescriptor>, CatalogError> {
 }
 
 /// An opaque, single-use request. Neither endpoint nor credential is formatted.
-/// Only ProjectAuthority can authorize remote fixture construction.
+/// Only ProjectAuthority can authorize native or fixture construction.
 pub struct CatalogRequest {
     source_id: Option<String>,
     remote: Option<(CatalogUrl, Option<Credential>)>,
+    binding: Option<CatalogBinding>,
+    publication: Option<CatalogPublication>,
+    join: bool,
+}
+
+/// Authority-local metadata only. Fingerprints include the credential only for
+/// same-origin catalogs, without retaining another copy of its plaintext.
+#[derive(Default)]
+pub(crate) struct CatalogCache(Mutex<BTreeMap<[u8; 32], CachedCatalog>>);
+/// Swift's ModelCatalog.Entry freshness: a listing is reused for five minutes,
+/// a failure is not retried for thirty seconds unless forced, and a failed
+/// refresh keeps the last good list beside it.
+pub(crate) const CATALOG_TTL: Duration = Duration::from_secs(300);
+pub(crate) const CATALOG_FAILURE_RETRY: Duration = Duration::from_secs(30);
+struct CachedCatalog {
+    generation: uuid::Uuid,
+    loading: bool,
+    fetched: Option<std::time::Instant>,
+    error: Option<CatalogError>,
+    models: Arc<Vec<ModelDescriptor>>,
+}
+/// What a source's shared entry can answer without a request: a list
+/// fetched within five minutes, or a failure within its thirty-second retry
+/// beside the last good list.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SharedCatalog {
+    Fresh(Vec<ModelDescriptor>),
+    Failed {
+        models: Vec<ModelDescriptor>,
+        error: CatalogError,
+    },
+}
+struct CatalogPublication {
+    cache: Arc<CatalogCache>,
+    identity: [u8; 32],
+    generation: uuid::Uuid,
+}
+#[derive(Clone)]
+pub(crate) struct CatalogBinding {
+    cache: Arc<CatalogCache>,
+    identity: Option<[u8; 32]>,
+}
+impl CatalogBinding {
+    pub(crate) fn new(
+        cache: Arc<CatalogCache>,
+        url: Option<&CatalogUrl>,
+        profile: &Profile,
+        key: &str,
+    ) -> Self {
+        use sha2::{Digest, Sha256};
+        let identity = url.map(|url| {
+            let mut hash = Sha256::new();
+            for value in [
+                profile.api.as_str(),
+                profile.base_url.as_str(),
+                url.0.as_str(),
+                if url.uses_gateway_credential(profile) {
+                    key
+                } else {
+                    ""
+                },
+            ] {
+                hash.update((value.len() as u64).to_le_bytes());
+                hash.update(value.as_bytes());
+            }
+            hash.finalize().into()
+        });
+        Self { cache, identity }
+    }
+    fn begin(&self) -> Option<CatalogPublication> {
+        let identity = self.identity?;
+        let mut entries = self.cache.0.lock().ok()?;
+        let generation = uuid::Uuid::new_v4();
+        if !entries.contains_key(&identity) && entries.len() >= 128 {
+            let first = *entries.keys().next()?;
+            entries.remove(&first);
+        }
+        let entry = entries.entry(identity).or_insert_with(|| CachedCatalog {
+            generation,
+            loading: false,
+            fetched: None,
+            error: None,
+            models: Arc::new(vec![]),
+        });
+        entry.generation = generation;
+        entry.loading = true;
+        Some(CatalogPublication {
+            cache: self.cache.clone(),
+            identity,
+            generation,
+        })
+    }
+    /// A custom catalog that a passive (unforced) listing would fetch now:
+    /// never listed, stale, or past its failure retry, and not already loading.
+    /// The bundled catalog needs no request.
+    pub(crate) fn needs_load(&self) -> bool {
+        let Some(identity) = self.identity else {
+            return false;
+        };
+        let Ok(entries) = self.cache.0.lock() else {
+            return false;
+        };
+        let Some(entry) = entries.get(&identity) else {
+            return true;
+        };
+        !entry.loading
+            && entry.fetched.is_none_or(|fetched| {
+                fetched.elapsed()
+                    >= if entry.error.is_some() {
+                        CATALOG_FAILURE_RETRY
+                    } else {
+                        CATALOG_TTL
+                    }
+            })
+    }
+    fn shared(&self) -> Option<SharedCatalog> {
+        let identity = self.identity?;
+        let entries = self.cache.0.lock().ok()?;
+        let entry = entries.get(&identity)?;
+        let age = entry.fetched?.elapsed();
+        match &entry.error {
+            None if age < CATALOG_TTL => Some(SharedCatalog::Fresh(entry.models.as_ref().clone())),
+            Some(error) if age < CATALOG_FAILURE_RETRY => Some(SharedCatalog::Failed {
+                models: entry.models.as_ref().clone(),
+                error: error.clone(),
+            }),
+            _ => None,
+        }
+    }
+    fn loading(&self) -> bool {
+        self.identity.is_some_and(|identity| {
+            self.cache
+                .0
+                .lock()
+                .is_ok_and(|entries| entries.get(&identity).is_some_and(|entry| entry.loading))
+        })
+    }
+    pub(crate) fn same_source(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.cache, &other.cache) && self.identity == other.identity
+    }
+    pub(crate) fn descriptor(&self, model: &str) -> Option<ModelDescriptor> {
+        if let Some(identity) = self.identity {
+            self.cache
+                .0
+                .lock()
+                .ok()?
+                .get(&identity)?
+                .models
+                .iter()
+                .find(|row| row.id == model)
+                .cloned()
+        } else {
+            bundled_models()
+                .ok()?
+                .iter()
+                .find(|row| row.id == model)
+                .cloned()
+        }
+    }
+}
+impl CatalogPublication {
+    /// Only the newest listing for a source writes its entry. A cancelled or
+    /// abandoned listing writes nothing but stops counting as in flight.
+    fn finish(&self, result: Option<&Result<Vec<ModelDescriptor>, CatalogError>>) {
+        if let Ok(mut entries) = self.cache.0.lock()
+            && let Some(entry) = entries.get_mut(&self.identity)
+            && entry.generation == self.generation
+            && entry.loading
+        {
+            entry.loading = false;
+            match result {
+                Some(Ok(models)) => {
+                    entry.models = Arc::new(models.clone());
+                    entry.fetched = Some(std::time::Instant::now());
+                    entry.error = None;
+                }
+                Some(Err(error)) => {
+                    entry.fetched = Some(std::time::Instant::now());
+                    entry.error = Some(error.clone());
+                }
+                None => {}
+            }
+        }
+    }
+}
+impl Drop for CatalogPublication {
+    fn drop(&mut self) {
+        self.finish(None);
+    }
 }
 impl CatalogRequest {
     pub(crate) fn bundled(source_id: Option<String>) -> Self {
         Self {
             source_id,
             remote: None,
+            binding: None,
+            publication: None,
+            join: false,
         }
     }
     pub(crate) fn fixture(
@@ -329,10 +536,53 @@ impl CatalogRequest {
         if !url.numeric_loopback() {
             return Err(CatalogError::FixtureOnly);
         }
+        if key
+            .as_ref()
+            .is_some_and(|key| key.expose() != crate::project_authority::connections::SYNTHETIC_KEY)
+        {
+            return Err(CatalogError::FixtureOnly);
+        }
         Ok(Self {
             source_id,
             remote: Some((url, key)),
+            binding: None,
+            publication: None,
+            join: false,
         })
+    }
+    pub(crate) fn native(
+        source_id: Option<String>,
+        url: CatalogUrl,
+        key: Option<Credential>,
+        binding: CatalogBinding,
+    ) -> Self {
+        Self {
+            source_id,
+            remote: Some((url, key)),
+            binding: Some(binding),
+            publication: None,
+            join: false,
+        }
+    }
+    /// What this request's source already has, so an unforced listing (Settings
+    /// Choose model) shows the list or failure a chat or another form fetched,
+    /// as Swift's shared catalog entry does. Bundled requests have none.
+    pub fn shared(&self) -> Option<SharedCatalog> {
+        self.binding.as_ref()?.shared()
+    }
+    /// An unforced listing: if the source is already being fetched, wait for
+    /// that fetch and answer with its result instead of superseding it.
+    pub fn joining(mut self) -> Self {
+        self.join = true;
+        self
+    }
+    /// Claim the source's listing now, so a passive caller is joined rather
+    /// than repeated before this request starts loading.
+    pub(crate) fn begin_now(mut self) -> Self {
+        if self.publication.is_none() {
+            self.publication = self.binding.as_ref().and_then(CatalogBinding::begin);
+        }
+        self
     }
     pub fn source_id(&self) -> Option<&str> {
         self.source_id.as_deref()
@@ -373,16 +623,43 @@ impl CatalogRequest {
         let Some((url, key)) = self.remote else {
             return bundled();
         };
-        if !url.numeric_loopback() {
-            return Err(CatalogError::FixtureOnly);
+        if self.join
+            && self.publication.is_none()
+            && let Some(binding) = &self.binding
+        {
+            while binding.loading() {
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(CatalogError::Cancelled),
+                    _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+                }
+            }
+            match binding.shared() {
+                Some(SharedCatalog::Fresh(models)) => return Ok(models),
+                Some(SharedCatalog::Failed { error, .. }) => return Err(error),
+                None => {}
+            }
         }
-        tokio::select! {
+        // The newest listing for a source owns its shared entry from here.
+        let publication = self
+            .publication
+            .or_else(|| self.binding.as_ref().and_then(CatalogBinding::begin));
+        let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(CatalogError::Cancelled),
             result = tokio::time::timeout(limits.total, fetch(url, key, limits)) => {
-                result.map_err(|_| CatalogError::TimedOut)?
+                result.unwrap_or(Err(CatalogError::TimedOut))
             }
+        };
+        if cancel.is_cancelled() {
+            return Err(CatalogError::Cancelled);
         }
+        if let Some(publication) = &publication
+            && !matches!(result, Err(CatalogError::Cancelled))
+        {
+            publication.finish(Some(&result));
+        }
+        result
     }
 }
 struct AbortFetch(tokio::task::JoinHandle<Result<Vec<ModelDescriptor>, CatalogError>>);

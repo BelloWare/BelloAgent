@@ -1,12 +1,12 @@
 //! A bounded Settings connection slice in the existing whole-envelope vault.
-//! Unknown fields remain raw; no native composition or credential entry is enabled.
+//! Unknown fields remain raw; catalog metadata never changes dispatch routing.
 //! Source: ConfigurationVault, WorkspaceConfiguration and SettingsConnectionForm.
 use super::{
     AuthorityError, AuthorityResult, Fields, LoadedProjects, ProjectAuthority, parse, raw,
 };
 use crate::{
     Credential, Profile,
-    model_catalog::{CatalogRequest, CatalogUrl},
+    model_catalog::{CatalogBinding, CatalogRequest, CatalogUrl},
 };
 use std::{
     collections::{BTreeMap, HashSet},
@@ -650,6 +650,12 @@ impl ProjectAuthority {
         expected: &LoadedConnections,
         draft: &ConnectionDraft,
     ) -> AuthorityResult<CatalogRequest> {
+        if !expected.same_authority(self) {
+            return Err(AuthorityError::Conflict);
+        }
+        if draft.profile.api != "openai-responses" {
+            return Err(AuthorityError::UnsupportedConnection);
+        }
         let mut source_id = None;
         let mut source_profile = &draft.profile;
         let mut selected_url = catalog_url(&draft.catalog_url)?;
@@ -703,18 +709,23 @@ impl ProjectAuthority {
         let Some(url) = selected_url else {
             return Ok(CatalogRequest::bundled(source_id));
         };
-        // This slice never enables production catalog networking, including on
-        // a production connection that happens to name a local endpoint.
         let fixture = match self.provenance {
             #[cfg(feature = "synthetic-authority")]
             super::AuthorityProvenance::Fixture => true,
-            _ => false,
+            super::AuthorityProvenance::Production => false,
+            super::AuthorityProvenance::Unavailable => return Err(AuthorityError::Unavailable),
         };
-        if !fixture || !url.numeric_loopback() {
+        if fixture && !url.numeric_loopback() {
             return Err(AuthorityError::Unavailable);
         }
         let key = if url.uses_gateway_credential(source_profile) {
-            let value = if use_draft_key && !draft.key_input.is_empty() {
+            let typed_valid = !draft.key_input.is_empty()
+                && draft.key_input.len() <= 16_384
+                && !draft.key_input.bytes().any(|byte| byte < 32 || byte == 127);
+            // Swift's draft listing uses a valid typed key, otherwise the saved
+            // key by ID. Fixtures keep rejecting any nonblank nonfixture key.
+            let value = if use_draft_key && (typed_valid || fixture && !draft.key_input.is_empty())
+            {
                 draft.key_input.clone()
             } else {
                 source_entry
@@ -722,14 +733,25 @@ impl ProjectAuthority {
                     .transpose()?
                     .unwrap_or_default()
             };
-            if value != SYNTHETIC_KEY {
+            if fixture && value != SYNTHETIC_KEY {
                 return Err(AuthorityError::InvalidConnection);
             }
             Some(Credential::new(value).map_err(|_| AuthorityError::InvalidConnection)?)
         } else {
             None
         };
-        CatalogRequest::fixture(source_id, url, key).map_err(|_| AuthorityError::InvalidConnection)
+        if fixture {
+            CatalogRequest::fixture(source_id, url, key)
+                .map_err(|_| AuthorityError::InvalidConnection)
+        } else {
+            let binding = CatalogBinding::new(
+                self.catalogs.clone(),
+                Some(&url),
+                source_profile,
+                key.as_ref().map(Credential::expose).unwrap_or(""),
+            );
+            Ok(CatalogRequest::native(source_id, url, key, binding))
+        }
     }
     pub fn confirm_connection(
         &self,

@@ -1109,6 +1109,7 @@ impl AgentView {
             return;
         }
         self.connections.cancel_catalog_loads();
+        self.chat_models = Default::default();
         self.sidebar_search.block_all();
         self.shutting_down = true;
         self.sidebar_run_states.cancel_pending();

@@ -1,7 +1,9 @@
-//! Form-scoped catalog state. Lists never change dispatch routing, grant model
-//! capabilities, write the vault or submit a turn. Publication is source-fenced.
+//! Form-scoped catalog state. Lists never change dispatch routing, write the
+//! vault or submit a turn. Publication is source-fenced.
 use super::*;
-use bello_agent_core::model_catalog::{CancellationToken, ModelDescriptor};
+use bello_agent_core::model_catalog::{
+    CancellationToken, CatalogError, ModelDescriptor, SharedCatalog,
+};
 use std::time::{Duration, Instant};
 
 const PAGE_SIZE: usize = 40;
@@ -29,6 +31,17 @@ impl SourceIdentity {
             headers: form.fields.headers.clone(),
         }
     }
+}
+
+/// What background preparation and listing came to.
+pub(super) enum Listing {
+    Unprepared,
+    Listed {
+        bundled: bool,
+        inherited: bool,
+        retained: Option<Vec<ModelDescriptor>>,
+        result: Result<Vec<ModelDescriptor>, CatalogError>,
+    },
 }
 
 pub(super) struct CatalogState {
@@ -158,7 +171,6 @@ impl ConnectionSettingsController {
 impl AgentView {
     pub(super) fn load_connection_catalog(&mut self, force: bool, cx: &mut Context<Self>) {
         if !self.connections.open
-            || !self.connections.presentation.mode.is_fixture()
             || self.connections.operation.is_some()
             || self.connections.uncertain
         {
@@ -204,43 +216,46 @@ impl AgentView {
             state.source = "Saved connection's catalog".into();
             state.bundled = false;
         }
-        let request = match self.connections.authority.prepare_catalog(&loaded, &draft) {
-            Ok(request) => request,
-            Err(_) => {
-                // A failed authority/source preparation is not a same-source
-                // HTTP refresh failure. The saved revision may have changed.
-                state.models.clear();
-                state.generation = uuid::Uuid::new_v4();
-                state.page = 0;
-                state.error = Some("Couldn't load this catalog. Use a numeric loopback URL and the fixture key for a same-origin catalog; reload saved connections if they changed.".into());
-                state.fetched = Some(Instant::now());
-                self.connections.publish(cx);
-                return;
-            }
-        };
-        state.bundled = request.is_bundled();
-        state.source = if request.is_bundled() {
-            "Bundled Bello catalog"
-        } else if request.source_id().is_some_and(|source| source != id) {
-            "Saved connection's catalog"
-        } else {
-            "Custom catalog"
-        }
-        .into();
+        // Preparing reads the saved vault (Keychain in a native build), so it
+        // runs off the UI thread with the same generation and source fences.
         let cancel = CancellationToken::new();
         state.cancel = Some(cancel.clone());
         state.error = None;
         state.generation = uuid::Uuid::new_v4();
         let generation = state.generation;
         let binding = self.window_binding;
+        let authority = self.connections.authority.clone();
         self.connections.publish(cx);
-        let task = cx
-            .background_executor()
-            .spawn(async move { request.load(cancel).await });
+        let source = id.clone();
+        let task = cx.background_executor().spawn(async move {
+            let Ok(request) = authority.prepare_catalog(&loaded, &draft) else {
+                return Listing::Unprepared;
+            };
+            let bundled = request.is_bundled();
+            let inherited = request.source_id().is_some_and(|id| id != source);
+            // As Swift's shared catalog entry: an unforced Choose model shows
+            // what a chat or another form listed within five minutes (or a
+            // failure within thirty seconds), and joins a listing in flight.
+            // Refresh always fetches.
+            let (retained, result) = match (force, request.shared()) {
+                (false, Some(SharedCatalog::Fresh(models))) => (None, Ok(models)),
+                (false, Some(SharedCatalog::Failed { models, error })) => {
+                    (Some(models), Err(error))
+                }
+                (false, None) => (None, request.joining().load(cancel).await),
+                (true, _) => (None, request.load(cancel).await),
+            };
+            Listing::Listed {
+                bundled,
+                inherited,
+                retained,
+                result,
+            }
+        });
         cx.spawn(async move |owner, cx| {
-            let result = task.await;
+            let listing = task.await;
             let _ = owner.update(cx, |view, cx| {
-                view.finish_connection_catalog(&id, generation, &identity, binding, result, cx);
+                view.finish_connection_catalog(&id, generation, &identity, binding, listing, cx);
             });
         })
         .detach();
@@ -251,12 +266,11 @@ impl AgentView {
         generation: uuid::Uuid,
         identity: &SourceIdentity,
         binding: Option<crate::workspace_lifetime::WindowBinding>,
-        result: Result<Vec<ModelDescriptor>, bello_agent_core::model_catalog::CatalogError>,
+        listing: Listing,
         cx: &mut Context<Self>,
     ) {
         self.connections.sync_catalog_sources();
         if !self.connections.open
-            || !self.connections.presentation.mode.is_fixture()
             || self.shutting_down
             || self.connections.operation.is_some()
             || self.connections.load.is_some()
@@ -274,6 +288,41 @@ impl AgentView {
         }
         state.cancel = None;
         state.fetched = Some(Instant::now());
+        let Listing::Listed {
+            bundled,
+            inherited,
+            retained,
+            result,
+        } = listing
+        else {
+            // A failed authority/source preparation is not a same-source
+            // HTTP refresh failure. The saved revision may have changed.
+            state.models.clear();
+            state.generation = uuid::Uuid::new_v4();
+            state.page = 0;
+            state.error = Some(if self.connections.presentation.mode.is_fixture() {
+                "Couldn't load this catalog. Use a numeric loopback URL and the fixture key for a same-origin catalog; reload saved connections if they changed."
+            } else {
+                "Couldn't load this catalog. Use HTTPS or explicit loopback HTTP and a valid key for a same-origin catalog; reload saved connections if they changed."
+            }.into());
+            self.connections.publish(cx);
+            return;
+        };
+        state.bundled = bundled;
+        state.source = if bundled {
+            "Bundled Bello catalog"
+        } else if inherited {
+            "Saved connection's catalog"
+        } else {
+            "Custom catalog"
+        }
+        .into();
+        if state.models.is_empty()
+            && let Some(models) = retained
+        {
+            state.models = models;
+            state.page = 0;
+        }
         match result {
             Ok(models) => {
                 state.models = models;
@@ -294,9 +343,6 @@ impl AgentView {
         self.connections.publish(cx);
     }
     pub(super) fn choose_connection_model(&mut self, selected: &str, generation: uuid::Uuid) {
-        if !self.connections.presentation.mode.is_fixture() {
-            return;
-        }
         self.connections.sync_catalog_sources();
         let Some(id) = self.connections.active.clone() else {
             return;
@@ -318,12 +364,11 @@ impl AgentView {
         let Some(form) = self.connections.forms.get_mut(&id) else {
             return;
         };
-        #[cfg(feature = "synthetic-authority")]
         match form.capture() {
             Ok(mut draft) => {
                 let changed_alias = draft.profile.model_id != model.id;
                 model.applying(&mut draft.profile);
-                if changed_alias {
+                if changed_alias && !form.preserve_declared_input {
                     draft.profile.input = vec!["text".into()];
                 }
                 let search = form.fields.catalog_search.clone();
@@ -335,8 +380,6 @@ impl AgentView {
             }
             Err(message) => self.connections.notice(message, true),
         }
-        #[cfg(not(feature = "synthetic-authority"))]
-        let _ = (model, form);
     }
 }
 
@@ -421,6 +464,24 @@ mod tests {
         form.update_fields(changed);
         assert_eq!(form.draft.profile.model_output_limit, None);
         assert_eq!(form.draft.profile.input, ["text"]);
+    }
+    #[::core::prelude::v1::test]
+    fn native_manual_alias_edits_preserve_declared_input_while_fixture_edits_reset_it() {
+        use crate::launch_authority::AuthorityMode;
+        for mode in [AuthorityMode::Native, AuthorityMode::Fixture] {
+            let mut form = new_form(mode);
+            form.draft.profile.input = vec!["text".into(), "image".into()];
+            form.draft.profile.model_output_limit = Some(128);
+            let mut changed = form.fields.clone();
+            changed.model = "manual-fake-alias".into();
+            form.update_fields(changed);
+            let captured = form.capture().unwrap();
+            assert_eq!(
+                captured.profile.supports_images(),
+                mode == AuthorityMode::Native
+            );
+            assert_eq!(captured.profile.model_output_limit, None);
+        }
     }
 }
 

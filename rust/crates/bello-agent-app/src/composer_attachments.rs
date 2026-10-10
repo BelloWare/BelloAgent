@@ -99,7 +99,77 @@ impl Render for TextHint {
     }
 }
 
+/// The shown chat's passive model listing, as Swift's model pill lists when a
+/// chat appears or its catalog source changes: once per installed runtime or
+/// configuration, again after saved connections change (a followed source may
+/// have a new URL or key), and only when its saved native connection uses a
+/// custom catalog that is not fresh. The list it loads tells the composer
+/// whether the chat's model takes images. Nothing is saved and no turn is
+/// sent. A listing is shared by every chat on its source, so switching chats
+/// never cancels one; closing the view does.
+#[derive(Default)]
+pub(crate) struct ChatModelListing {
+    controller: Option<Weak<Controller>>,
+    configuration: Option<Weak<bello_agent_core::runtime::Configuration>>,
+    revision: Option<i64>,
+    cancel: bello_agent_core::model_catalog::CancellationToken,
+}
+impl Drop for ChatModelListing {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 impl AgentView {
+    pub(crate) fn list_chat_models(&mut self, cx: &mut Context<Self>) {
+        if self.shutting_down {
+            self.chat_models = Default::default();
+            return;
+        }
+        let controller = self.controller.clone();
+        let configuration = controller.configuration();
+        let revision = self.connections.saved_revision();
+        let listing = &mut self.chat_models;
+        let same_controller = listing
+            .controller
+            .as_ref()
+            .is_some_and(|listed| std::ptr::eq(listed.as_ptr(), Arc::as_ptr(&controller)));
+        let same_configuration = match (&listing.configuration, &configuration) {
+            (Some(listed), Some(current)) => std::ptr::eq(listed.as_ptr(), Arc::as_ptr(current)),
+            (None, None) => true,
+            _ => false,
+        };
+        let revised = revision.is_some() && revision != listing.revision;
+        if revision.is_some() {
+            listing.revision = revision;
+        }
+        if same_controller && same_configuration && !revised {
+            return;
+        }
+        listing.controller = Some(Arc::downgrade(&controller));
+        listing.configuration = configuration.as_ref().map(Arc::downgrade);
+        // Each chat remembers the saved revision it resolved its source at, so
+        // a source changed while this chat was hidden is resolved again when
+        // it shows. Otherwise a fresh or bundled source is settled without
+        // leaving the UI thread.
+        if configuration.is_none() || !controller.model_catalog_stale(revision) {
+            return;
+        }
+        let cancel = listing.cancel.clone();
+        cx.spawn(async move |view, cx| {
+            // Resolving reads the vault (a same-origin key): off the UI thread.
+            let request = cx
+                .background_executor()
+                .spawn(async move { controller.model_catalog_request(revision) })
+                .await;
+            if let Some(request) = request {
+                let _ = request.load(cancel).await;
+            }
+            // Resolving alone can rebind the source to a list already held.
+            let _ = view.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
     pub(crate) fn picker_owns_chat(&self, chat: &str) -> bool {
         self.attachment_picker
             .as_ref()
