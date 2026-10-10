@@ -4,13 +4,14 @@
 //! body size below each; blocks are 10 pt apart, 6 inside items and quotes, 4
 //! between list items and 6 more above a heading, where the spacing TextKit
 //! leaves below a paragraph's last line counts toward the gap. Prose ends 640
-//! pt from the reply's leading edge; code and tables run its full width. Code
-//! sits on a rounded panel with 31 pt above it (where the language and Copy
-//! appear under the pointer) and 10 below, in the system monospaced face at
-//! 0.86 of the body, coloured as Swift colours it. Markers sit right-aligned
-//! in a column of at least 16 pt with 8 before the text; quotes have a 3 pt
-//! bar and a 12 pt gap. Text is drawn through the shaped-text cache, so
-//! unchanged blocks are not shaped again.
+//! pt from the reply's leading edge; code runs its full width. Code sits on a
+//! rounded panel with 31 pt above it (where the language and Copy appear
+//! under the pointer) and 10 below, in the system monospaced face at 0.86 of
+//! the body, coloured as Swift colours it. Markers sit right-aligned in a
+//! column of at least 16 pt with 8 before the text; quotes have a 3 pt bar and
+//! a 12 pt gap. Tables are sized and placed as `NSTextTable` sizes and places
+//! them (`docs/validation/table-swift-oracle-2026-10-10`). Text is drawn
+//! through the shaped-text cache, so unchanged blocks are not shaped again.
 //!
 //! GPUI shapes one text at one size, so a code span keeps its paragraph's size
 //! (Swift draws it at 0.9×) in the monospaced face on the code background.
@@ -137,6 +138,10 @@ pub(super) struct Context<'a> {
     pub window: &'a Window,
     /// Swift's `capsWidth`: prose lines end this far from the leading edge.
     pub prose_width: Option<f32>,
+    /// The reply's column, as wide as Swift's text container: a table
+    /// narrows to fit it as NSTextTable does. None lets a table shrink to
+    /// fit in proportion.
+    pub column: Option<f32>,
     /// The fence whose Copy was just pressed, by its key.
     pub copied: Option<SharedString>,
     /// Copies a fence's code and marks it copied, by its key.
@@ -176,6 +181,17 @@ impl Context<'_> {
     fn panel_strong(&self) -> gpui::Hsla {
         self.alpha(0x0000000f, 0xffffff14)
     }
+    /// Swift's `panel`: a table header's ground.
+    fn panel(&self) -> gpui::Hsla {
+        gpui::Hsla {
+            a: if self.palette.dark { 0.045 } else { 0.035 },
+            ..if self.palette.dark {
+                gpui::white()
+            } else {
+                gpui::black()
+            }
+        }
+    }
     /// Swift's `codeBackground`: a fence's panel.
     fn code_panel(&self) -> gpui::Hsla {
         self.color(0xf6f1ea, 0x211d1a)
@@ -203,6 +219,23 @@ struct Edges {
 struct Part {
     element: AnyElement,
     edges: Edges,
+}
+
+/// Where a block sits. NSTextTable narrows a table to the text container
+/// less the table's leading margin and (as TextKit does) its top margin
+/// rounded up, so a table needs to know what stands above it.
+#[derive(Clone, Copy)]
+struct Room {
+    /// Swift's `capsWidth`: prose lines end this far from the block's edge.
+    prose: Option<f32>,
+    /// The block's leading edge from the column's.
+    indent: f32,
+    /// How the paragraph above the block's first one ended (none at the
+    /// reply's top), and the gap the block is given.
+    above: Option<(Edges, f32)>,
+    /// A table keeps its pad above it, except under a list item's marker
+    /// line, whose gap Swift sets in place of the table's own.
+    pad: bool,
 }
 
 /// From one block's edge to the next's: Swift's paragraph spacing
@@ -271,8 +304,13 @@ fn edges(block: &Block, style: Style) -> Edges {
             spacing: style.base_size * 0.86 * 0.4,
             ..Edges::default()
         },
-        Block::Table { .. } => Edges {
-            before: TABLE_PAD,
+        // A preview opens with its note, the table below it.
+        Block::Table { header, rows, .. } => Edges {
+            before: if large_table(header, rows) {
+                0.
+            } else {
+                TABLE_PAD
+            },
             after: TABLE_PAD,
             ..Edges::default()
         },
@@ -334,6 +372,9 @@ pub(super) fn render(
     let mut children = Vec::new();
     let mut hidden: Option<(f32, f32)> = None;
     let mut previous: Option<Edges> = None;
+    // Swift's surface keeps room above the reply's first line (`firstInset`)
+    // and below its last (`lastInset`, its last paragraph's pad).
+    let first_inset = blocks.first().map_or(0., |block| first_inset(block, style));
     for (index, block) in blocks.iter().enumerate() {
         let block_edges = edges(block, style);
         let slot = placement.slots.get(index).copied().flatten();
@@ -349,11 +390,22 @@ pub(super) fn render(
                 column = column.child(div().flex_none().h(px(end - start)));
                 children.push(Child::Spacer);
             }
-            let top = previous.map_or(0., |previous| between(previous, block_edges, BLOCK_GAP));
-            column =
-                column.child(div().pt(px(top)).min_w_0().w_full().child(
-                    block_part(block, style, cx, &format!(".{index}"), cx.prose_width).element,
-                ));
+            let top = previous.map_or(first_inset, |previous| {
+                between(previous, block_edges, BLOCK_GAP)
+            });
+            let room = Room {
+                prose: cx.prose_width,
+                indent: 0.,
+                above: previous.map(|previous| (previous, BLOCK_GAP)),
+                pad: true,
+            };
+            column = column.child(
+                div()
+                    .pt(px(top))
+                    .min_w_0()
+                    .w_full()
+                    .child(block_part(block, style, cx, &format!(".{index}"), room).element),
+            );
             children.push(Child::Block(index));
         }
         previous = Some(block_edges);
@@ -362,45 +414,43 @@ pub(super) fn render(
         column = column.child(div().flex_none().h(px(end - start)));
         children.push(Child::Spacer);
     }
+    if let Some(last) = previous {
+        column = column.pb(px(last.after));
+    }
     (column, children)
 }
 
-fn column(
-    blocks: &[Block],
-    style: Style,
-    cx: &Context,
-    path: &str,
-    gap: f32,
-    width: Option<f32>,
-) -> Part {
-    stack(
-        blocks
-            .iter()
-            .enumerate()
-            .map(|(index, block)| {
-                (
-                    block_part(block, style, cx, &format!("{path}.{index}"), width),
-                    gap,
-                )
-            })
-            .collect(),
-    )
+/// The room Swift's surface keeps above a reply that opens with `block`: a
+/// heading's 6 and a table's pad (a fence's 31 is inside its panel here).
+fn first_inset(block: &Block, style: Style) -> f32 {
+    match block {
+        Block::Heading { .. } | Block::Table { .. } => edges(block, style).before,
+        _ => 0.,
+    }
 }
 
-fn block_part(block: &Block, style: Style, cx: &Context, path: &str, width: Option<f32>) -> Part {
+/// Blocks one above another, `gap` apart; the first is given the room's.
+fn column(blocks: &[Block], style: Style, cx: &Context, path: &str, gap: f32, room: Room) -> Part {
+    let mut room = room;
+    let mut parts = Vec::new();
+    for (index, block) in blocks.iter().enumerate() {
+        let part = block_part(block, style, cx, &format!("{path}.{index}"), room);
+        room.above = Some((part.edges, gap));
+        room.pad = true;
+        parts.push((part, gap));
+    }
+    stack(parts)
+}
+
+fn block_part(block: &Block, style: Style, cx: &Context, path: &str, room: Room) -> Part {
     Part {
-        element: block_element(block, style, cx, path, width),
+        element: block_element(block, style, cx, path, room),
         edges: edges(block, style),
     }
 }
 
-fn block_element(
-    block: &Block,
-    style: Style,
-    cx: &Context,
-    path: &str,
-    width: Option<f32>,
-) -> AnyElement {
+fn block_element(block: &Block, style: Style, cx: &Context, path: &str, room: Room) -> AnyElement {
+    let width = room.prose;
     match block {
         Block::Paragraph(spans) => prose(spans, style.base_size, style, cx, path, width).element,
         Block::Heading { level, spans, .. } => {
@@ -420,15 +470,20 @@ fn block_element(
             ordered,
             start,
             items,
-        } => list(*ordered, *start, items, style, cx, path, width).element,
+        } => list(*ordered, *start, items, style, cx, path, room).element,
         Block::Quote(blocks) => {
+            let inset = QUOTE_BAR + QUOTE_GAP;
             let inner = column(
                 blocks,
                 style,
                 cx,
                 path,
                 INNER_GAP,
-                width.map(|width| width - QUOTE_BAR - QUOTE_GAP),
+                Room {
+                    prose: width.map(|width| width - inset),
+                    indent: room.indent + inset,
+                    ..room
+                },
             );
             div()
                 .flex()
@@ -449,7 +504,7 @@ fn block_element(
             alignments,
             header,
             rows,
-        } => table(alignments, header, rows, style, cx, path).element,
+        } => table(alignments, header, rows, style, cx, path, room).element,
     }
 }
 
@@ -567,8 +622,9 @@ fn list(
     style: Style,
     cx: &Context,
     path: &str,
-    width: Option<f32>,
+    room: Room,
 ) -> Part {
+    let width = room.prose;
     let marker_font = font(Face::Sans, false, false);
     // Swift's `markerColumn`: the last number and a row of eights, as wide
     // as the wider of them, and never under 16 pt.
@@ -605,6 +661,9 @@ fn list(
         MARKER_WIDTH
     };
     let indent = LIST_LEADING + column_width + MARKER_GAP;
+    // The first item is given the list's room; each next one the item
+    // before it and the gap between items.
+    let mut above = room;
     let (height, spacing) = body_line(style);
     let marker_line = Line { height, spacing };
     let rows = items
@@ -635,31 +694,51 @@ fn list(
                 &format!("{path}.{index}m"),
             );
             let item_path = format!("{path}.{index}");
-            let inner_width = width.map(|width| width - indent);
+            let mut inner = Room {
+                prose: width.map(|width| width - indent),
+                indent: room.indent + indent,
+                ..above
+            };
             let mut parts = Vec::new();
-            if marker_on_own_line(item) {
+            let own_line = marker_on_own_line(item);
+            if own_line {
+                let marker = Edges {
+                    spacing: marker_line.spacing,
+                    ..Edges::default()
+                };
                 parts.push((
                     Part {
                         element: div().h(px(marker_line.height)).into_any_element(),
-                        edges: Edges {
-                            spacing: marker_line.spacing,
-                            ..Edges::default()
-                        },
+                        edges: marker,
                     },
                     0.,
                 ));
+                // Swift gives the block under the marker line the inner gap
+                // in place of its own: a table there keeps no pad above.
+                inner.above = Some((marker, INNER_GAP));
+                inner.pad = false;
             }
             for (block_index, block) in item.iter().enumerate() {
-                let part = block_part(
+                let mut part = block_part(
                     block,
                     style,
                     cx,
                     &format!("{item_path}.{block_index}"),
-                    inner_width,
+                    inner,
                 );
+                if own_line && block_index == 0 {
+                    part.edges.before = 0.;
+                }
+                inner.above = Some((part.edges, INNER_GAP));
+                inner.pad = true;
                 parts.push((part, INNER_GAP));
             }
             let body = stack(parts);
+            above = Room {
+                above: Some((body.edges, ITEM_GAP)),
+                pad: true,
+                ..room
+            };
             (
                 Part {
                     element: div()
@@ -851,6 +930,65 @@ fn code_block(language: Option<&str>, code: &str, style: Style, cx: &Context, pa
     }
 }
 
+/// Swift's `MarkdownTablePresentation`: a table with more rows or columns
+/// than this is shown as a preview of its first ones, under a note.
+const PREVIEW_ROWS: usize = 20;
+const PREVIEW_COLUMNS: usize = 8;
+/// No preview column is wider than this on one line.
+const PREVIEW_COLUMN: f32 = 320.;
+/// A cell's padding (`NSTextTableBlock`), its border, and both together
+/// across a cell: what a column holds beside its text.
+const CELL_PAD_X: f32 = 10.;
+const CELL_PAD_Y: f32 = 6.;
+const CELL_BORDER: f32 = 0.5;
+const CELL_CHROME: f32 = 2. * (CELL_PAD_X + CELL_BORDER);
+
+fn large_table(header: &[Vec<Span>], rows: &[Vec<Vec<Span>>]) -> bool {
+    rows.len() > 40
+        || header.len() > PREVIEW_COLUMNS
+        || rows.iter().any(|row| row.len() > PREVIEW_COLUMNS)
+}
+
+/// A count as Swift's `formatted()` writes it here: thousands grouped.
+fn grouped(count: usize) -> String {
+    let digits = count.to_string();
+    let mut out = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+/// Each cell's width, border to border: its column's widest cell set on one
+/// line (at least 1 pt, a preview's at most 320), padded. A table wider than
+/// `room` has each column narrowed in proportion and rounded down, as
+/// NSTextTable's automatic layout narrows it.
+fn column_widths(contents: &[f32], room: Option<f32>) -> Vec<f32> {
+    let natural: Vec<f32> = contents
+        .iter()
+        .map(|content| content.max(1.) + CELL_CHROME)
+        .collect();
+    let total: f64 = natural.iter().map(|&width| f64::from(width)).sum();
+    match room {
+        Some(room) if total > f64::from(room) => natural
+            .iter()
+            .map(|&width| {
+                let scaled = f64::from(width) * f64::from(room) / total - f64::from(CELL_CHROME);
+                (scaled.floor() as f32).max(1.) + CELL_CHROME
+            })
+            .collect(),
+        _ => natural,
+    }
+}
+
+/// Swift's `NSTextTable`: the cells padded 10 by 6, each in a hairline drawn
+/// on its edge (so doubled where cells meet), the header on the panel, and
+/// a rounded outline around them; a table too wide for its room narrows its
+/// columns, wrapping their text.
+#[allow(clippy::too_many_arguments)]
 fn table(
     alignments: &[Alignment],
     header: &[Vec<Span>],
@@ -858,91 +996,290 @@ fn table(
     style: Style,
     cx: &Context,
     path: &str,
+    room: Room,
 ) -> Part {
+    let large = large_table(header, rows);
+    let shown_columns = if large { PREVIEW_COLUMNS } else { usize::MAX };
+    let shown_rows = if large {
+        &rows[..rows.len().min(PREVIEW_ROWS)]
+    } else {
+        rows
+    };
+    // The header is set whole in 13 pt semibold system type.
+    let header: Vec<Vec<Span>> = header
+        .iter()
+        .take(shown_columns)
+        .map(|cell| {
+            cell.iter()
+                .map(|span| Span {
+                    bold: true,
+                    italic: false,
+                    mono: false,
+                    serif: false,
+                    ..span.clone()
+                })
+                .collect()
+        })
+        .collect();
+    let mut cells: Vec<(Vec<Vec<Span>>, f32, bool)> = Vec::new();
+    if !header.is_empty() {
+        cells.push((header, 13., true));
+    }
     let cell_size = style.base_size * 0.9;
-    let columns = alignments.len().max(1);
-    let row = |cells: &[Vec<Span>], header: bool, row_path: &str| {
-        let mut line = div().flex().flex_row().min_w_0().w_full();
-        for column in 0..columns {
+    for row in shown_rows {
+        cells.push((
+            row.iter().take(shown_columns).cloned().collect(),
+            cell_size,
+            false,
+        ));
+    }
+    let columns = cells.iter().map(|(row, ..)| row.len()).max().unwrap_or(0);
+    if columns == 0 {
+        return Part {
+            element: div().into_any_element(),
+            edges: Edges::default(),
+        };
+    }
+    let cap = if large { PREVIEW_COLUMN } else { f32::MAX };
+    let mut contents = vec![0f32; columns];
+    for (row, size, _) in &cells {
+        for (column, spans) in row.iter().enumerate() {
+            let natural = natural_width(spans, *size, cx).ceil() + 1.;
+            contents[column] = contents[column].max(natural.min(cap));
+        }
+    }
+    // The table's top margin, Swift's paragraph spacing above it (a table
+    // above keeps its pad below it as its own bottom pad). TextKit rounds it
+    // up where it sets the table, and takes it from the table's width too.
+    let margin = if large {
+        INNER_GAP + TABLE_PAD
+    } else {
+        room.above.map_or(0., |(tail, gap)| {
+            let pad = if room.pad { TABLE_PAD } else { 0. };
+            (gap + pad + tail.bottom_pad + tail.after - tail.spacing).max(0.)
+        })
+    };
+    let fit = cx
+        .column
+        .map(|column| (column - room.indent - margin.ceil()).max(0.));
+    let widths = column_widths(&contents, fit);
+    // Cells start half a border in, and each reaches half a border past its
+    // place on every side, its hairline straddling the edge it shares. The
+    // grid is given its width: the cells' overlap is no part of it.
+    let width = CELL_BORDER + widths.iter().sum::<f32>();
+    let mut grid = div()
+        .relative()
+        .flex()
+        .flex_col()
+        .w(px(width))
+        .pt(px(CELL_BORDER))
+        .pl(px(CELL_BORDER));
+    grid = if fit.is_some() {
+        grid.flex_none()
+    } else {
+        grid.max_w_full().min_w_0()
+    };
+    for (index, (row, size, header)) in cells.iter().enumerate() {
+        let mut line = div().flex().flex_row();
+        for (column, width) in widths.iter().enumerate() {
             let align = match alignments.get(column) {
                 Some(Alignment::Center) => TextAlign::Center,
                 Some(Alignment::Right) => TextAlign::Right,
                 _ => TextAlign::Left,
             };
-            let mut spans = cells.get(column).cloned().unwrap_or_default();
-            if header {
-                for span in &mut spans {
-                    span.bold = true;
-                }
-            }
+            let spans = row.get(column).map_or(&[][..], Vec::as_slice);
             // A cell sets no line height: TextKit's own, with no spacing.
-            let size = if header { 13. } else { cell_size };
             let opening = spans.first().map_or(Face::Sans, span_face);
             let cell_line = Line {
-                height: textkit_line(opening, size),
+                height: textkit_line(opening, *size),
                 spacing: 0.,
             };
-            line = line.child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .px(px(8.))
-                    .py(px(4.))
-                    .when_some_border(column > 0, cx.hair())
-                    .text_align(align)
-                    .child(text(
-                        &spans,
-                        size,
-                        cell_line,
-                        cx,
-                        &format!("{row_path}.{column}"),
-                    )),
-            );
+            let mut inside = div()
+                .flex_1()
+                .min_w_0()
+                .px(px(CELL_PAD_X))
+                .py(px(CELL_PAD_Y))
+                .text_align(align)
+                .child(text(
+                    spans,
+                    *size,
+                    cell_line,
+                    cx,
+                    &format!("{path}.{index}.{column}"),
+                ));
+            // The panel fills the cell inside its border.
+            if *header {
+                inside = inside.bg(cx.panel());
+            }
+            let outer = width + 2. * CELL_BORDER;
+            let mut cell = div()
+                .debug_selector(|| format!("markdown-cell-{}{path}.{index}.{column}", cx.owner))
+                .mx(px(-CELL_BORDER))
+                .my(px(-CELL_BORDER))
+                .border_1()
+                .border_color(cx.hair())
+                .flex()
+                .flex_col()
+                .child(inside);
+            cell = if fit.is_some() {
+                cell.flex_none().w(px(outer))
+            } else {
+                cell.flex_basis(px(outer)).min_w_0()
+            };
+            line = line.child(cell);
         }
-        line
-    };
-    let mut grid = div()
+        grid = grid.child(line);
+    }
+    // The outline: a hairline round the cells, inside their outer edges.
+    grid = grid
+        .debug_selector(|| format!("markdown-table-{}{path}", cx.owner))
+        .child(
+            div()
+                .absolute()
+                .top(px(CELL_BORDER))
+                .left(px(CELL_BORDER))
+                .right_0()
+                .bottom_0()
+                .rounded(px(4. + CELL_BORDER))
+                .border_1()
+                .border_color(cx.hair()),
+        );
+    let table = div()
         .flex()
-        .flex_col()
+        .flex_row()
         .min_w_0()
         .w_full()
-        .rounded(px(4.))
-        .border_1()
-        .border_color(cx.hair())
-        .child(row(header, true, &format!("{path}.h")));
-    for (index, cells) in rows.iter().enumerate() {
-        grid = grid.child(div().border_t_1().border_color(cx.hair()).child(row(
-            cells,
-            false,
-            &format!("{path}.{index}"),
-        )));
+        .pt(px(margin.ceil() - margin))
+        .child(grid);
+    if !large {
+        return Part {
+            element: table.into_any_element(),
+            edges: Edges {
+                before: TABLE_PAD,
+                after: TABLE_PAD,
+                ..Edges::default()
+            },
+        };
     }
+    let note = Span {
+        text: format!(
+            "Preview · first {} of {} rows · up to {PREVIEW_COLUMNS} columns",
+            rows.len().min(PREVIEW_ROWS),
+            grouped(rows.len())
+        ),
+        size: 11.,
+        bold: false,
+        italic: false,
+        mono: false,
+        serif: false,
+        code: false,
+        strike: false,
+        link: None,
+    };
+    let note_line = Line {
+        height: natural_line(Face::Sans, 11.),
+        spacing: 0.,
+    };
     Part {
-        element: grid.into_any_element(),
+        element: div()
+            .flex()
+            .flex_col()
+            .min_w_0()
+            .w_full()
+            .child(muted_text(&note, note_line, cx, &format!("{path}.note")))
+            .child(div().pt(px(INNER_GAP + TABLE_PAD)).child(table))
+            .into_any_element(),
         edges: Edges {
-            before: TABLE_PAD,
             after: TABLE_PAD,
             ..Edges::default()
         },
     }
 }
 
-trait CellBorder {
-    fn when_some_border(self, on: bool, color: gpui::Hsla) -> Self;
-}
-impl CellBorder for Div {
-    fn when_some_border(self, on: bool, color: gpui::Hsla) -> Self {
-        if on {
-            self.border_l_1().border_color(color)
-        } else {
-            self
-        }
+/// A cell's width set on one line, as TextKit measures it unbounded.
+fn natural_width(spans: &[Span], size: f32, cx: &Context) -> f32 {
+    let joined: String = spans.iter().map(|span| span.text.as_str()).collect();
+    if joined.is_empty() {
+        return 0.;
     }
+    let runs: Vec<TextRun> = spans.iter().map(|span| run(span, cx)).collect();
+    f32::from(
+        cx.window
+            .text_system()
+            .shape_line(joined.into(), px(size), &runs, None)
+            .width,
+    )
+}
+
+/// One line of chrome text in the muted colour (a table preview's note).
+fn muted_text(span: &Span, line: Line, cx: &Context, path: &str) -> AnyElement {
+    shaped_text::styled_text(
+        cx.cache,
+        SharedString::from(format!("{}{path}", cx.owner)),
+        span.text.clone().into(),
+        Styled {
+            runs: vec![TextRun {
+                color: cx.muted(),
+                ..run(span, cx)
+            }],
+            font_size: px(span.size),
+            line_height: px(line.height),
+            line_spacing: px(line.spacing),
+            last: true,
+            links: Vec::new(),
+        },
+    )
+    .into_any_element()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Edges, between};
+    use super::{Edges, between, grouped};
+
+    /// NSTextTable's narrowing, from the widths Swift measured: each case of
+    /// the oracle (`docs/validation/table-swift-oracle-2026-10-10`) at the
+    /// container width, less the table's indent and rounded-up top margin.
+    #[test]
+    fn tables_narrow_as_nstexttable_narrows_them() {
+        let swift: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../docs/validation/table-swift-oracle-2026-10-10/swift-tables.json"
+        ))
+        .unwrap();
+        let numbers = |value: &serde_json::Value| -> Vec<f32> {
+            value
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_f64().unwrap() as f32)
+                .collect()
+        };
+        let cases = swift["cases"].as_array().unwrap();
+        for case in cases {
+            let margins = numbers(&case["margins"]);
+            let room = case["width"].as_f64().unwrap() as f32 - margins[0] - margins[1].ceil();
+            assert_eq!(
+                super::column_widths(&numbers(&case["natural"]), Some(room)),
+                numbers(&case["widths"]),
+                "{} at {}",
+                case["name"],
+                case["width"]
+            );
+        }
+        assert!(cases.len() >= 16);
+    }
+
+    #[test]
+    fn counts_are_grouped_by_thousands() {
+        for (count, text) in [
+            (0, "0"),
+            (999, "999"),
+            (1_000, "1,000"),
+            (41_250, "41,250"),
+            (1_234_567, "1,234,567"),
+        ] {
+            assert_eq!(grouped(count), text);
+        }
+    }
 
     fn prose(spacing: f32) -> Edges {
         Edges {

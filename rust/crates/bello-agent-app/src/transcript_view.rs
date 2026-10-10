@@ -2803,6 +2803,16 @@ fn button(p: Palette, id: impl Into<ElementId>, label: impl Into<SharedString>) 
         .child(label.into())
 }
 
+/// A row's gutters and widest measure (Swift's `TranscriptMetrics`: a
+/// 48-point gutter, an 840-point page).
+const ROW_GUTTER: f32 = 24.;
+const ROW_MAX_WIDTH: f32 = 840.;
+
+/// The width of a row's content in a list `width` wide.
+fn row_width(width: Pixels) -> f32 {
+    (f32::from(width) - 2. * ROW_GUTTER).clamp(0., ROW_MAX_WIDTH)
+}
+
 fn render_row(
     presentation: &Presentation,
     index: usize,
@@ -2986,6 +2996,7 @@ fn render_row(
                                         palette: p,
                                         window,
                                         prose_width: Some(markdown_view::PROSE_WIDTH),
+                                        column: Some(row_width(width)),
                                         copied,
                                         on_copy: copy_code(tool_editors, child),
                                     },
@@ -3053,7 +3064,7 @@ fn render_row(
                     .debug_selector(|| selector)
                     // Keep the message content-sized, ending at its action band.
                     .w_full()
-                    .max_w(px(840.))
+                    .max_w(px(ROW_MAX_WIDTH))
                     .mx_auto()
                     .min_w_0()
                     .flex_shrink_0()
@@ -3079,7 +3090,7 @@ fn render_row(
     // The message's own bounds still finish at the bottom of its Copy band.
     div()
         .w_full()
-        .px(px(24.))
+        .px(px(ROW_GUTTER))
         .when(index + 1 < presentation.rows.len(), |row| row.pb(px(16.)))
         .flex()
         .flex_col()

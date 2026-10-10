@@ -3060,6 +3060,179 @@ fn only_replies_are_read_as_markdown(cx: &mut TestAppContext) {
     );
 }
 
+/// A table is as wide as its cells set on one line (Swift's NSTextTable
+/// columns), its cells padded 10 by 6 and parted by hairlines, not spread
+/// over the reply's width.
+#[gpui::test]
+fn a_table_is_as_wide_as_its_cells(cx: &mut TestAppContext) {
+    let rows = vec![message(
+        "reply",
+        "assistant",
+        "| Name | Size |\n|---|--:|\n| a.txt | 12 |\n| longer-name.txt | 3 |",
+    )];
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let (mut visual, _child) = host(&root, input(&root, cx), cx);
+    let column = visual.debug_bounds("transcript-text-reply").unwrap();
+    let table = visual
+        .debug_bounds("markdown-table-transcript-row-reply.0")
+        .unwrap();
+    let cell = |visual: &mut VisualTestContext, selector: &'static str| {
+        visual.debug_bounds(selector).unwrap()
+    };
+    let name = cell(&mut visual, "markdown-cell-transcript-row-reply.0.0.0");
+    let size = cell(&mut visual, "markdown-cell-transcript-row-reply.0.0.1");
+    let long = cell(&mut visual, "markdown-cell-transcript-row-reply.0.2.0");
+    let short = cell(&mut visual, "markdown-cell-transcript-row-reply.0.1.1");
+    assert!(
+        table.size.width < column.size.width / 2.,
+        "{table:?} in {column:?}"
+    );
+    // Every row shares the columns' widths. Each cell reaches half a border
+    // past its place on every side, and the cells start half a border in.
+    assert_eq!(long.size.width, name.size.width);
+    assert_eq!(short.size.width, size.size.width);
+    assert_eq!(
+        table.size.width,
+        px(0.5) + (name.size.width - px(1.)) + (size.size.width - px(1.))
+    );
+    assert_eq!(size.origin.x, name.origin.x + name.size.width - px(1.));
+    // A column holds its widest cell on one line, padded 10 a side.
+    assert!(name.size.width > size.size.width);
+    assert_eq!(table.origin.x, column.origin.x);
+    assert_eq!(name.origin.x, column.origin.x);
+}
+
+/// A table wider than its room narrows its columns in proportion to fit,
+/// and wraps their text, rather than running past the reply.
+#[gpui::test]
+fn a_wide_table_narrows_its_columns_to_fit(cx: &mut TestAppContext) {
+    let long = "words that run on ".repeat(8);
+    let longer = "words that run on ".repeat(16);
+    let reply = format!("| One | Two |\n|---|---|\n| {long} | {longer} |");
+    let rows = vec![message("reply", "assistant", &reply)];
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let (mut visual, _child) = host(&root, input(&root, cx), cx);
+    let column = visual.debug_bounds("transcript-text-reply").unwrap();
+    let table = visual
+        .debug_bounds("markdown-table-transcript-row-reply.0")
+        .unwrap();
+    let one = visual
+        .debug_bounds("markdown-cell-transcript-row-reply.0.1.0")
+        .unwrap();
+    let two = visual
+        .debug_bounds("markdown-cell-transcript-row-reply.0.1.1")
+        .unwrap();
+    // Narrowed to the column, each column rounded down as NSTextTable does.
+    assert!(table.size.width <= column.size.width + px(0.5), "{table:?}");
+    assert!(table.size.width > column.size.width - px(2.), "{table:?}");
+    assert!(two.size.width > one.size.width);
+    // Wrapped: the body row is several lines tall.
+    assert!(two.size.height > px(60.), "{two:?}");
+}
+
+/// Tables open where Swift's NSTextTable opens them, for every case of the
+/// oracle (`docs/validation/table-swift-oracle-2026-10-10`): the first row
+/// half a border in from the table's edge, at Swift's top (to the device
+/// pixel), its cells abutting. Widths and wrapping follow the glyphs, which
+/// GPUI's test text system does not shape as CoreText does, so the narrowing
+/// is checked from Swift's own widths in `tables_narrow_as_nstexttable_narrows_them`.
+#[gpui::test]
+fn tables_open_where_swift_opens_them(cx: &mut TestAppContext) {
+    let swift: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../docs/validation/table-swift-oracle-2026-10-10/swift-tables.json"
+    ))
+    .unwrap();
+    let mut misses = Vec::new();
+    for case in swift["cases"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let width = case["width"].as_f64().unwrap() as f32;
+        let path = case["path"].as_str().unwrap();
+        // Swift's surface sets its text this far down.
+        let inset = case["first_inset"].as_f64().unwrap();
+        let rows = vec![message(
+            "reply",
+            "assistant",
+            case["markdown"].as_str().unwrap(),
+        )];
+        let (_directory, _window, root) = fixture(cx, rows, 0);
+        let (mut visual, _child) = host(&root, input(&root, cx), cx);
+        visual.simulate_resize(size(px(width + 48.), px(4000.)));
+        cx.run_until_parked();
+        let column = visual.debug_bounds("transcript-text-reply").unwrap();
+        let first: Vec<Vec<f64>> = case["cells"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|cell| {
+                cell.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_f64().unwrap())
+                    .collect()
+            })
+            .filter(|cell: &Vec<f64>| cell[0] == 0.)
+            .collect();
+        let mut right = None;
+        for cell in &first {
+            let selector: &'static str = Box::leak(
+                format!("markdown-cell-transcript-row-reply{path}.0.{}", cell[1]).into_boxed_str(),
+            );
+            let Some(bounds) = visual.debug_bounds(selector) else {
+                misses.push(format!("{name}@{width} {selector}: not drawn"));
+                continue;
+            };
+            // The element reaches half a border past the cell's bounds.
+            let x = f64::from(f32::from(bounds.origin.x - column.origin.x)) + 0.5;
+            let y = f64::from(f32::from(bounds.origin.y - column.origin.y)) + 0.5;
+            let start = right.unwrap_or(cell[2]);
+            let top = cell[3] + inset;
+            if (x - start).abs() > 0.01 || (y - top).abs() > 0.5 {
+                misses.push(format!(
+                    "{name}@{width} 0,{}: rust ({x}, {y}) swift ({start}, {top})",
+                    cell[1]
+                ));
+            }
+            right = Some(x + f64::from(f32::from(bounds.size.width)) - 1.);
+        }
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+}
+
+/// A table of more than 40 rows (or 8 columns) shows its first 20 rows and
+/// 8 columns under Swift's note.
+#[gpui::test]
+fn a_large_table_shows_a_preview_under_a_note(cx: &mut TestAppContext) {
+    let mut reply = String::from("| Row | A | B | C | D | E | F | G | H | I |\n");
+    reply.push_str("|---|---|---|---|---|---|---|---|---|---|\n");
+    for row in 0..50 {
+        reply.push_str(&format!("| {row} | a | b | c | d | e | f | g | h | i |\n"));
+    }
+    let rows = vec![message("reply", "assistant", &reply)];
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let (mut visual, _child) = host(&root, input(&root, cx), cx);
+    let column = visual.debug_bounds("transcript-text-reply").unwrap();
+    let table = visual
+        .debug_bounds("markdown-table-transcript-row-reply.0")
+        .unwrap();
+    // The note's line, then 8 points, then the table.
+    assert!(table.origin.y > column.origin.y + px(18.), "{table:?}");
+    assert!(
+        visual
+            .debug_bounds("markdown-cell-transcript-row-reply.0.20.7")
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds("markdown-cell-transcript-row-reply.0.21.0")
+            .is_none()
+    );
+    assert!(
+        visual
+            .debug_bounds("markdown-cell-transcript-row-reply.0.0.8")
+            .is_none()
+    );
+}
+
 /// A reply's web link opens when clicked, as Swift's NSTextView opens it;
 /// a link Swift refuses (a script) stays plain text.
 #[gpui::test]
