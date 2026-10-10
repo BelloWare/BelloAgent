@@ -1008,6 +1008,8 @@ fn loading_retry_earlier_and_streaming_rows_have_distinct_logical_slots(cx: &mut
 
 #[gpui::test]
 fn duplicate_legacy_ids_keep_separate_rows_and_exact_source(cx: &mut TestAppContext) {
+    // About the rows themselves, not how a finished turn folds them.
+    crate::transcript_view::loose_turns_for_test();
     let rows = vec![
         message("duplicate", "user", "first duplicate"),
         message("unique", "assistant", "unique row"),
@@ -1193,6 +1195,8 @@ fn wheel_between_new_input_and_prepaint_uses_live_old_mapping_then_reconciles(
 
 #[gpui::test]
 fn huge_unicode_row_is_materialized_without_truncating_source(cx: &mut TestAppContext) {
+    // About the rows themselves, not how a finished turn folds them.
+    crate::transcript_view::loose_turns_for_test();
     let source = "  **source** 你好 👩🏽‍💻 e\u{301}\r\n\t".repeat(4_096);
     let mut rows = messages(100);
     rows[50].text = source.clone();
@@ -1380,6 +1384,8 @@ fn same_size_composer_and_root_notifications_reuse_populated_transcript(cx: &mut
 
 #[gpui::test]
 fn fresh_session_arc_same_ids_reasoning_state_and_order_invalidate(cx: &mut TestAppContext) {
+    // About the rows themselves, not how a finished turn folds them.
+    crate::transcript_view::loose_turns_for_test();
     let (_directory, window, root) = fixture(
         cx,
         vec![
@@ -2862,6 +2868,8 @@ mod live_terminal_ui;
 
 #[path = "transcript_tool_timing_tests.rs"]
 mod tool_timing_ui;
+#[path = "transcript_turn_fold_ui_tests.rs"]
+mod turn_fold_ui;
 #[path = "transcript_work_rows_ui_tests.rs"]
 mod work_rows_ui;
 

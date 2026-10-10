@@ -18,6 +18,8 @@ mod shaped_text;
 mod tool_presentation;
 #[path = "transcript_tool_row.rs"]
 mod tool_row;
+#[path = "transcript_turn_fold.rs"]
+mod turn_fold;
 #[path = "transcript_work_line.rs"]
 mod work_line;
 use gpui::{prelude::*, *};
@@ -47,6 +49,23 @@ thread_local! {
 #[cfg(test)]
 pub(crate) fn open_tool_rows_for_test() {
     TOOL_ROWS_OPEN.with(|open| open.set(true));
+}
+#[cfg(test)]
+thread_local! {
+    static TURNS_LOOSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Tests of a finished turn's own rows read the turn loose, as Swift's
+/// Normal display does; the turn-fold tests leave Swift's default.
+#[cfg(test)]
+pub(crate) fn loose_turns_for_test() {
+    TURNS_LOOSE.with(|loose| loose.set(true));
+}
+/// Swift's compact display, its default: finished turns fold.
+fn turn_folds_apply() -> bool {
+    #[cfg(test)]
+    return !TURNS_LOOSE.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    true
 }
 fn tool_rows_open_by_default() -> bool {
     #[cfg(test)]
@@ -92,6 +111,9 @@ enum RowKey {
         call_id: String,
         occurrence: usize,
     },
+    /// A finished turn's fold control, by the row of the question that opened
+    /// the turn. In the open set, the fold is open.
+    Fold(Box<RowKey>),
     // A duplicate has no stable model identity. Scope its presentation key to
     // the exact immutable snapshot instead of guessing after replacement.
     Duplicate {
@@ -108,6 +130,7 @@ struct LogicalRow {
     expanded: bool,
     read_expanded: bool,
     read_key: Option<RowKey>,
+    fold: turn_fold::RowFold,
 }
 
 struct Presentation {
@@ -142,6 +165,7 @@ impl Presentation {
                 expanded: false,
                 read_expanded: false,
                 read_key: None,
+                fold: turn_fold::RowFold::default(),
             });
         } else if input.load_failed {
             rows.push(LogicalRow {
@@ -151,6 +175,7 @@ impl Presentation {
                 expanded: false,
                 read_expanded: false,
                 read_key: None,
+                fold: turn_fold::RowFold::default(),
             });
         }
         if hidden_messages > 0 {
@@ -161,6 +186,7 @@ impl Presentation {
                 expanded: false,
                 read_expanded: false,
                 read_key: None,
+                fold: turn_fold::RowFold::default(),
             });
         }
         let mut counts = HashMap::<&str, usize>::new();
@@ -243,7 +269,11 @@ impl Presentation {
                 expanded,
                 read_expanded,
                 read_key,
+                fold: turn_fold::RowFold::default(),
             });
+        }
+        if turn_folds_apply() {
+            turn_fold::apply(&mut rows, &input.session, opened);
         }
         Self {
             input,
@@ -258,6 +288,7 @@ impl Presentation {
         let row = &self.rows[index];
         let other_row = &other.rows[other_index];
         if row.key != other_row.key
+            || row.fold != other_row.fold
             || (index + 1 == self.rows.len()) != (other_index + 1 == other.rows.len())
         {
             return false;
@@ -704,11 +735,23 @@ impl ViewportState {
 // estimate, never a view tree. Plain-message estimates mirror their text sizes,
 // wrapping width and chrome; tool cards use their bounded section caps without
 // copying retained payloads. Exact List measurements replace these guesses.
+/// `TranscriptNativeTurnFoldRow.controlHeight`: the 24-point line, eight
+/// points under it, and its hairline.
+const FOLD_CONTROL_HEIGHT: f32 = 32.;
+
 /// The room under a row. A reply's calls stack as Swift's part rows do, line
 /// on line, and the first sits just under the reply's Copy band; everything
 /// else keeps the 16-point gap.
 fn row_gap(presentation: &Presentation, index: usize) -> f32 {
-    let Some(next) = presentation.rows.get(index + 1) else {
+    // A folded row draws nothing, and a fold's line keeps its own room.
+    let row = &presentation.rows[index];
+    if row.fold.hidden || row.fold.control.is_some() {
+        return 0.;
+    }
+    let Some(next) = presentation.rows[index + 1..]
+        .iter()
+        .find(|row| !row.fold.hidden)
+    else {
         return 0.;
     };
     let assistant = |row: &LogicalRow| match row.projected {
@@ -732,6 +775,12 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
     }
     let gap = row_gap(presentation, index);
     let row = &presentation.rows[index];
+    if row.fold.hidden {
+        return px(0.);
+    }
+    if let Some(control) = &row.fold.control {
+        return px(FOLD_CONTROL_HEIGHT + if control.open { 4. } else { 8. });
+    }
     let Some(source_index) = row.message_index else {
         return px(gap
             + match row.key {
@@ -791,7 +840,7 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
             height += content.skills.len() as f32 * 30.;
         }
     }
-    if !message.reasoning.is_empty() {
+    if !message.reasoning.is_empty() && !row.fold.think_hidden {
         // The Think row, closed until opened.
         height += 6. + work_line::HEIGHT;
     }
@@ -1245,6 +1294,11 @@ impl TranscriptView {
         };
         let key = row.key.clone();
         let read_key = row.read_key.clone();
+        // As a browser's find reveals hidden text, the finished turn that
+        // folded the match away opens.
+        if let Some(group) = row.fold.group.clone() {
+            self.opened.insert(RowKey::Fold(Box::new(group)));
+        }
         self.opened.insert(key.clone());
         if let Some(read_key) = read_key {
             self.expanded_reads.insert(read_key);
@@ -1524,7 +1578,19 @@ impl TranscriptView {
         let Some(row) = row else {
             return false;
         };
-        self.viewport.borrow_mut().reveal = Some(row.key.clone());
+        let key = row.key.clone();
+        if row.fold.hidden
+            && let Some(group) = row.fold.group.clone()
+        {
+            // The finished turn that folded the message away opens.
+            self.opened.insert(RowKey::Fold(Box::new(group)));
+            self.presentation = Rc::new(Presentation::with_disclosure(
+                self.presentation.input.clone(),
+                &self.opened,
+                &self.expanded_reads,
+            ));
+        }
+        self.viewport.borrow_mut().reveal = Some(key);
         cx.notify();
         true
     }
@@ -1604,6 +1670,32 @@ impl TranscriptView {
                 editors.open_thinking.insert(message_id.to_owned());
             }
         }
+        cx.notify();
+    }
+    /// Opens or closes a finished turn's fold. What the reader opened inside
+    /// it stays as it was.
+    fn toggle_fold(
+        &mut self,
+        key: RowKey,
+        chat_id: &str,
+        controller: &Weak<Controller>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.presentation.input.chat_id != chat_id
+            || !Weak::ptr_eq(&self.presentation.input.controller, controller)
+            || !self.presentation.rows.iter().any(|row| row.key == key)
+        {
+            return;
+        }
+        if !self.opened.remove(&key) {
+            self.opened.insert(key);
+        }
+        self.presentation = Rc::new(Presentation::with_disclosure(
+            self.presentation.input.clone(),
+            &self.opened,
+            &self.expanded_reads,
+        ));
+        self.invalidate_sidebar_geometry(cx);
         cx.notify();
     }
     fn toggle_tool(
@@ -1963,6 +2055,16 @@ impl TranscriptView {
         Rc::as_ptr(&self.presentation) as usize
     }
     #[cfg(test)]
+    /// Each fold control's line and whether its turn is open.
+    #[cfg(test)]
+    pub(crate) fn fold_lines(&self) -> Vec<(String, bool)> {
+        self.presentation
+            .rows
+            .iter()
+            .filter_map(|row| row.fold.control.as_ref())
+            .map(|control| (control.label.clone(), control.open))
+            .collect()
+    }
     pub(crate) fn logical_row_ids(&self) -> Vec<String> {
         self.viewport
             .borrow()
@@ -1980,6 +2082,7 @@ impl TranscriptView {
                     occurrence,
                 } => format!("@tool:{assistant:?}:{call_id}:{occurrence}"),
                 RowKey::Duplicate { id, occurrence, .. } => format!("{id}#{occurrence}"),
+                RowKey::Fold(group) => format!("@fold:{group:?}"),
             })
             .collect()
     }
@@ -2861,6 +2964,70 @@ const ROW_GUTTER: f32 = 24.;
 const ROW_MAX_WIDTH: f32 = 840.;
 
 /// The width of a row's content in a list `width` wide.
+/// Swift's turn fold control (`TranscriptNativeTurnFoldControl`): the
+/// label in 13-point medium and a 10-point chevron 6 after it on a 24-point
+/// line, a hairline across the foot of its 32 points; muted, and the text
+/// colour under the pointer. The chevron points down while the turn is open.
+fn fold_control(
+    selector: &str,
+    control: &turn_fold::Control,
+    palette: &Palette,
+    toggle: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let colors = work_line::card_colors(palette);
+    let group = SharedString::from(format!("{selector}-group"));
+    let (text, muted) = (colors.text, colors.muted);
+    div()
+        .id(SharedString::from(selector.to_owned()))
+        .debug_selector({
+            let selector = selector.to_owned();
+            move || selector
+        })
+        .group(group.clone())
+        .w_full()
+        .h(px(FOLD_CONTROL_HEIGHT))
+        .flex()
+        .flex_col()
+        .cursor_pointer()
+        .on_click(move |_, window, cx| toggle(window, cx))
+        .child(
+            div()
+                .h(px(work_line::HEIGHT))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .debug_selector({
+                            let selector = format!("{selector}-label");
+                            move || selector
+                        })
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(muted)
+                        .group_hover(group.clone(), move |label| label.text_color(text))
+                        .child(control.label.clone()),
+                )
+                .child(
+                    svg()
+                        .path("chevron.down")
+                        .flex_none()
+                        .size(px(10.))
+                        .text_color(colors.faint)
+                        .group_hover(group, move |chevron| chevron.text_color(text))
+                        .with_transformation(Transformation::rotate(radians(if control.open {
+                            0.
+                        } else {
+                            -std::f32::consts::FRAC_PI_2
+                        }))),
+                ),
+        )
+        .child(div().flex_1())
+        .child(div().w_full().h(px(1.)).bg(colors.hair))
+}
+
 fn row_width(width: Pixels) -> f32 {
     (f32::from(width) - 2. * ROW_GUTTER).clamp(0., ROW_MAX_WIDTH)
 }
@@ -2883,6 +3050,31 @@ fn render_row(
     let input = &presentation.input;
     let row = &presentation.rows[index];
     let p = input.palette;
+    // A row its turn's closed fold holds keeps its place and draws nothing.
+    if row.fold.hidden {
+        return div().w_full();
+    }
+    if let Some(control) = &row.fold.control {
+        let (child, key) = (child.clone(), row.key.clone());
+        let (chat_id, controller) = (input.chat_id.clone(), input.controller.clone());
+        return div().w_full().px(px(ROW_GUTTER)).child(
+            div()
+                .w_full()
+                .max_w(px(ROW_MAX_WIDTH))
+                .mx_auto()
+                .pb(px(if control.open { 4. } else { 8. }))
+                .child(fold_control(
+                    &format!("transcript-fold-{:?}", row.key),
+                    control,
+                    &p,
+                    move |_, cx| {
+                        let _ = child.update(cx, |view, cx| {
+                            view.toggle_fold(key.clone(), &chat_id, &controller, cx)
+                        });
+                    },
+                )),
+        );
+    }
     let content = if matches!(
         row.projected,
         Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
@@ -2930,6 +3122,7 @@ fn render_row(
                 .into_any_element()
             }
             RowKey::Tool { .. } => unreachable!("tool card rendered above"),
+            RowKey::Fold(_) => unreachable!("fold control rendered above"),
             RowKey::Message(_) | RowKey::Duplicate { .. } => {
                 let source_index = row.message_index.expect("message row");
                 let message = &input.session.messages[source_index];
@@ -2966,7 +3159,7 @@ fn render_row(
                             .child(label.to_owned()),
                     );
                 }
-                if !message.reasoning.is_empty() {
+                if !message.reasoning.is_empty() && !row.fold.think_hidden {
                     // Swift's Think row: closed by default, even while it
                     // streams; open, the reasoning read as Markdown under it.
                     let streaming = message.state == "streaming";
