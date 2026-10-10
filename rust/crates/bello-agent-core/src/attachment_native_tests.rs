@@ -107,7 +107,7 @@ FileHandle.standardOutput.write(try JSON.array(results).data())
 #[test]
 fn selected_metadata_and_ordered_loaded_images_match_checked_in_swift() {
     let d = tempfile::tempdir().unwrap();
-    let cases=vec![
+    let cases=[
         ("fixture.gif",STANDARD.decode("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==").unwrap()),
         ("fixture.webp",STANDARD.decode("UklGRkgAAABXRUJQVlA4TDsAAAAvAkAAAC9AEEBS/hLDDLHNGgTZNuMaxPw1TnAFbdswLcNCeONPYfMf8A95yKSeZSAQoIwVD3wS0f8YLwA=").unwrap()),
         ("loose.gif",b"GIF8xx".to_vec()),("truncated.png",b"\x89PNG\r\n\x1a\n".to_vec()),
