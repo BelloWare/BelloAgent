@@ -1,2 +1,0 @@
-#!/bin/sh
-exec /Users/admin/Library/Caches/BelloRustWork/claude-2026-10-10/toolchain/bin/clippy-driver "$@"

@@ -1975,3 +1975,20 @@ fn archive_loopback_stop_preserves_partial_output_queue_and_restore_never_resume
     assert_eq!(run.controller.snapshot().pending.len(), 1);
     assert!(!cx.read(|cx| root.read(cx).chat_is_archived(&id)));
 }
+
+#[gpui::test]
+fn menu_quit_from_the_workspace_window_starts_the_close_barrier(cx: &mut TestAppContext) {
+    cx.update(crate::application_menus::install);
+    let (_dir, window, root) = fixture(cx);
+    window
+        .update(cx, |view, window, cx| view.composer.read(cx).focus(window))
+        .unwrap();
+    cx.run_until_parked();
+    // GPUI calls the global Quit listener inside this window's own update.
+    cx.dispatch_action(window.into(), crate::application_menus::Quit);
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(view.shutting_down || view.close_ready);
+    });
+}

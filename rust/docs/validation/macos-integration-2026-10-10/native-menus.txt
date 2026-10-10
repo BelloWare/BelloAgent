@@ -1,0 +1,73 @@
+## bello-agent-macos
+  About Bello Agent | enabled=true | key= glyph=missing value mods=0
+  -
+  Settings… | enabled=true | key=, glyph=missing value mods=0
+  -
+  Services | enabled=true | key= glyph=missing value mods=0
+  -
+  Hide Bello Agent | enabled=true | key=H glyph=missing value mods=0
+  Hide Others | enabled=true | key=H glyph=missing value mods=2
+  Show All | enabled=true | key= glyph=missing value mods=0
+  -
+  Quit Bello Agent | enabled=true | key=Q glyph=missing value mods=0
+## File
+  New Chat | enabled=true | key=N glyph=missing value mods=0
+  Open File… | enabled=true | key=P glyph=missing value mods=0
+  -
+  Archive Chat | enabled=true | key= glyph=missing value mods=0
+  Pin Chat | enabled=true | key= glyph=missing value mods=0
+  Move to Topic | enabled=true | key= glyph=missing value mods=0
+  Mark as Read | enabled=true | key= glyph=missing value mods=0
+  Mark as Unread | enabled=true | key= glyph=missing value mods=0
+  -
+  Close Window | enabled=true | key=W glyph=missing value mods=0
+## Edit
+  Undo | enabled=true | key=Z glyph=missing value mods=0
+  Redo | enabled=true | key=Z glyph=missing value mods=1
+  -
+  Cut | enabled=true | key=X glyph=missing value mods=0
+  Copy | enabled=true | key=C glyph=missing value mods=0
+  Paste | enabled=true | key=V glyph=missing value mods=0
+  Select All | enabled=true | key=A glyph=missing value mods=0
+  -
+  AutoFill | enabled=true | key= glyph=missing value mods=0
+  Start Dictation… | enabled=true | key= glyph=missing value mods=8
+  Emoji & Symbols | enabled=true | key=E glyph=missing value mods=24
+## View
+  Show Archived Chats | enabled=true | key= glyph=missing value mods=0
+  Session Inspector… | enabled=true | key=I glyph=missing value mods=2
+  Changes and History… | enabled=true | key=G glyph=missing value mods=1
+  -
+  Next Chat | enabled=true | key= glyph=106 mods=2
+  Previous Chat | enabled=true | key= glyph=104 mods=2
+  -
+  Widen Sidebar | enabled=true | key= glyph=101 mods=4
+  Narrow Sidebar | enabled=true | key= glyph=100 mods=4
+  Enter Full Screen | enabled=true | key=F glyph=missing value mods=24
+## Conversation
+  Send / Queue Follow-up | enabled=true | key= glyph=missing value mods=0
+  Send / Steer Current Run | enabled=true | key= glyph=11 mods=0
+  Stop | enabled=true | key=. glyph=missing value mods=0
+  Resume Follow-ups | enabled=false | key= glyph=missing value mods=0
+  Compact Now | enabled=true | key= glyph=missing value mods=0
+  Latest Messages | enabled=true | key= glyph=missing value mods=0
+  -
+  Find… | enabled=true | key=F glyph=missing value mods=0
+  Find Next | enabled=true | key=G glyph=missing value mods=0
+  Find Previous | enabled=false | key=G glyph=missing value mods=1
+  Search and Copy Conversation… | enabled=true | key=F glyph=missing value mods=2
+## Window
+  Tile Window to Left of Screen | enabled=true | key= glyph=missing value mods=0
+  Move Window to Left Side of Screen | enabled=true | key= glyph=missing value mods=10
+  Tile Window to Right of Screen | enabled=true | key= glyph=missing value mods=0
+  Move Window to Right Side of Screen | enabled=true | key= glyph=missing value mods=10
+  Replace Tiled Window | enabled=false | key= glyph=missing value mods=0
+  -
+  Remove Window from Set | enabled=false | key= glyph=missing value mods=0
+  Minimize | enabled=true | key=M glyph=missing value mods=0
+  Zoom | enabled=true | key= glyph=missing value mods=0
+  -
+  Bring All to Front | enabled=true | key= glyph=missing value mods=0
+  -
+  Bello Agent | enabled=true | key= glyph=missing value mods=0
+

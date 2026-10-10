@@ -4,7 +4,7 @@ use bello_agent_core::{
     Controller, read_observation::AcceptedReadObservation, workspace::ChatRecord,
     workspace_read_state::ChatReadState,
 };
-use gpui::{Context, Global, Task};
+use gpui::{App, Context, Global, Task};
 use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
@@ -24,6 +24,42 @@ pub(crate) fn dock_badge<'a>(
         })
         .count();
     (count > 0).then(|| count.to_string())
+}
+
+/// Swift bounces the Dock once when a reply becomes unread while another app
+/// is frontmost. A failed run and an archived chat do not ask for attention.
+pub(crate) fn attention_due(
+    before: u64,
+    after: u64,
+    app_active: bool,
+    failed: bool,
+    archived: bool,
+) -> bool {
+    after > before && !app_active && !failed && !archived
+}
+
+impl crate::AgentView {
+    pub(crate) fn refresh_dock_badge(&self, cx: &mut App) {
+        let badge = self.read_states.lock().unwrap().dock_badge(&self.records);
+        cx.global_mut::<Notifications>().set_badge(badge);
+    }
+    pub(crate) fn request_reply_attention(&self, record: &ChatRecord, before: u64, cx: &mut App) {
+        let after = self.read_states.lock().unwrap().unread_outputs(record);
+        let archived = self
+            .records
+            .iter()
+            .find(|r| r.id == record.id)
+            .unwrap_or(record)
+            .archived_at
+            .is_some();
+        let failed = self.chat_ref(&record.id).is_some_and(|chat| {
+            chat.controller.snapshot_shared().state == bello_agent_core::RunState::Error
+        });
+        let active = crate::sidebar_read_state::application_active(cx);
+        if attention_due(before, after, active, failed, archived) {
+            cx.global_mut::<Notifications>().request_attention();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -88,6 +124,8 @@ pub(crate) struct Notifications {
     badge: Option<Option<String>>,
     clock: Instant,
     last_played: Option<Duration>,
+    /// Dock attention requests made, for tests (native bounces are not observable).
+    attention_requests: usize,
     #[cfg(all(target_os = "macos", not(test)))]
     sound: native::Sound,
 }
@@ -105,6 +143,7 @@ impl Notifications {
             badge: None,
             clock: Instant::now(),
             last_played: None,
+            attention_requests: 0,
             #[cfg(all(target_os = "macos", not(test)))]
             sound: native::Sound::default(),
         }
@@ -142,13 +181,23 @@ impl Notifications {
         self.preferences = next;
         Ok(())
     }
-    pub(crate) fn badge(&mut self, label: Option<String>) {
+    /// The Dock badge last set, if any was set.
+    #[cfg(test)]
+    pub(crate) fn badge_label(&self) -> Option<&str> {
+        self.badge.as_ref().and_then(|label| label.as_deref())
+    }
+    pub(crate) fn set_badge(&mut self, label: Option<String>) {
         if self.badge.as_ref() == Some(&label) {
             return;
         }
         #[cfg(all(target_os = "macos", not(test)))]
         native::badge(label.as_deref());
         self.badge = Some(label);
+    }
+    fn request_attention(&mut self) {
+        self.attention_requests += 1;
+        #[cfg(all(target_os = "macos", not(test)))]
+        native::request_attention();
     }
     pub(crate) fn play(&mut self) -> bool {
         let now = self.clock.elapsed();
@@ -237,6 +286,17 @@ mod native {
         std::env::var("PI_APP_TESTING").as_deref() == Ok("1")
             || Class::get("XCTestCase").is_some()
             || std::env::var("BELLO_APP_TESTING").as_deref() == Ok("1")
+    }
+    pub(super) fn request_attention() {
+        if testing() {
+            return;
+        }
+        unsafe {
+            let app: id = msg_send![class!(NSApplication), sharedApplication];
+            // NSInformationalRequest: one bounce, as Swift asks.
+            let _: cocoa::foundation::NSInteger =
+                msg_send![app, requestUserAttention: 10 as cocoa::foundation::NSInteger];
+        }
     }
     pub(super) fn badge(label: Option<&str>) {
         unsafe {

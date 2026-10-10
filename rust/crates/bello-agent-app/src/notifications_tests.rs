@@ -225,3 +225,58 @@ fn dock_badge_refreshes_from_restored_manual_read_state_and_clears(cx: &mut gpui
     cx.run_until_parked();
     cx.read(|cx| assert_eq!(cx.global::<Notifications>().badge, Some(None)));
 }
+
+#[test]
+fn dock_attention_needs_a_new_unread_reply_in_the_background() {
+    assert!(attention_due(0, 1, false, false, false));
+    assert!(attention_due(2, 3, false, false, false));
+    assert!(!attention_due(1, 1, false, false, false), "no new reply");
+    assert!(!attention_due(2, 0, false, false, false), "read, not new");
+    assert!(!attention_due(0, 1, true, false, false), "app is frontmost");
+    assert!(!attention_due(0, 1, false, true, false), "run failed");
+    assert!(!attention_due(0, 1, false, false, true), "archived chat");
+}
+
+#[gpui::test]
+fn background_reply_observation_updates_badge_and_requests_attention_once(
+    cx: &mut gpui::TestAppContext,
+) {
+    use bello_agent_core::read_observation::{AcceptedTerminal, OutputProjection};
+    let (_dir, window, _root) =
+        crate::transcript_view_tests::fixture_with(cx, vec![], 0, None, false);
+    window
+        .update(cx, |view, _, cx| {
+            let record = view.record.clone();
+            let workspace = view.workspace.clone();
+            let source = Arc::downgrade(&view.controller);
+            let generation = view.controller.read_observation().generation;
+            let reply = |count: u64, sequence: u64| {
+                let history = OutputProjection::Known(OutputSummary {
+                    count,
+                    latest_id: Some(format!("reply-{count}")),
+                });
+                AcceptedReadObservation {
+                    generation: generation.clone(),
+                    source_revision: sequence + 1,
+                    history: history.clone(),
+                    busy: false,
+                    terminal: Some(AcceptedTerminal {
+                        sequence,
+                        source_revision: sequence + 1,
+                        history,
+                    }),
+                    failure_sequence: 0,
+                    completed_task_sequence: sequence,
+                }
+            };
+            view.receive_read_observation(&workspace, &record, &source, reply(0, 0), cx);
+            let before = cx.global::<Notifications>().attention_requests;
+            view.receive_read_observation(&workspace, &record, &source, reply(1, 1), cx);
+            assert_eq!(cx.global::<Notifications>().badge_label(), Some("1"));
+            assert_eq!(cx.global::<Notifications>().attention_requests, before + 1);
+            // The same observation again is not a new reply.
+            view.receive_read_observation(&workspace, &record, &source, reply(1, 1), cx);
+            assert_eq!(cx.global::<Notifications>().attention_requests, before + 1);
+        })
+        .unwrap();
+}

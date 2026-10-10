@@ -1152,6 +1152,25 @@ impl AgentView {
         {
             self.select_adjacent_chat(event.keystroke.key == "down", window, cx);
             cx.stop_propagation();
+        } else if cfg!(target_os = "macos")
+            && mods.platform
+            && mods.control
+            && !mods.alt
+            && !mods.shift
+            && matches!(event.keystroke.key.as_str(), "left" | "right")
+        {
+            // Swift's Widen/Narrow Sidebar (⌃⌘→/⌃⌘←). AppKit's menu reaches
+            // these before a text view; take them before the editor here.
+            #[cfg(any(target_os = "macos", test))]
+            self.adjust_sidebar(
+                if event.keystroke.key == "right" {
+                    application_menus::SIDEBAR_STEP
+                } else {
+                    -application_menus::SIDEBAR_STEP
+                },
+                cx,
+            );
+            cx.stop_propagation();
         } else if navigation_command
             && mods.shift
             && !mods.alt
@@ -1181,7 +1200,7 @@ impl AgentView {
             cx.stop_propagation();
             cx.notify();
         } else if command && event.keystroke.key == "w" {
-            if self.show_files && !cfg!(target_os = "macos") {
+            if self.show_files {
                 self.close_selected_tab(window, cx);
             } else if self.request_close(window, cx) {
                 window.remove_window();
@@ -1363,6 +1382,10 @@ impl AgentView {
         if self.resizing.take().is_none() {
             return;
         }
+        self.save_layout(cx);
+    }
+    /// Store the current layout, as ending a sidebar or pane drag does.
+    fn save_layout(&mut self, cx: &mut Context<Self>) {
         let store = self.layout_store.clone();
         let revision = store.reserve();
         let layout = self.layout;
@@ -3289,8 +3312,9 @@ impl Render for AgentView {
         self.resume_sidebar_reveal(cx);
         self.refresh_sidebar_search(cx);
         self.refresh_sidebar_run_states(cx);
-        let badge = self.read_states.lock().unwrap().dock_badge(&self.records);
-        cx.global_mut::<notifications::Notifications>().badge(badge);
+        self.refresh_dock_badge(cx);
+        #[cfg(any(target_os = "macos", test))]
+        self.sync_menus(cx);
         let palette = current_palette(window);
         if self.palette != palette {
             self.palette = palette;

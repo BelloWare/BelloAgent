@@ -164,6 +164,10 @@ impl ReadCoordinator {
     ) -> Result<bool> {
         self.apply(record, ReadEvent::Baseline(summary), false, false)
     }
+    /// Unread replies as the sidebar shows them (a grace hold hides some).
+    pub(crate) fn unread_outputs(&self, record: &ChatRecord) -> u64 {
+        self.presentation(record).map_or(0, |s| s.unread_count)
+    }
     pub(crate) fn dock_badge(&self, records: &[ChatRecord]) -> Option<String> {
         crate::notifications::dock_badge(records.iter().map(|r| (r, self.presentation(r))))
     }
@@ -427,20 +431,29 @@ impl AgentView {
             !self.show_files && !self.changes_open && !self.shutting_down,
             application_active(cx),
         );
-        let changed = self.read_states.lock().unwrap().apply(
-            record,
-            ReadEvent::Observe {
-                observation: &observation,
-                reader_present,
-            },
-            false,
-            grace,
-        );
+        let (unread_before, changed) = {
+            let mut states = self.read_states.lock().unwrap();
+            let before = states.unread_outputs(record);
+            let changed = states.apply(
+                record,
+                ReadEvent::Observe {
+                    observation: &observation,
+                    reader_present,
+                },
+                false,
+                grace,
+            );
+            (before, changed)
+        };
         match changed {
             Ok(true) => {
                 if self.record.id == record.id {
                     self.invalidate_read_geometry(cx);
                 }
+                // Keep the Dock current even if this window does not render
+                // while another app is in front.
+                self.refresh_dock_badge(cx);
+                self.request_reply_attention(record, unread_before, cx);
                 self.flush_read_states(cx);
                 self.schedule_read_grace(record, cx);
                 cx.notify();
@@ -984,7 +997,7 @@ impl NativeReadEvidence {
     }
 }
 
-fn application_active(cx: &App) -> bool {
+pub(crate) fn application_active(cx: &App) -> bool {
     #[cfg(all(target_os = "macos", not(test)))]
     {
         let _ = cx;
