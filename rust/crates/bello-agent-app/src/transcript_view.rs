@@ -2146,6 +2146,7 @@ impl TranscriptView {
             .map(|control| (control.label.clone(), control.open))
             .collect()
     }
+    #[cfg(test)]
     pub(crate) fn logical_row_ids(&self) -> Vec<String> {
         self.viewport
             .borrow()
