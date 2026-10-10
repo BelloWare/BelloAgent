@@ -3859,7 +3859,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
                 #[cfg(feature = "native-authority")]
                 println!(
-                    "  --native-authority  experimental separate Rust Keychain vault; saved provider chat only, no tools; requires approved signed macOS identity"
+                    "  --native-authority  experimental separate Rust Keychain vault; saved chats offer a trusted project's tools by their mode; requires approved signed macOS identity"
                 );
                 #[cfg(all(feature = "synthetic-authority", debug_assertions))]
                 println!(
