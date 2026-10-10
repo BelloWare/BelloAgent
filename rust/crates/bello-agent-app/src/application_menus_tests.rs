@@ -494,3 +494,29 @@ fn in_place_retitles_name_the_titles_the_built_menus_show() {
         }
     }
 }
+
+#[gpui::test]
+fn menu_send_refuses_while_a_tabs_text_has_focus(cx: &mut TestAppContext) {
+    cx.update(install);
+    let (dir, window, root) = fixture_with(cx, vec![], 0, None, true);
+    let path = dir.path().join("menu-send-focus.txt");
+    std::fs::write(&path, "original").unwrap();
+    window
+        .update(cx, |view, window, cx| {
+            view.open_file(path.clone(), None, window, cx)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_input(window.into(), "typed");
+    for action in [&SendFollowUp as &dyn Action, &SendSteer] {
+        cx.update_window(window.into(), |_, w, cx| {
+            w.dispatch_action(action.boxed_clone(), cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+    cx.read(|cx| {
+        assert!(root.read(cx).session.pending.is_empty());
+        assert_eq!(root.read(cx).composer.read(cx).text(), "draft");
+    });
+}

@@ -57,6 +57,10 @@ impl WorkspaceLifetime {
             let _ = window.update(cx, |view, window, cx| {
                 if view.request_close(window, cx) {
                     cx.quit();
+                } else {
+                    // A confirmation or a notice may need the reader: bring the
+                    // workspace forward even when an inspector was key.
+                    window.activate_window();
                 }
             });
         });

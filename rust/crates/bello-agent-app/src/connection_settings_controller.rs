@@ -665,6 +665,9 @@ impl AgentView {
             return;
         }
         let sound_dirty = self.connections.presentation.completion_sound_dirty;
+        // Saved before the connections; every later outcome says so, since
+        // Cancel can no longer undo it (honest partial saves).
+        let mut sound_saved = "";
         if sound_dirty {
             let enabled = self.connections.presentation.completion_sound_enabled;
             if let Err(error) = cx
@@ -684,6 +687,9 @@ impl AgentView {
                 self.close_connections(false, window, cx);
                 return;
             }
+            sound_saved = "Task completion sound saved. ";
+            self.connections.notice(sound_saved.trim_end(), false);
+            self.connections.publish(cx);
         }
         {
             if !self.connections.presentation.mode.editable() {
@@ -715,7 +721,8 @@ impl AgentView {
                 .cloned()
                 .collect();
             if let Some(reason) = self.connection_change_busy(&dirty_ids) {
-                self.connections.notice(reason, true);
+                self.connections
+                    .notice(format!("{sound_saved}{reason}"), true);
                 self.connections.publish(cx);
                 return;
             }
@@ -784,7 +791,8 @@ impl AgentView {
                     // Loaded still requires fresh healthy Core evidence and
                     // cannot fall back to disk; prior Blocked remains Blocked.
                     if !result.uncertain { view.sidebar_search.restore_operation(search_restore,false); }
-                    let mut message=if let Some(error)=result.failure{if names.is_empty(){format!("Connection save did not complete: {error}")}else{format!("Saved {names}. The following save did not complete: {error}")}}else{view.connections.presentation.mode.saved_notice().into()};
+                    let mut message=sound_saved.to_owned();
+                    message+=&if let Some(error)=result.failure{if names.is_empty(){format!("Connection save did not complete: {error}")}else{format!("Saved {names}. The following save did not complete: {error}")}}else{view.connections.presentation.mode.saved_notice().into()};
                     if forked {message.push_str(" Route changes created new connections; earlier chats keep their original connections.");}
                     for note in result.runtime_notices {message.push(' ');message.push_str(&note);}
                     view.connections.notice(message,!success);view.connections.publish(cx);

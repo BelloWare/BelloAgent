@@ -311,8 +311,9 @@ impl AgentView {
                     .read(cx)
                     .has_focused_editable_text(window, cx))
     }
-    fn menu_submit(&mut self, steer: bool, cx: &mut C) {
-        if self.composer.read(cx).has_marked_text() {
+    fn menu_submit(&mut self, steer: bool, window: &Window, cx: &mut C) {
+        // Swift's submitFocusedComposer refuses while a tab's text has focus.
+        if self.typing_in_tab(window, cx) || self.composer.read(cx).has_marked_text() {
             return;
         }
         // The composer's own Return path: an edit saves, otherwise send.
@@ -456,9 +457,10 @@ impl AgentView {
             .adjust_sidebar(SIDEBAR_STEP, cx));
         route!(true, NarrowSidebar, |v, _, _, cx| v
             .adjust_sidebar(-SIDEBAR_STEP, cx));
-        route!(composer, SendFollowUp, |v, _, _, cx| v
-            .menu_submit(false, cx));
-        route!(composer, SendSteer, |v, _, _, cx| v.menu_submit(true, cx));
+        route!(composer, SendFollowUp, |v, _, w, cx| v
+            .menu_submit(false, w, cx));
+        route!(composer, SendSteer, |v, _, w, cx| v
+            .menu_submit(true, w, cx));
         route!(active, Stop, |v, _, w, cx| v.stop_from_shortcut(w, cx));
         route!(
             active && crate::queue_actions::offers_resume(&self.chat),
