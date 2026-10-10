@@ -3604,6 +3604,91 @@ impl Render for AgentView {
     }
 }
 
+/// A command-line migration step, run instead of opening the window.
+enum Migration {
+    Import(PathBuf),
+    Undo(PathBuf),
+}
+
+/// Bello Agent's (Swift) data folder on this Mac.
+fn default_swift_data() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(
+            PathBuf::from(std::env::var_os("HOME")?)
+                .join("Library/Application Support/com.belloware.PiApp"),
+        )
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
+/// Runs an import or its undo against this project's Rust workspace and
+/// prints what happened. Bello Agent's own files are only read.
+fn run_migration(
+    migration: Migration,
+    workspace: &mut WorkspaceStore,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use bello_agent_core::swift_migration;
+    match migration {
+        Migration::Import(source) => {
+            let (path, manifest) = swift_migration::import(&source, workspace)?;
+            println!(
+                "Imported {} chat(s) and {} topic(s) from {} into {}.",
+                manifest.chats.len(),
+                manifest.topics.len(),
+                source.display(),
+                manifest.project.display()
+            );
+            for chat in &manifest.chats {
+                let left: Vec<String> = chat
+                    .left
+                    .iter()
+                    .map(|(kind, count)| format!("{count} {kind}"))
+                    .collect();
+                if left.is_empty() {
+                    println!("  + {}", chat.title);
+                } else {
+                    println!("  + {} (not carried: {})", chat.title, left.join(", "));
+                }
+            }
+            for skipped in &manifest.skipped {
+                println!("  - {}: {}", skipped.title, skipped.reason);
+            }
+            if manifest.unlisted > 0 {
+                println!(
+                    "  {} record(s) Bello Agent itself does not list were left alone.",
+                    manifest.unlisted
+                );
+            }
+            if let Some(backup) = &manifest.backup {
+                println!("The Rust catalog as it was: {}", backup.display());
+            }
+            println!(
+                "To take these chats out again: --undo-swift-import {}",
+                path.display()
+            );
+        }
+        Migration::Undo(manifest) => {
+            let undone = swift_migration::undo(workspace, &manifest)?;
+            println!(
+                "Took out {} imported chat(s); their files are in {}.",
+                undone.removed.len(),
+                undone.set_aside.display()
+            );
+            if !undone.kept.is_empty() {
+                println!(
+                    "Kept {} chat(s) continued in Rust since the import.",
+                    undone.kept.len()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn default_session() -> PathBuf {
     #[cfg(target_os = "macos")]
     let base = PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
@@ -3680,6 +3765,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut profile_path = None;
     let mut credential_stdin = false;
     let mut native_authority = false;
+    let mut migration: Option<Migration> = None;
     #[cfg(all(feature = "synthetic-authority", debug_assertions))]
     let mut synthetic_authority = false;
     #[cfg(all(feature = "synthetic-authority", debug_assertions))]
@@ -3697,6 +3783,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--credential-stdin" => credential_stdin = true,
             "--native-authority" => native_authority = true,
+            "--import-swift" => {
+                migration = Some(Migration::Import(
+                    default_swift_data()
+                        .ok_or("--import-swift needs --import-swift-from DIR here")?,
+                ))
+            }
+            "--import-swift-from" => {
+                migration = Some(Migration::Import(PathBuf::from(
+                    args.next().ok_or("--import-swift-from needs a folder")?,
+                )))
+            }
+            "--undo-swift-import" => {
+                migration = Some(Migration::Undo(PathBuf::from(
+                    args.next().ok_or("--undo-swift-import needs a manifest")?,
+                )))
+            }
             #[cfg(all(feature = "synthetic-authority", debug_assertions))]
             "--synthetic-project-authority" => synthetic_authority = true,
             #[cfg(all(feature = "synthetic-authority", debug_assertions))]
@@ -3716,7 +3818,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "BelloAgent Rust GPUI preview\n  --project DIR\n  --session FILE    isolated Rust snapshot (never a Swift journal)\n  --profile FILE    explicit non-secret LiteLLM Responses JSON\n  --credential-stdin  read an in-memory key until EOF; never stored\n  BELLO_PERF_LOG=FILE  optional real CPU callback JSONL telemetry"
+                    "BelloAgent Rust GPUI preview\n  --project DIR\n  --session FILE    isolated Rust snapshot (never a Swift journal)\n  --profile FILE    explicit non-secret LiteLLM Responses JSON\n  --credential-stdin  read an in-memory key until EOF; never stored\n  --import-swift    copy this project's chats from Bello Agent (Swift) into the Rust workspace, then exit;\n                    Bello Agent's own files are only read\n  --import-swift-from DIR  the same, from a Bello Agent data folder\n  --undo-swift-import MANIFEST  take an import's chats out again (not ones continued since), then exit\n  BELLO_PERF_LOG=FILE  optional real CPU callback JSONL telemetry"
                 );
                 #[cfg(all(debug_assertions, target_os = "linux", feature = "synthetic-authority"))]
                 println!(
@@ -3798,6 +3900,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         session = std::env::current_dir()?.join(session);
     }
     let mut workspace = WorkspaceStore::open(session.with_extension("workspace.json"), &project)?;
+    if let Some(migration) = migration {
+        return run_migration(migration, &mut workspace);
+    }
     let (store, record, pending) = open_startup_chat(&mut workspace, &session)?;
     let draft = workspace
         .snapshot()
