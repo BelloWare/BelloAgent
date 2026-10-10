@@ -48,3 +48,26 @@ Not read (not needed to show or continue a chat): spend, command receipts beyond
 the newest state record, task presentations, message versions (an edit's earlier
 replies stay in `history`), checkpoint files. A response timeline counts as
 terminal when its record names a terminal; Swift also requires it to decode.
+
+## The chat list (`metadata/`)
+
+`bello_agent_core::swift_catalog` reads Swift's `desktop.sqlite` (one table of
+JSON records by kind) as the sidebar lists it. `metadata/build.sh` compiles
+Swift's own `MetadataStore.swift` and the record types it encodes from
+`6319e368`, unchanged (the attachment record is the first 28 lines of
+`Attachments.swift`, the struct alone), with `stubs.swift` standing in for app
+types named only in code the oracle never runs (title claims, the portable
+handoff, error text, money formatting). `metadata-oracle generate OUT` has the
+store write three projects, a topic, a draft and chats of every kind (plain,
+pinned, archived, in a topic, a kept side, another project, a title request, a
+connection test, per-chat overrides with a cost limit, one with no creation
+order, one never sent), plus two rows another version could leave (no
+workspace; no tool mode). It checkpoints the WAL and keeps a copy of the store
+before listing (a listing writes back the orders it fills in), then writes
+Swift's `loadChats` result.
+
+Fixtures: `crates/bello-agent-core/tests/data/swift-catalog/`. Rust lists the
+same 11 chats in the same order, every decoded field equal, and leaves the same
+2 rows unlisted (Swift's synthesized `Codable` needs every non-optional key,
+`toolMode` and `imported` included, defaults notwithstanding). The 512 KiB row
+limit is checked by the Rust test with a row of its own.

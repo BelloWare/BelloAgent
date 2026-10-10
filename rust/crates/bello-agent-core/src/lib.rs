@@ -28,6 +28,7 @@ pub mod skills;
 pub mod source_admission;
 pub mod sse;
 mod stream_journal;
+pub mod swift_catalog;
 pub mod swift_import;
 pub mod swift_journal;
 pub mod syntax;
