@@ -3395,8 +3395,36 @@ struct ToolEditor {
 #[derive(Clone, Copy, PartialEq)]
 struct ToolEditorStyle {
     palette: Palette,
-    failed: bool,
+    tone: Tone,
+    /// A terminal's output scrolls past 224 points, any other section past 150.
+    terminal: bool,
 }
+/// What a card's payload is set in (`TranscriptNativeCards`): a request or a
+/// result muted, a command or a diff's and a read's lines in the text colour,
+/// a failure's result red.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Muted,
+    Text,
+    Danger,
+}
+impl ToolEditorStyle {
+    fn cap(self) -> f32 {
+        if self.terminal {
+            TERMINAL_CAP
+        } else {
+            tool_presentation::SECTION_CAP
+        }
+    }
+}
+/// `TranscriptCardFaces.code`: the system's monospaced face (SF Mono).
+const CARD_MONO: &str = if cfg!(target_os = "macos") {
+    ".AppleSystemUIFontMonospaced"
+} else {
+    "DejaVu Sans Mono"
+};
+/// `TranscriptCardMetrics.terminalCap`.
+const TERMINAL_CAP: f32 = 224.;
 impl ToolEditors {
     fn active_find(&self) -> Option<Rc<crate::transcript_find_presentation::FindPaint>> {
         self.sidebar.clone().or_else(|| self.find.clone())
@@ -3515,7 +3543,7 @@ impl ToolEditors {
         let (row_index, row, section) = key;
         let key = (row, section);
         self.tick += 1;
-        let ToolEditorStyle { palette: p, failed } = style;
+        let p = style.palette;
         if !self.entries.contains_key(&key) {
             if self.entries.len() >= TOOL_EDITOR_LIMIT {
                 let oldest = self
@@ -3532,7 +3560,7 @@ impl ToolEditors {
                 let mut editor = EditorView::new(preview.into(), window, cx);
                 editor.set_read_only(true, cx);
                 editor.set_vim(false, cx);
-                editor.set_appearance(tool_editor_appearance(p, failed), cx);
+                editor.set_appearance(tool_editor_appearance(p, style.tone), cx);
                 editor
             });
             self.entries.insert(
@@ -3557,11 +3585,11 @@ impl ToolEditors {
                 entry.find_installed = None;
             }
             if entry.style != style {
-                editor.set_appearance(tool_editor_appearance(p, failed), cx);
+                editor.set_appearance(tool_editor_appearance(p, style.tone), cx);
             }
             editor
                 .measured_content_height(width.max(1.), window)
-                .clamp(17., tool_presentation::SECTION_CAP)
+                .clamp(17., style.cap())
         });
         entry.style = style;
         (entry.editor.clone(), height)
@@ -3874,14 +3902,19 @@ fn decorate_find_tool(
     }
 }
 
-fn tool_editor_appearance(p: Palette, failed: bool) -> EditorAppearance {
+fn tool_editor_appearance(p: Palette, tone: Tone) -> EditorAppearance {
+    let colors = work_line::card_colors(&p);
     EditorAppearance {
-        font_family: "monospace".into(),
+        font_family: CARD_MONO.into(),
         font_size: 12.,
         line_height: 17.,
         padding_x: 0.,
         padding_y: 0.,
-        text: rgb(if failed { p.danger } else { p.secondary }).into(),
+        text: match tone {
+            Tone::Muted => colors.muted,
+            Tone::Text => colors.text,
+            Tone::Danger => colors.danger,
+        },
         selection: p.accent_soft(),
         caret: rgb(p.accent).into(),
         normal_caret: p.accent_soft(),
@@ -4037,7 +4070,6 @@ fn render_tool_card(
         .border_color(colors.hair)
         .bg(colors.code_background)
         .overflow_hidden();
-    let mut first = true;
     let shown_output = projected
         .result()
         .map(|index| tool_presentation::display_text(&session.messages[index]))
@@ -4077,9 +4109,14 @@ fn render_tool_card(
 
     let read_link = read_presentation::file_link(session, projected)
         .or_else(|| edit_presentation::file_link(session, projected));
+    // A change's card is its diff; what a change that did not land printed
+    // stays under it, but an empty result says nothing there.
     let output = shown_output
         .as_deref()
-        .filter(|_| edit_preview.is_none() || status != tool_presentation::Status::Completed)
+        .filter(|text| {
+            edit_preview.is_none()
+                || (status != tool_presentation::Status::Completed && !text.is_empty())
+        })
         .map(|text| {
             if let Some(read) = &read_window {
                 // Source's six-head/six-tail window, without the generic 8 KiB
@@ -4096,27 +4133,61 @@ fn render_tool_card(
                 text
             })
         });
+    // A command opens as Swift's terminal: `$ command` over what it printed.
+    let terminal = model
+        .as_ref()
+        .is_some_and(|model| model.kind == tool_row::ActionKind::Command)
+        && edit_preview.is_none()
+        && read_window.is_none()
+        && matches!(projected, ProjectedRow::Call { .. });
+    if terminal
+        && let (
+            Some(model),
+            ProjectedRow::Call {
+                assistant, call, ..
+            },
+        ) = (&model, projected)
+    {
+        let call = tool_presentation::call_at(session, assistant, call);
+        input = Some(tool_presentation::preview(
+            call.arguments["command"].as_str().unwrap_or(&model.object),
+        ));
+    }
     let truncated = input.as_ref().is_some_and(|preview| preview.truncated)
         || output.as_ref().is_some_and(|preview| preview.truncated);
+    let rule = colors.hair;
     if read_window.is_some() || read_link.is_some() || edit_preview.is_some() {
+        // The banner: what became of a change and its file, or a read's file
+        // and how much of it the card shows.
         let mut header = div()
             .w_full()
             .min_w_0()
-            .when(!first, |d| d.border_t_1())
-            .border_color(p.hairline())
+            .border_b_1()
+            .border_color(rule)
             .px(px(16.))
             .py(px(8.))
             .flex()
             .items_center()
             .gap(px(8.));
         if let Some(edit) = &edit_preview {
-            header = header.child(
-                div()
-                    .debug_selector(|| format!("{selector}-edit-label"))
-                    .text_size(px(11.5))
-                    .text_color(rgb(p.secondary))
-                    .child(edit.label.clone()),
-            );
+            let tint = match status {
+                tool_presentation::Status::Completed => colors.muted,
+                tool_presentation::Status::Failed | tool_presentation::Status::NotExecuted => {
+                    colors.danger
+                }
+                _ => colors.warning,
+            };
+            header = header
+                .child(
+                    div()
+                        .debug_selector(|| format!("{selector}-edit-label"))
+                        .flex_shrink_0()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_size(px(11.5))
+                        .text_color(tint)
+                        .child(edit.label.clone()),
+                )
+                .child(div().flex_1());
         }
         if let Some(link) = read_link {
             let path_selector = format!(
@@ -4135,10 +4206,14 @@ fn render_tool_card(
                 div()
                     .id(SharedString::from(path_selector.clone()))
                     .debug_selector(|| path_selector.clone())
-                    .flex_1()
+                    .when(edit_preview.is_none(), |d| d.flex_1())
                     .min_w_0()
                     .text_size(px(11.5))
-                    .text_color(rgb(p.secondary))
+                    .text_color(if edit_preview.is_some() {
+                        colors.faint
+                    } else {
+                        colors.muted
+                    })
                     .text_ellipsis()
                     .cursor_pointer()
                     .hover(|d| d.underline())
@@ -4156,34 +4231,56 @@ fn render_tool_card(
                     .debug_selector(|| format!("{selector}-read-window"))
                     .flex_shrink_0()
                     .text_size(px(11.5))
-                    .text_color(rgb(p.tertiary))
+                    .text_color(colors.faint)
                     .child(read.window_label(row.read_expanded)),
             );
         }
         panel = panel.child(header);
-        first = false;
     }
-    // The panel under the line's title, its 16-point sides and the 30-point
-    // gutter its section labels sit in, 14 points before the payload.
-    let body_width = (f32::from(width) - 2. * ROW_GUTTER).min(ROW_MAX_WIDTH)
-        - 4.
-        - work_line::INDENT
-        - 2.
-        - 32.
-        - 30.
-        - 14.;
-    for (label, preview) in [("IN", input), ("OUT", output)] {
-        let Some(preview) = preview else {
-            continue;
+    // The panel's inner width: its 16-point sides and hairline border.
+    let inner =
+        (f32::from(width) - 2. * ROW_GUTTER).min(ROW_MAX_WIDTH) - 4. - work_line::INDENT - 2. - 32.;
+    let sections = [("IN", input), ("OUT", output)];
+    let shown = sections
+        .iter()
+        .filter(|(_, preview)| preview.is_some())
+        .count();
+    for (position, (label, preview)) in sections
+        .into_iter()
+        .filter_map(|(label, preview)| Some((label, preview?)))
+        .enumerate()
+    {
+        // A diff's and a read's lines carry their own marks; a terminal's
+        // command its prompt; everything else stands beside its IN/OUT label.
+        let lines =
+            (label == "IN" && edit_preview.is_some()) || (label == "OUT" && read_window.is_some());
+        let gutter = !lines && !terminal;
+        let failed = label == "OUT" && status.is_error();
+        let style = ToolEditorStyle {
+            palette: p,
+            tone: if failed {
+                Tone::Danger
+            } else if lines || (terminal && label == "IN") {
+                Tone::Text
+            } else {
+                Tone::Muted
+            },
+            terminal: terminal && label == "OUT",
+        };
+        let prompt = if terminal && label == "IN" {
+            7. + 8.
+        } else {
+            0.
         };
         let (editor, height) = editors.borrow_mut().section(
             (index, row.key.clone(), label),
             &preview.text,
-            ToolEditorStyle {
-                palette: p,
-                failed: label == "OUT" && status.is_error(),
+            style,
+            if gutter {
+                inner - 30. - 14.
+            } else {
+                inner - prompt
             },
-            body_width,
             window,
             cx,
         );
@@ -4193,91 +4290,117 @@ fn render_tool_card(
             label,
             &preview.text,
             read_window.as_ref().map(|r| r.first_line),
-            edit_preview.is_none() && read_window.is_none(),
+            edit_preview.is_none() && read_window.is_none() && !terminal,
             &editor,
             editors,
             child,
             window,
             cx,
         );
-        let rule = !first;
-        first = false;
+        let mut section = div()
+            .w_full()
+            .min_w_0()
+            .when(position + 1 < shown, |d| d.border_b_1())
+            .border_color(rule)
+            .px(px(16.))
+            .py(px(if lines {
+                0.
+            } else if terminal {
+                10.
+            } else {
+                12.
+            }))
+            .flex()
+            .items_start();
+        if gutter {
+            section = section.gap(px(14.)).child(
+                div()
+                    .w(px(30.))
+                    .flex_shrink_0()
+                    .font_family(CARD_MONO)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_size(px(11.))
+                    .text_color(colors.faint)
+                    .child(label),
+            );
+        } else if prompt > 0. {
+            section = section.gap(px(8.)).child(
+                div()
+                    .flex_shrink_0()
+                    .font_family(CARD_MONO)
+                    .text_size(px(12.))
+                    .line_height(px(17.))
+                    .text_color(colors.faint)
+                    .child("$"),
+            );
+        }
         panel = panel.child(
-            div()
-                .w_full()
-                .min_w_0()
-                .when(rule, |d| d.border_t_1())
-                .border_color(p.hairline())
-                .px(px(16.))
-                .py(px(12.))
-                .flex()
-                .items_start()
-                .gap(px(14.))
-                .child(
-                    div()
-                        .w(px(30.))
-                        .flex_shrink_0()
-                        .font_family("monospace")
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_size(px(11.))
-                        .text_color(colors.faint)
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("{selector}-{label}")))
-                        .debug_selector(|| format!("{selector}-{label}"))
-                        .flex_1()
-                        .min_w_0()
-                        .h(px(height))
-                        .max_h(px(tool_presentation::SECTION_CAP))
-                        .overflow_hidden()
-                        // GPUI List registers its wheel listener after children,
-                        // so bubbling alone cannot stop it. Exclude the outer
-                        // list's hitbox while this selectable scroller is hit.
-                        .occlude()
-                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                        .child(editor),
-                ),
+            section.child(
+                div()
+                    .id(SharedString::from(format!("{selector}-{label}")))
+                    .debug_selector(|| format!("{selector}-{label}"))
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(height))
+                    .max_h(px(style.cap()))
+                    .overflow_hidden()
+                    // GPUI List registers its wheel listener after children,
+                    // so bubbling alone cannot stop it. Exclude the outer
+                    // list's hitbox while this selectable scroller is hit.
+                    .occlude()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .child(editor),
+            ),
         );
     }
+    // Swift's capped list's line (`TranscriptCardMoreLines`): a plain button
+    // in the code face, 4 points above and below.
+    let more = |id: String, label: String, toggle: Box<dyn Fn(&mut App)>| {
+        div()
+            .id(SharedString::from(id.clone()))
+            .debug_selector(move || id)
+            .w_full()
+            .px(px(16.))
+            .py(px(4.))
+            .cursor_pointer()
+            .font_family(CARD_MONO)
+            .text_size(px(12.))
+            .text_color(colors.faint)
+            .hover(|d| d.text_color(colors.muted))
+            .child(label)
+            .on_click(move |_, _, cx| toggle(cx))
+    };
     if let Some(read) = read_window {
         if read.collapsible() {
             let child = child.clone();
             let key = row.key.clone();
             let chat_id = presentation.input.chat_id.clone();
             let controller = presentation.input.controller.clone();
-            panel = panel.child(
-                div().px(px(16.)).pb(px(8.)).child(
-                    button(
-                        p,
-                        SharedString::from(format!("{selector}-read-disclosure")),
-                        if row.read_expanded {
-                            "Show less".into()
-                        } else {
-                            format!(
-                                "Show {} more lines",
-                                read.lines.len() - read_presentation::READ_LINES
-                            )
-                        },
+            panel = panel.child(more(
+                format!("{selector}-read-disclosure"),
+                if row.read_expanded {
+                    "Show fewer lines".into()
+                } else {
+                    format!(
+                        "Show {} more lines",
+                        read.lines.len() - read_presentation::READ_LINES
                     )
-                    .debug_selector(|| format!("{selector}-read-disclosure"))
-                    .on_click(move |_, _, cx| {
-                        let _ = child.update(cx, |view, cx| {
-                            view.toggle_read(key.clone(), &chat_id, &controller, cx)
-                        });
-                    }),
-                ),
-            );
+                },
+                Box::new(move |cx| {
+                    let _ = child.update(cx, |view, cx| {
+                        view.toggle_read(key.clone(), &chat_id, &controller, cx)
+                    });
+                }),
+            ));
         }
         if let Some(note) = read.note {
             panel = panel.child(
                 div()
                     .debug_selector(|| format!("{selector}-read-note"))
                     .px(px(16.))
-                    .pb(px(10.))
+                    .py(px(8.))
                     .text_size(px(11.5))
-                    .text_color(rgb(p.secondary))
+                    .text_color(colors.muted)
                     .child(note.to_owned()),
             );
         }
@@ -4295,31 +4418,34 @@ fn render_tool_card(
             } else {
                 format!("Show {} more lines", edit.hidden)
             };
-            panel = panel.child(
-                div().px(px(16.)).pb(px(8.)).child(
-                    button(
-                        p,
-                        SharedString::from(format!("{selector}-edit-disclosure")),
-                        label,
-                    )
-                    .debug_selector(|| format!("{selector}-edit-disclosure"))
-                    .on_click(move |_, _, cx| {
-                        let _ = child.update(cx, |view, cx| {
-                            view.toggle_read(key.clone(), &chat_id, &controller, cx)
-                        });
-                    }),
-                ),
-            );
+            panel = panel.child(more(
+                format!("{selector}-edit-disclosure"),
+                label,
+                Box::new(move |cx| {
+                    let _ = child.update(cx, |view, cx| {
+                        view.toggle_read(key.clone(), &chat_id, &controller, cx)
+                    });
+                }),
+            ));
         }
         if let Some(footer) = &edit.footer {
+            // `└ +3 −1`: the change's size at the diff's foot.
+            let (plus, minus) = footer.split_once(' ').unwrap_or((footer, ""));
             panel = panel.child(
                 div()
                     .debug_selector(|| format!("{selector}-edit-counts"))
                     .px(px(16.))
-                    .pb(px(8.))
-                    .text_size(px(11.5))
-                    .text_color(rgb(p.secondary))
-                    .child(footer.clone()),
+                    .py(px(6.))
+                    .flex()
+                    .text_size(px(12.))
+                    .child(
+                        div()
+                            .font_family(CARD_MONO)
+                            .text_color(colors.faint)
+                            .child("└ "),
+                    )
+                    .child(div().text_color(colors.success).child(plus.to_owned()))
+                    .child(div().text_color(colors.danger).child(format!(" {minus}"))),
             );
         }
     }
@@ -4327,9 +4453,9 @@ fn render_tool_card(
         panel = panel.child(
             div()
                 .px(px(16.))
-                .pb(px(10.))
+                .py(px(10.))
                 .text_size(px(11.5))
-                .text_color(rgb(p.secondary))
+                .text_color(colors.muted)
                 .child("Preview truncated; retained input and output are unchanged."),
         );
     }

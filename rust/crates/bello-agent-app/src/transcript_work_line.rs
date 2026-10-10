@@ -72,15 +72,25 @@ pub(crate) type Link = Box<dyn Fn(&mut Window, &mut App)>;
 
 /// The colours a work row's card is drawn in (`TranscriptNSPalette`).
 pub(crate) struct CardColors {
+    pub text: Hsla,
+    pub muted: Hsla,
     pub faint: Hsla,
     pub hair: Hsla,
     pub code_background: Hsla,
+    pub danger: Hsla,
+    pub warning: Hsla,
+    pub success: Hsla,
 }
 
 pub(crate) fn card_colors(palette: &crate::Palette) -> CardColors {
     let colors = Colors::new(palette);
     let dark = palette.dark;
     CardColors {
+        text: colors.text,
+        muted: colors.muted,
+        danger: colors.danger,
+        warning: colors.warning,
+        success: rgb(if dark { 0x7cc48f } else { 0x3d8a57 }).into(),
         faint: colors.faint,
         hair: rgba(if dark { 0xffffff17 } else { 0x00000014 }).into(),
         code_background: rgb(if dark { 0x211d1a } else { 0xf6f1ea }).into(),

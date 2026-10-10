@@ -97,3 +97,41 @@ fn a_replys_calls_are_closed_work_lines_stacked_and_open_on_click(cx: &mut TestA
     let next = bounds(&mut visual, format!("{}-disclosure", selectors[1])).unwrap();
     assert_eq!(next.top(), lines[0].bottom(), "closing gives the room back");
 }
+
+#[gpui::test]
+fn a_command_opens_as_swifts_terminal_card(cx: &mut TestAppContext) {
+    let (_directory, _window, root) = fixture(cx, messages(1), 0);
+    let mut changed = input(&root, cx);
+    let mut session = (*changed.session).clone();
+    session.messages = reply_with_calls(1);
+    changed.session = Arc::new(session);
+    changed.visible_messages = usize::MAX;
+    let (mut visual, child) = host(&root, changed, cx);
+    let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    let line = bounds(&mut visual, format!("{selector}-disclosure")).unwrap();
+    visual.simulate_click(line.center(), Modifiers::none());
+    cx.run_until_parked();
+    // The command itself, not its arguments' JSON, after its prompt; what it
+    // printed under it.
+    let mut texts: Vec<_> = cx.read(|cx| {
+        child
+            .read(cx)
+            .tool_section_editors()
+            .into_iter()
+            .map(|(label, editor)| (label, editor.read(cx).text().to_string()))
+            .collect()
+    });
+    texts.sort();
+    assert_eq!(
+        texts,
+        vec![("IN", "echo 0".to_owned()), ("OUT", "0".to_owned())]
+    );
+    let command = bounds(&mut visual, format!("{selector}-IN")).unwrap();
+    let output = bounds(&mut visual, format!("{selector}-OUT")).unwrap();
+    let card = bounds(&mut visual, format!("{selector}-card")).unwrap();
+    // `$` and 8 points stand before the command; the output starts at the
+    // card's 16-point side, 10 under the rule.
+    assert!(command.left() > output.left());
+    assert_eq!(output.left() - card.left(), px(1. + 16.));
+    assert_eq!(command.top() - card.top(), px(1. + 10.));
+}
