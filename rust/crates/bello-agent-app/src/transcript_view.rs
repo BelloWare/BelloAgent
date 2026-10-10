@@ -16,6 +16,8 @@ mod read_presentation;
 mod shaped_text;
 #[path = "transcript_tool_presentation.rs"]
 mod tool_presentation;
+#[path = "transcript_work_line.rs"]
+mod work_line;
 use gpui::{prelude::*, *};
 use std::{
     cell::RefCell,
@@ -752,7 +754,8 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
         }
     }
     if !message.reasoning.is_empty() {
-        height += 6. + plain(&message.reasoning, 12., 18.);
+        // The Think row, closed until opened.
+        height += 6. + work_line::HEIGHT;
     }
     if let Some(label) = crate::compaction_actions::row_label(message, &presentation.input.session)
     {
@@ -1554,6 +1557,16 @@ impl TranscriptView {
         cx.notify();
     }
 
+    /// Opens or closes a reply's Think row.
+    fn toggle_thinking(&mut self, message_id: &str, cx: &mut Context<Self>) {
+        {
+            let mut editors = self.tool_editors.borrow_mut();
+            if !editors.open_thinking.remove(message_id) {
+                editors.open_thinking.insert(message_id.to_owned());
+            }
+        }
+        cx.notify();
+    }
     fn toggle_tool(
         &mut self,
         key: RowKey,
@@ -2915,12 +2928,60 @@ fn render_row(
                     );
                 }
                 if !message.reasoning.is_empty() {
-                    body = body.child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(rgb(p.secondary))
-                            .child(message.reasoning.clone()),
+                    // Swift's Think row: closed by default, even while it
+                    // streams; open, the reasoning read as Markdown under it.
+                    let streaming = message.state == "streaming";
+                    let open = tool_editors.borrow().open_thinking.contains(&message.id);
+                    let think = work_line::WorkLine {
+                        icon: "brain",
+                        title: "Think".into(),
+                        summary: work_line::think_summary(&message.reasoning, streaming).into(),
+                        state: if streaming {
+                            work_line::WorkState::Running
+                        } else {
+                            work_line::WorkState::Ok
+                        },
+                        expandable: true,
+                        open,
+                        trailing: None,
+                        follow: streaming,
+                    };
+                    let (toggle_child, message_id) = (child.clone(), message.id.clone());
+                    // One view, as Swift's: the line, and what it opens 4
+                    // points under it, at the line's text.
+                    let mut row = div().flex().flex_col().child(
+                        div().debug_selector(|| format!("{selector}-think")).child(
+                            work_line::work_line(
+                                SharedString::from(format!("{selector}-think")),
+                                &think,
+                                &p,
+                                move |_, cx| {
+                                    let _ = toggle_child.update(cx, |view, cx| {
+                                        view.toggle_thinking(&message_id, cx)
+                                    });
+                                },
+                            ),
+                        ),
                     );
+                    if open {
+                        row = row.child(
+                            div()
+                                .debug_selector(|| format!("{selector}-reasoning"))
+                                .pl(px(work_line::INDENT))
+                                .pt(px(4.))
+                                .pb(px(4.))
+                                .child(reasoning_markdown(
+                                    &message.reasoning,
+                                    &selector,
+                                    tool_editors,
+                                    child,
+                                    p,
+                                    width,
+                                    window,
+                                )),
+                        );
+                    }
+                    body = body.child(row);
                 }
                 if let Some(pills) = crate::transcript_skills::pills(message, p) {
                     body = body.child(pills);
@@ -2998,6 +3059,7 @@ fn render_row(
                                         prose_width: Some(markdown_view::PROSE_WIDTH),
                                         column: Some(row_width(width)),
                                         copied,
+                                        text: None,
                                         on_copy: copy_code(tool_editors, child),
                                     },
                                     &markdown_view::Placement {
@@ -3102,6 +3164,8 @@ fn render_row(
 const TOOL_EDITOR_LIMIT: usize = 64;
 #[derive(Default)]
 struct ToolEditors {
+    /// Replies whose Think row the reader opened.
+    open_thinking: HashSet<String>,
     sidebar: Option<Rc<crate::transcript_find_presentation::FindPaint>>,
     find: Option<Rc<crate::transcript_find_presentation::FindPaint>>,
     entries: HashMap<(RowKey, &'static str), ToolEditor>,
@@ -3113,6 +3177,49 @@ struct ToolEditors {
     copied_code: Option<(SharedString, u64)>,
     copy_presses: u64,
     tick: u64,
+}
+/// A reply's reasoning as Swift's Think row opens it: Markdown in the
+/// reasoning style (13 pt, muted), the whole width, drawn whole.
+fn reasoning_markdown(
+    reasoning: &str,
+    selector: &str,
+    tool_editors: &Rc<RefCell<ToolEditors>>,
+    child: &WeakEntity<TranscriptView>,
+    p: Palette,
+    width: Pixels,
+    window: &Window,
+) -> impl IntoElement {
+    let style = bello_agent_core::markdown::Style::REASONING;
+    let owner = format!("{selector}-think");
+    let (blocks, shapes, copied) = {
+        let mut editors = tool_editors.borrow_mut();
+        (
+            editors.markdown(&SharedString::from(owner.clone()), reasoning, style),
+            editors.shaped_text.clone(),
+            editors.copied_code.as_ref().map(|(key, _)| key.clone()),
+        )
+    };
+    let muted = rgb(if p.dark { 0xa9a59b } else { 0x6e6a61 }).into();
+    markdown_view::render(
+        &blocks,
+        style,
+        &markdown_view::Context {
+            cache: &shapes,
+            owner: &owner,
+            palette: p,
+            window,
+            prose_width: None,
+            column: Some(row_width(width) - work_line::INDENT),
+            copied,
+            on_copy: copy_code(tool_editors, child),
+            text: Some(muted),
+        },
+        &markdown_view::Placement {
+            slots: &[],
+            visible: None,
+        },
+    )
+    .0
 }
 /// Where a reply's drawn blocks landed (their slots, from the column's top)
 /// and where its spacers and column are, for the frame's settling.

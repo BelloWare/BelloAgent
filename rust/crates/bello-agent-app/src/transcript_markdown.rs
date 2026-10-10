@@ -146,6 +146,9 @@ pub(super) struct Context<'a> {
     pub copied: Option<SharedString>,
     /// Copies a fence's code and marks it copied, by its key.
     pub on_copy: CopyCode,
+    /// The style's text colour (Swift's `MarkdownStyle.textColor`); None is
+    /// the ink.
+    pub text: Option<gpui::Hsla>,
 }
 
 /// A fence's Copy: its key and code.
@@ -163,7 +166,7 @@ impl Context<'_> {
         rgba(if self.palette.dark { dark } else { light }).into()
     }
     fn ink(&self) -> gpui::Hsla {
-        rgb(self.palette.ink).into()
+        self.text.unwrap_or_else(|| rgb(self.palette.ink).into())
     }
     fn muted(&self) -> gpui::Hsla {
         self.color(0x6e6a61, 0xa9a59b)

@@ -3060,6 +3060,46 @@ fn only_replies_are_read_as_markdown(cx: &mut TestAppContext) {
     );
 }
 
+/// A reply's reasoning is Swift's Think row: closed by default, its first
+/// line as the summary; a click opens the reasoning as Markdown under it and
+/// another closes it. (GPUI keeps an element's debug bounds after it goes,
+/// so closing is read from the reply's text moving back.)
+#[gpui::test]
+fn reasoning_is_a_think_row_that_opens_its_markdown(cx: &mut TestAppContext) {
+    let mut reply = message("reply", "assistant", "The answer.");
+    reply.reasoning = "**Planning** the change\n\n- check the tests".into();
+    let (_directory, _window, root) = fixture(cx, vec![reply], 0);
+    let (mut visual, _child) = host(&root, input(&root, cx), cx);
+    let think = visual
+        .debug_bounds("transcript-row-reply-think")
+        .expect("Think row");
+    assert_eq!(think.size.height, px(24.));
+    assert!(
+        visual
+            .debug_bounds("transcript-row-reply-reasoning")
+            .is_none()
+    );
+    let closed = visual.debug_bounds("transcript-text-reply").unwrap();
+    assert!(closed.top() >= think.bottom(), "{think:?} {closed:?}");
+    visual.simulate_click(think.center(), Modifiers::none());
+    visual.run_until_parked();
+    let reasoning = visual
+        .debug_bounds("transcript-row-reply-reasoning")
+        .expect("opened reasoning");
+    // Under the line, in the same view; its Markdown starts at the title.
+    assert_eq!(reasoning.top(), think.bottom());
+    assert_eq!(reasoning.left(), think.left());
+    assert!(reasoning.size.height > px(30.));
+    let opened = visual.debug_bounds("transcript-text-reply").unwrap();
+    assert_eq!(opened.top(), closed.top() + reasoning.size.height);
+    visual.simulate_click(think.center(), Modifiers::none());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("transcript-text-reply").unwrap().top(),
+        closed.top()
+    );
+}
+
 /// A table is as wide as its cells set on one line (Swift's NSTextTable
 /// columns), its cells padded 10 by 6 and parted by hairlines, not spread
 /// over the reply's width.

@@ -67,6 +67,11 @@ impl AssetSource for Assets {
                 r#"<rect x="8" y="8" width="12" height="13" rx="2.5" stroke-width="2"/><path d="M16 8V5.5A2.5 2.5 0 0 0 13.5 3h-7A2.5 2.5 0 0 0 4 5.5v8A2.5 2.5 0 0 0 6.5 16H8" stroke-width="2"/>"#
             }
             "checkmark" => r#"<path d="m5 12.5 4.5 4.5L19 7" stroke-width="2.4"/>"#,
+            // SF Symbols chevron.down (semibold) and brain, for work rows.
+            "chevron.down" => r#"<path d="m5 8.5 7 7 7-7" stroke-width="2.4"/>"#,
+            "brain" => {
+                r#"<path d="M12 4.6a3.1 3.1 0 0 0-5.3 1.1 3.2 3.2 0 0 0-2.9 4 3.3 3.3 0 0 0-.4 5.4 3.2 3.2 0 0 0 3.3 4.2A3.1 3.1 0 0 0 12 19.4zM12 4.6a3.1 3.1 0 0 1 5.3 1.1 3.2 3.2 0 0 1 2.9 4 3.3 3.3 0 0 1 .4 5.4 3.2 3.2 0 0 1-3.3 4.2A3.1 3.1 0 0 1 12 19.4zM7.4 9.6a2.4 2.4 0 0 1 2.4 1.9M16.6 9.6a2.4 2.4 0 0 0-2.4 1.9M7.6 15a2.2 2.2 0 0 0 2-1.4M16.4 15a2.2 2.2 0 0 1-2-1.4" stroke-width="1.7"/>"#
+            }
             "terminal" => {
                 r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m6 8 4 4-4 4M13 16h5"/>"#
             }
