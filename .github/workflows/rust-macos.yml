@@ -101,9 +101,9 @@ jobs:
       - name: Trusted Bash full feature suites and exact Swift process oracle
         # Owned generated processes and temporary files; no native vault or user data.
         run: |
-          cargo test --locked -p bello-agent-core --all-features
-          cargo test --locked -p bello-agent-core --all-features --test bash_native -- --nocapture
-          cargo test --locked -p bello-agent-app --features synthetic-authority
+          scripts/annotate-test-failures.sh cargo test --locked -p bello-agent-core --all-features
+          scripts/annotate-test-failures.sh cargo test --locked -p bello-agent-core --all-features --test bash_native -- --nocapture
+          scripts/annotate-test-failures.sh cargo test --locked -p bello-agent-app --features synthetic-authority
       - name: Project authority fixture contracts and native type checks
         # Fake API and temporary-file fixtures; no native authority or credentials are accessed.
         run: |
@@ -136,8 +136,8 @@ jobs:
         # Compile/link the native adapter; all exercised storage remains fake.
         # No application launch, signing identity check or Keychain access.
         run: |
-          cargo test --locked -p bello-agent-app --features native-authority
-          cargo test --locked -p bello-agent-app --features native-authority,synthetic-authority
+          scripts/annotate-test-failures.sh cargo test --locked -p bello-agent-app --features native-authority
+          scripts/annotate-test-failures.sh cargo test --locked -p bello-agent-app --features native-authority,synthetic-authority
           cargo build --locked -p bello-agent-app --features native-authority
       - name: Build native applications without launching
         run: cargo build --locked --workspace

@@ -556,8 +556,10 @@ fn exercise_settings_send(cx: &mut TestAppContext, mode: crate::launch_authority
     let url = format!("http://{}", listener.local_addr().unwrap());
     let (tx, rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // Each request has its own window: setup, the first turn and the
+        // tool all run before the second arrives.
         let request = || {
+            let deadline = Instant::now() + Duration::from_secs(10);
             let mut stream = loop {
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
