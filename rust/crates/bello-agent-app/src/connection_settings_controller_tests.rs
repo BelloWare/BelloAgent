@@ -393,6 +393,42 @@ fn native_mode_preflight_blocks_submission_but_denial_preserves_current_actor(
     });
 }
 
+/// The composer's picker is how a reader chooses a connection, by pointer or
+/// keyboard. Native mode once refused every choice made in it because the
+/// open picker itself counted as a blocking project action, leaving the
+/// picker up and the chat unbound (seen in the signed app).
+#[gpui::test]
+fn native_mode_choosing_in_the_picker_binds_the_connection(cx: &mut TestAppContext) {
+    for keyboard in [false, true] {
+        let (_dir, _control, window, root, id) = native_mode_saved_fixture(cx);
+        window
+            .update(cx, |view, window, cx| {
+                view.open_connection_picker(window, cx);
+                assert!(view.connections.picker);
+                if keyboard {
+                    let enter = gpui::KeyDownEvent {
+                        keystroke: gpui::Keystroke::parse("enter").unwrap(),
+                        is_held: false,
+                    };
+                    view.connection_picker_key(&enter, window, cx);
+                } else {
+                    view.select_connection(&id, cx);
+                }
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let view = root.read(cx);
+            assert!(!view.connections.picker, "keyboard: {keyboard}");
+            assert_eq!(
+                view.record.connection_id.as_deref(),
+                Some(id.as_str()),
+                "keyboard: {keyboard}"
+            );
+        });
+    }
+}
+
 #[gpui::test]
 fn native_mode_later_route_selection_discards_pending_new_chat(cx: &mut TestAppContext) {
     let (_dir, _control, window, root, id) = native_mode_saved_fixture(cx);

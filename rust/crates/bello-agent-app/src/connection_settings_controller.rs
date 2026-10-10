@@ -949,9 +949,14 @@ impl AgentView {
             return;
         }
         if self.connections.presentation.mode == crate::launch_authority::AuthorityMode::Native {
+            // The picker is where the choice was made: it closes first, or its
+            // own open state would count as a blocking project action and the
+            // choice would be dropped with the picker still up.
+            self.connections.picker = false;
             // An explicit route selection supersedes an earlier background New
             // Chat request, even while its authority read is still pending.
             if !self.advance_navigation(cx) {
+                cx.notify();
                 return;
             }
             let runtime = self.runtime.clone();
