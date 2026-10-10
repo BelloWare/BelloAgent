@@ -326,6 +326,16 @@ impl ConnectionSettingsController {
             ConnectionSettingsAvailability::Ready
         };
     }
+    /// A saved connection's name, by its id.
+    pub fn name_of(&self, id: &str) -> Option<String> {
+        self.loaded.as_ref().and_then(|loaded| {
+            loaded
+                .profiles()
+                .iter()
+                .find(|saved| saved.profile.id == id)
+                .map(|saved| saved.name.clone())
+        })
+    }
     pub fn choices(&self) -> Vec<SavedConnection> {
         self.loaded
             .as_ref()
@@ -1142,7 +1152,10 @@ impl AgentView {
                 Ok(mut changed)=>{
                     view.preserve_connection_activity(&mut changed.record);
                     if let Some(record)=view.records.iter_mut().find(|r|r.id==chat_id){*record=changed.record.clone();}
-                    if let Some(chat)=view.chat_mut(&chat_id){chat.record=changed.record;chat.loading=false;chat.load_failed=false;chat.replace_controller(changed.controller,cx);chat.error=Some("Next turn uses the selected saved connection and confirmed project settings.".into());}
+                    // Swift's footer notice, naming the connection.
+                    let connection=changed.record.connection_id.clone().unwrap_or_default();
+                    let name=view.connections.name_of(&connection).unwrap_or(connection);
+                    if let Some(chat)=view.chat_mut(&chat_id){chat.record=changed.record;chat.loading=false;chat.load_failed=false;chat.replace_controller(changed.controller,cx);chat.error=None;chat.notice=Some(format!("Next turn uses {name}."));}
                     view.connections.blocked.remove(&chat_id);
                     view.sidebar_search.installed(&chat_id);
                 },

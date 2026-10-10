@@ -80,11 +80,12 @@ pub(crate) fn message_label(message: &Message) -> Cow<'_, str> {
     }
 }
 
-struct AttachmentHint {
-    text: String,
-    palette: crate::Palette,
+/// A tooltip of plain text: an image's path, a notice in full.
+pub(crate) struct TextHint {
+    pub(crate) text: String,
+    pub(crate) palette: crate::Palette,
 }
-impl Render for AttachmentHint {
+impl Render for TextHint {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div()
             .max_w(px(480.))
@@ -376,7 +377,7 @@ impl AgentView {
                         view.open_attachment(&open, cx);
                     }))
                     .tooltip(move |_, cx| {
-                        cx.new(|_| AttachmentHint {
+                        cx.new(|_| TextHint {
                             text: path.clone(),
                             palette: p,
                         })

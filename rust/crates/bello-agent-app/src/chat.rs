@@ -28,6 +28,9 @@ pub struct ChatState {
     pub composer: Entity<EditorView>,
     pub transcript: Option<Entity<crate::transcript_view::TranscriptView>>,
     pub error: Option<String>,
+    /// What the reader should know next, not a failure (Swift's footer
+    /// `notice`): it stays until another replaces it.
+    pub notice: Option<String>,
     pub archive_stop_warning: Option<String>,
     pub editing: Option<String>,
     pub queued_turn_id: Option<String>,
@@ -215,6 +218,7 @@ impl ChatState {
                 String::new()
             },
             error: None,
+            notice: None,
             archive_stop_warning: None,
             visible_messages: 100,
             queue_open: true,

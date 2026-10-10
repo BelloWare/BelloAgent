@@ -1459,6 +1459,39 @@ impl AgentView {
             .hover(move |d| d.bg(p.fill()))
             .child(label.into())
     }
+    /// The chat's connection by its saved name, as Swift's starter card
+    /// names it.
+    fn connection_label(&self) -> String {
+        self.controller
+            .profile()
+            .map(|profile| self.connections.name_of(&profile.id).unwrap_or(profile.id))
+            .unwrap_or_else(|| "No connection".into())
+    }
+    /// Swift's `FooterNotice`: an info symbol and the notice in secondary
+    /// caption type, cut with "…" to the room the row leaves (at most 640),
+    /// whole in its help.
+    fn footer_notice(&self, notice: String) -> Stateful<Div> {
+        let (help, palette) = (notice.clone(), self.palette);
+        div()
+            .id("footer-notice")
+            .debug_selector(|| "footer-notice".into())
+            .flex()
+            .items_center()
+            .gap(px(5.))
+            .min_w_0()
+            .max_w(px(640.))
+            .text_size(px(11.5))
+            .text_color(rgb(self.palette.secondary))
+            .child(self.icon("info", 10.5).flex_none())
+            .child(div().min_w_0().truncate().child(notice))
+            .tooltip(move |_, cx| {
+                cx.new(|_| composer_attachments::TextHint {
+                    text: help.clone(),
+                    palette,
+                })
+                .into()
+            })
+    }
     fn badge(&self, label: String, name: &'static str) -> Div {
         div()
             .flex()
@@ -2085,15 +2118,7 @@ impl AgentView {
                         .flex()
                         .flex_wrap()
                         .gap(px(8.))
-                        .child(
-                            self.badge(
-                                self.controller
-                                    .profile()
-                                    .map(|v| v.id.clone())
-                                    .unwrap_or_else(|| "No connection".into()),
-                                "antenna",
-                            ),
-                        )
+                        .child(self.badge(self.connection_label(), "antenna"))
                         .child(
                             self.badge(
                                 self.controller
@@ -2759,6 +2784,9 @@ impl AgentView {
                             })),
                     )
                     .child(div().flex_1())
+                    .when_some(self.notice.clone(), |d, notice| {
+                        d.child(self.footer_notice(notice))
+                    })
                     .when(self.session.state == RunState::Running, |d| {
                         d.child(compaction_actions::progress_label(&self.session))
                     })

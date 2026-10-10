@@ -396,7 +396,8 @@ fn native_mode_preflight_blocks_submission_but_denial_preserves_current_actor(
 /// The composer's picker is how a reader chooses a connection, by pointer or
 /// keyboard. Native mode once refused every choice made in it because the
 /// open picker itself counted as a blocking project action, leaving the
-/// picker up and the chat unbound (seen in the signed app).
+/// picker up and the chat unbound (seen in the signed app). The change is
+/// told as Swift tells it: a footer notice naming the connection, no error.
 #[gpui::test]
 fn native_mode_choosing_in_the_picker_binds_the_connection(cx: &mut TestAppContext) {
     for keyboard in [false, true] {
@@ -425,7 +426,15 @@ fn native_mode_choosing_in_the_picker_binds_the_connection(cx: &mut TestAppConte
                 Some(id.as_str()),
                 "keyboard: {keyboard}"
             );
+            let name = view.connections.name_of(&id).unwrap();
+            assert!(!name.is_empty() && name != id, "{name}");
+            assert_eq!(view.notice, Some(format!("Next turn uses {name}.")));
+            assert_eq!(view.error, None);
+            assert_eq!(view.connection_label(), name);
         });
+        let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("footer-notice").is_some());
     }
 }
 

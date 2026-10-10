@@ -58,4 +58,6 @@ Locked or denied Keychain states, a second user, IME and VoiceOver in the
 secure field, Connections editing beyond one save, connection deletion, tools
 (still unavailable in native mode), notarization and Gatekeeper on a clean Mac.
 Two presentation nits: the "Next turn uses…" notice is drawn in the error
-banner's red, and the connection chip shows the connection's id, not its name.
+banner's red, and the connection chip shows the connection's id, not its name
+(both since fixed: a footer notice naming the connection, as Swift shows it,
+and the starter card's badge shows the saved name).
