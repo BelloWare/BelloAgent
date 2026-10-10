@@ -323,6 +323,9 @@ fn key_equivalent_routes_find_settings_new_chat_and_preserves_composer_keys(
     cx.read(|cx| assert_ne!(root.read(cx).record.id, old));
 }
 
+// The window claims ⌃⌘→/⌃⌘← ahead of the composer through macOS's key
+// equivalent phase; GPUI on Linux has no such phase, and no menu bar.
+#[cfg(target_os = "macos")]
 #[gpui::test]
 fn menu_only_key_equivalents_reach_their_commands(cx: &mut TestAppContext) {
     cx.update(install);
