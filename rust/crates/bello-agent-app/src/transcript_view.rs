@@ -16,6 +16,8 @@ mod read_presentation;
 mod shaped_text;
 #[path = "transcript_tool_presentation.rs"]
 mod tool_presentation;
+#[path = "transcript_tool_row.rs"]
+mod tool_row;
 #[path = "transcript_work_line.rs"]
 mod work_line;
 use gpui::{prelude::*, *};
