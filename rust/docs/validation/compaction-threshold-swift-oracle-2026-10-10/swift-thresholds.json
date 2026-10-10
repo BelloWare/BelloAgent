@@ -1,0 +1,107 @@
+[
+    {
+        "name": "short-65536",
+        "requestTokens": 101,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31697
+    },
+    {
+        "name": "long-65536",
+        "requestTokens": 115473,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31714
+    },
+    {
+        "name": "long-unanswered-65536",
+        "requestTokens": 109062,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31676
+    },
+    {
+        "name": "unicode-32000",
+        "requestTokens": 63183,
+        "safetyMargin": 320,
+        "summaryTokens": 8000,
+        "threshold": 15281
+    },
+    {
+        "name": "many-rows-128000",
+        "requestTokens": 117957,
+        "safetyMargin": 1024,
+        "summaryTokens": 16384,
+        "threshold": 93770
+    },
+    {
+        "name": "limit-2000-65536",
+        "requestTokens": 72139,
+        "safetyMargin": 655,
+        "summaryTokens": 2000,
+        "threshold": 44401
+    },
+    {
+        "name": "big-max-output-200000",
+        "requestTokens": 240457,
+        "safetyMargin": 1024,
+        "summaryTokens": 16384,
+        "threshold": 118592
+    },
+    {
+        "name": "window-1m",
+        "requestTokens": 576687,
+        "safetyMargin": 1024,
+        "summaryTokens": 16384,
+        "threshold": 950592
+    },
+    {
+        "name": "window-8192",
+        "requestTokens": 5855,
+        "safetyMargin": 81,
+        "summaryTokens": 2048,
+        "threshold": 3618
+    },
+    {
+        "name": "window-4096",
+        "requestTokens": 2953,
+        "safetyMargin": 40,
+        "summaryTokens": 1024,
+        "threshold": 1611
+    },
+    {
+        "name": "window-2048",
+        "requestTokens": 1011,
+        "safetyMargin": 20,
+        "summaryTokens": 512,
+        "threshold": 607
+    },
+    {
+        "name": "window-1024",
+        "requestTokens": 1011,
+        "safetyMargin": 10,
+        "summaryTokens": 256,
+        "threshold": 105
+    },
+    {
+        "name": "window-300-error",
+        "requestTokens": 77,
+        "safetyMargin": 3,
+        "summaryTokens": 75,
+        "thresholdError": "compact_budget"
+    },
+    {
+        "name": "empty-instructions",
+        "requestTokens": 24110,
+        "safetyMargin": 320,
+        "summaryTokens": 8000,
+        "threshold": 15282
+    },
+    {
+        "name": "single-huge-user",
+        "requestTokens": 75015,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31684
+    }
+]

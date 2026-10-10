@@ -1,7 +1,7 @@
 //! Manual compaction contracts ported from CompactionPlanner.swift,
 //! CompactionSourceBuilder.swift, CompactionCheckpoint.swift and RequestContext.swift.
 //! A checkpoint changes replay, never the retained transcript or queued input.
-use crate::{Message, Profile, Reply, Result, invalid};
+use crate::{Error, Message, Profile, Reply, Result, invalid};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -150,6 +150,10 @@ pub(crate) fn provider_summary(row: &Message) -> Value {
 /// Returned identities refer only to retained user history, never fresh grants.
 pub fn protected_input_ids(messages: &[Message]) -> Result<BTreeSet<String>> {
     let active = active_context(messages)?;
+    let current_task = crate::session::validate_task_provenance(messages)?;
+    protected_in(&active, current_task)
+}
+fn protected_in(active: &[&Message], current_task: Option<&str>) -> Result<BTreeSet<String>> {
     let mut protected = BTreeSet::new();
     if let Some(index) = active.iter().rposition(|row| row.role == "user") {
         let row = active[index];
@@ -164,7 +168,6 @@ pub fn protected_input_ids(messages: &[Message]) -> Result<BTreeSet<String>> {
             protected.insert(row.id.clone());
         }
     }
-    let current_task = crate::session::validate_task_provenance(messages)?;
     for row in active.iter().filter(|row| {
         row.user_content
             .as_ref()
@@ -332,13 +335,179 @@ fn message_tokens(row: &Message) -> u64 {
     chars.div_ceil(4)
 }
 fn input_budget(profile: &Profile) -> u64 {
-    let safety = (profile.context_window / 100).clamp(1, 1024);
-    u64::from(
-        profile
-            .context_window
-            .saturating_sub(profile.max_output_tokens)
-            .saturating_sub(safety),
-    )
+    u64::from(profile.context_window)
+        .saturating_sub(u64::from(profile.max_output_tokens))
+        .saturating_sub(safety_margin(profile.context_window))
+}
+/// Swift `RequestContextCount.safetyMargin(contextWindow:)`.
+pub(crate) fn safety_margin(context_window: u32) -> u64 {
+    u64::from((context_window / 100).clamp(1, 1024))
+}
+/// Swift `CompactionPolicy.summaryTokens(for:)`: one generation allowance.
+pub(crate) fn summary_tokens(profile: &Profile) -> u32 {
+    16_384
+        .min(profile.model_output_limit.unwrap_or(16_384))
+        .min(profile.context_window / 4)
+}
+/// Swift `CompactionPolicy.visibleTarget(for:inputTokens:)`.
+pub(crate) fn visible_target(profile: &Profile, input_tokens: Option<u64>) -> u64 {
+    3000u64
+        .min(u64::from(summary_tokens(profile) / 4).max(1))
+        .min((input_tokens.unwrap_or(12_000) / 4).max(1))
+}
+/// Swift `CompactionPolicy.keepRecentTokens(contextWindow:)` with pi's
+/// 16,384 reserve and 20,000 recent-context target.
+fn keep_recent_tokens(context_window: u32) -> u64 {
+    u64::from(20_000.min((context_window - 16_384.min(context_window / 2)) / 2))
+}
+const BUDGET_REFUSAL: &str =
+    "This context window cannot fit the checkpoint instruction and summary reserves.";
+/// Swift `CompactionPolicy.trigger(profile:instructionTokens:)`: reserve the
+/// appended instruction, summary generation, dispatch margin and pi's growth
+/// buffer before the next complete model/tool boundary.
+pub(crate) fn trigger(profile: &Profile, instruction_tokens: u64) -> Result<u64> {
+    let window = u64::from(profile.context_window);
+    let generation = u64::from(summary_tokens(profile));
+    let reserved = u64::from(profile.max_output_tokens)
+        .max(generation.saturating_add(instruction_tokens))
+        .saturating_add(safety_margin(profile.context_window))
+        .saturating_add(16_384u64.min(window / 4));
+    if generation < 16 || reserved >= window {
+        return Err(invalid(BUDGET_REFUSAL));
+    }
+    Ok(window - reserved)
+}
+/// The appended user instruction as Swift `RequestContextCounter.inputTokens`
+/// counts one `input_text` item.
+fn instruction_tokens(instruction: &str) -> u64 {
+    8u64.saturating_add(tokens(instruction))
+}
+/// The request size at which automatic compaction runs before a model request:
+/// Swift `AgentSession.compactionThreshold(_:instructions:profile:)`. The
+/// instruction is measured with its real boundary for the normal keep-recent
+/// cut, no focus and the default visible target.
+pub(crate) fn compaction_threshold(
+    messages: &[Message],
+    profile: &Profile,
+    instructions: &str,
+) -> Result<u64> {
+    let active = active_context(messages)?;
+    let current_task = crate::session::validate_task_provenance(messages)?;
+    let protected = protected_in(&active, current_task)?;
+    threshold_for(&active, &protected, profile, instructions)
+}
+fn threshold_for(
+    active: &[&Message],
+    protected: &BTreeSet<String>,
+    profile: &Profile,
+    instructions: &str,
+) -> Result<u64> {
+    let (previous, body, new_since) = source(active)?;
+    let cut = recent_cut(
+        &body,
+        previous,
+        new_since,
+        keep_recent_tokens(profile.context_window),
+        &mut || Ok(()),
+    )?;
+    let kept = kept_ids(&body, cut, protected);
+    let boundary = boundary(active, profile, instructions, &kept, &mut || Ok(()))?;
+    let text = instruction(&boundary, None, visible_target(profile, None));
+    trigger(profile, instruction_tokens(&text))
+}
+/// Whether an error is the threshold's reserve refusal (Swift `compact_budget`).
+pub(crate) fn is_budget_refusal(error: &Error) -> bool {
+    matches!(error, Error::Invalid(message) if message == BUDGET_REFUSAL)
+}
+/// Swift `canCompact` (not recovering): pi's prepareCompaction finds
+/// something new to summarize besides required inputs.
+pub(crate) fn can_compact(messages: &[Message]) -> bool {
+    let Ok(active) = active_context(messages) else {
+        return false;
+    };
+    let Ok((previous, body, new_since)) = source(&active) else {
+        return false;
+    };
+    if previous.is_some() && new_since.is_some_and(|index| index >= body.len()) {
+        return false;
+    }
+    let Ok(protected) = protected_input_ids(messages) else {
+        return false;
+    };
+    body.iter()
+        .flatten()
+        .any(|row| !protected.contains(row.id.as_str()))
+}
+type Source<'a> = (Option<&'a Message>, Vec<Vec<&'a Message>>, Option<usize>);
+/// The previous checkpoint, the complete replay groups after it and the first
+/// group appended after it (Swift `CompactionPlanner.source`).
+fn source<'a>(active: &[&'a Message]) -> Result<Source<'a>> {
+    let previous = active
+        .first()
+        .filter(|row| row.compaction.is_some())
+        .copied();
+    let body = groups(&active[usize::from(previous.is_some())..])?;
+    let new_since = previous.map(|row| {
+        let kept: BTreeSet<_> = row
+            .compaction
+            .as_ref()
+            .unwrap()
+            .kept_ids
+            .iter()
+            .map(String::as_str)
+            .collect();
+        body.iter()
+            .position(|group| !kept.contains(group[0].id.as_str()))
+            .unwrap_or(body.len())
+    });
+    Ok((previous, body, new_since))
+}
+/// Swift `CompactionPlanner.cut`: pi's findCutPoint walk from the newest
+/// message, counting the previous checkpoint where pi's session path holds it.
+fn recent_cut(
+    body: &[Vec<&Message>],
+    previous: Option<&Message>,
+    new_since: Option<usize>,
+    keep_recent: u64,
+    check_cancelled: &mut impl FnMut() -> Result<()>,
+) -> Result<usize> {
+    let mut used = 0u64;
+    for index in (0..body.len()).rev() {
+        check_cancelled()?;
+        for (offset, row) in body[index].iter().enumerate().rev() {
+            let cost = message_tokens(row);
+            if cost == 0 {
+                continue;
+            }
+            used = used.saturating_add(cost);
+            if used >= keep_recent {
+                return Ok(if offset == 0 { index } else { index + 1 });
+            }
+        }
+        if new_since == Some(index)
+            && let Some(previous) = previous
+        {
+            let cost = tokens(summary_text(previous));
+            used = used.saturating_add(cost);
+            if cost > 0 && used >= keep_recent {
+                return Ok(index);
+            }
+        }
+    }
+    Ok(0)
+}
+fn kept_ids<'a>(
+    body: &[Vec<&'a Message>],
+    cut: usize,
+    protected: &BTreeSet<String>,
+) -> BTreeSet<&'a str> {
+    body[..cut]
+        .iter()
+        .flatten()
+        .filter(|row| protected.contains(row.id.as_str()))
+        .chain(body[cut..].iter().flatten())
+        .map(|row| row.id.as_str())
+        .collect()
 }
 fn fits(request: &Value, profile: &Profile) -> bool {
     estimated_request_tokens(request) <= input_budget(profile)
@@ -391,6 +560,9 @@ fn select_cut(
 pub(crate) struct Prepared {
     pub profile: Profile,
     pub request: Value,
+    pub mode: Mode,
+    /// The task whose skill inputs stay protected in the candidate's next plan.
+    current_task: Option<String>,
     pub kept: Vec<Message>,
     pub checkpoint: Checkpoint,
 }
@@ -454,9 +626,10 @@ pub(crate) fn prepare_checked(
         definitions,
         operation_id,
         requested_focus,
-        false,
+        Mode::Manual,
         check_cancelled,
-    )
+    )?
+    .map_err(invalid)
 }
 
 /// Recovery uses the same intact-history safety gate, with Swift's smaller
@@ -479,9 +652,110 @@ pub(crate) fn prepare_recovery_checked(
         definitions,
         operation_id,
         None,
-        true,
+        Mode::Recovery,
+        check_cancelled,
+    )?
+    .map_err(invalid)
+}
+
+/// Swift `CompactionPlanner.prepare(reason: "threshold")`. `Ok(Err(_))` is
+/// Swift's `compact_unavailable`: nothing useful can replace the context, which
+/// the caller ignores while the intact request still fits.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_threshold_checked(
+    messages: &[Message],
+    profile: &Profile,
+    instructions: &str,
+    session_id: &str,
+    definitions: &[crate::tools::ToolDefinition],
+    operation_id: &str,
+    check_cancelled: impl FnMut() -> Result<()>,
+) -> Result<std::result::Result<Prepared, String>> {
+    prepare_mode_checked(
+        messages,
+        profile,
+        instructions,
+        session_id,
+        definitions,
+        operation_id,
+        None,
+        Mode::Threshold,
         check_cancelled,
     )
+}
+
+/// Whether an intact request of this size fits beside the normal output reserve
+/// (Swift `RequestContextCount.fits`).
+pub(crate) fn request_fits(request: &Value, profile: &Profile) -> bool {
+    fits(request, profile)
+}
+
+/// Swift `hasRoom` for an automatic compaction: the retained tail with the full
+/// summary allowance fits, and stays below the next threshold measured with the
+/// checkpoint instruction this cut would send.
+#[allow(clippy::too_many_arguments)]
+fn threshold_cut(
+    active: &[&Message],
+    body: &[Vec<&Message>],
+    costs: &[(u64, u64)],
+    initial: usize,
+    allowance_prefix: u64,
+    protected: &BTreeSet<String>,
+    profile: &Profile,
+    instructions: &str,
+    visible: u64,
+    check_cancelled: &mut impl FnMut() -> Result<()>,
+) -> Result<std::result::Result<Selection, String>> {
+    let mut retained = costs
+        .iter()
+        .enumerate()
+        .map(|(index, (whole, protected))| if index < initial { *protected } else { *whole })
+        .fold(0, u64::saturating_add);
+    // The trigger only falls as the instruction grows, so a tail at or above the
+    // instruction-free bound cannot have room and needs no boundary.
+    let bound = trigger(profile, 0)?;
+    let budget = input_budget(profile);
+    let has_room = |cut: usize,
+                    retained: u64,
+                    check: &mut dyn FnMut() -> Result<()>|
+     -> Result<std::result::Result<bool, String>> {
+        let full = allowance_prefix.saturating_add(retained);
+        if full > budget || full >= bound {
+            return Ok(Ok(false));
+        }
+        let kept = kept_ids(body, cut, protected);
+        let boundary = match boundary(active, profile, instructions, &kept, &mut || check()) {
+            Err(Error::Invalid(message)) if message == TOO_MANY_GROUPS => {
+                return Ok(Err(message));
+            }
+            other => other?,
+        };
+        let text = instruction(&boundary, None, visible);
+        Ok(Ok(full < trigger(profile, instruction_tokens(&text))?))
+    };
+    let mut cut = initial;
+    while cut < costs.len() {
+        check_cancelled()?;
+        match has_room(cut, retained, check_cancelled)? {
+            Ok(true) => break,
+            Ok(false) => {}
+            Err(message) => return Ok(Err(message)),
+        }
+        retained = retained.saturating_sub(costs[cut].0.saturating_sub(costs[cut].1));
+        cut += 1;
+    }
+    check_cancelled()?;
+    Ok(match has_room(cut, retained, check_cancelled)? {
+        Ok(useful) => Ok(Selection { cut, useful }),
+        Err(message) => Err(message),
+    })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Mode {
+    Manual,
+    Recovery,
+    Threshold,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -493,9 +767,9 @@ fn prepare_mode_checked(
     definitions: &[crate::tools::ToolDefinition],
     operation_id: &str,
     requested_focus: Option<&str>,
-    recovering: bool,
+    mode: Mode,
     mut check_cancelled: impl FnMut() -> Result<()>,
-) -> Result<Prepared> {
+) -> Result<std::result::Result<Prepared, String>> {
     check_cancelled()?;
     let focus = focus(requested_focus)?;
     crate::tool_history::validate(messages)?;
@@ -529,9 +803,7 @@ fn prepare_mode_checked(
         definitions,
     )?;
     let before = estimated_request_tokens(&original);
-    let cap = 16_384
-        .min(profile.model_output_limit.unwrap_or(16_384))
-        .min(profile.context_window / 4);
+    let cap = summary_tokens(profile);
     if cap < 16 || cap >= profile.context_window {
         return Err(invalid(
             "This context window cannot reserve the minimum summary output allowance",
@@ -550,66 +822,28 @@ fn prepare_mode_checked(
     }
     crate::provider::serialize_request(&original)?;
     check_cancelled()?;
-    let visible = 3000u64
-        .min(u64::from(cap / 4).max(1))
-        .min((before / 4).max(1));
-    let previous = active
-        .first()
-        .filter(|row| row.compaction.is_some())
-        .copied();
-    let body = groups(&active[usize::from(previous.is_some())..])?;
-    let new_since = previous.map(|row| {
-        let kept: BTreeSet<_> = row
-            .compaction
-            .as_ref()
-            .unwrap()
-            .kept_ids
-            .iter()
-            .map(String::as_str)
-            .collect();
-        body.iter()
-            .position(|group| !kept.contains(group[0].id.as_str()))
-            .unwrap_or(body.len())
-    });
+    let visible = visible_target(profile, Some(before));
+    let (previous, body, new_since) = source(&active)?;
     if new_since == Some(body.len()) {
-        return Err(invalid(
-            "Already compacted: nothing has been added since the last compaction",
+        return Ok(Err(
+            "Already compacted: nothing has been added since the last compaction".into(),
         ));
     }
-    let protected = protected_input_ids(messages)?;
-    let keep_recent =
-        20_000.min((profile.context_window - 16_384.min(profile.context_window / 2)) / 2) as u64;
-    let keep_recent = if recovering {
+    let current_task = crate::session::validate_task_provenance(messages)?;
+    let protected = protected_in(&active, current_task)?;
+    let keep_recent = keep_recent_tokens(profile.context_window);
+    let keep_recent = if mode == Mode::Recovery {
         keep_recent.min(active.iter().map(|row| message_tokens(row)).sum::<u64>() / 2)
     } else {
         keep_recent
     };
-    let mut used = 0u64;
-    let mut cut = 0;
-    'walk: for index in (0..body.len()).rev() {
-        check_cancelled()?;
-        for (offset, row) in body[index].iter().enumerate().rev() {
-            let cost = message_tokens(row);
-            if cost == 0 {
-                continue;
-            }
-            used = used.saturating_add(cost);
-            if used >= keep_recent {
-                cut = if offset == 0 { index } else { index + 1 };
-                break 'walk;
-            }
-        }
-        if new_since == Some(index)
-            && let Some(previous) = previous
-        {
-            let cost = tokens(summary_text(previous));
-            used = used.saturating_add(cost);
-            if cost > 0 && used >= keep_recent {
-                cut = index;
-                break;
-            }
-        }
-    }
+    let mut cut = recent_cut(
+        &body,
+        previous,
+        new_since,
+        keep_recent,
+        &mut check_cancelled,
+    )?;
     // Each complete replay group is projected once. Wire-token counting is
     // additive across these groups (including each item's eight-token overhead),
     // so changing the cut needs only a scalar subtraction, not a suffix clone.
@@ -634,15 +868,33 @@ fn prepare_mode_checked(
             .filter(|tools| !tools.is_empty())
             .map_or(0, |_| tokens(&original["tools"].to_string())),
     );
-    let selection = select_cut(
-        &costs,
-        cut,
-        prefix.saturating_add(summary_cost(u64::from(cap))),
-        prefix.saturating_add(summary_cost(visible)),
-        input_budget(profile),
-        before,
-        &mut check_cancelled,
-    )?;
+    let selection = if mode != Mode::Manual {
+        match threshold_cut(
+            &active,
+            &body,
+            &costs,
+            cut,
+            prefix.saturating_add(summary_cost(u64::from(cap))),
+            &protected,
+            profile,
+            instructions,
+            visible,
+            &mut check_cancelled,
+        )? {
+            Ok(selection) => selection,
+            Err(message) => return Ok(Err(message)),
+        }
+    } else {
+        select_cut(
+            &costs,
+            cut,
+            prefix.saturating_add(summary_cost(u64::from(cap))),
+            prefix.saturating_add(summary_cost(visible)),
+            input_budget(profile),
+            before,
+            &mut check_cancelled,
+        )?
+    };
     cut = selection.cut;
     check_cancelled()?;
     let kept: Vec<Message> = body[..cut]
@@ -657,24 +909,29 @@ fn prepare_mode_checked(
         .flatten()
         .all(|row| protected.contains(row.id.as_str()))
     {
-        return Err(invalid(
-            "Nothing useful to compact while preserving required inputs",
+        return Ok(Err(
+            "Nothing useful to compact while preserving required inputs".into(),
         ));
     }
     if !selection.useful {
-        return Err(invalid(
-            "No useful checkpoint fits beside required inputs and continuation headroom; original context is unchanged",
-        ));
+        return Err(invalid(if mode != Mode::Manual {
+            "No useful checkpoint can be planned while preserving required inputs and continuation headroom. Original context is unchanged."
+        } else {
+            "No useful checkpoint fits beside required inputs and continuation headroom; original context is unchanged"
+        }));
     }
     let kept_ids: BTreeSet<_> = kept.iter().map(|row| row.id.as_str()).collect();
     check_cancelled()?;
-    let boundary = boundary(
+    let boundary = match boundary(
         &active,
         profile,
         instructions,
         &kept_ids,
         &mut check_cancelled,
-    )?;
+    ) {
+        Err(Error::Invalid(message)) if message == TOO_MANY_GROUPS => return Ok(Err(message)),
+        other => other?,
+    };
     let instruction = instruction(&boundary, focus.as_deref(), visible);
     let mut request = crate::provider::request_body_with_tools(
         &summary_profile,
@@ -695,9 +952,11 @@ fn prepare_mode_checked(
         ));
     }
     crate::provider::serialize_request(&request)?;
-    Ok(Prepared {
+    Ok(Ok(Prepared {
         profile: summary_profile,
         request,
+        mode,
+        current_task: current_task.map(str::to_owned),
         checkpoint: Checkpoint {
             version: 1,
             operation_id: operation_id.into(),
@@ -713,9 +972,10 @@ fn prepare_mode_checked(
             after_estimated_tokens: 0,
         },
         kept,
-    })
+    }))
 }
 
+const TOO_MANY_GROUPS: &str = "The retained context has too many separate groups for one bounded checkpoint instruction; nothing was sent";
 fn boundary(
     active: &[&Message],
     profile: &Profile,
@@ -727,9 +987,14 @@ fn boundary(
     let mut replaced_ranges: Vec<Value> = Vec::new();
     let mut retained_ranges: Vec<Value> = Vec::new();
     let mut first = None;
+    // Swift's position of each source message in its projection, which names an
+    // assistant message item without a provider ID `msg_pi_<position>`.
+    let mut position = 0usize;
     // Project complete batches so result ownership and canonical ordering remain intact.
     for group in groups(active)? {
         check_cancelled()?;
+        let group_position = position;
+        position += group.len();
         let projected = crate::tool_history::project_active(&group, profile)?;
         let retained = kept.contains(group[0].id.as_str());
         if group
@@ -757,6 +1022,8 @@ fn boundary(
                 let mut item = json!({"index":offset,"role":group[0].role});
                 if let Some(id) = projected[0]["id"].as_str().filter(|id| id.len() <= 512) {
                     item["nativeItemID"] = json!(id);
+                } else if group[0].role == "assistant" && projected[0]["type"] == "message" {
+                    item["nativeItemID"] = json!(format!("msg_pi_{group_position}"));
                 } else if group[0].role == "user" {
                     item["identifyingExcerpt"] =
                         json!(group[0].text.chars().take(160).collect::<String>());
@@ -771,9 +1038,7 @@ fn boundary(
         value["firstRetainedItem"] = first;
     }
     if serde_json::to_vec(&value)?.len() > 16_384 {
-        return Err(invalid(
-            "The retained context has too many separate groups for one bounded checkpoint instruction; nothing was sent",
-        ));
+        return Err(invalid(TOO_MANY_GROUPS));
     }
     Ok(value)
 }
@@ -850,7 +1115,8 @@ pub(crate) fn validate_candidate(
     )?;
     crate::provider::serialize_request(&request)?;
     let after = estimated_request_tokens(&request);
-    if !fits(&request, profile) || after >= prepared.checkpoint.before_estimated_tokens {
+    let before = prepared.checkpoint.before_estimated_tokens;
+    if !fits(&request, profile) || after >= before {
         return Err(invalid(
             "The completed checkpoint did not free sufficient context; original context is unchanged",
         ));
@@ -858,6 +1124,18 @@ pub(crate) fn validate_candidate(
     let mut checkpoint = prepared.checkpoint.clone();
     checkpoint.after_estimated_tokens = after;
     summary.compaction = Some(checkpoint);
+    // Swift requires an automatic checkpoint to free at least the dispatch
+    // margin and land below the threshold its own next plan would use.
+    if prepared.mode != Mode::Manual {
+        let active: Vec<&Message> = std::iter::once(&summary).chain(&prepared.kept).collect();
+        let protected = protected_in(&active, prepared.current_task.as_deref())?;
+        let next = threshold_for(&active, &protected, profile, instructions)?;
+        if before - after < safety_margin(profile.context_window) || after >= next {
+            return Err(invalid(format!(
+                "The completed checkpoint did not free sufficient context (before {before}, after {after} estimated tokens). Original context is unchanged; no repair request was sent."
+            )));
+        }
+    }
     Ok(summary)
 }
 

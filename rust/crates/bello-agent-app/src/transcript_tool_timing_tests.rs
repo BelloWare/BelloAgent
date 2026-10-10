@@ -4,6 +4,7 @@ use bello_agent_core::{tool_history::ToolRecord, tool_timing::DurationUs};
 
 #[gpui::test]
 fn duration_only_redraw_preserves_selection_expansion_and_scroll(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let (_directory, _window, root) = fixture(cx, messages(1), 0);
     let mut changed = input(&root, cx);
     let mut session = (*changed.session).clone();
@@ -19,7 +20,7 @@ fn duration_only_redraw_preserves_selection_expansion_and_scroll(cx: &mut TestAp
     let card_selector: &'static str = Box::leak(selector.clone().into_boxed_str());
     let output_selector: &'static str = Box::leak(format!("{selector}-OUT").into_boxed_str());
     let duration_selector: &'static str =
-        Box::leak(format!("{selector}-duration").into_boxed_str());
+        Box::leak(format!("{selector}-disclosure-trailing").into_boxed_str());
     let disclosure_selector: &'static str =
         Box::leak(format!("{selector}-disclosure").into_boxed_str());
     assert!(visual.debug_bounds(duration_selector).is_none());

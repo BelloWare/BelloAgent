@@ -58,10 +58,30 @@ impl Phase {
         )
     }
 }
+/// Why the in-turn compaction ran. A threshold compaction (Swift
+/// `compactContext(reason: "threshold")`) runs before a request is sent: it
+/// has no provider failure and its deferred reply was never requested.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Reason {
+    #[default]
+    ContextRejection,
+    Threshold,
+}
+impl Reason {
+    pub fn is_context_rejection(&self) -> bool {
+        *self == Self::ContextRejection
+    }
+}
+/// The state of a reply deferred by a threshold compaction before its request.
+pub const DEFERRED_STATE: &str = "compaction-deferred";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Reason::is_context_rejection")]
+    pub reason: Reason,
     pub turn_id: String,
     /// Stable logical-request key; retry reply IDs/fingerprints never reset it.
     pub failed_reply_id: String,
@@ -71,7 +91,9 @@ pub struct Receipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_reply_id: Option<String>,
     pub request_fingerprint: String,
-    pub failure: Failure,
+    /// The structured rejection; absent exactly for a threshold compaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<Failure>,
     pub phase: Phase,
     pub summary_id: Option<String>,
     pub summary_failure: Option<String>,
@@ -169,7 +191,7 @@ impl Session {
     pub(crate) fn is_context_rejected_active(&self, reply_id: &str) -> bool {
         self.messages.iter().any(|row| {
             row.id == reply_id
-                && row.state == "context-rejected"
+                && (row.state == "context-rejected" || row.state == DEFERRED_STATE)
                 && !row.replay_eligible
                 && row.tool_record.is_none()
         }) && self.context_recoveries.iter().any(|r| {
@@ -185,10 +207,42 @@ impl Session {
         failure: Failure,
         request_fingerprint: String,
     ) -> Result<()> {
+        if !failure.category.context_rejection() {
+            return Err(invalid(
+                "Context recovery was already consumed or is unavailable",
+            ));
+        }
+        self.begin_in_turn_compaction(operation_id, reply_id, Some(failure), request_fingerprint)
+    }
+    /// Consume the unrequested active reply for an automatic compaction before
+    /// its model request. The reply stays retained but is never replayed.
+    pub(crate) fn begin_threshold_compaction(
+        &mut self,
+        operation_id: &str,
+        reply_id: &str,
+        request_fingerprint: String,
+    ) -> Result<()> {
+        if self
+            .messages
+            .iter()
+            .any(|row| row.id == reply_id && (!row.text.is_empty() || !row.reasoning.is_empty()))
+        {
+            return Err(invalid(
+                "A threshold compaction cannot defer a started reply",
+            ));
+        }
+        self.begin_in_turn_compaction(operation_id, reply_id, None, request_fingerprint)
+    }
+    fn begin_in_turn_compaction(
+        &mut self,
+        operation_id: &str,
+        reply_id: &str,
+        failure: Option<Failure>,
+        request_fingerprint: String,
+    ) -> Result<()> {
         identity(operation_id)?;
         fingerprint(&request_fingerprint)?;
-        if !failure.category.context_rejection()
-            || !self.can_recover_context(reply_id)
+        if !self.can_recover_context(reply_id)
             || self.context_recoveries.iter().any(|r| r.id == operation_id)
             || self
                 .compaction
@@ -203,8 +257,14 @@ impl Session {
         }
         let active = self.active.as_ref().expect("checked active");
         let progress_id = uuid::Uuid::new_v4().to_string();
+        let reason = if failure.is_some() {
+            Reason::ContextRejection
+        } else {
+            Reason::Threshold
+        };
         let receipt = Receipt {
             id: operation_id.into(),
+            reason,
             turn_id: active.id.clone(),
             failed_reply_id: reply_id.into(),
             progress_id: progress_id.clone(),
@@ -226,9 +286,13 @@ impl Session {
             .iter_mut()
             .find(|r| r.id == reply_id)
             .expect("checked reply");
-        row.state = "context-rejected".into();
         row.replay_eligible = false;
-        project_failure_usage(row, &receipt.failure);
+        if let Some(failure) = &receipt.failure {
+            row.state = "context-rejected".into();
+            project_failure_usage(row, failure);
+        } else {
+            row.state = DEFERRED_STATE.into();
+        }
         self.messages.push(Message {
             id: progress_id,
             role: "assistant".into(),
@@ -555,7 +619,13 @@ impl Session {
                     .iter()
                     .chain(&self.compaction_history)
                     .any(|op| op.id == r.id)
-                || !r.failure.category.context_rejection()
+                || match (r.reason, &r.failure) {
+                    (Reason::ContextRejection, Some(failure)) => {
+                        !failure.category.context_rejection()
+                    }
+                    (Reason::Threshold, None) => false,
+                    _ => true,
+                }
                 || r.summary_attempts > 1
                 || r.retry_attempts > 1
                 || r.summary_failure.as_ref().is_some_and(|s| s.len() > 4096)
@@ -605,7 +675,17 @@ impl Session {
                 || failed.role != "assistant"
                 || failed.replay_eligible
                 || failed.tool_record.is_some()
-                || !["context-rejected", "interrupted"].contains(&failed.state.as_str())
+                || ![
+                    if r.reason == Reason::Threshold {
+                        DEFERRED_STATE
+                    } else {
+                        "context-rejected"
+                    },
+                    "interrupted",
+                ]
+                .contains(&failed.state.as_str())
+                || (r.reason == Reason::Threshold
+                    && (!failed.text.is_empty() || !failed.reasoning.is_empty()))
                 || progress.role != "assistant"
                 || progress.replay_eligible
                 || progress.tool_record.is_some()
@@ -924,7 +1004,10 @@ mod tests {
                 2 => r.summary_attempts = 2,
                 3 => r.phase = Phase::Completed,
                 4 => r.retry_attempts = 1,
-                5 => r.failure.category = crate::provider_failure::Category::RateLimited,
+                5 => {
+                    r.failure.as_mut().unwrap().category =
+                        crate::provider_failure::Category::RateLimited
+                }
                 _ => bad.context_recoveries = vec![r.clone(); MAX_RECEIPTS + 1],
             }
             assert!(
@@ -965,6 +1048,116 @@ mod tests {
                 reopened.context_recoveries[0].summary_id.is_some(),
                 stage > 1
             );
+            assert!(reopened.queue_paused);
+            assert!(reopened.active.is_none());
+            reopened.validate_context_recoveries().unwrap();
+        }
+    }
+    fn begin_threshold(s: &mut Session) {
+        s.begin_threshold_compaction(
+            "recovery-1",
+            &s.active_reply.clone().unwrap(),
+            "b".repeat(64),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn threshold_receipt_defers_the_unrequested_reply_without_a_failure() {
+        let mut s = running();
+        let deferred = s.active_reply.clone().unwrap();
+        begin_threshold(&mut s);
+        let receipt = &s.context_recoveries[0];
+        assert_eq!(receipt.reason, Reason::Threshold);
+        assert!(receipt.failure.is_none());
+        let row = s.messages.iter().find(|r| r.id == deferred).unwrap();
+        assert_eq!(row.state, DEFERRED_STATE);
+        assert!(!row.replay_eligible && row.usage.is_null());
+        s.validate_context_recoveries().unwrap();
+        // The legacy shape stays byte-compatible: a rejection receipt names no reason.
+        let mut rejected = running();
+        begin(&mut rejected);
+        let value = serde_json::to_value(&rejected.context_recoveries[0]).unwrap();
+        assert!(value.get("reason").is_none() && value["failure"].is_object());
+        let value = serde_json::to_value(&s.context_recoveries[0]).unwrap();
+        assert_eq!(value["reason"], "threshold");
+        assert!(value.get("failure").is_none());
+        // Reason and failure must agree.
+        for corruption in 0..3 {
+            let mut bad = s.clone();
+            match corruption {
+                0 => bad.context_recoveries[0].failure = Some(failure()),
+                1 => bad.context_recoveries[0].reason = Reason::ContextRejection,
+                _ => {
+                    bad.messages
+                        .iter_mut()
+                        .find(|r| r.id == deferred)
+                        .unwrap()
+                        .text = "started".into()
+                }
+            }
+            assert!(
+                bad.validate_context_recoveries().is_err(),
+                "case {corruption}"
+            );
+        }
+        adopt(&mut s);
+        let retry = s.begin_recovery_retry("recovery-1").unwrap();
+        // One compaction per logical request: the retried request cannot compact again.
+        assert!(!s.can_recover_context(&retry));
+        s.finish_context_recovery(&retry, true).unwrap();
+        s.finish(&retry, Ok(reply())).unwrap();
+        s.validate_context_recoveries().unwrap();
+        assert_eq!(s.context_recoveries[0].phase, Phase::Completed);
+        // A started reply cannot be deferred.
+        let mut started = running();
+        let id = started.active_reply.clone().unwrap();
+        started
+            .delta(&id, crate::Delta::Text("partial".into()))
+            .unwrap();
+        assert!(
+            started
+                .begin_threshold_compaction("recovery-1", &id, "b".repeat(64))
+                .is_err()
+        );
+    }
+    #[test]
+    fn reopen_interrupts_each_threshold_phase_keeping_original_history_until_adoption() {
+        for stage in 0..4 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("session.json");
+            let mut store = SessionStore::open(&path).unwrap();
+            store
+                .transact(|s| {
+                    *s = running();
+                    begin_threshold(s);
+                    if stage > 0 {
+                        s.mark_recovery_summarizing("recovery-1")?;
+                    }
+                    if stage > 1 {
+                        s.adopt_recovery_checkpoint("recovery-1", checkpoint(s), &reply())?;
+                    }
+                    if stage > 2 {
+                        s.begin_recovery_retry("recovery-1")?;
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let before = store.snapshot();
+            let turn = before.active.as_ref().unwrap().id.clone();
+            let deferred = before.context_recoveries[0].failed_reply_id.clone();
+            drop(store);
+            let reopened = SessionStore::open(&path).unwrap().snapshot();
+            let receipt = &reopened.context_recoveries[0];
+            assert_eq!(receipt.phase, Phase::Interrupted);
+            assert_eq!(receipt.reason, Reason::Threshold);
+            assert_eq!(reopened.retry.as_ref().unwrap().id, turn);
+            assert_eq!(receipt.summary_id.is_some(), stage > 1);
+            assert_eq!(
+                reopened.messages.iter().any(|r| r.compaction.is_some()),
+                stage > 1
+            );
+            let row = reopened.messages.iter().find(|r| r.id == deferred).unwrap();
+            assert!(!row.replay_eligible && row.text.is_empty());
             assert!(reopened.queue_paused);
             assert!(reopened.active.is_none());
             reopened.validate_context_recoveries().unwrap();

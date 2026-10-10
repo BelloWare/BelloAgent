@@ -16,6 +16,10 @@ mod read_presentation;
 mod shaped_text;
 #[path = "transcript_tool_presentation.rs"]
 mod tool_presentation;
+#[path = "transcript_tool_row.rs"]
+mod tool_row;
+#[path = "transcript_turn_fold.rs"]
+mod turn_fold;
 #[path = "transcript_work_line.rs"]
 mod work_line;
 use gpui::{prelude::*, *};
@@ -35,6 +39,39 @@ type FindGeometryCallback = Box<dyn FnOnce(&mut Window, &mut App)>;
 thread_local! {
     static FIND_GEOMETRY_PAUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static FIND_GEOMETRY_CALLBACKS: RefCell<Vec<FindGeometryCallback>> = const { RefCell::new(Vec::new()) };
+}
+#[cfg(test)]
+thread_local! {
+    static TOOL_ROWS_OPEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Tests of what an open card holds start as if the reader had opened
+/// every tool row on this thread; a click still closes one.
+#[cfg(test)]
+pub(crate) fn open_tool_rows_for_test() {
+    TOOL_ROWS_OPEN.with(|open| open.set(true));
+}
+#[cfg(test)]
+thread_local! {
+    static TURNS_LOOSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// Tests of a finished turn's own rows read the turn loose, as Swift's
+/// Normal display does; the turn-fold tests leave Swift's default.
+#[cfg(test)]
+pub(crate) fn loose_turns_for_test() {
+    TURNS_LOOSE.with(|loose| loose.set(true));
+}
+/// Swift's compact display, its default: finished turns fold.
+fn turn_folds_apply() -> bool {
+    #[cfg(test)]
+    return !TURNS_LOOSE.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    true
+}
+fn tool_rows_open_by_default() -> bool {
+    #[cfg(test)]
+    return TOOL_ROWS_OPEN.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    false
 }
 #[cfg(test)]
 pub(crate) fn pause_find_geometry(paused: bool) {
@@ -74,6 +111,9 @@ enum RowKey {
         call_id: String,
         occurrence: usize,
     },
+    /// A finished turn's fold control, by the row of the question that opened
+    /// the turn. In the open set, the fold is open.
+    Fold(Box<RowKey>),
     // A duplicate has no stable model identity. Scope its presentation key to
     // the exact immutable snapshot instead of guessing after replacement.
     Duplicate {
@@ -90,11 +130,16 @@ struct LogicalRow {
     expanded: bool,
     read_expanded: bool,
     read_key: Option<RowKey>,
+    fold: turn_fold::RowFold,
 }
 
 struct Presentation {
     input: TranscriptInput,
     rows: Vec<LogicalRow>,
+    /// Rows a closed turn fold holds. They keep their identity and what the
+    /// reader opened in them, but are not list items: a long folded turn
+    /// costs the list nothing.
+    folded: Vec<LogicalRow>,
     hidden_messages: usize,
     #[cfg(test)]
     estimate_override: std::cell::Cell<Option<Pixels>>,
@@ -107,7 +152,7 @@ impl Presentation {
 
     fn with_disclosure(
         input: TranscriptInput,
-        collapsed: &HashSet<RowKey>,
+        opened: &HashSet<RowKey>,
         expanded_reads: &HashSet<RowKey>,
     ) -> Self {
         let hidden_messages = input
@@ -124,6 +169,7 @@ impl Presentation {
                 expanded: false,
                 read_expanded: false,
                 read_key: None,
+                fold: turn_fold::RowFold::default(),
             });
         } else if input.load_failed {
             rows.push(LogicalRow {
@@ -133,6 +179,7 @@ impl Presentation {
                 expanded: false,
                 read_expanded: false,
                 read_key: None,
+                fold: turn_fold::RowFold::default(),
             });
         }
         if hidden_messages > 0 {
@@ -143,6 +190,7 @@ impl Presentation {
                 expanded: false,
                 read_expanded: false,
                 read_key: None,
+                fold: turn_fold::RowFold::default(),
             });
         }
         let mut counts = HashMap::<&str, usize>::new();
@@ -190,7 +238,8 @@ impl Presentation {
                 }
                 _ => message_keys[&source].clone(),
             };
-            let expanded = !collapsed.contains(&key);
+            // Swift opens a call's card only on request (`TranscriptDisclosure`).
+            let expanded = opened.contains(&key) != tool_rows_open_by_default();
             // A read's retained result keeps its window state when Show earlier
             // replaces a standalone result with its owning call card. Ambiguous
             // result IDs remain snapshot-scoped like all other transcript keys.
@@ -224,21 +273,33 @@ impl Presentation {
                 expanded,
                 read_expanded,
                 read_key,
+                fold: turn_fold::RowFold::default(),
             });
         }
+        if turn_folds_apply() {
+            turn_fold::apply(&mut rows, &input.session, opened);
+        }
+        let (folded, rows) = rows.into_iter().partition(|row| row.fold.hidden);
         Self {
             input,
             rows,
+            folded,
             hidden_messages,
             #[cfg(test)]
             estimate_override: std::cell::Cell::new(None),
         }
     }
 
+    /// Every row of the page, folded ones included.
+    fn all_rows(&self) -> impl Iterator<Item = &LogicalRow> {
+        self.rows.iter().chain(&self.folded)
+    }
+
     fn same_row(&self, index: usize, other: &Self, other_index: usize) -> bool {
         let row = &self.rows[index];
         let other_row = &other.rows[other_index];
         if row.key != other_row.key
+            || row.fold != other_row.fold
             || (index + 1 == self.rows.len()) != (other_index + 1 == other.rows.len())
         {
             return false;
@@ -685,17 +746,52 @@ impl ViewportState {
 // estimate, never a view tree. Plain-message estimates mirror their text sizes,
 // wrapping width and chrome; tool cards use their bounded section caps without
 // copying retained payloads. Exact List measurements replace these guesses.
+/// `TranscriptNativeTurnFoldRow.controlHeight`: the 24-point line, eight
+/// points under it, and its hairline.
+const FOLD_CONTROL_HEIGHT: f32 = 32.;
+
+/// The room under a row. A reply's calls stack as Swift's part rows do, line
+/// on line, and the first sits just under the reply's Copy band; everything
+/// else keeps the 16-point gap.
+fn row_gap(presentation: &Presentation, index: usize) -> f32 {
+    // A folded row draws nothing, and a fold's line keeps its own room.
+    let row = &presentation.rows[index];
+    if row.fold.hidden || row.fold.control.is_some() {
+        return 0.;
+    }
+    let Some(next) = presentation.rows[index + 1..]
+        .iter()
+        .find(|row| !row.fold.hidden)
+    else {
+        return 0.;
+    };
+    let assistant = |row: &LogicalRow| match row.projected {
+        Some(ProjectedRow::Call { assistant, .. }) => Some(assistant),
+        _ => None,
+    };
+    let Some(owner) = assistant(next) else {
+        return 16.;
+    };
+    match presentation.rows[index].projected {
+        Some(ProjectedRow::Call { assistant, .. }) if assistant == owner => 0.,
+        Some(ProjectedRow::Message(source)) if source == owner => 4.,
+        _ => 16.,
+    }
+}
+
 fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) -> Pixels {
     #[cfg(test)]
     if let Some(height) = presentation.estimate_override.get() {
         return height;
     }
-    let gap = if index + 1 < presentation.rows.len() {
-        16.
-    } else {
-        0.
-    };
+    let gap = row_gap(presentation, index);
     let row = &presentation.rows[index];
+    if row.fold.hidden {
+        return px(0.);
+    }
+    if let Some(control) = &row.fold.control {
+        return px(FOLD_CONTROL_HEIGHT + if control.open { 4. } else { 8. });
+    }
     let Some(source_index) = row.message_index else {
         return px(gap
             + match row.key {
@@ -708,11 +804,13 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
         row.projected,
         Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
     ) {
+        // The line, and while open its card 2 under it and 8 above what follows.
         return px(gap
+            + work_line::HEIGHT
             + if row.expanded {
-                80. + tool_presentation::SECTION_CAP * 2.
+                2. + 64. + tool_presentation::SECTION_CAP * 2. + 8.
             } else {
-                56.
+                0.
             });
     }
     let user = message.role == "user";
@@ -753,7 +851,7 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
             height += content.skills.len() as f32 * 30.;
         }
     }
-    if !message.reasoning.is_empty() {
+    if !message.reasoning.is_empty() && !row.fold.think_hidden {
         // The Think row, closed until opened.
         height += 6. + work_line::HEIGHT;
     }
@@ -935,7 +1033,8 @@ pub(crate) struct TranscriptView {
     parent: WeakEntity<AgentView>,
     presentation: Rc<Presentation>,
     viewport: Rc<RefCell<ViewportState>>,
-    collapsed: HashSet<RowKey>,
+    /// Tool rows the reader opened; every other one is closed.
+    opened: HashSet<RowKey>,
     expanded_reads: HashSet<RowKey>,
     tool_editors: Rc<RefCell<ToolEditors>>,
     focus: Option<FocusHandle>,
@@ -964,7 +1063,7 @@ impl TranscriptView {
         let presentation = Rc::new(Presentation::new(input));
         Self {
             parent,
-            collapsed: HashSet::new(),
+            opened: HashSet::new(),
             expanded_reads: HashSet::new(),
             tool_editors: Rc::new(RefCell::new(ToolEditors::default())),
             focus: None,
@@ -1186,7 +1285,7 @@ impl TranscriptView {
         else {
             return false;
         };
-        let Some(row) = self.presentation.rows.iter().find(|r| {
+        let Some(row) = self.presentation.all_rows().find(|r| {
             input_target.as_ref().is_some_and(|hit| match r.projected {
                 Some(ProjectedRow::Call {
                     assistant, call, ..
@@ -1206,13 +1305,18 @@ impl TranscriptView {
         };
         let key = row.key.clone();
         let read_key = row.read_key.clone();
-        self.collapsed.remove(&key);
+        // As a browser's find reveals hidden text, the finished turn that
+        // folded the match away opens.
+        if let Some(group) = row.fold.group.clone() {
+            self.opened.insert(RowKey::Fold(Box::new(group)));
+        }
+        self.opened.insert(key.clone());
         if let Some(read_key) = read_key {
             self.expanded_reads.insert(read_key);
         }
         self.presentation = Rc::new(Presentation::with_disclosure(
             self.presentation.input.clone(),
-            &self.collapsed,
+            &self.opened,
             &self.expanded_reads,
         ));
         self.viewport.borrow_mut().reveal = Some(key);
@@ -1476,7 +1580,7 @@ impl TranscriptView {
             return false;
         };
         self.update_inputs(input, cx);
-        let row = self.presentation.rows.iter().find(|row| {
+        let row = self.presentation.all_rows().find(|row| {
             row.message_index == Some(index)
                 || row
                     .projected
@@ -1485,7 +1589,29 @@ impl TranscriptView {
         let Some(row) = row else {
             return false;
         };
-        self.viewport.borrow_mut().reveal = Some(row.key.clone());
+        let key = row.key.clone();
+        let mut changed = false;
+        if row.fold.hidden
+            && let Some(group) = row.fold.group.clone()
+        {
+            // The finished turn that folded the message away opens.
+            changed |= self.opened.insert(RowKey::Fold(Box::new(group)));
+        }
+        if matches!(
+            row.projected,
+            Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
+        ) {
+            // A retained result shows in its card, which opens.
+            changed |= self.opened.insert(key.clone());
+        }
+        if changed {
+            self.presentation = Rc::new(Presentation::with_disclosure(
+                self.presentation.input.clone(),
+                &self.opened,
+                &self.expanded_reads,
+            ));
+        }
+        self.viewport.borrow_mut().reveal = Some(key);
         cx.notify();
         true
     }
@@ -1517,7 +1643,7 @@ impl TranscriptView {
         }
         if old.chat_id != input.chat_id || !Weak::ptr_eq(&old.controller, &input.controller) {
             self.viewport.borrow_mut().reveal = None;
-            self.collapsed.clear();
+            self.opened.clear();
             self.expanded_reads.clear();
             self.removed_tool_focus.borrow_mut().extend(
                 self.tool_editors
@@ -1528,17 +1654,56 @@ impl TranscriptView {
             );
             self.tool_editors.borrow_mut().entries.clear();
         }
+        // A standalone result the reader opened stays open when paging
+        // brings its call onto the page and the result joins the call's card.
+        let open_results: HashSet<String> = self
+            .presentation
+            .all_rows()
+            .filter(|row| {
+                matches!(row.projected, Some(ProjectedRow::Result(_)))
+                    && self.opened.contains(&row.key)
+            })
+            .filter_map(|row| row.message_index)
+            .map(|index| self.presentation.input.session.messages[index].id.clone())
+            .collect();
         self.presentation = Rc::new(Presentation::with_disclosure(
             input,
-            &self.collapsed,
+            &self.opened,
             &self.expanded_reads,
         ));
-        let keys: HashSet<_> = self.presentation.rows.iter().map(|row| &row.key).collect();
-        self.collapsed.retain(|key| keys.contains(key));
+        if !open_results.is_empty() {
+            let session = self.presentation.input.session.clone();
+            let joined: Vec<RowKey> = self
+                .presentation
+                .all_rows()
+                .filter(|row| {
+                    matches!(row.projected, Some(ProjectedRow::Call { result: Some(result), .. })
+                        if open_results.contains(&session.messages[result].id))
+                })
+                .map(|row| row.key.clone())
+                .collect();
+            let mut changed = false;
+            for key in joined {
+                changed |= self.opened.insert(key);
+            }
+            if changed {
+                self.presentation = Rc::new(Presentation::with_disclosure(
+                    self.presentation.input.clone(),
+                    &self.opened,
+                    &self.expanded_reads,
+                ));
+            }
+        }
+        let keys: HashSet<_> = self.presentation.all_rows().map(|row| &row.key).collect();
+        // A fold's choice lasts as long as its question: a retry runs the turn
+        // again and its control comes back with the reader's choice.
+        self.opened.retain(|key| match key {
+            RowKey::Fold(question) => keys.contains(question.as_ref()),
+            key => keys.contains(key),
+        });
         let read_keys: HashSet<_> = self
             .presentation
-            .rows
-            .iter()
+            .all_rows()
             .filter_map(|row| row.read_key.as_ref())
             .collect();
         self.expanded_reads.retain(|key| read_keys.contains(key));
@@ -1567,6 +1732,53 @@ impl TranscriptView {
         }
         cx.notify();
     }
+    /// Opens or closes a finished turn's fold. What the reader opened inside
+    /// it stays as it was.
+    fn toggle_fold(
+        &mut self,
+        key: RowKey,
+        chat_id: &str,
+        controller: &Weak<Controller>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.presentation.input.chat_id != chat_id
+            || !Weak::ptr_eq(&self.presentation.input.controller, controller)
+            || !self.presentation.rows.iter().any(|row| row.key == key)
+        {
+            return;
+        }
+        if !self.opened.remove(&key) {
+            self.opened.insert(key);
+        }
+        self.presentation = Rc::new(Presentation::with_disclosure(
+            self.presentation.input.clone(),
+            &self.opened,
+            &self.expanded_reads,
+        ));
+        // Folding away a focused card's payload leaves a visible owner with
+        // the keyboard, as closing the card itself does.
+        let folded: HashSet<_> = self
+            .presentation
+            .folded
+            .iter()
+            .map(|row| &row.key)
+            .collect();
+        if self
+            .tool_editors
+            .borrow()
+            .entries
+            .iter()
+            .any(|((row, _), entry)| {
+                folded.contains(row) && entry.editor.read(cx).focus_handle(cx).is_focused(window)
+            })
+            && let Some(focus) = &self.focus
+        {
+            focus.focus(window);
+        }
+        self.invalidate_sidebar_geometry(cx);
+        cx.notify();
+    }
     fn toggle_tool(
         &mut self,
         key: RowKey,
@@ -1587,7 +1799,7 @@ impl TranscriptView {
         {
             return;
         }
-        if !self.collapsed.contains(&key)
+        if self.opened.contains(&key)
             && self
                 .tool_editors
                 .borrow()
@@ -1602,12 +1814,12 @@ impl TranscriptView {
             // Keep its editor/selection cached without routing keys to it.
             focus.focus(window);
         }
-        if !self.collapsed.remove(&key) {
-            self.collapsed.insert(key);
+        if !self.opened.remove(&key) {
+            self.opened.insert(key);
         }
         self.presentation = Rc::new(Presentation::with_disclosure(
             self.presentation.input.clone(),
-            &self.collapsed,
+            &self.opened,
             &self.expanded_reads,
         ));
         self.invalidate_sidebar_geometry(cx);
@@ -1669,7 +1881,7 @@ impl TranscriptView {
         }
         self.presentation = Rc::new(Presentation::with_disclosure(
             self.presentation.input.clone(),
-            &self.collapsed,
+            &self.opened,
             &self.expanded_reads,
         ));
         self.invalidate_sidebar_geometry(cx);
@@ -1694,7 +1906,7 @@ impl TranscriptView {
             .presentation
             .rows
             .iter()
-            .find(|row| &row.key == key && row.expanded)
+            .find(|row| &row.key == key)
             .and_then(|row| {
                 read_presentation::file_link(&self.presentation.input.session, row.projected?)
                     .or_else(|| {
@@ -1924,6 +2136,17 @@ impl TranscriptView {
         Rc::as_ptr(&self.presentation) as usize
     }
     #[cfg(test)]
+    /// Each fold control's line and whether its turn is open.
+    #[cfg(test)]
+    pub(crate) fn fold_lines(&self) -> Vec<(String, bool)> {
+        self.presentation
+            .rows
+            .iter()
+            .filter_map(|row| row.fold.control.as_ref())
+            .map(|control| (control.label.clone(), control.open))
+            .collect()
+    }
+    #[cfg(test)]
     pub(crate) fn logical_row_ids(&self) -> Vec<String> {
         self.viewport
             .borrow()
@@ -1941,6 +2164,7 @@ impl TranscriptView {
                     occurrence,
                 } => format!("@tool:{assistant:?}:{call_id}:{occurrence}"),
                 RowKey::Duplicate { id, occurrence, .. } => format!("{id}#{occurrence}"),
+                RowKey::Fold(group) => format!("@fold:{group:?}"),
             })
             .collect()
     }
@@ -2822,6 +3046,70 @@ const ROW_GUTTER: f32 = 24.;
 const ROW_MAX_WIDTH: f32 = 840.;
 
 /// The width of a row's content in a list `width` wide.
+/// Swift's turn fold control (`TranscriptNativeTurnFoldControl`): the
+/// label in 13-point medium and a 10-point chevron 6 after it on a 24-point
+/// line, a hairline across the foot of its 32 points; muted, and the text
+/// colour under the pointer. The chevron points down while the turn is open.
+fn fold_control(
+    selector: &str,
+    control: &turn_fold::Control,
+    palette: &Palette,
+    toggle: impl Fn(&mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let colors = work_line::card_colors(palette);
+    let group = SharedString::from(format!("{selector}-group"));
+    let (text, muted) = (colors.text, colors.muted);
+    div()
+        .id(SharedString::from(selector.to_owned()))
+        .debug_selector({
+            let selector = selector.to_owned();
+            move || selector
+        })
+        .group(group.clone())
+        .w_full()
+        .h(px(FOLD_CONTROL_HEIGHT))
+        .flex()
+        .flex_col()
+        .cursor_pointer()
+        .on_click(move |_, window, cx| toggle(window, cx))
+        .child(
+            div()
+                .h(px(work_line::HEIGHT))
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .child(
+                    div()
+                        .debug_selector({
+                            let selector = format!("{selector}-label");
+                            move || selector
+                        })
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(13.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(muted)
+                        .group_hover(group.clone(), move |label| label.text_color(text))
+                        .child(control.label.clone()),
+                )
+                .child(
+                    svg()
+                        .path("chevron.down")
+                        .flex_none()
+                        .size(px(10.))
+                        .text_color(colors.faint)
+                        .group_hover(group, move |chevron| chevron.text_color(text))
+                        .with_transformation(Transformation::rotate(radians(if control.open {
+                            0.
+                        } else {
+                            -std::f32::consts::FRAC_PI_2
+                        }))),
+                ),
+        )
+        .child(div().flex_1())
+        .child(div().w_full().h(px(1.)).bg(colors.hair))
+}
+
 fn row_width(width: Pixels) -> f32 {
     (f32::from(width) - 2. * ROW_GUTTER).clamp(0., ROW_MAX_WIDTH)
 }
@@ -2844,6 +3132,31 @@ fn render_row(
     let input = &presentation.input;
     let row = &presentation.rows[index];
     let p = input.palette;
+    // A row its turn's closed fold holds keeps its place and draws nothing.
+    if row.fold.hidden {
+        return div().w_full();
+    }
+    if let Some(control) = &row.fold.control {
+        let (child, key) = (child.clone(), row.key.clone());
+        let (chat_id, controller) = (input.chat_id.clone(), input.controller.clone());
+        return div().w_full().px(px(ROW_GUTTER)).child(
+            div()
+                .w_full()
+                .max_w(px(ROW_MAX_WIDTH))
+                .mx_auto()
+                .pb(px(if control.open { 4. } else { 8. }))
+                .child(fold_control(
+                    &format!("transcript-fold-{:?}", row.key),
+                    control,
+                    &p,
+                    move |window, cx| {
+                        let _ = child.update(cx, |view, cx| {
+                            view.toggle_fold(key.clone(), &chat_id, &controller, window, cx)
+                        });
+                    },
+                )),
+        );
+    }
     let content = if matches!(
         row.projected,
         Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
@@ -2891,6 +3204,7 @@ fn render_row(
                 .into_any_element()
             }
             RowKey::Tool { .. } => unreachable!("tool card rendered above"),
+            RowKey::Fold(_) => unreachable!("fold control rendered above"),
             RowKey::Message(_) | RowKey::Duplicate { .. } => {
                 let source_index = row.message_index.expect("message row");
                 let message = &input.session.messages[source_index];
@@ -2927,7 +3241,7 @@ fn render_row(
                             .child(label.to_owned()),
                     );
                 }
-                if !message.reasoning.is_empty() {
+                if !message.reasoning.is_empty() && !row.fold.think_hidden {
                     // Swift's Think row: closed by default, even while it
                     // streams; open, the reasoning read as Markdown under it.
                     let streaming = message.state == "streaming";
@@ -2936,6 +3250,7 @@ fn render_row(
                         icon: "brain",
                         title: "Think".into(),
                         summary: work_line::think_summary(&message.reasoning, streaming).into(),
+                        suffix: None,
                         state: if streaming {
                             work_line::WorkState::Running
                         } else {
@@ -2960,6 +3275,7 @@ fn render_row(
                                         view.toggle_thinking(&message_id, cx)
                                     });
                                 },
+                                None,
                             ),
                         ),
                     );
@@ -3153,7 +3469,7 @@ fn render_row(
     div()
         .w_full()
         .px(px(ROW_GUTTER))
-        .when(index + 1 < presentation.rows.len(), |row| row.pb(px(16.)))
+        .pb(px(row_gap(presentation, index)))
         .flex()
         .flex_col()
         .child(content)
@@ -3354,8 +3670,36 @@ struct ToolEditor {
 #[derive(Clone, Copy, PartialEq)]
 struct ToolEditorStyle {
     palette: Palette,
-    failed: bool,
+    tone: Tone,
+    /// A terminal's output scrolls past 224 points, any other section past 150.
+    terminal: bool,
 }
+/// What a card's payload is set in (`TranscriptNativeCards`): a request or a
+/// result muted, a command or a diff's and a read's lines in the text colour,
+/// a failure's result red.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tone {
+    Muted,
+    Text,
+    Danger,
+}
+impl ToolEditorStyle {
+    fn cap(self) -> f32 {
+        if self.terminal {
+            TERMINAL_CAP
+        } else {
+            tool_presentation::SECTION_CAP
+        }
+    }
+}
+/// `TranscriptCardFaces.code`: the system's monospaced face (SF Mono).
+const CARD_MONO: &str = if cfg!(target_os = "macos") {
+    ".AppleSystemUIFontMonospaced"
+} else {
+    "DejaVu Sans Mono"
+};
+/// `TranscriptCardMetrics.terminalCap`.
+const TERMINAL_CAP: f32 = 224.;
 impl ToolEditors {
     fn active_find(&self) -> Option<Rc<crate::transcript_find_presentation::FindPaint>> {
         self.sidebar.clone().or_else(|| self.find.clone())
@@ -3474,7 +3818,7 @@ impl ToolEditors {
         let (row_index, row, section) = key;
         let key = (row, section);
         self.tick += 1;
-        let ToolEditorStyle { palette: p, failed } = style;
+        let p = style.palette;
         if !self.entries.contains_key(&key) {
             if self.entries.len() >= TOOL_EDITOR_LIMIT {
                 let oldest = self
@@ -3491,7 +3835,7 @@ impl ToolEditors {
                 let mut editor = EditorView::new(preview.into(), window, cx);
                 editor.set_read_only(true, cx);
                 editor.set_vim(false, cx);
-                editor.set_appearance(tool_editor_appearance(p, failed), cx);
+                editor.set_appearance(tool_editor_appearance(p, style.tone), cx);
                 editor
             });
             self.entries.insert(
@@ -3516,11 +3860,11 @@ impl ToolEditors {
                 entry.find_installed = None;
             }
             if entry.style != style {
-                editor.set_appearance(tool_editor_appearance(p, failed), cx);
+                editor.set_appearance(tool_editor_appearance(p, style.tone), cx);
             }
             editor
                 .measured_content_height(width.max(1.), window)
-                .clamp(17., tool_presentation::SECTION_CAP)
+                .clamp(17., style.cap())
         });
         entry.style = style;
         (entry.editor.clone(), height)
@@ -3833,14 +4177,19 @@ fn decorate_find_tool(
     }
 }
 
-fn tool_editor_appearance(p: Palette, failed: bool) -> EditorAppearance {
+fn tool_editor_appearance(p: Palette, tone: Tone) -> EditorAppearance {
+    let colors = work_line::card_colors(&p);
     EditorAppearance {
-        font_family: "monospace".into(),
+        font_family: CARD_MONO.into(),
         font_size: 12.,
         line_height: 17.,
         padding_x: 0.,
         padding_y: 0.,
-        text: rgb(if failed { p.danger } else { p.secondary }).into(),
+        text: match tone {
+            Tone::Muted => colors.muted,
+            Tone::Text => colors.text,
+            Tone::Danger => colors.danger,
+        },
         selection: p.accent_soft(),
         caret: rgb(p.accent).into(),
         normal_caret: p.accent_soft(),
@@ -3889,97 +4238,113 @@ fn render_tool_card(
     let chat_id = presentation.input.chat_id.clone();
     let controller = presentation.input.controller.clone();
     let disclosure_child = child.clone();
-    let mut card = div()
+    // Swift's work row (`TranscriptNativeActionRow`): the call's one line,
+    // closed until the reader opens it, and its card under it.
+    let model = tool_row::row_model(session, projected);
+    let line = match &model {
+        Some(model) => work_line::WorkLine {
+            icon: model.icon,
+            title: model.title.clone().into(),
+            summary: model.summary.clone().into(),
+            suffix: model.suffix.clone().map(Into::into),
+            state: tool_row::work_state(model.state),
+            expandable: true,
+            open: row.expanded,
+            trailing: model.trailing.clone().map(Into::into),
+            follow: false,
+        },
+        // A result whose call is not on this page reads as its own line.
+        None => work_line::WorkLine {
+            icon: "circle",
+            title: "Tool result".into(),
+            summary: name
+                .strip_prefix("Tool result · ")
+                .unwrap_or("")
+                .to_owned()
+                .into(),
+            suffix: None,
+            state: if status.is_error() {
+                work_line::WorkState::Failed
+            } else {
+                work_line::WorkState::Ok
+            },
+            expandable: true,
+            open: row.expanded,
+            trailing: tool_presentation::elapsed(session, projected).map(Into::into),
+            follow: false,
+        },
+    };
+    // A sidebar hit on the tool's name: the line says what the call did, not
+    // its name, so the row is the owner shown.
+    if let Some(paint) = editors.borrow().active_find()
+        && paint.matches_binding(presentation.input.find_binding.as_ref())
+        && let Some(hit) = paint.sidebar_input()
+        && sidebar_input_matches(presentation, index, hit)
+        && matches!(
+            hit.target(),
+            bello_agent_core::sidebar_search::projection::SourceTarget::ToolName(_)
+        )
+    {
+        *paint.notice.borrow_mut() =
+            Some("This row transforms the tool name; showing its owning row.".into());
+    }
+    let link = model
+        .as_ref()
+        .filter(|model| model.links_summary && !model.summary.is_empty())
+        .and_then(|model| model.file.as_ref())
+        .map(|_| {
+            let (child, key) = (child.clone(), row.key.clone());
+            let (chat_id, controller) = (chat_id.clone(), controller.clone());
+            Box::new(move |window: &mut Window, cx: &mut App| {
+                let _ = child.update(cx, |view, cx| {
+                    view.open_read_file(&key, &chat_id, &controller, window, cx)
+                });
+            }) as work_line::Link
+        });
+    let card = div()
         .debug_selector(|| selector.clone())
         .w_full()
-        .max_w(px(640.))
+        .max_w(px(ROW_MAX_WIDTH))
         .mx_auto()
         .min_w_0()
         .flex()
         .flex_col()
-        .rounded(px(10.))
-        .border_1()
-        .border_color(p.hairline())
-        .bg(rgb(p.surface))
         .child(
             div()
-                .px(px(16.))
-                .py(px(10.))
-                .flex()
-                .gap(px(10.))
-                .items_start()
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap(px(3.))
-                        .child(
-                            div().text_size(px(12.)).text_color(rgb(p.ink)).child(
-                                {
-                                    let shown = edit_presentation::title(session, projected).unwrap_or_else(|| name.clone());
-                                    let sidebar = editors.borrow().active_find();
-                                    if let Some(paint) = sidebar
-                                        && paint.matches_binding(presentation.input.find_binding.as_ref())
-                                        && let Some(hit) = paint.sidebar_input()
-                                        && sidebar_input_matches(presentation, index, hit)
-                                        && matches!(hit.target(), bello_agent_core::sidebar_search::projection::SourceTarget::ToolName(_)) {
-                                        if shown == name {
-                                            paint.prose(&hit.key().message_id, shown, index).into_any_element()
-                                        } else {
-                                            *paint.notice.borrow_mut() = Some("This card transforms the tool name; showing its owning card.".into());
-                                            shown.into_any_element()
-                                        }
-                                    } else { shown.into_any_element() }
-                                },
-                            ),
-                        )
-                        .child(
-                            div()
-                                .debug_selector(|| format!("{selector}-status"))
-                                .text_size(px(11.5))
-                                .text_color(rgb(if status.is_error() {
-                                    p.danger
-                                } else {
-                                    p.secondary
-                                }))
-                                .child(status.label(&name)),
-                        ),
-                )
-                .when_some(
-                    tool_presentation::elapsed(session, projected),
-                    |header, elapsed| {
-                        header.child(
-                            div()
-                                .debug_selector(|| format!("{selector}-duration"))
-                                .text_size(px(11.5))
-                                .text_color(rgb(p.secondary))
-                                .child(elapsed),
-                        )
-                    },
-                )
-                .child(
-                    button(
-                        p,
-                        SharedString::from(format!("{selector}-disclosure")),
-                        if row.expanded {
-                            "Hide details"
-                        } else {
-                            "Show details"
-                        },
-                    )
-                    .debug_selector(|| format!("{selector}-disclosure"))
-                    .on_click(move |_, window, cx| {
+                .pl(px(4.))
+                .debug_selector(|| format!("{selector}-disclosure"))
+                .child(work_line::work_line(
+                    SharedString::from(format!("{selector}-disclosure")),
+                    &line,
+                    &p,
+                    move |window, cx| {
                         let _ = disclosure_child.update(cx, |view, cx| {
                             view.toggle_tool(key.clone(), &chat_id, &controller, window, cx)
                         });
-                    }),
-                ),
+                    },
+                    link,
+                )),
         );
     if !row.expanded {
         return card;
     }
+    // Swift's card (`TranscriptNativeCard`): one rounded panel with a
+    // hairline, set in to the line's title, 2 points under the line and 8
+    // above what follows.
+    let colors = work_line::card_colors(&p);
+    let mut panel = div()
+        .debug_selector(|| format!("{selector}-card"))
+        .ml(px(4. + work_line::INDENT))
+        .mt(px(2.))
+        .mb(px(8.))
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .rounded(px(12.))
+        .border_1()
+        .border_color(colors.hair)
+        .bg(colors.code_background)
+        .overflow_hidden();
     let shown_output = projected
         .result()
         .map(|index| tool_presentation::display_text(&session.messages[index]))
@@ -4019,9 +4384,14 @@ fn render_tool_card(
 
     let read_link = read_presentation::file_link(session, projected)
         .or_else(|| edit_presentation::file_link(session, projected));
+    // A change's card is its diff; what a change that did not land printed
+    // stays under it, but an empty result says nothing there.
     let output = shown_output
         .as_deref()
-        .filter(|_| edit_preview.is_none() || status != tool_presentation::Status::Completed)
+        .filter(|text| {
+            edit_preview.is_none()
+                || (status != tool_presentation::Status::Completed && !text.is_empty())
+        })
         .map(|text| {
             if let Some(read) = &read_window {
                 // Source's six-head/six-tail window, without the generic 8 KiB
@@ -4038,27 +4408,61 @@ fn render_tool_card(
                 text
             })
         });
+    // A command opens as Swift's terminal: `$ command` over what it printed.
+    let terminal = model
+        .as_ref()
+        .is_some_and(|model| model.kind == tool_row::ActionKind::Command)
+        && edit_preview.is_none()
+        && read_window.is_none()
+        && matches!(projected, ProjectedRow::Call { .. });
+    if terminal
+        && let (
+            Some(model),
+            ProjectedRow::Call {
+                assistant, call, ..
+            },
+        ) = (&model, projected)
+    {
+        let call = tool_presentation::call_at(session, assistant, call);
+        input = Some(tool_presentation::preview(
+            call.arguments["command"].as_str().unwrap_or(&model.object),
+        ));
+    }
     let truncated = input.as_ref().is_some_and(|preview| preview.truncated)
         || output.as_ref().is_some_and(|preview| preview.truncated);
+    let rule = colors.hair;
     if read_window.is_some() || read_link.is_some() || edit_preview.is_some() {
+        // The banner: what became of a change and its file, or a read's file
+        // and how much of it the card shows.
         let mut header = div()
             .w_full()
             .min_w_0()
-            .border_t_1()
-            .border_color(p.hairline())
+            .border_b_1()
+            .border_color(rule)
             .px(px(16.))
             .py(px(8.))
             .flex()
             .items_center()
             .gap(px(8.));
         if let Some(edit) = &edit_preview {
-            header = header.child(
-                div()
-                    .debug_selector(|| format!("{selector}-edit-label"))
-                    .text_size(px(11.5))
-                    .text_color(rgb(p.secondary))
-                    .child(edit.label.clone()),
-            );
+            let tint = match status {
+                tool_presentation::Status::Completed => colors.muted,
+                tool_presentation::Status::Failed | tool_presentation::Status::NotExecuted => {
+                    colors.danger
+                }
+                _ => colors.warning,
+            };
+            header = header
+                .child(
+                    div()
+                        .debug_selector(|| format!("{selector}-edit-label"))
+                        .flex_shrink_0()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_size(px(11.5))
+                        .text_color(tint)
+                        .child(edit.label.clone()),
+                )
+                .child(div().flex_1());
         }
         if let Some(link) = read_link {
             let path_selector = format!(
@@ -4077,10 +4481,14 @@ fn render_tool_card(
                 div()
                     .id(SharedString::from(path_selector.clone()))
                     .debug_selector(|| path_selector.clone())
-                    .flex_1()
+                    .when(edit_preview.is_none(), |d| d.flex_1())
                     .min_w_0()
                     .text_size(px(11.5))
-                    .text_color(rgb(p.secondary))
+                    .text_color(if edit_preview.is_some() {
+                        colors.faint
+                    } else {
+                        colors.muted
+                    })
                     .text_ellipsis()
                     .cursor_pointer()
                     .hover(|d| d.underline())
@@ -4098,25 +4506,56 @@ fn render_tool_card(
                     .debug_selector(|| format!("{selector}-read-window"))
                     .flex_shrink_0()
                     .text_size(px(11.5))
-                    .text_color(rgb(p.tertiary))
+                    .text_color(colors.faint)
                     .child(read.window_label(row.read_expanded)),
             );
         }
-        card = card.child(header);
+        panel = panel.child(header);
     }
-    let body_width = (f32::from(width) - 48.).min(640.) - 32. - 28. - 14. - 2.;
-    for (label, preview) in [("IN", input), ("OUT", output)] {
-        let Some(preview) = preview else {
-            continue;
+    // The panel's inner width: its 16-point sides and hairline border.
+    let inner =
+        (f32::from(width) - 2. * ROW_GUTTER).min(ROW_MAX_WIDTH) - 4. - work_line::INDENT - 2. - 32.;
+    let sections = [("IN", input), ("OUT", output)];
+    let shown = sections
+        .iter()
+        .filter(|(_, preview)| preview.is_some())
+        .count();
+    for (position, (label, preview)) in sections
+        .into_iter()
+        .filter_map(|(label, preview)| Some((label, preview?)))
+        .enumerate()
+    {
+        // A diff's and a read's lines carry their own marks; a terminal's
+        // command its prompt; everything else stands beside its IN/OUT label.
+        let lines =
+            (label == "IN" && edit_preview.is_some()) || (label == "OUT" && read_window.is_some());
+        let gutter = !lines && !terminal;
+        let failed = label == "OUT" && status.is_error();
+        let style = ToolEditorStyle {
+            palette: p,
+            tone: if failed {
+                Tone::Danger
+            } else if lines || (terminal && label == "IN") {
+                Tone::Text
+            } else {
+                Tone::Muted
+            },
+            terminal: terminal && label == "OUT",
+        };
+        let prompt = if terminal && label == "IN" {
+            7. + 8.
+        } else {
+            0.
         };
         let (editor, height) = editors.borrow_mut().section(
             (index, row.key.clone(), label),
             &preview.text,
-            ToolEditorStyle {
-                palette: p,
-                failed: label == "OUT" && status.is_error(),
+            style,
+            if gutter {
+                inner - 30. - 14.
+            } else {
+                inner - prompt
             },
-            body_width,
             window,
             cx,
         );
@@ -4126,87 +4565,117 @@ fn render_tool_card(
             label,
             &preview.text,
             read_window.as_ref().map(|r| r.first_line),
-            edit_preview.is_none() && read_window.is_none(),
+            edit_preview.is_none() && read_window.is_none() && !terminal,
             &editor,
             editors,
             child,
             window,
             cx,
         );
-        card = card.child(
-            div()
-                .w_full()
-                .min_w_0()
-                .border_t_1()
-                .border_color(p.hairline())
-                .px(px(16.))
-                .py(px(12.))
-                .flex()
-                .items_start()
-                .gap(px(14.))
-                .child(
-                    div()
-                        .w(px(28.))
-                        .flex_shrink_0()
-                        .text_size(px(11.))
-                        .text_color(rgb(p.tertiary))
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("{selector}-{label}")))
-                        .debug_selector(|| format!("{selector}-{label}"))
-                        .flex_1()
-                        .min_w_0()
-                        .h(px(height))
-                        .max_h(px(tool_presentation::SECTION_CAP))
-                        .overflow_hidden()
-                        // GPUI List registers its wheel listener after children,
-                        // so bubbling alone cannot stop it. Exclude the outer
-                        // list's hitbox while this selectable scroller is hit.
-                        .occlude()
-                        .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
-                        .child(editor),
-                ),
+        let mut section = div()
+            .w_full()
+            .min_w_0()
+            .when(position + 1 < shown, |d| d.border_b_1())
+            .border_color(rule)
+            .px(px(16.))
+            .py(px(if lines {
+                0.
+            } else if terminal {
+                10.
+            } else {
+                12.
+            }))
+            .flex()
+            .items_start();
+        if gutter {
+            section = section.gap(px(14.)).child(
+                div()
+                    .w(px(30.))
+                    .flex_shrink_0()
+                    .font_family(CARD_MONO)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_size(px(11.))
+                    .text_color(colors.faint)
+                    .child(label),
+            );
+        } else if prompt > 0. {
+            section = section.gap(px(8.)).child(
+                div()
+                    .flex_shrink_0()
+                    .font_family(CARD_MONO)
+                    .text_size(px(12.))
+                    .line_height(px(17.))
+                    .text_color(colors.faint)
+                    .child("$"),
+            );
+        }
+        panel = panel.child(
+            section.child(
+                div()
+                    .id(SharedString::from(format!("{selector}-{label}")))
+                    .debug_selector(|| format!("{selector}-{label}"))
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(height))
+                    .max_h(px(style.cap()))
+                    .overflow_hidden()
+                    // GPUI List registers its wheel listener after children,
+                    // so bubbling alone cannot stop it. Exclude the outer
+                    // list's hitbox while this selectable scroller is hit.
+                    .occlude()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .child(editor),
+            ),
         );
     }
+    // Swift's capped list's line (`TranscriptCardMoreLines`): a plain button
+    // in the code face, 4 points above and below.
+    let more = |id: String, label: String, toggle: Box<dyn Fn(&mut App)>| {
+        div()
+            .id(SharedString::from(id.clone()))
+            .debug_selector(move || id)
+            .w_full()
+            .px(px(16.))
+            .py(px(4.))
+            .cursor_pointer()
+            .font_family(CARD_MONO)
+            .text_size(px(12.))
+            .text_color(colors.faint)
+            .hover(|d| d.text_color(colors.muted))
+            .child(label)
+            .on_click(move |_, _, cx| toggle(cx))
+    };
     if let Some(read) = read_window {
         if read.collapsible() {
             let child = child.clone();
             let key = row.key.clone();
             let chat_id = presentation.input.chat_id.clone();
             let controller = presentation.input.controller.clone();
-            card = card.child(
-                div().px(px(16.)).pb(px(8.)).child(
-                    button(
-                        p,
-                        SharedString::from(format!("{selector}-read-disclosure")),
-                        if row.read_expanded {
-                            "Show less".into()
-                        } else {
-                            format!(
-                                "Show {} more lines",
-                                read.lines.len() - read_presentation::READ_LINES
-                            )
-                        },
+            panel = panel.child(more(
+                format!("{selector}-read-disclosure"),
+                if row.read_expanded {
+                    "Show fewer lines".into()
+                } else {
+                    format!(
+                        "Show {} more lines",
+                        read.lines.len() - read_presentation::READ_LINES
                     )
-                    .debug_selector(|| format!("{selector}-read-disclosure"))
-                    .on_click(move |_, _, cx| {
-                        let _ = child.update(cx, |view, cx| {
-                            view.toggle_read(key.clone(), &chat_id, &controller, cx)
-                        });
-                    }),
-                ),
-            );
+                },
+                Box::new(move |cx| {
+                    let _ = child.update(cx, |view, cx| {
+                        view.toggle_read(key.clone(), &chat_id, &controller, cx)
+                    });
+                }),
+            ));
         }
         if let Some(note) = read.note {
-            card = card.child(
+            panel = panel.child(
                 div()
                     .debug_selector(|| format!("{selector}-read-note"))
                     .px(px(16.))
-                    .pb(px(10.))
+                    .py(px(8.))
                     .text_size(px(11.5))
-                    .text_color(rgb(p.secondary))
+                    .text_color(colors.muted)
                     .child(note.to_owned()),
             );
         }
@@ -4224,45 +4693,48 @@ fn render_tool_card(
             } else {
                 format!("Show {} more lines", edit.hidden)
             };
-            card = card.child(
-                div().px(px(16.)).pb(px(8.)).child(
-                    button(
-                        p,
-                        SharedString::from(format!("{selector}-edit-disclosure")),
-                        label,
-                    )
-                    .debug_selector(|| format!("{selector}-edit-disclosure"))
-                    .on_click(move |_, _, cx| {
-                        let _ = child.update(cx, |view, cx| {
-                            view.toggle_read(key.clone(), &chat_id, &controller, cx)
-                        });
-                    }),
-                ),
-            );
+            panel = panel.child(more(
+                format!("{selector}-edit-disclosure"),
+                label,
+                Box::new(move |cx| {
+                    let _ = child.update(cx, |view, cx| {
+                        view.toggle_read(key.clone(), &chat_id, &controller, cx)
+                    });
+                }),
+            ));
         }
         if let Some(footer) = &edit.footer {
-            card = card.child(
+            // `└ +3 −1`: the change's size at the diff's foot.
+            let (plus, minus) = footer.split_once(' ').unwrap_or((footer, ""));
+            panel = panel.child(
                 div()
                     .debug_selector(|| format!("{selector}-edit-counts"))
                     .px(px(16.))
-                    .pb(px(8.))
-                    .text_size(px(11.5))
-                    .text_color(rgb(p.secondary))
-                    .child(footer.clone()),
+                    .py(px(6.))
+                    .flex()
+                    .text_size(px(12.))
+                    .child(
+                        div()
+                            .font_family(CARD_MONO)
+                            .text_color(colors.faint)
+                            .child("└ "),
+                    )
+                    .child(div().text_color(colors.success).child(plus.to_owned()))
+                    .child(div().text_color(colors.danger).child(format!(" {minus}"))),
             );
         }
     }
     if truncated {
-        card = card.child(
+        panel = panel.child(
             div()
                 .px(px(16.))
-                .pb(px(10.))
+                .py(px(10.))
                 .text_size(px(11.5))
-                .text_color(rgb(p.secondary))
+                .text_color(colors.muted)
                 .child("Preview truncated; retained input and output are unchanged."),
         );
     }
-    card
+    card.child(panel)
 }
 
 #[cfg(test)]

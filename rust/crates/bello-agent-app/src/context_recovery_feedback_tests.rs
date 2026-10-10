@@ -3,7 +3,7 @@ use super::{progress_label, row_label, tests::fixture};
 use bello_agent_core::{
     Controller, Lane, Message, RunState, Session, SessionStore, Submission,
     compaction::Checkpoint,
-    context_recovery::{Phase, Receipt},
+    context_recovery::{DEFERRED_STATE, Phase, Reason, Receipt},
     provider_failure::{Category, Failure},
 };
 use gpui::{TestAppContext, VisualTestContext};
@@ -39,13 +39,14 @@ fn recovery(mut session: Session) -> Session {
         summary_rejection: None,
         retry_rejection: None,
         request_fingerprint: "a".repeat(64),
-        failure: Failure {
+        reason: Reason::ContextRejection,
+        failure: Some(Failure {
             category: Category::InputContextExceeded,
             status: Some(400),
             message: "secret provider URL and request text".into(),
             attempt_id: None,
             reported_usage: None,
-        },
+        }),
         phase: Phase::Preparing,
         summary_id: None,
         summary_failure: None,
@@ -109,7 +110,11 @@ fn context_recovery_feedback_distinguishes_every_phase_without_disclosing_provid
         assert_eq!(failed.text, "Retained partial response");
         assert!(!failed.replay_eligible);
     }
-    session.context_recoveries[0].failure.category = Category::InputPlusOutputContextExceeded;
+    session.context_recoveries[0]
+        .failure
+        .as_mut()
+        .unwrap()
+        .category = Category::InputPlusOutputContextExceeded;
     let failed = row(&session, &session.context_recoveries[0].failed_reply_id);
     assert!(
         row_label(failed, &session)
@@ -301,8 +306,11 @@ fn context_recovery_usage_is_observed_sparse_and_never_double_counted() {
         .find(|r| r.id == failed)
         .unwrap()
         .usage = json!({"input_tokens": 12});
-    session.context_recoveries[0].failure.reported_usage =
-        Some(json!({"input_tokens": 999, "output_tokens": 999}));
+    session.context_recoveries[0]
+        .failure
+        .as_mut()
+        .unwrap()
+        .reported_usage = Some(json!({"input_tokens": 999, "output_tokens": 999}));
     assert_eq!(
         recovery_usage_label(&session).unwrap(),
         "Reported tokens · 12 in · unknown out"
@@ -512,4 +520,55 @@ fn context_recovery_usage_missing_explicit_retry_remains_partial() {
         super::recovery_usage_label(&session).unwrap(),
         "Reported tokens · 12 (partial) in · 3 (partial) out"
     );
+}
+
+#[::core::prelude::v1::test]
+fn automatic_compaction_is_one_compaction_row_and_its_deferred_reply_is_hidden() {
+    let mut session = recovery(Session::new());
+    let deferred = session.context_recoveries[0].failed_reply_id.clone();
+    let receipt = &mut session.context_recoveries[0];
+    receipt.reason = Reason::Threshold;
+    receipt.failure = None;
+    let row_mut = session
+        .messages
+        .iter_mut()
+        .find(|row| row.id == deferred)
+        .unwrap();
+    row_mut.state = DEFERRED_STATE.into();
+    row_mut.text.clear();
+    for (phase, label, status) in [
+        (
+            Phase::Preparing,
+            "Compaction · Preparing · threshold",
+            "Compacting · Preparing checkpoint…",
+        ),
+        (
+            Phase::Summarizing,
+            "Compaction · Summary request · attempt 1",
+            "Compacting · Summarizing…",
+        ),
+        (
+            Phase::Cancelled,
+            "Compaction · Cancelled; original context retained",
+            "Working · Generating response…",
+        ),
+        (
+            Phase::Interrupted,
+            "Compaction · Interrupted; original context retained",
+            "Working · Generating response…",
+        ),
+    ] {
+        session.context_recoveries[0].phase = phase;
+        assert_eq!(
+            row_label(row(&session, "recovery-progress"), &session),
+            Some(label)
+        );
+        assert_eq!(progress_label(&session), status);
+        assert_eq!(row_label(row(&session, &deferred), &session), None);
+    }
+    let hidden = super::deferred_replies(&session);
+    assert!(hidden.contains(deferred.as_str()));
+    assert!(!hidden.contains("recovery-progress"));
+    // A rejection receipt's retained attempt stays visible.
+    assert!(super::deferred_replies(&recovery(Session::new())).is_empty());
 }

@@ -1,0 +1,260 @@
+[
+ {
+  "name": "short-65536",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 65536,
+   "maxOutputTokens": 4096
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 1,
+   "size": 3
+  }
+ },
+ {
+  "name": "long-65536",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 65536,
+   "maxOutputTokens": 4096
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 12,
+   "size": 400
+  }
+ },
+ {
+  "name": "long-unanswered-65536",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 65536,
+   "maxOutputTokens": 4096
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 12,
+   "size": 400,
+   "answered": false
+  }
+ },
+ {
+  "name": "unicode-32000",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 32000,
+   "maxOutputTokens": 4096
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 8,
+   "size": 300,
+   "unicode": true
+  }
+ },
+ {
+  "name": "many-rows-128000",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 128000,
+   "maxOutputTokens": 8192
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 120,
+   "size": 40
+  }
+ },
+ {
+  "name": "limit-2000-65536",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 65536,
+   "maxOutputTokens": 4096,
+   "modelOutputLimit": 2000
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 6,
+   "size": 500
+  }
+ },
+ {
+  "name": "big-max-output-200000",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 200000,
+   "maxOutputTokens": 64000,
+   "modelOutputLimit": 64000
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 20,
+   "size": 500
+  }
+ },
+ {
+  "name": "window-1m",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 1000000,
+   "maxOutputTokens": 32000
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 30,
+   "size": 800
+  }
+ },
+ {
+  "name": "window-8192",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 8192,
+   "maxOutputTokens": 1024
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 4,
+   "size": 60
+  }
+ },
+ {
+  "name": "window-4096",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 4096,
+   "maxOutputTokens": 512
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 3,
+   "size": 40
+  }
+ },
+ {
+  "name": "window-2048",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 2048,
+   "maxOutputTokens": 256
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 2,
+   "size": 20
+  }
+ },
+ {
+  "name": "window-1024",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 1024,
+   "maxOutputTokens": 128
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 2,
+   "size": 20
+  }
+ },
+ {
+  "name": "window-300-error",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 300,
+   "maxOutputTokens": 100
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "chat": 1,
+   "size": 2
+  }
+ },
+ {
+  "name": "empty-instructions",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 32000,
+   "maxOutputTokens": 4096
+  },
+  "instructions": "",
+  "rows": {
+   "chat": 5,
+   "size": 200
+  }
+ },
+ {
+  "name": "single-huge-user",
+  "profile": {
+   "id": "oracle",
+   "api": "openai-responses",
+   "providerId": "litellm",
+   "modelId": "oracle-model",
+   "baseUrl": "http://127.0.0.1:1234",
+   "contextWindow": 65536,
+   "maxOutputTokens": 4096
+  },
+  "instructions": "Trusted system instructions",
+  "rows": {
+   "huge": 300000
+  }
+ }
+]
