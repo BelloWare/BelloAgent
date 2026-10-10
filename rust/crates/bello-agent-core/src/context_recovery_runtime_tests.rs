@@ -966,3 +966,42 @@ async fn a_tool_continuation_crossing_the_threshold_compacts_without_replaying_t
     );
     f.no_request().await;
 }
+
+#[tokio::test]
+async fn a_replayable_history_compaction_cannot_group_still_sends_its_request() {
+    use crate::tool_history::{AssistantRecord, Completion, ReplayBinding, ToolRecord};
+    let mut f = Fixture::new().await;
+    let profile = f.actor.configuration().unwrap().profile.clone();
+    f.actor
+        .inner
+        .lock()
+        .unwrap()
+        .store
+        .transact(|session| {
+            // A retained call whose result never arrived replays as pi's
+            // "No result provided" but cannot be grouped for compaction.
+            let mut call = row("call-owner", "assistant", String::new());
+            call.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+                tool_batch_timing: None,
+                completion: Completion::Complete,
+                calls: vec![crate::provider::ToolCall {
+                    id: "lost-call".into(),
+                    name: "ls".into(),
+                    arguments: json!({"path":"."}),
+                }],
+                binding: ReplayBinding::from_profile(&profile)?,
+                provider_items: vec![],
+            }));
+            session.messages.push(call);
+            Ok(())
+        })
+        .unwrap();
+    f.actor
+        .submit("Short follow-up".into(), Lane::FollowUp)
+        .unwrap();
+    let request = f.next().await;
+    assert!(!is_summary_request(&request));
+    assert!(request.to_string().contains("No result provided"));
+    f.reply(completed("Done")).await;
+    assert_eq!(f.settle().await.state, RunState::Idle);
+}

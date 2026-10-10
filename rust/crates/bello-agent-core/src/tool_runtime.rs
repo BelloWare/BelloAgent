@@ -484,16 +484,28 @@ impl Controller {
             let threshold = match ready {
                 Ok(()) if check_threshold => {
                     check_threshold = false;
-                    self.compact_before_request(
-                        &config,
-                        &item,
-                        &snapshot,
-                        &profile,
-                        &instructions,
-                        &definitions,
-                        cancel.clone(),
-                    )
-                    .await
+                    match self
+                        .compact_before_request(
+                            &config,
+                            &item,
+                            &snapshot,
+                            &profile,
+                            &instructions,
+                            &definitions,
+                            cancel.clone(),
+                        )
+                        .await
+                    {
+                        // Authority may change while the threshold is measured:
+                        // confirm again before the intact request is sent.
+                        Ok(None) => async {
+                            config.confirm_for_request().await?;
+                            self.confirm_turn_resources(cancel.clone()).await
+                        }
+                        .await
+                        .map(|()| None),
+                        other => other,
+                    }
                 }
                 ready => ready.map(|()| None),
             };

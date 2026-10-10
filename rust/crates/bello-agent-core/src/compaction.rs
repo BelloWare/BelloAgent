@@ -415,6 +415,10 @@ fn threshold_for(
     let text = instruction(&boundary, None, visible_target(profile, None));
     trigger(profile, instruction_tokens(&text))
 }
+/// Whether an error is the threshold's reserve refusal (Swift `compact_budget`).
+pub(crate) fn is_budget_refusal(error: &Error) -> bool {
+    matches!(error, Error::Invalid(message) if message == BUDGET_REFUSAL)
+}
 /// Swift `canCompact` (not recovering): pi's prepareCompaction finds
 /// something new to summarize besides required inputs.
 pub(crate) fn can_compact(messages: &[Message]) -> bool {

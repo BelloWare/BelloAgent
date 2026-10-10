@@ -89,11 +89,23 @@ impl Controller {
                 &measure_session,
                 &measure_definitions,
             )?;
-            let threshold = compaction::compaction_threshold(
+            // A history that ordinary replay accepts but compaction cannot
+            // group (a retained call without its result) is not compactable;
+            // only the reserve refusal ends the run, as in Swift.
+            let threshold = match compaction::compaction_threshold(
                 &measure_messages,
                 &measure_profile,
                 &measure_instructions,
-            )?;
+            ) {
+                Ok(threshold) => threshold,
+                Err(error)
+                    if !compaction::is_budget_refusal(&error)
+                        && !compaction::can_compact(&measure_messages) =>
+                {
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            };
             if compaction::estimated_request_tokens(&request) < threshold
                 || !compaction::can_compact(&measure_messages)
             {
