@@ -57,6 +57,20 @@ fn fixture_with_visible(
     WindowHandle<AgentView>,
     Entity<AgentView>,
 ) {
+    fixture_with(cx, rows, queued, visible_messages, false)
+}
+
+fn fixture_with(
+    cx: &mut TestAppContext,
+    rows: Vec<Message>,
+    queued: usize,
+    visible_messages: Option<usize>,
+    configured: bool,
+) -> (
+    tempfile::TempDir,
+    WindowHandle<AgentView>,
+    Entity<AgentView>,
+) {
     let directory = tempfile::tempdir().unwrap();
     let project = std::fs::canonicalize(directory.path()).unwrap();
     let path = project.join("session.json");
@@ -82,8 +96,20 @@ fn fixture_with_visible(
     };
     let mut workspace = WorkspaceStore::open(project.join("workspace.json"), &project).unwrap();
     workspace.register(record.clone(), draft.clone()).unwrap();
+    // A configured connection lets a send reach the paused queue; its
+    // discard-port address is never contacted while the queue is paused.
+    let connection = configured.then(|| {
+        let profile: bello_agent_core::Profile = serde_json::from_value(serde_json::json!({
+            "id": "transcript-ui", "api": "openai-responses", "providerId": "litellm",
+            "modelId": "fixture-model", "baseUrl": "http://127.0.0.1:9",
+            "contextWindow": 32000, "maxOutputTokens": 4096, "input": ["text"]
+        }))
+        .unwrap();
+        let credential = bello_agent_core::Credential::new("transcript-fixture-only".into());
+        (profile, credential.unwrap())
+    });
     let launch = LaunchState {
-        controller: Controller::new(store, None).unwrap(),
+        controller: Controller::new(store, connection).unwrap(),
         project,
         workspace: Arc::new(Mutex::new(workspace)),
         record,
@@ -284,7 +310,7 @@ impl Render for WheelInputHost {
     }
 }
 
-fn host(
+fn host_as_opened(
     root: &Entity<AgentView>,
     input: TranscriptInput,
     cx: &mut TestAppContext,
@@ -297,6 +323,18 @@ fn host(
     let visual = VisualTestContext::from_window(window.into(), cx);
     visual.simulate_resize(size(px(700.), px(620.)));
     cx.run_until_parked();
+    (visual, child)
+}
+
+fn host(
+    root: &Entity<AgentView>,
+    input: TranscriptInput,
+    cx: &mut TestAppContext,
+) -> (VisualTestContext, Entity<TranscriptView>) {
+    let (visual, child) = host_as_opened(root, input, cx);
+    // Chats open at their newest message; these hosted mechanics scenarios start
+    // from the top, as a reader who scrolled there would.
+    jump_to(&child, 0, 0., cx);
     (visual, child)
 }
 
@@ -378,23 +416,261 @@ fn visible_rows_keep_exact_source_gutters_gap_bottom_and_max_width(cx: &mut Test
 }
 
 #[gpui::test]
-fn initial_list_stays_top_aligned_and_parent_notifications_preserve_it(cx: &mut TestAppContext) {
+fn chat_opens_at_newest_message_and_parent_notifications_preserve_it(cx: &mut TestAppContext) {
     let (_directory, window, root) = fixture(cx, messages(100), 0);
     let child = transcript(&root, cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
-    assert_eq!(anchor(&child, cx), ("message-0".into(), px(0.)));
-    assert_eq!(
-        current_row_bounds(&mut visual, &child, "message-0", cx).top(),
-        scroll(&child, cx).viewport_bounds().top()
-    );
-    assert!(!materialized(&child, cx).contains(&99));
+    // Like Swift, the newest message's end is on screen and the oldest rows
+    // are not built.
+    let viewport = scroll(&child, cx).viewport_bounds();
+    let last = current_row_bounds(&mut visual, &child, "message-99", cx);
+    assert!(last.bottom() <= viewport.bottom() + px(1.));
+    assert!(last.top() < viewport.bottom());
+    assert!(!materialized(&child, cx).contains(&0));
+    let opened = anchor(&child, cx);
+    assert_ne!(opened.0, "message-0");
     let before = renders(&child, cx);
     for _ in 0..3 {
         root.update(cx, |_, cx| cx.notify());
         cx.run_until_parked();
         assert_eq!(renders(&child, cx), before);
-        assert_eq!(anchor(&child, cx), ("message-0".into(), px(0.)));
+        assert_eq!(anchor(&child, cx), opened);
     }
+}
+
+#[gpui::test]
+fn reader_at_the_end_follows_a_growing_reply_and_new_rows(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(100), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    // A streaming reply grows far past the viewport; its newest line stays on screen.
+    for lines in [20, 60, 120] {
+        snapshot_change(&root, cx, |session| {
+            session.messages[99].text = (0..lines)
+                .map(|line| format!("streamed line {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        });
+        let viewport = scroll(&child, cx).viewport_bounds();
+        let last = current_row_bounds(&mut visual, &child, "message-99", cx);
+        // The list keeps its bottom gap below the last row.
+        let gap = viewport.bottom() - last.bottom();
+        assert!(
+            gap >= px(0.) && gap <= px(24.),
+            "{lines} lines: {last:?} {viewport:?}"
+        );
+    }
+    // A newly appended row is followed too.
+    snapshot_change(&root, cx, |session| {
+        session
+            .messages
+            .push(message("message-100", "user", "a follow-up"));
+    });
+    let viewport = scroll(&child, cx).viewport_bounds();
+    let appended = current_row_bounds(&mut visual, &child, "message-100", cx);
+    assert!(appended.bottom() <= viewport.bottom() + px(1.));
+}
+
+#[gpui::test]
+fn reader_above_the_end_keeps_their_place_while_a_reply_grows(cx: &mut TestAppContext) {
+    let (_directory, _window, root) = fixture(cx, messages(100), 0);
+    let child = transcript(&root, cx);
+    jump_to(&child, 40, 7., cx);
+    let reading = anchor(&child, cx);
+    assert_eq!(reading, ("message-40".into(), px(7.)));
+    for lines in [20, 120] {
+        snapshot_change(&root, cx, |session| {
+            session.messages[99].text = (0..lines)
+                .map(|line| format!("streamed line {line}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+        });
+        assert_eq!(anchor(&child, cx), reading, "{lines} lines");
+    }
+    snapshot_change(&root, cx, |session| {
+        session
+            .messages
+            .push(message("message-100", "user", "a follow-up"));
+    });
+    assert_eq!(anchor(&child, cx), reading);
+}
+
+fn reply_lines(lines: usize) -> String {
+    (0..lines)
+        .map(|line| format!("reply line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn assert_end_followed(
+    visual: &mut VisualTestContext,
+    child: &Entity<TranscriptView>,
+    id: &str,
+    cx: &TestAppContext,
+) {
+    let viewport = scroll(child, cx).viewport_bounds();
+    let last = current_row_bounds(visual, child, id, cx);
+    let gap = viewport.bottom() - last.bottom();
+    assert!(
+        gap >= px(0.) && gap <= px(24.),
+        "end of {id} not followed: {last:?} {viewport:?}"
+    );
+}
+
+#[gpui::test]
+fn following_reader_keeps_the_end_when_the_queue_panel_takes_room(cx: &mut TestAppContext) {
+    // Sending first queues the message, which opens the queue panel above the
+    // composer for at least one frame. The top-anchored list must not let that
+    // shorter viewport cut the end off and stop following (seen in the app).
+    let (_directory, window, root) = fixture(cx, messages(100), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let before = scroll(&child, cx).viewport_bounds();
+    snapshot_change(&root, cx, |session| {
+        session
+            .pending
+            .push(Submission::new("queued".into(), Lane::FollowUp));
+    });
+    assert!(
+        scroll(&child, cx).viewport_bounds().size.height < before.size.height,
+        "the queue panel must take room from the transcript"
+    );
+    assert_end_followed(&mut visual, &child, "message-99", cx);
+    snapshot_change(&root, cx, |session| {
+        session.pending.clear();
+        session
+            .messages
+            .push(message("message-100", "user", "queued"));
+    });
+    assert_end_followed(&mut visual, &child, "message-100", cx);
+}
+
+#[gpui::test]
+fn sending_follows_the_new_turn_from_an_earlier_reading_position(cx: &mut TestAppContext) {
+    // Swift's followSubmittedTurn: a sent message is followed from wherever
+    // the reader was, here into a paused queue whose panel takes room too.
+    // Settled replies give the send a known read baseline.
+    let mut rows = messages(100);
+    for row in &mut rows {
+        row.state = "completed".into();
+    }
+    let (_directory, window, root) = fixture_with(cx, rows, 0, None, true);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    jump_to(&child, 40, 7., cx);
+    assert_eq!(anchor(&child, cx), ("message-40".into(), px(7.)));
+    root.update(cx, |view, cx| {
+        view.composer
+            .update(cx, |editor, cx| editor.set_text("follow this".into(), cx));
+        view.submit_chat(Lane::FollowUp, cx);
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    while cx.read(|cx| root.read(cx).busy) {
+        assert!(std::time::Instant::now() < deadline, "send did not settle");
+        cx.run_until_parked();
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    }
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| root.read(cx).error.clone()), None);
+    assert_eq!(
+        cx.read(|cx| root.read(cx).session.pending.len()),
+        1,
+        "the paused queue holds the sent message"
+    );
+    assert_end_followed(&mut visual, &child, "message-99", cx);
+}
+
+#[gpui::test]
+fn idle_chat_opens_at_the_question_of_a_last_turn_taller_than_the_viewport(
+    cx: &mut TestAppContext,
+) {
+    let mut rows = messages(100);
+    rows[99].text = reply_lines(300);
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let (mut visual, child) = host_as_opened(&root, input(&root, cx), cx);
+    // The question of the last turn is at the top, so its reply reads from
+    // its beginning, as Swift's opening placement.
+    let opened = anchor(&child, cx);
+    assert_eq!(opened, ("message-98".into(), px(0.)));
+    let viewport = scroll(&child, cx).viewport_bounds();
+    let question = current_row_bounds(&mut visual, &child, "message-98", cx);
+    assert!(question.top() >= viewport.top() && question.top() <= viewport.top() + px(16.));
+    // The page holds the question rather than following the end.
+    let mut grown = input(&root, cx);
+    let mut session = (*grown.session).clone();
+    session.messages[99].text = reply_lines(320);
+    grown.session = Arc::new(session);
+    child.update(cx, |view, cx| view.update_inputs(grown, cx));
+    cx.run_until_parked();
+    assert_eq!(anchor(&child, cx), opened);
+}
+
+#[gpui::test]
+fn idle_chat_whose_last_turn_fits_and_running_chat_open_at_the_end(cx: &mut TestAppContext) {
+    for (lines, running) in [(3, false), (300, true)] {
+        let mut rows = messages(100);
+        rows[99].text = reply_lines(lines);
+        let (_directory, _window, root) = fixture(cx, rows, 0);
+        let mut opened = input(&root, cx);
+        if running {
+            let mut session = (*opened.session).clone();
+            session.state = RunState::Running;
+            opened.session = Arc::new(session);
+        }
+        let (mut visual, child) = host_as_opened(&root, opened, cx);
+        assert_end_followed(&mut visual, &child, "message-99", cx);
+    }
+}
+
+#[gpui::test]
+fn going_up_unpins_and_scrolling_back_to_the_end_follows_again(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(100), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let target = scroll(&child, cx).viewport_bounds().center();
+    visual.simulate_mouse_move(target, None::<MouseButton>, Modifiers::none());
+    // Even a small move up leaves the end at once; a growing reply then
+    // leaves the reader where they are.
+    visual.simulate_event(ScrollWheelEvent {
+        position: target,
+        delta: ScrollDelta::Pixels(point(px(0.), px(10.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    let held = anchor(&child, cx);
+    snapshot_change(&root, cx, |session| {
+        session.messages[99].text = reply_lines(40);
+    });
+    assert_eq!(anchor(&child, cx), held);
+    // Coming back down to the end pins the page to it again.
+    visual.simulate_event(ScrollWheelEvent {
+        position: target,
+        delta: ScrollDelta::Pixels(point(px(0.), px(-5000.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    snapshot_change(&root, cx, |session| {
+        session.messages[99].text = reply_lines(120);
+    });
+    assert_end_followed(&mut visual, &child, "message-99", cx);
+    // Stopping short of the band leaves it unpinned.
+    visual.simulate_event(ScrollWheelEvent {
+        position: target,
+        delta: ScrollDelta::Pixels(point(px(0.), px(400.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    visual.simulate_event(ScrollWheelEvent {
+        position: target,
+        delta: ScrollDelta::Pixels(point(px(0.), px(-200.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    let short = anchor(&child, cx);
+    snapshot_change(&root, cx, |session| {
+        session.messages[99].text = reply_lines(160);
+    });
+    assert_eq!(anchor(&child, cx), short);
 }
 
 #[gpui::test]
@@ -534,8 +810,9 @@ fn cold_first_middle_last_rows_are_reachable_with_bounded_materialization(cx: &m
         let mut visual = VisualTestContext::from_window(window.into(), cx);
         assert_eq!(scroll(&child, cx).item_count(), count);
         assert_eq!(row_ids(&child, cx).len(), count);
-        assert_eq!(anchor(&child, cx), ("message-0".into(), px(0.)));
-        assert!(!materialized(&child, cx).contains(&(count - 1)));
+        // A cold open shows the newest row without building the oldest.
+        assert!(materialized(&child, cx).contains(&(count - 1)));
+        assert!(!materialized(&child, cx).contains(&0));
         for index in [0, count / 2, count - 1, 0] {
             jump_to(&child, index, 0., cx);
             let id = format!("message-{index}");
@@ -953,6 +1230,8 @@ fn cached_hover_copy_resolves_current_controller_text_after_same_id_redraw(
     rows[0].text = source.into();
     let (_directory, window, root) = fixture(cx, rows, 0);
     let child = transcript(&root, cx);
+    // Chats open at the newest message; this scenario starts from the top.
+    jump_to(&child, 0, 0., cx);
     // Model a published controller snapshot arriving after the displayed input.
     // The click must look up the controller's current text, not close over this
     // deliberately stale presentation string.
@@ -979,6 +1258,8 @@ fn same_size_composer_and_root_notifications_reuse_populated_transcript(cx: &mut
     rows[0].text = source.into();
     let (_directory, window, root) = fixture(cx, rows, 0);
     let child = transcript(&root, cx);
+    // Chats open at the newest message; this scenario starts from the top.
+    jump_to(&child, 0, 0., cx);
     let before = renders(&child, cx);
     assert!(before > 0);
     let viewport = scroll(&child, cx).viewport_bounds();
@@ -1228,6 +1509,8 @@ fn earlier_button_expands_current_prefix_and_retains_child(cx: &mut TestAppConte
 fn repeated_earlier_clicks_reveal_first_message_when_header_disappears(cx: &mut TestAppContext) {
     let (_directory, window, root) = fixture(cx, messages(220), 0);
     let child = transcript(&root, cx);
+    // Chats open at the newest message; this scenario starts from the top.
+    jump_to(&child, 0, 0., cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert_eq!(cx.read(|cx| root.read(cx).visible_messages), 100);
     assert_eq!(anchor(&child, cx), ("@earlier".into(), px(0.)));
@@ -2259,6 +2542,8 @@ fn retained_tool_scroll_away_keeps_window_shortcuts_routable(cx: &mut TestAppCon
         Some(usize::MAX),
     );
     let child = transcript(&root, cx);
+    // Chats open at the newest message; this scenario starts from the top.
+    jump_to(&child, 0, 0., cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
     let output = visual
@@ -2283,6 +2568,8 @@ fn retained_tool_page_repair_keeps_window_shortcuts_routable(cx: &mut TestAppCon
     let (_directory, window, root) =
         fixture_with_visible(cx, retained_tool_rows(40, "selectable result"), 0, Some(61));
     let child = transcript(&root, cx);
+    // Chats open at the newest message; this scenario starts from the top.
+    jump_to(&child, 0, 0., cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
     let output = visual
@@ -2348,6 +2635,8 @@ fn retained_tool_detail_restore_case(
         Some(usize::MAX),
     );
     let child = transcript(&root, cx);
+    // Chats open at the newest message; this scenario starts from the top.
+    jump_to(&child, 0, 0., cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
     let output = visual

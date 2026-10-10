@@ -2,7 +2,7 @@
 //! rows; only event callbacks access the parent. The list measures the viewport
 //! and the source's max(240px, half a viewport) buffer, never the whole history.
 use crate::{AgentView, Palette, layout, transcript_actions};
-use bello_agent_core::{Controller, Session};
+use bello_agent_core::{Controller, RunState, Session};
 use bello_workbench_ui::{EditorAppearance, EditorView, TextDecoration, TextPresentation};
 #[path = "transcript_edit_presentation.rs"]
 mod edit_presentation;
@@ -381,18 +381,50 @@ struct ViewportState {
     pending_scroll: Option<ListOffset>,
     reveal: Option<RowKey>,
     painted_scroll: ListOffset,
+    /// The page keeps the newest row in view, as Swift's `followsBottom`. A
+    /// chat opens following and sending follows the new turn; from then on
+    /// the reader decides: a scroll that ends within `FOLLOW_BAND` of the end
+    /// pins it, going up or any navigation elsewhere unpins it.
+    follows_end: bool,
+    /// The reader's wheel went down; once that lands, the band decides whether
+    /// the page follows again. Going up unpins at once and is not re-pinned
+    /// by the band: a reply arriving between the events of one upward gesture
+    /// must not pull the page back to the end under the reader's hand.
+    reader_landing: bool,
+    /// An idle chat opens at the question of its last turn when that turn is
+    /// taller than the viewport (Swift's opening placement), decided once on
+    /// the first frame with real geometry.
+    opening: bool,
     #[cfg(test)]
     target_preflights: Vec<usize>,
     #[cfg(test)]
     tool_height_invalidations: usize,
 }
 
+/// Swift's `TranscriptPage.followThreshold` plus its rounding point.
+const FOLLOW_BAND: Pixels = px(25.);
+
+/// One past the last row: GPUI's top-aligned list clamps this to the real
+/// bottom while filling the viewport upward, so it shows the newest content.
+fn end_offset(presentation: &Presentation) -> ListOffset {
+    ListOffset {
+        item_ix: presentation.rows.len(),
+        offset_in_item: px(0.),
+    }
+}
+
+fn same_offset(a: ListOffset, b: ListOffset) -> bool {
+    a.item_ix == b.item_ix && a.offset_in_item == b.offset_in_item
+}
+
 impl ViewportState {
     fn new(presentation: Rc<Presentation>) -> Self {
         let buffer = px(240.);
+        let end = end_offset(&presentation);
+        let list = ListState::new(presentation.rows.len(), ListAlignment::Top, buffer);
+        list.scroll_to(end);
         Self {
-            list: ListState::new(presentation.rows.len(), ListAlignment::Top, buffer),
-            presentation,
+            list,
             buffer,
             heights: HashMap::new(),
             pending_scroll: None,
@@ -401,19 +433,61 @@ impl ViewportState {
             target_preflights: Vec::new(),
             #[cfg(test)]
             tool_height_invalidations: 0,
-            painted_scroll: ListOffset {
-                item_ix: 0,
-                offset_in_item: px(0.),
-            },
+            painted_scroll: end,
+            follows_end: true,
+            reader_landing: false,
+            opening: presentation.input.session.state != RunState::Running,
+            presentation,
         }
+    }
+
+    /// Whether the end of the last row is on screen, or within the follow
+    /// band below it. Only a partly visible last row counts: rows between the
+    /// scroll top and it are then measured exactly by this layout.
+    fn end_in_band(&self) -> bool {
+        let Some(last) = self.presentation.rows.len().checked_sub(1) else {
+            return true;
+        };
+        let viewport = self.list.viewport_bounds();
+        self.list.bounds_for_item(last).is_some_and(|row| {
+            row.top() < viewport.bottom() && row.bottom() <= viewport.bottom() + FOLLOW_BAND
+        })
+    }
+
+    /// Navigation the reader or the app asked for takes the page off the end.
+    fn unpin(&mut self) {
+        self.follows_end = false;
+        self.reader_landing = false;
+        self.opening = false;
+    }
+
+    /// Follow the newest row again, as Swift's `followSubmittedTurn`.
+    fn follow_latest(&mut self) {
+        self.follows_end = true;
+        self.opening = false;
+        self.reader_landing = false;
+        self.pending_scroll = None;
+        self.reveal = None;
     }
 
     fn prepare(&mut self, next: Rc<Presentation>, bounds: Bounds<Pixels>) -> Option<ListOffset> {
         let buffer = px(240.).max(bounds.size.height / 2.);
-        let old = &self.presentation;
         // Capture at prepaint, after any user input received since the last
         // frame. No scheduled callback can later overwrite a newer gesture.
         let offset = self.list.logical_scroll_top();
+        // A move since the last painted frame that this view did not make,
+        // and no gesture is landing, is navigation elsewhere.
+        if self.pending_scroll.is_none() && !same_offset(offset, self.painted_scroll) {
+            self.unpin();
+        }
+        // While following, the end stays in view through new rows, a growing
+        // reply, and any viewport change (the queue panel opening as a message
+        // is sent, the composer growing, a resize), as in Swift.
+        let follow = self.follows_end;
+        if follow {
+            self.pending_scroll = None;
+        }
+        let old = &self.presentation;
         let changed = !Rc::ptr_eq(old, &next);
         if self.list.viewport_bounds().size.width != bounds.size.width
             || old.input.pane_width != next.input.pane_width
@@ -513,6 +587,11 @@ impl ViewportState {
             self.list.scroll_to(anchor);
         }
         self.presentation = next;
+        if follow {
+            let end = end_offset(&self.presentation);
+            self.painted_scroll = end;
+            self.list.scroll_to(end);
+        }
         if let Some(key) = self.reveal.take()
             && let Some(item_ix) = self.presentation.rows.iter().position(|row| row.key == key)
         {
@@ -520,12 +599,13 @@ impl ViewportState {
                 item_ix,
                 offset_in_item: px(0.),
             };
+            self.unpin();
             self.pending_scroll = None;
             self.painted_scroll = target;
             self.list.scroll_to(target);
             return Some(target);
         }
-        remeasure_anchor.then_some(anchor)
+        (remeasure_anchor && !follow).then_some(anchor)
     }
 }
 
@@ -1055,6 +1135,9 @@ impl TranscriptView {
         {
             return;
         }
+        // A match the reader navigates to holds the page, as a Swift reveal
+        // lands on an explicit, unpinned anchor.
+        viewport.unpin();
         let partial = span_height > bounds.size.height;
         let visible_height = if partial { line_height } else { span_height };
         let fully_visible = point.y >= bounds.top() && point.y + visible_height <= bounds.bottom();
@@ -1152,6 +1235,13 @@ impl TranscriptView {
                 .editor
                 .update(cx, |e, cx| e.invalidate_presentation_geometry(cx));
         }
+        cx.notify();
+    }
+    /// The reader sent a message: follow its new turn from wherever they were
+    /// reading, as Swift's `followSubmittedTurn`. Callers end any find landing
+    /// first, as a wheel gesture does.
+    pub(crate) fn follow_latest(&mut self, cx: &mut Context<Self>) {
+        self.viewport.borrow_mut().follow_latest();
         cx.notify();
     }
     pub(crate) fn cancel_find_navigation(&mut self, cx: &mut Context<Self>) {
@@ -1692,6 +1782,82 @@ struct ViewportList {
 }
 
 impl ViewportList {
+    /// Swift's opening placement: an idle chat whose last turn, from its
+    /// question to the end, is taller than the viewport opens with that
+    /// question at the top, held there until the reader moves. Measured before
+    /// the first layout, so no frame shows the end first.
+    fn place_opening(&self, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut App) {
+        self.viewport.borrow_mut().opening = false;
+        let messages = &self.presentation.input.session.messages;
+        let Some(question) = self
+            .presentation
+            .rows
+            .iter()
+            .rev()
+            .find_map(|row| {
+                row.message_index.filter(|&index| {
+                    !matches!(row.key, RowKey::Tool { .. })
+                        && messages.get(index).is_some_and(|m| m.role == "user")
+                })
+            })
+            .and_then(|index| {
+                self.presentation
+                    .rows
+                    .iter()
+                    .position(|row| row.message_index == Some(index))
+            })
+        else {
+            return;
+        };
+        let mut turn = px(0.);
+        for index in question..self.presentation.rows.len() {
+            let key = self.presentation.rows[index].key.clone();
+            let known = self.viewport.borrow().heights.get(&key).copied();
+            turn += match known {
+                Some(height) => height,
+                None => {
+                    let mut row = materialize_row(
+                        &self.presentation,
+                        index,
+                        RowRenderContext {
+                            parent: &self.parent,
+                            child: &self.child,
+                            tool_editors: &self.tool_editors,
+                        },
+                        bounds.size.width,
+                        window,
+                        cx,
+                        #[cfg(test)]
+                        &self.materialized,
+                    );
+                    let height = row
+                        .layout_as_root(
+                            size(
+                                AvailableSpace::Definite(bounds.size.width),
+                                AvailableSpace::MinContent,
+                            ),
+                            window,
+                            cx,
+                        )
+                        .height;
+                    self.viewport.borrow_mut().heights.insert(key, height);
+                    height
+                }
+            };
+            if turn > bounds.size.height + px(1.) {
+                let mut viewport = self.viewport.borrow_mut();
+                viewport.follows_end = false;
+                let target = ListOffset {
+                    item_ix: question,
+                    offset_in_item: px(0.),
+                };
+                viewport.painted_scroll = target;
+                viewport.list.scroll_to(target);
+                return;
+            }
+        }
+    }
+
     fn build_list(&self, width: Pixels) -> List {
         let state = self.viewport.borrow().list.clone();
         let presentation = self.presentation.clone();
@@ -1889,6 +2055,12 @@ impl Element for ViewportList {
                 self.viewport.borrow().list.scroll_to(anchor);
             }
         }
+        if self.viewport.borrow().opening
+            && !self.presentation.input.loading
+            && bounds.size.height > px(0.)
+        {
+            self.place_opening(bounds, window, cx);
+        }
         // At most two unseen target preflights in one frame. Adversarial
         // overestimates retain their residual target for the next frame while
         // the last canonical viewport remains interactive. A new gesture or
@@ -1901,13 +2073,17 @@ impl Element for ViewportList {
         };
         // A deferred target may have become measured by the fallback viewport.
         // Normalize against those newly exact heights before spending a preflight.
-        target = wheel_anchor(
-            &self.presentation,
-            &self.viewport.borrow().heights,
-            bounds.size.width,
-            target,
-            px(0.),
-        );
+        // The end target (one past the last row) is left for List's own bottom
+        // clamp, which shows the end of a last row taller than the viewport.
+        if target.item_ix < self.presentation.rows.len() {
+            target = wheel_anchor(
+                &self.presentation,
+                &self.viewport.borrow().heights,
+                bounds.size.width,
+                target,
+                px(0.),
+            );
+        }
         let mut complete = false;
         #[cfg(test)]
         let mut target_preflights = 0;
@@ -2000,6 +2176,12 @@ impl Element for ViewportList {
             .prepaint(id, inspector_id, bounds, state, window, cx);
         let mut viewport = self.viewport.borrow_mut();
         viewport.painted_scroll = viewport.list.logical_scroll_top();
+        // The reader's downward movement has landed: standing within the band
+        // pins the page to the newest row, anywhere else leaves it unpinned.
+        if viewport.reader_landing && viewport.pending_scroll.is_none() {
+            viewport.reader_landing = false;
+            viewport.follows_end = viewport.end_in_band();
+        }
         (prepaint, hitbox)
     }
     fn paint(
@@ -2040,7 +2222,8 @@ impl Element for ViewportList {
                 });
             }
             if phase == DispatchPhase::Bubble && hitbox.should_handle_scroll(window) {
-                distance += vertical_wheel_distance(event.delta, line_height);
+                let step = vertical_wheel_distance(event.delta, line_height);
+                distance += step;
                 let anchor = wheel_anchor(
                     &presentation,
                     &viewport.borrow().heights,
@@ -2048,7 +2231,17 @@ impl Element for ViewportList {
                     origin,
                     distance,
                 );
-                viewport.borrow_mut().pending_scroll = Some(anchor);
+                {
+                    let mut state = viewport.borrow_mut();
+                    state.pending_scroll = Some(anchor);
+                    state.opening = false;
+                    if step < px(0.) {
+                        // Going up leaves the end at once, before this lands.
+                        state.unpin();
+                    } else if step > px(0.) {
+                        state.reader_landing = true;
+                    }
+                }
                 list.scroll_to(anchor);
                 cx.notify(current_view);
             }

@@ -484,6 +484,15 @@ impl AgentView {
         self.skills.clear();
         self.composer
             .update(cx, |editor, cx| editor.set_text(String::new(), cx));
+        // Sending follows the new turn from wherever the reader was, ending
+        // any find landing still under way (Swift's followSubmittedTurn).
+        self.abandon_find_navigation();
+        if let Some(transcript) = self.transcript.clone() {
+            transcript.update(cx, |transcript, cx| {
+                transcript.cancel_find_navigation(cx);
+                transcript.follow_latest(cx);
+            });
+        }
         let record = self.record.clone();
         let id = record.id.clone();
         let controller = self.controller.clone();

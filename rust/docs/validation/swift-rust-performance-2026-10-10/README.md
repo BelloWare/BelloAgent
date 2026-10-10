@@ -60,9 +60,13 @@ Parity defects found by this run (both reproducible from `harness/`):
 1. **JSON value limit.** A 486 KB document with 32,347 values (depth 4) formats
    in Swift (~83 ms) but Rust rejects it: `JSON exceeds 64 levels or 20,000 values.`
    Swift limits depth to 64 and input to 500 KB, but has no value-count limit.
+   Fixed afterwards in BelloBox `de218fb`.
 2. **Sort A→Z semantics.** Swift sorts with `localizedCaseInsensitiveCompare`
    (`alpha` before `Beta`); Rust sorts by bytes (`Beta` before `alpha`). The
-   78× speed ratio therefore does not compare equal work.
+   78× speed ratio therefore does not compare equal work. Fixed afterwards in
+   BelloBox `2f475c5` (macOS sorts through Foundation's
+   `localizedCaseInsensitiveCompare`; Trim and Remove Empty use Swift's
+   whitespace set); the sort timing above predates that change.
 
 ### Agent interaction and streaming (end-to-end, external measurement)
 
@@ -100,10 +104,24 @@ Rust's streaming cost grows with the reply's length. A mid-stream `sample`
 
 Behavior observed while measuring (screens in `interaction/screens/`): the Rust
 transcript shows Markdown as raw text; it opens a chat at the top of its loaded
-100-message window instead of the newest message and does not follow a
-streaming reply (it is created with `ListAlignment::Top` and preserves the
-reader's anchor); Swift opens at the newest message, renders Markdown with
-syntax-highlighted code and follows the reply.
+100-message window and does not follow a streaming reply (it is created with
+`ListAlignment::Top` and preserves the reader's anchor). Swift opens this idle
+chat at the question of its last turn, which is taller than the window (with a
+Back to bottom button), renders Markdown with syntax-highlighted code and follows
+the reply.
+
+Transcript placement was fixed after these measurements (the follow-up `rust`
+commit). `harness/follow-check.sh` repeats the scenario on the release build:
+the chat opens at question 399 as Swift does (`rust-follow-01-opened.jpg`), a
+sent message's reply is followed while it streams (`rust-follow-03-streaming-8s.jpg`),
+a reader who scrolls up keeps their place (`rust-follow-05-held-5s-later.jpg`,
+identical to the frame 5 s earlier) and following resumes once they scroll back
+to the end (`rust-follow-07-following-5s-later.jpg`). A first attempt that only
+followed when the previous frame showed the end failed in the app although its
+tests passed: sending queues the message first, the queue panel shortens the
+transcript for a frame, and the end dropped out of view
+(`rust-before-fix-02-sent-not-followed.jpg`); the fix keeps a follow state,
+as Swift's `followsBottom`, instead of inferring it from the last frame.
 
 ## Limitations
 
