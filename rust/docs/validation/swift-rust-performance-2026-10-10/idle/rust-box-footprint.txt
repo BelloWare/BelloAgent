@@ -1,0 +1,50 @@
+======================================================================
+bellobox [97569]: 64-bit    Footprint: 125 MB (16384 bytes per page)
+======================================================================
+
+  Dirty      Clean  Reclaimable    Regions    Category
+    ---        ---          ---        ---    ---
+  70 MB        0 B      4608 KB         51    IOAccelerator (graphics)
+  36 MB        0 B          0 B          3    IOSurface
+4688 KB        0 B      1552 KB         10    MALLOC_MEDIUM
+4256 KB        0 B          0 B         11    MALLOC_SMALL
+3584 KB        0 B          0 B         20    MALLOC_TINY
+1241 KB        0 B          0 B        425    __DATA
+1232 KB        0 B          0 B          9    CoreUI image data
+ 707 KB        0 B          0 B          1    page table
+ 506 KB        0 B          0 B        147    __DATA_DIRTY
+ 464 KB        0 B          0 B         26    ColorSync
+ 368 KB        0 B          0 B          6    CG image
+ 352 KB        0 B          0 B         14    stack
+ 320 KB        0 B          0 B          1    libdispatch
+ 304 KB        0 B          0 B         25    MALLOC metadata
+ 304 KB        0 B          0 B         24    untagged ("VM_ALLOCATE")
+ 302 KB        0 B          0 B        257    __AUTH
+ 208 KB    9680 KB          0 B         26    mapped file
+ 199 KB        0 B          0 B        693    unused dyld shared cache area
+ 160 KB        0 B          0 B          7    IOKit
+ 128 KB        0 B          0 B          1    Accelerate image backing stores
+ 128 KB        0 B          0 B          8    CoreAnimation
+ 112 KB        0 B          0 B          3    IOAccelerator
+  48 KB        0 B          0 B          2    dyld private memory
+  40 KB        0 B          0 B          1    __OBJC_RW
+  32 KB        0 B          0 B          1    Activity Tracing
+  32 KB        0 B          0 B          2    CoreGraphics
+  16 KB        0 B       256 KB          2    MALLOC_LARGE
+  16 KB     208 KB          0 B        446    __DATA_CONST
+  16 KB        0 B          0 B          1    os_alloc_once
+  16 KB        0 B          0 B          1    Foundation
+    0 B    4688 KB          0 B        460    __TEXT
+    0 B      64 KB          0 B          5    __LINKEDIT
+    0 B        0 B          0 B          1    __OBJC_RO
+    0 B        0 B          0 B          1    __FONT_DATA
+    0 B        0 B          0 B          1    __CTF
+    0 B        0 B          0 B        440    __AUTH_CONST
+    ---        ---          ---        ---    ---
+ 125 MB      14 MB      6416 KB       3134    TOTAL
+
+Auxiliary data:
+    dirty: -
+    phys_footprint_peak: 130 MB
+    phys_footprint: 125 MB
+

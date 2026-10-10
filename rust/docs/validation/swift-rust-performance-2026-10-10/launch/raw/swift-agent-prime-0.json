@@ -1,0 +1,107 @@
+{
+  "args" : [
+
+  ],
+  "cold" : false,
+  "envKeys" : [
+    "PI_APP_BENCHMARK_OUTPUT",
+    "PI_APP_BENCHMARK_STATE_ROOT",
+    "PI_APP_SCRATCH_ROOT"
+  ],
+  "exe" : "\/Users\/admin\/Library\/Caches\/BelloRustWork\/claude-2026-10-10\/swift-apps\/agent\/Bello Agent.app\/Contents\/MacOS\/Bello Agent",
+  "failures" : 0,
+  "generatedUptimeMs" : 41629300.220208339,
+  "host" : "Version 14.8 (Build 23J21)",
+  "idleSeconds" : 1,
+  "label" : "swift-agent",
+  "summary" : {
+    "firstContentMs" : {
+      "max" : 204.13987500220537,
+      "mean" : 204.13987500220537,
+      "min" : 204.13987500220537,
+      "n" : 1,
+      "p50" : 204.13987500220537,
+      "p90" : 204.13987500220537
+    },
+    "footprintMB" : {
+      "max" : 25.9866943359375,
+      "mean" : 25.9866943359375,
+      "min" : 25.9866943359375,
+      "n" : 1,
+      "p50" : 25.9866943359375,
+      "p90" : 25.9866943359375
+    },
+    "idleCpuPercent" : {
+      "max" : 0,
+      "mean" : 0,
+      "min" : 0,
+      "n" : 1,
+      "p50" : 0,
+      "p90" : 0
+    },
+    "lifetimeMaxFootprintMB" : {
+      "max" : 26.0335693359375,
+      "mean" : 26.0335693359375,
+      "min" : 26.0335693359375,
+      "n" : 1,
+      "p50" : 26.0335693359375,
+      "p90" : 26.0335693359375
+    },
+    "residentMB" : {
+      "max" : 80.171875,
+      "mean" : 80.171875,
+      "min" : 80.171875,
+      "n" : 1,
+      "p50" : 80.171875,
+      "p90" : 80.171875
+    },
+    "settledMs" : {
+      "max" : 330.82887499779463,
+      "mean" : 330.82887499779463,
+      "min" : 330.82887499779463,
+      "n" : 1,
+      "p50" : 330.82887499779463,
+      "p90" : 330.82887499779463
+    },
+    "windowMs" : {
+      "max" : 204.12725000083447,
+      "mean" : 204.12725000083447,
+      "min" : 204.12725000083447,
+      "n" : 1,
+      "p50" : 204.12725000083447,
+      "p90" : 204.12725000083447
+    }
+  },
+  "trials" : [
+    {
+      "cold" : false,
+      "firstContentMs" : 204.13987500220537,
+      "footprintMB" : 25.9866943359375,
+      "idleCpuPercent" : 0,
+      "idlePeakFootprintMB" : 25.9866943359375,
+      "idleSamples" : [
+        [
+          1007.8507499992847,
+          279.180791,
+          25.9866943359375
+        ]
+      ],
+      "lifetimeMaxFootprintMB" : 26.0335693359375,
+      "meanCaptureMs" : 14.122691532296519,
+      "measured" : true,
+      "processes" : 1,
+      "quit" : "quit",
+      "residentMB" : 80.171875,
+      "settleBigChanges" : 1,
+      "settledMs" : 330.82887499779463,
+      "settleFrames" : 62,
+      "totalCpuMsAtEnd" : 279.180791,
+      "trial" : 0,
+      "windowMs" : 204.12725000083447,
+      "windowSize" : [
+        1240,
+        828
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+  PID  %CPU COMM
+96151  21.8 ~/.local/bin/claude
+ 3589   8.3 ~/projects/BelloRemoteAgent/.venv/bin/python
+  145   5.2 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+  399   4.1 /System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter
+68946   1.7 claude
+ 2307   0.6 com.ainoob.BelloWall.Agent
+ 5580   0.6 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT

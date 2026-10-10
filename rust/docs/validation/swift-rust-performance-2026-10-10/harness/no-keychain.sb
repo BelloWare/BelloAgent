@@ -1,0 +1,6 @@
+(version 1)
+(allow default)
+; Benchmark-only: make Keychain lookups fail fast instead of showing a password dialog.
+(deny mach-lookup (global-name "com.apple.SecurityServer"))
+(deny mach-lookup (global-name "com.apple.securityd.xpc"))
+(deny mach-lookup (global-name "com.apple.securityd"))

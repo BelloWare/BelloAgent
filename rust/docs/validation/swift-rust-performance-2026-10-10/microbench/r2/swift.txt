@@ -1,0 +1,5 @@
+json.pretty p50    50.56 ms  p90    53.59 ms  min    46.54 ms  out 454423 B
+json.minify p50    48.22 ms  p90    50.18 ms  min    43.83 ms  out 296022 B
+text.dedupe p50    26.16 ms  p90    27.29 ms  min    24.26 ms  out 488710 B
+text.sort p50   217.48 ms  p90   226.59 ms  min   205.12 ms  out 489999 B
+text.stats p50    69.83 ms  p90    72.02 ms  min    64.37 ms  out 25 B

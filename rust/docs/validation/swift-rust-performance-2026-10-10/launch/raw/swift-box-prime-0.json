@@ -1,0 +1,107 @@
+{
+  "args" : [
+    "-f",
+    "\/Users\/admin\/Library\/Caches\/BelloRustWork\/claude-2026-10-10\/harness\/no-keychain.sb",
+    "\/Users\/admin\/Library\/Caches\/BelloRustWork\/claude-2026-10-10\/swift-apps\/box\/Bello Box.app\/Contents\/MacOS\/Bello Box"
+  ],
+  "cold" : false,
+  "envKeys" : [
+
+  ],
+  "exe" : "\/usr\/bin\/sandbox-exec",
+  "failures" : 0,
+  "generatedUptimeMs" : 41641330.723916665,
+  "host" : "Version 14.8 (Build 23J21)",
+  "idleSeconds" : 1,
+  "label" : "swift-box",
+  "summary" : {
+    "firstContentMs" : {
+      "max" : 610.65791666507721,
+      "mean" : 610.65791666507721,
+      "min" : 610.65791666507721,
+      "n" : 1,
+      "p50" : 610.65791666507721,
+      "p90" : 610.65791666507721
+    },
+    "footprintMB" : {
+      "max" : 30.08050537109375,
+      "mean" : 30.08050537109375,
+      "min" : 30.08050537109375,
+      "n" : 1,
+      "p50" : 30.08050537109375,
+      "p90" : 30.08050537109375
+    },
+    "idleCpuPercent" : {
+      "max" : 0.06034078760526046,
+      "mean" : 0.06034078760526046,
+      "min" : 0.06034078760526046,
+      "n" : 1,
+      "p50" : 0.06034078760526046,
+      "p90" : 0.06034078760526046
+    },
+    "lifetimeMaxFootprintMB" : {
+      "max" : 30.08050537109375,
+      "mean" : 30.08050537109375,
+      "min" : 30.08050537109375,
+      "n" : 1,
+      "p50" : 30.08050537109375,
+      "p90" : 30.08050537109375
+    },
+    "residentMB" : {
+      "max" : 70.046875,
+      "mean" : 70.046875,
+      "min" : 70.046875,
+      "n" : 1,
+      "p50" : 70.046875,
+      "p90" : 70.046875
+    },
+    "settledMs" : {
+      "max" : 610.65791666507721,
+      "mean" : 610.65791666507721,
+      "min" : 610.65791666507721,
+      "n" : 1,
+      "p50" : 610.65791666507721,
+      "p90" : 610.65791666507721
+    },
+    "windowMs" : {
+      "max" : 610.64362499862909,
+      "mean" : 610.64362499862909,
+      "min" : 610.64362499862909,
+      "n" : 1,
+      "p50" : 610.64362499862909,
+      "p90" : 610.64362499862909
+    }
+  },
+  "trials" : [
+    {
+      "cold" : false,
+      "firstContentMs" : 610.65791666507721,
+      "footprintMB" : 30.08050537109375,
+      "idleCpuPercent" : 0.06034078760526046,
+      "idlePeakFootprintMB" : 30.08050537109375,
+      "idleSamples" : [
+        [
+          1006.6947083324194,
+          286.122208,
+          30.08050537109375
+        ]
+      ],
+      "lifetimeMaxFootprintMB" : 30.08050537109375,
+      "meanCaptureMs" : 29.573761574717032,
+      "measured" : true,
+      "processes" : 1,
+      "quit" : "quit",
+      "residentMB" : 70.046875,
+      "settleBigChanges" : 0,
+      "settledMs" : 610.65791666507721,
+      "settleFrames" : 36,
+      "totalCpuMsAtEnd" : 286.122208,
+      "trial" : 0,
+      "windowMs" : 610.64362499862909,
+      "windowSize" : [
+        1000,
+        788
+      ]
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "build" : "126",
+  "counters" : {
+    "sidebarIndexInvalidations" : 1
+  },
+  "method" : "Native edit event timestamp to NSTextView draw (Send is excluded); chat selection and oldest unsent host delta to native transcript snapshot application. Snapshot metrics end before deferred SwiftUI layout\/display and must not be treated as visible paint. Native draw is a paint opportunity, not physical scanout. Bounded off-main statistics; no content logged.",
+  "metrics" : {
+
+  },
+  "pid" : 94940,
+  "samples" : {
+
+  },
+  "totalSamples" : {
+
+  },
+  "version" : "0.1.122"
+}

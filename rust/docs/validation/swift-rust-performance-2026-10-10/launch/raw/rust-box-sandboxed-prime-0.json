@@ -1,0 +1,107 @@
+{
+  "args" : [
+    "-f",
+    "\/Users\/admin\/Library\/Caches\/BelloRustWork\/claude-2026-10-10\/harness\/no-keychain.sb",
+    "\/Users\/admin\/Library\/Caches\/BelloRustWork\/claude-2026-10-10\/target\/release\/bellobox"
+  ],
+  "cold" : false,
+  "envKeys" : [
+    "BELLOBOX_CONFIG_DIR"
+  ],
+  "exe" : "\/usr\/bin\/sandbox-exec",
+  "failures" : 0,
+  "generatedUptimeMs" : 41652987.474583335,
+  "host" : "Version 14.8 (Build 23J21)",
+  "idleSeconds" : 1,
+  "label" : "rust-box-sandboxed",
+  "summary" : {
+    "firstContentMs" : {
+      "max" : 198.49416666477919,
+      "mean" : 198.49416666477919,
+      "min" : 198.49416666477919,
+      "n" : 1,
+      "p50" : 198.49416666477919,
+      "p90" : 198.49416666477919
+    },
+    "footprintMB" : {
+      "max" : 125.11181640625,
+      "mean" : 125.11181640625,
+      "min" : 125.11181640625,
+      "n" : 1,
+      "p50" : 125.11181640625,
+      "p90" : 125.11181640625
+    },
+    "idleCpuPercent" : {
+      "max" : 0.5215383793133338,
+      "mean" : 0.5215383793133338,
+      "min" : 0.5215383793133338,
+      "n" : 1,
+      "p50" : 0.5215383793133338,
+      "p90" : 0.5215383793133338
+    },
+    "lifetimeMaxFootprintMB" : {
+      "max" : 129.61181640625,
+      "mean" : 129.61181640625,
+      "min" : 129.61181640625,
+      "n" : 1,
+      "p50" : 129.61181640625,
+      "p90" : 129.61181640625
+    },
+    "residentMB" : {
+      "max" : 54.140625,
+      "mean" : 54.140625,
+      "min" : 54.140625,
+      "n" : 1,
+      "p50" : 54.140625,
+      "p90" : 54.140625
+    },
+    "settledMs" : {
+      "max" : 198.49416666477919,
+      "mean" : 198.49416666477919,
+      "min" : 198.49416666477919,
+      "n" : 1,
+      "p50" : 198.49416666477919,
+      "p90" : 198.49416666477919
+    },
+    "windowMs" : {
+      "max" : 198.47854166477919,
+      "mean" : 198.47854166477919,
+      "min" : 198.47854166477919,
+      "n" : 1,
+      "p50" : 198.47854166477919,
+      "p90" : 198.47854166477919
+    }
+  },
+  "trials" : [
+    {
+      "cold" : false,
+      "firstContentMs" : 198.49416666477919,
+      "footprintMB" : 125.11181640625,
+      "idleCpuPercent" : 0.5215383793133338,
+      "idlePeakFootprintMB" : 125.11181640625,
+      "idleSamples" : [
+        [
+          1001.019125007093,
+          199.163208,
+          125.11181640625
+        ]
+      ],
+      "lifetimeMaxFootprintMB" : 129.61181640625,
+      "meanCaptureMs" : 12.853661202260705,
+      "measured" : true,
+      "processes" : 1,
+      "quit" : "quit",
+      "residentMB" : 54.140625,
+      "settleBigChanges" : 0,
+      "settledMs" : 198.49416666477919,
+      "settleFrames" : 61,
+      "totalCpuMsAtEnd" : 199.179958,
+      "trial" : 0,
+      "windowMs" : 198.47854166477919,
+      "windowSize" : [
+        1000,
+        788
+      ]
+    }
+  ]
+}

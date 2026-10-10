@@ -1,0 +1,106 @@
+{
+  "args" : [
+    "--project",
+    "\/Users\/admin\/Library\/Caches\/BelloRustWork\/claude-2026-10-10\/perf\/launch-r1\/rust-agent-project"
+  ],
+  "cold" : false,
+  "envKeys" : [
+    "HOME"
+  ],
+  "exe" : "\/Users\/admin\/Library\/Caches\/BelloRustWork\/claude-2026-10-10\/target\/release\/bello-agent",
+  "failures" : 0,
+  "generatedUptimeMs" : 41635093.178958334,
+  "host" : "Version 14.8 (Build 23J21)",
+  "idleSeconds" : 1,
+  "label" : "rust-agent",
+  "summary" : {
+    "firstContentMs" : {
+      "max" : 147.64983333647251,
+      "mean" : 147.64983333647251,
+      "min" : 147.64983333647251,
+      "n" : 1,
+      "p50" : 147.64983333647251,
+      "p90" : 147.64983333647251
+    },
+    "footprintMB" : {
+      "max" : 78.7838134765625,
+      "mean" : 78.7838134765625,
+      "min" : 78.7838134765625,
+      "n" : 1,
+      "p50" : 78.7838134765625,
+      "p90" : 78.7838134765625
+    },
+    "idleCpuPercent" : {
+      "max" : 0.44638760615579837,
+      "mean" : 0.44638760615579837,
+      "min" : 0.44638760615579837,
+      "n" : 1,
+      "p50" : 0.44638760615579837,
+      "p90" : 0.44638760615579837
+    },
+    "lifetimeMaxFootprintMB" : {
+      "max" : 79.5806884765625,
+      "mean" : 79.5806884765625,
+      "min" : 79.5806884765625,
+      "n" : 1,
+      "p50" : 79.5806884765625,
+      "p90" : 79.5806884765625
+    },
+    "residentMB" : {
+      "max" : 52.25,
+      "mean" : 52.25,
+      "min" : 52.25,
+      "n" : 1,
+      "p50" : 52.25,
+      "p90" : 52.25
+    },
+    "settledMs" : {
+      "max" : 147.64983333647251,
+      "mean" : 147.64983333647251,
+      "min" : 147.64983333647251,
+      "n" : 1,
+      "p50" : 147.64983333647251,
+      "p90" : 147.64983333647251
+    },
+    "windowMs" : {
+      "max" : 147.63645833730698,
+      "mean" : 147.63645833730698,
+      "min" : 147.63645833730698,
+      "n" : 1,
+      "p50" : 147.63645833730698,
+      "p90" : 147.63645833730698
+    }
+  },
+  "trials" : [
+    {
+      "cold" : false,
+      "firstContentMs" : 147.64983333647251,
+      "footprintMB" : 78.7838134765625,
+      "idleCpuPercent" : 0.44638760615579837,
+      "idlePeakFootprintMB" : 78.7838134765625,
+      "idleSamples" : [
+        [
+          1011.925291672349,
+          165.08766600000001,
+          78.7838134765625
+        ]
+      ],
+      "lifetimeMaxFootprintMB" : 79.5806884765625,
+      "meanCaptureMs" : 15.603956789744121,
+      "measured" : true,
+      "processes" : 1,
+      "quit" : "quit",
+      "residentMB" : 52.25,
+      "settleBigChanges" : 0,
+      "settledMs" : 147.64983333647251,
+      "settleFrames" : 54,
+      "totalCpuMsAtEnd" : 165.08766600000001,
+      "trial" : 0,
+      "windowMs" : 147.63645833730698,
+      "windowSize" : [
+        1280,
+        868
+      ]
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+[package]
+name = "box-engine-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Standalone (not a member of the BelloBox workspace); depends on the exact
+# checked-out rust-branch engine source by path.
+[workspace]
+
+[dependencies]
+bellobox-core = { path = "~/projects/BelloBox-rust/rust/crates/bellobox-core" }
+serde_json = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

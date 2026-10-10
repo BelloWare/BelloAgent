@@ -1,7 +1,8 @@
 # BelloAgent Rust / GPUI migration
 
 An incremental native implementation alongside the unchanged Swift application.
-This is **not feature parity** or a release replacement. The source-backed
+This is **not feature parity** or a release replacement. Current status, release
+blockers and same-Mac Swift/Rust measurements: [STATUS-2026-10-10](docs/STATUS-2026-10-10.md). The source-backed
 [parity ledger](docs/parity.md) separates implemented, partial, and unported work.
 Start with its [native connection checkpoint](docs/parity.md#native-saved-connections-2026-10-08)
 and [readiness index](docs/parity.md#readiness-index-2026-10-07)

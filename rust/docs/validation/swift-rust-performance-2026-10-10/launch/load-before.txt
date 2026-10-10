@@ -1,0 +1,8 @@
+  PID  %CPU COMM
+ 2307   9.8 com.ainoob.BelloWall.Agent
+ 3589   7.3 ~/projects/BelloRemoteAgent/.venv/bin/python
+68946   5.8 claude
+  119   1.1 /usr/libexec/opendirectoryd
+  140   0.9 /usr/sbin/notifyd
+    1   0.7 /sbin/launchd
+89329   0.7 /bin/zsh

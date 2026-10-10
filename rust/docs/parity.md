@@ -9,6 +9,12 @@ This is a **vertical slice, not feature parity**. The broad product inventory
 below is deliberately unweighted: passing tests do not equal completed features.
 A working Responses chat is materially smaller than the source application.
 
+## Current status (2026-10-10)
+
+The single-agent takeover record [STATUS-2026-10-10](STATUS-2026-10-10.md) summarizes
+what an ordinary release build offers, gated and missing workflows, CI repairs,
+release blockers and the first same-Mac Swift/Rust performance comparison.
+
 ## Native saved connections (2026-10-08)
 
 The [explicit native host](native-authority-host.md) extends implementation base

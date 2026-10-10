@@ -1,0 +1,17 @@
+swift-driver version: 1.115 Apple Swift version 6.0.2 (swiftlang-6.0.2.1.2 clang-1600.0.26.4)
+Target: arm64-apple-macosx14.0
+rustc 1.99.0 (b940084d7 2026-09-28)
+ProductName:		macOS
+ProductVersion:		14.8
+BuildVersion:		23J21
+1ecbaa3d04ef607b7f34cc821c772fc8b92bace3
+3dc58c0f68e76a0db3205bef989040b0828c13d589f616bab661e1929639069b  $WORK/microbench/swift/DeveloperJSON.swift
+7b04cc09dc67b0866c44a1596775b6081cc19c0a837e826df4b8d746e1386078  $WORK/microbench/swift/TextTools.swift
+3816ee35e6e135a2040357cd8774450b0bdfa69057a7c037d1e23c3cd7a38b14  $WORK/microbench/swift/TextTransforms.full.swift
+e2ff9c2ed4bae5da525cd47cc2c9c4235fa79824ec79a08a16467e3236b47137  $WORK/microbench/swift/main.swift
+c33a2ff640024705ce862128b6c2b9652fbafd4b30994fad92c2227e6ae2f723  $WORK/microbench/rust/src/main.rs
+150130a5edbd876b6fa6023d1ba32ea27fdeb3a70afc8696fa716c0d5fe6842f  $WORK/microbench/inputs/json-300k.json
+ca974c35acbcd575b2766255f05f4c662ca43bcb447caee27af382273f9666f2  $WORK/microbench/inputs/json-490k.json
+4c396b6f6091642982ec3da90cadd823ec6c53eaec3f679df6bc26b92c6d769e  $WORK/microbench/inputs/lines-490k.txt
+4114d671eaf033906b5207018ad8a0f5bbd658b05a87a3aeecfab939e0db83d2  $WORK/microbench/swift-bench
+656520d091f2c11c2b0ded3b2a4638a6494ae9de097a9bcb2dd57bdae4eb712f  $WORK/target/release/box-engine-bench
