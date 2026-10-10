@@ -1,5 +1,5 @@
-//! Form-scoped catalog state. Lists never change dispatch routing, grant model
-//! capabilities, write the vault or submit a turn. Publication is source-fenced.
+//! Form-scoped catalog state. Lists never change dispatch routing, write the
+//! vault or submit a turn. Publication is source-fenced.
 use super::*;
 use bello_agent_core::model_catalog::{CancellationToken, ModelDescriptor};
 use std::time::{Duration, Instant};
@@ -158,7 +158,6 @@ impl ConnectionSettingsController {
 impl AgentView {
     pub(super) fn load_connection_catalog(&mut self, force: bool, cx: &mut Context<Self>) {
         if !self.connections.open
-            || !self.connections.presentation.mode.is_fixture()
             || self.connections.operation.is_some()
             || self.connections.uncertain
         {
@@ -212,7 +211,11 @@ impl AgentView {
                 state.models.clear();
                 state.generation = uuid::Uuid::new_v4();
                 state.page = 0;
-                state.error = Some("Couldn't load this catalog. Use a numeric loopback URL and the fixture key for a same-origin catalog; reload saved connections if they changed.".into());
+                state.error = Some(if self.connections.presentation.mode.is_fixture() {
+                    "Couldn't load this catalog. Use a numeric loopback URL and the fixture key for a same-origin catalog; reload saved connections if they changed."
+                } else {
+                    "Couldn't load this catalog. Use HTTPS or explicit loopback HTTP and a valid key for a same-origin catalog; reload saved connections if they changed."
+                }.into());
                 state.fetched = Some(Instant::now());
                 self.connections.publish(cx);
                 return;
@@ -256,7 +259,6 @@ impl AgentView {
     ) {
         self.connections.sync_catalog_sources();
         if !self.connections.open
-            || !self.connections.presentation.mode.is_fixture()
             || self.shutting_down
             || self.connections.operation.is_some()
             || self.connections.load.is_some()
@@ -294,9 +296,6 @@ impl AgentView {
         self.connections.publish(cx);
     }
     pub(super) fn choose_connection_model(&mut self, selected: &str, generation: uuid::Uuid) {
-        if !self.connections.presentation.mode.is_fixture() {
-            return;
-        }
         self.connections.sync_catalog_sources();
         let Some(id) = self.connections.active.clone() else {
             return;
@@ -318,12 +317,11 @@ impl AgentView {
         let Some(form) = self.connections.forms.get_mut(&id) else {
             return;
         };
-        #[cfg(feature = "synthetic-authority")]
         match form.capture() {
             Ok(mut draft) => {
                 let changed_alias = draft.profile.model_id != model.id;
                 model.applying(&mut draft.profile);
-                if changed_alias {
+                if changed_alias && !form.preserve_declared_input {
                     draft.profile.input = vec!["text".into()];
                 }
                 let search = form.fields.catalog_search.clone();
@@ -335,8 +333,6 @@ impl AgentView {
             }
             Err(message) => self.connections.notice(message, true),
         }
-        #[cfg(not(feature = "synthetic-authority"))]
-        let _ = (model, form);
     }
 }
 
@@ -421,6 +417,24 @@ mod tests {
         form.update_fields(changed);
         assert_eq!(form.draft.profile.model_output_limit, None);
         assert_eq!(form.draft.profile.input, ["text"]);
+    }
+    #[::core::prelude::v1::test]
+    fn native_manual_alias_edits_preserve_declared_input_while_fixture_edits_reset_it() {
+        use crate::launch_authority::AuthorityMode;
+        for mode in [AuthorityMode::Native, AuthorityMode::Fixture] {
+            let mut form = new_form(mode);
+            form.draft.profile.input = vec!["text".into(), "image".into()];
+            form.draft.profile.model_output_limit = Some(128);
+            let mut changed = form.fields.clone();
+            changed.model = "manual-fake-alias".into();
+            form.update_fields(changed);
+            let captured = form.capture().unwrap();
+            assert_eq!(
+                captured.profile.supports_images(),
+                mode == AuthorityMode::Native
+            );
+            assert_eq!(captured.profile.model_output_limit, None);
+        }
     }
 }
 

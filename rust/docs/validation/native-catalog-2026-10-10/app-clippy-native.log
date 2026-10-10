@@ -1,0 +1,9 @@
+Environment: RUST_TEST_THREADS=6
+Command: cargo clippy --locked -p bello-agent-app --all-targets --features native-authority -- -D warnings
+    Checking bello-agent-core v0.1.0 (/Users/admin/projects/pi-app-rust-catalog/rust/crates/bello-agent-core)
+    Checking bello-agent-app v0.1.0 (/Users/admin/projects/pi-app-rust-catalog/rust/crates/bello-agent-app)
+    Finished `dev` profile [unoptimized] target(s) in 8.68s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6, proc-macro-error2 v2.0.1
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+
+Exit: 0; elapsed: 8.7s

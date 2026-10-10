@@ -21,7 +21,7 @@ use std::{cell::Cell, collections::BTreeMap, fmt, rc::Rc};
 
 const FIXTURE_NOTICE: &str = "Fixture-only · In-memory connections. Use only numeric loopback URLs, the key synthetic-project-fixture-only, and header values synthetic-header-fixture-only. Do not enter real keys. Nothing is saved to Keychain.";
 const NATIVE_NOTICE: &str = "Experimental native authority · Connections are stored in the separate Bello Agent Rust Keychain vault. No Swift settings are imported. Native signing, credential input and no-prompt acceptance remain under validation. Chats send to your explicitly saved endpoint, and in a trusted project they offer its tools (read-only or editing, by the chat's mode), MCP and project instructions and skills, as Swift does.";
-const SCOPE_NOTICE: &str = "This Rust preview covers Connections only. Catalog-assisted setup is fixture-only. Mini models, routing/reasoning controls and the other Settings sections are not available here. Saving does not send a request; send explicitly from a chat.";
+const SCOPE_NOTICE: &str = "This Rust preview covers Connections only. Mini models, routing/reasoning controls and the other Settings sections are not available here. Saving does not send a request; send explicitly from a chat.";
 
 /// Only user-typed replacements belong in key/headers. Never populate these
 /// fields from saved authority, including the synthetic saved authority.
@@ -235,20 +235,6 @@ impl ConnectionSettingsPresentation {
             return !self.busy();
         }
         if !self.editable() {
-            return false;
-        }
-        // Catalog preparation stays fixture-only. Native manual Connections
-        // keep their existing background vault and route lifecycle unchanged.
-        if !self.mode.is_fixture()
-            && matches!(
-                intent,
-                Intent::BrowseCatalog
-                    | Intent::RefreshCatalog
-                    | Intent::CloseCatalog
-                    | Intent::CatalogPage(_)
-                    | Intent::ChooseCatalog { .. }
-            )
-        {
             return false;
         }
         match intent {
@@ -926,17 +912,11 @@ impl ConnectionSettingsView {
                 Field::ALL
                     .into_iter()
                     .skip(1)
-                    .filter(|field| {
-                        *field != Field::CatalogSearch
-                            && (*field != Field::CatalogUrl || self.presentation.mode.is_fixture())
-                    })
+                    .filter(|field| *field != Field::CatalogSearch)
                     .map(Control::Field),
             );
-            if self.presentation.mode.is_fixture() {
-                controls.push(Control::Intent(Intent::BrowseCatalog));
-            }
+            controls.push(Control::Intent(Intent::BrowseCatalog));
             if let Some(form) = &self.presentation.active
-                && self.presentation.mode.is_fixture()
                 && form.catalog.opened
             {
                 controls.extend([
@@ -993,12 +973,8 @@ impl ConnectionSettingsView {
     fn control_enabled(&self, control: &Control) -> bool {
         match control {
             Control::Intent(intent) => self.enabled(intent),
-            Control::Field(field) => {
-                self.open
-                    && self.pending_revision.is_none()
-                    && self.presentation.editable()
-                    && (!matches!(field, Field::CatalogUrl | Field::CatalogSearch)
-                        || self.presentation.mode.is_fixture())
+            Control::Field(_) => {
+                self.open && self.pending_revision.is_none() && self.presentation.editable()
             }
         }
     }
@@ -1192,7 +1168,7 @@ impl ConnectionSettingsView {
         let mut panel = div().id("settings-model-catalog").debug_selector(|| "settings-model-catalog".into())
             .border_t_1().border_color(p.hairline()).flex().flex_col().gap(px(8.)).p(px(14.))
             .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(format!("{} · {}", catalog.source, if catalog.loading { "Loading…" } else { "Model suggestions" })))
-            .child(div().text_size(px(11.)).text_color(rgb(p.secondary)).child("Choosing only edits this form. Save separately, then send explicitly from a chat. Catalog image labels do not enable attachments."))
+            .child(div().text_size(px(11.)).text_color(rgb(p.secondary)).child("Choosing edits this form. Save separately, then send explicitly from a chat. Native chats merge declared inputs with the model catalog; fixtures keep declared capabilities."))
             .child(self.field_row(Field::CatalogSearch, "Search models", "Search name, alias or description.", "Filter models…", cx))
             .child(div().flex().gap(px(8.)).child(self.button("settings-refresh-models", "Refresh", ConnectionSettingsIntent::RefreshCatalog, false, false, cx))
                 .child(self.button("settings-close-models", "Close list", ConnectionSettingsIntent::CloseCatalog, false, false, cx)));
@@ -1233,7 +1209,14 @@ impl ConnectionSettingsView {
                 .as_ref()
                 .is_some_and(|input| input.iter().any(|kind| kind == "image"))
             {
-                badges.push("Catalog says image; capability unchanged".into());
+                badges.push(
+                    if self.presentation.mode.is_fixture() {
+                        "Catalog says image; capability unchanged"
+                    } else {
+                        "Images"
+                    }
+                    .into(),
+                );
             }
             rows = rows.child(
                 div()
@@ -1654,7 +1637,7 @@ impl Render for ConnectionSettingsView {
                     if presentation.mode.is_fixture() {
                         "Choose from the catalog or type an alias. Typing a different alias clears catalog limits; Save forks a new connection."
                     } else {
-                        "Type your model or router alias. Changing it saves a new connection for new chats."
+                        "Choose from the catalog or type an alias. Changing it saves a new connection for new chats."
                     },
                     if presentation.mode.is_fixture() {
                         "fixture-model"
@@ -1681,12 +1664,9 @@ impl Render for ConnectionSettingsView {
                     "4096",
                 ),
             ] {
-                if field == Field::CatalogUrl && !presentation.mode.is_fixture() {
-                    continue;
-                }
                 fields = fields.child(self.field_row(field, label, detail, placeholder, cx));
             }
-            if presentation.mode.is_fixture() {
+            {
                 fields = fields.child(
                     div()
                         .px(px(14.))
