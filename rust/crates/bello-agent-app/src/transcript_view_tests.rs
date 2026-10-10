@@ -3060,6 +3060,36 @@ fn only_replies_are_read_as_markdown(cx: &mut TestAppContext) {
     );
 }
 
+/// A reply's web link opens when clicked, as Swift's NSTextView opens it;
+/// a link Swift refuses (a script) stays plain text.
+#[gpui::test]
+fn clicking_a_link_in_a_reply_opens_it(cx: &mut TestAppContext) {
+    let rows = vec![
+        message(
+            "script",
+            "assistant",
+            "[a script link that is long enough](javascript:alert(1))",
+        ),
+        message(
+            "reply",
+            "assistant",
+            "[the documentation for the long link](https://example.com/docs) and more",
+        ),
+    ];
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let (mut visual, _child) = host(&root, input(&root, cx), cx);
+    let opening = |visual: &mut VisualTestContext, selector: &'static str| {
+        let text = visual.debug_bounds(selector).unwrap();
+        point(text.origin.x + px(20.), text.origin.y + px(9.))
+    };
+    let script = opening(&mut visual, "transcript-text-script");
+    visual.simulate_click(script, Modifiers::none());
+    assert_eq!(cx.opened_url(), None);
+    let reply = opening(&mut visual, "transcript-text-reply");
+    visual.simulate_click(reply, Modifiers::none());
+    assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/docs"));
+}
+
 /// A fence's Copy puts its code on the clipboard and reads "Copied" for two
 /// seconds, or until another fence is copied (`TranscriptCopyButton`).
 #[gpui::test]

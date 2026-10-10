@@ -14,7 +14,7 @@
 //!
 //! GPUI shapes one text at one size, so a code span keeps its paragraph's size
 //! (Swift draws it at 0.9×) in the monospaced face on the code background.
-use super::shaped_text::{self, ShapeCache, Styled};
+use super::shaped_text::{self, Link, ShapeCache, Styled};
 use crate::Palette;
 use bello_agent_core::markdown::{Alignment, Block, Span, Style};
 use bello_agent_core::syntax::{TokenKind, fence_tokens};
@@ -531,9 +531,33 @@ fn text(spans: &[Span], size: f32, line: Line, cx: &Context, path: &str) -> AnyE
             line_height: px(line.height),
             line_spacing: px(line.spacing),
             last: true,
+            links: links(spans),
         },
     )
     .into_any_element()
+}
+
+/// The spans' links by their bytes in the joined text; neighbouring spans of
+/// one link (a bold word inside it) are one link.
+fn links(spans: &[Span]) -> Vec<Link> {
+    let mut links: Vec<Link> = Vec::new();
+    let mut at = 0;
+    for span in spans {
+        let end = at + span.text.len();
+        if let Some(url) = &span.link {
+            match links.last_mut() {
+                Some(last) if last.range.end == at && last.url.as_ref() == url => {
+                    last.range.end = end;
+                }
+                _ => links.push(Link {
+                    range: at..end,
+                    url: SharedString::from(url.clone()),
+                }),
+            }
+        }
+        at = end;
+    }
+    links
 }
 
 fn list(
@@ -719,6 +743,7 @@ fn code_block(language: Option<&str>, code: &str, style: Style, cx: &Context, pa
             line_height: px(line.height),
             line_spacing: px(line.spacing),
             last: true,
+            links: Vec::new(),
         },
     );
     // Swift's `TranscriptCopyButton` in the fence's toolbar: muted, the

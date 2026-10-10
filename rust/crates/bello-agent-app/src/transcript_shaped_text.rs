@@ -8,12 +8,22 @@
 //! Layout and painting follow `gpui::TextLayout` (0.2.2) exactly: the same
 //! wrap-width choice, size (summed line heights, widest line rounded up) and
 //! line painting. Message text sets no truncation, so none is supported.
+//!
+//! Styled text may carry links, which act as links in Swift's transcript
+//! NSTextView: the pointing hand over one, and a press released on the link
+//! it began on opens it.
 use gpui::{
-    App, AvailableSpace, Bounds, Element, ElementId, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, Pixels, SharedString, Size, Style, TextRun, WhiteSpace, Window,
-    WrappedLine,
+    App, AvailableSpace, Bounds, CursorStyle, DispatchPhase, Element, ElementId, GlobalElementId,
+    Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Size, Style, TextAlign, TextRun,
+    WhiteSpace, Window, WrapBoundary, WrappedLine,
 };
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    ops::Range,
+    rc::Rc,
+};
 
 /// Lines per run. Boundaries depend only on line numbers, so text appended to
 /// a reply leaves every earlier run unchanged.
@@ -185,6 +195,15 @@ pub(super) struct Styled {
     /// The text's last lines: no spacing below the last of them, which
     /// TextKit leaves after every line but a paragraph's last.
     pub last: bool,
+    /// Links by their bytes in the text, in order and apart.
+    pub links: Vec<Link>,
+}
+
+/// A link's bytes in its text and the web address it opens.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Link {
+    pub range: Range<usize>,
+    pub url: SharedString,
 }
 
 impl Styled {
@@ -230,6 +249,7 @@ pub(super) fn styled_lines(
             styled: Some(Rc::new(Styled {
                 runs: runs_within(&styled.runs, range.clone()),
                 last: ordinal + 1 == count && styled.last,
+                links: links_within(&styled.links, range.clone()),
                 ..styled.clone()
             })),
             text: SharedString::from(text[range].to_owned()),
@@ -255,6 +275,19 @@ fn runs_within(runs: &[TextRun], range: std::ops::Range<usize>) -> Vec<TextRun> 
     within
 }
 
+/// The parts of `links` that fall in `range`, from its start.
+fn links_within(links: &[Link], range: Range<usize>) -> Vec<Link> {
+    links
+        .iter()
+        .filter(|link| link.range.start < range.end && range.start < link.range.end)
+        .map(|link| Link {
+            range: link.range.start.max(range.start) - range.start
+                ..link.range.end.min(range.end) - range.start,
+            url: link.url.clone(),
+        })
+        .collect()
+}
+
 pub(super) struct ShapedText {
     cache: Rc<RefCell<ShapeCache>>,
     owner: SharedString,
@@ -271,12 +304,24 @@ impl IntoElement for ShapedText {
     }
 }
 
+impl ShapedText {
+    fn links(&self) -> Option<&Rc<Styled>> {
+        self.styled
+            .as_ref()
+            .filter(|styled| !styled.links.is_empty())
+    }
+}
+
 impl Element for ShapedText {
     type RequestLayoutState = Rc<RefCell<Option<Rc<Shaped>>>>;
-    type PrepaintState = ();
+    /// Where the pointer meets the text, when it has links.
+    type PrepaintState = Option<Hitbox>;
 
+    /// Text with links keeps where a press began; `owner` and the run's
+    /// ordinal name it uniquely within the transcript.
     fn id(&self) -> Option<ElementId> {
-        None
+        self.links()
+            .map(|_| ElementId::named_usize(self.owner.clone(), self.ordinal))
     }
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
@@ -365,20 +410,22 @@ impl Element for ShapedText {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _state: &mut Self::RequestLayoutState,
-        _window: &mut Window,
+        window: &mut Window,
         _cx: &mut App,
-    ) {
+    ) -> Option<Hitbox> {
+        self.links()
+            .map(|_| window.insert_hitbox(bounds, HitboxBehavior::Normal))
     }
 
     fn paint(
         &mut self,
-        _id: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         state: &mut Self::RequestLayoutState,
-        _prepaint: &mut Self::PrepaintState,
+        hitbox: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
@@ -400,6 +447,154 @@ impl Element for ShapedText {
             let glyphs = gpui::point(origin.x, origin.y - lift);
             let _ = line.paint(glyphs, shaped.line_height, align, Some(bounds), window, cx);
             origin.y += line.size(shaped.line_height).height;
+        }
+        if let (Some(id), Some(hitbox), Some(styled)) = (id, hitbox.as_ref(), self.links()) {
+            let hit = Hit {
+                shaped,
+                bounds,
+                align,
+                styled: styled.clone(),
+            };
+            link_events(id, hitbox, hit, window);
+        }
+    }
+}
+
+/// Which link the pointer is over and the link a press began on, kept from
+/// frame to frame under the element's id.
+#[derive(Default)]
+struct LinkState {
+    hovered: Rc<Cell<Option<usize>>>,
+    pressed: Rc<Cell<Option<usize>>>,
+}
+
+fn link_events(id: &GlobalElementId, hitbox: &Hitbox, hit: Hit, window: &mut Window) {
+    let view = window.current_view();
+    let hit = Rc::new(hit);
+    window.with_element_state::<LinkState, _>(id, |state, window| {
+        let state = state.unwrap_or_default();
+        let under = |hitbox: &Hitbox, position, window: &Window| {
+            hitbox
+                .is_hovered(window)
+                .then(|| hit.link(position))
+                .flatten()
+        };
+        let hovered = under(hitbox, window.mouse_position(), window);
+        state.hovered.set(hovered);
+        if hovered.is_some() {
+            window.set_cursor_style(CursorStyle::PointingHand, hitbox);
+        }
+        // Moving onto or off a link draws again to change the pointer.
+        window.on_mouse_event({
+            let (hit, hitbox, hovered) = (hit.clone(), hitbox.clone(), state.hovered.clone());
+            move |event: &MouseMoveEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble {
+                    return;
+                }
+                let now = hitbox
+                    .is_hovered(window)
+                    .then(|| hit.link(event.position))
+                    .flatten();
+                if hovered.replace(now) != now {
+                    cx.notify(view);
+                }
+            }
+        });
+        window.on_mouse_event({
+            let (hit, hitbox, pressed) = (hit.clone(), hitbox.clone(), state.pressed.clone());
+            move |event: &MouseDownEvent, phase, window, _| {
+                if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+                    pressed.set(
+                        hitbox
+                            .is_hovered(window)
+                            .then(|| hit.link(event.position))
+                            .flatten(),
+                    );
+                }
+            }
+        });
+        window.on_mouse_event({
+            let (hit, hitbox, pressed) = (hit.clone(), hitbox.clone(), state.pressed.clone());
+            move |event: &MouseUpEvent, phase, window, cx| {
+                if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
+                    return;
+                }
+                if let Some(began) = pressed.take()
+                    && hitbox.is_hovered(window)
+                    && hit.link(event.position) == Some(began)
+                {
+                    cx.open_url(&hit.styled.links[began].url);
+                }
+            }
+        });
+        ((), state)
+    });
+}
+
+/// Painted text, for finding what lies under the pointer.
+struct Hit {
+    shaped: Rc<Shaped>,
+    bounds: Bounds<Pixels>,
+    align: TextAlign,
+    styled: Rc<Styled>,
+}
+
+impl Hit {
+    /// The link whose glyphs lie under `position`.
+    fn link(&self, position: Point<Pixels>) -> Option<usize> {
+        let index = self.index(position)?;
+        self.styled
+            .links
+            .iter()
+            .position(|link| link.range.contains(&index))
+    }
+
+    /// The byte of the glyph under `position`, found as
+    /// `gpui::TextLayout::index_for_position` finds it, with each row moved
+    /// as `WrappedLine::paint` aligns it.
+    fn index(&self, position: Point<Pixels>) -> Option<usize> {
+        if !self.bounds.contains(&position) {
+            return None;
+        }
+        let pitch = self.shaped.line_height;
+        let mut top = self.bounds.origin.y;
+        let mut start = 0;
+        for line in &self.shaped.lines {
+            let bottom = top + line.size(pitch).height;
+            if position.y >= bottom {
+                top = bottom;
+                start += line.len() + 1;
+                continue;
+            }
+            let y = position.y - top;
+            let row = (y / pitch) as usize;
+            let x = position.x - self.bounds.origin.x - self.row_offset(line, row);
+            return line
+                .index_for_position(gpui::point(x, y), pitch)
+                .ok()
+                .map(|index| start + index);
+        }
+        None
+    }
+
+    /// How far `WrappedLine::paint` moves a row of `line` to align it.
+    fn row_offset(&self, line: &WrappedLine, row: usize) -> Pixels {
+        let layout = &line.unwrapped_layout;
+        let x = |boundary: &WrapBoundary| {
+            layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix]
+                .position
+                .x
+        };
+        let start = row
+            .checked_sub(1)
+            .and_then(|row| line.wrap_boundaries.get(row))
+            .map_or(Pixels::ZERO, x);
+        let end = line.wrap_boundaries.get(row).map_or(layout.width, x);
+        let width = self.bounds.size.width;
+        match self.align {
+            TextAlign::Left => Pixels::ZERO,
+            TextAlign::Center => (width - (end - start)) / 2.,
+            TextAlign::Right => width - (end - start),
         }
     }
 }
@@ -523,6 +718,7 @@ mod tests {
                     line_height: px(18.),
                     line_spacing: px(5.075),
                     last: true,
+                    links: Vec::new(),
                 };
                 div()
                     .flex()
@@ -567,6 +763,107 @@ mod tests {
             px((30. * 23.075_f32 - 5.075).round())
         );
         assert_eq!(visual.debug_bounds("one").unwrap().size.height, px(18.));
+    }
+
+    /// Links act as Swift's transcript links: a press released on the link
+    /// it began on opens it, and only over the link's glyphs where the row
+    /// is drawn, aligned or not.
+    #[gpui::test]
+    fn a_click_on_a_link_opens_it(cx: &mut TestAppContext) {
+        struct Linked {
+            cache: Rc<RefCell<ShapeCache>>,
+        }
+        impl Render for Linked {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let element = |owner: &'static str, url: &'static str| {
+                    let text = "plain line\nlinked line";
+                    let start = "plain line\n".len();
+                    super::styled_text(
+                        &self.cache,
+                        owner.into(),
+                        text.into(),
+                        super::Styled {
+                            runs: vec![TextRun {
+                                len: text.len(),
+                                font: gpui::font("Helvetica"),
+                                color: gpui::black(),
+                                background_color: None,
+                                underline: None,
+                                strikethrough: None,
+                            }],
+                            font_size: px(14.5),
+                            line_height: px(18.),
+                            line_spacing: px(5.),
+                            last: true,
+                            links: vec![super::Link {
+                                range: start..text.len(),
+                                url: url.into(),
+                            }],
+                        },
+                    )
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .child(
+                        div()
+                            .w(px(400.))
+                            .debug_selector(|| "left".into())
+                            .child(element("left", "https://example.com/left")),
+                    )
+                    .child(
+                        div()
+                            .w(px(400.))
+                            .text_align(gpui::TextAlign::Center)
+                            .debug_selector(|| "center".into())
+                            .child(element("center", "https://example.com/center")),
+                    )
+            }
+        }
+        let cache = Rc::new(RefCell::new(ShapeCache::default()));
+        let window = cx.add_window(|_, _| Linked { cache });
+        let mut visual = VisualTestContext::from_window(window.into(), cx);
+        visual.simulate_resize(size(px(800.), px(600.)));
+        cx.run_until_parked();
+        let left = visual.debug_bounds("left").unwrap().origin;
+        let center = visual.debug_bounds("center").unwrap().origin;
+        // The first line is plain; the second (one 23-point pitch down) links.
+        let at = |origin: gpui::Point<gpui::Pixels>, x: f32, line: f32| {
+            gpui::point(origin.x + px(x), origin.y + px(23. * line + 9.))
+        };
+        let none = gpui::Modifiers::none();
+        visual.simulate_click(at(left, 10., 0.), none);
+        // Pressed on the link, released off it.
+        visual.simulate_mouse_down(at(left, 10., 1.), gpui::MouseButton::Left, none);
+        visual.simulate_mouse_up(at(left, 10., 0.), gpui::MouseButton::Left, none);
+        // Past the end of the link's row.
+        visual.simulate_click(at(left, 300., 1.), none);
+        // Where a left-aligned row would be: the centred row is not there.
+        visual.simulate_click(at(center, 10., 1.), none);
+        assert_eq!(cx.opened_url(), None);
+        visual.simulate_click(at(center, 200., 1.), none);
+        assert_eq!(
+            cx.opened_url().as_deref(),
+            Some("https://example.com/center")
+        );
+        visual.simulate_click(at(left, 10., 1.), none);
+        assert_eq!(cx.opened_url().as_deref(), Some("https://example.com/left"));
+    }
+
+    #[test]
+    fn links_split_with_the_runs_of_lines_they_fall_in() {
+        let link = |range: std::ops::Range<usize>| super::Link {
+            range,
+            url: "https://example.com".into(),
+        };
+        let links = [link(2..5), link(8..14), link(20..22)];
+        assert_eq!(
+            super::links_within(&links, 0..10),
+            vec![link(2..5), link(8..10)]
+        );
+        assert_eq!(super::links_within(&links, 10..20), vec![link(0..4)]);
+        assert_eq!(super::links_within(&links, 22..30), vec![]);
     }
 
     fn lines(text: &str) -> Vec<&str> {
