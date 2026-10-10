@@ -5,7 +5,8 @@ Worktree `/Users/admin/projects/pi-app-rust-catalog`, branch `rust-catalog`
 authority-local cache, model input resolution), `f5c21a15` (unreviewed Codex
 work in progress: native Settings catalog controls and tests), then a review
 commit that corrects and completes them (passive chat listing, freshness,
-Swift's per-chat model rules) and replaces the earlier logs.
+Swift's per-chat model rules) and replaces the earlier logs, and a commit
+addressing the Codex review (see below).
 
 Swift source read only, at `6319e368` (0.1.122):
 `Workspaces/ModelCatalogEndpoint.swift`, `ModelCatalog.swift`,
@@ -42,10 +43,16 @@ no provider headers, cookies or redirects.
 **When.** Save sends nothing. Settings Choose model lists (reusing a five-minute
 fresh list, a failure for thirty seconds) and Refresh always lists, as Swift's
 picker does. A shown native chat lists its source when it appears, as Swift's
-model pill does (`ModelSwitchPills.refresh` → `listModels(for:)`): once per
-installed runtime, only for a custom URL, only when the shared list is not fresh
-or past its failure retry, and joining a listing already in flight. A failed
-refresh keeps the last good list. Lists are shared within one authority, keyed
+model pill does (`ModelSwitchPills.refresh` → `listModels(for:)`): when a new
+runtime or configuration is installed for it, and again after saved
+connections change (the source is then resolved from the vault again, so a
+chat following another connection's catalog picks up that connection's new URL
+or key, as `catalogProfile(for:)` does); only for a custom URL, only when the
+shared list is not fresh or past its failure retry, and joining a listing
+already in flight. Switching chats never cancels a listing (Swift's fetch
+outlives the pill's task). An unforced Settings Choose model reuses a list a
+chat fetched within five minutes. A failed refresh, including an idle or total
+timeout, keeps the last good list and starts the failure retry window. Lists are shared within one authority, keyed
 by the source's API, base URL, catalog URL and (same-origin only) a key
 fingerprint, so Settings and chats see one list and a changed URL or key lists
 anew; older listings are generation-fenced.
@@ -55,7 +62,7 @@ connection's (`modelInput(for:)`). Its input is the declared input plus the
 catalog descriptor's input for that model, ordered text, image; either listing
 `image` enables attachment, request images and admission, and the composer
 re-reads it when a listing lands. As in `applyModelChoice`, only a chosen model
-takes the descriptor's context/output limits (when it has any) and an effort it
+(one other than the connection's own, which every send records) takes the descriptor's context/output limits (when it has any) and an effort it
 offers (else `default`); the connection's own model keeps the limits and
 reasoning saved with it. Choosing a model in Settings applies context, output
 ceiling with budget clamping and compatible reasoning (`applying(to:)`), and
@@ -106,9 +113,22 @@ cargo test --locked -p bello-agent-app --features native-authority      # app-te
 - Swift drops a profile's list whenever its saved record changes; Rust keys the
   list by source URL, origin and key, so editing other fields (a model alias,
   limits) keeps a fresh list instead of listing again.
-- Swift lists for the one chat its pill shows; Rust lists for the shown chat
-  each time a new runtime is installed for it (a chat switch, a reload, a saved
-  connection change), still bounded by the shared freshness window.
+- Swift lists for the one chat its pill shows whenever its source record
+  changes; Rust lists for the shown chat when its runtime, configuration or the
+  saved connections' revision changes, still bounded by the shared freshness
+  window. A chat-level per-send model equal to the connection's own is treated
+  as no choice (Rust records the model on every send).
 - Errors are Rust's sanitized ones without Swift's HTTP status and parser
   detail. The transport disables system proxies (Swift's URLSession uses them).
 - No interactive run against a real catalog or provider.
+
+## Codex review (gpt-6.1-sol, xhigh, read-only)
+
+Six findings, all valid and fixed: sends record the connection's model, so it
+was taken for a model choice and replaced saved limits/reasoning; a saved
+URL/key change reconfigures the same controller, which the pointer check missed;
+switching chats on one source cancelled the shared in-flight listing and left
+the new chat unlisted; followers kept their old source after it changed;
+unforced Settings Browse refetched despite a fresh shared list; and a total
+timeout skipped the failure bookkeeping. Each has a test except the two app
+scheduling fixes, which are covered by the core behavior they call.

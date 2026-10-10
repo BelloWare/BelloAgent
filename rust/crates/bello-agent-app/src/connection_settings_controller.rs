@@ -288,6 +288,10 @@ impl ConnectionSettingsController {
             self.draft_notice_owner = None;
         }
     }
+    /// The saved connections' revision this window last read, if any.
+    pub(crate) fn saved_revision(&self) -> Option<i64> {
+        self.loaded.as_ref().map(LoadedConnections::revision)
+    }
     fn install(&mut self, loaded: LoadedConnections, discard: bool) {
         if discard {
             self.catalogs.clear();

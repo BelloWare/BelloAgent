@@ -11,7 +11,9 @@ pub(crate) struct ConnectionLease {
     entry: Fields,
     profile: Profile,
     live: AtomicBool,
-    catalog: Option<CatalogBinding>,
+    /// Metadata only. Resolved again when the chat lists, as Swift resolves
+    /// `catalogProfile(for:)` from the current saved connections each time.
+    catalog: Option<std::sync::Mutex<CatalogBinding>>,
 }
 impl ConnectionLease {
     /// Swift's `modelInput(for:)` and `applyModelChoice`: the chat's model is
@@ -24,11 +26,19 @@ impl ConnectionLease {
         base: &Profile,
         item: Option<&crate::Submission>,
     ) -> Profile {
-        let Some(catalog) = &self.catalog else {
+        let Some(catalog) = self
+            .catalog
+            .as_ref()
+            .and_then(|c| c.lock().ok().map(|b| b.clone()))
+        else {
             return crate::runtime::tool_runtime::effective_profile(base, item);
         };
         let mut profile = base.clone();
-        let chosen = item.and_then(|item| item.model.as_ref());
+        // Sends capture the connection's own model; only another model is a
+        // choice (Swift's chat.model override).
+        let chosen = item
+            .and_then(|item| item.model.as_ref())
+            .filter(|model| **model != base.model_id);
         if let Some(model) = chosen {
             profile.model_id.clone_from(model);
         }
@@ -74,31 +84,49 @@ impl ConnectionLease {
     /// read from the vault only now, and only when the catalog shares the
     /// gateway's origin. A changed source yields nothing: the saved
     /// connection's next runtime lists its own.
-    pub(crate) fn catalog_stale(&self) -> bool {
-        self.check().is_ok()
-            && self
-                .catalog
-                .as_ref()
-                .is_some_and(CatalogBinding::needs_load)
+    fn binding(&self) -> Option<CatalogBinding> {
+        self.catalog
+            .as_ref()?
+            .lock()
+            .ok()
+            .map(|binding| binding.clone())
     }
-    pub(crate) fn catalog_request(&self) -> Option<crate::model_catalog::CatalogRequest> {
-        let binding = self.catalog.as_ref()?;
-        if self.check().is_err() || !binding.needs_load() {
+    pub(crate) fn catalog_stale(&self) -> bool {
+        self.check().is_ok() && self.binding().is_some_and(|binding| binding.needs_load())
+    }
+    /// A passive listing for this chat's catalog source, as Swift's model
+    /// pill lists when a chat shows: nothing for the bundled catalog, a fresh
+    /// or loading list, a fixture, or a revoked runtime. `resync` first
+    /// resolves the source again from the vault (a followed connection's URL
+    /// or key may have changed); otherwise an unchanged fresh source reads
+    /// nothing. The source's key is read only for a same-origin catalog.
+    pub(crate) fn catalog_request(
+        &self,
+        resync: bool,
+    ) -> Option<crate::model_catalog::CatalogRequest> {
+        let binding = self.binding()?;
+        if self.check().is_err() || !resync && !binding.needs_load() {
             return None;
         }
         let current = self.authority.load_connections().ok()?;
         let (current_binding, request) =
             catalog_source(&self.authority, &current, &self.profile.id).ok()?;
-        if !current_binding.same_source(binding) {
+        if !current_binding.same_source(&binding) {
+            *self.catalog.as_ref()?.lock().ok()? = current_binding.clone();
+        }
+        if self.check().is_err() || !current_binding.needs_load() {
             return None;
         }
         let (source_id, url, key) = request?;
-        Some(crate::model_catalog::CatalogRequest::native(
-            Some(source_id),
-            url,
-            key,
-            current_binding,
-        ))
+        Some(
+            crate::model_catalog::CatalogRequest::native(
+                Some(source_id),
+                url,
+                key,
+                current_binding,
+            )
+            .begin_now(),
+        )
     }
     pub(crate) fn check(&self) -> Result<()> {
         if self.live.load(Ordering::Acquire) {
@@ -207,11 +235,11 @@ impl SavedConnectionRuntime {
         profile.headers = headers;
         validate_connection(authority, &profile, &key).map_err(|e| invalid(e.to_string()))?;
         let catalog = if authority.provenance == super::super::AuthorityProvenance::Production {
-            Some(
+            Some(std::sync::Mutex::new(
                 catalog_source(authority, expected, id)
                     .map_err(|e| invalid(e.to_string()))?
                     .0,
-            )
+            ))
         } else {
             None
         };

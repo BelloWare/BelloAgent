@@ -328,6 +328,7 @@ pub fn parse(body: &[u8]) -> Result<Vec<ModelDescriptor>, CatalogError> {
 pub struct CatalogRequest {
     source_id: Option<String>,
     remote: Option<(CatalogUrl, Option<Credential>)>,
+    binding: Option<CatalogBinding>,
     publication: Option<CatalogPublication>,
 }
 
@@ -430,6 +431,13 @@ impl CatalogBinding {
                     }
             })
     }
+    fn fresh_models(&self) -> Option<Vec<ModelDescriptor>> {
+        let identity = self.identity?;
+        let entries = self.cache.0.lock().ok()?;
+        let entry = entries.get(&identity)?;
+        (!entry.failed && entry.fetched?.elapsed() < CATALOG_TTL)
+            .then(|| entry.models.as_ref().clone())
+    }
     pub(crate) fn same_source(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.cache, &other.cache) && self.identity == other.identity
     }
@@ -488,6 +496,7 @@ impl CatalogRequest {
         Self {
             source_id,
             remote: None,
+            binding: None,
             publication: None,
         }
     }
@@ -508,6 +517,7 @@ impl CatalogRequest {
         Ok(Self {
             source_id,
             remote: Some((url, key)),
+            binding: None,
             publication: None,
         })
     }
@@ -520,8 +530,23 @@ impl CatalogRequest {
         Self {
             source_id,
             remote: Some((url, key)),
-            publication: binding.begin(),
+            binding: Some(binding),
+            publication: None,
         }
+    }
+    /// The shared list for this request's source when it is fresh (listed
+    /// successfully within five minutes), so an unforced Settings listing
+    /// reuses what a chat listed, as Swift's shared catalog entry does.
+    pub fn fresh_models(&self) -> Option<Vec<ModelDescriptor>> {
+        self.binding.as_ref()?.fresh_models()
+    }
+    /// Claim the source's listing now, so a passive caller is joined rather
+    /// than repeated before this request starts loading.
+    pub(crate) fn begin_now(mut self) -> Self {
+        if self.publication.is_none() {
+            self.publication = self.binding.as_ref().and_then(CatalogBinding::begin);
+        }
+        self
     }
     pub fn source_id(&self) -> Option<&str> {
         self.source_id.as_deref()
@@ -562,17 +587,21 @@ impl CatalogRequest {
         let Some((url, key)) = self.remote else {
             return bundled();
         };
+        // The newest listing for a source owns its shared entry from here.
+        let publication = self
+            .publication
+            .or_else(|| self.binding.as_ref().and_then(CatalogBinding::begin));
         let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(CatalogError::Cancelled),
             result = tokio::time::timeout(limits.total, fetch(url, key, limits)) => {
-                result.map_err(|_| CatalogError::TimedOut)?
+                result.unwrap_or(Err(CatalogError::TimedOut))
             }
         };
         if cancel.is_cancelled() {
             return Err(CatalogError::Cancelled);
         }
-        if let Some(publication) = &self.publication
+        if let Some(publication) = &publication
             && !matches!(result, Err(CatalogError::Cancelled))
         {
             publication.finish(Some(&result));

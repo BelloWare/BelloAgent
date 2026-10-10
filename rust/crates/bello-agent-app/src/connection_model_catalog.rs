@@ -230,6 +230,17 @@ impl AgentView {
             "Custom catalog"
         }
         .into();
+        // As Swift's shared catalog entry: a list a chat (or this window)
+        // fetched within five minutes serves an unforced Choose model.
+        if !force && let Some(models) = request.fresh_models() {
+            state.models = models;
+            state.error = None;
+            state.page = 0;
+            state.generation = uuid::Uuid::new_v4();
+            state.fetched = Some(Instant::now());
+            self.connections.publish(cx);
+            return;
+        }
         let cancel = CancellationToken::new();
         state.cancel = Some(cancel.clone());
         state.error = None;

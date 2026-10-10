@@ -413,12 +413,12 @@ async fn native_chat_lists_its_custom_catalog_passively_once_per_freshness_windo
         "opening a chat sends nothing by itself"
     );
     assert!(controller.model_catalog_stale());
-    let request = controller.model_catalog_request().unwrap();
+    let request = controller.model_catalog_request(false).unwrap();
     assert!(
         !controller.model_catalog_stale(),
         "a listing in flight is joined"
     );
-    assert!(controller.model_catalog_request().is_none());
+    assert!(controller.model_catalog_request(false).is_none());
     let (result, headers) = tokio::join!(
         request.load(CancellationToken::new()),
         catalog_reply(&listener, r#"[{"id":"fixture","input":["text","image"]}]"#)
@@ -433,7 +433,21 @@ async fn native_chat_lists_its_custom_catalog_passively_once_per_freshness_windo
         ["text", "image"]
     );
     assert!(!controller.model_catalog_stale(), "fresh for five minutes");
-    assert!(controller.model_catalog_request().is_none());
+    let settings = authority
+        .prepare_catalog(&saved.loaded, &saved.loaded.edit(&form.profile.id).unwrap())
+        .unwrap();
+    assert!(
+        settings.fresh_models().is_some_and(
+            |models| models[0].input.as_deref() == Some(&["text".into(), "image".into()][..])
+        ),
+        "an unforced Settings listing reuses the chat's fresh list"
+    );
+    drop(settings);
+    assert!(
+        !controller.model_catalog_stale(),
+        "an unused request claims nothing"
+    );
+    assert!(controller.model_catalog_request(false).is_none());
     // Another chat on the same source shares the list without a request.
     let other = SavedConnectionRuntime::confirm(&authority, &saved.loaded, &form.profile.id)
         .unwrap()
@@ -453,7 +467,7 @@ async fn native_chat_lists_its_custom_catalog_passively_once_per_freshness_windo
         !changed_chat.supports_image_attachments(),
         "a new URL lists anew"
     );
-    let request = changed_chat.model_catalog_request().unwrap();
+    let request = changed_chat.model_catalog_request(false).unwrap();
     let (result, _) = tokio::join!(
         request.load(CancellationToken::new()),
         catalog_reply(&listener, "not a catalog")
@@ -461,7 +475,7 @@ async fn native_chat_lists_its_custom_catalog_passively_once_per_freshness_windo
     assert!(result.is_err());
     assert!(!changed_chat.model_catalog_stale(), "failure retry is 30 s");
     // The older runtime's source is no longer saved: it never lists it again.
-    assert!(controller.model_catalog_request().is_none() || controller.is_retired());
+    assert!(controller.model_catalog_request(false).is_none() || controller.is_retired());
     // Bundled-catalog chats never list over the network; revoked ones never list.
     let mut bundled = draft(2);
     bundled.catalog_url.clear();
@@ -477,7 +491,7 @@ async fn native_chat_lists_its_custom_catalog_passively_once_per_freshness_windo
     .open(SessionStore::pending(), Default::default())
     .unwrap();
     assert!(!bundled_chat.model_catalog_stale());
-    assert!(bundled_chat.model_catalog_request().is_none());
+    assert!(bundled_chat.model_catalog_request(false).is_none());
     let mut public = draft(3);
     public.catalog_url = "https://catalog.invalid/never".into();
     let public = authority.save_connection(&bundled.loaded, &public).unwrap();
@@ -493,7 +507,7 @@ async fn native_chat_lists_its_custom_catalog_passively_once_per_freshness_windo
     assert!(revoked_chat.model_catalog_stale());
     revoked.revoke();
     assert!(!revoked_chat.model_catalog_stale());
-    assert!(revoked_chat.model_catalog_request().is_none());
+    assert!(revoked_chat.model_catalog_request(false).is_none());
     assert!(
         timeout(Duration::from_millis(40), listener.accept())
             .await
@@ -517,6 +531,73 @@ async fn native_chat_lists_its_custom_catalog_passively_once_per_freshness_windo
             !chat.model_catalog_stale(),
             "fixture chats keep declared input"
         );
-        assert!(chat.model_catalog_request().is_none());
+        assert!(chat.model_catalog_request(false).is_none());
     }
+}
+
+#[tokio::test]
+async fn native_captured_default_model_keeps_saved_limits_and_followers_resync_their_source() {
+    let (authority, _) = setup();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let mut route = draft(1);
+    route.catalog_url.clear();
+    let route_saved = authority
+        .save_connection(&authority.load_connections().unwrap(), &route)
+        .unwrap();
+    let mut source = draft(2);
+    source.profile.base_url = base.clone();
+    source.catalog_url = format!("{base}/first");
+    let source_saved = authority
+        .save_connection(&route_saved.loaded, &source)
+        .unwrap();
+    let linked = authority
+        .use_catalog_source(&source_saved.loaded, &route.profile.id, &source.profile.id)
+        .unwrap();
+    let runtime = SavedConnectionRuntime::confirm(&authority, &linked, &route.profile.id).unwrap();
+    let controller = runtime
+        .open(SessionStore::pending(), Default::default())
+        .unwrap();
+    let request = controller.model_catalog_request(false).unwrap();
+    let (result, headers) = tokio::join!(
+        request.load(CancellationToken::new()),
+        catalog_reply(
+            &listener,
+            r#"[{"id":"fixture","input":["image"],"contextWindow":1000,"maxOutputTokens":10,"reasoning":[]}]"#
+        )
+    );
+    assert!(result.is_ok());
+    assert!(headers.starts_with("get /first http/1.1"));
+    assert!(controller.supports_image_attachments());
+    // A send captures the connection's own model and effort; that is not a
+    // model choice, so the saved limits and reasoning stay.
+    let mut captured = Submission::new("captured".into(), Lane::FollowUp);
+    captured.model = Some(route.profile.model_id.clone());
+    captured.effort = Some(route.profile.thinking_level.clone());
+    let effective = runtime.configuration().effective_profile(Some(&captured));
+    assert_eq!(effective.context_window, route.profile.context_window);
+    assert_eq!(effective.max_output_tokens, route.profile.max_output_tokens);
+    assert_eq!(effective.thinking_level, route.profile.thinking_level);
+    assert!(effective.supports_images());
+    // The followed source's URL changes; the follower's runtime is unchanged.
+    let mut changed = linked.edit(&source.profile.id).unwrap();
+    changed.catalog_url = format!("{base}/second");
+    authority.save_connection(&linked, &changed).unwrap();
+    assert!(
+        controller.model_catalog_request(false).is_none(),
+        "fresh list"
+    );
+    let request = controller.model_catalog_request(true).unwrap();
+    let (result, headers) = tokio::join!(
+        request.load(CancellationToken::new()),
+        catalog_reply(&listener, r#"[{"id":"fixture","input":["text"]}]"#)
+    );
+    assert!(result.is_ok());
+    assert!(headers.starts_with("get /second http/1.1"));
+    assert!(!controller.supports_image_attachments());
+    assert_eq!(
+        runtime.configuration().effective_profile(None).base_url,
+        route.profile.base_url,
+        "the source never becomes the route"
+    );
 }

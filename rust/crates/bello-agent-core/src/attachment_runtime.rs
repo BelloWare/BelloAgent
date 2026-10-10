@@ -199,11 +199,19 @@ impl Controller {
     /// None when nothing needs fetching. Reads the vault: call it off the UI
     /// thread. Loading the request publishes its list to the chat, so
     /// `supports_image_attachments` then reflects the catalog's input.
-    pub fn model_catalog_request(&self) -> Option<crate::model_catalog::CatalogRequest> {
+    /// `resync` resolves the chat's catalog source from the vault again, for
+    /// after saved connections changed.
+    pub fn model_catalog_request(
+        &self,
+        resync: bool,
+    ) -> Option<crate::model_catalog::CatalogRequest> {
         if self.is_retired() {
             return None;
         }
-        self.configuration()?.connection.as_ref()?.catalog_request()
+        self.configuration()?
+            .connection
+            .as_ref()?
+            .catalog_request(resync)
     }
     /// Cheap and lock-only: whether `model_catalog_request` could return a
     /// request now. Never reads the vault.

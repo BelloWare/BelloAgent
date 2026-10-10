@@ -480,10 +480,20 @@ async fn idle_and_total_deadlines_are_separate_and_fixed_by_default() {
             idle: Duration::from_millis(70),
             total: Duration::from_millis(160),
         };
-        let request = CatalogRequest::fixture(None, url, None).unwrap();
+        let binding = CatalogBinding::new(
+            Arc::new(CatalogCache::default()),
+            Some(&url),
+            &profile(),
+            "",
+        );
+        let request = CatalogRequest::native(None, url, None, binding.clone());
         assert_eq!(
             request.load_inner(CancellationToken::new(), limits).await,
             Err(CatalogError::TimedOut)
+        );
+        assert!(
+            !binding.needs_load(),
+            "idle and total timeouts both start the failure retry window"
         );
         server.abort();
     }
