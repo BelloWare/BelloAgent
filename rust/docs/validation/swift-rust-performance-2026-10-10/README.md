@@ -128,6 +128,15 @@ it, the main thread is idle 79% of the time; ~7% is spent waiting for the
 controller lock that the runtime holds while it synchronizes each delta to disk.
 The opening frame of the follow check is byte-identical before and after.
 
+Then each delta's sync changed from `F_FULLFSYNC` to a write barrier
+(`F_BARRIERFSYNC`; the turn-ending checkpoint still syncs fully). On this Mac
+one 200-byte append costs 0.002 ms unsynced, 1.4–2.3 ms with a barrier and
+5.4–5.7 ms with a full sync (median of 400, `harness/syncbench.c`). In the same
+streaming profile the runtime worker's share of time in the sync fell from 31%
+to 10% and the UI thread's waits for the controller lock from 7.2% to 0.9%;
+CPU stayed at 14.5% p50 (`after-barrier-sync-cpu.json`), since sync waits are
+not CPU time.
+
 Behavior observed while measuring (screens in `interaction/screens/`): the Rust
 transcript shows Markdown as raw text; it opens a chat at the top of its loaded
 100-message window and does not follow a streaming reply (it is created with

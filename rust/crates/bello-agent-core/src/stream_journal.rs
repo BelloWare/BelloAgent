@@ -1,6 +1,7 @@
 //! Private, generation-scoped append journal for streamed output. Each complete
-//! record is synced before it is published. Checkpoints rotate generations only
-//! after their atomic snapshot is durable, so deleting an older journal is safe.
+//! record reaches stable storage in order before it is published (see
+//! `append`). Checkpoints rotate generations only after their atomic snapshot is
+//! durable, so deleting an older journal is safe.
 use crate::{Delta, Result, Session, invalid};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -70,11 +71,34 @@ pub(crate) fn create(path: &Path) -> Result<File> {
 }
 pub(crate) fn append(file: &mut File, bytes: &[u8]) -> std::io::Result<()> {
     file.write_all(bytes)?;
-    file.sync_all()
+    order_on_disk(file)
 }
-/// An incomplete final line was never acknowledged by append+fsync. Keep the
-/// old generation for inspection and checkpoint only its complete valid prefix.
-/// Malformed complete records, gaps and foreign identities are refused.
+
+/// Persist a record ahead of any later write before it is published. On macOS
+/// a write barrier (F_BARRIERFSYNC) does this without F_FULLFSYNC's drive-cache
+/// flush, which cost ~5.5 ms per streamed delta on the owner's Mac (barrier
+/// ~1.5–2.3 ms) while the controller lock was held. A power loss can then drop
+/// the newest records, but only as a suffix: replay keeps the ordered prefix
+/// and treats a torn last line as unacknowledged. The command checkpoint that
+/// ends a turn still syncs fully, so a settled reply is durable, as in Swift.
+#[cfg(target_os = "macos")]
+fn order_on_disk(file: &File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: fcntl on an owned, open descriptor with an integer command.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } == -1 {
+        // Volumes without barrier support get the full flush.
+        return file.sync_all();
+    }
+    Ok(())
+}
+#[cfg(not(target_os = "macos"))]
+fn order_on_disk(file: &File) -> std::io::Result<()> {
+    file.sync_data()
+}
+
+/// An incomplete final line was never acknowledged by append and its sync. Keep
+/// the old generation for inspection and checkpoint only its complete valid
+/// prefix. Malformed complete records, gaps and foreign identities are refused.
 pub(crate) fn replay(snapshot: &Path, session: &mut Session) -> Result<Replay> {
     replay_with_confirmation(snapshot, session, true, None, false)
 }
