@@ -1,9 +1,14 @@
-//! Bounded operator catalog metadata. Catalogs never discover provider models,
-//! grant model inputs, or change runtime routing. Remote transport is fixture-only.
+//! Bounded operator catalog metadata. Explicit catalog URLs never discover
+//! provider models or change routing. Native inputs merge with declared inputs.
 use crate::{Credential, Profile};
 use futures_util::StreamExt;
 use serde_json::{Map, Value};
-use std::{collections::HashSet, fmt, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt,
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
+};
 pub use tokio_util::sync::CancellationToken;
 use url::Url;
 
@@ -77,12 +82,15 @@ impl CatalogUrl {
             return Err(CatalogError::Url);
         }
         let url = Url::parse(value).map_err(|_| CatalogError::Url)?;
-        let loopback = match url.host() {
-            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-            Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
-            None => false,
-        };
+        // Swift permits these explicit HTTP hosts, not alternate numeric forms
+        // which URL parsers can normalize to 127.0.0.1 (e.g. 127.1).
+        let host = authority
+            .strip_prefix('[')
+            .and_then(|value| value.split_once(']').map(|(host, _)| host))
+            .unwrap_or_else(|| authority.split(':').next().unwrap_or_default());
+        let loopback = ["localhost", "127.0.0.1", "::1"]
+            .iter()
+            .any(|allowed| host.eq_ignore_ascii_case(allowed));
         if !(url.scheme() == "https" || url.scheme() == "http" && loopback)
             || url.host().is_none()
             || !url.username().is_empty()
@@ -156,7 +164,14 @@ pub enum CatalogError {
 }
 
 pub fn bundled() -> Result<Vec<ModelDescriptor>, CatalogError> {
-    parse(BUNDLED).map_err(|_| CatalogError::BundledUnavailable)
+    bundled_models().cloned()
+}
+fn bundled_models() -> Result<&'static Vec<ModelDescriptor>, CatalogError> {
+    static MODELS: OnceLock<Result<Vec<ModelDescriptor>, CatalogError>> = OnceLock::new();
+    MODELS
+        .get_or_init(|| parse(BUNDLED).map_err(|_| CatalogError::BundledUnavailable))
+        .as_ref()
+        .map_err(Clone::clone)
 }
 fn text(value: Option<&Value>, clean: bool) -> String {
     let Some(mut value) = value.and_then(Value::as_str) else {
@@ -309,16 +324,113 @@ pub fn parse(body: &[u8]) -> Result<Vec<ModelDescriptor>, CatalogError> {
 }
 
 /// An opaque, single-use request. Neither endpoint nor credential is formatted.
-/// Only ProjectAuthority can authorize remote fixture construction.
+/// Only ProjectAuthority can authorize native or fixture construction.
 pub struct CatalogRequest {
     source_id: Option<String>,
     remote: Option<(CatalogUrl, Option<Credential>)>,
+    publication: Option<CatalogPublication>,
+}
+
+/// Authority-local metadata only. Fingerprints include the credential only for
+/// same-origin catalogs, without retaining another copy of its plaintext.
+#[derive(Default)]
+pub(crate) struct CatalogCache(Mutex<BTreeMap<[u8; 32], CachedCatalog>>);
+struct CachedCatalog {
+    generation: uuid::Uuid,
+    models: Arc<Vec<ModelDescriptor>>,
+}
+struct CatalogPublication {
+    cache: Arc<CatalogCache>,
+    identity: [u8; 32],
+    generation: uuid::Uuid,
+}
+#[derive(Clone)]
+pub(crate) struct CatalogBinding {
+    cache: Arc<CatalogCache>,
+    identity: Option<[u8; 32]>,
+}
+impl CatalogBinding {
+    pub(crate) fn new(
+        cache: Arc<CatalogCache>,
+        url: Option<&CatalogUrl>,
+        profile: &Profile,
+        key: &str,
+    ) -> Self {
+        use sha2::{Digest, Sha256};
+        let identity = url.map(|url| {
+            let mut hash = Sha256::new();
+            for value in [
+                profile.api.as_str(),
+                profile.base_url.as_str(),
+                url.0.as_str(),
+                if url.uses_gateway_credential(profile) {
+                    key
+                } else {
+                    ""
+                },
+            ] {
+                hash.update((value.len() as u64).to_le_bytes());
+                hash.update(value.as_bytes());
+            }
+            hash.finalize().into()
+        });
+        Self { cache, identity }
+    }
+    fn begin(&self) -> Option<CatalogPublication> {
+        let identity = self.identity?;
+        let mut entries = self.cache.0.lock().ok()?;
+        let generation = uuid::Uuid::new_v4();
+        if !entries.contains_key(&identity) && entries.len() >= 128 {
+            let first = *entries.keys().next()?;
+            entries.remove(&first);
+        }
+        let entry = entries.entry(identity).or_insert_with(|| CachedCatalog {
+            generation,
+            models: Arc::new(vec![]),
+        });
+        entry.generation = generation;
+        Some(CatalogPublication {
+            cache: self.cache.clone(),
+            identity,
+            generation,
+        })
+    }
+    pub(crate) fn descriptor(&self, model: &str) -> Option<ModelDescriptor> {
+        if let Some(identity) = self.identity {
+            self.cache
+                .0
+                .lock()
+                .ok()?
+                .get(&identity)?
+                .models
+                .iter()
+                .find(|row| row.id == model)
+                .cloned()
+        } else {
+            bundled_models()
+                .ok()?
+                .iter()
+                .find(|row| row.id == model)
+                .cloned()
+        }
+    }
+}
+impl CatalogPublication {
+    fn publish(self, models: &[ModelDescriptor]) {
+        if let Ok(mut entries) = self.cache.0.lock()
+            && let Some(entry) = entries.get_mut(&self.identity)
+            && entry.generation == self.generation
+        {
+            entry.models = Arc::new(models.to_vec());
+        }
+    }
 }
 impl CatalogRequest {
     pub(crate) fn bundled(source_id: Option<String>) -> Self {
         Self {
             source_id,
             remote: None,
+            publication: None,
         }
     }
     pub(crate) fn fixture(
@@ -329,10 +441,29 @@ impl CatalogRequest {
         if !url.numeric_loopback() {
             return Err(CatalogError::FixtureOnly);
         }
+        if key
+            .as_ref()
+            .is_some_and(|key| key.expose() != crate::project_authority::connections::SYNTHETIC_KEY)
+        {
+            return Err(CatalogError::FixtureOnly);
+        }
         Ok(Self {
             source_id,
             remote: Some((url, key)),
+            publication: None,
         })
+    }
+    pub(crate) fn native(
+        source_id: Option<String>,
+        url: CatalogUrl,
+        key: Option<Credential>,
+        binding: CatalogBinding,
+    ) -> Self {
+        Self {
+            source_id,
+            remote: Some((url, key)),
+            publication: binding.begin(),
+        }
     }
     pub fn source_id(&self) -> Option<&str> {
         self.source_id.as_deref()
@@ -373,16 +504,22 @@ impl CatalogRequest {
         let Some((url, key)) = self.remote else {
             return bundled();
         };
-        if !url.numeric_loopback() {
-            return Err(CatalogError::FixtureOnly);
-        }
-        tokio::select! {
+        let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(CatalogError::Cancelled),
             result = tokio::time::timeout(limits.total, fetch(url, key, limits)) => {
                 result.map_err(|_| CatalogError::TimedOut)?
             }
+        };
+        if cancel.is_cancelled() {
+            return Err(CatalogError::Cancelled);
         }
+        if let Ok(models) = &result
+            && let Some(publication) = self.publication
+        {
+            publication.publish(models);
+        }
+        result
     }
 }
 struct AbortFetch(tokio::task::JoinHandle<Result<Vec<ModelDescriptor>, CatalogError>>);

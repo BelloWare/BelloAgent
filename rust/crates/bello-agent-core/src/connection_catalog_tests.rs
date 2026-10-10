@@ -8,6 +8,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+#[path = "native_catalog_tests.rs"]
+mod native_tests;
+
 #[derive(Default)]
 struct Storage {
     bytes: Mutex<Option<Vec<u8>>>,
@@ -340,16 +343,38 @@ fn bundled_draft_needs_no_key_or_profile_validation_and_saved_prepare_exact_cas(
     ));
 }
 #[test]
-fn production_remote_preparation_stays_closed_even_for_loopback_and_without_key_reads() {
+fn native_remote_preparation_accepts_loopback_and_public_catalogs_without_provider_headers() {
     let (authority, _) = setup();
     let loaded = authority.load_connections().unwrap();
-    let form = draft(1);
+    let mut form = draft(1);
     reset_key_reads();
+    assert!(
+        !authority
+            .prepare_catalog(&loaded, &form)
+            .unwrap()
+            .is_bundled()
+    );
+    assert_eq!(key_reads(), 0);
+    form.catalog_url = "http://localhost:3334/catalog".into();
+    form.key_input = "invalid\nprivate-secret".into();
+    form.headers_input = "incomplete private-header".into();
+    assert!(
+        !authority
+            .prepare_catalog(&loaded, &form)
+            .unwrap()
+            .is_bundled()
+    );
+    assert_eq!(key_reads(), 0);
+    form.catalog_url = "http://127.0.0.1:3333/catalog".into();
     assert!(matches!(
         authority.prepare_catalog(&loaded, &form),
-        Err(AuthorityError::Unavailable)
+        Err(AuthorityError::InvalidConnection)
     ));
-    assert_eq!(key_reads(), 0);
+    form.profile.api = "anthropic-messages".into();
+    assert!(matches!(
+        authority.prepare_catalog(&loaded, &form),
+        Err(AuthorityError::UnsupportedConnection)
+    ));
 }
 #[cfg(feature = "synthetic-authority")]
 #[test]
@@ -358,6 +383,7 @@ fn fixture_external_is_anonymous_same_origin_resolves_only_key_and_inherited_sou
     let authority = ProjectAuthority {
         storage: Some(storage),
         provenance: AuthorityProvenance::Fixture,
+        ..ProjectAuthority::default()
     };
     let loaded = authority.load_connections().unwrap();
     let mut form = draft(1);

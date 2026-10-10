@@ -657,3 +657,48 @@ async fn dropping_or_aborting_load_closes_transfer_without_cancelling_token() {
         );
     }
 }
+
+#[test]
+fn explicit_http_loopback_names_match_swift_and_fixture_requests_reject_other_keys() {
+    for url in [
+        "http://127.1/catalog",
+        "http://127.0.0.2/catalog",
+        "http://2130706433/catalog",
+        "http://[0:0:0:0:0:0:0:1]/catalog",
+    ] {
+        assert_eq!(CatalogUrl::parse(url), Err(CatalogError::Url), "{url}");
+    }
+    let key = Credential::new("fake-nonfixture-key".into()).unwrap();
+    assert!(matches!(
+        CatalogRequest::fixture(
+            None,
+            CatalogUrl::parse("http://127.0.0.1/catalog").unwrap(),
+            Some(key)
+        ),
+        Err(CatalogError::FixtureOnly)
+    ));
+}
+
+#[test]
+fn native_cache_fences_old_publication_keys_and_authorities_without_exposing_secrets() {
+    let cache = Arc::new(CatalogCache::default());
+    let profile = profile();
+    let url = CatalogUrl::parse("http://127.0.0.1:3333/catalog?fake=1").unwrap();
+    let binding = CatalogBinding::new(cache.clone(), Some(&url), &profile, "fake-key-one");
+    let old = binding.begin().unwrap();
+    let current = binding.begin().unwrap();
+    let rows = decode(json!([{"id":"old","input":["image"]}])).unwrap();
+    old.publish(&rows);
+    assert!(binding.descriptor("old").is_none());
+    current.publish(&rows);
+    assert!(binding.descriptor("old").is_some());
+    let changed_key = CatalogBinding::new(cache, Some(&url), &profile, "fake-key-two");
+    assert!(changed_key.descriptor("old").is_none());
+    let foreign = CatalogBinding::new(
+        Arc::new(CatalogCache::default()),
+        Some(&url),
+        &profile,
+        "fake-key-one",
+    );
+    assert!(foreign.descriptor("old").is_none());
+}

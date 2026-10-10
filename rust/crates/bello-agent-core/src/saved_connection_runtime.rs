@@ -11,8 +11,50 @@ pub(crate) struct ConnectionLease {
     entry: Fields,
     profile: Profile,
     live: AtomicBool,
+    catalog: Option<CatalogBinding>,
 }
 impl ConnectionLease {
+    pub(crate) fn effective_profile(
+        &self,
+        base: &Profile,
+        item: Option<&crate::Submission>,
+    ) -> Profile {
+        let Some(catalog) = &self.catalog else {
+            return crate::runtime::tool_runtime::effective_profile(base, item);
+        };
+        let mut profile = base.clone();
+        if let Some(model) = item.and_then(|item| item.model.as_ref()) {
+            profile.model_id.clone_from(model);
+        }
+        if let Some(descriptor) = catalog.descriptor(&profile.model_id) {
+            if profile.model_id != base.model_id {
+                descriptor.applying(&mut profile);
+            }
+            if let Some(input) = descriptor.input {
+                for kind in input {
+                    if !profile.input.contains(&kind) {
+                        profile.input.push(kind);
+                    }
+                }
+            }
+            if let Some(reasoning) = descriptor.reasoning {
+                profile.reasoning = !reasoning.is_empty();
+                let effort = item
+                    .and_then(|item| item.effort.as_ref())
+                    .unwrap_or(&profile.thinking_level);
+                profile.thinking_level = if effort == "default" || reasoning.contains(effort) {
+                    effort.clone()
+                } else {
+                    "default".into()
+                };
+                return profile;
+            }
+        }
+        if let Some(effort) = item.and_then(|item| item.effort.as_ref()) {
+            profile.thinking_level.clone_from(effort);
+        }
+        profile
+    }
     pub(crate) fn check(&self) -> Result<()> {
         if self.live.load(Ordering::Acquire) {
             Ok(())
@@ -86,11 +128,40 @@ impl SavedConnectionRuntime {
         let mut profile = confirmed.metadata.profile.clone();
         profile.headers = headers;
         validate_connection(authority, &profile, &key).map_err(|e| invalid(e.to_string()))?;
+        let catalog = if authority.provenance == super::super::AuthorityProvenance::Production {
+            let source = expected
+                .catalog_source(id)
+                .map_err(|e| invalid(e.to_string()))?;
+            let source_key = if source
+                .catalog_url
+                .as_ref()
+                .is_some_and(|url| url.uses_gateway_credential(&source.profile))
+            {
+                field::<String>(
+                    &expected.entries[expected
+                        .index(&source.profile.id)
+                        .map_err(|e| invalid(e.to_string()))?],
+                    "apiKey",
+                )
+                .map_err(|e| invalid(e.to_string()))?
+            } else {
+                String::new()
+            };
+            Some(CatalogBinding::new(
+                authority.catalogs.clone(),
+                source.catalog_url.as_ref(),
+                &source.profile,
+                &source_key,
+            ))
+        } else {
+            None
+        };
         let lease = Arc::new(ConnectionLease {
             authority: confirmed.authority,
             entry: confirmed.entry,
             profile: profile.clone(),
             live: AtomicBool::new(true),
+            catalog,
         });
         let configuration = Arc::new(Configuration::saved_connection(
             profile,

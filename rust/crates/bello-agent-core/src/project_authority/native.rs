@@ -33,6 +33,7 @@ pub(super) fn authority() -> AuthorityResult<ProjectAuthority> {
                 api: macos::SecurityApi,
             })),
             provenance: super::AuthorityProvenance::Production,
+            ..ProjectAuthority::default()
         })
     }
     #[cfg(not(target_os = "macos"))]

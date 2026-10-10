@@ -193,7 +193,7 @@ impl Controller {
         !self.is_retired()
             && self
                 .configuration()
-                .is_some_and(|config| config.profile.supports_images())
+                .is_some_and(|config| config.effective_profile(None).supports_images())
     }
     fn use_fixture_images(&self, config: &Configuration) -> bool {
         #[cfg(all(not(target_os = "macos"), any(test, feature = "synthetic-authority")))]
@@ -227,7 +227,7 @@ impl Controller {
         if item.attachments.is_empty() && item.frozen_skills.is_empty() {
             return Ok(None);
         }
-        let profile = super::tool_runtime::effective_profile(&config.profile, Some(item));
+        let profile = config.effective_profile(Some(item));
         if !item.attachments.is_empty() && !profile.supports_images() {
             return Err(invalid(crate::attachments::IMAGES_UNSUPPORTED));
         }
