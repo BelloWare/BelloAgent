@@ -2132,7 +2132,8 @@ impl AgentView {
                             self.badge(
                                 saved_runtime_adapter::tool_runtime_label(
                                     &self.controller,
-                                    self.connections.presentation.mode.is_fixture(),
+                                    self.connections.presentation.mode,
+                                    self.record.tool_mode,
                                 )
                                 .into(),
                                 "pencil",

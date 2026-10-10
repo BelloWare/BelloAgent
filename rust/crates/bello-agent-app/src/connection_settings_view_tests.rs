@@ -101,9 +101,7 @@ fn native_mode_enables_only_ready_settings_and_retains_confirmation_guards() {
     p.availability = ConnectionSettingsAvailability::Unconfirmed("Review required".into());
     assert!(!p.allows(&ConnectionSettingsIntent::ConfirmDelete));
     assert!(!super::NATIVE_NOTICE.contains("Fixture-only"));
-    assert!(
-        super::NATIVE_NOTICE.contains("model tools, MCP and project resources remain unavailable")
-    );
+    assert!(super::NATIVE_NOTICE.contains("in a trusted project they offer its tools"));
 }
 
 #[test]

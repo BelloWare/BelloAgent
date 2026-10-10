@@ -457,12 +457,14 @@ fn native_mode_later_route_selection_discards_pending_new_chat(cx: &mut TestAppC
         assert_eq!(view.record.id, original);
         assert_eq!(view.records.len(), count);
         assert!(view.controller.configured());
-        assert!(!view.controller.has_available_tool_definitions());
+        assert!(view.controller.has_available_tool_definitions());
     });
 }
 
+/// A native saved chat offers its trusted project's tools, MCP and skills as
+/// Swift's does, through New Chat and after the startup loader restores it.
 #[gpui::test]
-fn native_mode_new_chat_and_startup_loader_keep_saved_connection_without_tools(
+fn native_mode_new_chat_and_startup_loader_keep_saved_connection_with_its_tools(
     cx: &mut TestAppContext,
 ) {
     let (_dir, _control, window, root, id) = native_mode_saved_fixture(cx);
@@ -476,7 +478,7 @@ fn native_mode_new_chat_and_startup_loader_keep_saved_connection_without_tools(
     let launch = root.update(cx, |view, _| {
         assert_ne!(view.record.id, original);
         assert!(view.controller.configured());
-        assert!(!view.controller.has_available_tool_definitions());
+        assert!(view.controller.has_available_tool_definitions());
         view.workspace
             .lock()
             .unwrap()
@@ -499,12 +501,12 @@ fn native_mode_new_chat_and_startup_loader_keep_saved_connection_without_tools(
             assert!(view.controller.configured());
             assert!(!view.loading && !view.load_failed);
             assert_eq!(view.record.connection_id.as_deref(), Some(id.as_str()));
-            assert!(!view.controller.has_available_tool_definitions());
-            assert!(view.runtime.mcp_manager().is_err());
+            assert!(view.controller.has_available_tool_definitions());
+            assert!(view.runtime.mcp_manager().is_ok());
             assert!(!view.record.snapshot.exists());
-            assert!(!view.can_choose_skills());
+            assert!(view.can_choose_skills());
             view.open_skill_picker(window, cx);
-            assert!(view.skill_picker.is_none());
+            assert!(view.skill_picker.is_some());
         })
         .unwrap();
 }
@@ -515,7 +517,7 @@ fn settings_save_select_and_real_composer_send_use_selected_fixture(cx: &mut Tes
 }
 
 #[gpui::test]
-fn native_mode_settings_send_uses_same_factory_with_no_tools_or_project_resources(
+fn native_mode_settings_send_uses_same_factory_with_tools_and_project_resources(
     cx: &mut TestAppContext,
 ) {
     // Storage is still the synthetic fake. Only the app composition/presentation
@@ -525,58 +527,73 @@ fn native_mode_settings_send_uses_same_factory_with_no_tools_or_project_resource
 
 fn exercise_settings_send(cx: &mut TestAppContext, mode: crate::launch_authority::AuthorityMode) {
     let (dir, _control, window, root) = fixture_with_mode(cx, true, mode);
-    std::fs::write(
-        dir.path().join("AGENTS.md"),
-        "NATIVE_PROJECT_RESOURCE_MUST_STAY_UNAVAILABLE",
-    )
-    .unwrap();
+    std::fs::write(dir.path().join("AGENTS.md"), "PROJECT_INSTRUCTIONS_MARKER").unwrap();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let (tx, rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(5);
-        let mut stream = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline);
-                    std::thread::sleep(Duration::from_millis(5));
+        let request = || {
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline);
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("{e}"),
                 }
-                Err(e) => panic!("{e}"),
-            }
-        };
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(3)))
-            .unwrap();
-        let mut bytes = Vec::new();
-        let mut buffer = [0; 4096];
-        let body = loop {
-            let n = stream.read(&mut buffer).unwrap();
-            assert!(n > 0);
-            bytes.extend_from_slice(&buffer[..n]);
-            if let Some(at) = bytes.windows(4).position(|p| p == b"\r\n\r\n") {
-                let headers = String::from_utf8_lossy(&bytes[..at]);
-                let size: usize = headers
-                    .lines()
-                    .find_map(|line| {
-                        line.to_ascii_lowercase()
-                            .strip_prefix("content-length:")
-                            .map(|v| v.trim().parse().unwrap())
-                    })
-                    .unwrap();
-                if bytes.len() >= at + 4 + size {
-                    break serde_json::from_slice::<serde_json::Value>(
-                        &bytes[at + 4..at + 4 + size],
-                    )
-                    .unwrap();
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut bytes = Vec::new();
+            let mut buffer = [0; 4096];
+            let body = loop {
+                let n = stream.read(&mut buffer).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&buffer[..n]);
+                if let Some(at) = bytes.windows(4).position(|p| p == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..at]);
+                    let size: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .map(|v| v.trim().parse().unwrap())
+                        })
+                        .unwrap();
+                    if bytes.len() >= at + 4 + size {
+                        break serde_json::from_slice::<serde_json::Value>(
+                            &bytes[at + 4..at + 4 + size],
+                        )
+                        .unwrap();
+                    }
                 }
-            }
+            };
+            (stream, body)
         };
+        let respond = |mut stream: std::net::TcpStream, output: &str| {
+            let event = format!(
+                "data: {{\"type\":\"response.completed\",\"response\":{{\"status\":\"completed\",\"output\":[{output}]}}}}\n\n"
+            );
+            write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",event.len(),event).unwrap();
+        };
+        // The model lists the project; the listing goes back to it.
+        let (stream, body) = request();
         tx.send(body).unwrap();
-        let event = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"fixture reply\"}]}]}}\n\n";
-        write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",event.len(),event).unwrap();
+        respond(
+            stream,
+            r#"{"type":"function_call","call_id":"list-project","name":"ls","arguments":"{\"path\":\".\"}"}"#,
+        );
+        let (stream, body) = request();
+        tx.send(body).unwrap();
+        respond(
+            stream,
+            r#"{"type":"message","content":[{"type":"output_text","text":"fixture reply"}]}"#,
+        );
     });
     edit(&root, cx, |f| {
         f.base_url = url;
@@ -605,34 +622,54 @@ fn exercise_settings_send(cx: &mut TestAppContext, mode: crate::launch_authority
     let body = body.unwrap();
     assert_eq!(body["model"], "selected-fixture-alias");
     assert!(body.to_string().contains("keep composer 日本語"));
-    if mode.is_fixture() {
-        assert!(
-            body["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tool| tool["name"] == "ls")
+    // Both compositions offer the trusted project's tools and send its
+    // instructions; a native chat reads as Swift's starter card does.
+    let names: Vec<&str> = body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(names.contains(&"ls"), "{names:?}");
+    assert!(
+        body.to_string().contains("PROJECT_INSTRUCTIONS_MARKER"),
+        "{body}"
+    );
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(view.controller.has_available_tool_definitions());
+        assert!(view.runtime.mcp_manager().is_ok());
+        let label = crate::saved_runtime_adapter::tool_runtime_label(
+            &view.controller,
+            mode,
+            view.record.tool_mode,
         );
-    } else {
-        assert!(
-            body.get("tools")
-                .is_none_or(|tools| tools.as_array().is_some_and(Vec::is_empty))
-        );
-        assert!(
-            !body
-                .to_string()
-                .contains("NATIVE_PROJECT_RESOURCE_MUST_STAY_UNAVAILABLE")
-        );
-        cx.read(|cx| {
-            let view = root.read(cx);
-            assert!(!view.controller.has_available_tool_definitions());
-            assert!(view.runtime.mcp_manager().is_err());
+        if mode.is_fixture() {
+            assert_eq!(label, "Fixture tool runtime");
+        } else {
             assert_eq!(
-                crate::saved_runtime_adapter::tool_runtime_label(&view.controller, false),
-                "Tools unavailable"
+                label,
+                match view.record.tool_mode {
+                    bello_agent_core::workspace::ChatToolMode::Editing => "Editing tools",
+                    bello_agent_core::workspace::ChatToolMode::ReadOnly => "Read-only tools",
+                }
             );
-        });
-    }
+        }
+    });
+    // The tool ran in the project and its listing went back to the model.
+    let mut body = None;
+    wait(cx, |_| {
+        body = rx.try_recv().ok();
+        body.is_some()
+    });
+    let listed = body
+        .unwrap()
+        .to_string()
+        .split("\"function_call_output\"")
+        .nth(1)
+        .unwrap_or_default()
+        .to_owned();
+    assert!(listed.contains("AGENTS.md"), "{listed}");
     worker.join().unwrap();
     wait(cx, |cx| {
         cx.read(|cx| root.read(cx).session.state != bello_agent_core::RunState::Running)
@@ -909,7 +946,8 @@ fn delete_replaces_pending_chat_with_disconnected_controller_and_preserves_compo
         assert_eq!(
             crate::saved_runtime_adapter::tool_runtime_label(
                 &view.controller,
-                view.connections.presentation.mode.is_fixture()
+                view.connections.presentation.mode,
+                view.record.tool_mode,
             ),
             "Tools unavailable"
         );
@@ -1809,7 +1847,8 @@ fn saved_settings_require_trust_then_open_the_same_pending_chat_without_sending(
         assert_eq!(
             crate::saved_runtime_adapter::tool_runtime_label(
                 &view.controller,
-                view.connections.presentation.mode.is_fixture()
+                view.connections.presentation.mode,
+                view.record.tool_mode,
             ),
             "Fixture tool runtime"
         );

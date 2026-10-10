@@ -92,8 +92,7 @@ impl SkillTarget {
 }
 impl AgentView {
     pub(crate) fn can_choose_skills(&self) -> bool {
-        self.connections.presentation.mode != crate::launch_authority::AuthorityMode::Native
-            && self.can_edit_skill_selection()
+        self.can_edit_skill_selection()
     }
     fn can_edit_skill_selection(&self) -> bool {
         !self.shutting_down

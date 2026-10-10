@@ -20,7 +20,7 @@ use secure_input::{HEADER_BYTES, KEY_BYTES, SecureInput, SecureInputEvent};
 use std::{cell::Cell, collections::BTreeMap, fmt, rc::Rc};
 
 const FIXTURE_NOTICE: &str = "Fixture-only · In-memory connections. Use only numeric loopback URLs, the key synthetic-project-fixture-only, and header values synthetic-header-fixture-only. Do not enter real keys. Nothing is saved to Keychain.";
-const NATIVE_NOTICE: &str = "Experimental native authority · Connections are stored in the separate Bello Agent Rust Keychain vault. No Swift settings are imported. Native signing, credential input and no-prompt acceptance remain under validation. Chats can send to your explicitly saved endpoint; model tools, MCP and project resources remain unavailable.";
+const NATIVE_NOTICE: &str = "Experimental native authority · Connections are stored in the separate Bello Agent Rust Keychain vault. No Swift settings are imported. Native signing, credential input and no-prompt acceptance remain under validation. Chats send to your explicitly saved endpoint, and in a trusted project they offer its tools (read-only or editing, by the chat's mode), MCP and project instructions and skills, as Swift does.";
 const SCOPE_NOTICE: &str = "This Rust preview covers Connections only. Catalog-assisted setup is fixture-only. Mini models, routing/reasoning controls and the other Settings sections are not available here. Saving does not send a request; send explicitly from a chat.";
 
 /// Only user-typed replacements belong in key/headers. Never populate these

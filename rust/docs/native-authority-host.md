@@ -37,13 +37,17 @@ no model request. Storage labels distinguish native Keychain and the in-memory
 fixture; mode presentation never changes the backend's validation provenance.
 Synthetic storage continues to reject ordinary keys and non-loopback endpoints.
 
-The named `SavedRuntimeFactory::connection_only` composition retains saved
-project trust, immutable catalog/chat identity, connection confirmation and
-revocation checks. It offers no builtin tool definitions, creates or reuses no
-MCP manager, and reads no project instruction/skill resources. Choosing Editing
-in persisted metadata does not enable those capabilities. The existing tool
-factory still requires explicit capabilities and remains the fixture tool path.
-There is no Swift vault or conversation import and no migration of credentials.
+Since 2026-10-10 native saved chats use the same tool-capable
+`SavedRuntimeFactory` composition as the fake-vault fixture: in a trusted
+project the chat's mode offers Swift's read-only tools (read, ls, find, grep)
+or its editing tools (those plus write, edit and bash), the project's MCP
+manager, and its instructions and skills, with the factory's existing trust,
+identity, connection and revocation checks before every request and tool
+batch. Tools see the reader's own HOME, and PATH, LANG and TMPDIR from the
+process with Swift's defaults, as Swift's `toolEnvironment` does (the fixture
+keeps HOME in the project folder). `SavedRuntimeFactory::connection_only`
+remains available but no launch uses it. Swift chats import from the command
+line (`--import-swift`); there is no migration of the vault or credentials.
 
 Native startup presents an unconfigured placeholder while the existing background
 loader restores the selected saved chat. New Chat and connection preflight use
@@ -75,7 +79,9 @@ Local results are recorded in the
 Published CI must be checked for the exact pushed revision, rather than inferred
 from compilation or an earlier revision's passing run.
 
-Actual signed-app vault access, no-prompt behavior, secure native input/IME,
-VoiceOver, full lifecycle, model catalog discovery, other Settings sections and
-production tool enablement remain separate acceptance work. This checkpoint is
+A locally signed app's vault access without prompts was accepted on
+2026-10-10 (`validation/native-signed-acceptance-2026-10-10`). Secure native
+input/IME, VoiceOver, full lifecycle, model catalog discovery, other Settings
+sections and macOS acceptance of tools in the signed app remain separate
+acceptance work. This checkpoint is
 not a release or native end-to-end credential certification.

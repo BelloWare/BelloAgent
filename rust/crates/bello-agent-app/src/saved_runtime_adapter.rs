@@ -27,13 +27,19 @@ impl AppRuntime {
         legacy: Option<Arc<Configuration>>,
     ) -> Self {
         if mode == crate::launch_authority::AuthorityMode::Native {
-            Self {
-                saved: SavedRuntimeFactory::connection_only(authority, workspace.clone()),
-                workspace,
-                // Native launch rejects legacy credentials before any input.
-                legacy: None,
-            }
+            // Saved chats get the project's tools as Swift offers them: the
+            // chat's mode chooses read-only or editing tools in the trusted
+            // project, and tools see the reader's own home, as Swift's
+            // `toolEnvironment` does (tests keep `home`, the project folder).
+            // Native launch rejects legacy credentials before any input.
+            #[cfg(not(test))]
+            let home = {
+                let _ = home;
+                user_home()
+            };
+            Self::new(authority, workspace, Self::options(home, true), None)
         } else {
+            // The fake-vault fixture keeps tools in the project folder.
             Self::new(
                 authority,
                 workspace,
@@ -54,10 +60,11 @@ impl AppRuntime {
             legacy,
         }
     }
-    pub fn options(home: PathBuf, fixture: bool) -> SavedChatOptions {
-        // Only the explicit fake-vault launch opts in. Native production startup
-        // remains disabled until the separate signing/Keychain acceptance gate.
-        let read_only_capabilities = if fixture {
+    /// The tools a saved chat may offer, by its mode: Swift's read-only set
+    /// (read, ls, find, grep) and, for editing, write, edit and bash too.
+    /// Ordinary startup (`tools` false) offers none.
+    pub fn options(home: PathBuf, tools: bool) -> SavedChatOptions {
+        let read_only_capabilities = if tools {
             #[cfg(target_os = "macos")]
             {
                 vec![
@@ -76,7 +83,7 @@ impl AppRuntime {
         };
         let editing_capabilities = read_only_capabilities.clone();
         #[cfg(target_os = "macos")]
-        let editing_capabilities = if fixture {
+        let editing_capabilities = if tools {
             let mut capabilities = editing_capabilities;
             capabilities.extend([
                 bello_agent_core::tools::Capability::Write,
@@ -86,7 +93,7 @@ impl AppRuntime {
         } else {
             editing_capabilities
         };
-        let editing_capabilities = if fixture {
+        let editing_capabilities = if tools {
             let mut capabilities = editing_capabilities;
             capabilities.push(bello_agent_core::tools::Capability::Bash);
             capabilities
@@ -247,13 +254,30 @@ fn unavailable() -> Error {
     Error::Invalid("The workspace is unavailable".into())
 }
 
+/// The reader's home: `HOME`, else the account's (Swift: `NSHomeDirectory`).
+/// None leaves no tool home, and saved chats then refuse to open with tools.
+#[cfg(not(test))]
+fn user_home() -> PathBuf {
+    std::env::home_dir().unwrap_or_default()
+}
+
 /// Presentation derives from the actual, currently admitted factory capability
-/// set. Saved IDs or profile metadata alone never imply available tools.
-pub(crate) fn tool_runtime_label(controller: &Controller, fixture: bool) -> &'static str {
-    if fixture && controller.has_available_tool_definitions() {
-        "Fixture tool runtime"
-    } else {
-        "Tools unavailable"
+/// set. Saved IDs or profile metadata alone never imply available tools. A
+/// native chat with tools reads as Swift's starter card reads, by its mode.
+pub(crate) fn tool_runtime_label(
+    controller: &Controller,
+    mode: crate::launch_authority::AuthorityMode,
+    tools: ChatToolMode,
+) -> &'static str {
+    use crate::launch_authority::AuthorityMode;
+    if !controller.has_available_tool_definitions() {
+        return "Tools unavailable";
+    }
+    match (mode, tools) {
+        (AuthorityMode::Fixture, _) => "Fixture tool runtime",
+        (AuthorityMode::Native, ChatToolMode::ReadOnly) => "Read-only tools",
+        (AuthorityMode::Native, ChatToolMode::Editing) => "Editing tools",
+        (AuthorityMode::Unavailable, _) => "Tools unavailable",
     }
 }
 
@@ -264,13 +288,19 @@ mod presentation_tests {
         let controller =
             bello_agent_core::Controller::new(bello_agent_core::SessionStore::pending(), None)
                 .unwrap();
-        assert_eq!(
-            super::tool_runtime_label(&controller, false),
-            "Tools unavailable"
-        );
-        assert_eq!(
-            super::tool_runtime_label(&controller, true),
-            "Tools unavailable"
-        );
+        use crate::launch_authority::AuthorityMode;
+        use bello_agent_core::workspace::ChatToolMode;
+        for mode in [
+            AuthorityMode::Unavailable,
+            AuthorityMode::Fixture,
+            AuthorityMode::Native,
+        ] {
+            for tools in [ChatToolMode::ReadOnly, ChatToolMode::Editing] {
+                assert_eq!(
+                    super::tool_runtime_label(&controller, mode, tools),
+                    "Tools unavailable"
+                );
+            }
+        }
     }
 }

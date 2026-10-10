@@ -269,11 +269,6 @@ impl AgentView {
     }
     fn update_mcp_chat_status(&mut self) {
         self.mcp.presentation.chat_label = self.record.title.clone();
-        if self.connections.presentation.mode == crate::launch_authority::AuthorityMode::Native {
-            self.mcp.presentation.editing = false;
-            self.mcp.presentation.can_enable_editing = false;
-            return;
-        }
         self.mcp.presentation.editing = self.record.tool_mode == ChatToolMode::Editing
             && self.record.connection_id.is_some()
             && self.controller.configured()
@@ -322,14 +317,6 @@ impl AgentView {
         }
     }
     fn load_mcp(&mut self, cx: &mut Context<Self>) {
-        if self.connections.presentation.mode == crate::launch_authority::AuthorityMode::Native {
-            self.mcp.presentation.ready = false;
-            self.mcp.presentation.notice =
-                "MCP configuration and tools are unavailable for native connection-only chats."
-                    .into();
-            self.mcp.publish(cx);
-            return;
-        }
         if self.mcp.busy() || self.mcp.admission_blocked {
             return;
         }
