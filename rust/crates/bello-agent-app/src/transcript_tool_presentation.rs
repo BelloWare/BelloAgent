@@ -114,6 +114,9 @@ pub(super) fn project(session: &Session, first: usize) -> Vec<ProjectedRow> {
         })
         .collect();
     let suppressed: HashSet<usize> = paired.values().copied().collect();
+    // A reply deferred by an automatic compaction was never requested; Swift
+    // shows only the compaction row and the reply after it.
+    let deferred = crate::compaction_actions::deferred_replies(session);
     let mut rows = Vec::new();
     for (index, message) in session.messages.iter().enumerate().skip(first) {
         match &message.tool_record {
@@ -136,6 +139,7 @@ pub(super) fn project(session: &Session, first: usize) -> Vec<ProjectedRow> {
             }
             Some(ToolRecord::Result(_)) => {}
             _ if message.role == "toolResult" => rows.push(ProjectedRow::Result(index)),
+            None if deferred.contains(message.id.as_str()) => {}
             _ => rows.push(ProjectedRow::Message(index)),
         }
     }

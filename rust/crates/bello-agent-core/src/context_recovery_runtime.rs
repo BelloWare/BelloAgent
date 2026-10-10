@@ -14,6 +14,13 @@ struct Binding {
     applied: Option<project_input_runtime::AppliedProjectResources>,
 }
 
+/// What started an in-turn compaction: a structured context rejection of the
+/// request, or Swift's pre-request threshold with its already prepared plan.
+enum Trigger<'a> {
+    Rejection(&'a Failure),
+    Threshold(Box<compaction::Prepared>),
+}
+
 impl Controller {
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn recover_context_rejection(
@@ -30,6 +37,147 @@ impl Controller {
         if !failure.category.context_rejection() {
             return Ok(None);
         }
+        self.compact_in_turn(
+            configuration,
+            item,
+            snapshot,
+            profile,
+            instructions,
+            definitions,
+            Trigger::Rejection(failure),
+            cancel,
+        )
+        .await
+    }
+
+    /// Swift `SessionRun`: before each model request (except the first request
+    /// of an explicit Retry), a request at or above `compactionThreshold`
+    /// compacts first when something can be compacted. Nothing useful to
+    /// replace is ignored while the intact request fits; any other failure
+    /// ends the run with the original history intact.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn compact_before_request(
+        &self,
+        configuration: &Arc<Configuration>,
+        item: &Submission,
+        snapshot: &Session,
+        profile: &Profile,
+        instructions: &str,
+        definitions: &[crate::tools::ToolDefinition],
+        cancel: CancellationToken,
+    ) -> Result<Option<Session>> {
+        // The legacy synthetic dynamic-resource constructor keeps its explicit
+        // automatic-compaction refusal, as for context recovery.
+        #[cfg(feature = "synthetic-authority")]
+        if self.resources.is_some() {
+            return Ok(None);
+        }
+        let messages = Arc::new(snapshot.messages.clone());
+        let (measure_messages, measure_profile, measure_instructions, measure_definitions) = (
+            messages.clone(),
+            profile.clone(),
+            instructions.to_owned(),
+            definitions.to_vec(),
+        );
+        let session_id = snapshot.id.clone();
+        let measure_session = session_id.clone();
+        let fits = tokio::task::spawn_blocking(move || -> Result<Option<bool>> {
+            let request = crate::provider::request_body_with_tools(
+                &measure_profile,
+                &measure_messages,
+                &measure_instructions,
+                &measure_session,
+                &measure_definitions,
+            )?;
+            let threshold = compaction::compaction_threshold(
+                &measure_messages,
+                &measure_profile,
+                &measure_instructions,
+            )?;
+            if compaction::estimated_request_tokens(&request) < threshold
+                || !compaction::can_compact(&measure_messages)
+            {
+                return Ok(None);
+            }
+            Ok(Some(compaction::request_fits(&request, &measure_profile)))
+        })
+        .await
+        .map_err(|_| invalid("Compaction threshold worker failed"))??;
+        let Some(fits) = fits else {
+            return Ok(None);
+        };
+        // A consumed or exhausted durable receipt leaves the request intact.
+        {
+            let inner = self
+                .inner
+                .lock()
+                .map_err(|_| invalid("Session is unavailable"))?;
+            let session = inner.store.snapshot_ref();
+            if !session
+                .active_reply
+                .as_deref()
+                .is_some_and(|reply| session.can_recover_context(reply))
+            {
+                return Ok(None);
+            }
+        }
+        let (preparation_profile, preparation_instructions, preparation_definitions) = (
+            profile.clone(),
+            instructions.to_owned(),
+            definitions.to_vec(),
+        );
+        let preparation_cancel = cancel.clone();
+        let operation_id = Uuid::new_v4().to_string();
+        let preparation_id = operation_id.clone();
+        let prepared = tokio::task::spawn_blocking(move || {
+            compaction::prepare_threshold_checked(
+                &messages,
+                &preparation_profile,
+                &preparation_instructions,
+                &session_id,
+                &preparation_definitions,
+                &preparation_id,
+                || {
+                    if preparation_cancel.is_cancelled() {
+                        Err(Error::Cancelled)
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+        })
+        .await
+        .map_err(|_| invalid("Compaction preparation worker failed"))??;
+        let prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(_) if fits => return Ok(None),
+            Err(unavailable) => return Err(invalid(unavailable)),
+        };
+        self.compact_in_turn(
+            configuration,
+            item,
+            snapshot,
+            profile,
+            instructions,
+            definitions,
+            Trigger::Threshold(Box::new(prepared)),
+            cancel,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn compact_in_turn(
+        &self,
+        configuration: &Arc<Configuration>,
+        item: &Submission,
+        snapshot: &Session,
+        profile: &Profile,
+        instructions: &str,
+        definitions: &[crate::tools::ToolDefinition],
+        trigger: Trigger<'_>,
+        cancel: CancellationToken,
+    ) -> Result<Option<Session>> {
         // This legacy fixture constructor resolves resources differently. Keep
         // the existing explicit compaction refusal until equivalent binding is ported.
         #[cfg(feature = "synthetic-authority")]
@@ -68,7 +216,14 @@ impl Controller {
             "{:x}",
             Sha256::digest(crate::provider::serialize_request(&request)?)
         );
-        let operation_id = Uuid::new_v4().to_string();
+        let (failure, mut ready) = match trigger {
+            Trigger::Rejection(failure) => (Some(failure), None),
+            Trigger::Threshold(prepared) => (None, Some(*prepared)),
+        };
+        let operation_id = ready.as_ref().map_or_else(
+            || Uuid::new_v4().to_string(),
+            |prepared| prepared.checkpoint.operation_id.clone(),
+        );
         #[cfg(test)]
         self.pause_input_commit_for_test("recovery-consume").await;
         {
@@ -77,13 +232,14 @@ impl Controller {
                 .lock()
                 .map_err(|_| invalid("Session is unavailable"))?;
             self.check_recovery_binding(&inner, configuration, &binding, &cancel)?;
-            inner.store.transact(|session| {
-                session.begin_context_recovery(
+            inner.store.transact(|session| match failure {
+                Some(failure) => session.begin_context_recovery(
                     &operation_id,
                     reply_id,
                     failure.clone(),
                     fingerprint,
-                )
+                ),
+                None => session.begin_threshold_compaction(&operation_id, reply_id, fingerprint),
             })?;
             self.publish(&inner);
         }
@@ -109,25 +265,31 @@ impl Controller {
             let preparation_definitions = definitions.to_vec();
             let preparation_id = operation_id.clone();
             let preparation_cancel = cancel.clone();
-            let prepared = tokio::task::spawn_blocking(move || {
-                compaction::prepare_recovery_checked(
-                    &frozen.messages,
-                    &preparation_profile,
-                    &preparation_instructions,
-                    &frozen.id,
-                    &preparation_definitions,
-                    &preparation_id,
-                    || {
-                        if preparation_cancel.is_cancelled() {
-                            Err(Error::Cancelled)
-                        } else {
-                            Ok(())
-                        }
-                    },
-                )
-            })
-            .await
-            .map_err(|_| invalid("Recovery preparation worker failed"))??;
+            let prepared = if let Some(prepared) = ready.take() {
+                // Adoption still requires these exact source rows to be active.
+                drop(frozen);
+                prepared
+            } else {
+                tokio::task::spawn_blocking(move || {
+                    compaction::prepare_recovery_checked(
+                        &frozen.messages,
+                        &preparation_profile,
+                        &preparation_instructions,
+                        &frozen.id,
+                        &preparation_definitions,
+                        &preparation_id,
+                        || {
+                            if preparation_cancel.is_cancelled() {
+                                Err(Error::Cancelled)
+                            } else {
+                                Ok(())
+                            }
+                        },
+                    )
+                })
+                .await
+                .map_err(|_| invalid("Recovery preparation worker failed"))??
+            };
             configuration.confirm_for_request().await?;
             self.confirm_runtime_authority(cancel.clone()).await?;
             self.confirm_recovery_resources(
@@ -342,11 +504,14 @@ impl Controller {
                 self.publish(&inner);
                 if cancelled {
                     Err(Error::Cancelled)
-                } else {
+                } else if let Some(failure) = failure {
                     Err(invalid(format!(
                         "{}; context recovery stopped: {error}",
                         failure.message
                     )))
+                } else {
+                    // Swift ends the run with the compaction's own error.
+                    Err(invalid(error.to_string()))
                 }
             }
         }

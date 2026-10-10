@@ -502,6 +502,7 @@ impl Controller {
                     self.image_delivery_failure(&mut inner, invalid("Skill scope or dependencies changed before delivery; queued input is retained"));
                     return;
                 }
+                let resuming = first.is_some();
                 let next = if let Some(item) = first.take() {
                     Ok(Some(item))
                 } else {
@@ -513,7 +514,7 @@ impl Controller {
                     Ok(Some(item)) => {
                         inner.applied_project = prepared.1;
                         self.publish(&inner);
-                        Some((item, inner.store.snapshot()))
+                        Some((item, inner.store.snapshot(), resuming))
                     }
                     Ok(None) => {
                         self.worker_finished(&mut inner);
@@ -528,10 +529,10 @@ impl Controller {
                     }
                 }
             };
-            let Some((item, session)) = admitted else {
+            let Some((item, session, resuming)) = admitted else {
                 return;
             };
-            self.run_turn(item, session, cancel).await;
+            self.run_turn(item, session, resuming, cancel).await;
             {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
                 inner.cancel = None;

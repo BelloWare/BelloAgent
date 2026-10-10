@@ -210,6 +210,13 @@ pub(crate) fn progress_label(session: &bello_agent_core::Session) -> &'static st
                     )
         })
     {
+        if receipt.reason == context_recovery::Reason::Threshold {
+            return match receipt.phase {
+                context_recovery::Phase::Preparing => "Compacting · Preparing checkpoint…",
+                context_recovery::Phase::Summarizing => "Compacting · Summarizing…",
+                _ => "Working · Generating response…",
+            };
+        }
         return recovery_label(receipt);
     }
     match session
@@ -232,11 +239,19 @@ pub(crate) fn row_label<'a>(
             || receipt.progress_id == message.id
             || receipt.retry_reply_id.as_deref() == Some(message.id.as_str())
     }) {
+        if receipt.reason == context_recovery::Reason::Threshold {
+            // Swift's automatic compaction is one execution row; the deferred
+            // reply was never requested and the reply after it is ordinary.
+            return (receipt.progress_id == message.id).then(|| threshold_label(receipt));
+        }
         if receipt.failed_reply_id == message.id {
             // Provider text is evidence, not a safe display string. Never expose
             // raw messages, request fingerprints, endpoints or attempt metadata.
-            return Some(match receipt.failure.category {
-                bello_agent_core::provider_failure::Category::InputPlusOutputContextExceeded => {
+            let category = receipt.failure.as_ref().map(|failure| &failure.category);
+            return Some(match category {
+                Some(
+                    bello_agent_core::provider_failure::Category::InputPlusOutputContextExceeded,
+                ) => {
                     "Context rejected · Input plus output exceeded context; failed attempt retained"
                 }
                 _ => "Context rejected · Input exceeded context; failed attempt retained",
@@ -281,6 +296,52 @@ pub(crate) fn row_label<'a>(
 #[path = "compaction_actions_tests.rs"]
 mod tests;
 
+/// Replies deferred, unrequested and empty, by an automatic compaction. Swift
+/// shows only the compaction row and the reply after it.
+pub(crate) fn deferred_replies(
+    session: &bello_agent_core::Session,
+) -> std::collections::HashSet<&str> {
+    let deferred: std::collections::HashSet<&str> = session
+        .context_recoveries
+        .iter()
+        .filter(|receipt| receipt.reason == context_recovery::Reason::Threshold)
+        .map(|receipt| receipt.failed_reply_id.as_str())
+        .collect();
+    session
+        .messages
+        .iter()
+        .filter(|row| {
+            deferred.contains(row.id.as_str())
+                && row.tool_record.is_none()
+                && row.text.is_empty()
+                && row.reasoning.is_empty()
+        })
+        .map(|row| row.id.as_str())
+        .collect()
+}
+
+/// Swift's "Compaction · …" execution row for `compactContext(reason: "threshold")`.
+fn threshold_label(receipt: &context_recovery::Receipt) -> &'static str {
+    use context_recovery::Phase;
+    match receipt.phase {
+        Phase::Preparing => "Compaction · Preparing · threshold",
+        Phase::Summarizing => "Compaction · Summary request · attempt 1",
+        Phase::RetryReady | Phase::Retrying | Phase::Completed => {
+            "Compaction · Checkpoint durably adopted"
+        }
+        Phase::Failed if receipt.summary_id.is_some() => "Compaction · Checkpoint durably adopted",
+        Phase::Failed => "Compaction · Failed; original context retained",
+        Phase::Cancelled if receipt.summary_id.is_some() => {
+            "Compaction · Checkpoint durably adopted"
+        }
+        Phase::Cancelled => "Compaction · Cancelled; original context retained",
+        Phase::Interrupted if receipt.summary_id.is_some() => {
+            "Compaction · Checkpoint durably adopted"
+        }
+        Phase::Interrupted => "Compaction · Interrupted; original context retained",
+    }
+}
+
 // These labels are deliberately source-safe constants. Raw provider errors can
 // include secrets or copied request content even in a reopened receipt.
 fn recovery_label(receipt: &context_recovery::Receipt) -> &'static str {
@@ -324,8 +385,17 @@ pub(crate) fn recovery_usage_label(session: &bello_agent_core::Session) -> Optio
         return None;
     }
     let mut attempted = std::collections::BTreeSet::new();
+    // A reply deferred by an automatic compaction made no request.
+    let deferred: std::collections::BTreeSet<_> = session
+        .context_recoveries
+        .iter()
+        .filter(|receipt| receipt.reason == context_recovery::Reason::Threshold)
+        .map(|receipt| receipt.failed_reply_id.as_str())
+        .collect();
     for receipt in &session.context_recoveries {
-        attempted.insert(receipt.failed_reply_id.as_str());
+        if !deferred.contains(receipt.failed_reply_id.as_str()) {
+            attempted.insert(receipt.failed_reply_id.as_str());
+        }
         if receipt.summary_attempts > 0 {
             attempted.insert(receipt.progress_id.as_str());
         }
@@ -357,6 +427,7 @@ pub(crate) fn recovery_usage_label(session: &bello_agent_core::Session) -> Optio
             && row.role == "assistant"
             && row.compaction.is_none()
             && !progress_rows.contains(row.id.as_str())
+            && !deferred.contains(row.id.as_str())
         {
             attempted.insert(row.id.as_str());
         }

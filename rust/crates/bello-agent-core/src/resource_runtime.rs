@@ -444,8 +444,8 @@ impl Controller {
             let Some((item, session)) = admitted else {
                 return;
             };
-            retry = None;
-            self.run_turn(item, session, cancel).await;
+            let resuming = retry.take().is_some();
+            self.run_turn(item, session, resuming, cancel).await;
             {
                 let mut inner = self.inner.lock().expect("session mutex poisoned");
                 inner.cancel = None;

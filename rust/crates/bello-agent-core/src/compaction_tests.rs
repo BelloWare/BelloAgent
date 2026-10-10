@@ -624,3 +624,251 @@ fn prepared_debug_never_formats_request_or_retained_payload() {
     }
     assert!(debug.contains("input_items"));
 }
+
+// Threshold parity: values Swift 0.1.122's own policy, planner, source builder
+// and counter produce for the same compact case specs (see the oracle README).
+fn oracle_rows(spec: &Value) -> Vec<Message> {
+    if let Some(huge) = spec["huge"].as_u64() {
+        return vec![row("u0", "user", &"x".repeat(huge as usize))];
+    }
+    let n = spec["chat"].as_u64().unwrap();
+    let t = (if spec["unicode"] == true {
+        "Objective and progress évidence 😀 "
+    } else {
+        "Objective and progress evidence "
+    })
+    .repeat(spec["size"].as_u64().unwrap() as usize);
+    let mut rows = Vec::new();
+    for i in 0..n {
+        rows.push(row(&format!("u{i}"), "user", &format!("Question {i}: {t}")));
+        if spec["answered"] != false || i + 1 < n {
+            rows.push(row(
+                &format!("a{i}"),
+                "assistant",
+                &format!("Answer {i}: {t}{t}"),
+            ));
+        }
+    }
+    rows
+}
+#[test]
+fn threshold_request_count_and_reserves_match_the_swift_oracle() {
+    let cases: Vec<Value> = serde_json::from_str(include_str!(
+        "../../../docs/validation/compaction-threshold-swift-oracle-2026-10-10/cases.json"
+    ))
+    .unwrap();
+    let expected: Vec<Value> = serde_json::from_str(include_str!(
+        "../../../docs/validation/compaction-threshold-swift-oracle-2026-10-10/swift-thresholds.json"
+    ))
+    .unwrap();
+    assert_eq!(cases.len(), expected.len());
+    for (case, expected) in cases.iter().zip(&expected) {
+        let name = case["name"].as_str().unwrap();
+        assert_eq!(expected["name"], name);
+        let profile: Profile = serde_json::from_value(case["profile"].clone()).unwrap();
+        let instructions = case["instructions"].as_str().unwrap();
+        let messages = oracle_rows(&case["rows"]);
+        let request =
+            crate::provider::request_body_with_tools(&profile, &messages, instructions, "s", &[])
+                .unwrap();
+        assert_eq!(
+            estimated_request_tokens(&request),
+            expected["requestTokens"].as_u64().unwrap(),
+            "{name}"
+        );
+        assert_eq!(
+            safety_margin(profile.context_window),
+            expected["safetyMargin"].as_u64().unwrap(),
+            "{name}"
+        );
+        assert_eq!(
+            u64::from(summary_tokens(&profile)),
+            expected["summaryTokens"].as_u64().unwrap(),
+            "{name}"
+        );
+        match compaction_threshold(&messages, &profile, instructions) {
+            Ok(threshold) => assert_eq!(Some(threshold), expected["threshold"].as_u64(), "{name}"),
+            Err(error) => {
+                assert_eq!(expected["thresholdError"], "compact_budget", "{name}");
+                assert_eq!(error.to_string(), BUDGET_REFUSAL);
+            }
+        }
+    }
+}
+#[test]
+fn trigger_reserves_generation_instruction_margin_and_growth_like_swift() {
+    let mut p = profile();
+    // 65536 - (max(4096, 16384 + 100) + 655 + 16384)
+    assert_eq!(trigger(&p, 100).unwrap(), 32_013);
+    p.model_output_limit = Some(2000);
+    // The output budget dominates a small generation allowance.
+    assert_eq!(trigger(&p, 100).unwrap(), 65_536 - (4096 + 655 + 16_384));
+    assert_eq!(visible_target(&p, None), 500);
+    assert_eq!(visible_target(&profile(), None), 3000);
+    assert_eq!(visible_target(&profile(), Some(400)), 100);
+    assert_eq!(safety_margin(50), 1);
+    assert_eq!(safety_margin(1_000_000), 1024);
+    p.context_window = 60;
+    p.max_output_tokens = 10;
+    p.model_output_limit = None;
+    // A generation allowance below 16 tokens cannot be reserved.
+    assert_eq!(summary_tokens(&p), 15);
+    assert!(trigger(&p, 0).is_err());
+    p.context_window = 300;
+    // 300 - (max(10, 75) + 3 + 75)
+    assert_eq!(trigger(&p, 0).unwrap(), 147);
+    p.max_output_tokens = 250;
+    assert!(trigger(&p, 0).is_err());
+}
+#[test]
+fn can_compact_needs_new_unprotected_history() {
+    assert!(!can_compact(&[]));
+    // Only the unanswered input exists: it is protected.
+    assert!(!can_compact(&[row("u", "user", "Only input")]));
+    let messages = history();
+    assert!(can_compact(&messages));
+    // Nothing added since the last checkpoint.
+    let prepared = plan(&messages);
+    let summary = validate_candidate(
+        &prepared,
+        "summary".into(),
+        &reply("Objective retained."),
+        &profile(),
+        "Trusted system instructions",
+        "session",
+        &[],
+    )
+    .unwrap();
+    let mut compacted = messages.clone();
+    compacted.push(summary);
+    assert!(!can_compact(&compacted));
+    compacted.push(row("a2", "assistant", "New answer"));
+    assert!(can_compact(&compacted));
+}
+fn threshold_plan(messages: &[Message]) -> std::result::Result<Prepared, String> {
+    prepare_threshold_checked(
+        messages,
+        &profile(),
+        "Trusted system instructions",
+        "session",
+        &[],
+        "operation",
+        || Ok(()),
+    )
+    .unwrap()
+}
+fn long_chat(rounds: usize) -> Vec<Message> {
+    (0..rounds)
+        .flat_map(|i| {
+            [
+                row(&format!("u{i}"), "user", &"Objective detail. ".repeat(400)),
+                row(
+                    &format!("a{i}"),
+                    "assistant",
+                    &"Progress evidence. ".repeat(800),
+                ),
+            ]
+        })
+        .collect()
+}
+#[test]
+fn threshold_plan_lands_below_the_next_threshold_with_room_for_the_summary() {
+    let messages = long_chat(7);
+    let p = profile();
+    let request = crate::provider::request_body_with_tools(
+        &p,
+        &messages,
+        "Trusted system instructions",
+        "session",
+        &[],
+    )
+    .unwrap();
+    let before = estimated_request_tokens(&request);
+    let threshold = compaction_threshold(&messages, &p, "Trusted system instructions").unwrap();
+    assert!(before >= threshold, "{before} < {threshold}");
+    let prepared = threshold_plan(&messages).unwrap();
+    assert_eq!(prepared.mode, Mode::Threshold);
+    // The retained tail plus the whole summary allowance is under the threshold
+    // the instruction for this cut implies; the manual rule would keep more.
+    let manual = plan(&messages);
+    assert!(prepared.kept.len() <= manual.kept.len());
+    assert!(prepared.kept.len() < messages.len());
+    let instruction = prepared.request["input"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(instruction.contains("Optional user focus: none"));
+    // A summary that frees little is refused as no progress for an automatic
+    // compaction, which the manual rule would have accepted.
+    let verbose = "Objective detail. ".repeat(4000);
+    assert!(
+        validate_candidate(
+            &prepared,
+            "s1".into(),
+            &reply(&verbose),
+            &p,
+            "Trusted system instructions",
+            "session",
+            &[]
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("did not free sufficient context (before")
+    );
+    let summary = validate_candidate(
+        &prepared,
+        "s2".into(),
+        &reply("Objective retained."),
+        &p,
+        "Trusted system instructions",
+        "session",
+        &[],
+    )
+    .unwrap();
+    let mut compacted = messages.clone();
+    compacted.push(summary);
+    let request = crate::provider::request_body_with_tools(
+        &p,
+        &compacted,
+        "Trusted system instructions",
+        "session",
+        &[],
+    )
+    .unwrap();
+    assert!(
+        estimated_request_tokens(&request)
+            < compaction_threshold(&compacted, &p, "Trusted system instructions").unwrap()
+    );
+}
+#[test]
+fn threshold_plan_reports_unavailable_for_nothing_new_or_only_required_input() {
+    let messages = long_chat(7);
+    let prepared = threshold_plan(&messages).unwrap();
+    let summary = validate_candidate(
+        &prepared,
+        "s".into(),
+        &reply("Objective retained."),
+        &profile(),
+        "Trusted system instructions",
+        "session",
+        &[],
+    )
+    .unwrap();
+    let mut compacted = messages.clone();
+    compacted.push(summary);
+    assert!(
+        threshold_plan(&compacted)
+            .unwrap_err()
+            .starts_with("Already compacted")
+    );
+    // A single unanswered input is required and cannot be summarized.
+    assert!(
+        threshold_plan(&[row("u", "user", "Input")])
+            .unwrap_err()
+            .starts_with("Nothing useful to compact")
+    );
+}
