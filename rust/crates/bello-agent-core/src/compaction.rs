@@ -864,7 +864,7 @@ fn prepare_mode_checked(
             .filter(|tools| !tools.is_empty())
             .map_or(0, |_| tokens(&original["tools"].to_string())),
     );
-    let selection = if mode == Mode::Threshold {
+    let selection = if mode != Mode::Manual {
         match threshold_cut(
             &active,
             &body,
@@ -910,7 +910,7 @@ fn prepare_mode_checked(
         ));
     }
     if !selection.useful {
-        return Err(invalid(if mode == Mode::Threshold {
+        return Err(invalid(if mode != Mode::Manual {
             "No useful checkpoint can be planned while preserving required inputs and continuation headroom. Original context is unchanged."
         } else {
             "No useful checkpoint fits beside required inputs and continuation headroom; original context is unchanged"
