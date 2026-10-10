@@ -112,7 +112,12 @@ fn a_finished_turns_work_folds_behind_one_line_above_its_answer(cx: &mut TestApp
     assert!(bounds(&mut visual, "transcript-text-working").is_none());
     assert!(bounds(&mut visual, "transcript-row-answer-think").is_none());
     let words = bounds(&mut visual, "transcript-text-answer").expect("the answer");
-    assert!(cx.read(|cx| child.read(cx).tool_card_selectors()).len() == 3);
+    // Folded rows are not list items at all.
+    assert!(
+        cx.read(|cx| child.read(cx).tool_card_selectors())
+            .is_empty()
+    );
+    assert!(!ids.iter().any(|id| id == "working"));
 
     visual.simulate_click(control.center(), Modifiers::none());
     cx.run_until_parked();
@@ -121,6 +126,7 @@ fn a_finished_turns_work_folds_behind_one_line_above_its_answer(cx: &mut TestApp
         vec![("2 tool calls · 1 message · 1 subagent".to_owned(), true)]
     );
     let narrated = bounds(&mut visual, "transcript-text-working").expect("the work, open");
+    assert_eq!(cx.read(|cx| child.read(cx).tool_card_selectors()).len(), 3);
     assert!(bounds(&mut visual, "transcript-row-answer-think").is_some());
     let opened = bounds(&mut visual, "transcript-text-answer").unwrap();
     assert!(narrated.top() > control.bottom());
@@ -161,6 +167,23 @@ fn revealing_folded_work_opens_its_turn(cx: &mut TestAppContext) {
     let (_directory, mut visual, child, input) = host_rows(finished_turns(), RunState::Paused, cx);
     assert!(child.update(cx, |view, cx| view.reveal_message(input, "working", cx)));
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| child.read(cx).fold_lines())[0].1, true);
+    assert!(cx.read(|cx| child.read(cx).fold_lines())[0].1);
     assert!(bounds(&mut visual, "transcript-text-working").is_some());
+}
+
+#[gpui::test]
+fn revealing_a_folded_result_opens_its_turn_and_its_card(cx: &mut TestAppContext) {
+    let (_directory, mut visual, child, input) = host_rows(finished_turns(), RunState::Paused, cx);
+    assert!(child.update(cx, |view, cx| view.reveal_message(
+        input,
+        "working-c1-result",
+        cx
+    )));
+    cx.run_until_parked();
+    assert!(cx.read(|cx| child.read(cx).fold_lines())[0].1);
+    let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[1].clone());
+    assert!(
+        bounds(&mut visual, &format!("{selector}-card")).is_some(),
+        "the card opens"
+    );
 }

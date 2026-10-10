@@ -136,6 +136,10 @@ struct LogicalRow {
 struct Presentation {
     input: TranscriptInput,
     rows: Vec<LogicalRow>,
+    /// Rows a closed turn fold holds. They keep their identity and what the
+    /// reader opened in them, but are not list items: a long folded turn
+    /// costs the list nothing.
+    folded: Vec<LogicalRow>,
     hidden_messages: usize,
     #[cfg(test)]
     estimate_override: std::cell::Cell<Option<Pixels>>,
@@ -275,13 +279,20 @@ impl Presentation {
         if turn_folds_apply() {
             turn_fold::apply(&mut rows, &input.session, opened);
         }
+        let (folded, rows) = rows.into_iter().partition(|row| row.fold.hidden);
         Self {
             input,
             rows,
+            folded,
             hidden_messages,
             #[cfg(test)]
             estimate_override: std::cell::Cell::new(None),
         }
+    }
+
+    /// Every row of the page, folded ones included.
+    fn all_rows(&self) -> impl Iterator<Item = &LogicalRow> {
+        self.rows.iter().chain(&self.folded)
     }
 
     fn same_row(&self, index: usize, other: &Self, other_index: usize) -> bool {
@@ -1274,7 +1285,7 @@ impl TranscriptView {
         else {
             return false;
         };
-        let Some(row) = self.presentation.rows.iter().find(|r| {
+        let Some(row) = self.presentation.all_rows().find(|r| {
             input_target.as_ref().is_some_and(|hit| match r.projected {
                 Some(ProjectedRow::Call {
                     assistant, call, ..
@@ -1569,7 +1580,7 @@ impl TranscriptView {
             return false;
         };
         self.update_inputs(input, cx);
-        let row = self.presentation.rows.iter().find(|row| {
+        let row = self.presentation.all_rows().find(|row| {
             row.message_index == Some(index)
                 || row
                     .projected
@@ -1579,11 +1590,21 @@ impl TranscriptView {
             return false;
         };
         let key = row.key.clone();
+        let mut changed = false;
         if row.fold.hidden
             && let Some(group) = row.fold.group.clone()
         {
             // The finished turn that folded the message away opens.
-            self.opened.insert(RowKey::Fold(Box::new(group)));
+            changed |= self.opened.insert(RowKey::Fold(Box::new(group)));
+        }
+        if matches!(
+            row.projected,
+            Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
+        ) {
+            // A retained result shows in its card, which opens.
+            changed |= self.opened.insert(key.clone());
+        }
+        if changed {
             self.presentation = Rc::new(Presentation::with_disclosure(
                 self.presentation.input.clone(),
                 &self.opened,
@@ -1638,12 +1659,11 @@ impl TranscriptView {
             &self.opened,
             &self.expanded_reads,
         ));
-        let keys: HashSet<_> = self.presentation.rows.iter().map(|row| &row.key).collect();
+        let keys: HashSet<_> = self.presentation.all_rows().map(|row| &row.key).collect();
         self.opened.retain(|key| keys.contains(key));
         let read_keys: HashSet<_> = self
             .presentation
-            .rows
-            .iter()
+            .all_rows()
             .filter_map(|row| row.read_key.as_ref())
             .collect();
         self.expanded_reads.retain(|key| read_keys.contains(key));
@@ -1679,6 +1699,7 @@ impl TranscriptView {
         key: RowKey,
         chat_id: &str,
         controller: &Weak<Controller>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.presentation.input.chat_id != chat_id
@@ -1695,6 +1716,26 @@ impl TranscriptView {
             &self.opened,
             &self.expanded_reads,
         ));
+        // Folding away a focused card's payload leaves a visible owner with
+        // the keyboard, as closing the card itself does.
+        let folded: HashSet<_> = self
+            .presentation
+            .folded
+            .iter()
+            .map(|row| &row.key)
+            .collect();
+        if self
+            .tool_editors
+            .borrow()
+            .entries
+            .iter()
+            .any(|((row, _), entry)| {
+                folded.contains(row) && entry.editor.read(cx).focus_handle(cx).is_focused(window)
+            })
+            && let Some(focus) = &self.focus
+        {
+            focus.focus(window);
+        }
         self.invalidate_sidebar_geometry(cx);
         cx.notify();
     }
@@ -3067,9 +3108,9 @@ fn render_row(
                     &format!("transcript-fold-{:?}", row.key),
                     control,
                     &p,
-                    move |_, cx| {
+                    move |window, cx| {
                         let _ = child.update(cx, |view, cx| {
-                            view.toggle_fold(key.clone(), &chat_id, &controller, cx)
+                            view.toggle_fold(key.clone(), &chat_id, &controller, window, cx)
                         });
                     },
                 )),
