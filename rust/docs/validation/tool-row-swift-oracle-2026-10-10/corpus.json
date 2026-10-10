@@ -1,0 +1,6959 @@
+{
+ "summaries": [
+  {
+   "reasoned": false,
+   "rows": []
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": []
+    }
+   ]
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-1",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "failed",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-1",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "cancelled",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-2",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "skipped",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-3",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "unknown",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-4",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "recorded",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-5",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "interrupted",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-6",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "running",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "preparing",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-1",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "preparing",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "toolCallCount": 5,
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ],
+     "truncated": true
+    }
+   ]
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    },
+    {
+     "id": "b",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "b-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "failed",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "b-1",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "failed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    },
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "failed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "toolCallCount": 0,
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": false,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "toolCallCount": -1,
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "failed",
+       "truncated": false
+      }
+     ],
+     "truncated": true
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": []
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": []
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-1",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "failed",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-1",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "cancelled",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-2",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "skipped",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-3",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "unknown",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-4",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "recorded",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-5",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "interrupted",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-6",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "running",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "preparing",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "a-1",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "preparing",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "toolCallCount": 5,
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ],
+     "truncated": true
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    },
+    {
+     "id": "b",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "b-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "failed",
+       "truncated": false
+      },
+      {
+       "durationMs": null,
+       "id": "b-1",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "failed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    },
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "failed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "toolCallCount": 0,
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "completed",
+       "truncated": false
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "reasoned": true,
+   "rows": [
+    {
+     "id": "a",
+     "role": "assistant",
+     "text": "",
+     "toolCallCount": -1,
+     "tools": [
+      {
+       "durationMs": null,
+       "id": "a-0",
+       "input": "{}",
+       "name": "bash",
+       "output": "",
+       "state": "failed",
+       "truncated": false
+      }
+     ],
+     "truncated": true
+    }
+   ]
+  }
+ ],
+ "tools": [
+  {
+   "durationMs": 1234,
+   "id": "call-0",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-1",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-2",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-3",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-4",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-5",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-6",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-7",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-8",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-9",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-10",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-11",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-12",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-13",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-14",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-15",
+   "input": "{\"command\":\"npm test\"}",
+   "name": "bash",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-16",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-17",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-18",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-19",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-20",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-21",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-22",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-23",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-24",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-25",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-26",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-27",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-28",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-29",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-30",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-31",
+   "input": "{\"path\":\"/Users/me/project/src/main.rs\"}",
+   "name": "read",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-32",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-33",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-34",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-35",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-36",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-37",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-38",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-39",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-40",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-41",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-42",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-43",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-44",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-45",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-46",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-47",
+   "input": "{\"content\":\"hello\\nworld\",\"path\":\"/Users/me/project/notes.md\"}",
+   "name": "write",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-48",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-49",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-50",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-51",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-52",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-53",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-54",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-55",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-56",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-57",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-58",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-59",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-60",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-61",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-62",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-63",
+   "input": "{\"newText\":\"b\",\"oldText\":\"a\",\"path\":\"src/lib.rs\"}",
+   "name": "edit",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-64",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-65",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-66",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-67",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-68",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-69",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-70",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-71",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-72",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-73",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-74",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-75",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-76",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-77",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-78",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-79",
+   "input": "{\"path\":\"/tmp/a/b\"}",
+   "name": "ls",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-80",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-81",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-82",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-83",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-84",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-85",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-86",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-87",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-88",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-89",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-90",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-91",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-92",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-93",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-94",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-95",
+   "input": "{\"pattern\":\"*.swift\"}",
+   "name": "find",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-96",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-97",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-98",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-99",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-100",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-101",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-102",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-103",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-104",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-105",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-106",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-107",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-108",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-109",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-110",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-111",
+   "input": "{\"path\":\".\",\"pattern\":\"TODO\"}",
+   "name": "grep",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-112",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-113",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-114",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-115",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-116",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-117",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-118",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-119",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-120",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-121",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-122",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-123",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-124",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-125",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-126",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-127",
+   "input": "{\"action\":\"invoke\",\"server\":\"github\",\"tool\":\"search\"}",
+   "name": "mcp",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-128",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-129",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-130",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-131",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-132",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-133",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-134",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-135",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-136",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-137",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-138",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-139",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "prepared",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-140",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-141",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "preparing",
+   "truncated": false
+  },
+  {
+   "durationMs": 1234,
+   "id": "call-142",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": 40,
+   "id": "call-143",
+   "input": "{\"url\":\"https://example.com\"}",
+   "name": "web_fetch",
+   "output": "  first line of output  \nsecond\nthird",
+   "state": "recorded",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-144",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-145",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-146",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-147",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-148",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "read",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-149",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-150",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-151",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-152",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-153",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "read",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-154",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-155",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-156",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-157",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-158",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-159",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-160",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-161",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "read",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-162",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-163",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "read",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-164",
+   "input": "{\"path\":\"\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-165",
+   "input": "{\"path\":\"\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-166",
+   "input": "{\"path\":\"\"}",
+   "name": "read",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-167",
+   "input": "{\"path\":\"\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-168",
+   "input": "{\"path\":\"\"}",
+   "name": "read",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-169",
+   "input": "{}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-170",
+   "input": "{}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-171",
+   "input": "{}",
+   "name": "read",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-172",
+   "input": "{}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-173",
+   "input": "{}",
+   "name": "read",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-174",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-175",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-176",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "read",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-177",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-178",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "read",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-179",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-180",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-181",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-182",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "read",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-183",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "read",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-184",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-185",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-186",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-187",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-188",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "write",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-189",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-190",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-191",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-192",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-193",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "write",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-194",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-195",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-196",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-197",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-198",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "write",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-199",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-200",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-201",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "write",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-202",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-203",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "write",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-204",
+   "input": "{\"path\":\"\"}",
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-205",
+   "input": "{\"path\":\"\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-206",
+   "input": "{\"path\":\"\"}",
+   "name": "write",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-207",
+   "input": "{\"path\":\"\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-208",
+   "input": "{\"path\":\"\"}",
+   "name": "write",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-209",
+   "input": "{}",
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-210",
+   "input": "{}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-211",
+   "input": "{}",
+   "name": "write",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-212",
+   "input": "{}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-213",
+   "input": "{}",
+   "name": "write",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-214",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-215",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-216",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "write",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-217",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-218",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "write",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-219",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-220",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-221",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-222",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "write",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-223",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "write",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-224",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-225",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-226",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-227",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-228",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "edit",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-229",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-230",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-231",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-232",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-233",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "edit",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-234",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-235",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-236",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-237",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-238",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "edit",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-239",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-240",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-241",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "edit",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-242",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-243",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "edit",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-244",
+   "input": "{\"path\":\"\"}",
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-245",
+   "input": "{\"path\":\"\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-246",
+   "input": "{\"path\":\"\"}",
+   "name": "edit",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-247",
+   "input": "{\"path\":\"\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-248",
+   "input": "{\"path\":\"\"}",
+   "name": "edit",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-249",
+   "input": "{}",
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-250",
+   "input": "{}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-251",
+   "input": "{}",
+   "name": "edit",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-252",
+   "input": "{}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-253",
+   "input": "{}",
+   "name": "edit",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-254",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-255",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-256",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "edit",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-257",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-258",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "edit",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-259",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-260",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-261",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-262",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "edit",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-263",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "edit",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-264",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "ls",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-265",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-266",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-267",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-268",
+   "input": "{\"path\":\"a.txt\"}",
+   "name": "ls",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-269",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "ls",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-270",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-271",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-272",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-273",
+   "input": "{\"path\":\"a/b.txt\"}",
+   "name": "ls",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-274",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "ls",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-275",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-276",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-277",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-278",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "ls",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-279",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "ls",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-280",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-281",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "ls",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-282",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-283",
+   "input": "{\"path\":\"/a/b/c/\"}",
+   "name": "ls",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-284",
+   "input": "{\"path\":\"\"}",
+   "name": "ls",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-285",
+   "input": "{\"path\":\"\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-286",
+   "input": "{\"path\":\"\"}",
+   "name": "ls",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-287",
+   "input": "{\"path\":\"\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-288",
+   "input": "{\"path\":\"\"}",
+   "name": "ls",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-289",
+   "input": "{}",
+   "name": "ls",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-290",
+   "input": "{}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-291",
+   "input": "{}",
+   "name": "ls",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-292",
+   "input": "{}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-293",
+   "input": "{}",
+   "name": "ls",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-294",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "ls",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-295",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-296",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "ls",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-297",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-298",
+   "input": "{\"path\":\"//x//y//z\"}",
+   "name": "ls",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-299",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "ls",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-300",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/deep/dir/file.swift",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-301",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-302",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "ls",
+   "output": "",
+   "path": "/resolved/r.swift",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-303",
+   "input": "{\"path\":\"日本/語/ファイル.txt\"}",
+   "name": "ls",
+   "output": "ENOENT: no such file\nstack",
+   "path": "/resolved/f.swift",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-304",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-305",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-306",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-307",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-308",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-309",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-310",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-311",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-312",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-313",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-314",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-315",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-316",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 1,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-317",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 1,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-318",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 1,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-319",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 1,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-320",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 1,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-321",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 1,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-322",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 1,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-323",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 1,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-324",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 1,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-325",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 1,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-326",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 1,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 3,
+   "durationMs": null,
+   "id": "call-327",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 1,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-328",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-329",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-330",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-331",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-332",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-333",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-334",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-335",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-336",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-337",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-338",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 5,
+   "durationMs": null,
+   "id": "call-339",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-340",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 2,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-341",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 2,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-342",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 2,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-343",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 2,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-344",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 2,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-345",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 2,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-346",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 2,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-347",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 2,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-348",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 2,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-349",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 2,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-350",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 2,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-351",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 2,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-352",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 0,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-353",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 0,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-354",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 0,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-355",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 0,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-356",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 0,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-357",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 0,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-358",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 0,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-359",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 0,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-360",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 0,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-361",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 0,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-362",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 0,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 0,
+   "durationMs": null,
+   "id": "call-363",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 0,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-364",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 0,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-365",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 0,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-366",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 0,
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-367",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 0,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-368",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 0,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-369",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 0,
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-370",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 0,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-371",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 0,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-372",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 0,
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-373",
+   "input": "{\"content\":\"x\",\"path\":\"/p/q/new.txt\"}",
+   "name": "write",
+   "output": "",
+   "removed": 0,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-374",
+   "input": "{\"newText\":\"y\",\"oldText\":\"x\",\"path\":\"/p/q/old.txt\"}",
+   "name": "edit",
+   "output": "",
+   "removed": 0,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "added": 12,
+   "durationMs": null,
+   "id": "call-375",
+   "input": "{\"command\":\"make\"}",
+   "name": "bash",
+   "output": "",
+   "removed": 0,
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-376",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-377",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-378",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-379",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-380",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 0,
+   "id": "call-381",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 0,
+   "id": "call-382",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 0,
+   "id": "call-383",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 0,
+   "id": "call-384",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 0,
+   "id": "call-385",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 10,
+   "id": "call-386",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 10,
+   "id": "call-387",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 10,
+   "id": "call-388",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 10,
+   "id": "call-389",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 10,
+   "id": "call-390",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 49,
+   "id": "call-391",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 49,
+   "id": "call-392",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 49,
+   "id": "call-393",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 49,
+   "id": "call-394",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 49,
+   "id": "call-395",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 49.9,
+   "id": "call-396",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 49.9,
+   "id": "call-397",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 49.9,
+   "id": "call-398",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 49.9,
+   "id": "call-399",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 49.9,
+   "id": "call-400",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 50,
+   "id": "call-401",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 50,
+   "id": "call-402",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 50,
+   "id": "call-403",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 50,
+   "id": "call-404",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 50,
+   "id": "call-405",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 94,
+   "id": "call-406",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 94,
+   "id": "call-407",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 94,
+   "id": "call-408",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 94,
+   "id": "call-409",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 94,
+   "id": "call-410",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 95,
+   "id": "call-411",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 95,
+   "id": "call-412",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 95,
+   "id": "call-413",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 95,
+   "id": "call-414",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 95,
+   "id": "call-415",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 949,
+   "id": "call-416",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 949,
+   "id": "call-417",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 949,
+   "id": "call-418",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 949,
+   "id": "call-419",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 949,
+   "id": "call-420",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 950,
+   "id": "call-421",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 950,
+   "id": "call-422",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 950,
+   "id": "call-423",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 950,
+   "id": "call-424",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 950,
+   "id": "call-425",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 990,
+   "id": "call-426",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 990,
+   "id": "call-427",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 990,
+   "id": "call-428",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 990,
+   "id": "call-429",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 990,
+   "id": "call-430",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 999,
+   "id": "call-431",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 999,
+   "id": "call-432",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 999,
+   "id": "call-433",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 999,
+   "id": "call-434",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 999,
+   "id": "call-435",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 1000,
+   "id": "call-436",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1000,
+   "id": "call-437",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 1000,
+   "id": "call-438",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 1000,
+   "id": "call-439",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 1000,
+   "id": "call-440",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 9949,
+   "id": "call-441",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 9949,
+   "id": "call-442",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 9949,
+   "id": "call-443",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 9949,
+   "id": "call-444",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 9949,
+   "id": "call-445",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 9950,
+   "id": "call-446",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 9950,
+   "id": "call-447",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 9950,
+   "id": "call-448",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 9950,
+   "id": "call-449",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 9950,
+   "id": "call-450",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 59400,
+   "id": "call-451",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 59400,
+   "id": "call-452",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 59400,
+   "id": "call-453",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 59400,
+   "id": "call-454",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 59400,
+   "id": "call-455",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 59500,
+   "id": "call-456",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 59500,
+   "id": "call-457",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 59500,
+   "id": "call-458",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 59500,
+   "id": "call-459",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 59500,
+   "id": "call-460",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 60000,
+   "id": "call-461",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 60000,
+   "id": "call-462",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 60000,
+   "id": "call-463",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 60000,
+   "id": "call-464",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 60000,
+   "id": "call-465",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 61000,
+   "id": "call-466",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 61000,
+   "id": "call-467",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 61000,
+   "id": "call-468",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 61000,
+   "id": "call-469",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 61000,
+   "id": "call-470",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 119500,
+   "id": "call-471",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 119500,
+   "id": "call-472",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 119500,
+   "id": "call-473",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 119500,
+   "id": "call-474",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 119500,
+   "id": "call-475",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 3599000,
+   "id": "call-476",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 3599000,
+   "id": "call-477",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 3599000,
+   "id": "call-478",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 3599000,
+   "id": "call-479",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 3599000,
+   "id": "call-480",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 3600000,
+   "id": "call-481",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 3600000,
+   "id": "call-482",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 3600000,
+   "id": "call-483",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 3600000,
+   "id": "call-484",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 3600000,
+   "id": "call-485",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 3660000,
+   "id": "call-486",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 3660000,
+   "id": "call-487",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 3660000,
+   "id": "call-488",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 3660000,
+   "id": "call-489",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 3660000,
+   "id": "call-490",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 7200000,
+   "id": "call-491",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 7200000,
+   "id": "call-492",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 7200000,
+   "id": "call-493",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 7200000,
+   "id": "call-494",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 7200000,
+   "id": "call-495",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": 86400000,
+   "id": "call-496",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": 86400000,
+   "id": "call-497",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": 86400000,
+   "id": "call-498",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": 86400000,
+   "id": "call-499",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "unknown",
+   "truncated": false
+  },
+  {
+   "durationMs": 86400000,
+   "id": "call-500",
+   "input": "{\"command\":\"sleep 1\"}",
+   "name": "bash",
+   "output": "",
+   "state": "cancelled",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-501",
+   "input": "{\"command\":\"cat <<'EOF'\\nline one\\nEOF\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-502",
+   "input": "{\"command\":\"cat <<'EOF'\\nline one\\nEOF\"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-503",
+   "input": "{\"command\":\"\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-504",
+   "input": "{\"command\":\"\"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-505",
+   "input": "{\"command\":\"   \"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-506",
+   "input": "{\"command\":\"   \"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-507",
+   "input": "{}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-508",
+   "input": "{}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-509",
+   "input": "{\"command\":\"  padded command  \"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-510",
+   "input": "{\"command\":\"  padded command  \"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-511",
+   "input": "{\"command\":\"echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-512",
+   "input": "{\"command\":\"echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-513",
+   "input": "{\"command\":\"ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-514",
+   "input": "{\"command\":\"ééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-515",
+   "input": "{\"command\":\"éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-516",
+   "input": "{\"command\":\"éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-517",
+   "input": "{\"command\":\"👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-518",
+   "input": "{\"command\":\"👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧👩‍👩‍👧\"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-519",
+   "input": "{\"command\":\"\\nleading newline\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-520",
+   "input": "{\"command\":\"\\nleading newline\"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-521",
+   "input": "{\"command\":\"crlf\\r\\nnext\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-522",
+   "input": "{\"command\":\"crlf\\r\\nnext\"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-523",
+   "input": "{\"command\":7}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-524",
+   "input": "{\"command\":7}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-525",
+   "input": "{\"cmd\":\"ls\"}",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-526",
+   "input": "{\"cmd\":\"ls\"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij\nmore",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-527",
+   "input": "{\"pattern\":\"\"}",
+   "name": "find",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-528",
+   "input": "{\"pattern\":\"\"}",
+   "name": "grep",
+   "output": "bad regex",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-529",
+   "input": "{\"pattern\":\"a|b\"}",
+   "name": "find",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-530",
+   "input": "{\"pattern\":\"a|b\"}",
+   "name": "grep",
+   "output": "bad regex",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-531",
+   "input": "{}",
+   "name": "find",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-532",
+   "input": "{}",
+   "name": "grep",
+   "output": "bad regex",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-533",
+   "input": "{\"pattern\":null}",
+   "name": "find",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-534",
+   "input": "{\"pattern\":null}",
+   "name": "grep",
+   "output": "bad regex",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-535",
+   "input": "{\"action\":\"list\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-536",
+   "input": "{\"action\":\"list\",\"server\":\"linear\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-537",
+   "input": "{\"action\":\"describe\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-538",
+   "input": "{\"action\":\"describe\",\"targets\":[\"a\"]}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-539",
+   "input": "{\"action\":\"describe\",\"targets\":[\"a\",\"b\",\"c\"]}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-540",
+   "input": "{\"action\":\"invoke\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-541",
+   "input": "{\"action\":\"invoke\",\"server\":\"s\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-542",
+   "input": "{\"action\":\"invoke\",\"tool\":\"t\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-543",
+   "input": "{\"server\":\"s\",\"tool\":\"t\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-544",
+   "input": "{\"action\":\"\",\"server\":\"\",\"tool\":\"\"}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-545",
+   "input": "{\"action\":\"list\",\"server\":3}",
+   "name": "mcp",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-546",
+   "input": "{\"command\":\"false\"}",
+   "name": "bash",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-547",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-548",
+   "input": "{\"command\":\"false\"}",
+   "name": "bash",
+   "output": "\n",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-549",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "\n",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-550",
+   "input": "{\"command\":\"false\"}",
+   "name": "bash",
+   "output": "   ",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-551",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "   ",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-552",
+   "input": "{\"command\":\"false\"}",
+   "name": "bash",
+   "output": "one",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-553",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "one",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-554",
+   "input": "{\"command\":\"false\"}",
+   "name": "bash",
+   "output": "  spaced  \nnext",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-555",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "  spaced  \nnext",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-556",
+   "input": "{\"command\":\"false\"}",
+   "name": "bash",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-557",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "echo abcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefghij",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-558",
+   "input": "{\"command\":\"false\"}",
+   "name": "bash",
+   "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-559",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-560",
+   "input": "{\"command\":\"false\"}",
+   "name": "bash",
+   "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-561",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-562",
+   "input": "{\"command\":\"false\"}",
+   "name": "bash",
+   "output": "\n\nafter blanks",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-563",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "\n\nafter blanks",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-564",
+   "input": "{\"command\":\"false\"}",
+   "name": "bash",
+   "output": "\ttab\tline\n",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-565",
+   "input": "{\"path\":\"/a/b/c.txt\"}",
+   "name": "read",
+   "output": "\ttab\tline\n",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-566",
+   "input": "{\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-567",
+   "input": "{\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\nc",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-568",
+   "input": "{\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\n[Truncated. 900 total lines; read another range.]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-569",
+   "input": "{\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "Read image file [image/png]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-570",
+   "input": "{\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "one",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-571",
+   "input": "{\"path\":\"/x/y/z.txt\"}",
+   "lastLine": 41,
+   "line": 40,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-572",
+   "input": "{\"path\":\"/x/y/z.txt\"}",
+   "line": 7,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-573",
+   "input": "{\"path\":\"/x/y/z.txt\"}",
+   "line": 0,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-574",
+   "input": "{\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-575",
+   "input": "{\"path\":\"/x/y/z.txt\"}",
+   "inputTruncated": true,
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-576",
+   "input": "{\"offset\":10,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-577",
+   "input": "{\"offset\":10,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\nc",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-578",
+   "input": "{\"offset\":10,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\n[Truncated. 900 total lines; read another range.]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-579",
+   "input": "{\"offset\":10,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "Read image file [image/png]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-580",
+   "input": "{\"offset\":10,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "one",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-581",
+   "input": "{\"offset\":10,\"path\":\"/x/y/z.txt\"}",
+   "lastLine": 41,
+   "line": 40,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-582",
+   "input": "{\"offset\":10,\"path\":\"/x/y/z.txt\"}",
+   "line": 7,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-583",
+   "input": "{\"offset\":10,\"path\":\"/x/y/z.txt\"}",
+   "line": 0,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-584",
+   "input": "{\"offset\":10,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-585",
+   "input": "{\"offset\":10,\"path\":\"/x/y/z.txt\"}",
+   "inputTruncated": true,
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-586",
+   "input": "{\"limit\":5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-587",
+   "input": "{\"limit\":5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\nc",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-588",
+   "input": "{\"limit\":5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\n[Truncated. 900 total lines; read another range.]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-589",
+   "input": "{\"limit\":5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "Read image file [image/png]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-590",
+   "input": "{\"limit\":5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "one",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-591",
+   "input": "{\"limit\":5,\"path\":\"/x/y/z.txt\"}",
+   "lastLine": 41,
+   "line": 40,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-592",
+   "input": "{\"limit\":5,\"path\":\"/x/y/z.txt\"}",
+   "line": 7,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-593",
+   "input": "{\"limit\":5,\"path\":\"/x/y/z.txt\"}",
+   "line": 0,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-594",
+   "input": "{\"limit\":5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-595",
+   "input": "{\"limit\":5,\"path\":\"/x/y/z.txt\"}",
+   "inputTruncated": true,
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-596",
+   "input": "{\"offset\":0,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-597",
+   "input": "{\"offset\":0,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\nc",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-598",
+   "input": "{\"offset\":0,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\n[Truncated. 900 total lines; read another range.]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-599",
+   "input": "{\"offset\":0,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "Read image file [image/png]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-600",
+   "input": "{\"offset\":0,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "one",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-601",
+   "input": "{\"offset\":0,\"path\":\"/x/y/z.txt\"}",
+   "lastLine": 41,
+   "line": 40,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-602",
+   "input": "{\"offset\":0,\"path\":\"/x/y/z.txt\"}",
+   "line": 7,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-603",
+   "input": "{\"offset\":0,\"path\":\"/x/y/z.txt\"}",
+   "line": 0,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-604",
+   "input": "{\"offset\":0,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-605",
+   "input": "{\"offset\":0,\"path\":\"/x/y/z.txt\"}",
+   "inputTruncated": true,
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-606",
+   "input": "{\"offset\":2.5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-607",
+   "input": "{\"offset\":2.5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\nc",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-608",
+   "input": "{\"offset\":2.5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\n[Truncated. 900 total lines; read another range.]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-609",
+   "input": "{\"offset\":2.5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "Read image file [image/png]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-610",
+   "input": "{\"offset\":2.5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "one",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-611",
+   "input": "{\"offset\":2.5,\"path\":\"/x/y/z.txt\"}",
+   "lastLine": 41,
+   "line": 40,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-612",
+   "input": "{\"offset\":2.5,\"path\":\"/x/y/z.txt\"}",
+   "line": 7,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-613",
+   "input": "{\"offset\":2.5,\"path\":\"/x/y/z.txt\"}",
+   "line": 0,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-614",
+   "input": "{\"offset\":2.5,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-615",
+   "input": "{\"offset\":2.5,\"path\":\"/x/y/z.txt\"}",
+   "inputTruncated": true,
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-616",
+   "input": "{\"offset\":true,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-617",
+   "input": "{\"offset\":true,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\nc",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-618",
+   "input": "{\"offset\":true,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\n[Truncated. 900 total lines; read another range.]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-619",
+   "input": "{\"offset\":true,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "Read image file [image/png]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-620",
+   "input": "{\"offset\":true,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "one",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-621",
+   "input": "{\"offset\":true,\"path\":\"/x/y/z.txt\"}",
+   "lastLine": 41,
+   "line": 40,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-622",
+   "input": "{\"offset\":true,\"path\":\"/x/y/z.txt\"}",
+   "line": 7,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-623",
+   "input": "{\"offset\":true,\"path\":\"/x/y/z.txt\"}",
+   "line": 0,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-624",
+   "input": "{\"offset\":true,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-625",
+   "input": "{\"offset\":true,\"path\":\"/x/y/z.txt\"}",
+   "inputTruncated": true,
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-626",
+   "input": "{\"offset\":null,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-627",
+   "input": "{\"offset\":null,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\nc",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-628",
+   "input": "{\"offset\":null,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\n[Truncated. 900 total lines; read another range.]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-629",
+   "input": "{\"offset\":null,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "Read image file [image/png]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-630",
+   "input": "{\"offset\":null,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "one",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-631",
+   "input": "{\"offset\":null,\"path\":\"/x/y/z.txt\"}",
+   "lastLine": 41,
+   "line": 40,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-632",
+   "input": "{\"offset\":null,\"path\":\"/x/y/z.txt\"}",
+   "line": 7,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-633",
+   "input": "{\"offset\":null,\"path\":\"/x/y/z.txt\"}",
+   "line": 0,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-634",
+   "input": "{\"offset\":null,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-635",
+   "input": "{\"offset\":null,\"path\":\"/x/y/z.txt\"}",
+   "inputTruncated": true,
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-636",
+   "input": "{\"offset\":10000001,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-637",
+   "input": "{\"offset\":10000001,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\nc",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-638",
+   "input": "{\"offset\":10000001,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\n[Truncated. 900 total lines; read another range.]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-639",
+   "input": "{\"offset\":10000001,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "Read image file [image/png]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-640",
+   "input": "{\"offset\":10000001,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "one",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-641",
+   "input": "{\"offset\":10000001,\"path\":\"/x/y/z.txt\"}",
+   "lastLine": 41,
+   "line": 40,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-642",
+   "input": "{\"offset\":10000001,\"path\":\"/x/y/z.txt\"}",
+   "line": 7,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-643",
+   "input": "{\"offset\":10000001,\"path\":\"/x/y/z.txt\"}",
+   "line": 0,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-644",
+   "input": "{\"offset\":10000001,\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-645",
+   "input": "{\"offset\":10000001,\"path\":\"/x/y/z.txt\"}",
+   "inputTruncated": true,
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-646",
+   "input": "{\"offset\":\"3\",\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-647",
+   "input": "{\"offset\":\"3\",\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\nc",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-648",
+   "input": "{\"offset\":\"3\",\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "a\nb\n[Truncated. 900 total lines; read another range.]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-649",
+   "input": "{\"offset\":\"3\",\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "Read image file [image/png]",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-650",
+   "input": "{\"offset\":\"3\",\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "one",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-651",
+   "input": "{\"offset\":\"3\",\"path\":\"/x/y/z.txt\"}",
+   "lastLine": 41,
+   "line": 40,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-652",
+   "input": "{\"offset\":\"3\",\"path\":\"/x/y/z.txt\"}",
+   "line": 7,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-653",
+   "input": "{\"offset\":\"3\",\"path\":\"/x/y/z.txt\"}",
+   "line": 0,
+   "name": "read",
+   "output": "a\nb",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-654",
+   "input": "{\"offset\":\"3\",\"path\":\"/x/y/z.txt\"}",
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-655",
+   "input": "{\"offset\":\"3\",\"path\":\"/x/y/z.txt\"}",
+   "inputTruncated": true,
+   "name": "read",
+   "output": "",
+   "state": "running",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-656",
+   "input": "{\"path\":\"/w/x.txt\"}",
+   "inputTruncated": true,
+   "name": "write",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-657",
+   "input": "{\"path\":\"/w/x.txt\"}",
+   "lastLine": 1,
+   "line": 3,
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-658",
+   "input": "{\"path\":\"/w/x.txt\"}",
+   "lastLine": 9,
+   "line": 3,
+   "name": "edit",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-659",
+   "input": "{\"path\":\"/w/x.txt\"}",
+   "lastLine": 9,
+   "line": 3,
+   "name": "edit",
+   "output": "",
+   "state": "failed",
+   "truncated": false
+  },
+  {
+   "durationMs": null,
+   "id": "call-660",
+   "input": "not json at all",
+   "name": "bash",
+   "output": "",
+   "state": "completed",
+   "truncated": false
+  }
+ ]
+}

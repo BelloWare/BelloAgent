@@ -112,6 +112,12 @@ fn project_checked(session: &Session) -> Option<OutputSummary> {
                 {
                     !row.text.is_empty() || !row.reasoning.is_empty()
                 }
+                // A reply deferred by a threshold compaction was never requested.
+                crate::context_recovery::DEFERRED_STATE
+                    if !row.replay_eligible && rejected.contains(row.id.as_str()) =>
+                {
+                    false
+                }
                 "streaming"
                     if !row.replay_eligible
                         && session.state == RunState::Running

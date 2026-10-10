@@ -450,14 +450,20 @@ impl Session {
 }
 
 impl Controller {
+    /// `resuming` is an explicit Retry: like Swift's `resumingFailedRequest`,
+    /// its first model request repeats without the threshold compaction.
     pub(super) async fn run_turn(
         self: &Arc<Self>,
         mut item: Submission,
         mut snapshot: Session,
+        resuming: bool,
         cancel: CancellationToken,
     ) {
         let config = self.configuration().expect("configuration checked");
         let definitions = self.options.definitions();
+        // Swift checks the threshold once per model/tool round, not again for
+        // the request that follows an in-round compaction.
+        let mut check_threshold = !resuming;
         loop {
             if self.is_retired() {
                 cancel.cancel();
@@ -475,9 +481,45 @@ impl Controller {
                 self.confirm_turn_resources(cancel.clone()).await
             }
             .await;
-            let mut response = match ready {
+            let threshold = match ready {
+                Ok(()) if check_threshold => {
+                    check_threshold = false;
+                    match self
+                        .compact_before_request(
+                            &config,
+                            &item,
+                            &snapshot,
+                            &profile,
+                            &instructions,
+                            &definitions,
+                            cancel.clone(),
+                        )
+                        .await
+                    {
+                        // Authority may change while the threshold is measured:
+                        // confirm again before the intact request is sent.
+                        Ok(None) => async {
+                            config.confirm_for_request().await?;
+                            self.confirm_turn_resources(cancel.clone()).await
+                        }
+                        .await
+                        .map(|()| None),
+                        other => other,
+                    }
+                }
+                ready => ready.map(|()| None),
+            };
+            let mut response = match threshold {
                 Err(error) => Err(error),
-                Ok(()) => {
+                Ok(Some(next)) => {
+                    item = next
+                        .active
+                        .clone()
+                        .expect("compaction retains active submission");
+                    snapshot = next;
+                    continue;
+                }
+                Ok(None) => {
                     self.client
                         .complete_with_tools(
                             &profile,
@@ -517,6 +559,7 @@ impl Controller {
                             .clone()
                             .expect("recovery retains active submission");
                         snapshot = next;
+                        check_threshold = false;
                         continue;
                     }
                     Ok(None) => {}
@@ -749,6 +792,7 @@ impl Controller {
                 if snapshot.state != RunState::Running {
                     return;
                 }
+                check_threshold = true;
                 continue;
             }
             let Some((next_item, next_snapshot)) = self
@@ -768,6 +812,7 @@ impl Controller {
             if snapshot.state != RunState::Running {
                 return;
             }
+            check_threshold = true;
         }
     }
 

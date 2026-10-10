@@ -102,6 +102,7 @@ fn wait_idle(controller: &Controller, expected: &str, cx: &mut TestAppContext) {
 async fn edit_native_workflow_trust_loopback_mutation_checkpoint_replay_and_diff_ui(
     cx: &mut TestAppContext,
 ) {
+    crate::transcript_view::open_tool_rows_for_test();
     let directory = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(directory.path()).unwrap();
     let project = root.join("project");

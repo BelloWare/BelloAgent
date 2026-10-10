@@ -76,6 +76,7 @@ fn stats(path: &str) -> ReadStats {
 
 #[gpui::test]
 fn edit_ui_diff_disclosure_cache_editor_identity_and_raw_copy(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let after = (0..20)
         .map(|n| format!("new-{n}"))
         .collect::<Vec<_>>()
@@ -143,6 +144,7 @@ fn edit_ui_diff_disclosure_cache_editor_identity_and_raw_copy(cx: &mut TestAppCo
 fn edit_ui_unknown_effects_never_claim_not_applied_and_large_content_is_explicit(
     cx: &mut TestAppContext,
 ) {
+    crate::transcript_view::open_tool_rows_for_test();
     let text = "界".repeat(90_000);
     let (_directory, window, root) = fixture(
         cx,
@@ -188,6 +190,7 @@ fn edit_ui_unknown_effects_never_claim_not_applied_and_large_content_is_explicit
 
 #[gpui::test]
 fn edit_ui_uses_resolved_file_range(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let (directory, window, root) = fixture(
         cx,
         edit_rows(
@@ -220,6 +223,7 @@ fn edit_ui_uses_resolved_file_range(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn edit_ui_stale_controller_path_cannot_open_file(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let (_directory, _window, root) = fixture(
         cx,
         edit_rows(
@@ -261,6 +265,7 @@ mod native_workflow;
 fn edit_ui_standalone_paged_result_preserves_disclosure_when_owner_is_revealed(
     cx: &mut TestAppContext,
 ) {
+    crate::transcript_view::open_tool_rows_for_test();
     let text = (0..20)
         .map(|n| format!("line-{n}"))
         .collect::<Vec<_>>()

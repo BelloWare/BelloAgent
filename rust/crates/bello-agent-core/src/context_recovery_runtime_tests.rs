@@ -211,7 +211,13 @@ async fn rejection_summary_retry_is_exactly_three_requests_and_keeps_original_su
     assert_eq!((receipt.summary_attempts, receipt.retry_attempts), (1, 1));
     assert!(receipt.summary_id.is_some());
     assert_eq!(
-        receipt.failure.reported_usage.as_ref().unwrap()["input_tokens"],
+        receipt
+            .failure
+            .as_ref()
+            .unwrap()
+            .reported_usage
+            .as_ref()
+            .unwrap()["input_tokens"],
         111
     );
     assert!(
@@ -395,7 +401,7 @@ async fn consumption_write_fault_sends_no_summary() {
 }
 
 #[tokio::test]
-async fn oversized_intact_history_refuses_without_summary_or_model_switch() {
+async fn oversized_intact_history_refuses_threshold_and_recovery_without_summary_or_model_switch() {
     let mut f = Fixture::new().await;
     let config = f.actor.configuration().unwrap();
     let mut profile = config.profile.clone();
@@ -409,6 +415,14 @@ async fn oversized_intact_history_refuses_without_summary_or_model_switch() {
         }))
         .unwrap();
     f.actor.submit("Continue".into(), Lane::FollowUp).unwrap();
+    // Far past the threshold, the automatic compaction refuses locally before
+    // any request and consumes nothing.
+    let refused = f.settle().await;
+    assert!(refused.error.as_ref().unwrap().contains("intact history"));
+    assert!(refused.context_recoveries.is_empty());
+    f.no_request().await;
+    // An explicit Retry repeats the request without the threshold check.
+    f.actor.retry().unwrap();
     let original = f.next().await;
     assert_eq!(original["model"], "fixture");
     f.reject().await;
@@ -711,4 +725,283 @@ async fn stop_after_observed_rejection_keeps_summary_and_retry_usage() {
         );
         f.no_request().await;
     }
+}
+
+// Swift SessionRun's pre-request threshold (compactContext(reason: "threshold")).
+fn set_window(f: &Fixture, window: u32) {
+    let config = f.actor.configuration().unwrap();
+    let mut profile = config.profile.clone();
+    profile.context_window = window;
+    f.actor
+        .configure(Arc::new(Configuration {
+            profile,
+            credential: Credential::new("fixture-secret-only".into()).unwrap(),
+            connection: None,
+        }))
+        .unwrap();
+}
+fn is_summary_request(request: &Value) -> bool {
+    request["tool_choice"] == "none"
+        && request["input"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()
+            .to_string()
+            .contains("Create a concise continuation checkpoint")
+}
+const COMPACTED: &str = "The conversation history before this point was compacted";
+
+#[tokio::test]
+async fn crossing_the_threshold_summarizes_before_the_request_and_keeps_the_submission() {
+    let mut f = Fixture::new().await;
+    // About 23k estimated tokens of history cross a 40k window's threshold
+    // (40000 - (10000 + instruction) - 400 - 10000) but fit beside the summary.
+    set_window(&f, 40_000);
+    let submission = Submission::new("Continue original task".into(), Lane::FollowUp);
+    let id = submission.id.clone();
+    f.actor.submit_identified(submission).unwrap();
+    let summary = f.next().await;
+    assert!(is_summary_request(&summary));
+    assert!(summary.to_string().contains("Optional user focus: none"));
+    // The summary sees the intact history, including the new input.
+    assert!(summary.to_string().contains("Objective constraints."));
+    assert!(summary.to_string().contains("Continue original task"));
+    let running = f.actor.snapshot();
+    let receipt = &running.context_recoveries[0];
+    assert_eq!(receipt.reason, crate::context_recovery::Reason::Threshold);
+    assert_eq!(receipt.phase, Phase::Summarizing);
+    f.summary().await;
+    let request = f.next().await;
+    assert!(!is_summary_request(&request));
+    let text = request.to_string();
+    assert!(text.contains(COMPACTED) && text.contains("Objective retained."));
+    assert!(text.contains("Continue original task"));
+    assert!(!text.contains("Objective constraints."));
+    f.reply(completed("Done after automatic compaction")).await;
+    let done = f.settle().await;
+    assert_eq!(done.state, RunState::Idle);
+    assert_eq!(done.context_recoveries.len(), 1);
+    let receipt = &done.context_recoveries[0];
+    assert_eq!(receipt.turn_id, id);
+    assert!(receipt.failure.is_none());
+    assert_eq!(receipt.phase, Phase::Completed);
+    assert_eq!((receipt.summary_attempts, receipt.retry_attempts), (1, 1));
+    let deferred = done
+        .messages
+        .iter()
+        .find(|row| row.id == receipt.failed_reply_id)
+        .unwrap();
+    assert_eq!(deferred.state, crate::context_recovery::DEFERRED_STATE);
+    assert!(deferred.text.is_empty() && !deferred.replay_eligible);
+    assert_eq!(
+        done.messages
+            .iter()
+            .filter(|row| row.compaction.is_some())
+            .count(),
+        1
+    );
+    assert_eq!(done.messages.iter().filter(|row| row.id == id).count(), 1);
+    assert_eq!(
+        done.messages.last().unwrap().text,
+        "Done after automatic compaction"
+    );
+    // The original transcript is retained; only replay changed.
+    assert!(done.messages.iter().any(|row| row.id == "old-user"));
+    f.no_request().await;
+    f.actor.retire_and_wait().await.unwrap();
+    let reopened = SessionStore::open(f.directory.path().join("session.json"))
+        .unwrap()
+        .snapshot();
+    assert_eq!(reopened.context_recoveries[0].phase, Phase::Completed);
+}
+
+#[tokio::test]
+async fn a_request_below_the_threshold_is_sent_without_compaction() {
+    let mut f = Fixture::new().await;
+    f.actor
+        .submit("Short follow-up".into(), Lane::FollowUp)
+        .unwrap();
+    let request = f.next().await;
+    assert!(!is_summary_request(&request));
+    assert!(request.to_string().contains("Objective constraints."));
+    f.reply(completed("Done")).await;
+    let done = f.settle().await;
+    assert!(done.context_recoveries.is_empty());
+    f.no_request().await;
+}
+
+#[tokio::test]
+async fn nothing_compactable_sends_the_intact_request() {
+    let mut f = Fixture::new().await;
+    f.actor
+        .inner
+        .lock()
+        .unwrap()
+        .store
+        .transact(|session| {
+            session.messages.clear();
+            Ok(())
+        })
+        .unwrap();
+    set_window(&f, 40_000);
+    // One unanswered input over the threshold is required and cannot be summarized.
+    f.actor
+        .submit("Large input. ".repeat(6500), Lane::FollowUp)
+        .unwrap();
+    let request = f.next().await;
+    assert!(!is_summary_request(&request));
+    f.reply(completed("Done")).await;
+    let done = f.settle().await;
+    assert_eq!(done.state, RunState::Idle);
+    assert!(done.context_recoveries.is_empty());
+    f.no_request().await;
+}
+
+#[tokio::test]
+async fn stop_during_the_automatic_summary_keeps_history_and_retry_resends_intact() {
+    let mut f = Fixture::new().await;
+    set_window(&f, 40_000);
+    f.actor
+        .submit("Original retry identity".into(), Lane::FollowUp)
+        .unwrap();
+    assert!(is_summary_request(&f.next().await));
+    let original = f.actor.snapshot().active.unwrap().id;
+    f.actor.stop().unwrap();
+    f.summary().await;
+    let stopped = f.settle().await;
+    assert_eq!(stopped.state, RunState::Paused);
+    assert_eq!(stopped.retry.as_ref().unwrap().id, original);
+    assert_eq!(stopped.context_recoveries[0].phase, Phase::Cancelled);
+    assert!(stopped.messages.iter().all(|row| row.compaction.is_none()));
+    f.no_request().await;
+    // Swift's resumingFailedRequest: an explicit Retry repeats the request
+    // without compacting first.
+    f.actor.retry().unwrap();
+    let request = f.next().await;
+    assert!(!is_summary_request(&request));
+    assert!(request.to_string().contains("Objective constraints."));
+    f.reply(completed("Done")).await;
+    let done = f.settle().await;
+    assert_eq!(done.state, RunState::Idle);
+    assert_eq!(done.context_recoveries.len(), 1);
+    f.no_request().await;
+}
+
+#[tokio::test]
+async fn crash_during_the_automatic_summary_reopens_with_original_history() {
+    let mut f = Fixture::new().await;
+    set_window(&f, 40_000);
+    f.actor
+        .submit("Interrupted by a crash".into(), Lane::FollowUp)
+        .unwrap();
+    assert!(is_summary_request(&f.next().await));
+    // The summary request was admitted after its durable receipt: this is
+    // exactly what a crash leaves on disk.
+    let crashed = f.directory.path().join("crashed.json");
+    std::fs::copy(f.directory.path().join("session.json"), &crashed).unwrap();
+    let reopened = SessionStore::open(&crashed).unwrap().snapshot();
+    let receipt = &reopened.context_recoveries[0];
+    assert_eq!(receipt.reason, crate::context_recovery::Reason::Threshold);
+    assert_eq!(receipt.phase, Phase::Interrupted);
+    assert_eq!(reopened.state, RunState::Paused);
+    assert!(reopened.queue_paused && reopened.active.is_none());
+    assert!(reopened.messages.iter().all(|row| row.compaction.is_none()));
+    assert!(
+        crate::compaction::active_context(&reopened.messages)
+            .unwrap()
+            .iter()
+            .any(|row| row.id == "old-user")
+    );
+    f.actor.stop().unwrap();
+    f.summary().await;
+    f.settle().await;
+}
+
+#[tokio::test]
+async fn a_tool_continuation_crossing_the_threshold_compacts_without_replaying_the_tool() {
+    let mut f = Fixture::with_tools(true).await;
+    // A long listing: about 10k estimated tokens of tool output.
+    for index in 0..200 {
+        std::fs::write(
+            f.directory
+                .path()
+                .join(format!("{}{index}", "Observed-evidence-".repeat(10))),
+            "",
+        )
+        .unwrap();
+    }
+    f.actor
+        .submit("Inspect and continue".into(), Lane::FollowUp)
+        .unwrap();
+    let first = f.next().await;
+    assert!(!is_summary_request(&first));
+    f.reply(json!({"id":"tool-response","status":"completed","output":[{"type":"function_call","id":"read-item","call_id":"read-call","name":"ls","arguments":"{\"path\":\".\"}"}],"usage":{"input_tokens":100,"output_tokens":10}}))
+        .await;
+    let summary = f.next().await;
+    assert!(is_summary_request(&summary));
+    assert!(summary.to_string().contains("Observed-evidence"));
+    assert_eq!(f.tool_calls.load(Ordering::SeqCst), 1);
+    f.summary().await;
+    let continuation = f.next().await;
+    assert!(!is_summary_request(&continuation));
+    assert!(continuation.to_string().contains(COMPACTED));
+    f.reply(completed("Done")).await;
+    let done = f.settle().await;
+    assert_eq!(f.tool_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        done.messages
+            .iter()
+            .filter(|row| matches!(
+                row.tool_record,
+                Some(crate::tool_history::ToolRecord::Result(_))
+            ))
+            .count(),
+        1
+    );
+    assert_eq!(done.context_recoveries[0].phase, Phase::Completed);
+    assert_eq!(
+        done.context_recoveries[0].reason,
+        crate::context_recovery::Reason::Threshold
+    );
+    f.no_request().await;
+}
+
+#[tokio::test]
+async fn a_replayable_history_compaction_cannot_group_still_sends_its_request() {
+    use crate::tool_history::{AssistantRecord, Completion, ReplayBinding, ToolRecord};
+    let mut f = Fixture::new().await;
+    let profile = f.actor.configuration().unwrap().profile.clone();
+    f.actor
+        .inner
+        .lock()
+        .unwrap()
+        .store
+        .transact(|session| {
+            // A retained call whose result never arrived replays as pi's
+            // "No result provided" but cannot be grouped for compaction.
+            let mut call = row("call-owner", "assistant", String::new());
+            call.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
+                tool_batch_timing: None,
+                completion: Completion::Complete,
+                calls: vec![crate::provider::ToolCall {
+                    id: "lost-call".into(),
+                    name: "ls".into(),
+                    arguments: json!({"path":"."}),
+                }],
+                binding: ReplayBinding::from_profile(&profile)?,
+                provider_items: vec![],
+            }));
+            session.messages.push(call);
+            Ok(())
+        })
+        .unwrap();
+    f.actor
+        .submit("Short follow-up".into(), Lane::FollowUp)
+        .unwrap();
+    let request = f.next().await;
+    assert!(!is_summary_request(&request));
+    assert!(request.to_string().contains("No result provided"));
+    f.reply(completed("Done")).await;
+    assert_eq!(f.settle().await.state, RunState::Idle);
 }
