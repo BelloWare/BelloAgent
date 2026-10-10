@@ -1468,29 +1468,31 @@ impl AgentView {
             .unwrap_or_else(|| "No connection".into())
     }
     /// Swift's `FooterNotice`: an info symbol and the notice in secondary
-    /// caption type, cut with "…" to the room the row leaves (at most 640),
-    /// whole in its help.
-    fn footer_notice(&self, notice: String) -> Stateful<Div> {
+    /// caption type from the trailing edge, cut with "…" to the room the row
+    /// leaves (at most 640), whole in its help.
+    fn footer_notice(&self, notice: String) -> Div {
         let (help, palette) = (notice.clone(), self.palette);
-        div()
-            .id("footer-notice")
-            .debug_selector(|| "footer-notice".into())
-            .flex()
-            .items_center()
-            .gap(px(5.))
-            .min_w_0()
-            .max_w(px(640.))
-            .text_size(px(11.5))
-            .text_color(rgb(self.palette.secondary))
-            .child(self.icon("info", 10.5).flex_none())
-            .child(div().min_w_0().truncate().child(notice))
-            .tooltip(move |_, cx| {
-                cx.new(|_| composer_attachments::TextHint {
-                    text: help.clone(),
-                    palette,
-                })
-                .into()
-            })
+        div().flex_1().min_w_0().flex().justify_end().child(
+            div()
+                .id("footer-notice")
+                .debug_selector(|| "footer-notice".into())
+                .flex()
+                .items_center()
+                .gap(px(5.))
+                .min_w_0()
+                .max_w(px(640.))
+                .text_size(px(11.5))
+                .text_color(rgb(self.palette.secondary))
+                .child(self.icon("info", 10.5).flex_none())
+                .child(div().min_w_0().truncate().child(notice))
+                .tooltip(move |_, cx| {
+                    cx.new(|_| composer_attachments::TextHint {
+                        text: help.clone(),
+                        palette,
+                    })
+                    .into()
+                }),
+        )
     }
     fn badge(&self, label: String, name: &'static str) -> Div {
         div()
@@ -2784,9 +2786,11 @@ impl AgentView {
                                 view.open_context_inspector(&inspector_target, window, cx);
                             })),
                     )
-                    .child(div().flex_1())
-                    .when_some(self.notice.clone(), |d, notice| {
-                        d.child(self.footer_notice(notice))
+                    // The notice takes the room the row leaves, cut to fit,
+                    // so it never wraps the footer under the composer.
+                    .child(match self.notice.clone() {
+                        Some(notice) => self.footer_notice(notice).into_any_element(),
+                        None => div().flex_1().into_any_element(),
                     })
                     .when(self.session.state == RunState::Running, |d| {
                         d.child(compaction_actions::progress_label(&self.session))

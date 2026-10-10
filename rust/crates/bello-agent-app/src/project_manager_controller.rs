@@ -937,10 +937,8 @@ impl AgentView {
                 );
                 self.projects.presentation.stage = Stage::Current;
                 self.projects.presentation.availability = Availability::Ready;
-                self.projects.notice(
-                    saved_project_notice(self.projects.presentation.mode.is_fixture()),
-                    false,
-                );
+                self.projects
+                    .notice(saved_project_notice(self.projects.presentation.mode), false);
                 self.projects.admission_blocked = false;
                 self.repair_retired_transcript_focus(retiring_focus, cx);
             }
@@ -1001,28 +999,41 @@ impl AgentView {
     }
 }
 
-fn saved_project_notice(synthetic: bool) -> &'static str {
-    if synthetic {
-        "Project folders saved. Fixture-only tools require a saved loopback connection. Nothing was sent; native production tools remain disabled."
-    } else {
-        "Project folders saved. Native production tools remain disabled. Nothing was sent."
+fn saved_project_notice(mode: crate::launch_authority::AuthorityMode) -> &'static str {
+    use crate::launch_authority::AuthorityMode;
+    match mode {
+        AuthorityMode::Fixture => {
+            "Project folders saved. Fixture-only tools require a saved loopback connection. Nothing was sent."
+        }
+        AuthorityMode::Native => {
+            "Project folders saved. Chats in this trusted project offer its tools by their mode. Nothing was sent."
+        }
+        AuthorityMode::Unavailable => {
+            "Project folders saved. Chat tools are unavailable in this build. Nothing was sent."
+        }
     }
 }
 
 #[cfg(test)]
 mod notice_tests {
+    use crate::launch_authority::AuthorityMode;
     #[::core::prelude::v1::test]
-    fn normal_project_notice_preserves_native_production_gate() {
-        let notice = super::saved_project_notice(false);
-        assert!(notice.contains("Native production tools remain disabled"));
+    fn ordinary_project_notice_says_tools_are_unavailable() {
+        let notice = super::saved_project_notice(AuthorityMode::Unavailable);
+        assert!(notice.contains("Chat tools are unavailable in this build"));
         assert!(!notice.contains("Fixture-only"));
         assert!(notice.contains("Nothing was sent"));
     }
     #[::core::prelude::v1::test]
+    fn native_project_notice_says_trusted_chats_offer_tools() {
+        let notice = super::saved_project_notice(AuthorityMode::Native);
+        assert!(notice.contains("offer its tools by their mode"));
+        assert!(notice.contains("Nothing was sent"));
+    }
+    #[::core::prelude::v1::test]
     fn synthetic_project_notice_requires_explicit_fixture_connection() {
-        let notice = super::saved_project_notice(true);
+        let notice = super::saved_project_notice(AuthorityMode::Fixture);
         assert!(notice.contains("Fixture-only tools require a saved loopback connection"));
-        assert!(notice.contains("native production tools remain disabled"));
         assert!(notice.contains("Nothing was sent"));
     }
 }

@@ -16,6 +16,8 @@ use std::{
 const MAXIMUM_ROOTS: usize = 16;
 const TRUST_WARNING: &str = "Trusting a project allows editing chats to read files, run shell commands and change files with your account's permissions. Project folders are working locations, not a security boundary.";
 const TOOLS_NOTICE: &str = "Chat tool execution remains unavailable in this Rust preview. Saving project trust does not enable tools.";
+const NATIVE_TOOLS_NOTICE: &str = "Chats in a trusted project offer its tools: read-only or editing, by the chat's mode. Trusting or selecting never sends a request.";
+const FIXTURE_TOOLS_NOTICE: &str = "Fixture-only tools require a saved loopback connection and confirmed project trust. Trusting or selecting never sends a request.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProjectTrustKind {
@@ -713,7 +715,11 @@ impl Render for ProjectManagerView {
             div()
                 .text_size(px(11.5))
                 .text_color(rgb(p.secondary))
-                .child(if presentation.mode.is_fixture() { "Fixture-only tools require a saved loopback connection and confirmed project trust. Trusting or selecting never sends a request. Native production tools remain disabled." } else { TOOLS_NOTICE }),
+                .child(match presentation.mode {
+                    crate::launch_authority::AuthorityMode::Fixture => FIXTURE_TOOLS_NOTICE,
+                    crate::launch_authority::AuthorityMode::Native => NATIVE_TOOLS_NOTICE,
+                    crate::launch_authority::AuthorityMode::Unavailable => TOOLS_NOTICE,
+                }),
         );
         if draft {
             body = body.child(

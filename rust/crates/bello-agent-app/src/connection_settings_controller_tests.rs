@@ -435,6 +435,29 @@ fn native_mode_choosing_in_the_picker_binds_the_connection(cx: &mut TestAppConte
         let mut visual = gpui::VisualTestContext::from_window(window.into(), cx);
         visual.run_until_parked();
         assert!(visual.debug_bounds("footer-notice").is_some());
+        // However long, the notice is cut to the room the footer row leaves
+        // rather than wrapping it: the composer above never moves.
+        visual.simulate_resize(gpui::size(gpui::px(1000.), gpui::px(800.)));
+        visual.run_until_parked();
+        let footer = visual.debug_bounds("queue-measured-footer").unwrap();
+        root.update(cx, |view, cx| {
+            view.notice = Some("A notice far too long for the footer's room. ".repeat(20));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("queue-measured-footer").unwrap(),
+            footer
+        );
+        root.update(cx, |view, cx| {
+            view.notice = None;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            visual.debug_bounds("queue-measured-footer").unwrap(),
+            footer
+        );
     }
 }
 
@@ -1828,7 +1851,7 @@ fn saved_settings_require_trust_then_open_the_same_pending_chat_without_sending(
             assert!(view.projects.presentation.trusted);
             let notice = &view.projects.presentation.notice.as_ref().unwrap().text;
             assert!(notice.contains("Fixture-only tools require a saved loopback connection"));
-            assert!(notice.contains("native production tools remain disabled"));
+            assert!(notice.contains("Nothing was sent"));
             view.projects
                 .view
                 .update(cx, |view, cx| view.close(true, window, cx));
