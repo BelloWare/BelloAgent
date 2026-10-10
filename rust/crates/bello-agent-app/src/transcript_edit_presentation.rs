@@ -86,61 +86,6 @@ pub(super) fn has_request(session: &Session, row: ProjectedRow) -> bool {
     })
 }
 
-// TranscriptRows.swift:728–742 deliberately uses the done-form title even
-// while running/failed; the separate status/summary conveys that outcome. Only
-// skipped/unknown titles use TranscriptActivity.describe's conjugation.
-pub(super) fn title(session: &Session, row: ProjectedRow) -> Option<String> {
-    let call = edit_call(session, row)?;
-    let status = tool_presentation::status(session, row);
-    let stats = stats(session, row);
-    let editing = call.name == "edit";
-    let verb = action_title(
-        editing,
-        stats.is_some_and(|s| s.added.is_some() && s.removed.unwrap_or(0) == 0),
-        status,
-    );
-    let path = stats
-        .map(|s| s.path.as_str())
-        .or_else(|| call.arguments["path"].as_str())
-        .unwrap_or("file");
-    let path = path
-        .rsplit('/')
-        .next()
-        .filter(|path| !path.is_empty())
-        .unwrap_or(path);
-    let suffix = stats
-        .and_then(|s| s.added.zip(s.removed))
-        .map(|(a, r)| format!("  +{a} −{r}"))
-        .unwrap_or_default();
-    Some(format!("{verb} {path}{suffix}"))
-}
-
-fn action_title(editing: bool, created: bool, status: Status) -> &'static str {
-    match status {
-        Status::Unknown | Status::Missing | Status::Cancelled => {
-            if editing {
-                "Stopped editing"
-            } else {
-                "Stopped writing"
-            }
-        }
-        Status::NotExecuted => {
-            if editing {
-                "Skipped editing"
-            } else {
-                "Skipped writing"
-            }
-        }
-        Status::Completed | Status::Awaiting | Status::Running | Status::Failed if editing => {
-            "Edited"
-        }
-        Status::Completed | Status::Awaiting | Status::Running | Status::Failed if created => {
-            "Created"
-        }
-        Status::Completed | Status::Awaiting | Status::Running | Status::Failed => "Wrote",
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Kind {
     Context,
@@ -526,26 +471,4 @@ impl EditCache {
         }
         Some(preview)
     }
-}
-
-#[cfg(test)]
-#[test]
-fn edit_row_titles_match_visible_swift_row_override_for_every_status() {
-    for status in [Status::Completed, Status::Awaiting, Status::Failed] {
-        assert_eq!(action_title(true, false, status), "Edited");
-        assert_eq!(action_title(false, false, status), "Wrote");
-        assert_eq!(action_title(false, true, status), "Created");
-    }
-    for status in [Status::Unknown, Status::Missing, Status::Cancelled] {
-        assert_eq!(action_title(true, false, status), "Stopped editing");
-        assert_eq!(action_title(false, true, status), "Stopped writing");
-    }
-    assert_eq!(
-        action_title(true, false, Status::NotExecuted),
-        "Skipped editing"
-    );
-    assert_eq!(
-        action_title(false, true, Status::NotExecuted),
-        "Skipped writing"
-    );
 }

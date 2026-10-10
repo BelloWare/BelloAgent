@@ -53,6 +53,7 @@ fn click(visual: &mut VisualTestContext, selector: &'static str, cx: &mut TestAp
 
 #[gpui::test]
 fn read_ui_repeated_expansion_keeps_full_text_notes_focus_and_identity(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let text = (1..=14)
         .map(|n| {
             if n == 7 {
@@ -143,6 +144,7 @@ fn read_ui_repeated_expansion_keeps_full_text_notes_focus_and_identity(cx: &mut 
 fn read_ui_content_only_changes_and_reopen_retain_text_without_image_decode(
     cx: &mut TestAppContext,
 ) {
+    crate::transcript_view::open_tool_rows_for_test();
     let text = "Read image file [image/png]";
     let mut rows = read_rows(
         text,
@@ -244,6 +246,7 @@ fn read_ui_content_only_changes_and_reopen_retain_text_without_image_decode(
 
 #[gpui::test]
 fn read_ui_resolved_path_opens_viewer_stats_first_line_and_reuses_tab(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let (_directory, window, root) = fixture(
         cx,
         read_rows(
@@ -293,6 +296,7 @@ fn read_ui_resolved_path_opens_viewer_stats_first_line_and_reuses_tab(cx: &mut T
 
 #[gpui::test]
 fn read_ui_stale_controller_path_cannot_open_file(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let (_directory, _window, root) = fixture(
         cx,
         read_rows(
@@ -341,6 +345,7 @@ fn read_ui_stale_controller_path_cannot_open_file(cx: &mut TestAppContext) {
 fn read_ui_page_reveal_retains_expansion_and_unrelated_updates_retain_anchor(
     cx: &mut TestAppContext,
 ) {
+    crate::transcript_view::open_tool_rows_for_test();
     let text = (1..=16)
         .map(|n| format!("line-{n}"))
         .collect::<Vec<_>>()
@@ -387,6 +392,7 @@ fn read_ui_page_reveal_retains_expansion_and_unrelated_updates_retain_anchor(
 
 #[gpui::test]
 fn read_ui_newer_result_before_repaint_rejects_stale_path(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let (_directory, _window, root) = fixture(
         cx,
         read_rows(
@@ -419,6 +425,7 @@ fn read_ui_newer_result_before_repaint_rejects_stale_path(cx: &mut TestAppContex
 
 #[gpui::test]
 fn read_ui_result_replaces_focused_arguments_with_visible_keyboard_owner(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let mut rows = read_rows(
         "retained text",
         json!({"path":"fixture.txt", "offset":2}),
@@ -468,6 +475,7 @@ fn read_ui_result_replaces_focused_arguments_with_visible_keyboard_owner(cx: &mu
 
 #[gpui::test]
 fn read_ui_image_only_descriptor_window_can_expand(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     let mut rows = read_rows("", json!({"path":"fixture.png"}), None);
     let Some(ToolRecord::Result(record)) = &mut rows[1].tool_record else {
         panic!()

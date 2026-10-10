@@ -25,12 +25,20 @@ fn rust_row(tool: &Value) -> Value {
         arguments: &arguments,
         state: tool["state"].as_str().unwrap(),
         output: tool["output"].as_str().unwrap(),
-        duration_us: tool["durationMs"].as_f64().map(|ms| (ms * 1000.).round() as u64),
+        duration_us: tool["durationMs"]
+            .as_f64()
+            .map(|ms| (ms * 1000.).round() as u64),
         path: path.as_deref(),
         added: number(tool, "added"),
         removed: number(tool, "removed"),
-        line: tool.get("line").and_then(Value::as_i64).map(|n| n.max(0) as u32),
-        last_line: tool.get("lastLine").and_then(Value::as_i64).map(|n| n.max(0) as u32),
+        line: tool
+            .get("line")
+            .and_then(Value::as_i64)
+            .map(|n| n.max(0) as u32),
+        last_line: tool
+            .get("lastLine")
+            .and_then(Value::as_i64)
+            .map(|n| n.max(0) as u32),
         input_truncated: tool.get("inputTruncated").and_then(Value::as_bool) == Some(true),
     };
     let m = model(&facts);
@@ -40,7 +48,11 @@ fn rust_row(tool: &Value) -> Value {
         "object": m.object, "outcome": m.outcome.name(),
     });
     let object = row.as_object_mut().unwrap();
-    for (key, value) in [("suffix", m.suffix), ("trailing", m.trailing), ("path", m.path)] {
+    for (key, value) in [
+        ("suffix", m.suffix),
+        ("trailing", m.trailing),
+        ("path", m.path),
+    ] {
         if let Some(value) = value {
             object.insert(key.into(), value.into());
         }

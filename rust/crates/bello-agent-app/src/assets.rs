@@ -72,6 +72,21 @@ impl AssetSource for Assets {
             "brain" => {
                 r#"<path d="M12 4.6a3.1 3.1 0 0 0-5.3 1.1 3.2 3.2 0 0 0-2.9 4 3.3 3.3 0 0 0-.4 5.4 3.2 3.2 0 0 0 3.3 4.2A3.1 3.1 0 0 0 12 19.4zM12 4.6a3.1 3.1 0 0 1 5.3 1.1 3.2 3.2 0 0 1 2.9 4 3.3 3.3 0 0 1 .4 5.4 3.2 3.2 0 0 1-3.3 4.2A3.1 3.1 0 0 1 12 19.4zM7.4 9.6a2.4 2.4 0 0 1 2.4 1.9M16.6 9.6a2.4 2.4 0 0 0-2.4 1.9M7.6 15a2.2 2.2 0 0 0 2-1.4M16.4 15a2.2 2.2 0 0 1-2-1.4" stroke-width="1.7"/>"#
             }
+            // SF Symbols for the tool rows' action kinds (`actionSymbol`) and
+            // a Work line, at a weight that stays legible at 12 points.
+            "doc.text" => {
+                r#"<path d="M6.5 3h7.5l4.5 4.5V21h-12z" stroke-width="2"/><path d="M14 3v4.5h4.5M9.5 12.5h5.5M9.5 16h5.5" stroke-width="2"/>"#
+            }
+            "magnifyingglass" => {
+                r#"<circle cx="10.5" cy="10.5" r="6" stroke-width="2.2"/><path d="m15 15 5.5 5.5" stroke-width="2.4"/>"#
+            }
+            "point.3.connected.trianglepath.dotted" => {
+                r#"<circle cx="12" cy="4.8" r="2.3" stroke-width="2"/><circle cx="4.8" cy="18.2" r="2.3" stroke-width="2"/><circle cx="19.2" cy="18.2" r="2.3" stroke-width="2"/><path d="M10.7 7.3 6.1 15.7M13.3 7.3l4.6 8.4M7.6 18.2h8.8" stroke-width="2" stroke-dasharray="1.6 2.2"/>"#
+            }
+            "circle" => r#"<circle cx="12" cy="12" r="8" stroke-width="2"/>"#,
+            "list.bullet" => {
+                r#"<path d="M9.5 6h11M9.5 12h11M9.5 18h11" stroke-width="2"/><circle cx="4.5" cy="6" r="1.2" fill="black"/><circle cx="4.5" cy="12" r="1.2" fill="black"/><circle cx="4.5" cy="18" r="1.2" fill="black"/>"#
+            }
             "terminal" => {
                 r#"<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m6 8 4 4-4 4M13 16h5"/>"#
             }

@@ -269,10 +269,12 @@ fn terminal_cards_case(name: &str, cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn generic_native_terminal_cards_render_while_siblings_wait_then_settle(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     terminal_cards_case("grep", cx);
 }
 
 #[gpui::test]
 fn generic_mcp_terminal_cards_render_while_siblings_wait_then_settle(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     terminal_cards_case("mcp", cx);
 }

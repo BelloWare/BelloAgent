@@ -38,6 +38,7 @@ pub(crate) enum ActionKind {
 }
 
 impl ActionKind {
+    #[cfg(test)]
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Command => "command",
@@ -83,6 +84,7 @@ impl Outcome {
             _ => Self::Done,
         }
     }
+    #[cfg(test)]
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -104,6 +106,7 @@ pub(crate) enum RowState {
 }
 
 impl RowState {
+    #[cfg(test)]
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Ok => "ok",
@@ -179,7 +182,6 @@ pub(crate) fn short_path(path: &str) -> String {
     }
 }
 
-
 /// `firstLine`: up to the first newline, trimmed, at most `max` characters
 /// (grapheme clusters, as Swift counts them) with an ellipsis.
 pub(crate) fn first_line(text: &str, max: usize) -> String {
@@ -218,7 +220,13 @@ pub(crate) fn parts(tool: &ToolFacts) -> Parts {
                     make(ActionKind::Write, done, "writing", object("file"), path)
                 }
                 "edit" => make(ActionKind::Write, "Edited", "editing", object("file"), path),
-                _ => make(ActionKind::List, "Listed", "listing", object("directory"), path),
+                _ => make(
+                    ActionKind::List,
+                    "Listed",
+                    "listing",
+                    object("directory"),
+                    path,
+                ),
             }
         }
         "bash" => {
@@ -232,14 +240,17 @@ pub(crate) fn parts(tool: &ToolFacts) -> Parts {
             make(ActionKind::Command, "Ran", "running", object, None)
         }
         "find" | "grep" => {
-            let object = member(tool.arguments, "pattern").unwrap_or("files").to_owned();
+            let object = member(tool.arguments, "pattern")
+                .unwrap_or("files")
+                .to_owned();
             make(ActionKind::Search, "Searched", "searching", object, None)
         }
         "mcp" => {
             let action = member(tool.arguments, "action").unwrap_or("invoke");
             let server = member(tool.arguments, "server");
             if action == "list" {
-                let object = server.map_or_else(|| "MCP servers".into(), |s| format!("tools on {s}"));
+                let object =
+                    server.map_or_else(|| "MCP servers".into(), |s| format!("tools on {s}"));
                 return make(ActionKind::Mcp, "Listed", "listing", object, None);
             }
             if action == "describe" {
@@ -417,6 +428,8 @@ pub(crate) fn model(tool: &ToolFacts) -> Model {
 
 /// `ToolCallSummary`, over one reply's calls or several replies' calls:
 /// issued calls with what failed, was skipped or ended unknown.
+// The response line and turn folds read it next; the oracle holds it now.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CallSummary {
     pub total: usize,
@@ -427,6 +440,7 @@ pub(crate) struct CallSummary {
     pub partial: bool,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl CallSummary {
     /// One reply's calls, by their helper states.
     pub(crate) fn add_reply<'a>(
@@ -490,3 +504,65 @@ impl CallSummary {
 #[cfg(test)]
 #[path = "transcript_tool_row_oracle_tests.rs"]
 mod oracle_tests;
+
+/// Swift's helper state for a call in Rust's history.
+pub(super) fn helper_state(status: super::tool_presentation::Status) -> &'static str {
+    use super::tool_presentation::Status;
+    match status {
+        Status::Completed => "completed",
+        Status::Failed => "failed",
+        // Never ran: Swift's "Skipped".
+        Status::NotExecuted => "cancelled",
+        // Rust's legacy cancellation, stopped with no result: amber, as
+        // Swift's unknown outcome reads.
+        Status::Cancelled | Status::Unknown => "unknown",
+        // Swift's journal card that holds only the request.
+        Status::Missing => "recorded",
+        Status::Awaiting => "prepared",
+        Status::Running => "running",
+    }
+}
+
+/// The row model of a call on the page: its arguments, its result or live
+/// preview, the host's file facts and its clock.
+pub(super) fn row_model(
+    session: &bello_agent_core::Session,
+    row: super::tool_presentation::ProjectedRow,
+) -> Option<Model> {
+    use super::tool_presentation as tools;
+    let tools::ProjectedRow::Call {
+        assistant, call, ..
+    } = row
+    else {
+        return None;
+    };
+    let call = tools::call_at(session, assistant, call);
+    let output = row
+        .result()
+        .map(|index| tools::display_text(&session.messages[index]))
+        .or_else(|| tools::live(session, row).map(|view| view.preview.as_ref().into()));
+    let stats = super::edit_presentation::stats(session, row);
+    Some(model(&ToolFacts {
+        name: &call.name,
+        arguments: &call.arguments,
+        state: helper_state(tools::status(session, row)),
+        output: output.as_deref().unwrap_or(""),
+        duration_us: tools::duration(session, row).map(DurationUs::get),
+        path: stats.map(|stats| stats.path.as_str()),
+        added: stats.and_then(|stats| stats.added),
+        removed: stats.and_then(|stats| stats.removed),
+        line: stats.and_then(|stats| stats.line),
+        last_line: stats.and_then(|stats| stats.last_line),
+        input_truncated: false,
+    }))
+}
+
+pub(super) fn work_state(state: RowState) -> super::work_line::WorkState {
+    use super::work_line::WorkState;
+    match state {
+        RowState::Ok => WorkState::Ok,
+        RowState::Running => WorkState::Running,
+        RowState::Stopped => WorkState::Stopped,
+        RowState::Failed => WorkState::Failed,
+    }
+}

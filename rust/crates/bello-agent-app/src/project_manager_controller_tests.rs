@@ -848,16 +848,19 @@ async fn retiring_tool_focus_case(cx: &mut TestAppContext, dismiss_early: bool, 
 async fn dismiss_after_retirement_routes_old_tool_editor_focus_to_current_composer(
     cx: &mut TestAppContext,
 ) {
+    crate::transcript_view::open_tool_rows_for_test();
     retiring_tool_focus_case(cx, false, false).await;
 }
 
 #[gpui::test]
 async fn dismiss_before_delayed_retirement_repairs_old_tool_editor_focus(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     retiring_tool_focus_case(cx, true, false).await;
 }
 
 #[gpui::test]
 async fn dismiss_before_delayed_retirement_preserves_newer_file_focus(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
     retiring_tool_focus_case(cx, true, true).await;
 }
 
