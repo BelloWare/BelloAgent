@@ -323,7 +323,7 @@ func postWheel(_ pixels: Int32, at point: CGPoint) {
 
 func commandInput(_ argv: ArraySlice<String>) {
     var pid: pid_t = 0, kind = "key", region = CGRect.zero, click: CGPoint? = nil, count = 40, interval = 0.35, wheel: Int32 = -60
-    var out: String? = nil, label = "input", timeout = 2000.0
+    var out: String? = nil, label = "input", timeout = 2000.0, text: [Character]? = nil
     var it = argv.makeIterator()
     func nums(_ s: String) -> [Double] { s.split(separator: ",").map { Double($0)! } }
     while let a = it.next() {
@@ -338,6 +338,7 @@ func commandInput(_ argv: ArraySlice<String>) {
         case "--timeout-ms": timeout = Double(it.next()!)!
         case "--out": out = it.next()!
         case "--label": label = it.next()!
+        case "--text": text = Array(it.next()!)
         default: die("unknown argument \(a)")
         }
     }
@@ -357,7 +358,8 @@ func commandInput(_ argv: ArraySlice<String>) {
         guard let before = regionImage(window: window.id, rect: region) else { continue }
         let t0 = now()
         if kind == "key" {
-            let c = letters[index % letters.count]; postKey(keyCodes[c] ?? 0, character: String(c))
+            let source = text ?? letters
+            let c = source[index % source.count]; postKey(keyCodes[c] ?? 0, character: String(c))
         } else {
             postWheel(index % 2 == 0 ? wheel : -wheel, at: center)
         }
@@ -374,6 +376,42 @@ func commandInput(_ argv: ArraySlice<String>) {
     if let out {
         let report: [String: Any] = ["label": label, "kind": kind, "region": [region.minX, region.minY, region.width, region.height], "samplesMs": samples,
                                      "timeouts": timeouts, "pollsPerSample": captures, "summary": summary, "windowSize": [window.bounds.width, window.bounds.height]]
+        try! JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: out))
+    }
+}
+
+// MARK: resource sampling
+// belloperf sample --pid PID --seconds S [--exclude PID,...] [--out FILE] [--label L]
+// Per-second CPU (% of one core) and physical footprint of the process tree.
+func commandSample(_ argv: ArraySlice<String>) {
+    var pid: pid_t = 0, seconds = 30.0, out: String? = nil, label = "sample", exclude: Set<pid_t> = []
+    var it = argv.makeIterator()
+    while let a = it.next() {
+        switch a {
+        case "--pid": pid = pid_t(it.next()!)!
+        case "--seconds": seconds = Double(it.next()!)!
+        case "--out": out = it.next()!
+        case "--label": label = it.next()!
+        case "--exclude": exclude = Set(it.next()!.split(separator: ",").map { pid_t($0)! })
+        default: die("unknown argument \(a)")
+        }
+    }
+    func tree() -> [pid_t] { processTree(pid).filter { !exclude.contains($0) } }
+    var previous = usage(tree()); var previousAt = now(); let start = previousAt
+    var rows: [[Double]] = []; var peak = Double(previous.footprint) / 1048576
+    while now() - start < seconds * 1000 {
+        Thread.sleep(forTimeInterval: 1)
+        let u = usage(tree()); let t = now()
+        let cpu = Double(machToNs(u.cpuNs &- previous.cpuNs)) / 1e6 / (t - previousAt) * 100
+        let mb = Double(u.footprint) / 1048576; peak = max(peak, mb)
+        rows.append([(t - start) / 1000, cpu, mb, Double(u.count)])
+        previous = u; previousAt = t
+    }
+    let cpus = rows.map { $0[1] }; let mbs = rows.map { $0[2] }
+    let summary: [String: Any] = ["cpuPercent": summarize(cpus), "footprintMB": summarize(mbs), "peakFootprintMB": peak]
+    print("SUMMARY \(label): \(summary)")
+    if let out {
+        let report: [String: Any] = ["label": label, "pid": pid, "seconds": seconds, "rows[t,cpu%,footprintMB,processes]": rows, "summary": summary]
         try! JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: URL(fileURLWithPath: out))
     }
 }
@@ -398,5 +436,6 @@ case "launch": commandLaunch(argv.dropFirst(2))
 case "input": commandInput(argv.dropFirst(2))
 case "windows": commandWindows(argv.dropFirst(2))
 case "capture": commandCapture(argv.dropFirst(2))
+case "sample": commandSample(argv.dropFirst(2))
 default: die("unknown command \(argv[1])")
 }

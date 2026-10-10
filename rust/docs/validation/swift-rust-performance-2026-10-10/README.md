@@ -64,6 +64,47 @@ Parity defects found by this run (both reproducible from `harness/`):
    (`alpha` before `Beta`); Rust sorts by bytes (`Beta` before `alpha`). The
    78× speed ratio therefore does not compare equal work.
 
+### Agent interaction and streaming (end-to-end, external measurement)
+
+Same Mac, same loopback gateway (`harness/benchgw.py`: one 96,000-character
+Markdown reply as 32-character `output_text.delta` events every 20 ms, 60 s),
+same 400-turn / 800-message / 2.1 MB conversation (`harness/longchat_fixture.py`).
+Swift is 0.1.122 (`6319e368`) built Release with testability and hosted by
+`harness/swift-bench-host/SwiftRustBenchHost.swift`: the production
+`WorkspaceRootView` and `ApplicationMenus` over an in-memory vault (the owner's
+Keychain is never touched). Rust is the `973e7bed` release binary with the CLI
+profile and a fake key; its session is seeded by `harness/rust-seeder`. Latency
+= synthetic event post → first change of that window region in the window
+server (`belloperf input`); its floor is one capture (~5 ms for the composer,
+~8 ms for the transcript). Input was posted only while the app was frontmost.
+
+| Measure | Swift 0.1.122 | Rust `973e7bed` |
+|---|---|---|
+| Typing in the composer, idle (n=40) p50 / p90 / max | 5.9 / 11.8 / 31 ms (at the capture floor) | 40.5 / 43.0 / 45 ms |
+| Typing while a reply streams (n=40) p50 / p90 / max | 13.3 / 21.9 / 50 ms | 41.1 / 60.0 / 72 ms |
+| Transcript wheel scroll (n=40) p50 / p90 / max | 21.0 / 31.0 / 51 ms | 39.3 / 45.1 / 50 ms |
+| Find: first keystroke of a query whose only match is turn 200 → revealed (n=1) | 528 ms (150 ms debounce, paged from disk) | 260 ms (session in memory) |
+| CPU while streaming, one core, p50 / p90 | 37.9 / 41.1% flat (reply on screen) | 28.8 / 51.6% with the reply off screen, climbing 10%→55%; 45.1 / 98.7% with the reply kept on screen, climbing 10%→100% |
+| Footprint while streaming, start → peak | 90 → 132 MB (app + helper) | 83 → 107 MB (off screen); 82 → 120 MB (on screen) |
+
+Rust's streaming cost grows with the reply's length. A mid-stream `sample`
+(`interaction/rust-visible/sample-top-of-stack.txt`) attributes it to:
+
+1. GPUI `WindowTextSystem::shape_text` ← `TextLayout::layout`: the streaming
+   reply is one text element, so every frame re-shapes the whole growing reply
+   (`memmove`/`madvise` dominate), i.e. O(reply length) per frame.
+2. `bello_agent_core::stream_journal::append` ← `SessionStore::append_delta`:
+   every delta is synchronized to stable storage (`fcntl`) before publication,
+   ~50 times per second. Swift writes run records unsynced and synchronizes when
+   the turn settles (`SessionJournal.append(flush:)`, `journalFlushesEachRecord`).
+
+Behavior observed while measuring (screens in `interaction/screens/`): the Rust
+transcript shows Markdown as raw text; it opens a chat at the top of its loaded
+100-message window instead of the newest message and does not follow a
+streaming reply (it is created with `ListAlignment::Top` and preserves the
+reader's anchor); Swift opens at the newest message, renders Markdown with
+syntax-highlighted code and follows the reply.
+
 ## Limitations
 
 - The Mac is a virtual machine (paravirtualized GPU, 60 Hz virtual display).
@@ -73,9 +114,10 @@ Parity defects found by this run (both reproducible from `harness/`):
   chat vs Rust Agent disconnected empty project; both Boxes show Home).
 - Swift Box runs with Keychain IPC denied (its synchronous launch-time Keychain
   read otherwise blocks on a password prompt on this Mac).
-- Not yet measured: input-to-screen latency, Agent streaming/long-chat
-  scrolling/search, Box tool-window and image/GIF workflows. Engine speed does
-  not imply faster end-to-end interaction.
+- Agent interaction results are single sessions per app (n=40 per latency
+  series, n=1 for Find and each streaming run); Swift ran as an XCTest-hosted
+  Release build, not the shipped bundle. Not yet measured: Box tool-window and
+  image/GIF end-to-end workflows.
 
 ## Reproduce
 

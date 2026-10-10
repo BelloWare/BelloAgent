@@ -1,0 +1,12 @@
+[package]
+name = "longchat-seeder"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Standalone; uses the exact checked-out rust-branch core by path.
+[workspace]
+
+[dependencies]
+bello-agent-core = { path = "~/projects/pi-app-rust/rust/crates/bello-agent-core" }
+serde_json = "1"
