@@ -82,9 +82,9 @@ builds never play a sound or bounce the Dock.
 All exit 0 (logs here): `cargo fmt --all -- --check`; clippy `-D warnings` for
 `bello-agent-core --all-targets --all-features`, `bello-agent-app --all-targets`
 with no features, `synthetic-authority`, `native-authority`, both, and
-`--workspace --all-targets`; `cargo test`: core `--all-features` 1134 passed,
-app `synthetic-authority` 843 passed, app `native-authority` 701 passed — on
-the merge of `origin/rust` (`c4bfc55f`) into this branch.
+`--workspace --all-targets`; `cargo test`: core `--all-features` 1143 passed,
+app `synthetic-authority` 846 passed, app `native-authority` 703 passed — on
+the merge of `origin/rust` (`7ba8a2d3`) into this branch.
 Builds used a worktree-specific `RUSTC_WORKSPACE_WRAPPER` (and clippy driver
 path) so the shared target directory never mixed this worktree's workspace
 crates with another worktree's.
@@ -116,6 +116,21 @@ build), launched with a scratch `HOME` and project, a loopback gateway
 
 The app was quit after each run and the gateway stopped; no badge or sound was
 left, and the Swift app's preferences were not touched.
+
+## Codex review (read-only, gpt-6.1-sol xhigh), both rounds addressed
+
+1. Badge stale after a grace hold expires while hidden → the release refreshes
+   the Dock directly.
+2. GPUI 0.2.2 retains every action of every `set_menus` → titles change in
+   place; only a topic-list change rebuilds (that GPUI retention remains,
+   bounded by topic edits).
+3. Menu Send / Steer from a focused file/Changes tab sent the chat draft →
+   refused, as Swift does (`menu_send_refuses_while_a_tabs_text_has_focus`,
+   fails without the guard).
+4. A held Quit with the inspector key and the workspace minimized showed
+   nothing → the workspace window is brought forward.
+5. A sound preference saved before a failed connection save was not reported
+   → every later outcome begins "Task completion sound saved."
 
 ## Remaining differences
 
