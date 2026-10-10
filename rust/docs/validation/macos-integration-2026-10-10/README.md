@@ -21,7 +21,8 @@ menus, order, titles and key equivalents for every command Rust has:
 Omitted because Rust has no such feature (never a dead item): Check for
 Updates…, Open Project…, Import Pi Session…, Rename Chat…, Delete Chat…, Usage
 Report, Background Requests, Show/Hide Terminal, Open Side, and the six fold
-commands.
+commands (`rust` now folds finished turns by click, but has no focused-turn or
+fold-all command for them to call).
 
 Routing: key bindings exist only for the menus' display (a context no view
 carries), so the window handles its keys first and AppKit's menu only gets a
@@ -30,9 +31,10 @@ and ⌃⌘←/→ are taken at the window before the composer's caret keys (AppK
 would give them to the menu before a text view). Availability follows Swift:
 conversation commands need the workspace window to be key, no sheet/modal
 and a loaded chat; Send needs an unarchived chat; Mark as Unread and Resume
-Follow-ups need something to act on. GPUI menus are static, so a change to
-the selected chat's pin/archive state, the archived-chats toggle or the topic
-list rebuilds them after the render (Swift retitles in `menuNeedsUpdate`).
+Follow-ups need something to act on. GPUI menus are static and GPUI 0.2.2 keeps
+every action of every `set_menus` call, so the Pin/Archive/Show Archived titles
+change natively in place after a render (Swift retitles in `menuNeedsUpdate`)
+and only a changed topic list rebuilds the bar.
 GPUI has no native Return key equivalent, so Send / Steer gets `"\r"` natively.
 
 **Dock badge** (`notifications.rs`): the count of chats with unread replies
@@ -63,6 +65,8 @@ builds never play a sound or bounce the Dock.
   composer, ⌘, , ⌘N, ⌥⌘I and ⌃⌘←/→ through the menu path); menu commands act on
   the selected chat (pin, archive, archived toggle, send, Mark Unread/Read and
   the badge) and retitle the menus; modal owners disable chat commands.
+- `in_place_retitles_name_the_titles_the_built_menus_show`: native retitles
+  match the built menus' titles.
 - `workspace_lifetime::tests::menu_quit_from_the_workspace_window_starts_the_close_barrier`:
   Quit with the workspace window key (failed before the fix below).
 - `notifications::tests`: badge rule, Dock attention rule and an observed
@@ -78,8 +82,9 @@ builds never play a sound or bounce the Dock.
 All exit 0 (logs here): `cargo fmt --all -- --check`; clippy `-D warnings` for
 `bello-agent-core --all-targets --all-features`, `bello-agent-app --all-targets`
 with no features, `synthetic-authority`, `native-authority`, both, and
-`--workspace --all-targets`; `cargo test`: core `--all-features` 1120 passed,
-app `synthetic-authority` 831 passed, app `native-authority` 689 passed.
+`--workspace --all-targets`; `cargo test`: core `--all-features` 1134 passed,
+app `synthetic-authority` 843 passed, app `native-authority` 701 passed — on
+the merge of `origin/rust` (`c4bfc55f`) into this branch.
 Builds used a worktree-specific `RUSTC_WORKSPACE_WRAPPER` (and clippy driver
 path) so the shared target directory never mixed this worktree's workspace
 crates with another worktree's.
@@ -98,6 +103,8 @@ build), launched with a scratch `HOME` and project, a loopback gateway
   ⌘↩ added exactly one steering message (session file: two user messages).
 - Clicking View ▸ Show Archived Chats and File ▸ Pin Chat retitled them to
   Hide Archived Chats and Unpin Chat; Mark as Unread became enabled after the reply.
+  After the in-place retitle change, Show/Hide Archived Chats toggled both ways
+  on the merged build.
 - ⌥⌘I opened the Session Inspector through the menu; with the inspector key,
   the Conversation commands were disabled.
 - A reply that finished while the app was hidden set the Dock badge to `1`
