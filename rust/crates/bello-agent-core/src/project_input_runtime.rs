@@ -235,7 +235,7 @@ impl Controller {
         config: &Arc<Configuration>,
         applied: Option<&AppliedProjectResources>,
     ) -> Result<()> {
-        let profile = super::tool_runtime::effective_profile(&config.profile, Some(item));
+        let profile = config.effective_profile(Some(item));
         let instructions = applied
             .map(|value| value.instructions.as_str())
             .unwrap_or(&self.options.instructions);

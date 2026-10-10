@@ -5,8 +5,10 @@ Worktree `/Users/admin/projects/pi-app-rust-catalog`, branch `rust-catalog`
 authority-local cache, model input resolution), `f5c21a15` (unreviewed Codex
 work in progress: native Settings catalog controls and tests), then a review
 commit that corrects and completes them (passive chat listing, freshness,
-Swift's per-chat model rules) and replaces the earlier logs, and a commit
-addressing the Codex review (see below).
+Swift's per-chat model rules) and replaces the earlier logs, two commits
+addressing the Codex reviews (see below), and a merge of `origin/rust`
+(`c4bfc55f`, automatic compaction and transcript work rows) on which the
+final gate ran.
 
 Swift source read only, at `6319e368` (0.1.122):
 `Workspaces/ModelCatalogEndpoint.swift`, `ModelCatalog.swift`,
@@ -44,14 +46,18 @@ no provider headers, cookies or redirects.
 fresh list, a failure for thirty seconds) and Refresh always lists, as Swift's
 picker does. A shown native chat lists its source when it appears, as Swift's
 model pill does (`ModelSwitchPills.refresh` → `listModels(for:)`): when a new
-runtime or configuration is installed for it, and again after saved
-connections change (the source is then resolved from the vault again, so a
+runtime or configuration is installed for it, and when the saved connections
+changed since that chat last resolved its source (each chat records the saved
+revision it resolved at; it then resolves the source from the vault again, so a
 chat following another connection's catalog picks up that connection's new URL
-or key, as `catalogProfile(for:)` does); only for a custom URL, only when the
+or key, as `catalogProfile(for:)` does, even if it was hidden at the time); only for a custom URL, only when the
 shared list is not fresh or past its failure retry, and joining a listing
 already in flight. Switching chats never cancels a listing (Swift's fetch
-outlives the pill's task). An unforced Settings Choose model reuses a list a
-chat fetched within five minutes. A failed refresh, including an idle or total
+outlives the pill's task). An unforced Settings Choose model shows a list a
+chat or another form fetched within five minutes, or a failure within thirty
+seconds beside the last good list, and joins a listing in flight instead of
+superseding it; Refresh always fetches. Settings prepares a listing (a vault
+read) off the UI thread. A failed refresh, including an idle or total
 timeout, keeps the last good list and starts the failure retry window. Lists are shared within one authority, keyed
 by the source's API, base URL, catalog URL and (same-origin only) a key
 fingerprint, so Settings and chats see one list and a changed URL or key lists
@@ -122,9 +128,9 @@ cargo test --locked -p bello-agent-app --features native-authority      # app-te
   detail. The transport disables system proxies (Swift's URLSession uses them).
 - No interactive run against a real catalog or provider.
 
-## Codex review (gpt-6.1-sol, xhigh, read-only)
+## Codex reviews (gpt-6.1-sol, xhigh, read-only)
 
-Six findings, all valid and fixed: sends record the connection's model, so it
+Round 1, six findings, all valid and fixed: sends record the connection's model, so it
 was taken for a model choice and replaced saved limits/reasoning; a saved
 URL/key change reconfigures the same controller, which the pointer check missed;
 switching chats on one source cancelled the shared in-flight listing and left
@@ -132,3 +138,14 @@ the new chat unlisted; followers kept their old source after it changed;
 unforced Settings Browse refetched despite a fresh shared list; and a total
 timeout skipped the failure bookkeeping. Each has a test except the two app
 scheduling fixes, which are covered by the core behavior they call.
+
+Round 2, five findings, all valid and fixed: the window-wide revision check
+missed a follower whose source changed while it was hidden (now per chat);
+unforced Settings Browse superseded a chat's in-flight listing and ignored a
+shared recent failure (now joins and honors it); the composer was not notified
+after a resolve that needed no fetch; and Settings preparation read the vault
+on the UI thread (now on the background executor). Core tests cover per-chat
+resync, joining and shared failure; the app tests exercise background
+preparation through the existing Settings catalog workflows. While merging,
+`validate_prepared_request` was also moved to the effective profile, so its
+size check sees the same input kinds as dispatch.
