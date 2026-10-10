@@ -397,6 +397,9 @@ struct ViewportState {
     /// taller than the viewport (Swift's opening placement), decided once on
     /// the first frame with real geometry.
     opening: bool,
+    /// The last laid-out frame had the end within the follow band. Anywhere
+    /// else the transcript offers Swift's "Jump to the latest message" circle.
+    end_shown: bool,
     #[cfg(test)]
     target_preflights: Vec<usize>,
     #[cfg(test)]
@@ -437,6 +440,7 @@ impl ViewportState {
             tool_height_invalidations: 0,
             painted_scroll: end,
             follows_end: true,
+            end_shown: true,
             reader_landing: false,
             opening: presentation.input.session.state != RunState::Running,
             presentation,
@@ -824,6 +828,8 @@ pub(crate) struct TranscriptView {
     materialized: Rc<RefCell<Materialized>>,
     #[cfg(test)]
     render_count: usize,
+    #[cfg(test)]
+    offered_jump: bool,
 }
 
 impl TranscriptView {
@@ -853,6 +859,8 @@ impl TranscriptView {
             materialized: Rc::new(RefCell::new(Materialized::default())),
             #[cfg(test)]
             render_count: 0,
+            #[cfg(test)]
+            offered_jump: false,
         }
     }
 
@@ -1720,6 +1728,11 @@ impl TranscriptView {
     pub(crate) fn render_count(&self) -> usize {
         self.render_count
     }
+    /// Whether the last render offered the jump to the latest message.
+    #[cfg(test)]
+    pub(crate) fn offers_jump(&self) -> bool {
+        self.offered_jump
+    }
     #[cfg(test)]
     pub(crate) fn list_state(&self) -> ListState {
         self.viewport.borrow().list.clone()
@@ -2184,6 +2197,16 @@ impl Element for ViewportList {
             viewport.reader_landing = false;
             viewport.follows_end = viewport.end_in_band();
         }
+        // The jump circle is the view's own content: render again only when
+        // the end comes into or leaves the band, after this draw.
+        let end_shown = viewport.end_in_band();
+        if end_shown != viewport.end_shown {
+            viewport.end_shown = end_shown;
+            let child = self.child.clone();
+            window.defer(cx, move |_, cx| {
+                let _ = child.update(cx, |_, cx| cx.notify());
+            });
+        }
         (prepaint, hitbox)
     }
     fn paint(
@@ -2493,17 +2516,88 @@ impl Render for TranscriptView {
             #[cfg(test)]
             materialized: self.materialized.clone(),
         };
+        let jump = !self.viewport.borrow().end_shown && !self.presentation.rows.is_empty();
+        #[cfg(test)]
+        {
+            self.offered_jump = jump;
+        }
+        let p = self.presentation.input.palette;
         div()
             .id("transcript")
             .track_focus(&focus)
             .on_any_mouse_down(|_, window, _| window.prevent_default())
             .debug_selector(|| "queue-measured-transcript".into())
+            .relative()
             .w_full()
             .h_full()
             .min_h_0()
             .flex()
             .flex_col()
             .child(element)
+            .when(jump, |transcript| {
+                // Swift's PiKit.BackToBottomPill: a 34 pt circle centred twelve
+                // points above the transcript's foot.
+                transcript.child(
+                    div()
+                        .id("transcript-jump-to-latest")
+                        .debug_selector(|| "transcript-jump-to-latest".into())
+                        .group("transcript-jump-to-latest")
+                        .absolute()
+                        .bottom(px(12.))
+                        .left(relative(0.5))
+                        .ml(px(-17.))
+                        .size(px(34.))
+                        .rounded_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .bg(rgb(p.surface))
+                        .border_1()
+                        .border_color(rgba(if p.dark { 0xffffff29 } else { 0x00000024 }))
+                        .hover(move |circle| {
+                            circle.border_color(rgba(if p.dark { 0xa9a59b73 } else { 0x6e6a6173 }))
+                        })
+                        .shadow(vec![BoxShadow {
+                            color: hsla(0., 0., 0., 0.22),
+                            offset: point(px(0.), px(4.)),
+                            blur_radius: px(12.),
+                            spread_radius: px(0.),
+                        }])
+                        .tooltip(|_, cx| cx.new(|_| LatestHint).into())
+                        .child(
+                            svg()
+                                .path("arrow.down")
+                                .size(px(13.))
+                                .text_color(rgb(p.ink))
+                                .group_hover("transcript-jump-to-latest", move |icon| {
+                                    icon.text_color(rgb(p.accent))
+                                }),
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            let _ = view
+                                .parent
+                                .update(cx, |parent, _| parent.abandon_find_navigation());
+                            view.cancel_find_navigation(cx);
+                            view.follow_latest(cx);
+                        })),
+                )
+            })
+    }
+}
+
+/// The jump circle's tooltip, worded as Swift's.
+struct LatestHint;
+impl Render for LatestHint {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.))
+            .py(px(5.))
+            .rounded(px(6.))
+            .bg(rgb(0x333333))
+            .text_color(rgb(0xffffff))
+            .text_size(px(12.))
+            .child("Jump to the latest message")
     }
 }
 

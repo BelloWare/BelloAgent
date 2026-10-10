@@ -155,6 +155,10 @@ fn renders(child: &Entity<TranscriptView>, cx: &TestAppContext) -> usize {
     cx.read(|cx| child.read(cx).render_count())
 }
 
+fn offers_jump(child: &Entity<TranscriptView>, cx: &TestAppContext) -> bool {
+    cx.read(|cx| child.read(cx).offers_jump())
+}
+
 fn scroll(child: &Entity<TranscriptView>, cx: &TestAppContext) -> ListState {
     // Resizing replaces GPUI's ListState because its overdraw is immutable.
     // Never retain this handle across geometry changes.
@@ -671,6 +675,50 @@ fn going_up_unpins_and_scrolling_back_to_the_end_follows_again(cx: &mut TestAppC
         session.messages[99].text = reply_lines(160);
     });
     assert_eq!(anchor(&child, cx), short);
+}
+
+#[gpui::test]
+fn jump_circle_offers_the_end_whenever_the_reader_is_away_from_it(cx: &mut TestAppContext) {
+    let (_directory, window, root) = fixture(cx, messages(100), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    assert!(!offers_jump(&child, cx));
+    let target = scroll(&child, cx).viewport_bounds().center();
+    visual.simulate_mouse_move(target, None::<MouseButton>, Modifiers::none());
+    visual.simulate_event(ScrollWheelEvent {
+        position: target,
+        delta: ScrollDelta::Pixels(point(px(0.), px(400.))),
+        ..Default::default()
+    });
+    cx.run_until_parked();
+    assert!(offers_jump(&child, cx));
+    // Swift's back-to-bottom circle: 34 pt, centred, twelve points above the foot.
+    let circle = visual
+        .debug_bounds("transcript-jump-to-latest")
+        .expect("offered away from the end");
+    let viewport = scroll(&child, cx).viewport_bounds();
+    assert_eq!(circle.size, size(px(34.), px(34.)));
+    assert!((circle.center().x - viewport.center().x).abs() <= px(1.));
+    assert!((viewport.bottom() - circle.bottom() - px(12.)).abs() <= px(1.));
+    // It returns to the end, which the page then follows again.
+    visual.simulate_click(circle.center(), Modifiers::none());
+    cx.run_until_parked();
+    snapshot_change(&root, cx, |session| {
+        session.messages[99].text = reply_lines(60);
+    });
+    assert_end_followed(&mut visual, &child, "message-99", cx);
+    // Debug selectors outlive the frame that drew them; ask the render.
+    assert!(!offers_jump(&child, cx));
+}
+
+#[gpui::test]
+fn chat_opened_at_its_last_question_offers_the_jump_to_its_end(cx: &mut TestAppContext) {
+    let mut rows = messages(100);
+    rows[99].text = reply_lines(300);
+    let (_directory, _window, root) = fixture(cx, rows, 0);
+    let (_visual, child) = host_as_opened(&root, input(&root, cx), cx);
+    assert_eq!(anchor(&child, cx).0, "message-98");
+    assert!(offers_jump(&child, cx));
 }
 
 #[gpui::test]
