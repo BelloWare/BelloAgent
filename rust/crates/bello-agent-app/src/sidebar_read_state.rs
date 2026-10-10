@@ -502,6 +502,8 @@ impl AgentView {
                     if view.record.id == record.id {
                         view.invalidate_read_geometry(cx);
                     }
+                    // A hidden or occluded window may not render to do this.
+                    view.refresh_dock_badge(cx);
                     cx.notify();
                 }
             });

@@ -276,18 +276,26 @@ impl AgentView {
                 .collect(),
         }
     }
-    /// Rebuild the menu bar after a render that changed what it shows. The
-    /// rebuild is deferred out of render; a newer state supersedes it.
+    /// Bring the menu bar up to date after a render that changed what it
+    /// shows, deferred out of render; a newer state supersedes it. GPUI 0.2.2
+    /// keeps every action of every `set_menus` call, so titles change in place
+    /// and only a changed topic list rebuilds the bar.
     pub(crate) fn sync_menus(&self, cx: &mut C) {
         let state = self.menu_state();
-        match cx.try_global::<InstalledMenus>() {
-            Some(installed) if installed.0 != state => {}
+        let previous = match cx.try_global::<InstalledMenus>() {
+            Some(installed) if installed.0 != state => installed.0.clone(),
             _ => return,
-        }
+        };
+        let rebuild_bar = previous.topics != state.topics;
         cx.global_mut::<InstalledMenus>().0 = state.clone();
         cx.defer(move |cx| {
-            if cx.global::<InstalledMenus>().0 == state {
+            if cx.global::<InstalledMenus>().0 != state {
+                return;
+            }
+            if rebuild_bar {
                 rebuild(&state, cx);
+            } else {
+                native_retitle(&state);
             }
         });
     }
@@ -349,7 +357,7 @@ impl AgentView {
         let chat = !modal && self.records.iter().any(|r| r.id == self.record.id);
         // Swift's conversationCommandsEnabled, plus Rust's load state.
         let active = chat && !self.loading && !self.load_failed;
-        let composer = active && self.record.archived_at.is_none();
+        let composer = active && !self.chat_is_archived(&self.record.id);
         let find = active && !self.typing_in_tab(window, cx);
         let close_prompt = self
             .files
@@ -560,6 +568,62 @@ fn native_system_menus() {
 }
 #[cfg(any(not(target_os = "macos"), test))]
 fn native_system_menus() {}
+
+/// The titles Swift changes as state changes: (menu, both titles, which one).
+fn retitles(state: &MenuState) -> [(&'static str, [&'static str; 2], bool); 3] {
+    [
+        ("File", ["Archive Chat", "Restore Chat"], state.archived),
+        ("File", ["Pin Chat", "Unpin Chat"], state.pinned),
+        (
+            "View",
+            ["Show Archived Chats", "Hide Archived Chats"],
+            state.archived_shown,
+        ),
+    ]
+}
+
+#[cfg(all(target_os = "macos", not(test)))]
+fn native_retitle(state: &MenuState) {
+    use cocoa::{
+        base::{id, nil},
+        foundation::NSString,
+    };
+    use objc::{class, msg_send, sel, sel_impl};
+    unsafe {
+        let app: id = msg_send![class!(NSApplication), sharedApplication];
+        let main: id = msg_send![app, mainMenu];
+        if main == nil {
+            return;
+        }
+        for (menu, titles, second) in retitles(state) {
+            let name = NSString::alloc(nil).init_str(menu);
+            let parent: id = msg_send![main, itemWithTitle: name];
+            let _: () = msg_send![name, release];
+            if parent == nil {
+                continue;
+            }
+            let submenu: id = msg_send![parent, submenu];
+            if submenu == nil {
+                continue;
+            }
+            for title in titles {
+                let old = NSString::alloc(nil).init_str(title);
+                let item: id = msg_send![submenu, itemWithTitle: old];
+                let _: () = msg_send![old, release];
+                if item != nil {
+                    let new = NSString::alloc(nil).init_str(titles[usize::from(second)]);
+                    let _: () = msg_send![item, setTitle: new];
+                    let _: () = msg_send![new, release];
+                    break;
+                }
+            }
+        }
+    }
+}
+#[cfg(any(not(target_os = "macos"), test))]
+fn native_retitle(state: &MenuState) {
+    let _ = retitles(state);
+}
 
 #[cfg(test)]
 #[path = "application_menus_tests.rs"]

@@ -475,3 +475,22 @@ fn menu_availability_and_edit_routing_follow_focus_and_modal_owner(cx: &mut Test
     // App-wide commands stay available, as AppKit's own items do.
     assert!(cx.update(|cx| cx.is_action_available(&Quit)));
 }
+
+#[::core::prelude::v1::test]
+fn in_place_retitles_name_the_titles_the_built_menus_show() {
+    for bits in 0..8u8 {
+        let state = MenuState {
+            archived: bits & 1 != 0,
+            pinned: bits & 2 != 0,
+            archived_shown: bits & 4 != 0,
+            topics: vec![],
+        };
+        let built = menus(&state);
+        for (menu, titles, second) in retitles(&state) {
+            let menu = built.iter().find(|m| m.name == menu).unwrap();
+            let shown = labels(menu);
+            assert!(shown.iter().any(|t| t == titles[usize::from(second)]));
+            assert!(!shown.iter().any(|t| t == titles[usize::from(!second)]));
+        }
+    }
+}
