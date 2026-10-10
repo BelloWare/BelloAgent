@@ -1,0 +1,12 @@
+[package]
+name = "markdown-dump"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Standalone: dumps this checkout's bello-agent-core Markdown reading as JSON.
+[workspace]
+
+[dependencies]
+bello-agent-core = { path = "../../../../crates/bello-agent-core" }
+serde_json = "1"

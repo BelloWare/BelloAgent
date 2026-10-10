@@ -1,0 +1,1847 @@
+[
+  [
+
+  ],
+  [
+
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Plain paragraph."
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "First paragraph."
+        }
+      ]
+    },
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Second paragraph."
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Soft\nbreak inside"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Hard\nbreak"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Backslash\nbreak"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Trailing spaces"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "italic" : true,
+          "size" : 14.5,
+          "text" : "it"
+        },
+        {
+          "size" : 14.5,
+          "text" : " and "
+        },
+        {
+          "italic" : true,
+          "size" : 14.5,
+          "text" : "it"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "bold" : true,
+          "size" : 14.5,
+          "text" : "bold"
+        },
+        {
+          "size" : 14.5,
+          "text" : " and "
+        },
+        {
+          "bold" : true,
+          "size" : 14.5,
+          "text" : "bold"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "bold" : true,
+          "italic" : true,
+          "size" : 14.5,
+          "text" : "both"
+        },
+        {
+          "size" : 14.5,
+          "text" : " and "
+        },
+        {
+          "bold" : true,
+          "italic" : true,
+          "size" : 14.5,
+          "text" : "both"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "strike" : true,
+          "text" : "strike"
+        },
+        {
+          "size" : 14.5,
+          "text" : " text"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Single "
+        },
+        {
+          "size" : 14.5,
+          "strike" : true,
+          "text" : "tilde"
+        },
+        {
+          "size" : 14.5,
+          "text" : " text"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "code" : true,
+          "mono" : true,
+          "size" : 13.050000000000001,
+          "text" : "code"
+        },
+        {
+          "size" : 14.5,
+          "text" : " span"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "bold" : true,
+          "code" : true,
+          "mono" : true,
+          "size" : 13.050000000000001,
+          "text" : "bold code"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "code" : true,
+          "italic" : true,
+          "mono" : true,
+          "size" : 13.050000000000001,
+          "text" : "italic code"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Escaped *not emphasis*"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Entities & < © #"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "link" : "https:\/\/example.com\/a?b=1",
+          "size" : 14.5,
+          "text" : "ok"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "link" : "http:\/\/example.com",
+          "size" : 14.5,
+          "text" : "http"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "file"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "js"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "cred"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "mail"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "link" : "https:\/\/auto.example.com\/x",
+          "size" : 14.5,
+          "text" : "https:\/\/auto.example.com\/x"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Bare "
+        },
+        {
+          "link" : "https:\/\/bare.example.com",
+          "size" : 14.5,
+          "text" : "https:\/\/bare.example.com"
+        },
+        {
+          "size" : 14.5,
+          "text" : " link"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "rel"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "link" : "https:\/\/example.com",
+          "size" : 14.5,
+          "text" : "bold link"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "[Image not loaded: alt text]"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "[Image not loaded: ￼]"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "heading" : 1,
+      "plain" : "H1",
+      "spans" : [
+        {
+          "bold" : true,
+          "serif" : true,
+          "size" : 21.75,
+          "text" : "H1"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "heading" : 2,
+      "plain" : "H2",
+      "spans" : [
+        {
+          "bold" : true,
+          "serif" : true,
+          "size" : 18.850000000000001,
+          "text" : "H2"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "heading" : 3,
+      "plain" : "H3",
+      "spans" : [
+        {
+          "bold" : true,
+          "serif" : true,
+          "size" : 16.240000000000002,
+          "text" : "H3"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "heading" : 4,
+      "plain" : "H4",
+      "spans" : [
+        {
+          "bold" : true,
+          "serif" : true,
+          "size" : 14.5,
+          "text" : "H4"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "heading" : 5,
+      "plain" : "H5",
+      "spans" : [
+        {
+          "bold" : true,
+          "serif" : true,
+          "size" : 14.5,
+          "text" : "H5"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "heading" : 6,
+      "plain" : "H6",
+      "spans" : [
+        {
+          "bold" : true,
+          "serif" : true,
+          "size" : 14.5,
+          "text" : "H6"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "heading" : 2,
+      "plain" : "A b c d",
+      "spans" : [
+        {
+          "bold" : true,
+          "serif" : true,
+          "size" : 18.850000000000001,
+          "text" : "A b "
+        },
+        {
+          "bold" : true,
+          "code" : true,
+          "mono" : true,
+          "size" : 16.965000000000003,
+          "text" : "c"
+        },
+        {
+          "bold" : true,
+          "serif" : true,
+          "size" : 18.850000000000001,
+          "text" : " d"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "heading" : 1,
+      "plain" : "Setext",
+      "spans" : [
+        {
+          "bold" : true,
+          "serif" : true,
+          "size" : 21.75,
+          "text" : "Setext"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "heading" : 2,
+      "plain" : "Setext two",
+      "spans" : [
+        {
+          "bold" : true,
+          "serif" : true,
+          "size" : 18.850000000000001,
+          "text" : "Setext two"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "code" : "let a = 1\nlet b = 2",
+      "language" : "swift"
+    }
+  ],
+  [
+    {
+      "code" : "plain tilde",
+      "language" : null
+    }
+  ],
+  [
+    {
+      "code" : "indented code\nsecond",
+      "language" : null
+    }
+  ],
+  [
+    {
+      "code" : "fn main() {}",
+      "language" : "rust"
+    }
+  ],
+  [
+
+  ],
+  [
+    {
+      "code" : "unclosed fence\nstill code",
+      "language" : "python"
+    }
+  ],
+  [
+    {
+      "code" : "```\nnested fence\n```",
+      "language" : null
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "a"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "b"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : false,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "a"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "b"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : false,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "a"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "b"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : false,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "one"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "two"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : true,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "three"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "four"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : true,
+      "start" : 3
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "zero"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "one"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : true,
+      "start" : 0
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "paren"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "paren"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : true,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "a"
+              }
+            ]
+          },
+          {
+            "list" : [
+              [
+                {
+                  "paragraph" : [
+                    {
+                      "size" : 14.5,
+                      "text" : "nested"
+                    }
+                  ]
+                }
+              ],
+              [
+                {
+                  "paragraph" : [
+                    {
+                      "size" : 14.5,
+                      "text" : "nested two"
+                    }
+                  ]
+                }
+              ]
+            ],
+            "ordered" : false,
+            "start" : 1
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "b"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : false,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "a"
+              }
+            ]
+          },
+          {
+            "list" : [
+              [
+                {
+                  "paragraph" : [
+                    {
+                      "size" : 14.5,
+                      "text" : "inner"
+                    }
+                  ]
+                }
+              ]
+            ],
+            "ordered" : true,
+            "start" : 1
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "b"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : true,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "loose"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "list"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : false,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "item one"
+              }
+            ]
+          },
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "continued paragraph"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "item two"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : false,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "item"
+              }
+            ]
+          },
+          {
+            "code" : "code()",
+            "language" : "js"
+          }
+        ]
+      ],
+      "ordered" : false,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "[ ] task"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "[x] done"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : false,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "bold" : true,
+                "size" : 14.5,
+                "text" : "bold item"
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "code" : true,
+                "mono" : true,
+                "size" : 13.050000000000001,
+                "text" : "code item"
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : false,
+      "start" : 1
+    }
+  ],
+  [
+    {
+      "quote" : [
+        {
+          "paragraph" : [
+            {
+              "size" : 14.5,
+              "text" : "quote"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "quote" : [
+        {
+          "paragraph" : [
+            {
+              "size" : 14.5,
+              "text" : "a\nb"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "quote" : [
+        {
+          "paragraph" : [
+            {
+              "size" : 14.5,
+              "text" : "outer"
+            }
+          ]
+        },
+        {
+          "quote" : [
+            {
+              "paragraph" : [
+                {
+                  "size" : 14.5,
+                  "text" : "inner"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "quote" : [
+        {
+          "list" : [
+            [
+              {
+                "paragraph" : [
+                  {
+                    "size" : 14.5,
+                    "text" : "quoted list"
+                  }
+                ]
+              }
+            ],
+            [
+              {
+                "paragraph" : [
+                  {
+                    "size" : 14.5,
+                    "text" : "two"
+                  }
+                ]
+              }
+            ]
+          ],
+          "ordered" : false,
+          "start" : 1
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "quote" : [
+        {
+          "heading" : 1,
+          "plain" : "quoted heading",
+          "spans" : [
+            {
+              "bold" : true,
+              "serif" : true,
+              "size" : 21.75,
+              "text" : "quoted heading"
+            }
+          ]
+        },
+        {
+          "paragraph" : [
+            {
+              "size" : 14.5,
+              "text" : "text"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "alignments" : [
+        "left",
+        "left"
+      ],
+      "header" : [
+        [
+          {
+            "size" : 13.050000000000001,
+            "text" : "a"
+          }
+        ],
+        [
+          {
+            "size" : 13.050000000000001,
+            "text" : "b"
+          }
+        ]
+      ],
+      "table" : [
+        [
+          [
+            {
+              "size" : 13.050000000000001,
+              "text" : "1"
+            }
+          ],
+          [
+            {
+              "size" : 13.050000000000001,
+              "text" : "2"
+            }
+          ]
+        ]
+      ]
+    }
+  ],
+  [
+    {
+      "alignments" : [
+        "left",
+        "center",
+        "right"
+      ],
+      "header" : [
+        [
+          {
+            "size" : 13.050000000000001,
+            "text" : "L"
+          }
+        ],
+        [
+          {
+            "size" : 13.050000000000001,
+            "text" : "C"
+          }
+        ],
+        [
+          {
+            "size" : 13.050000000000001,
+            "text" : "R"
+          }
+        ]
+      ],
+      "table" : [
+        [
+          [
+            {
+              "size" : 13.050000000000001,
+              "text" : "x"
+            }
+          ],
+          [
+            {
+              "size" : 13.050000000000001,
+              "text" : "y"
+            }
+          ],
+          [
+            {
+              "size" : 13.050000000000001,
+              "text" : "z"
+            }
+          ]
+        ]
+      ]
+    }
+  ],
+  [
+    {
+      "alignments" : [
+        "left",
+        "left"
+      ],
+      "header" : [
+        [
+          {
+            "code" : true,
+            "mono" : true,
+            "size" : 11.745000000000001,
+            "text" : "c"
+          }
+        ],
+        [
+          {
+            "bold" : true,
+            "size" : 13.050000000000001,
+            "text" : "b"
+          }
+        ]
+      ],
+      "table" : [
+        [
+          [
+            {
+              "link" : "https:\/\/e.com",
+              "size" : 13.050000000000001,
+              "text" : "l"
+            }
+          ],
+          [
+            {
+              "size" : 13.050000000000001,
+              "strike" : true,
+              "text" : "s"
+            }
+          ]
+        ]
+      ]
+    }
+  ],
+  [
+    {
+      "alignments" : [
+        "left"
+      ],
+      "header" : [
+        [
+          {
+            "size" : 13.050000000000001,
+            "text" : "a"
+          }
+        ]
+      ],
+      "table" : [
+        [
+          [
+            {
+              "size" : 13.050000000000001,
+              "text" : "pipe | escaped"
+            }
+          ]
+        ]
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Not | a | table"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "<div>block html<\/div>\n"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "a <b>inline<\/b> c"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "<!-- comment -->\n"
+        }
+      ]
+    },
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "text"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "line one\n<br>\nline two"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Para"
+        }
+      ]
+    },
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "After rule"
+        }
+      ]
+    }
+  ],
+  [
+
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "日本語 "
+        },
+        {
+          "italic" : true,
+          "size" : 14.5,
+          "text" : "強調"
+        },
+        {
+          "size" : 14.5,
+          "text" : " と "
+        },
+        {
+          "code" : true,
+          "mono" : true,
+          "size" : 13.050000000000001,
+          "text" : "コード"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "é combining"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Footnote[^1]"
+        }
+      ]
+    },
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "[^1]: the note"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Text with trailing newline"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Line\nwith CRLF"
+        }
+      ]
+    },
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Next"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Tabs\tinside\ttext"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "leading spaces paragraph"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "heading" : 2,
+      "plain" : "Finding 399.0",
+      "spans" : [
+        {
+          "bold" : true,
+          "serif" : true,
+          "size" : 18.850000000000001,
+          "text" : "Finding 399.0"
+        }
+      ]
+    },
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "The parser in module 8 reads the token stream twice when "
+        },
+        {
+          "bold" : true,
+          "size" : 14.5,
+          "text" : "a nested block"
+        },
+        {
+          "size" : 14.5,
+          "text" : " closes early, so\n"
+        },
+        {
+          "code" : true,
+          "mono" : true,
+          "size" : 13.050000000000001,
+          "text" : "parse(input:)"
+        },
+        {
+          "size" : 14.5,
+          "text" : " returns a shorter tree than the caller expects. This paragraph is long enough to\nwrap across the pane at its usual width."
+        }
+      ]
+    },
+    {
+      "list" : [
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "The first pass keeps the offsets."
+              }
+            ]
+          }
+        ],
+        [
+          {
+            "paragraph" : [
+              {
+                "size" : 14.5,
+                "text" : "The second pass loses them after a nested block."
+              }
+            ]
+          }
+        ]
+      ],
+      "ordered" : false,
+      "start" : 1
+    },
+    {
+      "code" : "    let value0 = compute(39900, 0) \/\/ step 0 of the pass\n    let value1 = compute(39900, 1) \/\/ step 1 of the pass",
+      "language" : "swift"
+    },
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "That is everything for question 399."
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Question 399: please look at module 8 and tell me what changed in the parser."
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Visit "
+        },
+        {
+          "link" : "http:\/\/www.example.com",
+          "size" : 14.5,
+          "text" : "www.example.com"
+        },
+        {
+          "size" : 14.5,
+          "text" : " now"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "See ("
+        },
+        {
+          "link" : "https:\/\/example.com\/path",
+          "size" : 14.5,
+          "text" : "https:\/\/example.com\/path"
+        },
+        {
+          "size" : 14.5,
+          "text" : ") and "
+        },
+        {
+          "link" : "https:\/\/example.com\/a",
+          "size" : 14.5,
+          "text" : "https:\/\/example.com\/a"
+        },
+        {
+          "size" : 14.5,
+          "text" : ")."
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "End "
+        },
+        {
+          "link" : "https:\/\/example.com",
+          "size" : 14.5,
+          "text" : "https:\/\/example.com"
+        },
+        {
+          "size" : 14.5,
+          "text" : "."
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Query "
+        },
+        {
+          "link" : "https:\/\/e.com\/?a=1&b=2",
+          "size" : 14.5,
+          "text" : "https:\/\/e.com\/?a=1&b=2"
+        },
+        {
+          "size" : 14.5,
+          "text" : ", then"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Code "
+        },
+        {
+          "code" : true,
+          "mono" : true,
+          "size" : 13.050000000000001,
+          "text" : "https:\/\/in.code.com"
+        },
+        {
+          "size" : 14.5,
+          "text" : " span"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "link" : "https:\/\/x.com",
+          "size" : 14.5,
+          "text" : "t"
+        },
+        {
+          "size" : 14.5,
+          "text" : " and "
+        },
+        {
+          "link" : "https:\/\/y.com",
+          "size" : 14.5,
+          "text" : "https:\/\/y.com"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "bold" : true,
+          "link" : "https:\/\/bold.example.com",
+          "size" : 14.5,
+          "text" : "https:\/\/bold.example.com"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Mixed "
+        },
+        {
+          "link" : "http:\/\/h.com",
+          "size" : 14.5,
+          "text" : "http:\/\/h.com"
+        },
+        {
+          "size" : 14.5,
+          "text" : " and ftp:\/\/f.com"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Trailing "
+        },
+        {
+          "link" : "https:\/\/e.com\/x_y",
+          "size" : 14.5,
+          "text" : "https:\/\/e.com\/x_y"
+        },
+        {
+          "size" : 14.5,
+          "text" : "_"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "code" : "let x = 1;",
+      "language" : "rust ignore"
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "Single "
+        },
+        {
+          "size" : 14.5,
+          "strike" : true,
+          "text" : "tilde"
+        },
+        {
+          "size" : 14.5,
+          "text" : " and "
+        },
+        {
+          "size" : 14.5,
+          "strike" : true,
+          "text" : "double"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "link" : "https:\/\/e.com",
+          "size" : 14.5,
+          "text" : "it link"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "link" : "https:\/\/e.com",
+          "size" : 14.5,
+          "text" : "code link"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "bold" : true,
+          "link" : "https:\/\/e.com",
+          "size" : 14.5,
+          "text" : "link in bold"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "link" : "https:\/\/e.com",
+          "size" : 14.5,
+          "text" : "s"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "link" : "https:\/\/e.com",
+          "size" : 14.5,
+          "text" : "a b c"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "italic" : true,
+          "link" : "https:\/\/e.com",
+          "size" : 14.5,
+          "text" : "it outside"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "bold" : true,
+          "size" : 14.5,
+          "text" : "bold "
+        },
+        {
+          "bold" : true,
+          "link" : "https:\/\/e.com",
+          "size" : 14.5,
+          "text" : "mid"
+        },
+        {
+          "bold" : true,
+          "size" : 14.5,
+          "text" : " bold"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "b"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "i"
+        }
+      ]
+    }
+  ],
+  [
+    {
+      "paragraph" : [
+        {
+          "size" : 14.5,
+          "text" : "[Image not loaded: alt]"
+        }
+      ]
+    }
+  ]
+]

@@ -27,6 +27,8 @@ tokio-util = "0.7"
 futures-util = "0.3"
 unicode-normalization = "0.1"
 unicode-segmentation = "=1.13.3"
+# Transcript Markdown (the same pinned parser BelloBox uses); no HTML renderer.
+pulldown-cmark = { version = "=0.13.4", default-features = false }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 base64 = "=0.22.1"

@@ -7,6 +7,7 @@ mod compaction_session;
 pub mod context_recovery;
 pub mod inspection;
 pub mod instructions;
+pub mod markdown;
 pub mod mcp;
 pub mod model_catalog;
 pub mod observed_source;
