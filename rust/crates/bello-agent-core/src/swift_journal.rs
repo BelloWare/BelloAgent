@@ -158,6 +158,9 @@ pub struct Row {
     pub stop_reason: Option<String>,
     pub context_usage_binding: Option<String>,
     pub usage: Option<Value>,
+    /// A compaction summary's record: the rows it kept and its token count.
+    /// Not part of Swift's row; the import needs it for legacy summaries.
+    pub kept: Option<(Vec<String>, Option<i64>)>,
 }
 
 impl Row {
@@ -194,6 +197,7 @@ impl Row {
             stop_reason: None,
             context_usage_binding: None,
             usage: None,
+            kept: None,
         }
     }
 
@@ -754,7 +758,9 @@ fn summary(record: &Value) -> Result<Row> {
         vec![text_block(&format!("{prefix}{written}"))],
     );
     row.kind = Some("compaction".into());
-    let kept = identities(&record["nativeKeptIDs"])?.len();
+    let kept_ids = identities(&record["nativeKeptIDs"])?;
+    let kept = kept_ids.len();
+    row.kept = Some((kept_ids, int(&record["tokensBefore"])));
     let tokens =
         int(&record["tokensBefore"]).map_or("unknown".to_owned(), |tokens| tokens.to_string());
     row.detail = Some(format!(
