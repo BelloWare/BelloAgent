@@ -1091,6 +1091,77 @@ impl WorkspaceStore {
             Ok(chat.clone())
         })
     }
+    /// The catalog file: its folder holds the chats and import records.
+    pub(crate) fn file(&self) -> &Path {
+        &self.path
+    }
+    /// Adds what an import brought (topics, and chats with their drafts) in
+    /// one commit, refusing any identity this project already has.
+    pub(crate) fn import_records(
+        &mut self,
+        topics: Vec<TopicRecord>,
+        chats: Vec<(ChatRecord, DraftRecord)>,
+    ) -> Result<()> {
+        self.ensure_certain()?;
+        self.transact(|state| {
+            if topics
+                .iter()
+                .any(|topic| state.topics.iter().any(|known| known.id == topic.id))
+                || chats
+                    .iter()
+                    .any(|(chat, _)| state.chats.iter().any(|known| known.id == chat.id))
+            {
+                return Err(invalid(
+                    "An imported chat or topic is already in this project",
+                ));
+            }
+            if state.chats.len() + chats.len() > MAX_CHATS {
+                return Err(invalid(
+                    "This development workspace supports up to 512 chats",
+                ));
+            }
+            state.topics.extend(topics);
+            for (chat, draft) in chats {
+                draft.validate()?;
+                state.drafts.insert(chat.id.clone(), draft);
+                state.chats.push(chat);
+            }
+            Ok(())
+        })
+    }
+    /// Takes out chats an import added, and its topics no chat is left in.
+    pub(crate) fn remove_imported(
+        &mut self,
+        chats: &std::collections::BTreeSet<String>,
+        topics: &std::collections::BTreeSet<String>,
+    ) -> Result<()> {
+        self.ensure_certain()?;
+        self.transact(|state| {
+            state.chats.retain(|chat| !chats.contains(&chat.id));
+            for id in chats {
+                state.drafts.remove(id);
+                state.read_states.remove(id);
+                state.settled_submissions.remove(id);
+                state.queued_cancellations.remove(id);
+            }
+            state
+                .intents
+                .retain(|_, intent| !chats.contains(&intent.chat_id));
+            if state.selected.as_ref().is_some_and(|id| chats.contains(id)) {
+                state.selected = None;
+                state.selection_revision = state.selection_revision.saturating_add(1);
+            }
+            let used: std::collections::BTreeSet<String> = state
+                .chats
+                .iter()
+                .filter_map(|chat| chat.topic_id.clone())
+                .collect();
+            state
+                .topics
+                .retain(|topic| !topics.contains(&topic.id) || used.contains(&topic.id));
+            Ok(())
+        })
+    }
     pub fn chat_path(&self, id: &str) -> Result<PathBuf> {
         Uuid::parse_str(id).map_err(|_| invalid("Invalid chat identity"))?;
         Ok(self

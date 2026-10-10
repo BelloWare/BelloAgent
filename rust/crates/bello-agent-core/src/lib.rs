@@ -31,6 +31,7 @@ mod stream_journal;
 pub mod swift_catalog;
 pub mod swift_import;
 pub mod swift_journal;
+pub mod swift_migration;
 pub mod syntax;
 #[cfg(feature = "synthetic-authority")]
 pub mod synthetic_project_runtime;

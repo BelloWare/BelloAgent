@@ -1358,6 +1358,17 @@ impl SessionStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_seeded(path.as_ref(), None)
     }
+    /// Writes an imported chat's first checkpoint at `path`, through the same
+    /// lock, validation and durable write as any new chat; a path that
+    /// already holds a file is refused, never read or replaced.
+    pub(crate) fn create_imported(path: &Path, session: Session) -> Result<Self> {
+        if path.exists() || path.with_extension("lock").exists() {
+            return Err(invalid(
+                "An imported chat cannot take the place of an existing file",
+            ));
+        }
+        Self::open_seeded(path, Some(session))
+    }
     /// Authority-aware composition must not create a missing saved chat or recover a
     /// different chat before checking its identity. Both checkpoint and lock
     /// must already exist; validate the ID under the same writer lock used by
