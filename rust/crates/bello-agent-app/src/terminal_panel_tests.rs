@@ -446,3 +446,135 @@ fn closing_the_window_ends_its_shells(cx: &mut TestAppContext) {
         .unwrap();
     wait(cx, "the shell to end with its window", |_| !alive(shell));
 }
+
+#[gpui::test]
+fn the_toggle_waits_for_an_open_picker(cx: &mut TestAppContext) {
+    let (_dir, window, view) = fixture_with(cx, Vec::new(), 0, None, false);
+    window
+        .update(cx, |view, window, cx| {
+            view.quick_open
+                .update(cx, |picker, cx| picker.show(window, cx))
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_keystrokes(window.into(), "ctrl-`");
+    assert!(!cx.read(|cx| view.read(cx).terminal.visible));
+}
+
+#[gpui::test]
+fn a_key_held_to_answer_a_question_never_reaches_the_shell(cx: &mut TestAppContext) {
+    let (_dir, window, _view, panel) = open(cx);
+    typed(
+        cx,
+        window,
+        "stty raw -echo; dd bs=1 count=1 2>/dev/null | od -An -tx1; stty sane",
+    );
+    cx.simulate_keystrokes(window.into(), "enter");
+    std::thread::sleep(Duration::from_millis(200));
+    window
+        .update(cx, |_, window, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.request_ending(Ending::Restart, window, cx)
+            })
+        })
+        .unwrap();
+    cx.simulate_keystrokes(window.into(), "enter");
+    assert!(cx.read(|cx| panel.read(cx).question.is_none()));
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    for _ in 0..3 {
+        visual.simulate_event(KeyDownEvent {
+            keystroke: Keystroke::parse("enter").unwrap(),
+            is_held: true,
+        });
+    }
+    typed(cx, window, "x");
+    wait_screen(cx, &panel, " 78");
+    assert!(!screen(&panel, cx).contains("0d"));
+}
+
+#[gpui::test]
+fn switching_terminals_reports_focus_to_programs_that_asked(cx: &mut TestAppContext) {
+    let (_dir, window, _view, panel) = open(cx);
+    typed(
+        cx,
+        window,
+        "printf '\\033[?1004h'; stty raw -echo; dd bs=1 count=3 2>/dev/null | od -An -tx1; stty sane",
+    );
+    cx.simulate_keystrokes(window.into(), "enter");
+    std::thread::sleep(Duration::from_millis(300));
+    cx.run_until_parked();
+    let first = cx.read(|cx| panel.read(cx).selected_session().unwrap().id);
+    window
+        .update(cx, |_, _, cx| {
+            panel.update(cx, |panel, cx| panel.create(cx))
+        })
+        .unwrap();
+    cx.run_until_parked();
+    // The first terminal was told it lost the keyboard (ESC [ O).
+    window
+        .update(cx, |_, _, cx| {
+            panel.update(cx, |panel, cx| panel.select(first, cx))
+        })
+        .unwrap();
+    wait_screen(cx, &panel, "1b 5b 4f");
+}
+
+#[gpui::test]
+fn the_chosen_tab_scrolls_into_view(cx: &mut TestAppContext) {
+    let (_dir, window, _view, panel) = open(cx);
+    for _ in 0..9 {
+        window
+            .update(cx, |_, _, cx| {
+                panel.update(cx, |panel, cx| panel.create(cx))
+            })
+            .unwrap();
+        cx.run_until_parked();
+    }
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let row = visual.debug_bounds("terminal-tabs").unwrap();
+    assert_eq!(f32::from(row.size.width), TABS_LIMIT);
+    let last = visual.debug_bounds("terminal-tab-Terminal 10").unwrap();
+    assert!(last.right() <= row.right(), "{last:?} in {row:?}");
+    assert!(cx.read(|cx| f32::from(panel.read(cx).tabs_scroll.offset().x)) < 0.);
+}
+
+#[test]
+fn height_saves_land_in_order_and_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = HeightStore::new(dir.path().join("terminal.json"));
+    assert_eq!(store.load(), DEFAULT_HEIGHT);
+    let older = store.reserve();
+    let newer = store.reserve();
+    assert!(store.save(newer, 400.).unwrap());
+    assert!(!store.save(older, 300.).unwrap(), "a stale save is dropped");
+    assert_eq!(store.load(), 400.);
+    std::fs::write(
+        dir.path().join("terminal.json"),
+        "{\"terminalHeight\": 5000}",
+    )
+    .unwrap();
+    assert_eq!(store.load(), MAXIMUM_HEIGHT);
+    let names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names.len(), 1, "no temporary file left: {names:?}");
+}
+
+#[cfg(not(target_os = "macos"))]
+#[gpui::test]
+fn a_focused_shell_keeps_its_control_keys_on_linux(cx: &mut TestAppContext) {
+    let (_dir, window, view, panel) = open(cx);
+    typed(
+        cx,
+        window,
+        "stty raw -echo; dd bs=1 count=3 2>/dev/null | od -An -tx1; stty sane",
+    );
+    cx.simulate_keystrokes(window.into(), "enter");
+    std::thread::sleep(Duration::from_millis(200));
+    let chats = cx.read(|cx| view.read(cx).records.len());
+    cx.simulate_keystrokes(window.into(), "ctrl-w ctrl-n ctrl-p");
+    wait_screen(cx, &panel, "17 0e 10");
+    assert_eq!(cx.read(|cx| view.read(cx).records.len()), chats);
+    assert!(cx.read(|cx| !view.read(cx).quick_open.read(cx).is_open()));
+}

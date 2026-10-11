@@ -120,11 +120,13 @@ pub(crate) fn element(
             let command =
                 key.modifiers.platform || (cfg!(target_os = "linux") && key.modifiers.control);
             if key.key == "escape" || (command && key.key == "w") {
+                panel.answered_key = Some(key.key.clone());
                 panel.answer(false, window, cx);
                 cx.stop_propagation();
             } else if key.key == "enter" && !key.modifiers.shift {
                 // Return renames; for an ending it is Cancel, the default.
                 if !event.is_held {
+                    panel.answered_key = Some(key.key.clone());
                     panel.answer(rename, window, cx);
                 }
                 cx.stop_propagation();

@@ -112,7 +112,7 @@ pub(crate) struct TerminalPanel {
     pub(crate) palette: Palette,
     width: f32,
     stored_height: f32,
-    height_path: Option<PathBuf>,
+    height_store: Option<Arc<HeightStore>>,
     /// The height being dragged to, until the drag ends.
     dragging: Option<f32>,
     drag_start: Option<(f32, f32)>,
@@ -120,6 +120,8 @@ pub(crate) struct TerminalPanel {
     pub(crate) metrics: Option<CellMetrics>,
     pub(crate) grid_bounds: Option<Bounds<Pixels>>,
     pub(crate) question: Option<Question>,
+    /// The key that answered the last question, while it is held.
+    pub(crate) answered_key: Option<String>,
     tabs_scroll: ScrollHandle,
     revealed: Option<Uuid>,
     /// The terminal last given the keyboard, by identity and generation.
@@ -148,12 +150,10 @@ impl TerminalPanel {
                 panel.focus_changed(false, cx)
             }),
         ];
-        let stored_height = height_path
-            .as_deref()
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .and_then(|value| value["terminalHeight"].as_f64())
-            .map_or(DEFAULT_HEIGHT, |value| value as f32);
+        let height_store = height_path.map(|path| Arc::new(HeightStore::new(path)));
+        let stored_height = height_store
+            .as_ref()
+            .map_or(DEFAULT_HEIGHT, |store| store.load());
         Self {
             registry: TerminalRegistry::new(launcher),
             grids: HashMap::new(),
@@ -164,13 +164,14 @@ impl TerminalPanel {
             palette,
             width: 0.,
             stored_height,
-            height_path,
+            height_store,
             dragging: None,
             drag_start: None,
             handle_hovered: false,
             metrics: None,
             grid_bounds: None,
             question: None,
+            answered_key: None,
             tabs_scroll: ScrollHandle::new(),
             revealed: None,
             focused_key: None,
@@ -315,13 +316,24 @@ impl TerminalPanel {
         session.write(data);
     }
     fn focus_changed(&mut self, focused: bool, cx: &mut Context<Self>) {
-        let reports = self
-            .selected_session()
-            .is_some_and(|session| session.emulator.focus_reporting());
-        if reports && let Some(session) = self.registry.selected_mut(&self.project) {
+        let key = self.selected_session().map(Self::key);
+        self.report_focus(key, focused);
+        cx.notify();
+    }
+    /// Focus in or out (`ESC[I`, `ESC[O`) to a terminal that asked for them.
+    fn report_focus(&mut self, key: Option<(Uuid, u64)>, focused: bool) {
+        let Some(key) = key else {
+            return;
+        };
+        if let Some(session) = self
+            .registry
+            .sessions_mut(&self.project)
+            .iter_mut()
+            .find(|s| Self::key(s) == key)
+            && session.emulator.focus_reporting()
+        {
             session.write(if focused { b"\x1b[I" } else { b"\x1b[O" });
         }
-        cx.notify();
     }
     /// The grid's bounds and cell size this frame: the emulator and the
     /// program follow the view's size.
@@ -393,14 +405,12 @@ impl TerminalPanel {
         };
         self.dragging = None;
         self.stored_height = clamp_height(start_height - (y - start_y));
-        if let Some(path) = self.height_path.clone() {
+        if let Some(store) = self.height_store.clone() {
             let height = self.stored_height;
+            let revision = store.reserve();
             cx.background_executor()
                 .spawn(async move {
-                    let _ = std::fs::write(
-                        path,
-                        serde_json::json!({ "terminalHeight": height }).to_string(),
-                    );
+                    let _ = store.save(revision, height);
                 })
                 .detach();
         }
@@ -538,6 +548,15 @@ impl TerminalPanel {
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let k = &event.keystroke;
         let m = k.modifiers;
+        // A key held to answer a question stays the question's.
+        if let Some(held) = self.answered_key.take()
+            && event.is_held
+            && held == k.key
+        {
+            self.answered_key = Some(held);
+            cx.stop_propagation();
+            return;
+        }
         // Composition owns every key until the input method commits it.
         if self
             .selected_session()
@@ -930,14 +949,16 @@ impl TerminalPanel {
             let selected_id = selected.map(|s| s.id);
             let surface = rgb(p.surface);
             let shadow: Hsla = rgba(if p.dark { 0x00000057 } else { 0x2a241817 }).into();
+            // The tabs are the scroll row's own children, so the chosen one
+            // can be brought into view by its index.
             let mut well = div()
                 .id("terminal-tabs-row")
+                .size_full()
                 .flex()
                 .gap(px(TABS_SPACING))
                 .p(px(TABS_INSET))
-                .rounded_full()
-                .bg(self.fill_strong())
-                .min_w(px(natural));
+                .overflow_x_scroll()
+                .track_scroll(&self.tabs_scroll);
             for (id, name, width) in titles {
                 let chosen = Some(id) == selected_id;
                 let selector = format!("terminal-tab-{name}");
@@ -976,8 +997,9 @@ impl TerminalPanel {
                 .flex_none()
                 .w(px(tabs_width))
                 .h(px(TAB_HEIGHT + TABS_INSET * 2.))
-                .overflow_x_scroll()
-                .track_scroll(&self.tabs_scroll)
+                .rounded_full()
+                .overflow_hidden()
+                .bg(self.fill_strong())
                 .child(well);
             if overflows {
                 // A row that scrolls fades at its end, so it reads as more.
@@ -1173,6 +1195,12 @@ impl Render for TerminalPanel {
         // The keyboard follows the shown terminal and its restarts.
         let key = self.selected_session().map(Self::key);
         if key != self.focused_key || self.focus_due {
+            if key != self.focused_key && self.focus.is_focused(window) {
+                // The keyboard stays on the panel, so its focus callbacks do
+                // not run: the terminal left and the one shown are told.
+                self.report_focus(self.focused_key, false);
+                self.report_focus(key, true);
+            }
             if key.is_some() && self.question.is_none() {
                 self.focus.focus(window);
             }
@@ -1380,6 +1408,63 @@ impl EntityInputHandler for TerminalPanel {
     }
 }
 
+/// The remembered height (Swift's `terminalHeight` default): saves land in
+/// order, the newest wins, and each replaces the file whole.
+pub(crate) struct HeightStore {
+    path: PathBuf,
+    latest: std::sync::atomic::AtomicU64,
+    write: std::sync::Mutex<()>,
+}
+impl HeightStore {
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            latest: std::sync::atomic::AtomicU64::new(0),
+            write: std::sync::Mutex::new(()),
+        }
+    }
+    pub(crate) fn load(&self) -> f32 {
+        std::fs::read(&self.path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|value| value["terminalHeight"].as_f64())
+            .map_or(DEFAULT_HEIGHT, |value| clamp_height(value as f32))
+    }
+    pub(crate) fn reserve(&self) -> u64 {
+        self.latest
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
+            + 1
+    }
+    /// Writes `height` unless a newer save was reserved meanwhile.
+    pub(crate) fn save(&self, revision: u64, height: f32) -> std::io::Result<bool> {
+        let _guard = self
+            .write
+            .lock()
+            .map_err(|_| std::io::Error::other("Terminal height storage lock failed"))?;
+        if self.latest.load(std::sync::atomic::Ordering::Acquire) != revision {
+            return Ok(false);
+        }
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("Terminal height storage has no parent"))?;
+        std::fs::create_dir_all(parent)?;
+        let temporary = parent.join(format!(".terminal-{}.tmp", Uuid::new_v4()));
+        let result = (|| {
+            std::fs::write(
+                &temporary,
+                serde_json::json!({ "terminalHeight": height }).to_string(),
+            )?;
+            std::fs::rename(&temporary, &self.path)?;
+            Ok(true)
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        result
+    }
+}
+
 /// The bell, coalesced by the session.
 fn beep() {
     #[cfg(all(target_os = "macos", not(test)))]
@@ -1434,6 +1519,36 @@ impl crate::AgentView {
             self.focus_visible_composer(window, cx);
         }
         cx.notify();
+    }
+    /// The window's keys for the terminal, after every modal has had its
+    /// own: Show/Hide Terminal (⌃`, before any field takes it), and on
+    /// Linux, where the app's commands are on Control, a focused shell keeps
+    /// its Control keys. True when the key was taken.
+    pub(crate) fn terminal_key(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let m = event.keystroke.modifiers;
+        if event.keystroke.key == "`"
+            && m.control
+            && !m.platform
+            && !m.alt
+            && !m.shift
+            && !m.function
+            && self.records.iter().any(|r| r.id == self.record.id)
+        {
+            self.toggle_terminal(window, cx);
+            cx.stop_propagation();
+            return true;
+        }
+        // Not stopped: the key goes on to the terminal's own handler.
+        cfg!(not(target_os = "macos"))
+            && self.terminal.visible
+            && m.control
+            && !m.platform
+            && self.terminal.panel.read(cx).focus.is_focused(window)
     }
     pub(crate) fn terminal_asking(&self, cx: &App) -> bool {
         self.terminal.panel.read(cx).asking()

@@ -133,9 +133,6 @@ fn current_palette(window: &Window) -> Palette {
     };
     Palette::for_appearance(appearance)
 }
-fn mods_are_control_only(mods: &Modifiers) -> bool {
-    mods.control && !mods.platform && !mods.alt && !mods.shift && !mods.function
-}
 fn initial_size() -> Size<Pixels> {
     let requested = std::env::var("BELLO_TEST_WINDOW_SIZE").ok().and_then(|s| {
         s.split_once('x')
@@ -1141,15 +1138,6 @@ impl AgentView {
             // The terminal's question owns the keyboard (its own handler).
             return;
         }
-        if event.keystroke.key == "`"
-            && mods_are_control_only(&event.keystroke.modifiers)
-            && self.records.iter().any(|r| r.id == self.record.id)
-        {
-            // Show/Hide Terminal (⌃`), before any field takes the key.
-            self.toggle_terminal(window, cx);
-            cx.stop_propagation();
-            return;
-        }
         if event.keystroke.key == "escape" && self.cancel_queue_drag(window, cx) {
             cx.stop_propagation();
             return;
@@ -1210,6 +1198,9 @@ impl AgentView {
                 cx.stop_propagation();
                 return;
             }
+        }
+        if self.terminal_key(event, window, cx) {
+            return;
         }
         if self.transcript_find_key(event, window, cx) {
             return;

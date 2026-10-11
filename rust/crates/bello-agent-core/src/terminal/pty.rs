@@ -204,27 +204,42 @@ impl PseudoTerminal {
             changed: Condvar::new(),
             notify: tokio::sync::Notify::new(),
         });
-        {
-            let (shared, master) = (shared.clone(), master.clone());
+        // The reaper first: from then on the child is always reaped. Any
+        // worker that cannot start ends the child and the workers started.
+        let spawn = |name: &str, work: Box<dyn FnOnce() + Send>| {
             std::thread::Builder::new()
-                .name("bello-pty-read".into())
-                .spawn(move || read_loop(&shared, &master))
-                .map_err(|e| SpawnError(e.to_string()))?;
+                .name(name.into())
+                .spawn(work)
+                .map(drop)
+                .map_err(|e| SpawnError(e.to_string()))
+        };
+        {
+            let worker = shared.clone();
+            if let Err(error) = spawn("bello-pty-wait", Box::new(move || wait_loop(&worker, pid))) {
+                abandon(&shared, pid, false);
+                return Err(error);
+            }
         }
         {
-            let shared = shared.clone();
-            std::thread::Builder::new()
-                .name("bello-pty-wait".into())
-                .spawn(move || wait_loop(&shared, pid))
-                .map_err(|e| SpawnError(e.to_string()))?;
+            let (worker, master) = (shared.clone(), master.clone());
+            if let Err(error) = spawn(
+                "bello-pty-read",
+                Box::new(move || read_loop(&worker, &master)),
+            ) {
+                abandon(&shared, pid, true);
+                return Err(error);
+            }
         }
         let (sender, receiver) = mpsc::channel::<Vec<u8>>();
         {
-            let (shared, master) = (shared.clone(), master.clone());
-            std::thread::Builder::new()
-                .name("bello-pty-write".into())
-                .spawn(move || write_loop(&shared, &master, receiver))
-                .map_err(|e| SpawnError(e.to_string()))?;
+            let (worker, master) = (shared.clone(), master.clone());
+            if let Err(error) = spawn(
+                "bello-pty-write",
+                Box::new(move || write_loop(&worker, &master, receiver)),
+            ) {
+                abandon(&shared, pid, true);
+                return Err(error);
+            }
         }
         Ok(Self {
             shared,
@@ -393,6 +408,27 @@ impl TerminalWaiter {
     pub async fn changed(&self) {
         self.0.notify.notified().await;
     }
+}
+
+/// Ends a child whose terminal could not be set up: stops any worker, kills
+/// the child and, when no reaper was started, reaps it here.
+fn abandon(shared: &Shared, pid: libc::pid_t, reaper_started: bool) {
+    let mut state = shared.lock();
+    state.stop = true;
+    state.closed = true;
+    state.input_cancelled = true;
+    if !state.reaped {
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        if !reaper_started {
+            let mut status = 0;
+            while unsafe { libc::waitpid(pid, &mut status, 0) } < 0
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR)
+            {}
+            state.reaped = true;
+        }
+    }
+    drop(state);
+    shared.changed.notify_all();
 }
 
 fn strerror(code: i32) -> String {
