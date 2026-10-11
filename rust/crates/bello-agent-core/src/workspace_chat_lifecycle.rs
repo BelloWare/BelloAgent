@@ -137,11 +137,17 @@ impl WorkspaceStore {
         if chat.snapshot != expected_snapshot {
             return Err(invalid("Chat identity is already registered differently"));
         }
+        // A held queued rewrite is unsent work even without its checkpoint.
         if self
             .state
-            .intents
-            .values()
-            .any(|intent| intent.chat_id == id)
+            .drafts
+            .get(id)
+            .is_some_and(|draft| draft.queued_edit.is_some())
+            || self
+                .state
+                .intents
+                .values()
+                .any(|intent| intent.chat_id == id)
             || self
                 .state
                 .queued_cancellations
@@ -185,6 +191,10 @@ impl WorkspaceStore {
 pub fn rename_saved_checkpoint(snapshot: &Path, id: &str, title: &str) -> Result<()> {
     let title = ChatRecord::normalized_title(title)?;
     let mut store = crate::SessionStore::open_existing_with_id(snapshot, id)?;
+    // The first turn names a chat with no messages and would overwrite this.
+    if store.snapshot().messages.is_empty() {
+        return Err(invalid("Send a first message before renaming this chat."));
+    }
     if store.snapshot().title == title {
         return Ok(());
     }

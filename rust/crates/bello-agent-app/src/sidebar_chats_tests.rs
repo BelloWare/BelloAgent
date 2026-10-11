@@ -38,6 +38,7 @@ pub(crate) fn app_fixture(
         store
             .transact(|session| {
                 session.title = (*title).into();
+                session.messages.push(serde_json::from_value(serde_json::json!({"id": uuid::Uuid::new_v4().to_string(), "role": "user", "text": "hello", "reasoning": "", "replay_eligible": true, "state": "complete", "usage": null, "model": null})).unwrap());
                 Ok(())
             })
             .unwrap();

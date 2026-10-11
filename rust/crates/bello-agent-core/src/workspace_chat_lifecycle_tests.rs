@@ -196,6 +196,16 @@ fn unloaded_checkpoint_rename_writes_the_chats_own_title() {
     // A live writer holds the checkpoint: the rename waits for it.
     assert!(rename_saved_checkpoint(&path, &id, "Busy").is_err());
     drop(store);
+    // A chat with no messages is named by its first turn: refused.
+    assert!(rename_saved_checkpoint(&path, &id, "Too early").is_err());
+    let mut store = crate::SessionStore::open_existing_with_id(&path, &id).unwrap();
+    store
+        .transact(|session| {
+            session.messages.push(serde_json::from_value(serde_json::json!({"id": "m", "role": "user", "text": "hello", "reasoning": "", "replay_eligible": true, "state": "complete", "usage": null, "model": null})).unwrap());
+            Ok(())
+        })
+        .unwrap();
+    drop(store);
     assert!(rename_saved_checkpoint(&path, &Uuid::new_v4().to_string(), "Other").is_err());
     rename_saved_checkpoint(&path, &id, "  Renamed\nchat ").unwrap();
     let reopened = crate::SessionStore::open_existing_with_id(&path, &id).unwrap();

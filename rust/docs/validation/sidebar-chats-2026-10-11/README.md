@@ -44,21 +44,25 @@ Workstream C, branch `work/sidebar-chats`. Swift source of truth: 0.1.122
 
 ## Codex review
 
-Two rounds (`codex exec review`, gpt-6.1-sol, xhigh, read-only). Fixed: deletion now refuses
+Three rounds (`codex exec review`, gpt-6.1-sol, xhigh, read-only). Fixed: deletion now refuses
 a running reply, queued/held work in an unloaded checkpoint (read-only
 `SessionInspectionLease` under the writer lock, held across the catalog removal) and
 failed-load placeholders; settled cancellation receipts no longer block and are removed;
 read state is forgotten only after a confirmed deletion; shutdown waits for rename/delete;
 titles are capped to the catalog's 512 bytes on grapheme boundaries; the draft marker
 follows cancellation settlements; reading acknowledgement is suspended while the sheets are
-open; the startup anchor is not resurrected after deletion.
+open; the startup anchor is not resurrected after deletion; a held queued rewrite in a
+saved draft blocks deletion; batch Mark as Read/Unread decides every chat before one flush;
+the recency file lives in the catalog's `chats` directory; the draft marker also follows
+exact flushes before queue commands.
 
 ## What still differs
 
 - No title suggestions (no mini-model titling in Rust): the sheet always shows Swift's
   no-mini-model state.
-- Rename is refused for a chat that exists only on screen or is registered but has no
-  checkpoint yet ("Send a first message before renaming this chat."); Swift materializes it.
+- Rename is refused for a chat with no messages yet (only on screen, registered without a
+  checkpoint, or with an empty checkpoint): "Send a first message before renaming this
+  chat."; Swift materializes it and keeps the title from its first-turn titling.
   Reason: Rust's title lives in the checkpoint and the first submission sets it.
 - Deleting the only chat is refused ("Create another chat before deleting this one.");
   Rust always has an open chat, Swift can show none.

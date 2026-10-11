@@ -32,8 +32,12 @@ impl AgentView {
         if self.shutting_down || self.project_actions_blocked() || self.known_catalog_uncertainty {
             return Some("Wait for project changes to finish before renaming this chat.");
         }
+        // The first turn names a chat with no messages; a rename before it
+        // would be overwritten.
         if record.materialization == ChatMaterialization::Pending
-            || self.chat_ref(id).is_some_and(|chat| chat.pending)
+            || self
+                .chat_ref(id)
+                .is_some_and(|chat| chat.pending || chat.session.messages.is_empty())
         {
             return Some("Send a first message before renaming this chat.");
         }

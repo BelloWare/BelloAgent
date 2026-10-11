@@ -54,14 +54,15 @@ pub(crate) struct SidebarChats {
 impl SidebarChats {
     /// At launch: the saved drafts' markers and the remembered order of
     /// opening, kept beside the window layout.
+    /// `chats` is the catalog's managed chat directory, the same for every
+    /// launch whichever chat it opens.
     pub(crate) fn restore(
         drafts: &BTreeMap<String, DraftRecord>,
         records: &[ChatRecord],
         launch: &ChatRecord,
+        chats: Option<&Path>,
     ) -> Self {
-        let store = launch
-            .snapshot
-            .parent()
+        let store = chats
             .filter(|_| cfg!(not(test)))
             .map(|directory| Arc::new(RecentStore::new(directory.join("recent-chats.json"))));
         let mut recent = store
@@ -311,10 +312,23 @@ impl AgentView {
             SidebarAction::MarkMarkedRead | SidebarAction::MarkMarkedUnread => {
                 self.clear_session_marks();
                 let unread = action == SidebarAction::MarkMarkedUnread;
-                for id in ids {
-                    if self.can_read_action(&id, unread) {
-                        self.mark_chat_read_state(&id, unread, cx);
-                    }
+                // Decide every chat first, and hold the shared flush until the
+                // whole batch is applied: a flush holding the catalog would
+                // make later eligibility checks read as refusals.
+                let eligible: Vec<String> = ids
+                    .into_iter()
+                    .filter(|id| self.can_read_action(id, unread))
+                    .collect();
+                let hold_flush = !self.read_write_inflight;
+                if hold_flush {
+                    self.read_write_inflight = true;
+                }
+                for id in eligible {
+                    self.mark_chat_read_state(&id, unread, cx);
+                }
+                if hold_flush {
+                    self.read_write_inflight = false;
+                    self.flush_read_states(cx);
                 }
             }
             SidebarAction::ClearMarks => self.clear_session_marks(),

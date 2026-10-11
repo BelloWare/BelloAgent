@@ -440,8 +440,18 @@ impl AgentView {
         }
         let launch_archive_reveal = chat.record.archived_at.is_some() && !state.show_archived;
         let launch_topic_reveal = state.effective_topic_id(&chat.record).map(str::to_owned);
-        let sidebar_chats =
-            sidebar_chats::SidebarChats::restore(&state.drafts, &records, &chat.record);
+        let chats_directory = workspace
+            .lock()
+            .expect("workspace lock")
+            .chat_path(&chat.record.id)
+            .ok()
+            .and_then(|path| path.parent().map(std::path::Path::to_owned));
+        let sidebar_chats = sidebar_chats::SidebarChats::restore(
+            &state.drafts,
+            &records,
+            &chat.record,
+            chats_directory.as_deref(),
+        );
         let mut view = Self {
             attachment_picker: None,
             chat_models: Default::default(),
@@ -703,13 +713,14 @@ impl AgentView {
         let task = cx.background_executor().spawn(async move {
             let flushed = if let Some(draft) = flush {
                 let revision = draft.revision;
+                let holds = draft.holds_unsent();
                 let saved = chat_organization::catalog_operation(&workspace, |store| {
                     store.flush_draft_exact(&flush_id, draft)
                 });
                 if let Err(error) = saved.result {
                     return (None, Err(error), saved.uncertain);
                 }
-                Some(revision)
+                Some((revision, holds))
             } else {
                 None
             };
@@ -744,8 +755,11 @@ impl AgentView {
                     return;
                 }
                 let archived = view.chat_is_archived(&id);
+                if let Some((_, holds)) = flushed {
+                    view.note_draft_mark(&id, holds);
+                }
                 if let Some(chat) = view.chat_mut(&id) {
-                    if let Some(revision) = flushed {
+                    if let Some((revision, _)) = flushed {
                         chat.draft_save_status.confirm(revision, &mut chat.error);
                     }
                     chat.busy = false;
