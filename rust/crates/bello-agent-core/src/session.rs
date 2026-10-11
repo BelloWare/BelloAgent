@@ -155,6 +155,10 @@ pub struct Session {
         deserialize_with = "crate::context_recovery::deserialize_receipts"
     )]
     pub context_recoveries: Vec<crate::context_recovery::Receipt>,
+    /// Every model request this chat made, in dispatch order, with what it
+    /// reported (`crate::accounting`). Kept for good; never trimmed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requests: Vec<crate::accounting::RequestRecord>,
 }
 impl Session {
     pub fn new() -> Self {
@@ -180,7 +184,20 @@ impl Session {
             compaction: None,
             compaction_history: Vec::new(),
             context_recoveries: Vec::new(),
+            requests: Vec::new(),
         }
+    }
+    /// The session's request totals (`crate::accounting::GatewayTotals`).
+    pub fn request_totals(&self) -> crate::accounting::GatewayTotals {
+        crate::accounting::GatewayTotals::of(&self.requests)
+    }
+    /// The usage binding the request that produced `reply` recorded.
+    pub fn usage_binding_of(&self, reply: &str) -> Option<&str> {
+        self.requests
+            .iter()
+            .rev()
+            .find(|record| record.reply.as_deref() == Some(reply))
+            .and_then(|record| record.usage_binding.as_deref())
     }
     pub fn submit(&mut self, item: Submission) -> Result<()> {
         validate_submission(&item)?;
@@ -548,6 +565,14 @@ impl Session {
             })
     }
     fn validate_tool_history(&self) -> Result<()> {
+        if self.version < 11 && !self.requests.is_empty() {
+            return Err(invalid(
+                "Request accounting requires Rust snapshot version 11",
+            ));
+        }
+        for record in &self.requests {
+            record.validate()?;
+        }
         if self.version < 9 && self.has_tool_timing() {
             return Err(invalid("Tool timing requires Rust snapshot version 9"));
         }
@@ -1052,7 +1077,7 @@ impl SessionInspectionLease {
         if session.id != expected_session_id {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].contains(&session.version) {
+        if !(1..=11).contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1256,6 +1281,8 @@ pub struct SessionStore {
     journal: Option<File>,
     encoded_bytes: usize,
     snapshot_limit: usize,
+    /// Requests made since the last durable write (`note_request`).
+    pending_requests: Vec<crate::accounting::RequestRecord>,
 }
 impl Drop for SessionStore {
     fn drop(&mut self) {
@@ -1287,6 +1314,7 @@ impl SessionStore {
             journal: None,
             encoded_bytes,
             snapshot_limit: MAX_SNAPSHOT_BYTES,
+            pending_requests: Vec::new(),
         }
     }
     pub fn pending_with_id(id: &str) -> Result<Self> {
@@ -1469,7 +1497,7 @@ impl SessionStore {
         {
             return Err(invalid("The session file belongs to another chat"));
         }
-        if ![1, 2, 3, 4, 5, 6, 7, 8, 9, 10].contains(&session.version) {
+        if !(1..=11).contains(&session.version) {
             return Err(invalid(
                 "Unsupported Rust session format. Swift journals are not imported automatically.",
             ));
@@ -1527,6 +1555,7 @@ impl SessionStore {
             journal: None,
             encoded_bytes,
             snapshot_limit: MAX_SNAPSHOT_BYTES,
+            pending_requests: Vec::new(),
         };
         if checkpoint {
             store.write(&store.session, false)?;
@@ -1614,6 +1643,17 @@ impl SessionStore {
     pub fn snapshot_revision(&self) -> u64 {
         self.session.revision
     }
+    /// A model request this chat made: it is written with the next change of
+    /// the session, so it costs no write of its own. An invalid record (a
+    /// figure out of bounds) is not kept.
+    pub(crate) fn note_request(&mut self, record: crate::accounting::RequestRecord) {
+        if record.validate().is_ok()
+            && !self.session.requests.iter().any(|r| r.id == record.id)
+            && !self.pending_requests.iter().any(|r| r.id == record.id)
+        {
+            self.pending_requests.push(record);
+        }
+    }
     pub fn snapshot(&self) -> Session {
         self.session.clone()
     }
@@ -1640,6 +1680,12 @@ impl SessionStore {
         }
         let mut next = self.session.clone();
         let result = change(&mut next)?;
+        // Requests made since the last write join this one; a failed write
+        // keeps them for the next.
+        next.requests.extend(self.pending_requests.iter().cloned());
+        if !next.requests.is_empty() {
+            next.version = next.version.max(11);
+        }
         if !next.context_recoveries.is_empty() {
             next.version = next.version.max(10);
         }
@@ -1692,6 +1738,7 @@ impl SessionStore {
         }
         self.read_observation.accept(&self.session, &next);
         self.session = next;
+        self.pending_requests.clear();
         self.encoded_bytes = encoded_bytes;
         self.journal = None;
         // Cleanup is optional: the durable checkpoint names the new generation.

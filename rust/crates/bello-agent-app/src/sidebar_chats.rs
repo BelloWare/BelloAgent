@@ -190,14 +190,15 @@ impl RecentStore {
     }
 }
 
-/// SessionReference.text, for a chat this build keeps no request
-/// accounting for: its usage reads as Swift's does with none retained.
+/// SessionReference.text: the chat, its retained requests' usage
+/// (`SessionReference.usageLines`) and where its file is.
 pub(crate) fn session_reference(
     record: &ChatRecord,
     title: &str,
     project_id: Option<&str>,
     project: &Path,
     saved: bool,
+    usage: &bello_agent_core::accounting::GatewayTotals,
 ) -> String {
     let mut lines = vec![
         "Bello Agent session".to_owned(),
@@ -207,21 +208,8 @@ pub(crate) fn session_reference(
             Some(id) => format!("Project ID: {id}"),
             None => format!("Project folder: {}", project.display()),
         },
-        "Gateway-reported usage (retained requests): 0 requests".to_owned(),
     ];
-    for label in [
-        "Total tokens (input + output)",
-        "Input tokens (includes cache)",
-        "Output tokens (includes reasoning)",
-        "Cached input tokens",
-        "Cache-write input tokens",
-        "Reasoning tokens (part of output)",
-        "Reported cost",
-        "Reasoning cost (part of reported cost)",
-    ] {
-        lines.push(format!("{label}: not reported"));
-    }
-    lines.push("Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added.".into());
+    lines.extend(bello_agent_core::accounting_presentation::reference_usage_lines(usage));
     lines.push(String::new());
     if saved {
         let path = record.snapshot.display().to_string();
@@ -585,13 +573,64 @@ impl AgentView {
             return;
         }
         let workspace = self.workspace.clone();
+        // An open chat's usage is its session's; a saved one's is read from
+        // its file in the background, never by opening the chat.
+        let mut usage: BTreeMap<String, bello_agent_core::accounting::GatewayTotals> =
+            BTreeMap::new();
+        let mut unread = Vec::new();
+        for id in &ids {
+            if let Some(chat) = self.chat_ref(id) {
+                usage.insert(id.clone(), chat.session.request_totals());
+            } else if let Some(record) = self.records.iter().find(|record| &record.id == id)
+                && record.materialization == ChatMaterialization::CheckpointRequired
+            {
+                unread.push((record.id.clone(), record.snapshot.clone()));
+            }
+        }
         let task = cx.background_executor().spawn(async move {
-            crate::chat_organization::catalog_operation(&workspace, |store| {
-                Ok(store.project_id().map(str::to_owned))
-            })
+            let mut read = BTreeMap::new();
+            if !unread.is_empty() {
+                // Through the shared inspection lane, one parse at a time, as
+                // the sidebar reads saved chats.
+                let lane = workspace
+                    .lock()
+                    .map_err(|_| "The workspace is unavailable.".to_owned())?
+                    .inspection_coordinator();
+                let cancel = bello_agent_core::inspection::InspectionCancellation::new();
+                let mut permit = lane
+                    .background(&cancel)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                for (id, path) in unread {
+                    let lease = permit
+                        .inspect(&path, &id)
+                        .map_err(|error| error.to_string())?;
+                    read.insert(id, lease.snapshot().request_totals());
+                }
+            }
+            Ok::<_, String>((
+                crate::chat_organization::catalog_operation(&workspace, |store| {
+                    Ok(store.project_id().map(str::to_owned))
+                }),
+                read,
+            ))
         });
         cx.spawn(async move |view, cx| {
-            let outcome = task.await;
+            let (outcome, read) = match task.await {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = view.update(cx, |view, cx| {
+                        if view.sidebar_chats.copy_revision == revision && !view.shutting_down {
+                            view.error = Some(format!(
+                                "Session usage could not be read for copying. {error}"
+                            ));
+                            cx.notify();
+                        }
+                    });
+                    return;
+                }
+            };
+            usage.extend(read);
             let _ = view.update(cx, |view, cx| {
                 if view.sidebar_chats.copy_revision != revision || view.shutting_down {
                     return;
@@ -621,6 +660,7 @@ impl AgentView {
                         project_id.as_deref(),
                         &view.project,
                         saved,
+                        &usage.get(id).cloned().unwrap_or_default(),
                     ));
                 }
                 let heading = if references.len() > 1 {

@@ -203,7 +203,7 @@ async fn rejection_summary_retry_is_exactly_three_requests_and_keeps_original_su
     assert!(!retry.to_string().contains("context-rejected"));
     f.reply(completed("Done after compaction")).await;
     let done = f.settle().await;
-    assert_eq!(done.version, 10);
+    assert_eq!(done.version, 11);
     assert_eq!(done.context_recoveries.len(), 1);
     let receipt = &done.context_recoveries[0];
     assert_eq!(receipt.turn_id, id);
@@ -936,7 +936,7 @@ async fn a_tool_continuation_crossing_the_threshold_compacts_without_replaying_t
         .unwrap();
     let first = f.next().await;
     assert!(!is_summary_request(&first));
-    f.reply(json!({"id":"tool-response","status":"completed","output":[{"type":"function_call","id":"read-item","call_id":"read-call","name":"ls","arguments":"{\"path\":\".\"}"}],"usage":{"input_tokens":100,"output_tokens":10}}))
+    f.reply(json!({"id":"tool-response","status":"completed","output":[{"type":"function_call","id":"read-item","call_id":"read-call","name":"ls","arguments":"{\"path\":\".\"}"}]}))
         .await;
     let summary = f.next().await;
     assert!(is_summary_request(&summary));
@@ -1004,4 +1004,133 @@ async fn a_replayable_history_compaction_cannot_group_still_sends_its_request() 
     assert!(request.to_string().contains("No result provided"));
     f.reply(completed("Done")).await;
     assert_eq!(f.settle().await.state, RunState::Idle);
+}
+
+fn large_usage(text: &str) -> Value {
+    let mut reply = completed(text);
+    reply["usage"] = json!({"input_tokens":60000,"output_tokens":100,"total_tokens":60100});
+    reply
+}
+
+/// Swift sizes the next request from the last reply's reported tokens when
+/// that reply measured the same prefix (`RequestContextCounter.count`): a
+/// reported 60K-token context crosses the threshold that ~23K estimated
+/// characters do not.
+#[tokio::test]
+async fn the_last_reply_reported_usage_sizes_the_threshold_check() {
+    let mut f = Fixture::new().await;
+    f.actor.submit("First".into(), Lane::FollowUp).unwrap();
+    let first = f.next().await;
+    assert!(!is_summary_request(&first));
+    f.reply(large_usage("Reported a large context")).await;
+    let done = f.settle().await;
+    let record = done.requests.last().unwrap();
+    assert!(record.usage_binding.is_some());
+    assert_eq!(record.usage.input, Some(60_000));
+    f.actor.submit("Second".into(), Lane::FollowUp).unwrap();
+    let second = f.next().await;
+    assert!(
+        is_summary_request(&second),
+        "usage baseline crossed the threshold"
+    );
+    f.summary().await;
+    let request = f.next().await;
+    assert!(!is_summary_request(&request));
+    f.reply(completed("Done")).await;
+    let done = f.settle().await;
+    let purposes: Vec<_> = done.requests.iter().map(|r| r.purpose.as_str()).collect();
+    assert_eq!(purposes, ["turn", "compaction", "turn"]);
+}
+
+/// A reply whose request had another prefix (here other request headers) does
+/// not measure the next request: its size falls back to the character estimate.
+#[tokio::test]
+async fn a_usage_baseline_from_another_prefix_is_not_used() {
+    let mut f = Fixture::new().await;
+    f.actor.submit("First".into(), Lane::FollowUp).unwrap();
+    f.next().await;
+    f.reply(large_usage("Reported a large context")).await;
+    f.settle().await;
+    let config = f.actor.configuration().unwrap();
+    let mut profile = config.profile.clone();
+    profile
+        .headers
+        .insert("x-fixture-route".into(), "other".into());
+    f.actor
+        .configure(Arc::new(Configuration {
+            profile,
+            credential: Credential::new("fixture-secret-only".into()).unwrap(),
+            connection: None,
+        }))
+        .unwrap();
+    f.actor.submit("Second".into(), Lane::FollowUp).unwrap();
+    let second = f.next().await;
+    assert!(!is_summary_request(&second));
+    f.reply(completed("Done")).await;
+    f.settle().await;
+}
+
+/// Every request the chat made is kept with it, failed ones included, and
+/// survives reopening (version 11).
+#[tokio::test]
+async fn each_request_is_recorded_with_its_usage_and_survives_reopen() {
+    let mut f = Fixture::new().await;
+    let submission = Submission::new("Continue original task".into(), Lane::FollowUp);
+    let id = submission.id.clone();
+    f.actor.submit_identified(submission).unwrap();
+    f.next().await;
+    f.reject().await;
+    f.next().await;
+    f.summary().await;
+    f.next().await;
+    f.reply(completed("Done after compaction")).await;
+    let done = f.settle().await;
+    assert_eq!(done.version, 11);
+    let outcomes: Vec<_> = done
+        .requests
+        .iter()
+        .map(|r| (r.purpose.as_str(), r.outcome.as_str(), r.usage.input))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("turn", "failed", Some(111)),
+            ("compaction", "completed", Some(100)),
+            ("turn", "completed", Some(100)),
+        ]
+    );
+    assert!(
+        done.requests
+            .iter()
+            .all(|r| r.turn.as_deref() == Some(id.as_str()))
+    );
+    let reply = done.messages.last().unwrap();
+    assert_eq!(done.requests[2].reply.as_deref(), Some(reply.id.as_str()));
+    assert!(
+        done.requests
+            .iter()
+            .all(|r| r.wall > 0.0 && (r.ttft_ms.is_some() == (r.outcome == "completed")))
+    );
+    let totals = done.request_totals();
+    assert_eq!((totals.requests, totals.turn_count), (3, 1));
+    assert_eq!(totals.output.value(), Some(20.0));
+    f.actor.retire_and_wait().await.unwrap();
+    let reopened = SessionStore::open(f.directory.path().join("session.json"))
+        .unwrap()
+        .snapshot();
+    let identity = |s: &Session| {
+        s.requests
+            .iter()
+            .map(|r| {
+                (
+                    r.id.clone(),
+                    r.outcome.clone(),
+                    r.usage,
+                    r.usage_binding.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(identity(&reopened), identity(&done));
+    assert_eq!(reopened.request_totals().requests, 3);
 }

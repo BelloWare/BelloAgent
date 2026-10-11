@@ -695,6 +695,68 @@ fn threshold_request_count_and_reserves_match_the_swift_oracle() {
         }
     }
 }
+/// The usage baseline (Swift `RequestContextCounter.count` with a request):
+/// the last reply's reported tokens plus the items after it when its binding
+/// matches, the projection estimate otherwise; and the meter's tokens.
+#[test]
+fn usage_baseline_matches_the_swift_oracle() {
+    let cases: Vec<Value> = serde_json::from_str(include_str!(
+        "../../../docs/validation/compaction-threshold-swift-oracle-2026-10-10/cases.json"
+    ))
+    .unwrap();
+    let expected: Vec<Value> = serde_json::from_str(include_str!(
+        "../../../docs/validation/compaction-threshold-swift-oracle-2026-10-10/swift-thresholds.json"
+    ))
+    .unwrap();
+    let mut checked = 0;
+    for (case, expected) in cases.iter().zip(&expected) {
+        let name = case["name"].as_str().unwrap();
+        let profile: Profile = serde_json::from_value(case["profile"].clone()).unwrap();
+        let instructions = case["instructions"].as_str().unwrap();
+        let mut messages = oracle_rows(&case["rows"]);
+        let request =
+            crate::provider::request_body_with_tools(&profile, &messages, instructions, "s", &[])
+                .unwrap();
+        let current = usage_binding(&request, &profile).unwrap();
+        let mut bindings = std::collections::BTreeMap::new();
+        for usage in case["rows"]["usage"].as_array().into_iter().flatten() {
+            let id = usage["id"].as_str().unwrap();
+            let row = messages.iter_mut().find(|row| row.id == id).unwrap();
+            row.usage = usage["raw"].clone();
+            match usage["binding"].as_str() {
+                Some("match") => bindings.insert(id.to_owned(), current.clone()),
+                Some("stale") => bindings.insert(id.to_owned(), "stale".to_owned()),
+                _ => None,
+            };
+        }
+        let (tokens, method) = request_tokens(&messages, &profile, &request, |reply| {
+            bindings.get(reply).map(String::as_str)
+        })
+        .unwrap();
+        assert_eq!(
+            tokens,
+            expected["baselineRequestTokens"].as_u64().unwrap(),
+            "{name}"
+        );
+        assert_eq!(
+            match method {
+                RequestMethod::LastReplyUsage => "last-reply-usage",
+                RequestMethod::Characters => "characters",
+            },
+            expected["baselineMethod"],
+            "{name}"
+        );
+        assert_eq!(
+            context_usage(&messages)
+                .unwrap()
+                .map(|estimate| estimate.tokens),
+            expected["meterTokens"].as_u64(),
+            "{name}"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 25);
+}
 #[test]
 fn trigger_reserves_generation_instruction_margin_and_growth_like_swift() {
     let mut p = profile();

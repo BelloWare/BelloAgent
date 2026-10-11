@@ -154,6 +154,8 @@ struct Observation {
     record: ChatRecord,
     state: SavedRunState,
     file_identity: Option<FileIdentity>,
+    /// The saved chat's request totals, read with its run state.
+    totals: Option<bello_agent_core::accounting::GatewayTotals>,
 }
 #[derive(Default)]
 pub(crate) struct SidebarRunStates {
@@ -280,6 +282,7 @@ impl AgentView {
             .as_ref()
             .map(|_| std::mem::take(&mut self.sidebar_search.cache));
         let task = cx.background_executor().spawn(async move {
+            let mut totals = None;
             let result = async {
                 if worker_search.is_some()
                     && cache.as_ref().is_none_or(|owner| owner.cache.is_none())
@@ -358,7 +361,7 @@ impl AgentView {
                     Some(work) => crate::sidebar_inspection::InspectionDemand::search(work),
                     None => crate::sidebar_inspection::InspectionDemand::run_read(),
                 };
-                let output = match cache.as_mut().and_then(|owner| owner.cache.as_mut()) {
+                let mut output = match cache.as_mut().and_then(|owner| owner.cache.as_mut()) {
                     Some(cache) => crate::sidebar_inspection::inspect_with_cache(
                         &record,
                         &mut permit,
@@ -367,6 +370,7 @@ impl AgentView {
                     )?,
                     None => crate::sidebar_inspection::inspect(&record, &mut permit, demand)?,
                 };
+                totals = output.totals.take();
                 Ok::<_, bello_agent_core::Error>((output.run_read, output.search, None))
             }
             .await;
@@ -375,10 +379,10 @@ impl AgentView {
             {
                 let _ = value.cleanup();
             }
-            (result, cache)
+            (result, cache, totals)
         });
         cx.spawn(async move |view, cx| {
-            let (outcome, cache) = task.await;
+            let (outcome, cache, totals) = task.await;
             let _ = view.update(cx, |view, cx| {
                 if let Some(cache) = cache {
                     view.finish_sidebar_cache_owner(&cache_owner, cache);
@@ -451,6 +455,7 @@ impl AgentView {
                         view.sidebar_run_states.observations.get_mut(&record.id)
                 {
                     observation.file_identity = file_identity;
+                    observation.totals = totals;
                 }
                 if accepted
                     && view.chat_ref(&record.id).is_none()
@@ -501,6 +506,7 @@ impl AgentView {
                 record: target.record,
                 state,
                 file_identity: None,
+                totals: None,
             },
         );
         true
@@ -535,6 +541,28 @@ impl AgentView {
             observation.state = SavedRunState::Unknown;
             observation.file_identity = None;
         }
+    }
+
+    /// An unloaded chat's request totals as its saved run state was read,
+    /// under the same scope and record as that state.
+    pub(crate) fn sidebar_saved_totals(
+        &self,
+        record: &ChatRecord,
+    ) -> Option<&bello_agent_core::accounting::GatewayTotals> {
+        if self.chat_ref(&record.id).is_some()
+            || self
+                .sidebar_run_states
+                .scope
+                .as_ref()
+                .is_none_or(|scope| !scope.matches(self))
+        {
+            return None;
+        }
+        self.sidebar_run_states
+            .observations
+            .get(&record.id)
+            .filter(|o| o.record == *record)
+            .and_then(|o| o.totals.as_ref())
     }
 
     pub(crate) fn sidebar_run_status(&self, record: &ChatRecord) -> &'static str {

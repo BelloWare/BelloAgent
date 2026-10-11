@@ -25,6 +25,7 @@ mod layout;
 mod mcp_inspector_controller;
 mod mcp_inspector_host;
 mod mcp_inspector_view;
+mod metrics_footer;
 mod model_picker;
 mod model_picker_view;
 #[cfg(any(target_os = "macos", test))]
@@ -56,6 +57,7 @@ mod sidebar_chat_delete;
 mod sidebar_chat_rename;
 mod sidebar_chats;
 mod sidebar_inspection;
+mod sidebar_metrics;
 mod sidebar_read_state;
 mod sidebar_run_state;
 mod sidebar_search_controller;
@@ -2326,7 +2328,6 @@ impl AgentView {
     }
     fn conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
-        let inspector_target = self.context_inspector_target();
         let content_target = conversation_content_controller::Target::capture(self);
         let transcript = if self.session.messages.is_empty() {
             // Do not retain a removed/cleared history behind the starter.
@@ -2542,7 +2543,7 @@ impl AgentView {
                         v.open_changes(cx);
                     })),
             )
-            .child(self.icon_button("usage", "chart", 28.).opacity(0.45))
+            .child(self.session_usage_button(cx))
             .child(
                 self.icon_button("actions", "dots", 28.)
                     .debug_selector(|| "conversation-actions-open".into())
@@ -2732,29 +2733,6 @@ impl AgentView {
             .child(transcript)
             .child(queue)
             .children(self.terminal_slot(cx));
-        let reported: Vec<_> = self
-            .session
-            .messages
-            .iter()
-            .filter(|m| !m.usage.is_null())
-            .collect();
-        let tokens = if let Some(label) = compaction_actions::recovery_usage_label(&self.session) {
-            label
-        } else if reported.is_empty() {
-            "Tokens n/a".into()
-        } else {
-            format!(
-                "{} in · {} out",
-                reported
-                    .iter()
-                    .filter_map(|m| m.usage["input_tokens"].as_u64())
-                    .sum::<u64>(),
-                reported
-                    .iter()
-                    .filter_map(|m| m.usage["output_tokens"].as_u64())
-                    .sum::<u64>()
-            )
-        };
         let composer = if self.chat_is_archived(&self.record.id) {
             let id = self.record.id.clone();
             div()
@@ -2824,29 +2802,9 @@ impl AgentView {
                     .text_size(px(11.5))
                     .text_color(rgb(p.secondary))
                     .flex_wrap()
-                    .child(
-                        self.badge(tokens, "chart")
-                            .min_w_0()
-                            .max_w_full()
-                            .debug_selector(|| "composer-reported-tokens".into()),
-                    )
-                    .child(self.badge("Cost n/a".into(), "chart"))
-                    .child(
-                        self.badge(
-                            tool_timing_presentation::total_label(&self.session),
-                            "chart",
-                        )
-                        .debug_selector(|| "composer-tool-time".into()),
-                    )
-                    .child(
-                        self.badge("Context n/a".into(), "cpu")
-                            .id("context-inspector-open")
-                            .debug_selector(|| "context-inspector-open".into())
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |view, _, window, cx| {
-                                view.open_context_inspector(&inspector_target, window, cx);
-                            })),
-                    )
+                    // Swift `SessionStatsPills`: the room the row leaves
+                    // beside the capture badge chooses the usage face.
+                    .child(self.session_stats_pills(self.pane_width - 32. - 120., cx))
                     // The notice takes the room the row leaves, cut to fit,
                     // so it never wraps the footer under the composer.
                     .child(match self.notice.clone() {
@@ -3157,15 +3115,7 @@ impl AgentView {
                                         )),
                                 )
                             })
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(rgb(p.secondary))
-                                    .child(match &attention {
-                                        Some(attention) => format!("{status} · {attention}"),
-                                        None => status.to_owned(),
-                                    }),
-                            ),
+                            .child(self.sidebar_metrics_line(record, status, attention.as_deref())),
                     ),
             );
         }

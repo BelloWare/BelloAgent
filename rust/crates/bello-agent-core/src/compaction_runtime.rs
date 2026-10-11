@@ -331,9 +331,10 @@ impl Controller {
         cancel: CancellationToken,
         on_delta: impl FnMut(crate::Delta) -> Result<()>,
     ) -> (Result<crate::Message>, Option<crate::Reply>) {
-        match self
+        let mut observation = crate::accounting::AttemptObservation::default();
+        let result = match self
             .client
-            .complete_prepared(
+            .complete_observed(
                 &prepared.profile,
                 &configuration.credential,
                 &prepared.request,
@@ -341,6 +342,7 @@ impl Controller {
                 attempt_id,
                 cancel,
                 on_delta,
+                &mut observation,
             )
             .await
         {
@@ -357,7 +359,24 @@ impl Controller {
                 (candidate, Some(reply))
             }
             Err(error) => (Err(error), None),
+        };
+        // The summary request is one of the chat's requests whatever became
+        // of its checkpoint; the turn it ran in, if any, is its turn.
+        if let Ok(mut inner) = self.inner.lock() {
+            let turn = inner
+                .store
+                .snapshot_ref()
+                .active
+                .as_ref()
+                .map(|item| item.id.clone());
+            let reply = result.0.as_ref().ok().map(|message| message.id.clone());
+            if let Some(record) =
+                observation.record("compaction", turn.as_deref(), reply.as_deref())
+            {
+                inner.store.note_request(record);
+            }
         }
+        result
     }
 
     fn check_compaction_binding(

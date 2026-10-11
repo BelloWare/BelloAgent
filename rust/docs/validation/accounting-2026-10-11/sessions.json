@@ -1,0 +1,601 @@
+[
+ {
+  "name": "empty",
+  "records": []
+ },
+ {
+  "name": "one",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 1200,
+     "output": 120,
+     "cache_read": 0
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 0.0025
+    },
+    "turn": "t1",
+    "ttft_ms": 412.5,
+    "stream_ms": 3400
+   }
+  ]
+ },
+ {
+  "name": "mixed",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 10000,
+     "output": 2500,
+     "cache_read": 7594,
+     "reasoning": 1200
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 0.0021
+    },
+    "turn": "t1",
+    "ttft_ms": 300,
+    "stream_ms": 10000
+   },
+   {
+    "id": "a1",
+    "purpose": "turn",
+    "wall": 1760000001.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 12000,
+     "output": 40,
+     "cache_read": 9000
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 0.0004
+    },
+    "turn": "t1",
+    "ttft_ms": 250,
+    "stream_ms": 800
+   },
+   {
+    "id": "a2",
+    "purpose": "turn",
+    "wall": 1760000002.0,
+    "requested_model": "oracle-model",
+    "outcome": "failed",
+    "usage": {},
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t2"
+   },
+   {
+    "id": "a3",
+    "purpose": "compaction",
+    "wall": 1760000003.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 20000,
+     "output": 900
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 0.01
+    },
+    "turn": "t2",
+    "ttft_ms": 1200,
+    "stream_ms": 9000
+   },
+   {
+    "id": "a4",
+    "purpose": "turn",
+    "wall": 1760000004.0,
+    "requested_model": "oracle-model",
+    "outcome": "cancelled",
+    "usage": {
+     "input": 5000
+    },
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t3",
+    "ttft_ms": 100
+   },
+   {
+    "id": "a5",
+    "purpose": "turn",
+    "wall": 1760000005.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 6000,
+     "output": 1,
+     "cache_read": 100
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 0
+    },
+    "turn": "t3",
+    "ttft_ms": 90,
+    "stream_ms": 500
+   }
+  ]
+ },
+ {
+  "name": "split",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 10000,
+     "output": 2500,
+     "cache_read": 7594,
+     "reasoning": 1200
+    },
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t1",
+    "ttft_ms": 500,
+    "stream_ms": 10000
+   },
+   {
+    "id": "a1",
+    "purpose": "turn",
+    "wall": 1760000001.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 3000,
+     "output": 500,
+     "cache_read": 0,
+     "reasoning": 0
+    },
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t2",
+    "ttft_ms": 600,
+    "stream_ms": 100
+   }
+  ]
+ },
+ {
+  "name": "zero-cost",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 10,
+     "output": 5,
+     "cache_read": 0
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 0
+    },
+    "turn": "t1"
+   }
+  ]
+ },
+ {
+  "name": "tiny-cost",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 10,
+     "output": 5
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 4.213e-09
+    },
+    "turn": "t1"
+   }
+  ]
+ },
+ {
+  "name": "millions",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 900000,
+     "output": 120000,
+     "cache_read": 450000,
+     "reasoning": 50000
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 1.2345
+    },
+    "turn": "t0",
+    "ttft_ms": 2000,
+    "stream_ms": 60000
+   },
+   {
+    "id": "a1",
+    "purpose": "turn",
+    "wall": 1760000001.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 900001,
+     "output": 120000,
+     "cache_read": 450000,
+     "reasoning": 50000
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 1.2345
+    },
+    "turn": "t0",
+    "ttft_ms": 2000,
+    "stream_ms": 60000
+   },
+   {
+    "id": "a2",
+    "purpose": "turn",
+    "wall": 1760000002.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 900002,
+     "output": 120000,
+     "cache_read": 450000,
+     "reasoning": 50000
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 1.2345
+    },
+    "turn": "t0",
+    "ttft_ms": 2000,
+    "stream_ms": 60000
+   },
+   {
+    "id": "a3",
+    "purpose": "turn",
+    "wall": 1760000003.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 900003,
+     "output": 120000,
+     "cache_read": 450000,
+     "reasoning": 50000
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 1.2345
+    },
+    "turn": "t1",
+    "ttft_ms": 2000,
+    "stream_ms": 60000
+   },
+   {
+    "id": "a4",
+    "purpose": "turn",
+    "wall": 1760000004.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 900004,
+     "output": 120000,
+     "cache_read": 450000,
+     "reasoning": 50000
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 1.2345
+    },
+    "turn": "t1",
+    "ttft_ms": 2000,
+    "stream_ms": 60000
+   },
+   {
+    "id": "a5",
+    "purpose": "turn",
+    "wall": 1760000005.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 900005,
+     "output": 120000,
+     "cache_read": 450000,
+     "reasoning": 50000
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 1.2345
+    },
+    "turn": "t1",
+    "ttft_ms": 2000,
+    "stream_ms": 60000
+   },
+   {
+    "id": "a6",
+    "purpose": "turn",
+    "wall": 1760000006.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 900006,
+     "output": 120000,
+     "cache_read": 450000,
+     "reasoning": 50000
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 1.2345
+    },
+    "turn": "t2",
+    "ttft_ms": 2000,
+    "stream_ms": 60000
+   },
+   {
+    "id": "a7",
+    "purpose": "turn",
+    "wall": 1760000007.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 900007,
+     "output": 120000,
+     "cache_read": 450000,
+     "reasoning": 50000
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 1.2345
+    },
+    "turn": "t2",
+    "ttft_ms": 2000,
+    "stream_ms": 60000
+   },
+   {
+    "id": "a8",
+    "purpose": "turn",
+    "wall": 1760000008.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 900008,
+     "output": 120000,
+     "cache_read": 450000,
+     "reasoning": 50000
+    },
+    "cost": {
+     "status": "reported",
+     "usd": 1.2345
+    },
+    "turn": "t2",
+    "ttft_ms": 2000,
+    "stream_ms": 60000
+   }
+  ]
+ },
+ {
+  "name": "short-span",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 10,
+     "output": 500
+    },
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t1",
+    "stream_ms": 249.9
+   },
+   {
+    "id": "a1",
+    "purpose": "turn",
+    "wall": 1760000001.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 10,
+     "output": 500
+    },
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t1",
+    "stream_ms": 250
+   }
+  ]
+ },
+ {
+  "name": "full-hit",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 1000,
+     "output": 10,
+     "cache_read": 1000
+    },
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t1"
+   },
+   {
+    "id": "a1",
+    "purpose": "turn",
+    "wall": 1760000001.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 1000,
+     "output": 10,
+     "cache_read": 1000
+    },
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t1"
+   }
+  ]
+ },
+ {
+  "name": "no-usage",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "failed",
+    "usage": {},
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t1"
+   },
+   {
+    "id": "a1",
+    "purpose": "compaction",
+    "wall": 1760000001.0,
+    "requested_model": "oracle-model",
+    "outcome": "failed",
+    "usage": {},
+    "cost": {
+     "status": "unreported"
+    }
+   }
+  ]
+ },
+ {
+  "name": "output-only",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "output": 50
+    },
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t1",
+    "stream_ms": 1000
+   }
+  ]
+ },
+ {
+  "name": "latest-not-measured",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 10,
+     "output": 500
+    },
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t1",
+    "stream_ms": 2000
+   },
+   {
+    "id": "a1",
+    "purpose": "turn",
+    "wall": 1760000001.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 10,
+     "output": 1
+    },
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t1",
+    "stream_ms": 2000
+   },
+   {
+    "id": "a2",
+    "purpose": "turn",
+    "wall": 1760000002.0,
+    "requested_model": "oracle-model",
+    "outcome": "failed",
+    "usage": {},
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t1"
+   }
+  ]
+ },
+ {
+  "name": "fast-rate",
+  "records": [
+   {
+    "id": "a0",
+    "purpose": "turn",
+    "wall": 1760000000.0,
+    "requested_model": "oracle-model",
+    "outcome": "completed",
+    "usage": {
+     "input": 10,
+     "output": 200000
+    },
+    "cost": {
+     "status": "unreported"
+    },
+    "turn": "t1",
+    "stream_ms": 1500
+   }
+  ]
+ }
+]

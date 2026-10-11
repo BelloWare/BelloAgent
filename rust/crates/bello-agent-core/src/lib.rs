@@ -1,5 +1,7 @@
 //! Native Rust migration core. Its versioned snapshots are intentionally separate
 //! from Swift journals. No credentials are read, discovered, or persisted here.
+pub mod accounting;
+pub mod accounting_presentation;
 pub mod attachments;
 pub mod compaction;
 #[path = "compaction_session.rs"]
@@ -9,6 +11,7 @@ pub mod inspection;
 pub mod instructions;
 pub mod markdown;
 pub mod mcp;
+pub mod metric_format;
 pub mod model_catalog;
 pub mod model_choice;
 pub mod observed_source;

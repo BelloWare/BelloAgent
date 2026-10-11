@@ -68,15 +68,15 @@ fn assert_measured(
     let composer = visual.debug_bounds("queue-measured-composer").unwrap();
     let footer = visual.debug_bounds("queue-measured-footer").unwrap();
     let transcript = visual.debug_bounds("queue-measured-transcript").unwrap();
-    let tool_time = visual.debug_bounds("composer-tool-time").unwrap();
+    let context = visual.debug_bounds("session-stats-context").unwrap();
     assert!(
-        tool_time.left() >= footer.left() && tool_time.right() <= footer.right(),
-        "Tool time must stay readable inside the footer"
+        context.left() >= footer.left() && context.right() <= footer.right(),
+        "The context pill must stay readable inside the footer"
     );
-    assert!(tool_time.top() >= footer.top() && tool_time.bottom() <= footer.bottom());
+    assert!(context.top() >= footer.top() && context.bottom() <= footer.bottom());
     assert!(
-        tool_time.size.height <= px(28.),
-        "Tool time label must not wrap internally"
+        context.size.height <= px(28.),
+        "The context pill must not wrap internally"
     );
     cx.read(|cx| {
         let view = root.read(cx);
@@ -174,11 +174,15 @@ fn queue_geometry_short_tall_minimum_and_split_panes_use_actual_bounds(cx: &mut 
             });
             assert_measured(&root, &mut visual, cx);
         }
-        if split && height == 600. {
+        // Swift's footer (the session pills) fits one row here; only a
+        // footer that wraps reaches the floor below.
+        let wrapped = cx.read(|cx| {
+            root.read(cx).queue_geometry.unwrap().footer_height > queue_presentation::FOOTER_HEIGHT
+        });
+        if split && height == 600. && wrapped {
             cx.read(|cx| {
                 let view = root.read(cx);
                 let geometry = view.queue_geometry.unwrap();
-                assert!(geometry.footer_height > queue_presentation::FOOTER_HEIGHT);
                 assert!(geometry.room() < 52.);
                 assert_eq!(view.queue_scroll.bounds().size.height, px(52.));
             });

@@ -403,6 +403,21 @@ impl Controller {
         profile.headers.clear();
         Some(profile)
     }
+    /// The profile the next request goes out with under the chat's model and
+    /// effort choice (the dispatch's own `effective_profile`): its window and
+    /// limits are the selected model's. Headers are left out.
+    pub fn next_request_profile(
+        &self,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Option<Profile> {
+        let mut item = Submission::new(String::new(), Lane::FollowUp);
+        item.model = model;
+        item.effort = effort;
+        let mut profile = self.configuration()?.effective_profile(Some(&item));
+        profile.headers.clear();
+        Some(profile)
+    }
     pub fn settings_pending(&self) -> bool {
         self.pending_settings.load(Ordering::Acquire)
     }

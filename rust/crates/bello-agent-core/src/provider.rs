@@ -1,5 +1,6 @@
 use crate::{
-    Credential, Error, Message, Profile, Result, invalid, profile::correlation_value, sse::Parser,
+    Credential, Error, Message, Profile, Result, accounting::AttemptObservation, invalid,
+    profile::correlation_value, sse::Parser,
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -356,6 +357,12 @@ impl Accumulator {
         Ok(reply)
     }
 }
+/// Whether a response body carries any output item.
+fn has_output(response: &Value) -> bool {
+    response["output"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty())
+}
 fn string(v: &Value) -> String {
     v.as_str().unwrap_or("").into()
 }
@@ -468,14 +475,52 @@ impl ResponsesClient {
         cancel: CancellationToken,
         on_delta: impl FnMut(Delta) -> Result<()>,
     ) -> Result<Reply> {
-        let body = request_body_with_tools(profile, messages, instructions, session_id, tools)?;
-        self.complete_prepared(
-            profile, credential, &body, session_id, turn_id, cancel, on_delta,
+        let mut observation = AttemptObservation::default();
+        self.complete_with_tools_observed(
+            profile,
+            credential,
+            messages,
+            instructions,
+            session_id,
+            turn_id,
+            tools,
+            cancel,
+            on_delta,
+            &mut observation,
         )
         .await
     }
-    /// Internal dispatch of an already counted, immutable compaction request.
-    /// Ordinary callers keep using the typed history builder above.
+    /// The same request, recording what it reported and when its output
+    /// came into `observation` (also when it fails or is stopped).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn complete_with_tools_observed(
+        &self,
+        profile: &Profile,
+        credential: &Credential,
+        messages: &[Message],
+        instructions: &str,
+        session_id: &str,
+        turn_id: &str,
+        tools: &[crate::tools::ToolDefinition],
+        cancel: CancellationToken,
+        on_delta: impl FnMut(Delta) -> Result<()>,
+        observation: &mut AttemptObservation,
+    ) -> Result<Reply> {
+        let body = request_body_with_tools(profile, messages, instructions, session_id, tools)?;
+        self.complete_observed(
+            profile,
+            credential,
+            &body,
+            session_id,
+            turn_id,
+            cancel,
+            on_delta,
+            observation,
+        )
+        .await
+    }
+    /// An already counted, immutable request, without accounting (tests).
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn complete_prepared(
         &self,
@@ -485,11 +530,96 @@ impl ResponsesClient {
         session_id: &str,
         turn_id: &str,
         cancel: CancellationToken,
-        mut on_delta: impl FnMut(Delta) -> Result<()>,
+        on_delta: impl FnMut(Delta) -> Result<()>,
     ) -> Result<Reply> {
-        let bytes = serialize_request(body)?;
+        let mut observation = AttemptObservation::default();
+        self.complete_observed(
+            profile,
+            credential,
+            body,
+            session_id,
+            turn_id,
+            cancel,
+            on_delta,
+            &mut observation,
+        )
+        .await
+    }
+    /// Sends `body` once and settles `observation`: its outcome, the usage
+    /// and cost the response reported, and the request's timing.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn complete_observed(
+        &self,
+        profile: &Profile,
+        credential: &Credential,
+        body: &Value,
+        session_id: &str,
+        turn_id: &str,
+        cancel: CancellationToken,
+        on_delta: impl FnMut(Delta) -> Result<()>,
+        observation: &mut AttemptObservation,
+    ) -> Result<Reply> {
         // A retry is a separate physical invocation, even within one turn.
         let attempt_id = uuid::Uuid::new_v4().to_string();
+        *observation = AttemptObservation {
+            id: attempt_id.clone(),
+            api: profile.api.clone(),
+            requested_model: profile.model_id.clone(),
+            usage_binding: crate::compaction::usage_binding(body, profile).ok(),
+            ..AttemptObservation::default()
+        };
+        let result = self
+            .send(
+                profile,
+                credential,
+                body,
+                session_id,
+                turn_id,
+                cancel,
+                on_delta,
+                &attempt_id,
+                observation,
+            )
+            .await;
+        observation.outcome = Some(
+            match &result {
+                Ok(reply) if reply.status == "incomplete" => "truncated",
+                Ok(_) => "completed",
+                Err(Error::Cancelled) => "cancelled",
+                Err(_) => "failed",
+            }
+            .into(),
+        );
+        match &result {
+            Ok(reply) if !reply.usage.is_null() => observation.usage = Some(reply.usage.clone()),
+            Err(Error::ProviderFailure(failure)) => {
+                if let Some(usage) = &failure.reported_usage {
+                    observation.usage = Some(usage.clone());
+                }
+            }
+            _ => {}
+        }
+        result
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn send(
+        &self,
+        profile: &Profile,
+        credential: &Credential,
+        body: &Value,
+        session_id: &str,
+        turn_id: &str,
+        cancel: CancellationToken,
+        mut on_delta: impl FnMut(Delta) -> Result<()>,
+        attempt_id: &str,
+        observation: &mut AttemptObservation,
+    ) -> Result<Reply> {
+        let bytes = serialize_request(body)?;
+        let attempt_id = attempt_id.to_owned();
+        let secret = |text: &str| {
+            let key = credential.expose();
+            !key.is_empty() && text.contains(key)
+        };
         let mut request = self
             .client
             .post(profile.endpoint()?)
@@ -504,13 +634,29 @@ impl ResponsesClient {
         for (name, value) in &profile.headers {
             request = request.header(name, value);
         }
+        observation.wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64());
+        // A request stopped before it went out was never a request.
+        if cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        observation.clock.dispatched();
         let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|e|Error::Provider(profile.safe_error(credential,&format!("Transport failure: {e}"))))? };
         let status = response.status();
         let json_body = response
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.contains("application/json"));
+            .is_some_and(|v| v.to_ascii_lowercase().contains("application/json"));
+        observation.cost.head(
+            response
+                .headers()
+                .get("x-litellm-response-cost")
+                .and_then(|v| v.to_str().ok()),
+            !json_body,
+            &secret,
+        );
         let mut stream = response.bytes_stream();
         let mut parser = Parser::default();
         let mut acc = Accumulator::default();
@@ -550,6 +696,28 @@ impl ResponsesClient {
                 }
                 let value: Value = serde_json::from_str(&event.data)
                     .map_err(|_| invalid("Provider emitted invalid SSE JSON"))?;
+                observation.cost.body(&value, true, &secret);
+                match value["type"].as_str().unwrap_or("") {
+                    "response.output_item.added" => observation.clock.opened(),
+                    // An item done is output, even with no item-added event before it.
+                    "response.output_item.done" => {
+                        observation.clock.opened();
+                        observation.clock.produced(false)
+                    }
+                    kind @ ("response.completed" | "response.incomplete" | "response.failed") => {
+                        // Usage is kept as reported, whatever later validation says.
+                        let usage = &value["response"]["usage"];
+                        if usage.is_object() {
+                            observation.usage = Some(usage.clone());
+                        }
+                        // A response whose output only the terminal carried.
+                        if kind != "response.failed" && has_output(&value["response"]) {
+                            observation.clock.final_content();
+                        }
+                        observation.clock.terminal()
+                    }
+                    _ => {}
+                }
                 if matches!(event.event.as_str(), "error" | "response.failed") {
                     return Err(safe_failure(
                         acc.rejection_with_usage(&value),
@@ -563,6 +731,15 @@ impl ResponsesClient {
                     safe_failure(e, profile, credential, status.as_u16(), &attempt_id)
                 })?;
                 for delta in deltas {
+                    let produced = match &delta {
+                        Delta::Text(text) | Delta::Reasoning(text) => !text.is_empty(),
+                        Delta::Tool {
+                            name, arguments, ..
+                        } => !name.is_empty() || !arguments.is_empty(),
+                    };
+                    if produced {
+                        observation.clock.produced(true);
+                    }
                     on_delta(delta)?;
                 }
             }
@@ -570,6 +747,10 @@ impl ResponsesClient {
         if !status.is_success() {
             let value = serde_json::from_slice::<Value>(&raw)
                 .unwrap_or_else(|_| json!({"message":String::from_utf8_lossy(&raw)}));
+            observation.cost.body(&value, false, &secret);
+            if value["usage"].is_object() {
+                observation.usage = Some(value["usage"].clone());
+            }
             let mut failure =
                 crate::provider_failure::Failure::rejection(&value, Some(status.as_u16()));
             failure.message = format!("HTTP {}: {}", status.as_u16(), failure.message);
@@ -582,8 +763,16 @@ impl ResponsesClient {
             ));
         }
         if json_body {
-            let value = serde_json::from_slice(&raw)
+            let value: Value = serde_json::from_slice(&raw)
                 .map_err(|_| invalid("Provider emitted invalid JSON"))?;
+            observation.cost.body(&value, false, &secret);
+            if value["usage"].is_object() {
+                observation.usage = Some(value["usage"].clone());
+            }
+            if has_output(&value) {
+                observation.clock.final_content();
+            }
+            observation.clock.terminal();
             acc.accept_json(value)
                 .map_err(|e| safe_failure(e, profile, credential, status.as_u16(), &attempt_id))?;
         }
@@ -709,6 +898,145 @@ mod tests {
             ),
             Error::Provider(_)
         ));
+    }
+
+    /// One loopback response, sent through `complete_observed`.
+    async fn observed_fixture(
+        status: u16,
+        content_type: &str,
+        headers: &str,
+        body: String,
+    ) -> (Result<Reply>, AttemptObservation) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut profile = fixture_profile();
+        profile.base_url = format!("http://{}", listener.local_addr().unwrap());
+        let response = format!(
+            "HTTP/1.1 {status} Fixture\r\nContent-Type: {content_type}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let n = socket.read(&mut chunk).await.unwrap();
+                request.extend_from_slice(&chunk[..n]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .map_or(0, |v| v.trim().parse().unwrap());
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let client = ResponsesClient::new_synthetic_fixture().unwrap();
+        let mut observation = AttemptObservation::default();
+        let result = client
+            .complete_observed(
+                &profile,
+                &Credential::new("credential-secret".into()).unwrap(),
+                &json!({}),
+                "session",
+                "turn",
+                CancellationToken::new(),
+                |_| Ok(()),
+                &mut observation,
+            )
+            .await;
+        server.await.unwrap();
+        (result, observation)
+    }
+
+    #[tokio::test]
+    async fn accounting_keeps_usage_cost_and_timing_whatever_follows() {
+        // Output only in the terminal event: the request still has a TTFT.
+        let terminal = json!({"type":"response.completed","response":{"status":"completed",
+            "output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],
+            "usage":{"input_tokens":5,"output_tokens":2,"cost":0.25}}});
+        let (result, observation) = observed_fixture(
+            200,
+            "text/event-stream",
+            "",
+            format!("data: {terminal}\n\n"),
+        )
+        .await;
+        assert!(result.is_ok());
+        let record = observation.record("turn", None, None).unwrap();
+        assert!(record.ttft_ms.is_some() && record.stream_ms.is_some());
+        assert_eq!((record.usage.input, record.cost.usd), (Some(5), Some(0.25)));
+        // Malformed tool arguments fail the reply, not its reported usage.
+        let broken = json!({"type":"response.completed","response":{"status":"completed",
+            "output":[{"type":"function_call","call_id":"c","name":"ls","arguments":"{"}],
+            "usage":{"input_tokens":7,"output_tokens":3}}});
+        let (result, observation) =
+            observed_fixture(200, "text/event-stream", "", format!("data: {broken}\n\n")).await;
+        assert!(result.is_err());
+        let record = observation.record("turn", None, None).unwrap();
+        assert_eq!(record.outcome, "failed");
+        assert_eq!(record.usage.input, Some(7));
+        // An HTTP failure body's cost disagrees with its header: a conflict.
+        let (result, observation) = observed_fixture(
+            400,
+            "application/json",
+            "x-litellm-response-cost: 0.5\r\n",
+            json!({"error":{"message":"bad"},"usage":{"input_tokens":1,"cost":0.75}}).to_string(),
+        )
+        .await;
+        assert!(result.is_err());
+        let record = observation.record("turn", None, None).unwrap();
+        assert_eq!(record.cost.status, "conflict");
+        // Items done, then a terminal with an empty output list: still timed.
+        let item = json!({"type":"response.output_item.done","output_index":0,
+            "item":{"type":"message","content":[{"type":"output_text","text":"hi"}]}});
+        let done =
+            json!({"type":"response.completed","response":{"status":"completed","output":[]}});
+        let (result, observation) = observed_fixture(
+            200,
+            "text/event-stream",
+            "",
+            format!("data: {item}\n\ndata: {done}\n\n"),
+        )
+        .await;
+        assert_eq!(result.unwrap().text, "hi");
+        assert!(observation.clock.ttft_ms().is_some());
+        // A request stopped before it went out is no request.
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut stopped = AttemptObservation::default();
+        let error = ResponsesClient::new_synthetic_fixture()
+            .unwrap()
+            .complete_observed(
+                &fixture_profile(),
+                &Credential::new("credential-secret".into()).unwrap(),
+                &json!({}),
+                "session",
+                "turn",
+                cancel,
+                |_| Ok(()),
+                &mut stopped,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Cancelled));
+        assert!(stopped.record("turn", None, None).is_none());
+        // An empty JSON reply has no first output.
+        let (_, observation) = observed_fixture(
+            200,
+            "application/json",
+            "",
+            json!({"status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":0}})
+                .to_string(),
+        )
+        .await;
+        let record = observation.record("turn", None, None).unwrap();
+        assert_eq!(record.ttft_ms, None);
+        assert!(record.request_ms.is_some());
     }
 
     async fn rejected_fixture(

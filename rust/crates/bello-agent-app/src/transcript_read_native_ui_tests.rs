@@ -182,7 +182,7 @@ async fn read_native_workflow_trust_loopback_checkpoint_replay_and_numbered_ui(
     let snapshot = restored.snapshot();
     // This fresh session retains completed tool timing, requiring snapshot v9.
     // Retained read content alone still requires only v4 in legacy fixtures.
-    assert_eq!(snapshot.version, 9);
+    assert_eq!(snapshot.version, 11);
     let users = snapshot
         .messages
         .iter()

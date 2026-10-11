@@ -228,7 +228,7 @@ fn live_unoffered_call_fails_once_and_reopens_without_execution_or_resubmission(
     let reopened = SessionStore::open(&path).unwrap().snapshot();
     assert_eq!(reopened.state, RunState::Error);
     assert_eq!(reopened.messages.len(), snapshot.messages.len());
-    assert_eq!(reopened.version, 9);
+    assert_eq!(reopened.version, 11);
     finished.send(()).unwrap();
     server.join().unwrap();
 }
@@ -291,7 +291,7 @@ fn stopping_streamed_call_arguments_never_creates_executable_history() {
         "waiting for terminal"
     );
     assert!(reopened.queue_paused);
-    assert_eq!(reopened.version, 9);
+    assert_eq!(reopened.version, 11);
     finished.send(()).unwrap();
     server.join().unwrap();
 }

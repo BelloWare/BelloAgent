@@ -1,0 +1,1279 @@
+{
+  "formats" : {
+    "cacheHit" : [
+      {
+        "padded" : "0.00",
+        "percent" : "0",
+        "prompt" : 100,
+        "read" : 0
+      },
+      {
+        "padded" : "50.00",
+        "percent" : "50",
+        "prompt" : 100,
+        "read" : 50
+      },
+      {
+        "padded" : "75.94",
+        "percent" : "76",
+        "prompt" : 10000,
+        "read" : 7594
+      },
+      {
+        "padded" : "99.99",
+        "percent" : "99.99",
+        "prompt" : 10000,
+        "read" : 9999
+      },
+      {
+        "padded" : "99.999",
+        "percent" : "99.999",
+        "prompt" : 100000,
+        "read" : 99999
+      },
+      {
+        "padded" : "100.00",
+        "percent" : "100",
+        "prompt" : 100,
+        "read" : 100
+      },
+      {
+        "padded" : "<0.01",
+        "percent" : "<1",
+        "prompt" : 1000000,
+        "read" : 1
+      },
+      {
+        "padded" : "0.30",
+        "percent" : "<1",
+        "prompt" : 1000,
+        "read" : 3
+      },
+      {
+        "padded" : null,
+        "percent" : null,
+        "prompt" : 0,
+        "read" : 0
+      },
+      {
+        "padded" : "33.33",
+        "percent" : "33",
+        "prompt" : 3,
+        "read" : 1
+      },
+      {
+        "padded" : "66.67",
+        "percent" : "67",
+        "prompt" : 3,
+        "read" : 2
+      }
+    ],
+    "money" : [
+      {
+        "centsUSD" : null,
+        "compactGatewayUSD" : "$0.00",
+        "exactUSD" : "$0.00 USD",
+        "gatewayUSD" : "$0.00 USD",
+        "preciseDecimal" : "0",
+        "value" : 0
+      },
+      {
+        "centsUSD" : "$0.0004",
+        "compactGatewayUSD" : "$0.00042188",
+        "exactUSD" : "$0.00042188 USD",
+        "gatewayUSD" : "$0.00042188 USD",
+        "preciseDecimal" : "0.00042188",
+        "value" : 0.00042188000000000002
+      },
+      {
+        "centsUSD" : "$0.0004",
+        "compactGatewayUSD" : "$0.000421875",
+        "exactUSD" : "$0.00042188 USD",
+        "gatewayUSD" : "$0.00042188 USD",
+        "preciseDecimal" : "0.000421875",
+        "value" : 0.000421875
+      },
+      {
+        "centsUSD" : "$0.0025",
+        "compactGatewayUSD" : "$0.0025",
+        "exactUSD" : "$0.0025 USD",
+        "gatewayUSD" : "$0.0025 USD",
+        "preciseDecimal" : "0.0025",
+        "value" : 0.0025000000000000001
+      },
+      {
+        "centsUSD" : "$0.0050",
+        "compactGatewayUSD" : "$0.005",
+        "exactUSD" : "$0.005 USD",
+        "gatewayUSD" : "$0.005 USD",
+        "preciseDecimal" : "0.005",
+        "value" : 0.0050000000000000001
+      },
+      {
+        "centsUSD" : "$0.01",
+        "compactGatewayUSD" : "$0.00995",
+        "exactUSD" : "$0.00995 USD",
+        "gatewayUSD" : "$0.00995 USD",
+        "preciseDecimal" : "0.00995",
+        "value" : 0.0099500000000000005
+      },
+      {
+        "centsUSD" : "$0.01",
+        "compactGatewayUSD" : "$0.01",
+        "exactUSD" : "$0.01 USD",
+        "gatewayUSD" : "$0.01 USD",
+        "preciseDecimal" : "0.01",
+        "value" : 0.01
+      },
+      {
+        "centsUSD" : "$0.50",
+        "compactGatewayUSD" : "$0.50",
+        "exactUSD" : "$0.50 USD",
+        "gatewayUSD" : "$0.50 USD",
+        "preciseDecimal" : "0.5",
+        "value" : 0.5
+      },
+      {
+        "centsUSD" : "$1.50",
+        "compactGatewayUSD" : "$1.50",
+        "exactUSD" : "$1.50 USD",
+        "gatewayUSD" : "$1.50 USD",
+        "preciseDecimal" : "1.5",
+        "value" : 1.5
+      },
+      {
+        "centsUSD" : "$4.13",
+        "compactGatewayUSD" : "$4.125",
+        "exactUSD" : "$4.125 USD",
+        "gatewayUSD" : "$4.125 USD",
+        "preciseDecimal" : "4.125",
+        "value" : 4.125
+      },
+      {
+        "centsUSD" : "$12.35",
+        "compactGatewayUSD" : "$12.3456789",
+        "exactUSD" : "$12.3456789 USD",
+        "gatewayUSD" : "$12.3456789 USD",
+        "preciseDecimal" : "12.3456789",
+        "value" : 12.345678899999999
+      },
+      {
+        "centsUSD" : "<$0.0001",
+        "compactGatewayUSD" : "$0.000000004213",
+        "exactUSD" : "$4.21e-9 USD",
+        "gatewayUSD" : "$4.21e-9 USD",
+        "preciseDecimal" : "0.000000004213",
+        "value" : 4.2130000000000002e-09
+      },
+      {
+        "centsUSD" : "<$0.0001",
+        "compactGatewayUSD" : "$0.000000009999",
+        "exactUSD" : "$1.00e-8 USD",
+        "gatewayUSD" : "$1.00e-8 USD",
+        "preciseDecimal" : "0.000000009999",
+        "value" : 9.9990000000000007e-09
+      },
+      {
+        "centsUSD" : "<$0.0001",
+        "compactGatewayUSD" : "$4e-13",
+        "exactUSD" : "$4.00e-13 USD",
+        "gatewayUSD" : "$4.00e-13 USD",
+        "preciseDecimal" : "4e-13",
+        "value" : 4.0000000000000001e-13
+      },
+      {
+        "centsUSD" : "$123456.79",
+        "compactGatewayUSD" : "$123456.789",
+        "exactUSD" : "$123456.789 USD",
+        "gatewayUSD" : "$123456.789 USD",
+        "preciseDecimal" : "123456.789",
+        "value" : 123456.789
+      },
+      {
+        "centsUSD" : "<$0.0001",
+        "compactGatewayUSD" : "$0.00004999",
+        "exactUSD" : "$0.00004999 USD",
+        "gatewayUSD" : "$0.00004999 USD",
+        "preciseDecimal" : "0.00004999",
+        "value" : 4.9990000000000001e-05
+      },
+      {
+        "centsUSD" : "$0.0001",
+        "compactGatewayUSD" : "$0.00005",
+        "exactUSD" : "$0.00005 USD",
+        "gatewayUSD" : "$0.00005 USD",
+        "preciseDecimal" : "0.00005",
+        "value" : 5.0000000000000002e-05
+      }
+    ],
+    "occupancy" : [
+      {
+        "detail" : "0",
+        "fraction" : 0,
+        "percent" : "0"
+      },
+      {
+        "detail" : "<0.1",
+        "fraction" : 9.9999999999999995e-08,
+        "percent" : "<1"
+      },
+      {
+        "detail" : "0.4",
+        "fraction" : 0.0040000000000000001,
+        "percent" : "<1"
+      },
+      {
+        "detail" : "50",
+        "fraction" : 0.5,
+        "percent" : "50"
+      },
+      {
+        "detail" : "99.96",
+        "fraction" : 0.99960000000000004,
+        "percent" : "99.96"
+      },
+      {
+        "detail" : "99.996",
+        "fraction" : 0.99995999999999996,
+        "percent" : "99.996"
+      },
+      {
+        "detail" : "100",
+        "fraction" : 1,
+        "percent" : "100"
+      },
+      {
+        "detail" : "100",
+        "fraction" : 1.2,
+        "percent" : "100"
+      }
+    ],
+    "tokens" : [
+      {
+        "compactRate" : "0 tok\/s",
+        "compactTokens" : "0",
+        "latency" : "0 ms",
+        "menuBarTokens" : "0",
+        "rowTokenCount" : "0 tok",
+        "throughput" : "0 tok\/s",
+        "tokenCount" : "0 tok",
+        "tokens" : "0",
+        "value" : 0
+      },
+      {
+        "compactRate" : "0.40 tok\/s",
+        "compactTokens" : "0",
+        "latency" : "0 ms",
+        "menuBarTokens" : "0",
+        "rowTokenCount" : "0 tok",
+        "throughput" : "0.4 tok\/s",
+        "tokenCount" : "0 tok",
+        "tokens" : "0",
+        "value" : 0.40000000000000002
+      },
+      {
+        "compactRate" : "1 tok\/s",
+        "compactTokens" : "1",
+        "latency" : "1 ms",
+        "menuBarTokens" : "1",
+        "rowTokenCount" : "1 tok",
+        "throughput" : "1 tok\/s",
+        "tokenCount" : "1 tok",
+        "tokens" : "1",
+        "value" : 1
+      },
+      {
+        "compactRate" : "10 tok\/s",
+        "compactTokens" : "10",
+        "latency" : "10 ms",
+        "menuBarTokens" : "10",
+        "rowTokenCount" : "10 tok",
+        "throughput" : "10 tok\/s",
+        "tokenCount" : "10 tok",
+        "tokens" : "10",
+        "value" : 9.9600000000000009
+      },
+      {
+        "compactRate" : "12 tok\/s",
+        "compactTokens" : "12",
+        "latency" : "12 ms",
+        "menuBarTokens" : "12",
+        "rowTokenCount" : "12 tok",
+        "throughput" : "12 tok\/s",
+        "tokenCount" : "12 tok",
+        "tokens" : "12",
+        "value" : 12.34
+      },
+      {
+        "compactRate" : "100 tok\/s",
+        "compactTokens" : "100",
+        "latency" : "100 ms",
+        "menuBarTokens" : "100",
+        "rowTokenCount" : "100 tok",
+        "throughput" : "100 tok\/s",
+        "tokenCount" : "100 tok",
+        "tokens" : "100",
+        "value" : 99.5
+      },
+      {
+        "compactRate" : "517 tok\/s",
+        "compactTokens" : "517",
+        "latency" : "517 ms",
+        "menuBarTokens" : "517",
+        "rowTokenCount" : "517 tok",
+        "throughput" : "517 tok\/s",
+        "tokenCount" : "517 tok",
+        "tokens" : "517",
+        "value" : 517
+      },
+      {
+        "compactRate" : "999 tok\/s",
+        "compactTokens" : "999",
+        "latency" : "999 ms",
+        "menuBarTokens" : "999",
+        "rowTokenCount" : "999 tok",
+        "throughput" : "999 tok\/s",
+        "tokenCount" : "999 tok",
+        "tokens" : "999",
+        "value" : 999.39999999999998
+      },
+      {
+        "compactRate" : "1K tok\/s",
+        "compactTokens" : "1000",
+        "latency" : "1s",
+        "menuBarTokens" : "1,000",
+        "rowTokenCount" : "1.0K tok",
+        "throughput" : "1000 tok\/s",
+        "tokenCount" : "1K tok",
+        "tokens" : "1K",
+        "value" : 999.5
+      },
+      {
+        "compactRate" : "1K tok\/s",
+        "compactTokens" : "1K",
+        "latency" : "1s",
+        "menuBarTokens" : "1,000",
+        "rowTokenCount" : "1.0K tok",
+        "throughput" : "1000 tok\/s",
+        "tokenCount" : "1K tok",
+        "tokens" : "1K",
+        "value" : 1000
+      },
+      {
+        "compactRate" : "1K tok\/s",
+        "compactTokens" : "1K",
+        "latency" : "1s",
+        "menuBarTokens" : "1,049",
+        "rowTokenCount" : "1.0K tok",
+        "throughput" : "1049 tok\/s",
+        "tokenCount" : "1K tok",
+        "tokens" : "1K",
+        "value" : 1049
+      },
+      {
+        "compactRate" : "1.1K tok\/s",
+        "compactTokens" : "1.1K",
+        "latency" : "1.1s",
+        "menuBarTokens" : "1,050",
+        "rowTokenCount" : "1.1K tok",
+        "throughput" : "1050 tok\/s",
+        "tokenCount" : "1.1K tok",
+        "tokens" : "1.1K",
+        "value" : 1050
+      },
+      {
+        "compactRate" : "10K tok\/s",
+        "compactTokens" : "10K",
+        "latency" : "10s",
+        "menuBarTokens" : "9,999",
+        "rowTokenCount" : "10.0K tok",
+        "throughput" : "9999 tok\/s",
+        "tokenCount" : "10K tok",
+        "tokens" : "10K",
+        "value" : 9999
+      },
+      {
+        "compactRate" : "10K tok\/s",
+        "compactTokens" : "10K",
+        "latency" : "10s",
+        "menuBarTokens" : "10,000",
+        "rowTokenCount" : "10.0K tok",
+        "throughput" : "10000 tok\/s",
+        "tokenCount" : "10K tok",
+        "tokens" : "10K",
+        "value" : 10000
+      },
+      {
+        "compactRate" : "12K tok\/s",
+        "compactTokens" : "12K",
+        "latency" : "12s",
+        "menuBarTokens" : "12,200",
+        "rowTokenCount" : "12.2K tok",
+        "throughput" : "12200 tok\/s",
+        "tokenCount" : "12.2K tok",
+        "tokens" : "12.2K",
+        "value" : 12200
+      },
+      {
+        "compactRate" : "100K tok\/s",
+        "compactTokens" : "100K",
+        "latency" : "100s",
+        "menuBarTokens" : "99,949",
+        "rowTokenCount" : "99.9K tok",
+        "throughput" : "99949 tok\/s",
+        "tokenCount" : "99.9K tok",
+        "tokens" : "99.9K",
+        "value" : 99949
+      },
+      {
+        "compactRate" : "100K tok\/s",
+        "compactTokens" : "100K",
+        "latency" : "100s",
+        "menuBarTokens" : "99,950",
+        "rowTokenCount" : "100.0K tok",
+        "throughput" : "99950 tok\/s",
+        "tokenCount" : "100K tok",
+        "tokens" : "100K",
+        "value" : 99950
+      },
+      {
+        "compactRate" : "100K tok\/s",
+        "compactTokens" : "100K",
+        "latency" : "100s",
+        "menuBarTokens" : "100,000",
+        "rowTokenCount" : "100.0K tok",
+        "throughput" : "100000 tok\/s",
+        "tokenCount" : "100K tok",
+        "tokens" : "100K",
+        "value" : 100000
+      },
+      {
+        "compactRate" : "517K tok\/s",
+        "compactTokens" : "517K",
+        "latency" : "517s",
+        "menuBarTokens" : "516,800",
+        "rowTokenCount" : "516.8K tok",
+        "throughput" : "516800 tok\/s",
+        "tokenCount" : "517K tok",
+        "tokens" : "517K",
+        "value" : 516800
+      },
+      {
+        "compactRate" : "999K tok\/s",
+        "compactTokens" : "999K",
+        "latency" : "999s",
+        "menuBarTokens" : "999,499",
+        "rowTokenCount" : "999.5K tok",
+        "throughput" : "999499 tok\/s",
+        "tokenCount" : "999K tok",
+        "tokens" : "999K",
+        "value" : 999499
+      },
+      {
+        "compactRate" : "1M tok\/s",
+        "compactTokens" : "1000K",
+        "latency" : "1000s",
+        "menuBarTokens" : "999,500",
+        "rowTokenCount" : "999.5K tok",
+        "throughput" : "999500 tok\/s",
+        "tokenCount" : "1M tok",
+        "tokens" : "1M",
+        "value" : 999500
+      },
+      {
+        "compactRate" : "1M tok\/s",
+        "compactTokens" : "1000K",
+        "latency" : "1000s",
+        "menuBarTokens" : "999,950",
+        "rowTokenCount" : "1.0M tok",
+        "throughput" : "999950 tok\/s",
+        "tokenCount" : "1M tok",
+        "tokens" : "1M",
+        "value" : 999950
+      },
+      {
+        "compactRate" : "1M tok\/s",
+        "compactTokens" : "1M",
+        "latency" : "1000s",
+        "menuBarTokens" : "1,000,000",
+        "rowTokenCount" : "1.0M tok",
+        "throughput" : "1000000 tok\/s",
+        "tokenCount" : "1M tok",
+        "tokens" : "1M",
+        "value" : 1000000
+      },
+      {
+        "compactRate" : "1.2M tok\/s",
+        "compactTokens" : "1.2M",
+        "latency" : "1235s",
+        "menuBarTokens" : "1,234,567",
+        "rowTokenCount" : "1.2M tok",
+        "throughput" : "1234567 tok\/s",
+        "tokenCount" : "1.2M tok",
+        "tokens" : "1.2M",
+        "value" : 1234567
+      },
+      {
+        "compactRate" : "100M tok\/s",
+        "compactTokens" : "100M",
+        "latency" : "99950s",
+        "menuBarTokens" : "99,950,000",
+        "rowTokenCount" : "100.0M tok",
+        "throughput" : "99950000 tok\/s",
+        "tokenCount" : "100M tok",
+        "tokens" : "100M",
+        "value" : 99950000
+      },
+      {
+        "compactRate" : "999.5M tok\/s",
+        "compactTokens" : "999.5M",
+        "latency" : "999500s",
+        "menuBarTokens" : "999,500,000",
+        "rowTokenCount" : "999.5M tok",
+        "throughput" : "999500000 tok\/s",
+        "tokenCount" : "1B tok",
+        "tokens" : "1B",
+        "value" : 999500000
+      },
+      {
+        "compactRate" : "1500M tok\/s",
+        "compactTokens" : "1500M",
+        "latency" : "1500000s",
+        "menuBarTokens" : "1,500,000,000",
+        "rowTokenCount" : "1.5B tok",
+        "throughput" : "1500000000 tok\/s",
+        "tokenCount" : "1.5B tok",
+        "tokens" : "1.5B",
+        "value" : 1500000000
+      },
+      {
+        "compactRate" : "2500000M tok\/s",
+        "compactTokens" : "2500000M",
+        "latency" : "2500000000s",
+        "menuBarTokens" : "2,500,000,000,000",
+        "rowTokenCount" : "2500.0B tok",
+        "throughput" : "2500000000000 tok\/s",
+        "tokenCount" : "2500B tok",
+        "tokens" : "2500B",
+        "value" : 2500000000000
+      },
+      {
+        "compactRate" : "0.05 tok\/s",
+        "compactTokens" : "0",
+        "latency" : "0 ms",
+        "menuBarTokens" : "0",
+        "rowTokenCount" : "0 tok",
+        "throughput" : "0.1 tok\/s",
+        "tokenCount" : "0 tok",
+        "tokens" : "0",
+        "value" : 0.050000000000000003
+      },
+      {
+        "compactRate" : "3 tok\/s",
+        "compactTokens" : "3",
+        "latency" : "3 ms",
+        "menuBarTokens" : "3",
+        "rowTokenCount" : "3 tok",
+        "throughput" : "3.5 tok\/s",
+        "tokenCount" : "3 tok",
+        "tokens" : "3",
+        "value" : 3.4500000000000002
+      },
+      {
+        "compactRate" : "36 tok\/s",
+        "compactTokens" : "36",
+        "latency" : "36 ms",
+        "menuBarTokens" : "36",
+        "rowTokenCount" : "36 tok",
+        "throughput" : "36 tok\/s",
+        "tokenCount" : "36 tok",
+        "tokens" : "36",
+        "value" : 35.5
+      },
+      {
+        "compactRate" : "126K tok\/s",
+        "compactTokens" : "126K",
+        "latency" : "126s",
+        "menuBarTokens" : "126,397",
+        "rowTokenCount" : "126.4K tok",
+        "throughput" : "126397 tok\/s",
+        "tokenCount" : "126K tok",
+        "tokens" : "126K",
+        "value" : 126397
+      },
+      {
+        "compactRate" : "1K tok\/s",
+        "compactTokens" : "1000",
+        "latency" : "1s",
+        "menuBarTokens" : "1,000",
+        "rowTokenCount" : "1.0K tok",
+        "throughput" : "1000 tok\/s",
+        "tokenCount" : "1K tok",
+        "tokens" : "1K",
+        "value" : 999.60000000000002
+      },
+      {
+        "compactRate" : "60K tok\/s",
+        "compactTokens" : "60K",
+        "latency" : "60s",
+        "menuBarTokens" : "59,960",
+        "rowTokenCount" : "60.0K tok",
+        "throughput" : "59960 tok\/s",
+        "tokenCount" : "60K tok",
+        "tokens" : "60K",
+        "value" : 59960
+      }
+    ]
+  },
+  "observations" : [
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : 1200,
+      "name" : "plain",
+      "output" : 340,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : 7594,
+      "cacheWrite" : null,
+      "costStatus" : "reported",
+      "costUSD" : 0.0025000000000000001,
+      "input" : 10000,
+      "name" : "cached",
+      "output" : 2500,
+      "reasoning" : 1200
+    },
+    {
+      "cacheRead" : 1000,
+      "cacheWrite" : 2000,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : 5000,
+      "name" : "cache-write",
+      "output" : 10,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : 100,
+      "name" : "cache-over-input",
+      "output" : 5,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : 100,
+      "name" : "caches-sum-over-input",
+      "output" : 5,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : 10,
+      "name" : "reasoning-over-output",
+      "output" : 5,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : null,
+      "name" : "negative-input",
+      "output" : 5,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : null,
+      "name" : "fractional",
+      "output" : 5,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : null,
+      "name" : "string-count",
+      "output" : 5,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : null,
+      "name" : "huge",
+      "output" : 1000000000000,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : null,
+      "name" : "empty",
+      "output" : null,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : 10,
+      "name" : "bad-total",
+      "output" : 5,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : 4000,
+      "cacheWrite" : 300,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : 4350,
+      "name" : "anthropic",
+      "output" : 20,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : null,
+      "name" : "anthropic-invalid-cache",
+      "output" : 20,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "reported",
+      "costUSD" : 0.000421875,
+      "input" : 1,
+      "name" : "cost-string",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "reported",
+      "costUSD" : 0.5,
+      "input" : 1,
+      "name" : "cost-both-agree",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "conflict",
+      "costUSD" : null,
+      "input" : 1,
+      "name" : "cost-conflict",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "invalid",
+      "costUSD" : null,
+      "input" : 1,
+      "name" : "cost-invalid",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : 1,
+      "name" : "cost-null",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "reported",
+      "costUSD" : 0.125,
+      "input" : 1,
+      "name" : "cost-incomplete",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : 1,
+      "name" : "cost-not-terminal",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : 1,
+      "name" : "header-streaming",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "reported",
+      "costUSD" : 0.75,
+      "input" : 1,
+      "name" : "header-json",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "reported",
+      "costUSD" : 0.75,
+      "input" : 1,
+      "name" : "header-json-agree",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "conflict",
+      "costUSD" : null,
+      "input" : 1,
+      "name" : "header-json-conflict",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "invalid",
+      "costUSD" : null,
+      "input" : 1,
+      "name" : "header-json-invalid",
+      "output" : 2,
+      "reasoning" : null
+    },
+    {
+      "cacheRead" : null,
+      "cacheWrite" : null,
+      "costStatus" : "unreported",
+      "costUSD" : null,
+      "input" : 1,
+      "name" : "header-streaming-invalid",
+      "output" : 2,
+      "reasoning" : null
+    }
+  ],
+  "sessions" : [
+    {
+      "billedTotal" : null,
+      "cacheHit" : null,
+      "compactUsageFace" : "",
+      "costFigure" : null,
+      "gauge" : "0 turns 0 steps",
+      "hasUsage" : false,
+      "lastActivity" : null,
+      "latestRate" : null,
+      "name" : "empty",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 0 requests",
+        "Total tokens (input + output): not reported",
+        "Input tokens (includes cache): not reported",
+        "Output tokens (includes reasoning): not reported",
+        "Cached input tokens: not reported",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): not reported",
+        "Reported cost: not reported",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 0,
+      "throughput" : null,
+      "ttft" : null,
+      "turns" : 0,
+      "usage" : "",
+      "usageFace" : ""
+    },
+    {
+      "billedTotal" : 1320,
+      "cacheHit" : "0.00",
+      "compactUsageFace" : "1.3K tok · Cache hit 0.00% · $0.0025",
+      "costFigure" : "$0.0025",
+      "gauge" : "1 turn 1 step · 35 tok\/s",
+      "hasUsage" : true,
+      "lastActivity" : 1760000000,
+      "latestRate" : "Latest 35 tok\/s",
+      "name" : "one",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 1 requests",
+        "Total tokens (input + output): 1320 (1\/1 requests reported)",
+        "Input tokens (includes cache): 1200 (1\/1 requests reported)",
+        "Output tokens (includes reasoning): 120 (1\/1 requests reported)",
+        "Cached input tokens: 0 (1\/1 requests reported)",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): not reported",
+        "Reported cost: $0.0025 USD (1\/1 requests reported)",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 1,
+      "throughput" : 35,
+      "ttft" : 412.5,
+      "turns" : 1,
+      "usage" : "1.3K tok · 1.2K uncached · 0 cached · 120 out · Cache hit 0.00% · $0.0025",
+      "usageFace" : "1.3K tok · 1.2K uncached · 0 cached · 120 out · Cache hit 0.00% · $0.0025"
+    },
+    {
+      "billedTotal" : 56441,
+      "cacheHit" : "59.62",
+      "compactUsageFace" : "56.4K tok · Cache hit 59.62% · $0.0125",
+      "costFigure" : "$0.0125",
+      "gauge" : "3 turns 6 steps · 174 tok\/s",
+      "hasUsage" : true,
+      "lastActivity" : 1760000005,
+      "latestRate" : null,
+      "name" : "mixed",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 6 requests",
+        "Total tokens (input + output): 51441 (4\/6 requests reported)",
+        "Input tokens (includes cache): 53000 (5\/6 requests reported)",
+        "Output tokens (includes reasoning): 3441 (4\/6 requests reported)",
+        "Cached input tokens: 16694 (3\/6 requests reported)",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): 1200 (1\/6 requests reported)",
+        "Reported cost: $0.0125 USD (4\/6 requests reported)",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 6,
+      "throughput" : 173.58585858585857,
+      "ttft" : 388,
+      "turns" : 3,
+      "usage" : "56.4K tok · 53K in · 3.4K out (1.2K reasoning) · Cache hit 59.62% · $0.0125",
+      "usageFace" : "56.4K tok · 53K in · 3.4K out (1.2K reasoning) · Cache hit 59.62% · $0.0125"
+    },
+    {
+      "billedTotal" : 16000,
+      "cacheHit" : "58.42",
+      "compactUsageFace" : "16K tok · Cache hit 58.42%",
+      "costFigure" : null,
+      "gauge" : "2 turns 2 steps · 250 tok\/s",
+      "hasUsage" : true,
+      "lastActivity" : 1760000001,
+      "latestRate" : null,
+      "name" : "split",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 2 requests",
+        "Total tokens (input + output): 16000 (2\/2 requests reported)",
+        "Input tokens (includes cache): 13000 (2\/2 requests reported)",
+        "Output tokens (includes reasoning): 3000 (2\/2 requests reported)",
+        "Cached input tokens: 7594 (2\/2 requests reported)",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): 1200 (2\/2 requests reported)",
+        "Reported cost: not reported",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 2,
+      "throughput" : 249.90000000000001,
+      "ttft" : 550,
+      "turns" : 2,
+      "usage" : "16K tok · 5.4K uncached · 7.6K cached · 3K out (1.2K reasoning) · Cache hit 58.42%",
+      "usageFace" : "16K tok · 5.4K uncached · 7.6K cached · 3K out (1.2K reasoning) · Cache hit 58.42%"
+    },
+    {
+      "billedTotal" : 15,
+      "cacheHit" : "0.00",
+      "compactUsageFace" : "15 tok · Cache hit 0.00% · $0.00",
+      "costFigure" : "$0.00",
+      "gauge" : "1 turn 1 step",
+      "hasUsage" : true,
+      "lastActivity" : 1760000000,
+      "latestRate" : null,
+      "name" : "zero-cost",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 1 requests",
+        "Total tokens (input + output): 15 (1\/1 requests reported)",
+        "Input tokens (includes cache): 10 (1\/1 requests reported)",
+        "Output tokens (includes reasoning): 5 (1\/1 requests reported)",
+        "Cached input tokens: 0 (1\/1 requests reported)",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): not reported",
+        "Reported cost: $0.00 USD (1\/1 requests reported)",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 1,
+      "throughput" : null,
+      "ttft" : null,
+      "turns" : 1,
+      "usage" : "15 tok · 10 uncached · 0 cached · 5 out · Cache hit 0.00% · $0.00",
+      "usageFace" : "15 tok · 10 uncached · 0 cached · 5 out · Cache hit 0.00% · $0.00"
+    },
+    {
+      "billedTotal" : 15,
+      "cacheHit" : null,
+      "compactUsageFace" : "15 tok · $0.000000004213",
+      "costFigure" : "$0.000000004213",
+      "gauge" : "1 turn 1 step",
+      "hasUsage" : true,
+      "lastActivity" : 1760000000,
+      "latestRate" : null,
+      "name" : "tiny-cost",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 1 requests",
+        "Total tokens (input + output): 15 (1\/1 requests reported)",
+        "Input tokens (includes cache): 10 (1\/1 requests reported)",
+        "Output tokens (includes reasoning): 5 (1\/1 requests reported)",
+        "Cached input tokens: not reported",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): not reported",
+        "Reported cost: $4.21e-9 USD (1\/1 requests reported)",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 1,
+      "throughput" : null,
+      "ttft" : null,
+      "turns" : 1,
+      "usage" : "15 tok · 10 in · 5 out · $0.000000004213",
+      "usageFace" : "15 tok · 10 in · 5 out · $0.000000004213"
+    },
+    {
+      "billedTotal" : 9180036,
+      "cacheHit" : "50.00",
+      "compactUsageFace" : "9.2M tok · Cache hit 50.00% · $11.1105",
+      "costFigure" : "$11.1105",
+      "gauge" : "3 turns 9 steps · 2000 tok\/s",
+      "hasUsage" : true,
+      "lastActivity" : 1760000008,
+      "latestRate" : "Latest 2K tok\/s",
+      "name" : "millions",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 9 requests",
+        "Total tokens (input + output): 9180036 (9\/9 requests reported)",
+        "Input tokens (includes cache): 8100036 (9\/9 requests reported)",
+        "Output tokens (includes reasoning): 1080000 (9\/9 requests reported)",
+        "Cached input tokens: 4050000 (9\/9 requests reported)",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): 450000 (9\/9 requests reported)",
+        "Reported cost: $11.1105 USD (9\/9 requests reported)",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 9,
+      "throughput" : 1999.9833333333333,
+      "ttft" : 2000,
+      "turns" : 3,
+      "usage" : "9.2M tok · 4.1M uncached · 4.1M cached · 1.1M out (450K reasoning) · Cache hit 50.00% · $11.1105",
+      "usageFace" : "9.2M tok · 4.1M uncached · 4.1M cached · 1.1M out (450K reasoning) · Cache hit 50.00% · $11.1105"
+    },
+    {
+      "billedTotal" : 1020,
+      "cacheHit" : null,
+      "compactUsageFace" : "1K tok",
+      "costFigure" : null,
+      "gauge" : "1 turn 2 steps · 1996 tok\/s",
+      "hasUsage" : true,
+      "lastActivity" : 1760000001,
+      "latestRate" : "Latest 2K tok\/s",
+      "name" : "short-span",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 2 requests",
+        "Total tokens (input + output): 1020 (2\/2 requests reported)",
+        "Input tokens (includes cache): 20 (2\/2 requests reported)",
+        "Output tokens (includes reasoning): 1000 (2\/2 requests reported)",
+        "Cached input tokens: not reported",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): not reported",
+        "Reported cost: not reported",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 2,
+      "throughput" : 1996,
+      "ttft" : null,
+      "turns" : 1,
+      "usage" : "1K tok · 20 in · 1K out",
+      "usageFace" : "1K tok · 20 in · 1K out"
+    },
+    {
+      "billedTotal" : 2020,
+      "cacheHit" : "100.00",
+      "compactUsageFace" : "2K tok · Cache hit 100.00%",
+      "costFigure" : null,
+      "gauge" : "1 turn 2 steps",
+      "hasUsage" : true,
+      "lastActivity" : 1760000001,
+      "latestRate" : null,
+      "name" : "full-hit",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 2 requests",
+        "Total tokens (input + output): 2020 (2\/2 requests reported)",
+        "Input tokens (includes cache): 2000 (2\/2 requests reported)",
+        "Output tokens (includes reasoning): 20 (2\/2 requests reported)",
+        "Cached input tokens: 2000 (2\/2 requests reported)",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): not reported",
+        "Reported cost: not reported",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 2,
+      "throughput" : null,
+      "ttft" : null,
+      "turns" : 1,
+      "usage" : "2K tok · 0 uncached · 2K cached · 20 out · Cache hit 100.00%",
+      "usageFace" : "2K tok · 0 uncached · 2K cached · 20 out · Cache hit 100.00%"
+    },
+    {
+      "billedTotal" : null,
+      "cacheHit" : null,
+      "compactUsageFace" : "",
+      "costFigure" : null,
+      "gauge" : "1 turn 2 steps",
+      "hasUsage" : false,
+      "lastActivity" : 1760000001,
+      "latestRate" : null,
+      "name" : "no-usage",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 2 requests",
+        "Total tokens (input + output): not reported",
+        "Input tokens (includes cache): not reported",
+        "Output tokens (includes reasoning): not reported",
+        "Cached input tokens: not reported",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): not reported",
+        "Reported cost: not reported",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 2,
+      "throughput" : null,
+      "ttft" : null,
+      "turns" : 1,
+      "usage" : "",
+      "usageFace" : ""
+    },
+    {
+      "billedTotal" : 50,
+      "cacheHit" : null,
+      "compactUsageFace" : "50 tok",
+      "costFigure" : null,
+      "gauge" : "1 turn 1 step · 49 tok\/s",
+      "hasUsage" : true,
+      "lastActivity" : 1760000000,
+      "latestRate" : "Latest 49 tok\/s",
+      "name" : "output-only",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 1 requests",
+        "Total tokens (input + output): not reported",
+        "Input tokens (includes cache): not reported",
+        "Output tokens (includes reasoning): 50 (1\/1 requests reported)",
+        "Cached input tokens: not reported",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): not reported",
+        "Reported cost: not reported",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 1,
+      "throughput" : 49,
+      "ttft" : null,
+      "turns" : 1,
+      "usage" : "50 tok · 50 out",
+      "usageFace" : "50 tok · 50 out"
+    },
+    {
+      "billedTotal" : 521,
+      "cacheHit" : null,
+      "compactUsageFace" : "521 tok",
+      "costFigure" : null,
+      "gauge" : "1 turn 3 steps · 250 tok\/s",
+      "hasUsage" : true,
+      "lastActivity" : 1760000002,
+      "latestRate" : null,
+      "name" : "latest-not-measured",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 3 requests",
+        "Total tokens (input + output): 521 (2\/3 requests reported)",
+        "Input tokens (includes cache): 20 (2\/3 requests reported)",
+        "Output tokens (includes reasoning): 501 (2\/3 requests reported)",
+        "Cached input tokens: not reported",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): not reported",
+        "Reported cost: not reported",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 3,
+      "throughput" : 249.5,
+      "ttft" : null,
+      "turns" : 1,
+      "usage" : "521 tok · 20 in · 501 out",
+      "usageFace" : "521 tok · 20 in · 501 out"
+    },
+    {
+      "billedTotal" : 200010,
+      "cacheHit" : null,
+      "compactUsageFace" : "200K tok",
+      "costFigure" : null,
+      "gauge" : "1 turn 1 step · 133333 tok\/s",
+      "hasUsage" : true,
+      "lastActivity" : 1760000000,
+      "latestRate" : "Latest 133K tok\/s",
+      "name" : "fast-rate",
+      "referenceUsage" : [
+        "Gateway-reported usage (retained requests): 1 requests",
+        "Total tokens (input + output): 200010 (1\/1 requests reported)",
+        "Input tokens (includes cache): 10 (1\/1 requests reported)",
+        "Output tokens (includes reasoning): 200000 (1\/1 requests reported)",
+        "Cached input tokens: not reported",
+        "Cache-write input tokens: not reported",
+        "Reasoning tokens (part of output): not reported",
+        "Reported cost: not reported",
+        "Reasoning cost (part of reported cost): not reported",
+        "Usage is a snapshot of this session's own retained requests; inherited conversation history and unreported in-flight usage are not added."
+      ],
+      "requests" : 1,
+      "throughput" : 133332.66666666666,
+      "ttft" : null,
+      "turns" : 1,
+      "usage" : "200K tok · 10 in · 200K out",
+      "usageFace" : "200K tok · 10 in · 200K out"
+    }
+  ]
+}

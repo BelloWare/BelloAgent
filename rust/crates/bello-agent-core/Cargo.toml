@@ -14,7 +14,7 @@ native-authority = ["dep:security-framework", "dep:security-framework-sys", "dep
 
 [dependencies]
 serde = { workspace = true, features = ["rc"] }
-serde_json = { workspace = true, features = ["raw_value"] }
+serde_json = { workspace = true, features = ["raw_value", "float_roundtrip"] }
 uuid.workspace = true
 thiserror.workspace = true
 rusqlite.workspace = true
