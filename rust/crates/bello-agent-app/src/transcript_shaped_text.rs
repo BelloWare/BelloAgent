@@ -32,8 +32,59 @@ const RUN_LINES: usize = 24;
 /// Shaped lines kept for reuse, least recently used first out.
 const BUDGET: usize = 16 * 1024 * 1024;
 
+/// A shaped line: GPUI's own, or one set at more than one size.
+pub(super) enum Line {
+    Gpui(WrappedLine),
+    Mixed(super::mixed_text::Mixed),
+}
+
+impl std::ops::Deref for Line {
+    type Target = gpui::WrappedLineLayout;
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Line::Gpui(line) => line,
+            Line::Mixed(line) => &line.layout,
+        }
+    }
+}
+
+impl Line {
+    fn paint_background(
+        &self,
+        origin: Point<Pixels>,
+        pitch: Pixels,
+        align: TextAlign,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        match self {
+            Line::Gpui(line) => {
+                let _ = line.paint_background(origin, pitch, align, Some(bounds), window, cx);
+            }
+            Line::Mixed(line) => line.paint_background(origin, pitch, align, bounds, window),
+        }
+    }
+    fn paint(
+        &self,
+        origin: Point<Pixels>,
+        pitch: Pixels,
+        align: TextAlign,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        match self {
+            Line::Gpui(line) => {
+                let _ = line.paint(origin, pitch, align, Some(bounds), window, cx);
+            }
+            Line::Mixed(line) => line.paint(origin, pitch, align, bounds, window, cx),
+        }
+    }
+}
+
 pub(super) struct Shaped {
-    lines: Vec<WrappedLine>,
+    lines: Vec<Line>,
     size: Size<Pixels>,
     line_height: Pixels,
     wrap_width: Option<Pixels>,
@@ -42,6 +93,7 @@ pub(super) struct Shaped {
 struct Entry {
     text: SharedString,
     runs: Vec<TextRun>,
+    scaled: Vec<(Range<usize>, Pixels)>,
     font_size: Pixels,
     line_clamp: Option<usize>,
     shaped: Rc<Shaped>,
@@ -70,6 +122,7 @@ impl ShapeCache {
         ordinal: usize,
         text: &SharedString,
         runs: &[TextRun],
+        scaled: &[(Range<usize>, Pixels)],
         font_size: Pixels,
         line_height: Pixels,
         line_clamp: Option<usize>,
@@ -85,6 +138,7 @@ impl ShapeCache {
         if let Some(entry) = self.entries.get_mut(&slot)
             && entry.text == *text
             && entry.runs == runs
+            && entry.scaled == scaled
             && entry.font_size == font_size
             && entry.line_clamp == line_clamp
             && entry.shaped.line_height == line_height
@@ -94,18 +148,27 @@ impl ShapeCache {
         }
         #[cfg(test)]
         self.shaped.push(ordinal);
-        let lines = window
-            .text_system()
-            .shape_text(text.clone(), font_size, runs, wrap_width, line_clamp)
-            .unwrap_or_default();
+        let lines: Vec<Line> = if scaled.is_empty() {
+            window
+                .text_system()
+                .shape_text(text.clone(), font_size, runs, wrap_width, line_clamp)
+                .unwrap_or_default()
+                .into_iter()
+                .map(Line::Gpui)
+                .collect()
+        } else {
+            super::mixed_text::shape(window, text, font_size, runs, scaled, wrap_width)
+                .into_iter()
+                .map(Line::Mixed)
+                .collect()
+        };
         let mut size = Size::<Pixels>::default();
         for line in &lines {
             let line_size = line.size(line_height);
             size.height += line_size.height;
             size.width = size.width.max(line_size.width).ceil();
         }
-        let lines = lines.into_vec();
-        let cost = text.len() + lines.len() * std::mem::size_of::<WrappedLine>();
+        let cost = text.len() + lines.len() * std::mem::size_of::<Line>();
         let shaped = Rc::new(Shaped {
             lines,
             size,
@@ -130,6 +193,7 @@ impl ShapeCache {
             Entry {
                 text: text.clone(),
                 runs: runs.to_vec(),
+                scaled: scaled.to_vec(),
                 font_size,
                 line_clamp,
                 shaped: shaped.clone(),
@@ -222,6 +286,9 @@ pub(super) struct Styled {
     pub last: bool,
     /// Links by their bytes in the text, in order and apart.
     pub links: Vec<Link>,
+    /// Bytes set at a size of their own (a code span, at 0.9 of its
+    /// paragraph's), in order and apart.
+    pub scaled: Vec<(Range<usize>, Pixels)>,
 }
 
 /// A link's bytes in its text and the web address it opens.
@@ -279,6 +346,7 @@ pub(super) fn styled_lines(
                 runs: runs_within(&styled.runs, range.clone()),
                 last: ordinal + 1 == count && styled.last,
                 links: links_within(&styled.links, range.clone()),
+                scaled: Vec::new(),
                 ..styled.clone()
             })),
             text: SharedString::from(text[range].to_owned()),
@@ -377,8 +445,13 @@ impl Element for ShapedText {
             .as_ref()
             .filter(|styled| styled.last)
             .map_or(Pixels::ZERO, |styled| styled.line_spacing);
-        let (runs, font_size, line_height) = match &self.styled {
-            Some(styled) => (styled.runs.clone(), styled.font_size, styled.pitch()),
+        let (runs, scaled, font_size, line_height) = match &self.styled {
+            Some(styled) => (
+                styled.runs.clone(),
+                styled.scaled.clone(),
+                styled.font_size,
+                styled.pitch(),
+            ),
             None => {
                 let font_size = text_style.font_size.to_pixels(window.rem_size());
                 let line_height = text_style
@@ -386,6 +459,7 @@ impl Element for ShapedText {
                     .to_pixels(font_size.into(), window.rem_size());
                 (
                     vec![text_style.to_run(self.text.len())],
+                    Vec::new(),
                     font_size,
                     line_height,
                 )
@@ -426,6 +500,7 @@ impl Element for ShapedText {
                     ordinal,
                     &text,
                     &runs,
+                    &scaled,
                     font_size,
                     line_height,
                     line_clamp,
@@ -475,8 +550,7 @@ impl Element for ShapedText {
         });
         let mut origin = bounds.origin;
         for line in &shaped.lines {
-            let _ =
-                line.paint_background(origin, shaped.line_height, align, Some(bounds), window, cx);
+            line.paint_background(origin, shaped.line_height, align, bounds, window, cx);
             origin.y += line.size(shaped.line_height).height;
         }
         // The selection over the lines' backgrounds, under their glyphs.
@@ -493,7 +567,7 @@ impl Element for ShapedText {
                     - (styled.line_height - layout.descent.round())
             });
             let glyphs = gpui::point(origin.x, origin.y - lift);
-            let _ = line.paint(glyphs, shaped.line_height, align, Some(bounds), window, cx);
+            line.paint(glyphs, shaped.line_height, align, bounds, window, cx);
             origin.y += line.size(shaped.line_height).height;
         }
         if let (Some(select), Some(hitbox)) = (self.select.as_ref(), hitbox.as_ref()) {
@@ -810,7 +884,7 @@ impl Hit {
     }
 
     /// How far `WrappedLine::paint` moves a row of `line` to align it.
-    fn row_offset(&self, line: &WrappedLine, row: usize) -> Pixels {
+    fn row_offset(&self, line: &Line, row: usize) -> Pixels {
         let layout = &line.unwrapped_layout;
         let x = |boundary: &WrapBoundary| {
             layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix]
@@ -951,6 +1025,7 @@ mod tests {
                     line_spacing: px(5.075),
                     last: true,
                     links: Vec::new(),
+                    scaled: Vec::new(),
                 };
                 div()
                     .flex()
@@ -1033,6 +1108,7 @@ mod tests {
                                 range: start..text.len(),
                                 url: url.into(),
                             }],
+                            scaled: Vec::new(),
                         },
                         None,
                     )

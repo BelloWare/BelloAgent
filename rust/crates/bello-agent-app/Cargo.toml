@@ -28,6 +28,7 @@ gpui = { workspace = true, default-features = false, features = ["x11", "wayland
 libc = "=0.2.186"
 serde_json.workspace = true
 serde.workspace = true
+smallvec = "1"
 uuid.workspace = true
 unicode-normalization = "0.1"
 url = "2"

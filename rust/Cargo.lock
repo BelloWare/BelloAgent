@@ -519,6 +519,7 @@ dependencies = [
  "objc",
  "serde",
  "serde_json",
+ "smallvec",
  "tempfile",
  "unicode-normalization",
  "unicode-segmentation",

@@ -19,6 +19,8 @@ mod polish_oracle;
 mod read_presentation;
 #[path = "transcript_response.rs"]
 mod response;
+#[path = "transcript_mixed_text.rs"]
+mod mixed_text;
 #[path = "transcript_quote.rs"]
 mod quote;
 #[path = "transcript_selection.rs"]

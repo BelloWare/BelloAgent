@@ -13,8 +13,9 @@
 //! them (`docs/validation/table-swift-oracle-2026-10-10`). Text is drawn
 //! through the shaped-text cache, so unchanged blocks are not shaped again.
 //!
-//! GPUI shapes one text at one size, so a code span keeps its paragraph's size
-//! (Swift draws it at 0.9×) in the monospaced face on the code background.
+//! A code span is set at 0.9 of its paragraph's size, as Swift sets it, on its
+//! paragraph's baseline (`transcript_mixed_text`), in the monospaced face on
+//! the code background.
 use super::shaped_text::{self, Link, Select, ShapeCache, Styled};
 use crate::Palette;
 use bello_agent_core::markdown::{Alignment, Block, Span, Style};
@@ -578,9 +579,27 @@ fn run(span: &Span, cx: &Context) -> TextRun {
     }
 }
 
+/// The spans set at a size other than their text's: their bytes and size.
+fn scaled(spans: &[Span], size: f32) -> Vec<(std::ops::Range<usize>, gpui::Pixels)> {
+    let mut out: Vec<(std::ops::Range<usize>, gpui::Pixels)> = Vec::new();
+    let mut at = 0;
+    for span in spans {
+        let end = at + span.text.len();
+        if span.size != size && end > at {
+            match out.last_mut() {
+                Some((last, other)) if last.end == at && *other == px(span.size) => last.end = end,
+                _ => out.push((at..end, px(span.size))),
+            }
+        }
+        at = end;
+    }
+    out
+}
+
 fn text(spans: &[Span], size: f32, line: Line, cx: &Context, path: &str) -> AnyElement {
     let joined: String = spans.iter().map(|span| span.text.as_str()).collect();
     let runs = spans.iter().map(|span| run(span, cx)).collect();
+    let scaled = scaled(spans, size);
     shaped_text::styled_text(
         cx.cache,
         SharedString::from(format!("{}{path}", cx.owner)),
@@ -592,6 +611,7 @@ fn text(spans: &[Span], size: f32, line: Line, cx: &Context, path: &str) -> AnyE
             line_spacing: px(line.spacing),
             last: true,
             links: links(spans),
+            scaled,
         },
         cx.select.clone(),
     )
@@ -829,6 +849,7 @@ fn code_block(language: Option<&str>, code: &str, style: Style, cx: &Context, pa
             line_spacing: px(line.spacing),
             last: true,
             links: Vec::new(),
+            scaled: Vec::new(),
         },
         cx.select.clone(),
     );
@@ -1019,6 +1040,7 @@ fn table(
         .map(|cell| {
             cell.iter()
                 .map(|span| Span {
+                    size: 13.,
                     bold: true,
                     italic: false,
                     mono: false,
@@ -1210,12 +1232,19 @@ fn natural_width(spans: &[Span], size: f32, cx: &Context) -> f32 {
         return 0.;
     }
     let runs: Vec<TextRun> = spans.iter().map(|span| run(span, cx)).collect();
-    f32::from(
-        cx.window
-            .text_system()
-            .shape_line(joined.into(), px(size), &runs, None)
-            .width,
-    )
+    let scaled = scaled(spans, size);
+    if scaled.is_empty() {
+        return f32::from(
+            cx.window
+                .text_system()
+                .shape_line(joined.into(), px(size), &runs, None)
+                .width,
+        );
+    }
+    // Each stretch at its own size, as the cell's line sets it.
+    super::mixed_text::shape(cx.window, &joined, px(size), &runs, &scaled, None)
+        .first()
+        .map_or(0., |line| f32::from(line.layout.unwrapped_layout.width))
 }
 
 /// One line of chrome text in the muted colour (a table preview's note).
@@ -1234,6 +1263,7 @@ fn muted_text(span: &Span, line: Line, cx: &Context, path: &str) -> AnyElement {
             line_spacing: px(line.spacing),
             last: true,
             links: Vec::new(),
+            scaled: Vec::new(),
         },
         cx.select.clone(),
     )
