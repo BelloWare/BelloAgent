@@ -69,12 +69,14 @@ extension WorkspaceModel {
     /// page at a time and always ends on where the drag ended.
     func jumpToHistoryPosition(_ id: String, position: Int, offset: Double) {
         guard transcriptShows(id), let view = displays[id], let item = record(id), view.revealRead == nil else { return }
-        if view.jumpRead != nil { view.jumpWanted = (position, offset); return }
+        // The place being read already is not asked for again (layout passes
+        // report where the reader is as often as they run).
+        if view.jumpRead != nil { view.jumpWanted = view.jumpReading == position ? nil : (position, offset); return }
         if let failed = view.jumpFailedAt, ProcessInfo.processInfo.systemUptime - failed < 1 { view.jumpRetry = (position, offset); return }
         view.jumpRetry = nil
         revealSerial += 1
         let serial = revealSerial, generation = view.presentationGeneration, navigation = messageNavigationRevision
-        view.jumpRead = serial; view.jumpWanted = nil
+        view.jumpRead = serial; view.jumpWanted = nil; view.jumpReading = position
         // The timeline the window holds: a position counts rows of it, and a
         // page of another (the chat changed elsewhere) is not read in its
         // place; that change is the page's to report.

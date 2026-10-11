@@ -102,7 +102,7 @@ at a time on every core, a run bounded to 16 MiB.
 | Document height on opening | 4,870 pt (the newest 15 rows) | 679,284 pt (the whole chat) |
 | Knob dragged bottom → top over 3 s: where the reader ends | turn 382 of 400 | turn 5 (knob 0.015) |
 | Knob dragged to the middle: where the reader ends | turn 390 | turn 193 |
-| Rows on screen after the hand stops | 0 ms (the window's own rows) | 3 ms |
+| Rows on screen after the hand stops | 0 ms (the window's own rows) | 0–48 ms over five runs |
 | Frames during a drag that showed room, not rows | 0 (it never left the window) | nearly all: the rows of a place come 3 ms after the hand stops there |
 
 ### Holding the knob at the top, then the bottom (`testProbeScrollerDragToTop`)

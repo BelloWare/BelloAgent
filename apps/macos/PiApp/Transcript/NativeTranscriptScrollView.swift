@@ -1423,6 +1423,12 @@ final class TranscriptNativeScrollView: NSScrollView {
         page.measuredHistoryRowHeight(height, over: count)
         if snapshot.extent != nil, before.map({ abs($0 - height) > 0.5 }) ?? true { dirty = true; scheduleLayout() }
     }
+    /// Says again where the reader is, when the page has become ready to
+    /// read for it.
+    func recheckRoom() {
+        guard let clip = enclosingScrollView?.contentView else { return }
+        noteReaderInRoom(clip)
+    }
     /// Whether the viewport shows none of the window's rows, only room kept
     /// for rows not read.
     var viewportInRoom: Bool {

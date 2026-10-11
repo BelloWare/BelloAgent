@@ -1351,6 +1351,9 @@ struct ContentGeometry: Equatable {
             // The prepared tree may already be cached beneath the loading
             // cover. Request one destination draw after lifting that cover.
             self.scrollView?.documentView?.needsDisplay = true
+            // A reader who moved on into room while this page was prepared is
+            // read where they are now.
+            (self.scrollView?.documentView as? TranscriptNativeDocument)?.recheckRoom()
             self.requestEarlierIfNearTop(scrollY: self.scrollY)
             self.requestNewerIfNearBottom()
         }
