@@ -6,8 +6,8 @@
 
 The Rust port is stopped (`rust` branch, `rust/docs/STATUS-2026-10-10.md`). Bring back into Swift what the port found (owner: "work on all of them"); no release without the owner's OK.
 
-- [ ] Chats missing from the sidebar: `ChatRecord` rows without `toolMode`/`imported` fail to decode and are skipped (`Storage/MetadataStore.swift`).
-- [ ] MCP outcome marker cleared before the result is journaled (`PiAgentCore/MCP.swift`).
+- [x] Chats missing from the sidebar: `ChatRecord` rows without `toolMode`/`imported` fail to decode and are skipped (`Storage/MetadataStore.swift`). Done on `dev/chat-records-mcp`: defaulted keys decode as their defaults in `ChatRecord`, `TopicRecord` and `SessionReadState`; required keys stay required; encoding unchanged.
+- [x] MCP outcome marker cleared before the result is journaled (`PiAgentCore/MCP.swift`). Done on `dev/chat-records-mcp`: the marker is cleared only after the batch's result rows are appended and synced (one fsync per batch with an MCP call); a failed write or sync leaves the outcome unknown. Left: the Inspector's one-shot invoke still clears on return; reopening a workspace while a result waits can let the old manager delete the shared marker.
 - [ ] Terminal: Quit leaves SIGHUP-ignoring shells running (`Terminal/PseudoTerminal.swift`); held keys may show the accent popup instead of repeating.
 - [ ] A crash mid-reply may lose the streamed text (`Workspaces/SessionStreaming.swift`); streaming CPU (~38% vs Rust 15–18%).
 - [ ] Later: Find deep in history (528 vs 260 ms), launch to settled window, CI for the Swift apps, perf harness and Swift golden corpora from the Rust oracles.
