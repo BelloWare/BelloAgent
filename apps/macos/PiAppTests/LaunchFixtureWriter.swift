@@ -12,7 +12,7 @@ import XCTest
 ///
 /// 60 chats in two projects; the one reopened at launch has 200 turns of
 /// Markdown; five are unread, one marked unread, two paused, three hold a
-/// draft. The only connection is a loopback port nothing listens on.
+/// draft (their journals end paused, as the helper leaves them). The only connection is a loopback port nothing listens on.
 final class LaunchFixtureWriter: XCTestCase {
     @MainActor func testWriteLaunchFixture() async throws {
         guard let path = testEnvironment("PI_APP_LAUNCH_FIXTURE") else { throw XCTSkip("Set PI_APP_LAUNCH_FIXTURE to write the launch fixture") }
@@ -51,7 +51,10 @@ final class LaunchFixtureWriter: XCTestCase {
                 let id = "chat-\(p)-\(String(format: "%02d", n))"
                 let journal = sessions.appendingPathComponent(id + ".jsonl")
                 let turns = (p == 0 && n == 0) ? 200 : 3 + n % 5
-                try Self.journal(id: id, cwd: project.path, turns: turns).write(to: journal)
+                // The two paused chats' journals end stopped with Resume waiting, so
+                // the settling launch's journal check keeps their run holds.
+                let paused = (p == 0 && n == 6) || (p == 1 && n == 5)
+                try Self.journal(id: id, cwd: project.path, turns: turns, paused: paused).write(to: journal)
                 var chat = ChatRecord(id: id, workspaceID: project.id, title: "Fixture chat \(p + 1)·\(n + 1) about topic \(n % 7)", path: journal.path, profileID: profile.id)
                 chat.lastActivityAt = now - Int64(p * 30 + n) * 60_000_000
                 chat.sidebarOrder = chat.lastActivityAt
@@ -74,8 +77,10 @@ final class LaunchFixtureWriter: XCTestCase {
         try await store.put(RememberedSelection(chatID: chats[0].id, projectID: projects[0].id), kind: RememberedSelection.recordKind, id: RememberedSelection.recordID)
     }
 
-    /// A pi session journal: a header, then user and assistant messages.
-    private static func journal(id: String, cwd: String, turns: Int) throws -> Data {
+    /// A pi session journal: a header, then user and assistant messages, and
+    /// for a paused chat the helper's run-state record (its key order is the
+    /// helper's: `JournalRunHold` finds the record by its first key).
+    private static func journal(id: String, cwd: String, turns: Int, paused: Bool) throws -> Data {
         var lines: [[String: Any]] = [["type": "session", "version": 3, "id": id, "timestamp": "2026-10-01T00:00:00.000Z", "cwd": cwd]]
         var parent: String?
         for turn in 0..<turns {
@@ -97,6 +102,10 @@ final class LaunchFixtureWriter: XCTestCase {
         }
         var data = Data()
         for line in lines { data += try JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]); data += Data("\n".utf8) }
+        if paused, let parent {
+            data += Data(#"{"customType":"pi-app.native.state.v1","data":{"active":false,"queue":[],"steering":[],"queuePaused":true,"runStatus":"stopped"},"id":"state-1","parentId":"\#(parent)","timestamp":"2026-10-01T00:00:00.000Z","type":"custom"}"#.utf8)
+            data += Data("\n".utf8)
+        }
         return data
     }
 }

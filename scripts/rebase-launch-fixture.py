@@ -4,7 +4,8 @@
 Its records and vault.json name journals and projects by absolute path, as
 JSON that may escape "/" as "\\/", and the search index beside the database
 keys each chat by its journal's path (a moved journal is read again in full).
-Every occurrence of <origin>/ becomes <copy>/ in all three.
+Every occurrence of <origin>/ becomes <copy>/ in all three, and <copy>'s
+fixture-root marker names <copy>.
 usage: rebase-launch-fixture.py <desktop.sqlite> <vault.json> <origin> <copy>
 """
 import os
@@ -40,3 +41,7 @@ with open(vault, "rb") as handle:
     data = handle.read()
 with open(vault, "wb") as handle:
     handle.write(rebase(data))
+marker = os.path.join(copy, "fixture-root")
+if os.path.exists(marker):
+    with open(marker, "w") as handle:
+        handle.write(os.path.abspath(copy))
