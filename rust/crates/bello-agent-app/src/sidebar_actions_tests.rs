@@ -60,8 +60,7 @@ fn install_menu(view: &mut AgentView, id: &str) -> uuid::Uuid {
             .unwrap_or_default(),
         project: view.project.clone(),
         binding: view.window_binding,
-        pinned: false,
-        archived: false,
+        entries: super::chat_menu_entries(&Default::default()),
         selected: SidebarAction::TogglePinned,
         #[cfg(not(target_os = "macos"))]
         position: point(px(80.), px(100.)),
@@ -247,7 +246,9 @@ fn sidebar_second_menu_stays_usable_while_archive_waits_and_toggles_at_activatio
             view.set_chat_archived(&id, true, cx);
             view.open_sidebar_menu(&id, gpui::point(gpui::px(80.), gpui::px(100.)), window, cx);
             let token = view.sidebar_menu.as_ref().unwrap().token;
-            assert!(!view.sidebar_menu.as_ref().unwrap().archived);
+            assert!(view.sidebar_menu.as_ref().unwrap().entries.iter().any(|entry| {
+                matches!(entry, super::SidebarMenuEntry::Item(item) if item.title == "Archive Chat")
+            }));
             // Native tracking can outlive an earlier completion. The action uses
             // current authoritative metadata, never the menu's captured label.
             view.records

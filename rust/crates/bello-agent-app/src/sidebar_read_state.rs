@@ -164,6 +164,10 @@ impl ReadCoordinator {
     ) -> Result<bool> {
         self.apply(record, ReadEvent::Baseline(summary), false, false)
     }
+    /// A deleted chat keeps no read state to flush.
+    pub(crate) fn forget(&mut self, id: &str) {
+        self.entries.remove(id);
+    }
     /// Unread replies as the sidebar shows them (a grace hold hides some).
     pub(crate) fn unread_outputs(&self, record: &ChatRecord) -> u64 {
         self.presentation(record).map_or(0, |s| s.unread_count)
@@ -930,6 +934,7 @@ impl AgentView {
             && self.queue_detail.is_none()
             && self.sidebar_menu.is_none()
             && self.topic_panel.is_none()
+            && !self.sidebar_chats.modal_open()
             && self.compaction_menu.is_none()
             && self.conversation_content.is_none()
             && self.skill_picker.is_none()

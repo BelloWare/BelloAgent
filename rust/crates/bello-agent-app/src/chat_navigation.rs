@@ -50,6 +50,7 @@ impl AgentView {
         let snapshot_path = record.snapshot.clone();
         let expected_error = chat.error.clone();
         let draft = chat.saved_draft(cx);
+        let holds_draft = draft.holds_unsent();
         let id = id.to_owned();
         let timer = cx.background_executor().timer(Duration::from_millis(150));
         let task = cx.background_executor().spawn(async move {
@@ -73,6 +74,10 @@ impl AgentView {
                 }
                 view.observe_catalog_uncertainty(outcome.uncertain, cx);
                 let result = outcome.display_result();
+                if matches!(result, Ok(true)) {
+                    // The sidebar's draft marker follows committed writes.
+                    view.note_draft_mark(&id, holds_draft);
+                }
                 if let Some(chat) = view.chat_mut(&id) {
                     if chat.record.snapshot != snapshot_path {
                         return;
@@ -171,6 +176,7 @@ impl AgentView {
         } else {
             self.inactive.insert(id, outgoing);
         }
+        self.note_chat_opened(cx);
         self.focus_visible_composer(window, cx);
         self.remember_selection(cx);
         cx.notify();
@@ -1087,6 +1093,7 @@ impl AgentView {
             || self.archive_visibility_writes != 0
             || !self.read_manual_operations.is_empty()
             || self.topic_write.is_some()
+            || !self.sidebar_chats.busy.is_empty()
             || self.busy
             || self.loading
             || self.queue_operation.is_some()

@@ -12,11 +12,261 @@ pub(crate) enum SidebarEntry<'a> {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SidebarAction {
+    Rename,
     TogglePinned,
     ToggleArchived,
+    Delete,
     CopySessionId,
+    CopySessionReference,
     MarkRead,
     MarkUnread,
+    CopyMarkedReferences,
+    ArchiveMarked,
+    RestoreMarked,
+    PinMarked,
+    UnpinMarked,
+    MarkMarkedRead,
+    MarkMarkedUnread,
+    ClearMarks,
+}
+
+/// One command of a chat row's right-click menu.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SidebarMenuItem {
+    pub action: SidebarAction,
+    pub title: String,
+    /// The SF Symbol the native menu shows, as SessionOrganizationActions names it.
+    pub symbol: Option<&'static str>,
+    /// The bundled icon the drawn (non-macOS) menu shows.
+    pub icon: Option<&'static str>,
+    pub enabled: bool,
+}
+/// PiMenuEntry: a command, an informative note or a divider.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SidebarMenuEntry {
+    Item(SidebarMenuItem),
+    Note(String),
+    Separator,
+}
+fn item(
+    action: SidebarAction,
+    title: impl Into<String>,
+    symbol: Option<&'static str>,
+    icon: Option<&'static str>,
+    enabled: bool,
+) -> SidebarMenuEntry {
+    SidebarMenuEntry::Item(SidebarMenuItem {
+        action,
+        title: title.into(),
+        symbol,
+        icon,
+        enabled,
+    })
+}
+
+/// What one chat's menu branches on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ChatMenuFacts {
+    pub pinned: bool,
+    pub archived: bool,
+    /// Rename… applies: the chat has a saved checkpoint and is not loading.
+    pub renamable: bool,
+    /// SidebarChatRowState.offersMarkAsRead.
+    pub offers_read: bool,
+    /// WorkspaceModel.canMarkSessionUnread.
+    pub can_unread: bool,
+}
+
+/// SidebarChatRowView.entries: SessionOrganizationActions, then
+/// SessionReferenceActions, then Mark as Read or Mark as Unread. (Move to
+/// Topic stays on the row's own Move button in this build.)
+pub(crate) fn chat_menu_entries(facts: &ChatMenuFacts) -> Vec<SidebarMenuEntry> {
+    let mut entries = vec![
+        item(
+            SidebarAction::Rename,
+            "Rename…",
+            None,
+            Some("pencil"),
+            facts.renamable,
+        ),
+        if facts.pinned {
+            item(
+                SidebarAction::TogglePinned,
+                "Unpin Chat",
+                Some("pin.slash"),
+                Some("unpin"),
+                true,
+            )
+        } else {
+            item(
+                SidebarAction::TogglePinned,
+                "Pin Chat",
+                Some("pin"),
+                Some("pin"),
+                true,
+            )
+        },
+        if facts.archived {
+            item(
+                SidebarAction::ToggleArchived,
+                "Restore Chat",
+                Some("arrow.uturn.backward"),
+                Some("restore"),
+                true,
+            )
+        } else {
+            item(
+                SidebarAction::ToggleArchived,
+                "Archive Chat",
+                Some("archivebox"),
+                Some("archive"),
+                true,
+            )
+        },
+    ];
+    if facts.archived {
+        entries.push(SidebarMenuEntry::Separator);
+        entries.push(item(
+            SidebarAction::Delete,
+            "Delete Chat…",
+            Some("trash"),
+            Some("trash"),
+            true,
+        ));
+    }
+    entries.push(SidebarMenuEntry::Separator);
+    entries.push(item(
+        SidebarAction::CopySessionId,
+        "Copy Session ID",
+        Some("number"),
+        Some("number"),
+        true,
+    ));
+    entries.push(item(
+        SidebarAction::CopySessionReference,
+        "Copy Session Reference",
+        Some("doc.on.doc"),
+        Some("doc.on.doc"),
+        true,
+    ));
+    if facts.offers_read {
+        entries.push(SidebarMenuEntry::Separator);
+        entries.push(item(
+            SidebarAction::MarkRead,
+            "Mark as Read",
+            None,
+            Some("checkmark"),
+            true,
+        ));
+    } else if facts.can_unread {
+        entries.push(SidebarMenuEntry::Separator);
+        entries.push(item(
+            SidebarAction::MarkUnread,
+            "Mark as Unread",
+            None,
+            Some("circle"),
+            true,
+        ));
+    }
+    entries
+}
+
+/// What the marked rows' menu counts (MarkedSessionActions).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MarkedMenuFacts {
+    pub count: usize,
+    pub archived: usize,
+    pub unread: usize,
+    pub read: usize,
+}
+
+/// MarkedSessionActions.entries, without its Move to Topic submenu.
+pub(crate) fn marked_menu_entries(facts: &MarkedMenuFacts) -> Vec<SidebarMenuEntry> {
+    let mut entries = vec![
+        SidebarMenuEntry::Note(format!("{} chats selected", facts.count)),
+        SidebarMenuEntry::Separator,
+        item(
+            SidebarAction::CopyMarkedReferences,
+            "Copy Session References",
+            Some("doc.on.doc"),
+            Some("doc.on.doc"),
+            true,
+        ),
+        SidebarMenuEntry::Separator,
+    ];
+    if facts.archived < facts.count {
+        entries.push(item(
+            SidebarAction::ArchiveMarked,
+            format!("Archive {} Chats", facts.count - facts.archived),
+            Some("archivebox"),
+            Some("archive"),
+            true,
+        ));
+    }
+    if facts.archived > 0 {
+        entries.push(item(
+            SidebarAction::RestoreMarked,
+            format!("Restore {} Chats", facts.archived),
+            Some("arrow.uturn.backward"),
+            Some("restore"),
+            true,
+        ));
+    }
+    entries.push(item(
+        SidebarAction::PinMarked,
+        "Pin All",
+        Some("pin"),
+        Some("pin"),
+        true,
+    ));
+    entries.push(item(
+        SidebarAction::UnpinMarked,
+        "Unpin All",
+        Some("pin.slash"),
+        Some("unpin"),
+        true,
+    ));
+    if facts.unread > 0 || facts.read > 0 {
+        entries.push(SidebarMenuEntry::Separator);
+    }
+    if facts.unread > 0 {
+        entries.push(item(
+            SidebarAction::MarkMarkedRead,
+            format!("Mark {} as Read", facts.unread),
+            None,
+            Some("checkmark"),
+            true,
+        ));
+    }
+    if facts.read > 0 {
+        entries.push(item(
+            SidebarAction::MarkMarkedUnread,
+            format!("Mark {} as Unread", facts.read),
+            None,
+            Some("circle"),
+            true,
+        ));
+    }
+    entries.push(SidebarMenuEntry::Separator);
+    entries.push(item(
+        SidebarAction::ClearMarks,
+        "Clear Selection",
+        Some("xmark.circle"),
+        Some("close"),
+        true,
+    ));
+    entries
+}
+
+/// The commands keyboard selection moves between, in menu order.
+pub(crate) fn menu_actions(entries: &[SidebarMenuEntry]) -> Vec<SidebarAction> {
+    entries
+        .iter()
+        .filter_map(|entry| match entry {
+            SidebarMenuEntry::Item(item) => Some(item.action),
+            _ => None,
+        })
+        .collect()
 }
 
 #[derive(Clone)]
@@ -26,8 +276,7 @@ pub(crate) struct SidebarMenu {
     snapshot: PathBuf,
     project: PathBuf,
     binding: Option<WindowBinding>,
-    pinned: bool,
-    archived: bool,
+    entries: Vec<SidebarMenuEntry>,
     selected: SidebarAction,
     #[cfg(not(target_os = "macos"))]
     position: Point<Pixels>,
@@ -148,15 +397,25 @@ impl AgentView {
         let Some(record) = self.records.iter().find(|record| record.id == id) else {
             return;
         };
+        let entries = self.sidebar_menu_entries(id, cx);
+        // A single chat's menu starts on Pin, as it always has; the marked
+        // rows' menu on its first command.
+        let selected = if menu_actions(&entries).contains(&SidebarAction::TogglePinned) {
+            SidebarAction::TogglePinned
+        } else {
+            menu_actions(&entries)
+                .first()
+                .copied()
+                .unwrap_or(SidebarAction::ClearMarks)
+        };
         let menu = SidebarMenu {
             token: uuid::Uuid::new_v4(),
             chat_id: id.into(),
             snapshot: record.snapshot.clone(),
             project: self.project.clone(),
             binding: self.window_binding,
-            pinned: record.pinned_at.is_some(),
-            archived: record.archived_at.is_some(),
-            selected: SidebarAction::TogglePinned,
+            entries,
+            selected,
             #[cfg(not(target_os = "macos"))]
             position,
             #[cfg(not(target_os = "macos"))]
@@ -191,12 +450,7 @@ impl AgentView {
                 cx,
                 window.window_handle(),
                 position,
-                menu.pinned,
-                menu.archived,
-                (
-                    self.can_read_action(id, false),
-                    self.can_read_action(id, true),
-                ),
+                menu.entries.clone(),
                 move |choice, pointer, cx| {
                     let _ = owner.update(cx, |view, cx| {
                         if view
@@ -267,6 +521,12 @@ impl AgentView {
                 SidebarAction::CopySessionId => self.copy_sidebar_session_id(&menu.chat_id, cx),
                 SidebarAction::MarkRead => self.mark_chat_read_state(&menu.chat_id, false, cx),
                 SidebarAction::MarkUnread => self.mark_chat_read_state(&menu.chat_id, true, cx),
+                SidebarAction::Rename => self.present_rename(&menu.chat_id, cx),
+                SidebarAction::Delete => self.ask_delete_chat(&menu.chat_id, cx),
+                SidebarAction::CopySessionReference => {
+                    self.copy_session_references(vec![menu.chat_id.clone()], cx)
+                }
+                marked => self.run_marked_action(marked, cx),
             }
         }
         cx.notify();
@@ -325,16 +585,19 @@ impl AgentView {
         };
         match event.keystroke.key.as_str() {
             "escape" => self.finish_sidebar_menu(menu.token, None, cx),
-            "enter" => self.finish_sidebar_menu(menu.token, Some(menu.selected), cx),
+            "enter" => {
+                let enabled = menu.entries.iter().any(|entry| {
+                    matches!(entry, SidebarMenuEntry::Item(item)
+                        if item.action == menu.selected && item.enabled)
+                });
+                self.finish_sidebar_menu(menu.token, enabled.then_some(menu.selected), cx)
+            }
             "up" | "down" => {
                 if let Some(menu) = self.sidebar_menu.as_mut() {
-                    let actions = [
-                        SidebarAction::TogglePinned,
-                        SidebarAction::ToggleArchived,
-                        SidebarAction::CopySessionId,
-                        SidebarAction::MarkRead,
-                        SidebarAction::MarkUnread,
-                    ];
+                    let actions = menu_actions(&menu.entries);
+                    if actions.is_empty() {
+                        return true;
+                    }
                     let index = actions
                         .iter()
                         .position(|action| *action == menu.selected)
@@ -388,54 +651,28 @@ impl AgentView {
                 .on_mouse_down_out(
                     cx.listener(move |view, _, _, cx| view.finish_sidebar_menu(token, None, cx)),
                 );
-            for (action, id, icon, label) in [
-                (
-                    SidebarAction::TogglePinned,
-                    "sidebar-pin-choice",
-                    if menu.pinned { "unpin" } else { "pin" },
-                    if menu.pinned {
-                        "Unpin Chat"
-                    } else {
-                        "Pin Chat"
-                    },
-                ),
-                (
-                    SidebarAction::ToggleArchived,
-                    "sidebar-archive-choice",
-                    if menu.archived { "restore" } else { "archive" },
-                    if menu.archived {
-                        "Restore Chat"
-                    } else {
-                        "Archive Chat"
-                    },
-                ),
-                (
-                    SidebarAction::CopySessionId,
-                    "sidebar-copy-id-choice",
-                    "number",
-                    "Copy Session ID",
-                ),
-                (
-                    SidebarAction::MarkRead,
-                    "sidebar-mark-read",
-                    "chat",
-                    "Mark as Read",
-                ),
-                (
-                    SidebarAction::MarkUnread,
-                    "sidebar-mark-unread",
-                    "chat",
-                    "Mark as Unread",
-                ),
-            ] {
-                if action == SidebarAction::CopySessionId {
-                    body = body.child(div().h(px(1.)).my(px(4.)).bg(p.hairline()));
-                }
-                let enabled = match action {
-                    SidebarAction::MarkRead => self.can_read_action(&menu.chat_id, false),
-                    SidebarAction::MarkUnread => self.can_read_action(&menu.chat_id, true),
-                    _ => true,
+            for entry in &menu.entries {
+                let entry = match entry {
+                    SidebarMenuEntry::Separator => {
+                        body = body.child(div().h(px(1.)).my(px(4.)).bg(p.hairline()));
+                        continue;
+                    }
+                    SidebarMenuEntry::Note(note) => {
+                        body = body.child(
+                            div()
+                                .px(px(8.))
+                                .py(px(4.))
+                                .text_size(px(12.))
+                                .text_color(rgb(p.tertiary))
+                                .child(note.clone()),
+                        );
+                        continue;
+                    }
+                    SidebarMenuEntry::Item(entry) => entry,
                 };
+                let action = entry.action;
+                let id = menu_item_selector(action);
+                let enabled = entry.enabled;
                 body = body.child(
                     div()
                         .id(id)
@@ -463,10 +700,12 @@ impl AgentView {
                             }
                         }))
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            view.finish_sidebar_menu(token, Some(action), cx)
+                            if enabled {
+                                view.finish_sidebar_menu(token, Some(action), cx)
+                            }
                         }))
-                        .child(self.icon(icon, 13.))
-                        .child(label),
+                        .when_some(entry.icon, |row, icon| row.child(self.icon(icon, 13.)))
+                        .child(entry.title.clone()),
                 );
             }
             Some(
@@ -481,6 +720,29 @@ impl AgentView {
                 .into_any_element(),
             )
         }
+    }
+}
+
+/// Stable test selectors for the drawn (non-macOS) menu's rows.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn menu_item_selector(action: SidebarAction) -> &'static str {
+    match action {
+        SidebarAction::Rename => "sidebar-rename-choice",
+        SidebarAction::TogglePinned => "sidebar-pin-choice",
+        SidebarAction::ToggleArchived => "sidebar-archive-choice",
+        SidebarAction::Delete => "sidebar-delete-choice",
+        SidebarAction::CopySessionId => "sidebar-copy-id-choice",
+        SidebarAction::CopySessionReference => "sidebar-copy-reference-choice",
+        SidebarAction::MarkRead => "sidebar-mark-read",
+        SidebarAction::MarkUnread => "sidebar-mark-unread",
+        SidebarAction::CopyMarkedReferences => "sidebar-marked-copy-references",
+        SidebarAction::ArchiveMarked => "sidebar-marked-archive",
+        SidebarAction::RestoreMarked => "sidebar-marked-restore",
+        SidebarAction::PinMarked => "sidebar-marked-pin",
+        SidebarAction::UnpinMarked => "sidebar-marked-unpin",
+        SidebarAction::MarkMarkedRead => "sidebar-marked-read",
+        SidebarAction::MarkMarkedUnread => "sidebar-marked-unread",
+        SidebarAction::ClearMarks => "sidebar-marked-clear",
     }
 }
 

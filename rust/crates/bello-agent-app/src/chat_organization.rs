@@ -33,6 +33,11 @@ pub(crate) struct OrganizationError {
     action: Option<OrganizationAction>,
     message: String,
 }
+impl OrganizationError {
+    pub(crate) fn target_id(&self) -> &str {
+        &self.target_id
+    }
+}
 /// Retain both the typed error and certainty of the locked catalog, including
 /// Invalid refusals after another writer first made that catalog uncertain.
 pub(crate) struct CatalogOutcome<T> {
@@ -357,7 +362,12 @@ impl AgentView {
                     fallback = self
                         .records
                         .iter()
-                        .filter(|record| record.id != saved.id && record.archived_at.is_none())
+                        .filter(|record| {
+                            // A chat the same batch is archiving is no destination.
+                            record.id != saved.id
+                                && record.archived_at.is_none()
+                                && !self.has_pending_archive(&record.id)
+                        })
                         .min_by(|a, b| a.sidebar_cmp(b))
                         .map(|record| record.id.clone());
                 }
