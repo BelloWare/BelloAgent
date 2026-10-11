@@ -156,6 +156,8 @@ fn settings_sound_draft_cancel_save_and_preview_use_existing_settings_controls(
             .expect("visible sound setting");
         visual.simulate_click(bounds.center(), Modifiers::none());
     };
+    click(&mut visual, "settings-section-chats");
+    cx.run_until_parked();
     click(&mut visual, "settings-completion-sound");
     cx.run_until_parked();
     cx.read(|cx| {

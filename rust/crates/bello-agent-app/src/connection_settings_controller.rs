@@ -137,6 +137,7 @@ pub(crate) struct ConnectionSettingsController {
     authority: Arc<ProjectAuthority>,
     loaded: Option<LoadedConnections>,
     completion_sound_baseline: bool,
+    transcript_display_baseline: crate::app_settings::TranscriptDisplayMode,
     forms: BTreeMap<String, RetainedForm>,
     catalogs: BTreeMap<String, CatalogState>,
     draft_notice_owner: Option<String>,
@@ -184,6 +185,7 @@ impl ConnectionSettingsController {
         let completion_sound_enabled = cx
             .try_global::<crate::notifications::Notifications>()
             .is_none_or(|n| n.enabled());
+        let transcript_display = crate::app_settings::transcript_display(cx);
         let presentation = ConnectionSettingsPresentation {
             revision: 1,
             mode,
@@ -194,6 +196,9 @@ impl ConnectionSettingsController {
             dirty: false,
             completion_sound_enabled,
             completion_sound_dirty: false,
+            section: Default::default(),
+            transcript_display,
+            transcript_display_dirty: false,
             confirmation: ConnectionConfirmation::None,
             notice: None,
         };
@@ -204,6 +209,7 @@ impl ConnectionSettingsController {
             authority,
             loaded: None,
             completion_sound_baseline: completion_sound_enabled,
+            transcript_display_baseline: transcript_display,
             forms: BTreeMap::new(),
             catalogs: BTreeMap::new(),
             draft_notice_owner: None,
@@ -273,8 +279,10 @@ impl ConnectionSettingsController {
         });
         self.presentation.completion_sound_dirty =
             self.presentation.completion_sound_enabled != self.completion_sound_baseline;
-        self.presentation.dirty = self.forms.values().any(RetainedForm::dirty)
-            || self.presentation.completion_sound_dirty;
+        self.presentation.transcript_display_dirty =
+            self.presentation.transcript_display != self.transcript_display_baseline;
+        self.presentation.dirty =
+            self.forms.values().any(RetainedForm::dirty) || self.presentation.preferences_dirty();
         let p = self.presentation.clone();
         self.view.update(cx, |v, cx| v.set_presentation(p, cx));
         cx.notify();
@@ -444,6 +452,10 @@ impl AgentView {
             self.connections.completion_sound_baseline = enabled;
             self.connections.presentation.completion_sound_enabled = enabled;
             self.connections.presentation.completion_sound_dirty = false;
+            let mode = crate::app_settings::transcript_display(cx);
+            self.connections.transcript_display_baseline = mode;
+            self.connections.presentation.transcript_display = mode;
+            self.connections.presentation.transcript_display_dirty = false;
         }
         self.connections.picker = false;
         self.connections.open = true;
@@ -511,6 +523,8 @@ impl AgentView {
         if discard {
             self.connections.presentation.completion_sound_enabled =
                 self.connections.completion_sound_baseline;
+            self.connections.presentation.transcript_display =
+                self.connections.transcript_display_baseline;
             if let Some(loaded) = self.connections.loaded.clone() {
                 self.connections.install(loaded, true);
             } else {
@@ -551,6 +565,8 @@ impl AgentView {
         use ConnectionSettingsIntent::*;
         match intent {
             Edited => {}
+            SelectSection(section) => self.connections.presentation.section = section,
+            SetTranscriptDisplay(mode) => self.connections.presentation.transcript_display = mode,
             ToggleCompletionSound => {
                 self.connections.presentation.completion_sound_enabled =
                     !self.connections.presentation.completion_sound_enabled;
@@ -608,7 +624,7 @@ impl AgentView {
             }
             RequestClose => {
                 if self.connections.forms.values().any(RetainedForm::dirty)
-                    || self.connections.presentation.completion_sound_dirty
+                    || self.connections.presentation.preferences_dirty()
                 {
                     self.connections.presentation.confirmation = ConnectionConfirmation::Close;
                 } else {
@@ -619,7 +635,7 @@ impl AgentView {
             Keep | KeepEditing => {}
             Reload => {
                 if self.connections.forms.values().any(RetainedForm::dirty)
-                    || self.connections.presentation.completion_sound_dirty
+                    || self.connections.presentation.preferences_dirty()
                 {
                     self.connections.presentation.confirmation = ConnectionConfirmation::Reload;
                 } else {
@@ -630,6 +646,8 @@ impl AgentView {
             DiscardAndReload => {
                 self.connections.presentation.completion_sound_enabled =
                     self.connections.completion_sound_baseline;
+                self.connections.presentation.transcript_display =
+                    self.connections.transcript_display_baseline;
                 self.reload_connections(true, cx);
                 return;
             }
@@ -682,18 +700,38 @@ impl AgentView {
         if self.connections.operation.is_some() || self.shutting_down {
             return;
         }
-        let sound_dirty = self.connections.presentation.completion_sound_dirty;
-        // Saved before the connections; every later outcome says so, since
-        // Cancel can no longer undo it (honest partial saves).
-        let mut sound_saved = "";
-        if sound_dirty {
+        // Preferences are saved before the connections; every later outcome
+        // says so, since Cancel can no longer undo them (honest partial saves).
+        let mut saved_notes: Vec<&str> = Vec::new();
+        if self.connections.presentation.transcript_display_dirty {
+            let mode = self.connections.presentation.transcript_display;
+            if let Err(error) = cx
+                .global_mut::<crate::app_settings::AppSettings>()
+                .set_transcript_display(mode)
+            {
+                self.connections.notice(
+                    format!("The transcript display could not be saved: {error}"),
+                    true,
+                );
+                self.connections.publish(cx);
+                return;
+            }
+            self.connections.transcript_display_baseline = mode;
+            self.connections.presentation.transcript_display_dirty = false;
+            saved_notes.push("Transcript display saved.");
+        }
+        if self.connections.presentation.completion_sound_dirty {
             let enabled = self.connections.presentation.completion_sound_enabled;
             if let Err(error) = cx
                 .global_mut::<crate::notifications::Notifications>()
                 .set_enabled(enabled)
             {
+                saved_notes.push("");
                 self.connections.notice(
-                    format!("Completion sound could not be saved: {error}"),
+                    format!(
+                        "{}Completion sound could not be saved: {error}",
+                        saved_notes.join(" ")
+                    ),
                     true,
                 );
                 self.connections.publish(cx);
@@ -701,11 +739,15 @@ impl AgentView {
             }
             self.connections.completion_sound_baseline = enabled;
             self.connections.presentation.completion_sound_dirty = false;
+            saved_notes.push("Task completion sound saved.");
+        }
+        let mut sound_saved = String::new();
+        if !saved_notes.is_empty() {
             if !self.connections.forms.values().any(RetainedForm::dirty) {
                 self.close_connections(false, window, cx);
                 return;
             }
-            sound_saved = "Task completion sound saved. ";
+            sound_saved = saved_notes.join(" ") + " ";
             self.connections.notice(sound_saved.trim_end(), false);
             self.connections.publish(cx);
         }

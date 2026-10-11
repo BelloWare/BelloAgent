@@ -14,14 +14,58 @@ use bello_workbench_ui::{EditorAppearance, EditorEvent, EditorView};
 use gpui::{
     AnyElement, App, Bounds, Context, Div, ElementId, Entity, EventEmitter, FocusHandle, Focusable,
     FontWeight, IntoElement, KeyDownEvent, MouseButton, Pixels, Point, Render, ScrollHandle,
-    Stateful, Subscription, Window, canvas, div, prelude::*, px, rgb,
+    SharedString, Stateful, Subscription, Window, canvas, div, prelude::*, px, rgb, svg,
 };
 use secure_input::{HEADER_BYTES, KEY_BYTES, SecureInput, SecureInputEvent};
 use std::{cell::Cell, collections::BTreeMap, fmt, rc::Rc};
 
 const FIXTURE_NOTICE: &str = "Fixture-only · In-memory connections. Use only numeric loopback URLs, the key synthetic-project-fixture-only, and header values synthetic-header-fixture-only. Do not enter real keys. Nothing is saved to Keychain.";
 const NATIVE_NOTICE: &str = "Experimental native authority · Connections are stored in the separate Bello Agent Rust Keychain vault. No Swift settings are imported. Native signing, credential input and no-prompt acceptance remain under validation. Chats send to your explicitly saved endpoint, and in a trusted project they offer its tools (read-only or editing, by the chat's mode), MCP and project instructions and skills, as Swift does.";
-const SCOPE_NOTICE: &str = "This Rust preview covers Connections and task completion sound. Mini models, routing/reasoning controls and the other Settings sections are not available here. Saving does not send a request; send explicitly from a chat.";
+const SCOPE_NOTICE: &str = "Mini models and routing and reasoning contracts are not available in this Rust preview. Choose a chat's model and effort from the composer. Saving does not send a request; send explicitly from a chat.";
+const SUBTITLE: &str =
+    "Your connections, keys, headers and preferences. Nothing here sends a request.";
+const USAGE_NOTICE: &str = "Request capture, the usage dashboard and per-chat cost limits are not part of this Rust preview yet, so there is nothing to set here. No request or response body is captured.";
+const APP_NOTICE: &str = "The helper runtime and app update preferences are not part of this Rust preview yet, so there is nothing to set here.";
+const TRANSCRIPT_FOOTER: &str = "Compact is how a finished turn reads by default: its tool calls and thoughts fold behind one line above the answer, and one click on that line shows the whole turn again. Nothing is discarded either way, and a turn still running always reads in full.";
+
+/// Settings' sections, down the left (Swift `SettingsSection`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) enum SettingsSection {
+    #[default]
+    Connections,
+    Usage,
+    Chats,
+    App,
+}
+impl SettingsSection {
+    pub(crate) const ALL: [Self; 4] = [Self::Connections, Self::Usage, Self::Chats, Self::App];
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Self::Connections => "Connections",
+            Self::Usage => "Usage & capture",
+            Self::Chats => "Chats & notifications",
+            Self::App => "App",
+        }
+    }
+    pub(crate) fn raw(self) -> &'static str {
+        match self {
+            Self::Connections => "connections",
+            Self::Usage => "usage",
+            Self::Chats => "chats",
+            Self::App => "app",
+        }
+    }
+    /// The nearest drawn equivalents of Swift's network, chart.bar,
+    /// bubble.left.and.bubble.right and gearshape symbols.
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Connections => "antenna",
+            Self::Usage => "chart",
+            Self::Chats => "chat",
+            Self::App => "gear",
+        }
+    }
+}
 
 /// Only user-typed replacements belong in key/headers. Never populate these
 /// fields from saved authority, including the synthetic saved authority.
@@ -129,6 +173,9 @@ pub(crate) struct ConnectionSettingsPresentation {
     pub(crate) dirty: bool,
     pub(crate) completion_sound_enabled: bool,
     pub(crate) completion_sound_dirty: bool,
+    pub(crate) section: SettingsSection,
+    pub(crate) transcript_display: crate::app_settings::TranscriptDisplayMode,
+    pub(crate) transcript_display_dirty: bool,
     pub(crate) confirmation: ConnectionConfirmation,
     pub(crate) notice: Option<ConnectionSettingsNotice>,
 }
@@ -136,6 +183,8 @@ pub(crate) struct ConnectionSettingsPresentation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ConnectionSettingsIntent {
     Edited,
+    SelectSection(SettingsSection),
+    SetTranscriptDisplay(crate::app_settings::TranscriptDisplayMode),
     ToggleCompletionSound,
     PreviewCompletionSound,
     BrowseCatalog,
@@ -175,6 +224,18 @@ pub(crate) enum ConnectionSettingsEvent {
 }
 
 impl ConnectionSettingsPresentation {
+    /// Unsaved preferences outside the connection tabs.
+    pub(crate) fn preferences_dirty(&self) -> bool {
+        self.completion_sound_dirty || self.transcript_display_dirty
+    }
+    /// Sections with unsaved edits, marked in the section list.
+    fn edited(&self, section: SettingsSection) -> bool {
+        match section {
+            SettingsSection::Connections => self.tabs.iter().any(|tab| tab.dirty),
+            SettingsSection::Chats => self.preferences_dirty(),
+            SettingsSection::Usage | SettingsSection::App => false,
+        }
+    }
     fn busy(&self) -> bool {
         self.saving
             || matches!(
@@ -202,13 +263,25 @@ impl ConnectionSettingsPresentation {
         ) {
             return cfg!(target_os = "macos")
                 && !self.saving
-                && self.confirmation == Confirmation::None;
+                && self.confirmation == Confirmation::None
+                && self.section == SettingsSection::Chats;
+        }
+        if let Intent::SetTranscriptDisplay(mode) = intent {
+            return !self.saving
+                && self.confirmation == Confirmation::None
+                && self.section == SettingsSection::Chats
+                && self.transcript_display != *mode;
+        }
+        if let Intent::SelectSection(section) = intent {
+            return !self.saving
+                && self.confirmation == Confirmation::None
+                && self.section != *section;
         }
         if self.saving {
             return false;
         }
         if matches!(intent, Intent::SaveAll | Intent::SaveAndClose)
-            && self.completion_sound_dirty
+            && self.preferences_dirty()
             && !self.tabs.iter().any(|tab| tab.dirty)
             && matches!(self.confirmation, Confirmation::None | Confirmation::Close)
         {
@@ -915,23 +988,37 @@ impl ConnectionSettingsView {
 
     fn current_controls(&self) -> Vec<Control> {
         use ConnectionSettingsIntent as Intent;
-        let mut controls: Vec<_> = self
-            .presentation
-            .tabs
-            .iter()
-            .map(|tab| Control::Intent(Intent::Select(tab.id.clone())))
+        let mut controls: Vec<_> = SettingsSection::ALL
+            .into_iter()
+            .map(|section| Control::Intent(Intent::SelectSection(section)))
             .collect();
-        if cfg!(target_os = "macos") {
+        let section = self.presentation.section;
+        if section == SettingsSection::Chats {
+            controls.extend(
+                crate::app_settings::TranscriptDisplayMode::ALL
+                    .into_iter()
+                    .map(|mode| Control::Intent(Intent::SetTranscriptDisplay(mode))),
+            );
+            if cfg!(target_os = "macos") {
+                controls.extend([
+                    Control::Intent(Intent::PreviewCompletionSound),
+                    Control::Intent(Intent::ToggleCompletionSound),
+                ]);
+            }
+        }
+        if section == SettingsSection::Connections {
+            controls.extend(
+                self.presentation
+                    .tabs
+                    .iter()
+                    .map(|tab| Control::Intent(Intent::Select(tab.id.clone()))),
+            );
             controls.extend([
-                Control::Intent(Intent::ToggleCompletionSound),
-                Control::Intent(Intent::PreviewCompletionSound),
+                Control::Intent(Intent::New),
+                Control::Intent(Intent::Reload),
             ]);
         }
-        controls.extend([
-            Control::Intent(Intent::New),
-            Control::Intent(Intent::Reload),
-        ]);
-        if self.presentation.active.is_some() {
+        if section == SettingsSection::Connections && self.presentation.active.is_some() {
             controls.push(Control::Field(Field::Name));
             controls.extend(
                 Field::ALL
@@ -965,7 +1052,9 @@ impl ConnectionSettingsView {
         }
         match self.presentation.confirmation {
             ConnectionConfirmation::None => {
-                if let Some(form) = &self.presentation.active {
+                if let Some(form) = &self.presentation.active
+                    && section == SettingsSection::Connections
+                {
                     controls.push(Control::Intent(if form.saved {
                         Intent::RequestDelete
                     } else {
@@ -1459,78 +1548,373 @@ impl ConnectionSettingsView {
     }
 }
 
+impl ConnectionSettingsView {
+    /// A control's focus and click wiring, without the bordered button face.
+    fn plain_control(
+        &self,
+        id: impl Into<ElementId>,
+        intent: ConnectionSettingsIntent,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let p = self.palette;
+        let enabled = self.enabled(&intent);
+        let token = self.token();
+        let focus = self
+            .controls
+            .iter()
+            .find(|control| control.control == Control::Intent(intent.clone()))
+            .expect("rendered settings control")
+            .focus
+            .clone();
+        div()
+            .id(id)
+            .when(enabled, |control| {
+                control
+                    .track_focus(&focus)
+                    .tab_index(0)
+                    .cursor_pointer()
+                    .focus(move |style| style.bg(p.accent_soft()))
+            })
+            .on_click(cx.listener(move |view, _, _, cx| view.dispatch(token, intent.clone(), cx)))
+    }
+
+    /// Settings' sections down the left: the open one highlighted with its
+    /// symbol in the accent, a dot on a section with unsaved edits (Swift
+    /// `SettingsSectionList`, 210 points wide).
+    fn section_list(&self, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        let mut list = div()
+            .w(px(210.))
+            .h_full()
+            .flex_shrink_0()
+            .bg(rgb(p.window))
+            .p(px(12.))
+            .flex()
+            .flex_col()
+            .gap(px(2.));
+        for section in SettingsSection::ALL {
+            let selected = self.presentation.section == section;
+            let edited = self.presentation.edited(section);
+            let selector = format!("settings-section-{}", section.raw());
+            list = list.child(
+                self.plain_control(
+                    SharedString::from(selector.clone()),
+                    ConnectionSettingsIntent::SelectSection(section),
+                    cx,
+                )
+                .debug_selector(move || selector.clone())
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .px(px(8.))
+                .py(px(6.))
+                .rounded(px(7.))
+                .text_size(px(13.))
+                .text_color(rgb(p.ink))
+                .when(selected, |row| row.bg(p.fill()))
+                .when(!selected, |row| row.hover(move |s| s.bg(p.fill())))
+                .child(
+                    div()
+                        .relative()
+                        .w(px(18.))
+                        .flex()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .path(section.icon())
+                                .size(px(12.))
+                                .text_color(rgb(if selected { p.accent } else { p.secondary })),
+                        )
+                        .when(edited, |icon| {
+                            icon.child(
+                                div()
+                                    .absolute()
+                                    .top(px(-2.))
+                                    .right(px(-1.))
+                                    .size(px(6.))
+                                    .rounded_full()
+                                    .bg(rgb(if p.dark { 0xe3b15c } else { 0xb97a1e })),
+                            )
+                        }),
+                )
+                .child(section.title()),
+            );
+        }
+        list
+    }
+
+    /// A titled group of rows with an optional footer (Swift `SettingsCard`).
+    fn card(
+        &self,
+        title: &'static str,
+        rows: Vec<AnyElement>,
+        footer: Option<&'static str>,
+    ) -> Div {
+        let p = self.palette;
+        let mut group = div()
+            .flex_shrink_0()
+            .rounded(px(8.))
+            .border_1()
+            .border_color(p.hairline())
+            .overflow_hidden();
+        for (index, row) in rows.into_iter().enumerate() {
+            group = group.child(
+                div()
+                    .px(px(14.))
+                    .py(px(12.))
+                    .when(index > 0, |row| row.border_t_1().border_color(p.hairline()))
+                    .child(row),
+            );
+        }
+        div()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .gap(px(8.))
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(group)
+            .when_some(footer, |card, footer| {
+                card.child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(rgb(p.secondary))
+                        .child(footer),
+                )
+            })
+    }
+
+    /// A label (with its detail under it) beside its control.
+    fn setting_row(
+        &self,
+        label: &'static str,
+        detail: Option<&'static str>,
+        control: AnyElement,
+    ) -> AnyElement {
+        let p = self.palette;
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .w(px(215.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(3.))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(label),
+                    )
+                    .when_some(detail, |column, detail| {
+                        column.child(
+                            div()
+                                .text_size(px(11.5))
+                                .text_color(rgb(p.secondary))
+                                .child(detail),
+                        )
+                    }),
+            )
+            .child(control)
+            .into_any_element()
+    }
+
+    /// Usage & capture and App: what this preview does not have, said once.
+    fn notice_card(&self, title: &'static str, id: &'static str, text: &'static str) -> Div {
+        let p = self.palette;
+        self.card(
+            title,
+            vec![
+                div()
+                    .debug_selector(move || id.into())
+                    .text_size(px(12.))
+                    .text_color(rgb(p.secondary))
+                    .child(text)
+                    .into_any_element(),
+            ],
+            None,
+        )
+    }
+
+    /// Chats & notifications: how a finished turn reads, and the task
+    /// completion sound (Swift `chatsAndNotifications`).
+    fn chats_section(&self, cx: &mut Context<Self>) -> Vec<Div> {
+        use crate::app_settings::TranscriptDisplayMode as Mode;
+        let p = self.palette;
+        let current = self.presentation.transcript_display;
+        let mut choices = div()
+            .debug_selector(|| "settings-transcript-display".into())
+            .flex()
+            .p(px(2.))
+            .gap(px(2.))
+            .rounded(px(7.))
+            .bg(p.fill());
+        for mode in Mode::ALL {
+            let selected = mode == current;
+            let selector = format!("settings-transcript-{}", mode.raw());
+            choices = choices.child(
+                self.plain_control(
+                    SharedString::from(selector.clone()),
+                    ConnectionSettingsIntent::SetTranscriptDisplay(mode),
+                    cx,
+                )
+                .debug_selector(move || selector.clone())
+                .px(px(12.))
+                .py(px(4.))
+                .rounded(px(5.))
+                .text_size(px(12.))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(rgb(if selected { p.ink } else { p.secondary }))
+                .when(selected, |choice| {
+                    choice
+                        .bg(rgb(p.surface))
+                        .border_1()
+                        .border_color(p.hairline())
+                })
+                .child(mode.label()),
+            );
+        }
+        let transcript = self.card(
+            "Transcript",
+            vec![self.setting_row(
+                "Finished turns",
+                Some(Mode::Compact.detail()),
+                choices.into_any_element(),
+            )],
+            Some(TRANSCRIPT_FOOTER),
+        );
+        let sound = if cfg!(target_os = "macos") {
+            let enabled = self.presentation.completion_sound_enabled;
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(
+                    self.button(
+                        "settings-completion-preview",
+                        "Preview",
+                        ConnectionSettingsIntent::PreviewCompletionSound,
+                        false,
+                        false,
+                        cx,
+                    )
+                    .debug_selector(|| "settings-completion-preview".into()),
+                )
+                .child(
+                    self.button(
+                        "settings-completion-sound",
+                        if enabled { "On" } else { "Off" },
+                        ConnectionSettingsIntent::ToggleCompletionSound,
+                        enabled,
+                        false,
+                        cx,
+                    )
+                    .debug_selector(|| "settings-completion-sound".into()),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .text_size(px(12.))
+                .text_color(rgb(p.secondary))
+                .child("The completion sound plays on macOS only.")
+                .into_any_element()
+        };
+        let notifications = self.card(
+            "Notifications",
+            vec![self.setting_row(
+                "Task completion sound",
+                Some("Play a short chime when a chat finishes its task, even while the app is in the background."),
+                sound,
+            )],
+            None,
+        );
+        vec![transcript, notifications]
+    }
+}
+
 impl Render for ConnectionSettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_editors(window, cx);
         self.sync_controls(window, cx);
         let p = self.palette;
         let presentation = &self.presentation;
-        let mut tabs = div()
-            .id("settings-connection-tabs")
-            .debug_selector(|| "settings-connection-tabs".into())
-            .flex_1()
-            .min_w_0()
-            .h(px(33.))
-            .overflow_x_scroll()
-            .track_scroll(&self.tab_scroll)
-            .flex()
-            .items_center()
-            .gap(px(6.));
-        for (index, tab) in presentation.tabs.iter().enumerate() {
-            let selected = presentation
-                .active
-                .as_ref()
-                .is_some_and(|form| form.id == tab.id);
-            let label = format!(
-                "{}{}{}",
-                tab.label,
-                if tab.dirty { " •" } else { "" },
-                if tab.saved { "" } else { " · new" }
-            );
-            tabs = tabs.child(
-                self.button(
-                    ("settings-tab", index),
-                    label,
-                    ConnectionSettingsIntent::Select(tab.id.clone()),
-                    false,
-                    false,
-                    cx,
+        let section = presentation.section;
+        // Only the Connections section has tabs; its controls exist only there.
+        let tab_bar = (section == SettingsSection::Connections).then(|| {
+            let mut tabs = div()
+                .id("settings-connection-tabs")
+                .debug_selector(|| "settings-connection-tabs".into())
+                .flex_1()
+                .min_w_0()
+                .h(px(33.))
+                .overflow_x_scroll()
+                .track_scroll(&self.tab_scroll)
+                .flex()
+                .items_center()
+                .gap(px(6.));
+            for (index, tab) in presentation.tabs.iter().enumerate() {
+                let selected = presentation
+                    .active
+                    .as_ref()
+                    .is_some_and(|form| form.id == tab.id);
+                let label = format!(
+                    "{}{}{}",
+                    tab.label,
+                    if tab.dirty { " •" } else { "" },
+                    if tab.saved { "" } else { " · new" }
+                );
+                tabs = tabs.child(
+                    self.button(
+                        ("settings-tab", index),
+                        label,
+                        ConnectionSettingsIntent::Select(tab.id.clone()),
+                        false,
+                        false,
+                        cx,
+                    )
+                    .when(selected, |tab| {
+                        tab.opacity(1.)
+                            .bg(p.accent_soft())
+                            .border_color(rgb(p.accent))
+                    })
+                    .debug_selector(move || format!("settings-tab-{index}")),
+                );
+            }
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .child(tabs)
+                .child(
+                    self.button(
+                        "settings-new-connection",
+                        "+ New",
+                        ConnectionSettingsIntent::New,
+                        false,
+                        false,
+                        cx,
+                    )
+                    .debug_selector(|| "settings-new-connection".into()),
                 )
-                .when(selected, |tab| {
-                    tab.opacity(1.)
-                        .bg(p.accent_soft())
-                        .border_color(rgb(p.accent))
-                })
-                .debug_selector(move || format!("settings-tab-{index}")),
-            );
-        }
-        let tab_bar = div()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .child(tabs)
-            .child(
-                self.button(
-                    "settings-new-connection",
-                    "+ New",
-                    ConnectionSettingsIntent::New,
-                    false,
-                    false,
-                    cx,
+                .child(
+                    self.button(
+                        "settings-reload",
+                        "Reload",
+                        ConnectionSettingsIntent::Reload,
+                        false,
+                        false,
+                        cx,
+                    )
+                    .debug_selector(|| "settings-reload".into()),
                 )
-                .debug_selector(|| "settings-new-connection".into()),
-            )
-            .child(
-                self.button(
-                    "settings-reload",
-                    "Reload",
-                    ConnectionSettingsIntent::Reload,
-                    false,
-                    false,
-                    cx,
-                )
-                .debug_selector(|| "settings-reload".into()),
-            );
+        });
         let mut body = div()
             .id("settings-body")
             .debug_selector(|| "settings-body".into())
@@ -1542,7 +1926,45 @@ impl Render for ConnectionSettingsView {
             .flex()
             .flex_col()
             .gap(px(16.));
-        if presentation.mode.is_fixture() {
+        match section {
+            SettingsSection::Connections => {}
+            SettingsSection::Chats => body = body.children(self.chats_section(cx)),
+            SettingsSection::Usage => {
+                body = body.child(self.notice_card(
+                    "Usage and capture",
+                    "settings-usage-notice",
+                    USAGE_NOTICE,
+                ))
+            }
+            SettingsSection::App => {
+                body = body.child(self.notice_card(
+                    "Runtime and updates",
+                    "settings-app-notice",
+                    APP_NOTICE,
+                ))
+            }
+        }
+        if section == SettingsSection::Connections {
+            body = body.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(rgb(p.tertiary))
+                            .child(format!(
+                                "CONNECTIONS · {}",
+                                presentation.tabs.iter().filter(|tab| tab.saved).count()
+                            )),
+                    )
+                    .children(tab_bar),
+            );
+        }
+        if section == SettingsSection::Connections && presentation.mode.is_fixture() {
             body = body.child(
                 div()
                     .id("settings-fixture-notice")
@@ -1555,7 +1977,9 @@ impl Render for ConnectionSettingsView {
                     .child(FIXTURE_NOTICE),
             );
         }
-        if presentation.mode == crate::launch_authority::AuthorityMode::Native {
+        if section == SettingsSection::Connections
+            && presentation.mode == crate::launch_authority::AuthorityMode::Native
+        {
             body = body.child(
                 div()
                     .id("settings-native-notice")
@@ -1568,7 +1992,11 @@ impl Render for ConnectionSettingsView {
                     .child(NATIVE_NOTICE),
             );
         }
-        if let Some(form) = &presentation.active {
+        if let Some(form) = presentation
+            .active
+            .as_ref()
+            .filter(|_| section == SettingsSection::Connections)
+        {
             let mut fields = div()
                 .flex_shrink_0()
                 .rounded(px(8.))
@@ -1728,13 +2156,15 @@ impl Render for ConnectionSettingsView {
                 .child(if form.saved { "Connection" } else { "New connection" })).child(fields)
                 .child(div().flex_shrink_0().text_size(px(11.5)).text_color(rgb(p.secondary)).child("Leave the key and headers empty to keep saved values. Save All saves edited tabs one at a time; if one fails, earlier successful saves remain saved."));
         }
-        body = body.child(
-            div()
-                .flex_shrink_0()
-                .text_size(px(11.5))
-                .text_color(rgb(p.secondary))
-                .child(SCOPE_NOTICE),
-        );
+        if section == SettingsSection::Connections {
+            body = body.child(
+                div()
+                    .flex_shrink_0()
+                    .text_size(px(11.5))
+                    .text_color(rgb(p.secondary))
+                    .child(SCOPE_NOTICE),
+            );
+        }
         let mut footer = div()
             .flex_shrink_0()
             .px(px(20.))
@@ -1839,7 +2269,11 @@ impl Render for ConnectionSettingsView {
             }
             ConnectionConfirmation::None => {
                 let mut buttons = Vec::new();
-                if let Some(form) = &presentation.active {
+                if let Some(form) = presentation
+                    .active
+                    .as_ref()
+                    .filter(|_| section == SettingsSection::Connections)
+                {
                     buttons.push(if form.saved {
                         (
                             "settings-delete-connection",
@@ -1916,7 +2350,7 @@ impl Render for ConnectionSettingsView {
                     .border_color(p.hairline())
                     .flex()
                     .flex_col()
-                    .gap(px(10.))
+                    .gap(px(4.))
                     .child(
                         div()
                             .text_size(px(19.))
@@ -1927,45 +2361,26 @@ impl Render for ConnectionSettingsView {
                         div()
                             .text_size(px(12.))
                             .text_color(rgb(p.secondary))
-                            .child(format!(
-                                "Connections · {} saved",
-                                presentation.tabs.iter().filter(|tab| tab.saved).count()
-                            )),
-                    )
-                    .when(cfg!(target_os = "macos"), |header| {
-                        let enabled = presentation.completion_sound_enabled;
-                        header.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .flex_wrap()
-                                .gap(px(8.))
-                                .child(self.button(
-                                    "settings-completion-sound",
-                                    if enabled {
-                                        "Play task completion sound: On"
-                                    } else {
-                                        "Play task completion sound: Off"
-                                    },
-                                    ConnectionSettingsIntent::ToggleCompletionSound,
-                                    false,
-                                    false,
-                                    cx,
-                                ).debug_selector(|| "settings-completion-sound".into()))
-                                .child(self.button(
-                                    "settings-completion-preview",
-                                    "Preview",
-                                    ConnectionSettingsIntent::PreviewCompletionSound,
-                                    false,
-                                    false,
-                                    cx,
-                                ).debug_selector(|| "settings-completion-preview".into()))
-                                .child(div().text_size(px(11.)).child("Play a short chime when a chat finishes its task, even in the background.")),
-                        )
-                    })
-                    .child(tab_bar),
+                            .child(SUBTITLE),
+                    ),
             )
-            .child(body)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(self.section_list(cx))
+                    .child(div().w(px(1.)).h_full().bg(p.hairline()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .child(body),
+                    ),
+            )
             .child(footer)
     }
 }

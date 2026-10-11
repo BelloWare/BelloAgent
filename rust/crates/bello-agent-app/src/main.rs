@@ -1,4 +1,5 @@
 #[cfg(any(target_os = "macos", test))]
+mod app_settings;
 mod application_menus;
 mod assets;
 #[cfg(all(feature = "synthetic-authority", debug_assertions))]
@@ -263,6 +264,9 @@ impl AgentView {
         } = launch;
         if !cx.has_global::<notifications::Notifications>() {
             cx.set_global(notifications::Notifications::new(None));
+        }
+        if !cx.has_global::<app_settings::AppSettings>() {
+            cx.set_global(app_settings::AppSettings::new(None));
         }
         let palette = current_palette(window);
         let mut state = workspace.lock().expect("workspace lock").snapshot();
@@ -4021,6 +4025,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .parent()
                     .unwrap()
                     .join("notifications.json"),
+            )));
+            cx.set_global(app_settings::AppSettings::new(Some(
+                default_session()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("app-settings.json"),
             )));
             #[cfg(target_os = "macos")]
             application_menus::install(cx);
