@@ -593,6 +593,34 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
         XCTAssertTrue(session.process.running, "a closed terminal's shell is asked first and given time")
         try await eventually("end the shell after the grace", timeout: 10) { !session.process.running }
     }
+
+    /// Showing another terminal takes the shown one's view out of the
+    /// window while it has the keyboard, and AppKit does not ask a view it
+    /// removes to resign: a program that asked for focus reports (vim,
+    /// tmux) never heard that it lost focus. Shown again, it hears it back.
+    @MainActor func testATerminalTakenOutOfTheWindowReportsLosingFocus() throws {
+        let emulator = TerminalEmulator(columns: 40, rows: 8)
+        let view = TerminalView(emulator: emulator)
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 180))
+        let window = window(holder, width: 420, height: 180)
+        defer { window.contentView = nil; window.close() }
+        var sent = Data()
+        func taken() -> String { defer { sent = Data() }; return String(decoding: sent, as: UTF8.self) }
+        view.onInput = { sent.append($0) }
+        emulator.feed("\u{1b}[?1004h")
+        view.frame = holder.bounds; holder.addSubview(view)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        XCTAssertEqual(taken(), "\u{1b}[I")
+        view.removeFromSuperview()
+        XCTAssertEqual(taken(), "\u{1b}[O", "the program hears it lost focus")
+        holder.addSubview(view)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        XCTAssertEqual(taken(), "\u{1b}[I", "and that it has it again")
+        // Removed without the keyboard: nothing to report.
+        XCTAssertTrue(window.makeFirstResponder(nil)); XCTAssertEqual(taken(), "\u{1b}[O")
+        view.removeFromSuperview()
+        XCTAssertEqual(taken(), "")
+    }
 }
 
 

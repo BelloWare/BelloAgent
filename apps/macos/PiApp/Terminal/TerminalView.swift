@@ -333,6 +333,16 @@ import CoreText
         return true
     }
 
+    /// AppKit takes the keyboard from a view it removes without asking it to
+    /// resign: showing another terminal left this one's program focused.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window, let window, window.firstResponder === self {
+            focused = false
+            if emulator.focusReporting { send("\u{1b}[O") }
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
     // MARK: Keyboard
 
     private func send(_ text: String) { send(Data(text.utf8)) }
