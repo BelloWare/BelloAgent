@@ -670,6 +670,9 @@ struct ContentGeometry: Equatable {
         let offset = position.offset
         for item in snapshot.items {
             guard let frame = frames[item.id], frame.maxY > offset else { continue }
+            // A row below the screen is not where the reader is: they stand
+            // in room kept for rows not read, whose place the document keeps.
+            guard frame.minY < offset + max(1, position.viewport) else { return }
             pendingAnchor = TranscriptAnchor(id: item.id, offset: frame.minY - offset, followsBottom: false)
             return
         }

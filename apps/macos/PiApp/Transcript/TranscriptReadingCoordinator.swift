@@ -131,6 +131,9 @@ extension NSScrollView {
         // explains where they end up.
         ledger.forgetWrites()
     }
+    /// The reader is in room kept for rows not read: nothing on their screen
+    /// is a row to hold; the page keeps their place in the chat itself.
+    func letGo() { clear(reason: "reader in room") }
     private func clear(reason: String) {
         source = nil; surface = nil; row = nil; lastInvalidation = reason; anchorDocumentTop = nil; anchorSourceTop = nil
         // Explicitly: a row already let go of reads nil, and setting nil again

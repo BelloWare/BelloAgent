@@ -1231,11 +1231,22 @@ final class TranscriptNativeScrollView: NSScrollView {
         // Room that changes moves every row: the pass places them all again,
         // and a reader among the rows moves with them in the same pass
         // (`finishPass`), before anything is mounted or drawn where they were.
+        let previousRowHeight = roomRowHeight
         let rooms = roomHeights()
         if abs(rooms.leading - leadingSpace) > 0.01 {
             markDirty(from: 0)
-            if let clip = enclosingScrollView?.contentView, !rows.isEmpty, !(page?.followsBottom ?? true),
-               clip.bounds.minY >= TranscriptMetrics.pageTopInset + leadingSpace - 1 { roomShift += rooms.leading - leadingSpace }
+            if let clip = enclosingScrollView?.contentView, !rows.isEmpty, !(page?.followsBottom ?? true) {
+                let top = TranscriptMetrics.pageTopInset
+                if clip.bounds.minY >= top + leadingSpace - 1 { roomShift += rooms.leading - leadingSpace }
+                else if previousRowHeight > 0, clip.bounds.maxY <= top + leadingSpace {
+                    // A reader in the room above the window keeps their row
+                    // of the chat (the one the room put at the top of their
+                    // screen), not a row of the window off their screen.
+                    let place = (clip.bounds.minY - top) / previousRowHeight
+                    roomShift += top + place * roomRowHeight - clip.bounds.minY
+                    enclosingScrollView?.transcriptReading.letGo()
+                }
+            }
         }
         leadingSpace = rooms.leading; trailingSpace = rooms.trailing
         rowWidth = nextWidth

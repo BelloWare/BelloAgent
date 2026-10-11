@@ -251,4 +251,32 @@ final class HistoryExtentTests: XCTestCase {
             XCTFail("A window of another branch was read by position")
         } catch { XCTAssertTrue(WorkspaceModel.isSourceChange(error), "\(error)") }
     }
+
+    /// A reader standing in room above the window keeps their place in the
+    /// chat when the room is measured again (a resize settles): the row of
+    /// the chat the room put at the top of their screen stays there, so the
+    /// read under way is still for where they are.
+    @MainActor func testAReaderInRoomKeepsTheirPlaceWhenTheRoomIsMeasuredAgain() async throws {
+        let chat = try await LongChatScroll(turns: 200)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        // Position reads wait, as a slow journal makes them.
+        chat.model.historyWindowLoader = { _, _, _, _ in try await Task.sleep(for: .seconds(60)); throw CancellationError() }
+        let scroll = try XCTUnwrap(chat.scroll), document = try XCTUnwrap(chat.document), page = try XCTUnwrap(chat.page)
+        let clip = scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: 0, y: document.frame.height * 0.3)); scroll.reflectScrolledClipView(clip)
+        for _ in 0..<5 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+        let height = document.roomRowHeight
+        XCTAssertGreaterThan(height, 0)
+        let place = Int((clip.bounds.minY - TranscriptMetrics.pageTopInset) / height)
+        XCTAssertEqual(chat.view.jumpReading, place, "The read under way is for where the reader is")
+        page.measuredHistoryRowHeight(height * 1.5, over: page.historyRowHeightSample, width: page.historyRowHeightWidth ?? 0)
+        document.layoutNow()
+        for _ in 0..<5 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+        let now = Int((clip.bounds.minY - TranscriptMetrics.pageTopInset) / document.roomRowHeight)
+        XCTAssertEqual(Double(now), Double(place), accuracy: 1, "The reader is at the same row of the chat")
+        XCTAssertTrue(chat.view.jumpWanted == nil || abs((chat.view.jumpWanted?.position ?? place) - place) <= 1,
+                      "No read for another place was asked for (\(chat.view.jumpWanted?.position ?? -1) vs \(place))")
+    }
 }
