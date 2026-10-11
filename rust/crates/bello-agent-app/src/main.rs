@@ -66,6 +66,9 @@ mod sidebar_title_tests;
 mod stop_shortcut;
 #[cfg(all(debug_assertions, target_os = "linux", feature = "synthetic-authority"))]
 mod synthetic_sidebar_fixture;
+mod terminal_grid;
+mod terminal_panel;
+mod terminal_question;
 mod theme;
 mod tool_timing_presentation;
 mod topics;
@@ -242,6 +245,7 @@ struct AgentView {
     workbench: Entity<WorkbenchView>,
     show_files: bool,
     close_dialog: bool,
+    terminal: terminal_panel::TerminalHost,
     _release: Subscription,
 }
 impl Deref for AgentView {
@@ -303,6 +307,7 @@ impl AgentView {
         if !records.iter().any(|item| item.id == record.id) {
             records.insert(0, record.clone());
         }
+        let layout_store_dir = record.snapshot.parent().map(std::path::Path::to_owned);
         let layout_store = Arc::new(layout::LayoutStore::new(
             record.snapshot.parent().unwrap().join("layout.json"),
         ));
@@ -466,6 +471,13 @@ impl AgentView {
             &chat.record,
             chats_directory.as_deref(),
         );
+        let terminal = terminal_panel::TerminalHost::new(
+            &project,
+            layout_store_dir.map(|dir| dir.join("terminal.json")),
+            palette,
+            window,
+            cx,
+        );
         let mut view = Self {
             attachment_picker: None,
             chat_models: Default::default(),
@@ -551,6 +563,7 @@ impl AgentView {
             workbench,
             show_files: false,
             close_dialog: false,
+            terminal,
             _release: release,
         };
         // Saved model choices that cannot be read are said once, rather than
@@ -1120,6 +1133,10 @@ impl AgentView {
             cx.stop_propagation();
             return;
         }
+        if self.terminal_asking(cx) {
+            // The terminal's question owns the keyboard (its own handler).
+            return;
+        }
         if event.keystroke.key == "escape" && self.cancel_queue_drag(window, cx) {
             cx.stop_propagation();
             return;
@@ -1180,6 +1197,9 @@ impl AgentView {
                 cx.stop_propagation();
                 return;
             }
+        }
+        if self.terminal_key(event, window, cx) {
+            return;
         }
         if self.transcript_find_key(event, window, cx) {
             return;
@@ -2247,12 +2267,15 @@ impl AgentView {
                         )
                         .child(
                             self.button("starter-terminal", "")
+                                .debug_selector(|| "starter-terminal".into())
                                 .flex()
                                 .items_center()
                                 .gap(px(6.))
                                 .child(self.icon("terminal", 12.))
                                 .child("Terminal")
-                                .opacity(0.45),
+                                .on_click(cx.listener(|v, _, window, cx| {
+                                    v.toggle_terminal(window, cx);
+                                })),
                         )
                         .child(
                             self.button("starter-skills", "")
@@ -2373,7 +2396,7 @@ impl AgentView {
             .update(cx, |editor, _| {
                 editor.measured_content_height((self.pane_width - 34.).max(1.), window)
             })
-            .clamp(44., 240.);
+            .clamp(44., self.composer_ceiling());
         let mut field = div()
             .debug_selector(|| "queue-measured-field".into())
             .relative()
@@ -2707,7 +2730,8 @@ impl AgentView {
                 }
             })
             .child(transcript)
-            .child(queue);
+            .child(queue)
+            .children(self.terminal_slot(cx));
         let reported: Vec<_> = self
             .session
             .messages

@@ -81,6 +81,7 @@ fn menu_bar_follows_swift_order_titles_and_omits_unimplemented_commands() {
             "Show Archived Chats",
             "Session Inspector…",
             "Changes and History…",
+            "Show Terminal",
             "-",
             "Next Chat",
             "Previous Chat",
@@ -129,7 +130,6 @@ fn menu_bar_follows_swift_order_titles_and_omits_unimplemented_commands() {
         "Import Pi Session…",
         "Usage Report",
         "Background Requests",
-        "Show Terminal",
         "Open Side",
     ] {
         assert!(!titles.iter().any(|t| t == missing), "{missing}");
@@ -139,11 +139,13 @@ fn menu_bar_follows_swift_order_titles_and_omits_unimplemented_commands() {
         pinned: true,
         archived: true,
         archived_shown: true,
+        terminal_visible: true,
         topics: vec![("t1".into(), "Alpha".into()), ("t2".into(), "Beta".into())],
     };
     let menus = super::menus(&state);
     assert_eq!(labels(&menus[1])[6..8], ["Restore Chat", "Unpin Chat"]);
     assert_eq!(labels(&menus[3])[0], "Hide Archived Chats");
+    assert_eq!(labels(&menus[3])[3], "Hide Terminal");
     let MenuItem::Submenu(topics) = &menus[1].items[8] else {
         panic!("Move to Topic is a submenu");
     };
@@ -176,6 +178,7 @@ fn menu_key_equivalents_are_swifts(cx: &mut TestAppContext) {
         ("Select All", "cmd-a"),
         ("Session Inspector…", "cmd-alt-i"),
         ("Changes and History…", "cmd-shift-g"),
+        ("Show Terminal", "ctrl-`"),
         ("Next Chat", "cmd-alt-down"),
         ("Previous Chat", "cmd-alt-up"),
         ("Widen Sidebar", "ctrl-cmd-right"),
@@ -490,11 +493,12 @@ fn menu_availability_and_edit_routing_follow_focus_and_modal_owner(cx: &mut Test
 
 #[::core::prelude::v1::test]
 fn in_place_retitles_name_the_titles_the_built_menus_show() {
-    for bits in 0..8u8 {
+    for bits in 0..16u8 {
         let state = MenuState {
             archived: bits & 1 != 0,
             pinned: bits & 2 != 0,
             archived_shown: bits & 4 != 0,
+            terminal_visible: bits & 8 != 0,
             topics: vec![],
         };
         let built = menus(&state);
