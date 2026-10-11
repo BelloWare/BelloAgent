@@ -158,4 +158,75 @@ extension MetadataDurabilityTests {
         XCTAssertEqual(saved?.queuedEdit?.rewrite, "first rewrite", "the record saved before is not replaced")
         await store.close()
     }
+
+    /// A chat row another version wrote without `toolMode` or `imported`
+    /// (keys with a default here) lists and shows; it used to be skipped as
+    /// undecodable and only counted as unlisted.
+    func testAChatRowWithoutDefaultedKeysLoadsAndShows() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
+        let row = ["id": "old", "workspaceID": "w", "title": "Older chat", "profileID": "p"]
+        try await store.put(row, kind: "chat", id: "old")
+        let chats = try await store.loadChats()
+        XCTAssertEqual(chats.map(\.id), ["old"])
+        let unlisted = await store.unlistedChats
+        XCTAssertEqual(unlisted, 0)
+        XCTAssertEqual(chats.first?.toolMode, ChatRecord.editingTools)
+        XCTAssertEqual(chats.first?.imported, false)
+        XCTAssertNotNil(chats.first?.sidebarOrder, "an older row still takes its order from the store")
+        let fetched = try await store.get(ChatRecord.self, kind: "chat", id: "old")
+        XCTAssertEqual(fetched?.title, "Older chat")
+        // A key with no default stays required: such a row is still unlisted.
+        try await store.put(["id": "bad", "workspaceID": "w", "title": "No profile"], kind: "chat", id: "bad")
+        let after = try await store.loadChats().map(\.id)
+        XCTAssertEqual(after, ["old"])
+        let unlistedAfter = await store.unlistedChats
+        XCTAssertEqual(unlistedAfter, 1)
+        await store.close()
+    }
+
+    /// Every field survives a round trip, and the bytes written are the same
+    /// as the synthesized encoding's (nil keys left out, nothing added).
+    func testChatRecordRoundTripsEveryFieldUnchanged() throws {
+        let date = Date(timeIntervalSinceReferenceDate: 700_000_000)
+        var chat = ChatRecord(id: "c", workspaceID: "w", title: "T", path: "/j", profileID: "p", toolMode: ChatRecord.readOnlyTools, imported: true, connectionTest: true)
+        chat.model = "m"; chat.thinkingLevel = "high"; chat.contextWindow = 1000; chat.maxOutputTokens = 100; chat.modelOutputLimit = 200
+        chat.outputBudgetVersion = 7; chat.sidebarOrder = 11; chat.lastActivityAt = 12; chat.pinnedAt = date; chat.archivedAt = date
+        chat.titleWasEdited = true; chat.titleWasGenerated = false; chat.titleTaskSessionID = "tt"; chat.backgroundTask = "title"
+        chat.sourceSessionID = "s"; chat.backgroundTaskNotice = "n"; chat.backgroundTaskStartedAt = date; chat.backgroundTaskEndedAt = date
+        chat.backgroundTaskOutcome = "completed"; chat.backgroundTaskResult = "r"; chat.organizationRevision = 3; chat.topicID = "t"
+        chat.parentSessionID = "pp"; chat.costLimit = .usd(5); chat.webhookOff = true; chat.connectionRevision = 4; chat.journalRebind = true
+        for child in Mirror(reflecting: chat).children {
+            let inner = Mirror(reflecting: child.value)
+            if inner.displayStyle == .optional { XCTAssertFalse(inner.children.isEmpty, "fixture leaves \(child.label ?? "?") nil") }
+        }
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let data = try encoder.encode(chat)
+        let decoded = try JSONDecoder().decode(ChatRecord.self, from: data)
+        XCTAssertEqual(decoded, chat)
+        XCTAssertEqual(try encoder.encode(decoded), data)
+        // Optionals absent from a row stay nil (an upgrade fills them in), not
+        // the defaults a new record starts with.
+        let sparse = try JSONDecoder().decode(ChatRecord.self, from: Data(#"{"id":"c","workspaceID":"w","title":"T","profileID":"p","toolMode":"read-only","imported":true}"#.utf8))
+        XCTAssertNil(sparse.sidebarOrder); XCTAssertNil(sparse.outputBudgetVersion)
+        XCTAssertEqual(sparse.toolMode, ChatRecord.readOnlyTools); XCTAssertTrue(sparse.imported)
+        let keys = try JSONSerialization.jsonObject(with: try encoder.encode(sparse)) as? [String: Any]
+        XCTAssertEqual(Set(keys?.keys.map { $0 } ?? []), ["id", "workspaceID", "title", "profileID", "toolMode", "imported"])
+    }
+
+    /// Topics and read states written without a defaulted key decode with
+    /// its default; a key with none stays required.
+    func testTopicAndReadStateRowsWithoutDefaultedKeysDecode() throws {
+        let topic = try JSONDecoder().decode(TopicRecord.self, from: Data(#"{"id":"t","workspaceID":"w","title":"T","createdAt":5,"revision":2}"#.utf8))
+        XCTAssertTrue(topic.expanded); XCTAssertEqual(topic.revision, 2)
+        XCTAssertThrowsError(try JSONDecoder().decode(TopicRecord.self, from: Data(#"{"id":"t","workspaceID":"w","title":"T","revision":2}"#.utf8)), "createdAt has no default when read")
+        let read = try JSONDecoder().decode(SessionReadState.self, from: Data(#"{"id":"c","observedAssistantCount":3}"#.utf8))
+        XCTAssertEqual(read.unreadOutputs, 0); XCTAssertEqual(read.revision, 0)
+        XCTAssertThrowsError(try JSONDecoder().decode(SessionReadState.self, from: Data(#"{"id":"c"}"#.utf8)))
+        let full = SessionReadState(id: "c", observedAssistantCount: 3, latestAssistantID: "a", unreadOutputs: 2, unreadTargetID: "u", unreadFailure: true, markedUnread: true, baselinePending: true, revision: 9)
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        XCTAssertEqual(try JSONDecoder().decode(SessionReadState.self, from: try encoder.encode(full)), full)
+        let fullTopic = TopicRecord(id: "t", workspaceID: "w", title: "T", createdAt: Date(timeIntervalSinceReferenceDate: 9), expanded: false, revision: 4)
+        XCTAssertEqual(try JSONDecoder().decode(TopicRecord.self, from: try encoder.encode(fullTopic)), fullTopic)
+    }
 }

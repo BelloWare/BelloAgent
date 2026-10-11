@@ -22,6 +22,21 @@ struct SessionReadState: Codable, Sendable, Equatable, Identifiable {
     /// Shown as unread in the sidebar, whatever made it so.
     var isUnread: Bool { unreadOutputs > 0 || markedUnread == true }
 }
+/// A key with a default may be missing from a row another version wrote:
+/// it reads as that default, as `ChatRecord`'s do. Encoding is the
+/// synthesized one.
+extension SessionReadState {
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); observedAssistantCount = try c.decode(Int.self, forKey: .observedAssistantCount)
+        latestAssistantID = try c.decodeIfPresent(String.self, forKey: .latestAssistantID)
+        unreadOutputs = try c.decodeIfPresent(Int.self, forKey: .unreadOutputs) ?? 0
+        unreadTargetID = try c.decodeIfPresent(String.self, forKey: .unreadTargetID)
+        unreadFailure = try c.decodeIfPresent(Bool.self, forKey: .unreadFailure); markedUnread = try c.decodeIfPresent(Bool.self, forKey: .markedUnread)
+        baselinePending = try c.decodeIfPresent(Bool.self, forKey: .baselinePending)
+        revision = try c.decodeIfPresent(Int64.self, forKey: .revision) ?? 0
+    }
+}
 
 /// Replies not yet published as unread: see `WorkspaceModel.visibleReplyGrace`.
 struct HeldUnread {
