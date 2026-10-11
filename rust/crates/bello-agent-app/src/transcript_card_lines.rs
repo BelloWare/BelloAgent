@@ -58,6 +58,43 @@ pub(super) struct Mark {
     pub background: Option<Hsla>,
 }
 
+/// Lines in each piece of a long run: a run more than twice this long is
+/// drawn a piece at a time.
+pub(super) const PIECE: usize = 32;
+/// The most pieces a run is named for; a longer run's pieces grow.
+pub(super) const PIECES: usize = 256;
+
+/// The editor section a run's `k`th piece is: the run's own for the first,
+/// "OUT#3" and so on after it.
+pub(super) fn piece_label(run: &'static str, k: usize) -> &'static str {
+    use std::sync::OnceLock;
+    static LABELS: OnceLock<Vec<(&'static str, Vec<&'static str>)>> = OnceLock::new();
+    if k == 0 {
+        return run;
+    }
+    let labels = LABELS.get_or_init(|| {
+        ["IN", "IN-tail", "OUT", "OUT-tail"]
+            .into_iter()
+            .map(|base| {
+                let names = (0..PIECES)
+                    .map(|k| &*Box::leak(format!("{base}#{k}").into_boxed_str()))
+                    .collect();
+                (base, names)
+            })
+            .collect()
+    });
+    labels
+        .iter()
+        .find(|(base, _)| *base == run)
+        .map_or(run, |(_, names)| names[k.min(PIECES - 1)])
+}
+
+/// The card section ("IN" or "OUT") an editor section belongs to.
+pub(super) fn section_of(label: &str) -> &str {
+    let label = label.split('#').next().unwrap_or(label);
+    label.strip_suffix("-tail").unwrap_or(label)
+}
+
 /// `TranscriptCardMetrics.headTail`: how many lines are hidden, whether the
 /// list caps at all, and how the shown lines divide.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

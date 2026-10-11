@@ -371,7 +371,9 @@ fn tool_section_visible(
                 && row.expanded
                 // A capped list's tail is drawn only while the list is capped.
                 && !(section.ends_with("-tail") && row.read_expanded)
-                && row.projected.is_some_and(|projected| match section.strip_suffix("-tail").unwrap_or(section) {
+                // A long run's later pieces exist only while it is expanded.
+                && !(section.contains('#') && !row.read_expanded)
+                && row.projected.is_some_and(|projected| match card_lines::section_of(section) {
                     "IN" => {
                         (matches!(projected, ProjectedRow::Call { .. })
                             || edit_presentation::has_request(
@@ -1497,8 +1499,8 @@ impl TranscriptView {
         index: usize,
         key: &RowKey,
         label: &'static str,
-        line: usize,
-        within: usize,
+        first: (usize, usize),
+        last: (usize, usize),
         cx: &mut Context<Self>,
     ) {
         if self
@@ -1518,15 +1520,21 @@ impl TranscriptView {
         let Some((block, rows)) = geometry else {
             return;
         };
-        let Some(block) = block.get().filter(|_| line < rows.len()) else {
+        let Some(block) = block
+            .get()
+            .filter(|_| last.0 < rows.len() && first.0 <= last.0)
+        else {
             self.rearm_find_geometry(cx);
             return;
         };
-        // The editor row the match starts on: a long line wraps, and its
+        // The editor rows the match runs over: a long line wraps, and its
         // start may be far above the match.
-        let within = within.min(rows[line].saturating_sub(1));
-        let top = (rows[..line].iter().sum::<usize>() + within) as f32 * card_lines::LINE_HEIGHT;
-        let height = card_lines::LINE_HEIGHT;
+        let top_of = |(line, within): (usize, usize)| {
+            (rows[..line].iter().sum::<usize>() + within.min(rows[line].saturating_sub(1))) as f32
+                * card_lines::LINE_HEIGHT
+        };
+        let top = top_of(first);
+        let height = top_of(last) - top + card_lines::LINE_HEIGHT;
         self.land_find_point(
             find,
             index,
@@ -3717,6 +3725,10 @@ struct ToolEditors {
     copied_code: Option<(SharedString, u64)>,
     copy_presses: u64,
     tick: u64,
+    /// Each lines run's rows per line, by its text and width.
+    run_rows: HashMap<(RowKey, &'static str), (f32, String, Vec<usize>)>,
+    /// Where each lines piece last stood.
+    places: HashMap<(RowKey, &'static str), Placed>,
     /// What each card's lines section last drew, for checks.
     #[cfg(test)]
     drawn_lines: HashMap<String, DrawnLines>,
@@ -3908,7 +3920,9 @@ struct ToolEditor {
     lines_width: f32,
 }
 /// Where a lines run's block last stood, and its lines' rows.
-type LinesPlace = (Rc<std::cell::Cell<Option<Bounds<Pixels>>>>, Vec<usize>);
+type LinesPlace = (Placed, Vec<usize>);
+/// Where a lines piece last stood in the window.
+type Placed = Rc<std::cell::Cell<Option<Bounds<Pixels>>>>;
 #[derive(Clone, Copy, PartialEq)]
 struct ToolEditorStyle {
     palette: Palette,
@@ -3947,6 +3961,42 @@ const CARD_MONO: &str = if cfg!(target_os = "macos") {
 /// `TranscriptCardMetrics.terminalCap`.
 const TERMINAL_CAP: f32 = 224.;
 impl ToolEditors {
+    /// How many editor rows each of a run's lines takes, kept while the
+    /// run's text and width are unchanged.
+    fn run_rows(
+        &mut self,
+        key: &RowKey,
+        label: &'static str,
+        text: &str,
+        width: f32,
+        measure: impl FnOnce() -> Vec<usize>,
+    ) -> Vec<usize> {
+        let slot = (key.clone(), label);
+        if let Some((known, known_text, rows)) = self.run_rows.get(&slot)
+            && *known == width
+            && known_text == text
+        {
+            return rows.clone();
+        }
+        if self.run_rows.len() >= 256 {
+            self.run_rows.clear();
+        }
+        let rows = measure();
+        self.run_rows
+            .insert(slot, (width, text.to_owned(), rows.clone()));
+        rows
+    }
+    /// Where a lines piece last stood in the window, kept for its row.
+    fn place(
+        &mut self,
+        key: &RowKey,
+        label: &'static str,
+    ) -> Rc<std::cell::Cell<Option<Bounds<Pixels>>>> {
+        if self.places.len() >= 4096 {
+            self.places.clear();
+        }
+        self.places.entry((key.clone(), label)).or_default().clone()
+    }
     fn active_find(&self) -> Option<Rc<crate::transcript_find_presentation::FindPaint>> {
         self.sidebar.clone().or_else(|| self.find.clone())
     }
@@ -4205,7 +4255,7 @@ fn decorate_find_tool(
         return;
     };
     // A capped list's tail is its section's too.
-    let section = label.strip_suffix("-tail").unwrap_or(label);
+    let section = card_lines::section_of(label);
     if !find.matches_binding(presentation.input.find_binding.as_ref()) {
         editor.update(cx, |e, cx| {
             let _ = e.set_text_presentation(None, cx);
@@ -4356,26 +4406,30 @@ fn decorate_find_tool(
             // A read's lines are as tall as they are: nothing scrolls inside
             // them, and the match's place is the line's, from the lines'
             // own layout. The conversation goes there once the frame is drawn.
-            let line = shown[..range.start].matches('\n').count();
-            let start = shown[..range.start].rfind('\n').map_or(0, |at| at + 1);
             let width = editors
                 .borrow()
                 .entries
                 .get(&(row.key.clone(), label))
                 .map(|entry| entry.lines_width);
-            let within = width.map_or(0, |width| {
-                card_lines::row_of(
-                    CARD_MONO,
-                    &shown[start..],
-                    range.start - start,
-                    width,
-                    window,
-                )
-            });
+            // A byte's line, and the editor row of that line it wraps onto.
+            let position = |at: usize| {
+                let line = shown[..at].matches('\n').count();
+                let start = shown[..at].rfind('\n').map_or(0, |found| found + 1);
+                let within = width.map_or(0, |width| {
+                    card_lines::row_of(CARD_MONO, &shown[start..], at - start, width, window)
+                });
+                (line, within)
+            };
+            let first = position(range.start);
+            let mut end = range.end.max(range.start + 1).min(shown.len()) - 1;
+            while !shown.is_char_boundary(end) {
+                end -= 1;
+            }
+            let last = position(end.max(range.start));
             let (child, find, key) = (child.clone(), find.clone(), row.key.clone());
             window.defer(cx, move |_, cx| {
                 let _ = child.update(cx, |view, cx| {
-                    view.land_find_line(&find, index, &key, label, line, within, cx)
+                    view.land_find_line(&find, index, &key, label, first, last, cx)
                 });
             });
             return;
@@ -5215,70 +5269,119 @@ fn lines_section(
         .flex()
         .flex_col()
         .when(spec.dimmed, |d| d.opacity(0.72));
+    // The card's selected find match, which its piece must draw to land on.
+    let selected = spec
+        .find
+        .then(|| row.projected.and_then(|projected| projected.result()))
+        .flatten()
+        .and_then(|source| {
+            let find = editors.borrow().active_find()?;
+            let id = &presentation.input.session.messages[source].id;
+            find.ranges(id)?.selected.clone()
+        });
+    let band = f32::from(window.viewport_size().height);
     for (n, run) in spec.runs.iter().enumerate() {
-        let shown = &spec.text[run.bytes.clone()];
-        let (editor, height) = editors.borrow_mut().section(
-            (index, row.key.clone(), run.label),
-            shown,
-            style,
-            text_width,
-            window,
-            cx,
-        );
-        // Where the texts wrap, for a find landing on a wrapped line.
-        if let Some(entry) = editors
-            .borrow_mut()
-            .entries
-            .get_mut(&(row.key.clone(), run.label))
-        {
-            entry.lines_width = text_width;
-        }
-        decorate_find_tool(
-            presentation,
-            index,
+        let rows = editors.borrow_mut().run_rows(
+            &row.key,
             run.label,
-            shown,
-            spec.find.then_some((run.bytes.start, all.as_slice())),
-            false,
-            &editor,
-            editors,
-            child,
-            window,
-            cx,
+            &spec.text[run.bytes.clone()],
+            text_width,
+            || card_lines::rows(CARD_MONO, run.lines.iter().copied(), text_width, window),
         );
-        let rows = card_lines::rows(CARD_MONO, run.lines.iter().copied(), text_width, window);
-        let height = (rows.iter().sum::<usize>() as f32 * card_lines::LINE_HEIGHT).max(height);
-        let placed = {
-            let mut editors = editors.borrow_mut();
-            let entry = editors
-                .entries
-                .get_mut(&(row.key.clone(), run.label))
-                .expect("the run's editor");
-            let placed = entry
-                .lines
-                .as_ref()
-                .map(|(placed, _)| placed.clone())
-                .unwrap_or_default();
-            entry.lines = Some((placed.clone(), rows.clone()));
-            placed
+        let mut pieces = div().w_full().flex().flex_col();
+        // A long run is drawn a piece at a time: only the pieces near the
+        // window are editors, the rest stand aside at their height, so an
+        // expanded read costs what is on screen.
+        let size = if run.lines.len() > 2 * card_lines::PIECE {
+            card_lines::PIECE.max(run.lines.len().div_ceil(card_lines::PIECES))
+        } else {
+            run.lines.len().max(1)
         };
-        let block = card_lines::render(
-            format!("{selector}-{}", run.label),
-            spec.style,
-            &run.marks,
-            &rows,
-            div()
-                .id(SharedString::from(format!("{selector}-{}-text", run.label)))
-                .debug_selector({
-                    let selector = format!("{selector}-{}-text", run.label);
-                    move || selector
-                })
-                .size_full()
-                .child(editor)
-                .into_any_element(),
-            height,
-            placed,
-        );
+        let offset = |line: &str| line.as_ptr() as usize - spec.text.as_ptr() as usize;
+        for (k, first) in (0..run.lines.len()).step_by(size).enumerate() {
+            let lines = first..(first + size).min(run.lines.len());
+            let label = card_lines::piece_label(run.label, k);
+            let last = run.lines[lines.end - 1];
+            let bytes = offset(run.lines[lines.start])..offset(last) + last.len();
+            let piece_rows = &rows[lines.clone()];
+            let height = piece_rows.iter().sum::<usize>() as f32 * card_lines::LINE_HEIGHT;
+            let placed = editors.borrow_mut().place(&row.key, label);
+            let near = placed.get().map_or(k < 4, |bounds| {
+                f32::from(bounds.bottom()) > -band && f32::from(bounds.top()) < 2. * band
+            }) || selected
+                .as_ref()
+                .is_some_and(|selected| bytes.contains(&selected.start));
+            if !near {
+                pieces = pieces.child(
+                    div().relative().w_full().h(px(height)).child(
+                        canvas(
+                            move |bounds, window, _| {
+                                placed.set(Some(bounds));
+                                // A piece standing aside that comes near is
+                                // drawn on the next frame.
+                                let band = window.viewport_size().height;
+                                if bounds.bottom() > -band && bounds.top() < band * 2. {
+                                    window.refresh();
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    ),
+                );
+                continue;
+            }
+            let shown = &spec.text[bytes.clone()];
+            let (editor, measured) = editors.borrow_mut().section(
+                (index, row.key.clone(), label),
+                shown,
+                style,
+                text_width,
+                window,
+                cx,
+            );
+            if let Some(entry) = editors
+                .borrow_mut()
+                .entries
+                .get_mut(&(row.key.clone(), label))
+            {
+                // Where the piece stands and wraps, for a find landing on it.
+                entry.lines_width = text_width;
+                entry.lines = Some((placed.clone(), piece_rows.to_vec()));
+            }
+            decorate_find_tool(
+                presentation,
+                index,
+                label,
+                shown,
+                spec.find.then_some((bytes.start, all.as_slice())),
+                false,
+                &editor,
+                editors,
+                child,
+                window,
+                cx,
+            );
+            pieces = pieces.child(card_lines::render(
+                format!("{selector}-{label}"),
+                spec.style,
+                &run.marks[lines.clone()],
+                piece_rows,
+                div()
+                    .id(SharedString::from(format!("{selector}-{label}-text")))
+                    .debug_selector({
+                        let selector = format!("{selector}-{label}-text");
+                        move || selector
+                    })
+                    .size_full()
+                    .child(editor)
+                    .into_any_element(),
+                height.max(measured),
+                placed,
+            ));
+        }
+        let block = pieces;
         section = if n == 0 && spec.scroll {
             // Every line of a long diff, in a scroll of its own past the
             // terminal's cap. GPUI List registers its wheel listener after

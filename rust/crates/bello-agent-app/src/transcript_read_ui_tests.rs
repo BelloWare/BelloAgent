@@ -563,3 +563,41 @@ fn read_ui_image_only_descriptor_window_can_expand(cx: &mut TestAppContext) {
 #[cfg(feature = "synthetic-authority")]
 #[path = "transcript_read_native_ui_tests.rs"]
 mod native_workflow;
+
+#[gpui::test]
+fn read_ui_a_long_expanded_window_draws_only_the_pieces_near_the_screen(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
+    let text = (1..=2000)
+        .map(|n| format!("line-{n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (_directory, window, root) =
+        fixture(cx, read_rows(&text, json!({"path":"fixture.txt"}), None), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    click(&mut visual, selector(&child, "read-disclosure", cx), cx);
+    for _ in 0..3 {
+        child.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+    }
+    let pieces = cx.read(|cx| {
+        child
+            .read(cx)
+            .tool_section_editors()
+            .into_iter()
+            .filter(|(label, _)| label.starts_with("OUT"))
+            .count()
+    });
+    // 2,000 lines are 63 pieces of 32; only the first frame's few and a
+    // window's worth either side of the screen ever became editors.
+    assert!((1..=12).contains(&pieces), "{pieces} pieces drawn");
+    let card = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    assert_eq!(
+        cx.read(|cx| child.read(cx).drawn_lines(&card))
+            .unwrap()
+            .runs[0]
+            .1
+            .len(),
+        2000
+    );
+}
