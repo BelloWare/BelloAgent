@@ -3,9 +3,9 @@
 #
 #   scripts/perf-launch.sh <fixture> <out> <label>=<app> [<label>=<app> ...]
 #
-# <fixture>  a folder from LaunchFixtureWriter (PI_APP_LAUNCH_FIXTURE), best
-#            "settled" by one launch and quit of the app first, so the request
-#            archive and search index exist as they do on a reader's Mac.
+# <fixture>  a folder from LaunchFixtureWriter (PI_APP_LAUNCH_FIXTURE),
+#            "settled" in place by one launch and quit of the app first, so
+#            the request archive and search index exist as on a reader's Mac.
 # <app>      a Release build made with
 #            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PI_LAUNCH_FIXTURE':
 #            it reads the fixture's vault.json and never the Keychain. Each app
@@ -15,16 +15,21 @@
 #            rust/docs/validation/swift-rust-performance-2026-10-10/harness).
 # WARM, COLD trials per app (default 8 and 5); cold runs `sudo -n purge` first.
 #
-# Every trial starts from a fresh copy of the fixture, with HOME and
+# Every trial starts from a fresh copy of the fixture's state, with HOME and
 # CFFIXED_USER_HOME pointing into it, and trials alternate between the apps.
 # Results: <out>/raw/<label>-<warm|cold>-<n>.json; summarize with the
 # harness's analyze-launch.py <out>.
 set -euo pipefail
 FIXTURE=$(cd "$1" && pwd) OUT=$(mkdir -p "$2" && cd "$2" && pwd); shift 2
-# The fixture's records name its journals and projects by absolute path:
-# each trial's copy is rebased onto itself, so it reads only its own files.
-ORIGIN=$(cat "$FIXTURE/fixture-root")
-REBASE="$(cd "$(dirname "$0")" && pwd)/rebase-launch-fixture.py"
+# The fixture's records name its journals and projects by absolute path, and
+# its search index keys each journal by path and file identity: a copied
+# journal would be indexed again in full at every launch. So each trial gets
+# its own copy of the state, and reads the fixture's own journals, which a
+# launch only reads (checked below). A fixture that moved is rebased once with
+# rebase-launch-fixture.py and settled again by one launch.
+[ "$(cat "$FIXTURE/fixture-root")" = "$FIXTURE" ] || { echo "$FIXTURE moved from $(cat "$FIXTURE/fixture-root"): rebase and settle it first" >&2; exit 1; }
+journals() { find "$FIXTURE/home" -name '*.jsonl' -exec stat -f '%N %m %z' {} + | sort; }
+before_journals=$(journals)
 : "${BELLOPERF:?Set BELLOPERF to the belloperf binary}"
 WARM=${WARM:-8} COLD=${COLD:-5} IDLE=${IDLE:-2}
 DOMAIN=com.belloware.PiApp.launchperf
@@ -43,7 +48,6 @@ done
 trial() { # label exe kind index
   local run="$OUT/run"
   rm -rf "$run"; ditto "$FIXTURE" "$run"
-  python3 -I "$REBASE" "$run/home/Library/Application Support/com.belloware.PiApp/desktop.sqlite" "$run/vault.json" "$ORIGIN" "$run"
   defaults delete "$DOMAIN" >/dev/null 2>&1 || true
   local cold=(); [ "$3" = cold ] && cold=(--cold)
   "$BELLOPERF" launch --label "$1" --trials 1 --prime 0 --idle "$IDLE" ${cold[@]+"${cold[@]}"} \
@@ -61,4 +65,6 @@ for kind in warm cold; do
 done
 rm -rf "$OUT/run" "$OUT/raw/"*-prime-*.json
 defaults delete "$DOMAIN" >/dev/null 2>&1 || true
+[ "$(journals)" = "$before_journals" ] || echo "WARNING: a fixture journal changed during the run" >&2
+# Other test runs (the XCTest host is com.belloware.PiApp) also write it.
 [ "$(stat -f %m "$OWNER_PREFS" 2>/dev/null || echo none)" = "$owner_mark" ] || echo "WARNING: $OWNER_PREFS changed during the run" >&2
