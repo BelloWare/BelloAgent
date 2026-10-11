@@ -85,6 +85,10 @@ impl AssetSource for Assets {
                 r#"<circle cx="12" cy="4.8" r="2.3" stroke-width="2"/><circle cx="4.8" cy="18.2" r="2.3" stroke-width="2"/><circle cx="19.2" cy="18.2" r="2.3" stroke-width="2"/><path d="M10.7 7.3 6.1 15.7M13.3 7.3l4.6 8.4M7.6 18.2h8.8" stroke-width="2" stroke-dasharray="1.6 2.2"/>"#
             }
             "circle" => r#"<circle cx="12" cy="12" r="8" stroke-width="2"/>"#,
+            // SF Symbol arrow.clockwise, for Refresh.
+            "arrow.clockwise" => {
+                r#"<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4v4.5H15" stroke-width="2"/>"#
+            }
             "list.bullet" => {
                 r#"<path d="M9.5 6h11M9.5 12h11M9.5 18h11" stroke-width="2"/><circle cx="4.5" cy="6" r="1.2" fill="black"/><circle cx="4.5" cy="12" r="1.2" fill="black"/><circle cx="4.5" cy="18" r="1.2" fill="black"/>"#
             }

@@ -46,6 +46,9 @@ fn ready() -> ConnectionSettingsPresentation {
         dirty: false,
         completion_sound_enabled: true,
         completion_sound_dirty: false,
+        section: super::SettingsSection::Connections,
+        transcript_display: crate::app_settings::TranscriptDisplayMode::Compact,
+        transcript_display_dirty: false,
         confirmation: ConnectionConfirmation::None,
         notice: None,
     }

@@ -1,0 +1,212 @@
+{
+ "plans": [
+  {
+   "contextWindow": 32000,
+   "maxOutputTokens": 4096,
+   "miniModelId": null,
+   "descriptors": [
+    {
+     "id": "big",
+     "name": "big",
+     "description": "",
+     "deprecated": false
+    },
+    {
+     "id": "small",
+     "name": "small",
+     "mini": true,
+     "contextWindow": 8192,
+     "maxOutputTokens": 1024,
+     "reasoning": [
+      "minimal",
+      "low"
+     ],
+     "description": "",
+     "deprecated": false
+    }
+   ],
+   "input": "Fix the \"login\" bug / please",
+   "variants": 1
+  },
+  {
+   "contextWindow": 32000,
+   "maxOutputTokens": 4096,
+   "miniModelId": null,
+   "descriptors": [
+    {
+     "id": "small",
+     "name": "small",
+     "mini": true,
+     "description": "",
+     "deprecated": false
+    }
+   ],
+   "input": "Plan a trip to Kyoto",
+   "variants": 3
+  },
+  {
+   "contextWindow": 32000,
+   "maxOutputTokens": 4096,
+   "miniModelId": " chosen ",
+   "descriptors": [
+    {
+     "id": "small",
+     "name": "small",
+     "mini": true,
+     "description": "",
+     "deprecated": false
+    }
+   ],
+   "input": "tabs\tand\nnewlines\u0001 control",
+   "variants": 1
+  },
+  {
+   "contextWindow": 32000,
+   "maxOutputTokens": 4096,
+   "miniModelId": null,
+   "descriptors": [
+    {
+     "id": "big",
+     "name": "big",
+     "description": "",
+     "deprecated": false
+    }
+   ],
+   "input": "no mini",
+   "variants": 1
+  },
+  {
+   "contextWindow": 32000,
+   "maxOutputTokens": 4096,
+   "miniModelId": null,
+   "descriptors": [
+    {
+     "id": "old",
+     "name": "old",
+     "mini": true,
+     "deprecated": true,
+     "description": ""
+    },
+    {
+     "id": "new",
+     "name": "new",
+     "mini": true,
+     "reasoning": [],
+     "description": "",
+     "deprecated": false
+    }
+   ],
+   "input": "x",
+   "variants": 1
+  },
+  {
+   "contextWindow": 32000,
+   "maxOutputTokens": 4096,
+   "miniModelId": null,
+   "descriptors": [
+    {
+     "id": "small",
+     "name": "small",
+     "mini": true,
+     "contextWindow": 3587,
+     "description": "",
+     "deprecated": false
+    }
+   ],
+   "input": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+   "variants": 1
+  },
+  {
+   "contextWindow": 32000,
+   "maxOutputTokens": 4096,
+   "miniModelId": null,
+   "descriptors": [
+    {
+     "id": "small",
+     "name": "small",
+     "mini": true,
+     "contextWindow": 3073,
+     "description": "",
+     "deprecated": false
+    }
+   ],
+   "input": "x",
+   "variants": 1
+  },
+  {
+   "contextWindow": 32000,
+   "maxOutputTokens": 4096,
+   "miniModelId": null,
+   "descriptors": [
+    {
+     "id": "small",
+     "name": "small",
+     "mini": true,
+     "description": "",
+     "deprecated": false
+    }
+   ],
+   "input": "  \n ",
+   "variants": 1
+  },
+  {
+   "contextWindow": 5000,
+   "maxOutputTokens": 200,
+   "miniModelId": null,
+   "descriptors": [
+    {
+     "id": "small",
+     "name": "small",
+     "mini": true,
+     "reasoning": [
+      "off",
+      "low"
+     ],
+     "description": "",
+     "deprecated": false
+    }
+   ],
+   "input": "日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト 日本語のテキスト ",
+   "variants": 1
+  },
+  {
+   "contextWindow": 32000,
+   "maxOutputTokens": 4096,
+   "miniModelId": null,
+   "descriptors": [
+    {
+     "id": "small",
+     "name": "small",
+     "mini": true,
+     "maxOutputTokens": 64,
+     "description": "",
+     "deprecated": false
+    }
+   ],
+   "input": "emoji 👩‍👩‍👧 and </script>",
+   "variants": 2
+  }
+ ],
+ "replies": [
+  "Fixing the login bug",
+  "Title: \"Fixing the login bug.\"",
+  "**Session title:** Plan the trip。",
+  "\n\n- 1. `Refactor parser`\nExplanation follows",
+  "# Release notes\nMore",
+  "“Quoted title”",
+  "...",
+  "",
+  "word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word ",
+  "1. One\n- two\n* \"One\"\nThree\nFour",
+  "> quoted\n2) second",
+  "TITLE：全角コロン",
+  "  \t  \nsession Title:   spaced   ",
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "short xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "‘single’ quotes.",
+  "\"\"\n- \n* Real one",
+  "Line with \u0007 bell\nClean line",
+  "Titles:\n1) Alpha\n2) Beta\n3) Gamma\n4) Delta",
+  "🚀 Launch plan 👩‍💻 for the team, with a very long tail that goes on and on beyond eighty characters easily"
+ ]
+}

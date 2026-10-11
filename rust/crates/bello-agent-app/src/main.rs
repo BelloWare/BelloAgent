@@ -1,3 +1,4 @@
+mod app_settings;
 #[cfg(any(target_os = "macos", test))]
 mod application_menus;
 mod assets;
@@ -24,6 +25,8 @@ mod layout;
 mod mcp_inspector_controller;
 mod mcp_inspector_host;
 mod mcp_inspector_view;
+mod model_picker;
+mod model_picker_view;
 #[cfg(any(target_os = "macos", test))]
 mod native_menu;
 #[cfg(feature = "native-lifecycle-smoke")]
@@ -159,6 +162,7 @@ struct AgentView {
     chat: ChatState,
     attachment_picker: Option<composer_attachments::PickerOperation>,
     chat_models: composer_attachments::ChatModelListing,
+    model_pickers: model_picker::ModelPickers,
     skill_picker: Option<project_skills_view::SkillPicker>,
     inactive: BTreeMap<String, ChatState>,
     records: Vec<ChatRecord>,
@@ -265,6 +269,9 @@ impl AgentView {
         if !cx.has_global::<notifications::Notifications>() {
             cx.set_global(notifications::Notifications::new(None));
         }
+        if !cx.has_global::<app_settings::AppSettings>() {
+            cx.set_global(app_settings::AppSettings::new(None));
+        }
         let palette = current_palette(window);
         let mut state = workspace.lock().expect("workspace lock").snapshot();
         state
@@ -301,6 +308,14 @@ impl AgentView {
             record.snapshot.parent().unwrap().join("layout.json"),
         ));
         let layout = layout_store.load();
+        // Beside every saved chat, whichever chat the window opened on.
+        let chat_folder = workspace
+            .lock()
+            .expect("workspace lock")
+            .chat_path(&uuid::Uuid::nil().to_string())
+            .expect("valid chat id");
+        let model_pickers =
+            model_picker::ModelPickers::open(chat_folder.parent().expect("chat folder"));
         let legacy_configuration = cx
             .try_global::<connection_settings_controller::LaunchLegacyConfiguration>()
             .map(|source| source.0.clone())
@@ -455,6 +470,7 @@ impl AgentView {
         let mut view = Self {
             attachment_picker: None,
             chat_models: Default::default(),
+            model_pickers,
             skill_picker: None,
             chat,
             inactive: BTreeMap::new(),
@@ -538,6 +554,11 @@ impl AgentView {
             close_dialog: false,
             _release: release,
         };
+        // Saved model choices that cannot be read are said once, rather than
+        // chats silently falling back to their connection's model.
+        if let Some(error) = view.model_pickers.choices.error() {
+            view.chat.notice = Some(error);
+        }
         view.bind_window(window, cx);
         view
     }
@@ -1025,6 +1046,11 @@ impl AgentView {
         }
         if self.skill_picker.is_some() {
             self.skill_picker_key(event, window, cx);
+            return;
+        }
+        if self.model_pickers.open.is_some() && self.model_picker_key(event, window, cx) {
+            self.cancelled_prompt_key = Some(event.keystroke.key.clone());
+            cx.stop_propagation();
             return;
         }
         if self.mcp.open {
@@ -2502,50 +2528,6 @@ impl AgentView {
             );
         let compact = self.pane_width < 620.;
         let icons = self.pane_width < 480.;
-        let model = self
-            .controller
-            .profile()
-            .map(|profile| profile.model_id.clone())
-            .unwrap_or_else(|| "No model".into());
-        let effort = self
-            .controller
-            .profile()
-            .map(|profile| profile.thinking_level.clone())
-            .unwrap_or_else(|| "Default".into());
-        let mut model_pill = div()
-            .flex()
-            .items_center()
-            .gap(px(5.))
-            .px(px(7.))
-            .py(px(4.))
-            .rounded_full()
-            .bg(p.fill())
-            .text_size(px(12.))
-            .text_color(rgb(p.secondary))
-            .child(self.icon("cpu", 11.));
-        if !icons {
-            model_pill = model_pill.child(
-                div()
-                    .max_w(px(if compact { 110. } else { 170. }))
-                    .truncate()
-                    .child(model),
-            );
-        }
-        model_pill = model_pill.child(self.icon("down", 9.));
-        let mut effort_pill = div()
-            .flex()
-            .items_center()
-            .gap(px(5.))
-            .px(px(7.))
-            .py(px(4.))
-            .rounded_full()
-            .bg(p.fill())
-            .text_size(px(12.))
-            .text_color(rgb(p.secondary))
-            .child(self.icon("sparkles", 11.));
-        if !compact {
-            effort_pill = effort_pill.child(effort);
-        }
         let connection_choices = self.connections.choices();
         if connection_choices.len() > 1
             || !self.controller.configured()
@@ -2584,9 +2566,7 @@ impl AgentView {
                 );
             bar = bar.child(choice);
         }
-        bar = bar
-            .child(model_pill)
-            .child(effort_pill.child(self.icon("down", 9.)));
+        bar = bar.children(self.model_switch_pills(compact, icons, cx));
         let can_send = self.controller.configured()
             && !self.load_failed
             && !self.actor_mutation_blocked(&self.record.id)
@@ -3606,6 +3586,9 @@ impl Render for AgentView {
         if let Some(menu) = self.compaction_menu_element(cx) {
             element = element.child(menu);
         }
+        if let Some(picker) = self.model_picker_element(window, cx) {
+            element = element.children(picker);
+        }
         if let Some(menu) = self.sidebar_menu_element(cx) {
             element = element.child(menu);
         }
@@ -4111,6 +4094,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .parent()
                     .unwrap()
                     .join("notifications.json"),
+            )));
+            cx.set_global(app_settings::AppSettings::new(Some(
+                default_session()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("app-settings.json"),
             )));
             #[cfg(target_os = "macos")]
             application_menus::install(cx);

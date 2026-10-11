@@ -189,7 +189,9 @@ impl AgentView {
             && self.cancel_operation.is_none()
             && !self.edit_recovery.blocked
             && (!self.busy || self.inflight_submission.is_some())
-            && self.controller.supports_image_attachments()
+            && self
+                .controller
+                .supports_image_attachments_for(&self.chat_model_choice())
     }
     pub(crate) fn held_input_has_images(&self) -> bool {
         self.editing.is_some()
@@ -297,6 +299,8 @@ impl AgentView {
         if self.shutting_down || self.close_ready || self.actor_mutation_blocked(id) {
             return;
         }
+        // The chat's chosen model decides, as it did for opening the picker.
+        let choice = self.model_pickers.choice(id);
         let Some(chat) = self.chat_mut(id).filter(|chat| {
             source.ptr_eq(&Arc::downgrade(&chat.controller)) && !chat.loading && !chat.load_failed
         }) else {
@@ -314,7 +318,7 @@ impl AgentView {
         if items.is_empty() {
             return;
         }
-        if !chat.controller.supports_image_attachments() {
+        if !chat.controller.supports_image_attachments_for(&choice) {
             chat.error = Some(attachments::IMAGES_UNSUPPORTED.into());
             cx.notify();
             return;

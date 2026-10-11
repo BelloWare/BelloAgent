@@ -30,6 +30,9 @@ pub struct ModelDescriptor {
     pub deprecated: bool,
     pub order: Option<i64>,
     pub input: Option<Vec<String>>,
+    /// The operator's pick for utility work such as titles; None when the
+    /// catalog does not say.
+    pub mini: Option<bool>,
 }
 impl ModelDescriptor {
     pub fn display_name(&self) -> &str {
@@ -285,13 +288,10 @@ pub fn parse(body: &[u8]) -> Result<Vec<ModelDescriptor>, CatalogError> {
             .map(|v| v.as_bool().ok_or(CatalogError::Malformed))
             .transpose()?
             .unwrap_or(false);
-        // Validate recognized Swift metadata even though this bounded slice does
-        // not yet offer utility-model selection.
-        if let Some(mini) = row.get("mini")
-            && !mini.is_boolean()
-        {
-            return Err(CatalogError::Malformed);
-        }
+        let mini = row
+            .get("mini")
+            .map(|v| v.as_bool().ok_or(CatalogError::Malformed))
+            .transpose()?;
         models.push(ModelDescriptor {
             id: id.to_owned(),
             name: text(row.get("name"), true),
@@ -315,6 +315,7 @@ pub fn parse(body: &[u8]) -> Result<Vec<ModelDescriptor>, CatalogError> {
                 .get("input")
                 .map(|v| known_strings(v, &["text", "image"]))
                 .transpose()?,
+            mini,
         });
     }
     // Stable sorting preserves array order for equal explicit orders and for
