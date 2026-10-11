@@ -621,6 +621,55 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
         view.removeFromSuperview()
         XCTAssertEqual(taken(), "")
     }
+    /// A held key repeats into the program. macOS's press-and-hold holds the
+    /// repeats back in the text input system to offer accents (a key window
+    /// and the input method server are needed for the real one, so a stand-in
+    /// swallows repeats the same way); what is being composed, and input
+    /// methods, still go through the text input system.
+    @MainActor func testAHeldKeyRepeatsIntoTheProgram() throws {
+        let emulator = TerminalEmulator(columns: 40, rows: 8)
+        let view = TerminalView(emulator: emulator)
+        view.frame = NSRect(x: 0, y: 0, width: 420, height: 180)
+        let window = window(view, width: 420, height: 180)
+        defer { window.contentView = nil; window.close() }
+        window.makeFirstResponder(view)
+        var sent = Data(), interpreted: [String] = []
+        view.onInput = { sent.append($0) }
+        func taken() -> String { defer { sent = Data() }; return String(decoding: sent, as: UTF8.self) }
+        view.interpretKeys = { [weak view] events in
+            for event in events {
+                interpreted.append(event.characters ?? "")
+                if !event.isARepeat { view?.interpretKeyEvents([event]) }   // press-and-hold keeps the repeats
+            }
+        }
+        var layout = true
+        view.keyboardIsLayout = { layout }
+        func press(_ characters: String, code: UInt16, repeat: Bool) {
+            guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                                               context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: `repeat`, keyCode: code)
+            else { return XCTFail("Could not make a key event") }
+            view.keyDown(with: event)
+        }
+        press("e", code: 14, repeat: false)
+        for _ in 0..<5 { press("e", code: 14, repeat: true) }
+        XCTAssertEqual(taken(), "eeeeee", "every repeat of a held e reaches the program")
+        XCTAssertEqual(interpreted, ["e"], "only the first press goes through the text input system")
+
+        interpreted = []
+
+        // Something being composed: the repeat is the input method's.
+        view.setMarkedText("´", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        press("e", code: 14, repeat: true)
+        XCTAssertEqual(interpreted, ["e"], "a repeat while composing goes to the input method")
+        XCTAssertEqual(taken(), "")
+        view.unmarkText()
+
+        // An input method rather than a keyboard layout: its repeats are its own.
+        interpreted = []; layout = false
+        press("a", code: 0, repeat: true)
+        XCTAssertEqual(interpreted, ["a"], "an input method's repeats go to it")
+        XCTAssertEqual(taken(), "")
+    }
 }
 
 
