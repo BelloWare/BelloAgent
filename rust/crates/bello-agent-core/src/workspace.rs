@@ -18,6 +18,9 @@ const CURRENT_VERSION: u32 = 12;
 #[path = "workspace_topics.rs"]
 mod topics;
 pub use topics::TopicRecord;
+#[path = "workspace_chat_lifecycle.rs"]
+mod chat_lifecycle;
+pub use chat_lifecycle::{DELETE_WORK_NOTICE, DeletedChat, rename_saved_checkpoint};
 #[cfg(test)]
 #[path = "workspace_activity_tests.rs"]
 mod activity_tests;

@@ -967,6 +967,14 @@ impl Controller {
     pub fn reorder(&self, ids: &[String]) -> Result<()> {
         self.change(|s| s.reorder(ids))
     }
+    /// Rename Chat…: persist a reader-chosen, already normalized title in
+    /// this chat's own checkpoint, from which the sidebar and catalog follow.
+    pub fn rename(&self, title: &str) -> Result<()> {
+        self.change(|session| {
+            session.title = title.to_owned();
+            Ok(())
+        })
+    }
     /// Persist the lane change without interrupting or relaunching the worker.
     pub fn promote_to_steering(&self, id: &str) -> Result<()> {
         self.change_checked(
