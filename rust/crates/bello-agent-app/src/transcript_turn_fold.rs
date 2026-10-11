@@ -9,6 +9,10 @@ use super::{LogicalRow, ProjectedRow, RowKey};
 use bello_agent_core::{Message, RunState, Session, tool_history::ToolRecord};
 use std::collections::HashSet;
 
+/// How a finished turn reads (Swift's `TranscriptDisplayMode`): Settings'
+/// own value, so the transcript follows Settings without translating it.
+pub(crate) use crate::app_settings::TranscriptDisplayMode;
+
 /// Where a row stands in a finished turn's fold.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct RowFold {
@@ -19,6 +23,9 @@ pub(super) struct RowFold {
     pub hidden: bool,
     /// The answer's own Think line folds with its turn; its words never do.
     pub think_hidden: bool,
+    /// The answer's own header line folds with the work it summarises, so a
+    /// folded turn reads as one line and the answer.
+    pub header_hidden: bool,
     /// Set on the one row that is a turn's fold control.
     pub control: Option<Control>,
 }
@@ -51,7 +58,7 @@ pub(super) fn label(tool_calls: usize, messages: usize, subagents: usize) -> Str
 }
 
 /// `TurnFoldSpec.isSubagent`: a delegation call is a subagent, not a tool call.
-fn subagent(name: &str) -> bool {
+pub(super) fn subagent(name: &str) -> bool {
     name == "subagent" || name.starts_with("subagent_")
 }
 
@@ -199,13 +206,14 @@ fn fold(
             ..RowFold::default()
         };
     }
-    if thought {
-        rows[last].fold = RowFold {
-            group: Some(group.clone()),
-            think_hidden: closed,
-            ..RowFold::default()
-        };
-    }
+    rows[last].fold = RowFold {
+        // Only a thought ties the answer's row to its fold: a find in the
+        // answer's words never opens the work above it.
+        group: thought.then(|| group.clone()),
+        think_hidden: thought && closed,
+        header_hidden: closed,
+        ..RowFold::default()
+    };
     let at = members.first().copied().unwrap_or(last);
     Some((
         at,
@@ -216,6 +224,7 @@ fn fold(
             expanded: false,
             read_expanded: false,
             read_key: None,
+            response: Default::default(),
             fold: RowFold {
                 control: Some(Control {
                     label: label(tool_calls, messages.len(), subagents),
@@ -229,7 +238,7 @@ fn fold(
 
 #[cfg(test)]
 mod tests {
-    use super::label;
+    use super::{TranscriptDisplayMode, label};
 
     #[test]
     fn a_fold_line_counts_as_swift_counts() {
@@ -238,5 +247,23 @@ mod tests {
         assert_eq!(label(3, 1, 0), "3 tool calls · 1 message");
         assert_eq!(label(0, 2, 2), "2 messages · 2 subagents");
         assert_eq!(label(2, 0, 1), "2 tool calls · 1 subagent");
+    }
+
+    #[test]
+    fn the_display_modes_read_as_swifts_and_compact_is_the_default() {
+        assert_eq!(
+            TranscriptDisplayMode::default(),
+            TranscriptDisplayMode::Compact
+        );
+        assert_eq!(TranscriptDisplayMode::Normal.label(), "Normal");
+        assert_eq!(TranscriptDisplayMode::Compact.label(), "Compact");
+        assert_eq!(
+            TranscriptDisplayMode::Normal.detail(),
+            "A finished turn keeps every tool call and thought on screen."
+        );
+        assert_eq!(
+            TranscriptDisplayMode::Compact.detail(),
+            "A finished turn folds its work behind one line above the answer."
+        );
     }
 }

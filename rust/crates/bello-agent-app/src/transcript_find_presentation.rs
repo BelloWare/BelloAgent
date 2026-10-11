@@ -20,7 +20,6 @@ pub(crate) struct Ranges {
     pub selected: Option<Range<usize>>,
     pub limited: bool,
     pub total: usize,
-    pub numbered: Arc<crate::transcript_find_numbered::NumberedPreviewMap>,
     pub role: String,
     pub tool_owner: Option<(String, String)>,
     pub sidebar_input: Option<bello_agent_core::sidebar_search::OwnedHit>,
@@ -132,17 +131,10 @@ pub(crate) fn prepare(
             notice = Some("Visible highlights are bounded to 4096 per row and 16384 in total; all retained occurrences remain counted and the selected match is highlighted separately.".into());
         }
         let soft = merge_ranges(soft);
-        let numbered = Arc::new(crate::transcript_find_numbered::NumberedPreviewMap::new(
-            text,
-            &soft,
-            selected.as_ref(),
-            cancel,
-        )?);
         ranges.insert(
             id,
             Ranges {
                 all: soft,
-                numbered,
                 role: session.messages[index].role.clone(),
                 tool_owner: match &session.messages[index].tool_record {
                     Some(bello_agent_core::tool_history::ToolRecord::Result(record)) => {
@@ -443,12 +435,9 @@ pub(crate) fn prepare_sidebar(
     {
         return Err("Search range changed".into());
     }
-    let numbered = Arc::new(crate::transcript_find_numbered::NumberedPreviewMap::new(
-        text,
-        &[],
-        selected.as_ref(),
-        cancel,
-    )?);
+    if cancel.load(Ordering::Acquire) {
+        return Err("Find cancelled.".into());
+    }
     let owner = match &message.tool_record {
         Some(bello_agent_core::tool_history::ToolRecord::Result(result)) => {
             Some((result.assistant_id.clone(), result.call_id.clone()))
@@ -463,7 +452,6 @@ pub(crate) fn prepare_sidebar(
             selected,
             limited: false,
             total: 1,
-            numbered,
             role: message.role.clone(),
             tool_owner: owner,
             sidebar_input: input.then(|| hit.clone()),

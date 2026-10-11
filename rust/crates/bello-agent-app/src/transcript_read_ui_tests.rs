@@ -76,22 +76,57 @@ fn read_ui_repeated_expansion_keeps_full_text_notes_focus_and_identity(cx: &mut 
     let disclosure = selector(&child, "disclosure", cx);
     let editor = output(&child, cx);
     let initial = cx.read(|cx| editor.read(cx).text().to_owned());
-    assert!(initial.starts_with("20  line-1\n"));
-    assert!(initial.contains("25  line-6\n… 2 more lines\n28  line-9"));
-    assert!(initial.ends_with("33  line-14"));
-    assert!(!initial.contains("Truncated."));
+    // The head's six lines in their editor, numbered in their gutter; the
+    // middle line; the tail's six.
+    assert_eq!(initial, "line-1\nline-2\nline-3\nline-4\nline-5\nline-6");
+    let card = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    let drawn = cx.read(|cx| child.read(cx).drawn_lines(&card)).unwrap();
+    assert_eq!(drawn.more.as_deref(), Some("… 2 more lines"));
+    let numbers = |run: &(&str, Vec<(String, bool)>)| -> Vec<String> {
+        run.1.iter().map(|(mark, _)| mark.clone()).collect()
+    };
+    assert_eq!(
+        numbers(&drawn.runs[0]),
+        ["20", "21", "22", "23", "24", "25"]
+    );
+    assert_eq!(
+        numbers(&drawn.runs[1]),
+        ["28", "29", "30", "31", "32", "33"]
+    );
+    assert!(
+        drawn
+            .runs
+            .iter()
+            .flat_map(|run| &run.1)
+            .all(|(_, tint)| !tint)
+    );
+    let tail = cx.read(|cx| {
+        child
+            .read(cx)
+            .tool_section_editors()
+            .into_iter()
+            .find(|(label, _)| *label == "OUT-tail")
+            .unwrap()
+            .1
+    });
+    assert!(cx.read(|cx| tail.read(cx).text().starts_with("line-9\n")));
+    assert!(cx.read(|cx| tail.read(cx).text().ends_with("line-14")));
+    // The numbers end at the right of their 34-point gutter; the text
+    // starts 12 past it.
+    let marks = visual
+        .debug_bounds(selector(&child, "OUT-marks", cx))
+        .unwrap();
+    let lines = visual.debug_bounds(selector(&child, "OUT", cx)).unwrap();
+    let words = visual
+        .debug_bounds(selector(&child, "OUT-text", cx))
+        .unwrap();
+    assert_eq!(marks.left() - lines.left(), px(16.));
+    assert_eq!(marks.size.width, px(34.));
+    assert_eq!(words.left() - marks.right(), px(12.));
     assert!(
         visual
             .debug_bounds(selector(&child, "read-note", cx))
             .is_some()
-    );
-    assert!(
-        visual
-            .debug_bounds(selector(&child, "OUT", cx))
-            .unwrap()
-            .size
-            .height
-            <= px(150.)
     );
     for _ in 0..3 {
         let invalidations = cx.read(|cx| child.read(cx).tool_height_invalidation_count());
@@ -99,11 +134,12 @@ fn read_ui_repeated_expansion_keeps_full_text_notes_focus_and_identity(cx: &mut 
         assert!(cx.read(|cx| child.read(cx).tool_height_invalidation_count()) > invalidations);
         let expanded = cx.read(|cx| editor.read(cx).text().to_owned());
         assert!(
-            expanded.len() > 8192
-                && expanded.contains("26  line-7")
-                && expanded.ends_with("33  line-14")
+            expanded.len() > 8192 && expanded.contains("line-7") && expanded.ends_with("line-14")
         );
-        assert!(!expanded.contains("more lines"));
+        let drawn = cx.read(|cx| child.read(cx).drawn_lines(&card)).unwrap();
+        assert_eq!(drawn.more.as_deref(), Some("Show fewer lines"));
+        assert_eq!(drawn.runs.len(), 1);
+        assert_eq!(drawn.runs[0].1.len(), 14);
         click(&mut visual, disclosure, cx);
         click(&mut visual, disclosure, cx);
         assert_eq!(output(&child, cx).entity_id(), editor.entity_id());
@@ -171,7 +207,15 @@ fn read_ui_content_only_changes_and_reopen_retain_text_without_image_decode(
     let editor = output(&child, cx);
     assert_eq!(
         cx.read(|cx| editor.read(cx).text().to_owned()),
-        "2  Read image file [image/png]\n3  [image/png result, 68 bytes]"
+        "Read image file [image/png]\n[image/png result, 68 bytes]"
+    );
+    let card = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    assert_eq!(
+        cx.read(|cx| child.read(cx).drawn_lines(&card))
+            .unwrap()
+            .runs[0]
+            .1,
+        [("2".to_owned(), false), ("3".to_owned(), false)]
     );
     let invalidations = cx.read(|cx| child.read(cx).tool_height_invalidation_count());
     snapshot_change(&root, cx, |session| {
@@ -361,13 +405,13 @@ fn read_ui_page_reveal_retains_expansion_and_unrelated_updates_retain_anchor(
     assert_eq!(row_ids(&child, cx)[1], "tool-result-0");
     let more = selector(&child, "read-disclosure", cx);
     click(&mut visual, more, cx);
-    assert!(cx.read(|app| output(&child, cx).read(app).text().contains("9  line-7")));
+    assert!(cx.read(|app| output(&child, cx).read(app).text().contains("line-7")));
     changed.visible_messages = usize::MAX;
     child.update(cx, |view, cx| view.update_inputs(changed.clone(), cx));
     cx.run_until_parked();
     assert!(row_ids(&child, cx)[0].contains("@tool:"));
     assert!(
-        cx.read(|app| output(&child, cx).read(app).text().contains("9  line-7")),
+        cx.read(|app| output(&child, cx).read(app).text().contains("line-7")),
         "pairing an existing result must not lose its expansion state"
     );
     let editor = output(&child, cx);
@@ -387,7 +431,15 @@ fn read_ui_page_reveal_retains_expansion_and_unrelated_updates_retain_anchor(
     changed.session = Arc::new(session);
     child.update(cx, |view, cx| view.update_inputs(changed, cx));
     cx.run_until_parked();
-    assert!(cx.read(|cx| editor.read(cx).text().contains("… 4 more lines")));
+    assert!(!cx.read(|cx| editor.read(cx).text().contains("line-7")));
+    let card = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    assert_eq!(
+        cx.read(|cx| child.read(cx).drawn_lines(&card))
+            .unwrap()
+            .more
+            .as_deref(),
+        Some("… 4 more lines")
+    );
 }
 
 #[gpui::test]
@@ -490,20 +542,104 @@ fn read_ui_image_only_descriptor_window_can_expand(cx: &mut TestAppContext) {
     let child = transcript(&root, cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     let editor = output(&child, cx);
-    assert!(cx.read(|cx| editor.read(cx).text().contains("… 2 more lines")));
+    let card = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    let more_line = |cx: &TestAppContext| {
+        cx.read(|cx| child.read(cx).drawn_lines(&card))
+            .unwrap()
+            .more
+    };
+    assert_eq!(more_line(cx).as_deref(), Some("… 2 more lines"));
     let more = selector(&child, "read-disclosure", cx);
     click(&mut visual, more, cx);
-    assert!(cx.read(|cx| {
-        editor
-            .read(cx)
-            .text()
-            .contains("7  [image/png result, 1 bytes]")
-    }));
-    assert!(!cx.read(|cx| editor.read(cx).text().contains("more lines")));
+    assert_eq!(
+        cx.read(|cx| editor.read(cx).text().lines().nth(6).map(str::to_owned)),
+        Some("[image/png result, 1 bytes]".to_owned())
+    );
+    assert_eq!(more_line(cx).as_deref(), Some("Show fewer lines"));
     click(&mut visual, more, cx);
-    assert!(cx.read(|cx| editor.read(cx).text().contains("… 2 more lines")));
+    assert_eq!(more_line(cx).as_deref(), Some("… 2 more lines"));
 }
 
 #[cfg(feature = "synthetic-authority")]
 #[path = "transcript_read_native_ui_tests.rs"]
 mod native_workflow;
+
+#[gpui::test]
+fn read_ui_a_long_expanded_window_draws_only_the_pieces_near_the_screen(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
+    let text = (1..=2000)
+        .map(|n| format!("line-{n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (_directory, window, root) =
+        fixture(cx, read_rows(&text, json!({"path":"fixture.txt"}), None), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    click(&mut visual, selector(&child, "read-disclosure", cx), cx);
+    for _ in 0..3 {
+        child.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+    }
+    let pieces = cx.read(|cx| {
+        child
+            .read(cx)
+            .tool_section_editors()
+            .into_iter()
+            .filter(|(label, _)| label.starts_with("OUT"))
+            .count()
+    });
+    // 2,000 lines are 63 pieces of 32; only the first frame's few and a
+    // window's worth either side of the screen ever became editors.
+    assert!((1..=12).contains(&pieces), "{pieces} pieces drawn");
+    let card = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    assert_eq!(
+        cx.read(|cx| child.read(cx).drawn_lines(&card))
+            .unwrap()
+            .runs[0]
+            .1
+            .len(),
+        2000
+    );
+}
+
+#[gpui::test]
+fn read_ui_folding_the_middle_away_releases_a_focused_piece(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
+    let text = (1..=100)
+        .map(|n| format!("line-{n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (_directory, window, root) =
+        fixture(cx, read_rows(&text, json!({"path":"fixture.txt"}), None), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let more = selector(&child, "read-disclosure", cx);
+    click(&mut visual, more, cx);
+    let piece = cx.read(|cx| {
+        child
+            .read(cx)
+            .tool_section_editors()
+            .into_iter()
+            .find(|(label, _)| *label == "OUT#1")
+            .expect("the second piece")
+            .1
+    });
+    window
+        .update(cx, |_, window, cx| {
+            piece.read(cx).focus_handle(cx).focus(window)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    click(&mut visual, more, cx);
+    child.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert!(
+        !window
+            .update(cx, |_, window, cx| piece
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window))
+            .unwrap(),
+        "a piece folded into the middle gives up the keyboard"
+    );
+}

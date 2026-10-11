@@ -121,8 +121,7 @@ pub(crate) fn transcript_display(cx: &App) -> TranscriptDisplayMode {
 
 /// Calls `changed` with the new mode whenever Settings saves a different one.
 /// Keep the returned subscription for as long as the view should follow.
-/// The transcript stream is its consumer; until it subscribes only tests do.
-#[cfg_attr(not(test), allow(dead_code))]
+/// The transcript (`TranscriptView::following_settings`) follows it.
 pub(crate) fn observe_transcript_display<V: 'static>(
     cx: &mut Context<V>,
     mut changed: impl FnMut(&mut V, TranscriptDisplayMode, &mut Context<V>) + 'static,

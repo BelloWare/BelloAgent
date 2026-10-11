@@ -217,7 +217,15 @@ async fn edit_native_workflow_trust_loopback_mutation_checkpoint_replay_and_diff
     let editor = super::editor(&child, "IN", cx);
     assert_eq!(
         cx.read(|cx| editor.read(cx).text().to_owned()),
-        "− second\n+ SECOND"
+        "second\nSECOND"
+    );
+    let card = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    assert_eq!(
+        cx.read(|cx| child.read(cx).drawn_lines(&card))
+            .unwrap()
+            .runs[0]
+            .1,
+        [("−".to_owned(), true), ("+".to_owned(), true)]
     );
     assert!(
         visual

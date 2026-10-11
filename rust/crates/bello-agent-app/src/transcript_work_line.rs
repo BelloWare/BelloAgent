@@ -6,9 +6,10 @@
 //! place, a running one tints its icon with the accent. A row whose summary is
 //! its file's path opens the file from the summary.
 use gpui::{
-    App, ElementId, Hsla, InteractiveElement, IntoElement, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, Transformation, Window, div, prelude::FluentBuilder, px,
-    radians, rgb, rgba, svg,
+    Animation, AnimationExt, App, AppContext, ElementId, Hsla, InteractiveElement, IntoElement,
+    ParentElement, SharedString, StatefulInteractiveElement, Styled, Transformation, Window, div,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder, px, radians, relative, rgb, rgba,
+    svg,
 };
 
 /// The line box every work row shares, and where what opens under it starts:
@@ -38,7 +39,22 @@ pub(crate) struct WorkLine {
     pub trailing: Option<SharedString>,
     /// A line still being written: its end is the part kept in view.
     pub follow: bool,
+    /// What the pointer says over the line; the summary when unset.
+    pub help: Option<SharedString>,
 }
+
+impl WorkLine {
+    /// Swift's `help ?? summary`, and nothing when that is empty.
+    pub(crate) fn tooltip(&self) -> Option<SharedString> {
+        let help = self.help.clone().unwrap_or_else(|| self.summary.clone());
+        (!help.is_empty()).then_some(help)
+    }
+}
+
+/// One sweep of the running shimmer (`TranscriptRowChrome.shimmerSeconds`),
+/// and the band's width.
+const SHIMMER: std::time::Duration = std::time::Duration::from_millis(2600);
+const SHIMMER_BAND: f32 = 300.;
 
 /// Swift's transcript colours, light and dark.
 struct Colors {
@@ -49,6 +65,7 @@ struct Colors {
     danger: Hsla,
     warning: Hsla,
     panel: Hsla,
+    panel_strong: Hsla,
 }
 
 impl Colors {
@@ -63,6 +80,7 @@ impl Colors {
             danger: rgb(palette.danger).into(),
             warning: pick(0xb97a1e, 0xe3b15c),
             panel: rgba(if palette.dark { 0xffffff0b } else { 0x00000009 }).into(),
+            panel_strong: rgba(if palette.dark { 0xffffff14 } else { 0x0000000f }).into(),
         }
     }
 }
@@ -80,6 +98,12 @@ pub(crate) struct CardColors {
     pub danger: Hsla,
     pub warning: Hsla,
     pub success: Hsla,
+    pub panel: Hsla,
+    pub hair_strong: Hsla,
+    pub accent: Hsla,
+    /// A diff's added row and its mark (`diffAdded`, `diffAddedMark`).
+    pub diff_added: Hsla,
+    pub diff_added_mark: Hsla,
 }
 
 pub(crate) fn card_colors(palette: &crate::Palette) -> CardColors {
@@ -94,6 +118,11 @@ pub(crate) fn card_colors(palette: &crate::Palette) -> CardColors {
         faint: colors.faint,
         hair: rgba(if dark { 0xffffff17 } else { 0x00000014 }).into(),
         code_background: rgb(if dark { 0x211d1a } else { 0xf6f1ea }).into(),
+        panel: colors.panel,
+        hair_strong: rgba(if dark { 0xffffff29 } else { 0x00000024 }).into(),
+        accent: colors.accent,
+        diff_added: rgba(if dark { 0x2f8f4e2e } else { 0x2f8f4e1f }).into(),
+        diff_added_mark: rgb(if dark { 0x7cc48f } else { 0x2f8f4e }).into(),
     }
 }
 
@@ -171,10 +200,14 @@ pub(crate) fn work_line(
                 ),
         );
     }
+    let shimmer = (line.state == WorkState::Running).then(|| shimmer(&id, colors.panel_strong));
+    let shimmer = shimmer.map(IntoElement::into_any_element);
+    let tooltip = line.tooltip();
     let mut row = div()
         .id(id)
         .group(group.clone())
         .relative()
+        .overflow_hidden()
         .h(px(HEIGHT))
         .w_full()
         .min_w_0()
@@ -182,6 +215,8 @@ pub(crate) fn work_line(
         .flex_row()
         .items_center()
         .rounded(px(6.))
+        // Under the line's marks and words, as Swift layers it.
+        .children(shimmer)
         .child(div().flex_none().w(px(INDENT)).child(leading))
         .child(
             div()
@@ -195,6 +230,16 @@ pub(crate) fn work_line(
                 })
                 .child(line.title.clone()),
         );
+    if let Some(help) = tooltip {
+        let palette = *palette;
+        row = row.tooltip(move |_, cx| {
+            cx.new(|_| crate::composer_skills::SkillHint {
+                text: help.to_string(),
+                palette,
+            })
+            .into()
+        });
+    }
     if line.expandable {
         let panel = colors.panel;
         row = row
@@ -251,6 +296,44 @@ pub(crate) fn work_line(
         );
     }
     row
+}
+
+/// Swift's `TranscriptShimmer`: a slow band of light crossing a running row,
+/// clear to the strong panel and back, once every 2.6 s. It paints over the
+/// row and decides no geometry.
+fn shimmer(id: &ElementId, strong: Hsla) -> impl IntoElement {
+    let clear = Hsla { a: 0., ..strong };
+    let half = |from: Hsla, to: Hsla| {
+        div().w(px(SHIMMER_BAND / 2.)).h_full().bg(linear_gradient(
+            90.,
+            linear_color_stop(from, 0.),
+            linear_color_stop(to, 1.),
+        ))
+    };
+    // The track runs from a band's width before the row to its end, so the
+    // band enters whole and leaves whole.
+    let selector = format!("{id}-shimmer");
+    div()
+        .debug_selector(move || selector)
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(-SHIMMER_BAND))
+        .right_0()
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .h_full()
+                .flex()
+                .child(half(clear, strong))
+                .child(half(strong, clear))
+                .with_animation(
+                    SharedString::from(format!("work-line-shimmer-{id}")),
+                    Animation::new(SHIMMER).repeat(),
+                    |band, delta| band.left(relative(delta)),
+                ),
+        )
 }
 
 /// The summary gives way first: cut at its end, or, for a line still being
@@ -315,7 +398,32 @@ pub(crate) fn think_summary(text: &str, running: bool) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::think_summary;
+    use super::{WorkLine, WorkState, think_summary};
+
+    #[test]
+    fn a_work_lines_tooltip_is_its_help_or_its_summary() {
+        let mut line = WorkLine {
+            icon: "terminal",
+            title: "Ran".into(),
+            summary: "cargo test".into(),
+            suffix: None,
+            state: WorkState::Ok,
+            expandable: true,
+            open: false,
+            trailing: None,
+            follow: false,
+            help: None,
+        };
+        assert_eq!(line.tooltip(), Some("cargo test".into()));
+        line.help = Some("/repo/src/main.rs".into());
+        assert_eq!(line.tooltip(), Some("/repo/src/main.rs".into()));
+        // A help that says nothing hides the summary too, as Swift's does.
+        line.help = Some("".into());
+        assert_eq!(line.tooltip(), None);
+        line.help = None;
+        line.summary = "".into();
+        assert_eq!(line.tooltip(), None);
+    }
 
     #[test]
     fn a_think_row_reads_its_first_line_or_while_running_its_last() {

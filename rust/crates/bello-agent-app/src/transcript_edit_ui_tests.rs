@@ -95,9 +95,34 @@ fn edit_ui_diff_disclosure_cache_editor_identity_and_raw_copy(cx: &mut TestAppCo
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     let input = editor(&child, "IN", cx);
     let collapsed = cx.read(|cx| input.read(cx).text().to_owned());
-    assert!(collapsed.starts_with("− before\n+ new-0"));
-    assert!(collapsed.contains("… 9 more lines"));
-    assert!(collapsed.ends_with("+ new-19"));
+    // Swift's capped diff: six rows, the middle line, six rows; each row's
+    // sign beside its text, the added and removed ones tinted.
+    assert_eq!(collapsed, "before\nnew-0\nnew-1\nnew-2\nnew-3\nnew-4");
+    let tail = editor(&child, "IN-tail", cx);
+    assert!(cx.read(|cx| tail.read(cx).text().ends_with("new-19")));
+    let card = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    let drawn = cx.read(|cx| child.read(cx).drawn_lines(&card)).unwrap();
+    assert_eq!(drawn.more.as_deref(), Some("… 9 more lines"));
+    assert_eq!(drawn.runs.len(), 2);
+    assert_eq!(drawn.runs[0].0, "IN");
+    assert_eq!(drawn.runs[0].1[0], ("−".to_owned(), true));
+    assert_eq!(drawn.runs[0].1[1], ("+".to_owned(), true));
+    assert_eq!(drawn.runs[1].0, "IN-tail");
+    let head = visual.debug_bounds(selector(&child, "IN", cx)).unwrap();
+    let more = visual
+        .debug_bounds(selector(&child, "edit-disclosure", cx))
+        .unwrap();
+    let rest = visual
+        .debug_bounds(selector(&child, "IN-tail", cx))
+        .unwrap();
+    assert_eq!(head.size.height, px(6. * 17.));
+    assert_eq!(more.top(), head.bottom(), "the middle line stands between");
+    assert_eq!(rest.top(), more.bottom());
+    // The text stands past the sign's box, 34 points into the card.
+    let text = visual
+        .debug_bounds(selector(&child, "IN-text", cx))
+        .unwrap();
+    assert_eq!(text.left() - head.left(), px(34.));
     assert!(
         visual
             .debug_bounds(selector(&child, "edit-label", cx))
@@ -113,8 +138,15 @@ fn edit_ui_diff_disclosure_cache_editor_identity_and_raw_copy(cx: &mut TestAppCo
     for _ in 0..3 {
         click(&mut visual, selector(&child, "edit-disclosure", cx), cx);
         let full = cx.read(|cx| input.read(cx).text().to_owned());
-        assert!(full.contains("+ new-10"));
-        assert!(!full.contains("more lines"));
+        assert!(full.contains("new-10") && full.ends_with("new-19"));
+        let drawn = cx.read(|cx| child.read(cx).drawn_lines(&card)).unwrap();
+        assert_eq!(drawn.more.as_deref(), Some("Show fewer lines"));
+        assert_eq!(drawn.runs.len(), 1);
+        // Every row, in a scroll of its own past 224 points.
+        let scroll = visual
+            .debug_bounds(selector(&child, "IN-scroll", cx))
+            .unwrap();
+        assert_eq!(scroll.size.height, px(224.));
         click(&mut visual, selector(&child, "disclosure", cx), cx);
         click(&mut visual, selector(&child, "disclosure", cx), cx);
         assert_eq!(editor(&child, "IN", cx).entity_id(), input.entity_id());
@@ -289,7 +321,7 @@ fn edit_ui_standalone_paged_result_preserves_disclosure_when_owner_is_revealed(
         editor(&child, "IN", cx)
             .read(app)
             .text()
-            .contains("+ line-10")
+            .contains("line-10")
     }));
     changed.visible_messages = usize::MAX;
     child.update(cx, |view, cx| view.update_inputs(changed.clone(), cx));
@@ -299,7 +331,7 @@ fn edit_ui_standalone_paged_result_preserves_disclosure_when_owner_is_revealed(
         cx.read(|app| editor(&child, "IN", cx)
             .read(app)
             .text()
-            .contains("+ line-10")),
+            .contains("line-10")),
         "revealing the validated owning assistant must preserve requested-change expansion"
     );
 }

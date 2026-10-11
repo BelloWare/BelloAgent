@@ -1,0 +1,2911 @@
+{
+  "caps" : {
+    "diffLines" : 12,
+    "readLines" : 12,
+    "sectionCap" : 150,
+    "terminalCap" : 224
+  },
+  "fallback" : "compact",
+  "folds" : [
+    {
+      "label" : "Thought for a while",
+      "messages" : 0,
+      "subagents" : 0,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "1 subagent",
+      "messages" : 0,
+      "subagents" : 1,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "2 subagents",
+      "messages" : 0,
+      "subagents" : 2,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "3 subagents",
+      "messages" : 0,
+      "subagents" : 3,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "1 message",
+      "messages" : 1,
+      "subagents" : 0,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "1 message · 1 subagent",
+      "messages" : 1,
+      "subagents" : 1,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "1 message · 2 subagents",
+      "messages" : 1,
+      "subagents" : 2,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "1 message · 3 subagents",
+      "messages" : 1,
+      "subagents" : 3,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "2 messages",
+      "messages" : 2,
+      "subagents" : 0,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "2 messages · 1 subagent",
+      "messages" : 2,
+      "subagents" : 1,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "2 messages · 2 subagents",
+      "messages" : 2,
+      "subagents" : 2,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "2 messages · 3 subagents",
+      "messages" : 2,
+      "subagents" : 3,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "3 messages",
+      "messages" : 3,
+      "subagents" : 0,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "3 messages · 1 subagent",
+      "messages" : 3,
+      "subagents" : 1,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "3 messages · 2 subagents",
+      "messages" : 3,
+      "subagents" : 2,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "3 messages · 3 subagents",
+      "messages" : 3,
+      "subagents" : 3,
+      "toolCalls" : 0
+    },
+    {
+      "label" : "1 tool call",
+      "messages" : 0,
+      "subagents" : 0,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 1 subagent",
+      "messages" : 0,
+      "subagents" : 1,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 2 subagents",
+      "messages" : 0,
+      "subagents" : 2,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 3 subagents",
+      "messages" : 0,
+      "subagents" : 3,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 1 message",
+      "messages" : 1,
+      "subagents" : 0,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 1 message · 1 subagent",
+      "messages" : 1,
+      "subagents" : 1,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 1 message · 2 subagents",
+      "messages" : 1,
+      "subagents" : 2,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 1 message · 3 subagents",
+      "messages" : 1,
+      "subagents" : 3,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 2 messages",
+      "messages" : 2,
+      "subagents" : 0,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 2 messages · 1 subagent",
+      "messages" : 2,
+      "subagents" : 1,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 2 messages · 2 subagents",
+      "messages" : 2,
+      "subagents" : 2,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 2 messages · 3 subagents",
+      "messages" : 2,
+      "subagents" : 3,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 3 messages",
+      "messages" : 3,
+      "subagents" : 0,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 3 messages · 1 subagent",
+      "messages" : 3,
+      "subagents" : 1,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 3 messages · 2 subagents",
+      "messages" : 3,
+      "subagents" : 2,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "1 tool call · 3 messages · 3 subagents",
+      "messages" : 3,
+      "subagents" : 3,
+      "toolCalls" : 1
+    },
+    {
+      "label" : "2 tool calls",
+      "messages" : 0,
+      "subagents" : 0,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 1 subagent",
+      "messages" : 0,
+      "subagents" : 1,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 2 subagents",
+      "messages" : 0,
+      "subagents" : 2,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 3 subagents",
+      "messages" : 0,
+      "subagents" : 3,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 1 message",
+      "messages" : 1,
+      "subagents" : 0,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 1 message · 1 subagent",
+      "messages" : 1,
+      "subagents" : 1,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 1 message · 2 subagents",
+      "messages" : 1,
+      "subagents" : 2,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 1 message · 3 subagents",
+      "messages" : 1,
+      "subagents" : 3,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 2 messages",
+      "messages" : 2,
+      "subagents" : 0,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 2 messages · 1 subagent",
+      "messages" : 2,
+      "subagents" : 1,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 2 messages · 2 subagents",
+      "messages" : 2,
+      "subagents" : 2,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 2 messages · 3 subagents",
+      "messages" : 2,
+      "subagents" : 3,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 3 messages",
+      "messages" : 3,
+      "subagents" : 0,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 3 messages · 1 subagent",
+      "messages" : 3,
+      "subagents" : 1,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 3 messages · 2 subagents",
+      "messages" : 3,
+      "subagents" : 2,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "2 tool calls · 3 messages · 3 subagents",
+      "messages" : 3,
+      "subagents" : 3,
+      "toolCalls" : 2
+    },
+    {
+      "label" : "3 tool calls",
+      "messages" : 0,
+      "subagents" : 0,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 1 subagent",
+      "messages" : 0,
+      "subagents" : 1,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 2 subagents",
+      "messages" : 0,
+      "subagents" : 2,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 3 subagents",
+      "messages" : 0,
+      "subagents" : 3,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 1 message",
+      "messages" : 1,
+      "subagents" : 0,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 1 message · 1 subagent",
+      "messages" : 1,
+      "subagents" : 1,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 1 message · 2 subagents",
+      "messages" : 1,
+      "subagents" : 2,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 1 message · 3 subagents",
+      "messages" : 1,
+      "subagents" : 3,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 2 messages",
+      "messages" : 2,
+      "subagents" : 0,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 2 messages · 1 subagent",
+      "messages" : 2,
+      "subagents" : 1,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 2 messages · 2 subagents",
+      "messages" : 2,
+      "subagents" : 2,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 2 messages · 3 subagents",
+      "messages" : 2,
+      "subagents" : 3,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 3 messages",
+      "messages" : 3,
+      "subagents" : 0,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 3 messages · 1 subagent",
+      "messages" : 3,
+      "subagents" : 1,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 3 messages · 2 subagents",
+      "messages" : 3,
+      "subagents" : 2,
+      "toolCalls" : 3
+    },
+    {
+      "label" : "3 tool calls · 3 messages · 3 subagents",
+      "messages" : 3,
+      "subagents" : 3,
+      "toolCalls" : 3
+    }
+  ],
+  "modes" : [
+    {
+      "detail" : "A finished turn keeps every tool call and thought on screen.",
+      "label" : "Normal",
+      "mode" : "normal"
+    },
+    {
+      "detail" : "A finished turn folds its work behind one line above the answer.",
+      "label" : "Compact",
+      "mode" : "compact"
+    }
+  ],
+  "numbers" : [
+    {
+      "text" : "0",
+      "value" : 0
+    },
+    {
+      "text" : "7",
+      "value" : 7
+    },
+    {
+      "text" : "999",
+      "value" : 999
+    },
+    {
+      "text" : "1,000",
+      "value" : 1000
+    },
+    {
+      "text" : "9,000",
+      "value" : 9000
+    },
+    {
+      "text" : "12,345",
+      "value" : 12345
+    },
+    {
+      "text" : "1,234,567",
+      "value" : 1234567
+    },
+    {
+      "text" : "10,000,000",
+      "value" : 10000000
+    }
+  ],
+  "splits" : [
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : -7,
+      "maxLines" : 7,
+      "moreLines" : "… -7 more lines",
+      "tail" : 3,
+      "total" : 0
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : -7,
+      "maxLines" : 7,
+      "moreLines" : "… -7 more lines",
+      "tail" : 3,
+      "total" : 0
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : -6,
+      "maxLines" : 7,
+      "moreLines" : "… -6 more lines",
+      "tail" : 3,
+      "total" : 1
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : -6,
+      "maxLines" : 7,
+      "moreLines" : "… -6 more lines",
+      "tail" : 3,
+      "total" : 1
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : -5,
+      "maxLines" : 7,
+      "moreLines" : "… -5 more lines",
+      "tail" : 3,
+      "total" : 2
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : -5,
+      "maxLines" : 7,
+      "moreLines" : "… -5 more lines",
+      "tail" : 3,
+      "total" : 2
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : -4,
+      "maxLines" : 7,
+      "moreLines" : "… -4 more lines",
+      "tail" : 3,
+      "total" : 3
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : -4,
+      "maxLines" : 7,
+      "moreLines" : "… -4 more lines",
+      "tail" : 3,
+      "total" : 3
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : -3,
+      "maxLines" : 7,
+      "moreLines" : "… -3 more lines",
+      "tail" : 3,
+      "total" : 4
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : -3,
+      "maxLines" : 7,
+      "moreLines" : "… -3 more lines",
+      "tail" : 3,
+      "total" : 4
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : -2,
+      "maxLines" : 7,
+      "moreLines" : "… -2 more lines",
+      "tail" : 3,
+      "total" : 5
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : -2,
+      "maxLines" : 7,
+      "moreLines" : "… -2 more lines",
+      "tail" : 3,
+      "total" : 5
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : -1,
+      "maxLines" : 7,
+      "moreLines" : "… -1 more lines",
+      "tail" : 3,
+      "total" : 6
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : -1,
+      "maxLines" : 7,
+      "moreLines" : "… -1 more lines",
+      "tail" : 3,
+      "total" : 6
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 0,
+      "maxLines" : 7,
+      "moreLines" : "… 0 more lines",
+      "tail" : 3,
+      "total" : 7
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 0,
+      "maxLines" : 7,
+      "moreLines" : "… 0 more lines",
+      "tail" : 3,
+      "total" : 7
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 1,
+      "maxLines" : 7,
+      "moreLines" : "… 1 more line",
+      "tail" : 3,
+      "total" : 8
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 1,
+      "maxLines" : 7,
+      "moreLines" : "… 1 more line",
+      "tail" : 3,
+      "total" : 8
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 2,
+      "maxLines" : 7,
+      "moreLines" : "… 2 more lines",
+      "tail" : 3,
+      "total" : 9
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 2,
+      "maxLines" : 7,
+      "moreLines" : "… 2 more lines",
+      "tail" : 3,
+      "total" : 9
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 3,
+      "maxLines" : 7,
+      "moreLines" : "… 3 more lines",
+      "tail" : 3,
+      "total" : 10
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 3,
+      "maxLines" : 7,
+      "moreLines" : "… 3 more lines",
+      "tail" : 3,
+      "total" : 10
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 4,
+      "maxLines" : 7,
+      "moreLines" : "… 4 more lines",
+      "tail" : 3,
+      "total" : 11
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 4,
+      "maxLines" : 7,
+      "moreLines" : "… 4 more lines",
+      "tail" : 3,
+      "total" : 11
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 5,
+      "maxLines" : 7,
+      "moreLines" : "… 5 more lines",
+      "tail" : 3,
+      "total" : 12
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 5,
+      "maxLines" : 7,
+      "moreLines" : "… 5 more lines",
+      "tail" : 3,
+      "total" : 12
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 6,
+      "maxLines" : 7,
+      "moreLines" : "… 6 more lines",
+      "tail" : 3,
+      "total" : 13
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 6,
+      "maxLines" : 7,
+      "moreLines" : "… 6 more lines",
+      "tail" : 3,
+      "total" : 13
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 7,
+      "maxLines" : 7,
+      "moreLines" : "… 7 more lines",
+      "tail" : 3,
+      "total" : 14
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 7,
+      "maxLines" : 7,
+      "moreLines" : "… 7 more lines",
+      "tail" : 3,
+      "total" : 14
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 8,
+      "maxLines" : 7,
+      "moreLines" : "… 8 more lines",
+      "tail" : 3,
+      "total" : 15
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 8,
+      "maxLines" : 7,
+      "moreLines" : "… 8 more lines",
+      "tail" : 3,
+      "total" : 15
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 9,
+      "maxLines" : 7,
+      "moreLines" : "… 9 more lines",
+      "tail" : 3,
+      "total" : 16
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 9,
+      "maxLines" : 7,
+      "moreLines" : "… 9 more lines",
+      "tail" : 3,
+      "total" : 16
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 10,
+      "maxLines" : 7,
+      "moreLines" : "… 10 more lines",
+      "tail" : 3,
+      "total" : 17
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 10,
+      "maxLines" : 7,
+      "moreLines" : "… 10 more lines",
+      "tail" : 3,
+      "total" : 17
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 11,
+      "maxLines" : 7,
+      "moreLines" : "… 11 more lines",
+      "tail" : 3,
+      "total" : 18
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 11,
+      "maxLines" : 7,
+      "moreLines" : "… 11 more lines",
+      "tail" : 3,
+      "total" : 18
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 12,
+      "maxLines" : 7,
+      "moreLines" : "… 12 more lines",
+      "tail" : 3,
+      "total" : 19
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 12,
+      "maxLines" : 7,
+      "moreLines" : "… 12 more lines",
+      "tail" : 3,
+      "total" : 19
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 13,
+      "maxLines" : 7,
+      "moreLines" : "… 13 more lines",
+      "tail" : 3,
+      "total" : 20
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 13,
+      "maxLines" : 7,
+      "moreLines" : "… 13 more lines",
+      "tail" : 3,
+      "total" : 20
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 14,
+      "maxLines" : 7,
+      "moreLines" : "… 14 more lines",
+      "tail" : 3,
+      "total" : 21
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 14,
+      "maxLines" : 7,
+      "moreLines" : "… 14 more lines",
+      "tail" : 3,
+      "total" : 21
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 15,
+      "maxLines" : 7,
+      "moreLines" : "… 15 more lines",
+      "tail" : 3,
+      "total" : 22
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 15,
+      "maxLines" : 7,
+      "moreLines" : "… 15 more lines",
+      "tail" : 3,
+      "total" : 22
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 16,
+      "maxLines" : 7,
+      "moreLines" : "… 16 more lines",
+      "tail" : 3,
+      "total" : 23
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 16,
+      "maxLines" : 7,
+      "moreLines" : "… 16 more lines",
+      "tail" : 3,
+      "total" : 23
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 17,
+      "maxLines" : 7,
+      "moreLines" : "… 17 more lines",
+      "tail" : 3,
+      "total" : 24
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 17,
+      "maxLines" : 7,
+      "moreLines" : "… 17 more lines",
+      "tail" : 3,
+      "total" : 24
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 18,
+      "maxLines" : 7,
+      "moreLines" : "… 18 more lines",
+      "tail" : 3,
+      "total" : 25
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 18,
+      "maxLines" : 7,
+      "moreLines" : "… 18 more lines",
+      "tail" : 3,
+      "total" : 25
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 19,
+      "maxLines" : 7,
+      "moreLines" : "… 19 more lines",
+      "tail" : 3,
+      "total" : 26
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 19,
+      "maxLines" : 7,
+      "moreLines" : "… 19 more lines",
+      "tail" : 3,
+      "total" : 26
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 20,
+      "maxLines" : 7,
+      "moreLines" : "… 20 more lines",
+      "tail" : 3,
+      "total" : 27
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 20,
+      "maxLines" : 7,
+      "moreLines" : "… 20 more lines",
+      "tail" : 3,
+      "total" : 27
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 21,
+      "maxLines" : 7,
+      "moreLines" : "… 21 more lines",
+      "tail" : 3,
+      "total" : 28
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 21,
+      "maxLines" : 7,
+      "moreLines" : "… 21 more lines",
+      "tail" : 3,
+      "total" : 28
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 22,
+      "maxLines" : 7,
+      "moreLines" : "… 22 more lines",
+      "tail" : 3,
+      "total" : 29
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 22,
+      "maxLines" : 7,
+      "moreLines" : "… 22 more lines",
+      "tail" : 3,
+      "total" : 29
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 23,
+      "maxLines" : 7,
+      "moreLines" : "… 23 more lines",
+      "tail" : 3,
+      "total" : 30
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 23,
+      "maxLines" : 7,
+      "moreLines" : "… 23 more lines",
+      "tail" : 3,
+      "total" : 30
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 24,
+      "maxLines" : 7,
+      "moreLines" : "… 24 more lines",
+      "tail" : 3,
+      "total" : 31
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 24,
+      "maxLines" : 7,
+      "moreLines" : "… 24 more lines",
+      "tail" : 3,
+      "total" : 31
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 25,
+      "maxLines" : 7,
+      "moreLines" : "… 25 more lines",
+      "tail" : 3,
+      "total" : 32
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 25,
+      "maxLines" : 7,
+      "moreLines" : "… 25 more lines",
+      "tail" : 3,
+      "total" : 32
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 26,
+      "maxLines" : 7,
+      "moreLines" : "… 26 more lines",
+      "tail" : 3,
+      "total" : 33
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 26,
+      "maxLines" : 7,
+      "moreLines" : "… 26 more lines",
+      "tail" : 3,
+      "total" : 33
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 27,
+      "maxLines" : 7,
+      "moreLines" : "… 27 more lines",
+      "tail" : 3,
+      "total" : 34
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 27,
+      "maxLines" : 7,
+      "moreLines" : "… 27 more lines",
+      "tail" : 3,
+      "total" : 34
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 28,
+      "maxLines" : 7,
+      "moreLines" : "… 28 more lines",
+      "tail" : 3,
+      "total" : 35
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 28,
+      "maxLines" : 7,
+      "moreLines" : "… 28 more lines",
+      "tail" : 3,
+      "total" : 35
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 29,
+      "maxLines" : 7,
+      "moreLines" : "… 29 more lines",
+      "tail" : 3,
+      "total" : 36
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 29,
+      "maxLines" : 7,
+      "moreLines" : "… 29 more lines",
+      "tail" : 3,
+      "total" : 36
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 30,
+      "maxLines" : 7,
+      "moreLines" : "… 30 more lines",
+      "tail" : 3,
+      "total" : 37
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 30,
+      "maxLines" : 7,
+      "moreLines" : "… 30 more lines",
+      "tail" : 3,
+      "total" : 37
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 31,
+      "maxLines" : 7,
+      "moreLines" : "… 31 more lines",
+      "tail" : 3,
+      "total" : 38
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 31,
+      "maxLines" : 7,
+      "moreLines" : "… 31 more lines",
+      "tail" : 3,
+      "total" : 38
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 32,
+      "maxLines" : 7,
+      "moreLines" : "… 32 more lines",
+      "tail" : 3,
+      "total" : 39
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 32,
+      "maxLines" : 7,
+      "moreLines" : "… 32 more lines",
+      "tail" : 3,
+      "total" : 39
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 4,
+      "hidden" : 33,
+      "maxLines" : 7,
+      "moreLines" : "… 33 more lines",
+      "tail" : 3,
+      "total" : 40
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 4,
+      "hidden" : 33,
+      "maxLines" : 7,
+      "moreLines" : "… 33 more lines",
+      "tail" : 3,
+      "total" : 40
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -12,
+      "maxLines" : 12,
+      "moreLines" : "… -12 more lines",
+      "tail" : 6,
+      "total" : 0
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -12,
+      "maxLines" : 12,
+      "moreLines" : "… -12 more lines",
+      "tail" : 6,
+      "total" : 0
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -11,
+      "maxLines" : 12,
+      "moreLines" : "… -11 more lines",
+      "tail" : 6,
+      "total" : 1
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -11,
+      "maxLines" : 12,
+      "moreLines" : "… -11 more lines",
+      "tail" : 6,
+      "total" : 1
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -10,
+      "maxLines" : 12,
+      "moreLines" : "… -10 more lines",
+      "tail" : 6,
+      "total" : 2
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -10,
+      "maxLines" : 12,
+      "moreLines" : "… -10 more lines",
+      "tail" : 6,
+      "total" : 2
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -9,
+      "maxLines" : 12,
+      "moreLines" : "… -9 more lines",
+      "tail" : 6,
+      "total" : 3
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -9,
+      "maxLines" : 12,
+      "moreLines" : "… -9 more lines",
+      "tail" : 6,
+      "total" : 3
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -8,
+      "maxLines" : 12,
+      "moreLines" : "… -8 more lines",
+      "tail" : 6,
+      "total" : 4
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -8,
+      "maxLines" : 12,
+      "moreLines" : "… -8 more lines",
+      "tail" : 6,
+      "total" : 4
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -7,
+      "maxLines" : 12,
+      "moreLines" : "… -7 more lines",
+      "tail" : 6,
+      "total" : 5
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -7,
+      "maxLines" : 12,
+      "moreLines" : "… -7 more lines",
+      "tail" : 6,
+      "total" : 5
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -6,
+      "maxLines" : 12,
+      "moreLines" : "… -6 more lines",
+      "tail" : 6,
+      "total" : 6
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -6,
+      "maxLines" : 12,
+      "moreLines" : "… -6 more lines",
+      "tail" : 6,
+      "total" : 6
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -5,
+      "maxLines" : 12,
+      "moreLines" : "… -5 more lines",
+      "tail" : 6,
+      "total" : 7
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -5,
+      "maxLines" : 12,
+      "moreLines" : "… -5 more lines",
+      "tail" : 6,
+      "total" : 7
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -4,
+      "maxLines" : 12,
+      "moreLines" : "… -4 more lines",
+      "tail" : 6,
+      "total" : 8
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -4,
+      "maxLines" : 12,
+      "moreLines" : "… -4 more lines",
+      "tail" : 6,
+      "total" : 8
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -3,
+      "maxLines" : 12,
+      "moreLines" : "… -3 more lines",
+      "tail" : 6,
+      "total" : 9
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -3,
+      "maxLines" : 12,
+      "moreLines" : "… -3 more lines",
+      "tail" : 6,
+      "total" : 9
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -2,
+      "maxLines" : 12,
+      "moreLines" : "… -2 more lines",
+      "tail" : 6,
+      "total" : 10
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -2,
+      "maxLines" : 12,
+      "moreLines" : "… -2 more lines",
+      "tail" : 6,
+      "total" : 10
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : -1,
+      "maxLines" : 12,
+      "moreLines" : "… -1 more lines",
+      "tail" : 6,
+      "total" : 11
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : -1,
+      "maxLines" : 12,
+      "moreLines" : "… -1 more lines",
+      "tail" : 6,
+      "total" : 11
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 0,
+      "maxLines" : 12,
+      "moreLines" : "… 0 more lines",
+      "tail" : 6,
+      "total" : 12
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 0,
+      "maxLines" : 12,
+      "moreLines" : "… 0 more lines",
+      "tail" : 6,
+      "total" : 12
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 1,
+      "maxLines" : 12,
+      "moreLines" : "… 1 more line",
+      "tail" : 6,
+      "total" : 13
+    },
+    {
+      "capped" : false,
+      "collapses" : false,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 1,
+      "maxLines" : 12,
+      "moreLines" : "… 1 more line",
+      "tail" : 6,
+      "total" : 13
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 2,
+      "maxLines" : 12,
+      "moreLines" : "… 2 more lines",
+      "tail" : 6,
+      "total" : 14
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 2,
+      "maxLines" : 12,
+      "moreLines" : "… 2 more lines",
+      "tail" : 6,
+      "total" : 14
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 3,
+      "maxLines" : 12,
+      "moreLines" : "… 3 more lines",
+      "tail" : 6,
+      "total" : 15
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 3,
+      "maxLines" : 12,
+      "moreLines" : "… 3 more lines",
+      "tail" : 6,
+      "total" : 15
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 4,
+      "maxLines" : 12,
+      "moreLines" : "… 4 more lines",
+      "tail" : 6,
+      "total" : 16
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 4,
+      "maxLines" : 12,
+      "moreLines" : "… 4 more lines",
+      "tail" : 6,
+      "total" : 16
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 5,
+      "maxLines" : 12,
+      "moreLines" : "… 5 more lines",
+      "tail" : 6,
+      "total" : 17
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 5,
+      "maxLines" : 12,
+      "moreLines" : "… 5 more lines",
+      "tail" : 6,
+      "total" : 17
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 6,
+      "maxLines" : 12,
+      "moreLines" : "… 6 more lines",
+      "tail" : 6,
+      "total" : 18
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 6,
+      "maxLines" : 12,
+      "moreLines" : "… 6 more lines",
+      "tail" : 6,
+      "total" : 18
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 7,
+      "maxLines" : 12,
+      "moreLines" : "… 7 more lines",
+      "tail" : 6,
+      "total" : 19
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 7,
+      "maxLines" : 12,
+      "moreLines" : "… 7 more lines",
+      "tail" : 6,
+      "total" : 19
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 8,
+      "maxLines" : 12,
+      "moreLines" : "… 8 more lines",
+      "tail" : 6,
+      "total" : 20
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 8,
+      "maxLines" : 12,
+      "moreLines" : "… 8 more lines",
+      "tail" : 6,
+      "total" : 20
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 9,
+      "maxLines" : 12,
+      "moreLines" : "… 9 more lines",
+      "tail" : 6,
+      "total" : 21
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 9,
+      "maxLines" : 12,
+      "moreLines" : "… 9 more lines",
+      "tail" : 6,
+      "total" : 21
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 10,
+      "maxLines" : 12,
+      "moreLines" : "… 10 more lines",
+      "tail" : 6,
+      "total" : 22
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 10,
+      "maxLines" : 12,
+      "moreLines" : "… 10 more lines",
+      "tail" : 6,
+      "total" : 22
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 11,
+      "maxLines" : 12,
+      "moreLines" : "… 11 more lines",
+      "tail" : 6,
+      "total" : 23
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 11,
+      "maxLines" : 12,
+      "moreLines" : "… 11 more lines",
+      "tail" : 6,
+      "total" : 23
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 12,
+      "maxLines" : 12,
+      "moreLines" : "… 12 more lines",
+      "tail" : 6,
+      "total" : 24
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 12,
+      "maxLines" : 12,
+      "moreLines" : "… 12 more lines",
+      "tail" : 6,
+      "total" : 24
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 13,
+      "maxLines" : 12,
+      "moreLines" : "… 13 more lines",
+      "tail" : 6,
+      "total" : 25
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 13,
+      "maxLines" : 12,
+      "moreLines" : "… 13 more lines",
+      "tail" : 6,
+      "total" : 25
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 14,
+      "maxLines" : 12,
+      "moreLines" : "… 14 more lines",
+      "tail" : 6,
+      "total" : 26
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 14,
+      "maxLines" : 12,
+      "moreLines" : "… 14 more lines",
+      "tail" : 6,
+      "total" : 26
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 15,
+      "maxLines" : 12,
+      "moreLines" : "… 15 more lines",
+      "tail" : 6,
+      "total" : 27
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 15,
+      "maxLines" : 12,
+      "moreLines" : "… 15 more lines",
+      "tail" : 6,
+      "total" : 27
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 16,
+      "maxLines" : 12,
+      "moreLines" : "… 16 more lines",
+      "tail" : 6,
+      "total" : 28
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 16,
+      "maxLines" : 12,
+      "moreLines" : "… 16 more lines",
+      "tail" : 6,
+      "total" : 28
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 17,
+      "maxLines" : 12,
+      "moreLines" : "… 17 more lines",
+      "tail" : 6,
+      "total" : 29
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 17,
+      "maxLines" : 12,
+      "moreLines" : "… 17 more lines",
+      "tail" : 6,
+      "total" : 29
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 18,
+      "maxLines" : 12,
+      "moreLines" : "… 18 more lines",
+      "tail" : 6,
+      "total" : 30
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 18,
+      "maxLines" : 12,
+      "moreLines" : "… 18 more lines",
+      "tail" : 6,
+      "total" : 30
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 19,
+      "maxLines" : 12,
+      "moreLines" : "… 19 more lines",
+      "tail" : 6,
+      "total" : 31
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 19,
+      "maxLines" : 12,
+      "moreLines" : "… 19 more lines",
+      "tail" : 6,
+      "total" : 31
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 20,
+      "maxLines" : 12,
+      "moreLines" : "… 20 more lines",
+      "tail" : 6,
+      "total" : 32
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 20,
+      "maxLines" : 12,
+      "moreLines" : "… 20 more lines",
+      "tail" : 6,
+      "total" : 32
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 21,
+      "maxLines" : 12,
+      "moreLines" : "… 21 more lines",
+      "tail" : 6,
+      "total" : 33
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 21,
+      "maxLines" : 12,
+      "moreLines" : "… 21 more lines",
+      "tail" : 6,
+      "total" : 33
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 22,
+      "maxLines" : 12,
+      "moreLines" : "… 22 more lines",
+      "tail" : 6,
+      "total" : 34
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 22,
+      "maxLines" : 12,
+      "moreLines" : "… 22 more lines",
+      "tail" : 6,
+      "total" : 34
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 23,
+      "maxLines" : 12,
+      "moreLines" : "… 23 more lines",
+      "tail" : 6,
+      "total" : 35
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 23,
+      "maxLines" : 12,
+      "moreLines" : "… 23 more lines",
+      "tail" : 6,
+      "total" : 35
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 24,
+      "maxLines" : 12,
+      "moreLines" : "… 24 more lines",
+      "tail" : 6,
+      "total" : 36
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 24,
+      "maxLines" : 12,
+      "moreLines" : "… 24 more lines",
+      "tail" : 6,
+      "total" : 36
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 25,
+      "maxLines" : 12,
+      "moreLines" : "… 25 more lines",
+      "tail" : 6,
+      "total" : 37
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 25,
+      "maxLines" : 12,
+      "moreLines" : "… 25 more lines",
+      "tail" : 6,
+      "total" : 37
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 26,
+      "maxLines" : 12,
+      "moreLines" : "… 26 more lines",
+      "tail" : 6,
+      "total" : 38
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 26,
+      "maxLines" : 12,
+      "moreLines" : "… 26 more lines",
+      "tail" : 6,
+      "total" : 38
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 27,
+      "maxLines" : 12,
+      "moreLines" : "… 27 more lines",
+      "tail" : 6,
+      "total" : 39
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 27,
+      "maxLines" : 12,
+      "moreLines" : "… 27 more lines",
+      "tail" : 6,
+      "total" : 39
+    },
+    {
+      "capped" : true,
+      "collapses" : true,
+      "expanded" : false,
+      "head" : 6,
+      "hidden" : 28,
+      "maxLines" : 12,
+      "moreLines" : "… 28 more lines",
+      "tail" : 6,
+      "total" : 40
+    },
+    {
+      "capped" : false,
+      "collapses" : true,
+      "expanded" : true,
+      "head" : 6,
+      "hidden" : 28,
+      "maxLines" : 12,
+      "moreLines" : "… 28 more lines",
+      "tail" : 6,
+      "total" : 40
+    }
+  ],
+  "subagents" : [
+    {
+      "name" : "subagent",
+      "subagent" : true
+    },
+    {
+      "name" : "subagent_review",
+      "subagent" : true
+    },
+    {
+      "name" : "subagents",
+      "subagent" : false
+    },
+    {
+      "name" : "sub_agent",
+      "subagent" : false
+    },
+    {
+      "name" : "bash",
+      "subagent" : false
+    },
+    {
+      "name" : "",
+      "subagent" : false
+    }
+  ],
+  "windows" : [
+    {
+      "label" : "0 lines",
+      "shown" : 0,
+      "total" : 0
+    },
+    {
+      "label" : "0 lines",
+      "shown" : 1,
+      "total" : 0
+    },
+    {
+      "label" : "0 lines",
+      "shown" : 12,
+      "total" : 0
+    },
+    {
+      "label" : "0 lines",
+      "shown" : 13,
+      "total" : 0
+    },
+    {
+      "label" : "0 lines",
+      "shown" : 0,
+      "total" : 0
+    },
+    {
+      "label" : "Showing 0 of 1 lines",
+      "shown" : 0,
+      "total" : 1
+    },
+    {
+      "label" : "1 line",
+      "shown" : 1,
+      "total" : 1
+    },
+    {
+      "label" : "1 line",
+      "shown" : 12,
+      "total" : 1
+    },
+    {
+      "label" : "1 line",
+      "shown" : 13,
+      "total" : 1
+    },
+    {
+      "label" : "1 line",
+      "shown" : 1,
+      "total" : 1
+    },
+    {
+      "label" : "Showing 0 of 2 lines",
+      "shown" : 0,
+      "total" : 2
+    },
+    {
+      "label" : "Showing 1 of 2 lines",
+      "shown" : 1,
+      "total" : 2
+    },
+    {
+      "label" : "2 lines",
+      "shown" : 12,
+      "total" : 2
+    },
+    {
+      "label" : "2 lines",
+      "shown" : 13,
+      "total" : 2
+    },
+    {
+      "label" : "2 lines",
+      "shown" : 2,
+      "total" : 2
+    },
+    {
+      "label" : "Showing 0 of 12 lines",
+      "shown" : 0,
+      "total" : 12
+    },
+    {
+      "label" : "Showing 1 of 12 lines",
+      "shown" : 1,
+      "total" : 12
+    },
+    {
+      "label" : "12 lines",
+      "shown" : 12,
+      "total" : 12
+    },
+    {
+      "label" : "12 lines",
+      "shown" : 13,
+      "total" : 12
+    },
+    {
+      "label" : "12 lines",
+      "shown" : 12,
+      "total" : 12
+    },
+    {
+      "label" : "Showing 0 of 13 lines",
+      "shown" : 0,
+      "total" : 13
+    },
+    {
+      "label" : "Showing 1 of 13 lines",
+      "shown" : 1,
+      "total" : 13
+    },
+    {
+      "label" : "Showing 12 of 13 lines",
+      "shown" : 12,
+      "total" : 13
+    },
+    {
+      "label" : "13 lines",
+      "shown" : 13,
+      "total" : 13
+    },
+    {
+      "label" : "13 lines",
+      "shown" : 13,
+      "total" : 13
+    },
+    {
+      "label" : "Showing 0 of 14 lines",
+      "shown" : 0,
+      "total" : 14
+    },
+    {
+      "label" : "Showing 1 of 14 lines",
+      "shown" : 1,
+      "total" : 14
+    },
+    {
+      "label" : "Showing 12 of 14 lines",
+      "shown" : 12,
+      "total" : 14
+    },
+    {
+      "label" : "Showing 13 of 14 lines",
+      "shown" : 13,
+      "total" : 14
+    },
+    {
+      "label" : "14 lines",
+      "shown" : 14,
+      "total" : 14
+    },
+    {
+      "label" : "Showing 0 of 340 lines",
+      "shown" : 0,
+      "total" : 340
+    },
+    {
+      "label" : "Showing 1 of 340 lines",
+      "shown" : 1,
+      "total" : 340
+    },
+    {
+      "label" : "Showing 12 of 340 lines",
+      "shown" : 12,
+      "total" : 340
+    },
+    {
+      "label" : "Showing 13 of 340 lines",
+      "shown" : 13,
+      "total" : 340
+    },
+    {
+      "label" : "340 lines",
+      "shown" : 340,
+      "total" : 340
+    }
+  ],
+  "works" : [
+    {
+      "states" : [
+
+      ],
+      "text" : "",
+      "thinking" : "",
+      "work" : "Response"
+    },
+    {
+      "states" : [
+        "completed"
+      ],
+      "text" : "",
+      "thinking" : "",
+      "work" : "1 tool call"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed"
+      ],
+      "text" : "",
+      "thinking" : "",
+      "work" : "2 tool calls · 1 failed"
+    },
+    {
+      "states" : [
+        "running",
+        "preparing"
+      ],
+      "text" : "",
+      "thinking" : "",
+      "work" : "1 tool call · Preparing tool call…"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed",
+        "cancelled",
+        "skipped",
+        "unknown",
+        "recorded",
+        "interrupted",
+        "running",
+        "prepared",
+        "preparing"
+      ],
+      "text" : "",
+      "thinking" : "",
+      "work" : "9 tool calls · 1 failed · 2 skipped · 3 outcome unknown · Preparing tool call…"
+    },
+    {
+      "states" : [
+
+      ],
+      "text" : " ",
+      "thinking" : "",
+      "work" : "Response"
+    },
+    {
+      "states" : [
+        "completed"
+      ],
+      "text" : " ",
+      "thinking" : "",
+      "work" : "1 tool call"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed"
+      ],
+      "text" : " ",
+      "thinking" : "",
+      "work" : "2 tool calls · 1 failed"
+    },
+    {
+      "states" : [
+        "running",
+        "preparing"
+      ],
+      "text" : " ",
+      "thinking" : "",
+      "work" : "1 tool call · Preparing tool call…"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed",
+        "cancelled",
+        "skipped",
+        "unknown",
+        "recorded",
+        "interrupted",
+        "running",
+        "prepared",
+        "preparing"
+      ],
+      "text" : " ",
+      "thinking" : "",
+      "work" : "9 tool calls · 1 failed · 2 skipped · 3 outcome unknown · Preparing tool call…"
+    },
+    {
+      "states" : [
+
+      ],
+      "text" : "Done.",
+      "thinking" : "",
+      "work" : "Answered"
+    },
+    {
+      "states" : [
+        "completed"
+      ],
+      "text" : "Done.",
+      "thinking" : "",
+      "work" : "1 tool call"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed"
+      ],
+      "text" : "Done.",
+      "thinking" : "",
+      "work" : "2 tool calls · 1 failed"
+    },
+    {
+      "states" : [
+        "running",
+        "preparing"
+      ],
+      "text" : "Done.",
+      "thinking" : "",
+      "work" : "1 tool call · Preparing tool call…"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed",
+        "cancelled",
+        "skipped",
+        "unknown",
+        "recorded",
+        "interrupted",
+        "running",
+        "prepared",
+        "preparing"
+      ],
+      "text" : "Done.",
+      "thinking" : "",
+      "work" : "9 tool calls · 1 failed · 2 skipped · 3 outcome unknown · Preparing tool call…"
+    },
+    {
+      "states" : [
+
+      ],
+      "text" : "",
+      "thinking" : "  \n",
+      "work" : "Response"
+    },
+    {
+      "states" : [
+        "completed"
+      ],
+      "text" : "",
+      "thinking" : "  \n",
+      "work" : "1 tool call"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed"
+      ],
+      "text" : "",
+      "thinking" : "  \n",
+      "work" : "2 tool calls · 1 failed"
+    },
+    {
+      "states" : [
+        "running",
+        "preparing"
+      ],
+      "text" : "",
+      "thinking" : "  \n",
+      "work" : "1 tool call · Preparing tool call…"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed",
+        "cancelled",
+        "skipped",
+        "unknown",
+        "recorded",
+        "interrupted",
+        "running",
+        "prepared",
+        "preparing"
+      ],
+      "text" : "",
+      "thinking" : "  \n",
+      "work" : "9 tool calls · 1 failed · 2 skipped · 3 outcome unknown · Preparing tool call…"
+    },
+    {
+      "states" : [
+
+      ],
+      "text" : " ",
+      "thinking" : "  \n",
+      "work" : "Response"
+    },
+    {
+      "states" : [
+        "completed"
+      ],
+      "text" : " ",
+      "thinking" : "  \n",
+      "work" : "1 tool call"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed"
+      ],
+      "text" : " ",
+      "thinking" : "  \n",
+      "work" : "2 tool calls · 1 failed"
+    },
+    {
+      "states" : [
+        "running",
+        "preparing"
+      ],
+      "text" : " ",
+      "thinking" : "  \n",
+      "work" : "1 tool call · Preparing tool call…"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed",
+        "cancelled",
+        "skipped",
+        "unknown",
+        "recorded",
+        "interrupted",
+        "running",
+        "prepared",
+        "preparing"
+      ],
+      "text" : " ",
+      "thinking" : "  \n",
+      "work" : "9 tool calls · 1 failed · 2 skipped · 3 outcome unknown · Preparing tool call…"
+    },
+    {
+      "states" : [
+
+      ],
+      "text" : "Done.",
+      "thinking" : "  \n",
+      "work" : "Answered"
+    },
+    {
+      "states" : [
+        "completed"
+      ],
+      "text" : "Done.",
+      "thinking" : "  \n",
+      "work" : "1 tool call"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed"
+      ],
+      "text" : "Done.",
+      "thinking" : "  \n",
+      "work" : "2 tool calls · 1 failed"
+    },
+    {
+      "states" : [
+        "running",
+        "preparing"
+      ],
+      "text" : "Done.",
+      "thinking" : "  \n",
+      "work" : "1 tool call · Preparing tool call…"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed",
+        "cancelled",
+        "skipped",
+        "unknown",
+        "recorded",
+        "interrupted",
+        "running",
+        "prepared",
+        "preparing"
+      ],
+      "text" : "Done.",
+      "thinking" : "  \n",
+      "work" : "9 tool calls · 1 failed · 2 skipped · 3 outcome unknown · Preparing tool call…"
+    },
+    {
+      "states" : [
+
+      ],
+      "text" : "",
+      "thinking" : "Plan.",
+      "work" : "Reasoned"
+    },
+    {
+      "states" : [
+        "completed"
+      ],
+      "text" : "",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 1 tool call"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed"
+      ],
+      "text" : "",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 2 tool calls · 1 failed"
+    },
+    {
+      "states" : [
+        "running",
+        "preparing"
+      ],
+      "text" : "",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 1 tool call · Preparing tool call…"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed",
+        "cancelled",
+        "skipped",
+        "unknown",
+        "recorded",
+        "interrupted",
+        "running",
+        "prepared",
+        "preparing"
+      ],
+      "text" : "",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 9 tool calls · 1 failed · 2 skipped · 3 outcome unknown · Preparing tool call…"
+    },
+    {
+      "states" : [
+
+      ],
+      "text" : " ",
+      "thinking" : "Plan.",
+      "work" : "Reasoned"
+    },
+    {
+      "states" : [
+        "completed"
+      ],
+      "text" : " ",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 1 tool call"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed"
+      ],
+      "text" : " ",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 2 tool calls · 1 failed"
+    },
+    {
+      "states" : [
+        "running",
+        "preparing"
+      ],
+      "text" : " ",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 1 tool call · Preparing tool call…"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed",
+        "cancelled",
+        "skipped",
+        "unknown",
+        "recorded",
+        "interrupted",
+        "running",
+        "prepared",
+        "preparing"
+      ],
+      "text" : " ",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 9 tool calls · 1 failed · 2 skipped · 3 outcome unknown · Preparing tool call…"
+    },
+    {
+      "states" : [
+
+      ],
+      "text" : "Done.",
+      "thinking" : "Plan.",
+      "work" : "Reasoned"
+    },
+    {
+      "states" : [
+        "completed"
+      ],
+      "text" : "Done.",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 1 tool call"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed"
+      ],
+      "text" : "Done.",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 2 tool calls · 1 failed"
+    },
+    {
+      "states" : [
+        "running",
+        "preparing"
+      ],
+      "text" : "Done.",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 1 tool call · Preparing tool call…"
+    },
+    {
+      "states" : [
+        "completed",
+        "failed",
+        "cancelled",
+        "skipped",
+        "unknown",
+        "recorded",
+        "interrupted",
+        "running",
+        "prepared",
+        "preparing"
+      ],
+      "text" : "Done.",
+      "thinking" : "Plan.",
+      "work" : "Reasoned · 9 tool calls · 1 failed · 2 skipped · 3 outcome unknown · Preparing tool call…"
+    }
+  ]
+}

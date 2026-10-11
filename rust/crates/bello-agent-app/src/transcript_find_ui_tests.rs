@@ -383,11 +383,16 @@ fn find_tool_read_middle_expands_and_inner_scroll_keeps_find_focus_and_caret(
                 .read(cx)
                 .tool_section_editors()
                 .into_iter()
-                .filter(|(label, _)| *label == "OUT")
+                .filter(|(label, _)| label.starts_with("OUT"))
                 .collect();
-            assert_eq!(outputs.len(), 1);
-            let editor = outputs[0].1.read(cx);
-            assert!(editor.text().contains("85  line-75 needle"));
+            // The expanded read is drawn a piece at a time; the piece holding
+            // the match is drawn, the far ones stand aside.
+            assert!(outputs.len() <= 4, "{}", outputs.len());
+            let (_, editor) = outputs
+                .iter()
+                .find(|(_, editor)| editor.read(cx).text().contains("line-75 needle"))
+                .expect("the match's piece");
+            let editor = editor.read(cx);
             assert_eq!(editor.engine.cursor, 0);
             assert!(!editor.focus_handle(cx).is_focused(window));
             assert!(

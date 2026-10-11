@@ -4,14 +4,21 @@
 use crate::{AgentView, Palette, layout, transcript_actions};
 use bello_agent_core::{Controller, RunState, Session};
 use bello_workbench_ui::{EditorAppearance, EditorView, TextDecoration, TextPresentation};
+#[path = "transcript_card_lines.rs"]
+mod card_lines;
 #[path = "transcript_edit_presentation.rs"]
 mod edit_presentation;
 #[path = "transcript_markdown.rs"]
 mod markdown_view;
 #[cfg(test)]
 pub(crate) use markdown_view::Child as MarkdownChild;
+#[cfg(test)]
+#[path = "transcript_polish_oracle_tests.rs"]
+mod polish_oracle;
 #[path = "transcript_read_presentation.rs"]
 mod read_presentation;
+#[path = "transcript_response.rs"]
+mod response;
 #[path = "transcript_shaped_text.rs"]
 mod shaped_text;
 #[path = "transcript_tool_presentation.rs"]
@@ -20,6 +27,8 @@ mod tool_presentation;
 mod tool_row;
 #[path = "transcript_turn_fold.rs"]
 mod turn_fold;
+pub(crate) use response::FoldCommand;
+pub(crate) use turn_fold::TranscriptDisplayMode;
 #[path = "transcript_work_line.rs"]
 mod work_line;
 use gpui::{prelude::*, *};
@@ -60,12 +69,14 @@ thread_local! {
 pub(crate) fn loose_turns_for_test() {
     TURNS_LOOSE.with(|loose| loose.set(true));
 }
-/// Swift's compact display, its default: finished turns fold.
-fn turn_folds_apply() -> bool {
+/// The display a new transcript starts in: Swift's compact display, its
+/// default, unless a test asked for the turns loose.
+fn initial_display() -> TranscriptDisplayMode {
     #[cfg(test)]
-    return !TURNS_LOOSE.with(std::cell::Cell::get);
-    #[cfg(not(test))]
-    true
+    if TURNS_LOOSE.with(std::cell::Cell::get) {
+        return TranscriptDisplayMode::Normal;
+    }
+    TranscriptDisplayMode::Compact
 }
 fn tool_rows_open_by_default() -> bool {
     #[cfg(test)]
@@ -114,6 +125,12 @@ enum RowKey {
     /// A finished turn's fold control, by the row of the question that opened
     /// the turn. In the open set, the fold is open.
     Fold(Box<RowKey>),
+    /// A response by its reply's row key. In the open set, the response is
+    /// folded to its header line (Swift's `responseLine`). Never a row's key.
+    Response(Box<RowKey>),
+    /// In the open set, everything inside the response draws closed (Swift's
+    /// `response`). Never a row's key.
+    ResponseInside(Box<RowKey>),
     // A duplicate has no stable model identity. Scope its presentation key to
     // the exact immutable snapshot instead of guessing after replacement.
     Duplicate {
@@ -131,6 +148,7 @@ struct LogicalRow {
     read_expanded: bool,
     read_key: Option<RowKey>,
     fold: turn_fold::RowFold,
+    response: response::RowResponse,
 }
 
 struct Presentation {
@@ -146,14 +164,15 @@ struct Presentation {
 }
 
 impl Presentation {
-    fn new(input: TranscriptInput) -> Self {
-        Self::with_disclosure(input, &HashSet::new(), &HashSet::new())
+    fn new(input: TranscriptInput, display: TranscriptDisplayMode) -> Self {
+        Self::with_disclosure(input, &HashSet::new(), &HashSet::new(), display)
     }
 
     fn with_disclosure(
         input: TranscriptInput,
         opened: &HashSet<RowKey>,
         expanded_reads: &HashSet<RowKey>,
+        display: TranscriptDisplayMode,
     ) -> Self {
         let hidden_messages = input
             .session
@@ -170,6 +189,7 @@ impl Presentation {
                 read_expanded: false,
                 read_key: None,
                 fold: turn_fold::RowFold::default(),
+                response: Default::default(),
             });
         } else if input.load_failed {
             rows.push(LogicalRow {
@@ -180,6 +200,7 @@ impl Presentation {
                 read_expanded: false,
                 read_key: None,
                 fold: turn_fold::RowFold::default(),
+                response: Default::default(),
             });
         }
         if hidden_messages > 0 {
@@ -191,6 +212,7 @@ impl Presentation {
                 read_expanded: false,
                 read_key: None,
                 fold: turn_fold::RowFold::default(),
+                response: Default::default(),
             });
         }
         let mut counts = HashMap::<&str, usize>::new();
@@ -274,12 +296,21 @@ impl Presentation {
                 read_expanded,
                 read_key,
                 fold: turn_fold::RowFold::default(),
+                response: Default::default(),
             });
         }
-        if turn_folds_apply() {
+        response::apply(&mut rows, &input.session, opened);
+        for row in &mut rows {
+            // A response folded from inside draws its cards closed and keeps
+            // what the reader opened for when it opens again.
+            row.expanded &= !row.response.inside_folded;
+        }
+        if display == TranscriptDisplayMode::Compact {
             turn_fold::apply(&mut rows, &input.session, opened);
         }
-        let (folded, rows) = rows.into_iter().partition(|row| row.fold.hidden);
+        let (folded, rows) = rows
+            .into_iter()
+            .partition(|row| row.fold.hidden || row.response.line_hidden);
         Self {
             input,
             rows,
@@ -300,6 +331,7 @@ impl Presentation {
         let other_row = &other.rows[other_index];
         if row.key != other_row.key
             || row.fold != other_row.fold
+            || row.response != other_row.response
             || (index + 1 == self.rows.len()) != (other_index + 1 == other.rows.len())
         {
             return false;
@@ -337,7 +369,10 @@ fn tool_section_visible(
         .filter(|row| {
             &row.key == key
                 && row.expanded
-                && row.projected.is_some_and(|projected| match section {
+                // A capped list's tail is drawn only while the list is capped.
+                && !(section.split('#').next().is_some_and(|run| run.ends_with("-tail"))
+                    && row.read_expanded)
+                && row.projected.is_some_and(|projected| match card_lines::section_of(section) {
                     "IN" => {
                         (matches!(projected, ProjectedRow::Call { .. })
                             || edit_presentation::has_request(
@@ -425,6 +460,7 @@ impl ToolFocusRestore {
             .iter()
             .any(|((key, section), entry)| {
                 &entry.editor.read(cx).focus_handle(cx) == previous
+                    && entry.mounted
                     && tool_section_visible(
                         &view.presentation,
                         &view.viewport.borrow().list,
@@ -779,6 +815,16 @@ fn row_gap(presentation: &Presentation, index: usize) -> f32 {
     }
 }
 
+/// The response strip a row draws: none when its turn's fold hides it.
+fn drawn_header(row: &LogicalRow) -> Option<&response::Header> {
+    // A response the reader folded to its line keeps that line even inside
+    // a closed turn: the fold is what they asked for, not the turn's.
+    row.response
+        .header
+        .as_ref()
+        .filter(|header| !row.fold.header_hidden || header.collapsed)
+}
+
 fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) -> Pixels {
     #[cfg(test)]
     if let Some(height) = presentation.estimate_override.get() {
@@ -799,6 +845,11 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
                 _ => 29.25,
             });
     };
+    let header = drawn_header(row);
+    if let Some(header) = header.filter(|header| header.collapsed) {
+        // A response folded to its line is its strip and nothing else.
+        return px(gap + header.height());
+    }
     let message = &presentation.input.session.messages[source_index];
     if matches!(
         row.projected,
@@ -806,6 +857,7 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
     ) {
         // The line, and while open its card 2 under it and 8 above what follows.
         return px(gap
+            + header.map_or(0., response::Header::height)
             + work_line::HEIGHT
             + if row.expanded {
                 2. + 64. + tool_presentation::SECTION_CAP * 2. + 8.
@@ -844,7 +896,9 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
         let (line, spacing) = markdown_view::body_line(bello_agent_core::markdown::Style::PROSE);
         plain(&message.text, 14.5, line + spacing) - spacing
     };
-    let mut height = 12. + 6. + transcript_actions::ACTION_BAND_HEIGHT + gap + body;
+    // A response's strip stands where the row's top room was.
+    let top = header.map_or(12., response::Header::height);
+    let mut height = top + 6. + transcript_actions::ACTION_BAND_HEIGHT + gap + body;
     if user {
         height += 18.;
         if let Some(content) = &message.user_content {
@@ -1036,6 +1090,10 @@ pub(crate) struct TranscriptView {
     /// Tool rows the reader opened; every other one is closed.
     opened: HashSet<RowKey>,
     expanded_reads: HashSet<RowKey>,
+    /// How finished turns read: Normal keeps them loose, Compact folds them.
+    display: TranscriptDisplayMode,
+    /// Settings' display preference, while this view follows it.
+    _display: Option<Subscription>,
     tool_editors: Rc<RefCell<ToolEditors>>,
     focus: Option<FocusHandle>,
     removed_tool_focus: Rc<RefCell<Vec<FocusHandle>>>,
@@ -1060,11 +1118,14 @@ impl TranscriptView {
                 .is_some_and(|row| reply_end_visible(row, viewport.list.viewport_bounds()))
     }
     pub(crate) fn new(parent: WeakEntity<AgentView>, input: TranscriptInput) -> Self {
-        let presentation = Rc::new(Presentation::new(input));
+        let display = initial_display();
+        let presentation = Rc::new(Presentation::new(input, display));
         Self {
             parent,
             opened: HashSet::new(),
             expanded_reads: HashSet::new(),
+            display,
+            _display: None,
             tool_editors: Rc::new(RefCell::new(ToolEditors::default())),
             focus: None,
             removed_tool_focus: Rc::new(RefCell::new(Vec::new())),
@@ -1310,6 +1371,12 @@ impl TranscriptView {
         if let Some(group) = row.fold.group.clone() {
             self.opened.insert(RowKey::Fold(Box::new(group)));
         }
+        // And the response folded around it opens.
+        if let Some(owner) = row.response.owner.clone() {
+            self.opened
+                .remove(&RowKey::Response(Box::new(owner.clone())));
+            self.opened.remove(&RowKey::ResponseInside(Box::new(owner)));
+        }
         self.opened.insert(key.clone());
         if let Some(read_key) = read_key {
             self.expanded_reads.insert(read_key);
@@ -1318,6 +1385,7 @@ impl TranscriptView {
             self.presentation.input.clone(),
             &self.opened,
             &self.expanded_reads,
+            self.display,
         ));
         self.viewport.borrow_mut().reveal = Some(key);
         cx.notify();
@@ -1424,6 +1492,60 @@ impl TranscriptView {
         // A scroll request is not visibility evidence. Keep navigation active
         // and require another fresh painted receipt at the resulting origin.
         self.rearm_find_geometry(cx);
+    }
+    /// Lands a find on line `line` of a lines section's run, from where the
+    /// run's block was drawn; a block not drawn yet is tried on the next frame.
+    #[allow(clippy::too_many_arguments)]
+    fn land_find_line(
+        &mut self,
+        find: &Rc<crate::transcript_find_presentation::FindPaint>,
+        index: usize,
+        key: &RowKey,
+        label: &'static str,
+        first: (usize, usize),
+        (last, past): ((usize, usize), usize),
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .presentation
+            .rows
+            .get(index)
+            .is_none_or(|row| &row.key != key)
+        {
+            return;
+        }
+        let geometry = self
+            .tool_editors
+            .borrow()
+            .entries
+            .get(&(key.clone(), label))
+            .and_then(|entry| entry.lines.clone());
+        let Some((block, rows)) = geometry else {
+            return;
+        };
+        let Some(block) = block
+            .get()
+            .filter(|_| last.0 < rows.len() && first.0 <= last.0)
+        else {
+            self.rearm_find_geometry(cx);
+            return;
+        };
+        // The editor rows the match runs over: a long line wraps, and its
+        // start may be far above the match.
+        let top_of = |(line, within): (usize, usize)| {
+            (rows[..line].iter().sum::<usize>() + within.min(rows[line].saturating_sub(1))) as f32
+                * card_lines::LINE_HEIGHT
+        };
+        let top = top_of(first);
+        let height = top_of(last) - top + (1 + past) as f32 * card_lines::LINE_HEIGHT;
+        self.land_find_point(
+            find,
+            index,
+            point(block.left(), block.top() + px(top)),
+            px(height),
+            px(card_lines::LINE_HEIGHT),
+            cx,
+        );
     }
     fn invalidate_sidebar_geometry(&self, cx: &mut Context<Self>) {
         if let Some(paint) = self.tool_editors.borrow().sidebar.clone() {
@@ -1597,6 +1719,13 @@ impl TranscriptView {
             // The finished turn that folded the message away opens.
             changed |= self.opened.insert(RowKey::Fold(Box::new(group)));
         }
+        if let Some(owner) = row.response.owner.clone() {
+            // So does the response folded around it.
+            changed |= self
+                .opened
+                .remove(&RowKey::Response(Box::new(owner.clone())));
+            changed |= self.opened.remove(&RowKey::ResponseInside(Box::new(owner)));
+        }
         if matches!(
             row.projected,
             Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
@@ -1609,6 +1738,7 @@ impl TranscriptView {
                 self.presentation.input.clone(),
                 &self.opened,
                 &self.expanded_reads,
+                self.display,
             ));
         }
         self.viewport.borrow_mut().reveal = Some(key);
@@ -1670,6 +1800,7 @@ impl TranscriptView {
             input,
             &self.opened,
             &self.expanded_reads,
+            self.display,
         ));
         if !open_results.is_empty() {
             let session = self.presentation.input.session.clone();
@@ -1691,14 +1822,24 @@ impl TranscriptView {
                     self.presentation.input.clone(),
                     &self.opened,
                     &self.expanded_reads,
+                    self.display,
                 ));
             }
         }
         let keys: HashSet<_> = self.presentation.all_rows().map(|row| &row.key).collect();
+        let responses: HashSet<_> = self
+            .presentation
+            .all_rows()
+            .filter_map(|row| row.response.owner.as_ref())
+            .collect();
         // A fold's choice lasts as long as its question: a retry runs the turn
-        // again and its control comes back with the reader's choice.
+        // again and its control comes back with the reader's choice. A
+        // response's lasts as long as the response.
         self.opened.retain(|key| match key {
             RowKey::Fold(question) => keys.contains(question.as_ref()),
+            RowKey::Response(owner) | RowKey::ResponseInside(owner) => {
+                responses.contains(owner.as_ref())
+            }
             key => keys.contains(key),
         });
         let read_keys: HashSet<_> = self
@@ -1751,13 +1892,18 @@ impl TranscriptView {
         if !self.opened.remove(&key) {
             self.opened.insert(key);
         }
+        self.refold(window, cx);
+    }
+    /// Lays the page out again after a fold changed, leaving the keyboard
+    /// with a visible owner when the fold hid a focused card's payload, as
+    /// closing the card itself does.
+    fn refold(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.presentation = Rc::new(Presentation::with_disclosure(
             self.presentation.input.clone(),
             &self.opened,
             &self.expanded_reads,
+            self.display,
         ));
-        // Folding away a focused card's payload leaves a visible owner with
-        // the keyboard, as closing the card itself does.
         let folded: HashSet<_> = self
             .presentation
             .folded
@@ -1821,6 +1967,7 @@ impl TranscriptView {
             self.presentation.input.clone(),
             &self.opened,
             &self.expanded_reads,
+            self.display,
         ));
         self.invalidate_sidebar_geometry(cx);
         cx.notify();
@@ -1883,6 +2030,7 @@ impl TranscriptView {
             self.presentation.input.clone(),
             &self.opened,
             &self.expanded_reads,
+            self.display,
         ));
         self.invalidate_sidebar_geometry(cx);
         cx.notify();
@@ -2040,6 +2188,15 @@ impl TranscriptView {
             .map(|row| format!("transcript-tool-{:?}", row.key))
             .collect()
     }
+    /// What the card `selector` names last drew as its lines.
+    #[cfg(test)]
+    pub(crate) fn drawn_lines(&self, selector: &str) -> Option<DrawnLines> {
+        self.tool_editors
+            .borrow()
+            .drawn_lines
+            .get(selector)
+            .cloned()
+    }
     #[cfg(test)]
     pub(crate) fn tool_section_editors(&self) -> Vec<(&'static str, Entity<EditorView>)> {
         self.tool_editors
@@ -2165,6 +2322,9 @@ impl TranscriptView {
                 } => format!("@tool:{assistant:?}:{call_id}:{occurrence}"),
                 RowKey::Duplicate { id, occurrence, .. } => format!("{id}#{occurrence}"),
                 RowKey::Fold(group) => format!("@fold:{group:?}"),
+                RowKey::Response(_) | RowKey::ResponseInside(_) => {
+                    unreachable!("a response's fold is never a row")
+                }
             })
             .collect()
     }
@@ -2822,6 +2982,8 @@ impl Element for ViewportList {
                 row.message_index
                     .is_some_and(|i| self.presentation.input.session.messages[i].id == target)
             })
+            // A response folded to its strip shows none of its end.
+            && !drawn_header(&self.presentation.rows[index]).is_some_and(|header| header.collapsed)
             && measured_reply_end_visible(&list, index)
         {
             let parent = self.parent.clone();
@@ -2866,15 +3028,16 @@ impl Element for ViewportList {
             .entries
             .iter()
             .find(|(_, entry)| entry.editor.read(cx).focus_handle(cx).is_focused(window))
-            .map(|((key, section), entry)| (key.clone(), *section, entry.row_index));
-        let hidden_focused = focused_row.is_some_and(|(key, section, index)| {
-            !tool_section_visible(
-                &self.presentation,
-                &self.viewport.borrow().list,
-                &key,
-                section,
-                index,
-            )
+            .map(|((key, section), entry)| (key.clone(), *section, entry.row_index, entry.mounted));
+        let hidden_focused = focused_row.is_some_and(|(key, section, index, mounted)| {
+            !mounted
+                || !tool_section_visible(
+                    &self.presentation,
+                    &self.viewport.borrow().list,
+                    &key,
+                    section,
+                    index,
+                )
         });
         if removed_focused || hidden_focused {
             // This component's cached read-only editor left the rendered page.
@@ -3110,6 +3273,30 @@ fn fold_control(
         .child(div().w_full().h(px(1.)).bg(colors.hair))
 }
 
+/// The response strip a row carries, and whether the response is folded to
+/// it. Pressing it folds or opens the response.
+fn response_strip(
+    presentation: &Presentation,
+    index: usize,
+    child: &WeakEntity<TranscriptView>,
+) -> Option<(bool, AnyElement)> {
+    let row = &presentation.rows[index];
+    let header = drawn_header(row)?;
+    let input = &presentation.input;
+    let (child, owner) = (child.clone(), header.owner.clone());
+    let (chat_id, controller) = (input.chat_id.clone(), input.controller.clone());
+    let selector = format!("transcript-response-{:?}", header.owner);
+    Some((
+        header.collapsed,
+        response::render(&selector, header, &input.palette, move |window, cx| {
+            let _ = child.update(cx, |view, cx| {
+                view.toggle_response(owner.clone(), &chat_id, &controller, window, cx)
+            });
+        })
+        .into_any_element(),
+    ))
+}
+
 fn row_width(width: Pixels) -> f32 {
     (f32::from(width) - 2. * ROW_GUTTER).clamp(0., ROW_MAX_WIDTH)
 }
@@ -3157,12 +3344,40 @@ fn render_row(
                 )),
         );
     }
-    let content = if matches!(
+    let (collapsed, strip) = match response_strip(presentation, index, child) {
+        Some((collapsed, strip)) => (collapsed, Some(strip)),
+        None => (false, None),
+    };
+    let content = if collapsed {
+        // A response folded to its line: its first row is the strip alone.
+        let selector = match &row.key {
+            RowKey::Message(id) => Some(format!("transcript-row-{id}")),
+            _ => None,
+        };
+        div()
+            .when_some(selector, |d, selector| d.debug_selector(|| selector))
+            .w_full()
+            .max_w(px(ROW_MAX_WIDTH))
+            .mx_auto()
+            .children(strip)
+            .into_any_element()
+    } else if matches!(
         row.projected,
         Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
     ) {
-        render_tool_card(presentation, index, child, tool_editors, width, window, cx)
-            .into_any_element()
+        let card = render_tool_card(presentation, index, child, tool_editors, width, window, cx);
+        match strip {
+            Some(strip) => div()
+                .w_full()
+                .max_w(px(ROW_MAX_WIDTH))
+                .mx_auto()
+                .flex()
+                .flex_col()
+                .child(strip)
+                .child(card)
+                .into_any_element(),
+            None => card.into_any_element(),
+        }
     } else {
         match &row.key {
             RowKey::Loading => div()
@@ -3205,6 +3420,9 @@ fn render_row(
             }
             RowKey::Tool { .. } => unreachable!("tool card rendered above"),
             RowKey::Fold(_) => unreachable!("fold control rendered above"),
+            RowKey::Response(_) | RowKey::ResponseInside(_) => {
+                unreachable!("a response's fold is never a row")
+            }
             RowKey::Message(_) | RowKey::Duplicate { .. } => {
                 let source_index = row.message_index.expect("message row");
                 let message = &input.session.messages[source_index];
@@ -3245,7 +3463,9 @@ fn render_row(
                     // Swift's Think row: closed by default, even while it
                     // streams; open, the reasoning read as Markdown under it.
                     let streaming = message.state == "streaming";
-                    let open = tool_editors.borrow().open_thinking.contains(&message.id);
+                    // A response folded from inside draws its thought closed.
+                    let open = tool_editors.borrow().open_thinking.contains(&message.id)
+                        && !row.response.inside_folded;
                     let think = work_line::WorkLine {
                         icon: "brain",
                         title: "Think".into(),
@@ -3260,6 +3480,7 @@ fn render_row(
                         open,
                         trailing: None,
                         follow: streaming,
+                        help: None,
                     };
                     let (toggle_child, message_id) = (child.clone(), message.id.clone());
                     // One view, as Swift's: the line, and what it opens 4
@@ -3437,16 +3658,19 @@ fn render_row(
                         input.controller.clone(),
                     )
                 };
-                div()
+                // The row's selector names the whole row, its strip included.
+                let row_selector = selector.clone();
+                let message_row = div()
                     .group(group)
-                    .debug_selector(|| selector)
+                    .when(strip.is_none(), |d| d.debug_selector(|| row_selector))
                     // Keep the message content-sized, ending at its action band.
                     .w_full()
                     .max_w(px(ROW_MAX_WIDTH))
                     .mx_auto()
                     .min_w_0()
                     .flex_shrink_0()
-                    .pt(px(12.))
+                    // A response's strip stands in the row's top room.
+                    .when(strip.is_none(), |d| d.pt(px(12.)))
                     .flex()
                     .flex_col()
                     .gap(px(6.))
@@ -3458,8 +3682,22 @@ fn render_row(
                             .when(user, |d| d.justify_end().pl(px(40.)))
                             .child(body),
                     )
-                    .child(actions)
-                    .into_any_element()
+                    .child(actions);
+                match strip {
+                    Some(strip) => div()
+                        .debug_selector(|| selector)
+                        .w_full()
+                        .max_w(px(ROW_MAX_WIDTH))
+                        .mx_auto()
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .child(strip)
+                        .child(message_row)
+                        .into_any_element(),
+                    None => message_row.into_any_element(),
+                }
             }
         }
     };
@@ -3493,6 +3731,21 @@ struct ToolEditors {
     copied_code: Option<(SharedString, u64)>,
     copy_presses: u64,
     tick: u64,
+    /// Each lines run's rows per line, by its text and width.
+    run_rows: HashMap<(RowKey, &'static str), (f32, String, Vec<usize>)>,
+    /// Where each lines piece last stood.
+    places: HashMap<(RowKey, &'static str), Placed>,
+    /// What each card's lines section last drew, for checks.
+    #[cfg(test)]
+    drawn_lines: HashMap<String, DrawnLines>,
+}
+/// A lines section as it was last drawn: each run's editor section and its
+/// marks (and whether each is tinted), and the middle line.
+#[cfg(test)]
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct DrawnLines {
+    pub runs: Vec<(&'static str, Vec<(String, bool)>)>,
+    pub more: Option<String>,
 }
 /// A reply's reasoning as Swift's Think row opens it: Markdown in the
 /// reasoning style (13 pt, muted), the whole width, drawn whole.
@@ -3666,13 +3919,28 @@ struct ToolEditor {
     style: ToolEditorStyle,
     used: u64,
     find_installed: Option<Rc<crate::transcript_find_presentation::FindPaint>>,
+    /// A run of a lines section: where its block last stood in the window,
+    /// and how many of the editor's rows each of its lines takes.
+    lines: Option<LinesPlace>,
+    /// The width a lines run's texts wrap at.
+    lines_width: f32,
+    /// Whether the card still draws this editor: a lines piece the card's
+    /// last drawing left out (folded into the middle, or standing aside) is
+    /// not, though its editor is kept.
+    mounted: bool,
 }
+/// Where a lines run's block last stood, and its lines' rows.
+type LinesPlace = (Placed, Vec<usize>);
+/// Where a lines piece last stood in the window.
+type Placed = Rc<std::cell::Cell<Option<Bounds<Pixels>>>>;
 #[derive(Clone, Copy, PartialEq)]
 struct ToolEditorStyle {
     palette: Palette,
     tone: Tone,
     /// A terminal's output scrolls past 224 points, any other section past 150.
     terminal: bool,
+    /// A diff's or a read's lines: as tall as they are, their marks beside them.
+    uncapped: bool,
 }
 /// What a card's payload is set in (`TranscriptNativeCards`): a request or a
 /// result muted, a command or a diff's and a read's lines in the text colour,
@@ -3685,7 +3953,9 @@ enum Tone {
 }
 impl ToolEditorStyle {
     fn cap(self) -> f32 {
-        if self.terminal {
+        if self.uncapped {
+            f32::INFINITY
+        } else if self.terminal {
             TERMINAL_CAP
         } else {
             tool_presentation::SECTION_CAP
@@ -3701,6 +3971,42 @@ const CARD_MONO: &str = if cfg!(target_os = "macos") {
 /// `TranscriptCardMetrics.terminalCap`.
 const TERMINAL_CAP: f32 = 224.;
 impl ToolEditors {
+    /// How many editor rows each of a run's lines takes, kept while the
+    /// run's text and width are unchanged.
+    fn run_rows(
+        &mut self,
+        key: &RowKey,
+        label: &'static str,
+        text: &str,
+        width: f32,
+        measure: impl FnOnce() -> Vec<usize>,
+    ) -> Vec<usize> {
+        let slot = (key.clone(), label);
+        if let Some((known, known_text, rows)) = self.run_rows.get(&slot)
+            && *known == width
+            && known_text == text
+        {
+            return rows.clone();
+        }
+        if self.run_rows.len() >= 256 {
+            self.run_rows.clear();
+        }
+        let rows = measure();
+        self.run_rows
+            .insert(slot, (width, text.to_owned(), rows.clone()));
+        rows
+    }
+    /// Where a lines piece last stood in the window, kept for its row.
+    fn place(
+        &mut self,
+        key: &RowKey,
+        label: &'static str,
+    ) -> Rc<std::cell::Cell<Option<Bounds<Pixels>>>> {
+        if self.places.len() >= 4096 {
+            self.places.clear();
+        }
+        self.places.entry((key.clone(), label)).or_default().clone()
+    }
     fn active_find(&self) -> Option<Rc<crate::transcript_find_presentation::FindPaint>> {
         self.sidebar.clone().or_else(|| self.find.clone())
     }
@@ -3846,6 +4152,9 @@ impl ToolEditors {
                     style,
                     used: self.tick,
                     find_installed: None,
+                    lines: None,
+                    lines_width: 0.,
+                    mounted: true,
                 },
             );
         }
@@ -3942,7 +4251,9 @@ fn decorate_find_tool(
     index: usize,
     label: &'static str,
     shown: &str,
-    numbered: Option<usize>,
+    // A read's run of lines: where `shown` starts in the result's text, and
+    // every run the card shows.
+    slice: Option<(usize, &[std::ops::Range<usize>])>,
     canonical_input: bool,
     editor: &Entity<EditorView>,
     editors: &Rc<RefCell<ToolEditors>>,
@@ -3954,6 +4265,8 @@ fn decorate_find_tool(
     let Some(find) = find else {
         return;
     };
+    // A capped list's tail is its section's too.
+    let section = card_lines::section_of(label);
     if !find.matches_binding(presentation.input.find_binding.as_ref()) {
         editor.update(cx, |e, cx| {
             let _ = e.set_text_presentation(None, cx);
@@ -3966,7 +4279,8 @@ fn decorate_find_tool(
         .and_then(|p| p.result())
         .map(|i| &presentation.input.session.messages[i]);
     let key = (row.key.clone(), label);
-    if label == "OUT" && source.is_some_and(|m| find.has_record(&m.id) && !find.scope_matches(m)) {
+    if section == "OUT" && source.is_some_and(|m| find.has_record(&m.id) && !find.scope_matches(m))
+    {
         editor.update(cx, |e, cx| {
             let _ = e.set_text_presentation(None, cx);
         });
@@ -3989,8 +4303,11 @@ fn decorate_find_tool(
         return;
     }
     let mut selected = None;
+    let mut leads = true;
+    // A read match running past this piece: the text beyond it.
+    let mut beyond = String::new();
     let mut decorations = vec![];
-    if label == "IN"
+    if section == "IN"
         && let Some(hit) = find.sidebar_input()
         && sidebar_input_matches(presentation, index, hit)
         && let bello_agent_core::sidebar_search::projection::SourceTarget::ToolInput(range) =
@@ -4002,7 +4319,7 @@ fn decorate_find_tool(
         }
     }
 
-    if label == "OUT"
+    if section == "OUT"
         && let Some(source) = source
         && let Some(ranges) = find.ranges(&source.id)
     {
@@ -4012,11 +4329,15 @@ fn decorate_find_tool(
             prefix -= 1;
         }
         let generic_verified = shown.starts_with(&source.text[..prefix]);
+        // A read's lines are exact slices of its result: a match maps by its
+        // offset, once the slice is the retained text byte for byte.
+        let slice_verified = slice
+            .is_some_and(|(start, _)| source.text.get(start..start + shown.len()) == Some(shown));
         let map = |range: &std::ops::Range<usize>| {
-            if let Some(first) = numbered {
-                (ranges.numbered.expected_len(first, row.read_expanded) == Some(shown.len()))
-                    .then(|| ranges.numbered.map_range(range, first, row.read_expanded))
-                    .flatten()
+            if let Some((start, _)) = slice {
+                // A match running across pieces shows its part in each.
+                let (low, high) = (range.start.max(start), range.end.min(start + shown.len()));
+                (slice_verified && low < high).then(|| low - start..high - start)
             } else {
                 (generic_verified && range.end <= prefix).then_some(range.clone())
             }
@@ -4025,12 +4346,36 @@ fn decorate_find_tool(
             ranges.all.iter().filter_map(map).collect(),
         );
         selected = ranges.selected.as_ref().and_then(map);
-        if ranges.selected.is_some() && selected.is_none() {
+        if let (Some((start, _)), Some(full)) = (slice, ranges.selected.as_ref()) {
+            let end = start + shown.len();
+            if full.end > end {
+                beyond = source
+                    .text
+                    .get(end..full.end)
+                    .unwrap_or_default()
+                    .to_owned();
+            }
+        }
+        // The piece the selected match starts in is the one that lands it.
+        leads = slice.is_none_or(|(start, _)| {
+            ranges.selected.as_ref().is_some_and(|selected| {
+                selected.start >= start && selected.start < start + shown.len()
+            })
+        });
+        // The match another of the card's runs draws is that run's to show.
+        let elsewhere = slice.is_some_and(|(_, runs)| {
+            ranges.selected.as_ref().is_some_and(|selected| {
+                runs.iter()
+                    .any(|run| selected.start >= run.start && selected.end <= run.end)
+            })
+        });
+        if ranges.selected.is_some() && selected.is_none() && !elsewhere {
             *find.notice.borrow_mut() = Some("Match is outside this card’s displayed preview; showing its row. Full retained text remains searchable.".into());
         } else if ranges.limited {
             *find.notice.borrow_mut() = Some("Only the first 4096 matches in this output are softly highlighted; the selected occurrence is still revealed.".into());
         }
         if let Some(destination) = find.destination.clone()
+            && leads
             && destination.found.id == source.id
             && !ranges.limited
             && selected.is_some()
@@ -4072,6 +4417,7 @@ fn decorate_find_tool(
         entry.find_installed = Some(find.clone());
     }
     if let Some(range) = selected
+        && leads
         && find.navigating()
         && !find.measuring.get()
     {
@@ -4089,6 +4435,48 @@ fn decorate_find_tool(
             return;
         }
         find.attempts.set(find.attempts.get() + 1);
+        if slice.is_some() {
+            // A read's lines are as tall as they are: nothing scrolls inside
+            // them, and the match's place is the line's, from the lines'
+            // own layout. The conversation goes there once the frame is drawn.
+            let width = editors
+                .borrow()
+                .entries
+                .get(&(row.key.clone(), label))
+                .map(|entry| entry.lines_width);
+            // A byte's line, and the editor row of that line it wraps onto.
+            let position = |at: usize| {
+                let line = shown[..at].matches('\n').count();
+                let start = shown[..at].rfind('\n').map_or(0, |found| found + 1);
+                let within = width.map_or(0, |width| {
+                    card_lines::row_of(CARD_MONO, &shown[start..], at - start, width, window)
+                });
+                (line, within)
+            };
+            let first = position(range.start);
+            let mut end = range.end.max(range.start + 1).min(shown.len()) - 1;
+            while !shown.is_char_boundary(end) {
+                end -= 1;
+            }
+            let last = position(end.max(range.start));
+            // The match's rows past this piece, wrapped as the next pieces
+            // wrap them (the text after this piece starts at a line's end).
+            let past = match (width, beyond.strip_prefix('\n')) {
+                (Some(width), Some(rest)) => {
+                    card_lines::rows(CARD_MONO, rest.split('\n'), width, window)
+                        .iter()
+                        .sum()
+                }
+                _ => 0,
+            };
+            let (child, find, key) = (child.clone(), find.clone(), row.key.clone());
+            window.defer(cx, move |_, cx| {
+                let _ = child.update(cx, |view, cx| {
+                    view.land_find_line(&find, index, &key, label, first, (last, past), cx)
+                });
+            });
+            return;
+        }
         find.measuring.set(true);
         find.host_row.set(Some(index));
         *find.host_geometry.borrow_mut() = None;
@@ -4252,6 +4640,7 @@ fn render_tool_card(
             open: row.expanded,
             trailing: model.trailing.clone().map(Into::into),
             follow: false,
+            help: Some(model.help.clone().into()),
         },
         // A result whose call is not on this page reads as its own line.
         None => work_line::WorkLine {
@@ -4272,6 +4661,7 @@ fn render_tool_card(
             open: row.expanded,
             trailing: tool_presentation::elapsed(session, projected).map(Into::into),
             follow: false,
+            help: None,
         },
     };
     // A sidebar hit on the tool's name: the line says what the call did, not
@@ -4359,7 +4749,13 @@ fn render_tool_card(
             .get(&row.key, session, projected, row.read_expanded);
     if let Some(edit) = &edit_preview {
         input = Some(tool_presentation::Preview {
-            text: edit.text(row.read_expanded).to_owned(),
+            // A diff's rows are drawn as lines below; this is only what
+            // stands in the section of a change too large to diff.
+            text: if edit.too_large {
+                edit.text(row.read_expanded).to_owned()
+            } else {
+                edit.rows.clone()
+            },
             truncated: false,
         });
     }
@@ -4393,12 +4789,11 @@ fn render_tool_card(
                 || (status != tool_presentation::Status::Completed && !text.is_empty())
         })
         .map(|text| {
-            if let Some(read) = &read_window {
-                // Source's six-head/six-tail window, without the generic 8 KiB
-                // prefix. The selectable Editor remains a bounded 150 px scroller;
-                // Show more exposes every retained line, and raw Copy stays exact.
+            if read_window.is_some() {
+                // The window's lines are drawn below, each an exact slice of
+                // the result, without the generic 8 KiB prefix.
                 return tool_presentation::Preview {
-                    text: read.numbered(row.read_expanded),
+                    text: String::new(),
                     truncated: false,
                 };
             }
@@ -4525,10 +4920,38 @@ fn render_tool_card(
         .filter_map(|(label, preview)| Some((label, preview?)))
         .enumerate()
     {
-        // A diff's and a read's lines carry their own marks; a terminal's
-        // command its prompt; everything else stands beside its IN/OUT label.
-        let lines =
-            (label == "IN" && edit_preview.is_some()) || (label == "OUT" && read_window.is_some());
+        // A diff's and a read's lines: Swift's `TranscriptCardLines`.
+        let diff = edit_preview
+            .as_ref()
+            .filter(|edit| label == "IN" && !edit.too_large);
+        let read = read_window.as_ref().filter(|_| label == "OUT");
+        if diff.is_some() || read.is_some() {
+            let spec = match (diff, read) {
+                (Some(edit), _) => diff_lines(edit, status, row.read_expanded, &colors),
+                (_, Some(read)) => read_lines(read, status, row.read_expanded, &colors),
+                _ => unreachable!("lines"),
+            };
+            panel = panel.child(
+                lines_section(
+                    presentation,
+                    index,
+                    spec,
+                    inner,
+                    &selector,
+                    editors,
+                    child,
+                    window,
+                    cx,
+                )
+                .when(position + 1 < shown, |d| d.border_b_1())
+                .border_color(rule),
+            );
+            continue;
+        }
+        // A change too large to diff says so in its section; a terminal's
+        // command stands after its prompt; everything else beside its IN/OUT
+        // label.
+        let lines = label == "IN" && edit_preview.is_some();
         let gutter = !lines && !terminal;
         let failed = label == "OUT" && status.is_error();
         let style = ToolEditorStyle {
@@ -4541,6 +4964,7 @@ fn render_tool_card(
                 Tone::Muted
             },
             terminal: terminal && label == "OUT",
+            uncapped: false,
         };
         let prompt = if terminal && label == "IN" {
             7. + 8.
@@ -4564,7 +4988,7 @@ fn render_tool_card(
             index,
             label,
             &preview.text,
-            read_window.as_ref().map(|r| r.first_line),
+            None,
             edit_preview.is_none() && read_window.is_none() && !terminal,
             &editor,
             editors,
@@ -4628,79 +5052,39 @@ fn render_tool_card(
             ),
         );
     }
-    // Swift's capped list's line (`TranscriptCardMoreLines`): a plain button
-    // in the code face, 4 points above and below.
-    let more = |id: String, label: String, toggle: Box<dyn Fn(&mut App)>| {
-        div()
-            .id(SharedString::from(id.clone()))
-            .debug_selector(move || id)
-            .w_full()
-            .px(px(16.))
-            .py(px(4.))
-            .cursor_pointer()
-            .font_family(CARD_MONO)
-            .text_size(px(12.))
-            .text_color(colors.faint)
-            .hover(|d| d.text_color(colors.muted))
-            .child(label)
-            .on_click(move |_, _, cx| toggle(cx))
-    };
-    if let Some(read) = read_window {
-        if read.collapsible() {
-            let child = child.clone();
-            let key = row.key.clone();
-            let chat_id = presentation.input.chat_id.clone();
-            let controller = presentation.input.controller.clone();
-            panel = panel.child(more(
-                format!("{selector}-read-disclosure"),
-                if row.read_expanded {
-                    "Show fewer lines".into()
-                } else {
-                    format!(
-                        "Show {} more lines",
-                        read.lines.len() - read_presentation::READ_LINES
-                    )
-                },
-                Box::new(move |cx| {
-                    let _ = child.update(cx, |view, cx| {
-                        view.toggle_read(key.clone(), &chat_id, &controller, cx)
-                    });
-                }),
-            ));
-        }
-        if let Some(note) = read.note {
-            panel = panel.child(
-                div()
-                    .debug_selector(|| format!("{selector}-read-note"))
-                    .px(px(16.))
-                    .py(px(8.))
-                    .text_size(px(11.5))
-                    .text_color(colors.muted)
-                    .child(note.to_owned()),
-            );
-        }
+    if let Some(note) = read_window.as_ref().and_then(|read| read.note) {
+        panel = panel.child(
+            div()
+                .debug_selector(|| format!("{selector}-read-note"))
+                .px(px(16.))
+                .py(px(8.))
+                .text_size(px(11.5))
+                .text_color(colors.muted)
+                .child(note.to_owned()),
+        );
     }
     if let Some(edit) = edit_preview {
-        if edit.collapsible {
+        // A change too large to diff opens its whole content from its foot.
+        if edit.too_large {
             let child = child.clone();
             let key = row.key.clone();
             let chat_id = presentation.input.chat_id.clone();
             let controller = presentation.input.controller.clone();
-            let label = if row.read_expanded {
-                "Show fewer lines".to_owned()
-            } else if edit.too_large {
-                "View full content".to_owned()
-            } else {
-                format!("Show {} more lines", edit.hidden)
-            };
-            panel = panel.child(more(
+            panel = panel.child(card_lines::more(
                 format!("{selector}-edit-disclosure"),
-                label,
-                Box::new(move |cx| {
+                if row.read_expanded {
+                    "Show fewer lines".to_owned()
+                } else {
+                    "View full content".to_owned()
+                },
+                colors.faint,
+                colors.muted,
+                CARD_MONO,
+                move |_, cx| {
                     let _ = child.update(cx, |view, cx| {
                         view.toggle_read(key.clone(), &chat_id, &controller, cx)
                     });
-                }),
+                },
             ));
         }
         if let Some(footer) = &edit.footer {
@@ -4735,6 +5119,369 @@ fn render_tool_card(
         );
     }
     card.child(panel)
+}
+
+/// One run of a lines section: which of the editor sections draws it, its
+/// text's place in the section's text, and each line's mark.
+struct LinesRun<'a> {
+    label: &'static str,
+    bytes: std::ops::Range<usize>,
+    lines: Vec<&'a str>,
+    marks: Vec<card_lines::Mark>,
+}
+/// A diff's or a read's lines as Swift's card draws them.
+struct LinesSpec<'a> {
+    style: card_lines::Style,
+    /// The text the runs are slices of.
+    text: &'a str,
+    runs: Vec<LinesRun<'a>>,
+    /// The middle line: "… 8 more lines", or while every line shows, the
+    /// way back; none for a list that never collapses.
+    more: Option<(String, String)>,
+    /// An expanded diff scrolls past the terminal's cap.
+    scroll: bool,
+    /// A change that did not land, or a read that failed, dims as one.
+    dimmed: bool,
+    /// A read's runs map a find's matches by offset.
+    find: bool,
+}
+
+fn diff_lines<'a>(
+    edit: &'a edit_presentation::EditPreview,
+    status: tool_presentation::Status,
+    expanded: bool,
+    colors: &work_line::CardColors,
+) -> LinesSpec<'a> {
+    use edit_presentation::Kind;
+    use tool_presentation::Status;
+    let lines: Vec<&str> = edit.rows.split('\n').collect();
+    let offset = |line: &str| line.as_ptr() as usize - edit.rows.as_ptr() as usize;
+    let cap = card_lines::head_tail(lines.len(), card_lines::MAX_LINES, expanded);
+    let collapses = card_lines::collapses(cap.hidden);
+    let runs = card_lines::runs(lines.len(), cap)
+        .into_iter()
+        .enumerate()
+        .filter(|(_, run)| !run.is_empty())
+        .map(|(n, run)| LinesRun {
+            label: if n == 0 { "IN" } else { "IN-tail" },
+            bytes: offset(lines[run.start])..offset(lines[run.end - 1]) + lines[run.end - 1].len(),
+            marks: edit.kinds[run.clone()]
+                .iter()
+                .map(|kind| match kind {
+                    Kind::Added => card_lines::Mark {
+                        text: "+".into(),
+                        color: colors.diff_added_mark,
+                        background: Some(colors.diff_added),
+                    },
+                    Kind::Removed => card_lines::Mark {
+                        text: "−".into(),
+                        color: colors.danger,
+                        background: Some(Hsla {
+                            a: 0.1,
+                            ..colors.danger
+                        }),
+                    },
+                    Kind::Context => card_lines::Mark {
+                        text: " ".into(),
+                        color: colors.faint,
+                        background: None,
+                    },
+                })
+                .collect(),
+            lines: lines[run].to_vec(),
+        })
+        .collect();
+    LinesSpec {
+        style: card_lines::Style::Diff,
+        text: &edit.rows,
+        runs,
+        more: collapses.then(|| {
+            (
+                "edit-disclosure".into(),
+                if cap.capped {
+                    card_lines::more_lines(cap.hidden)
+                } else {
+                    "Show fewer lines".into()
+                },
+            )
+        }),
+        scroll: !cap.capped && expanded,
+        dimmed: matches!(
+            status,
+            Status::Failed | Status::NotExecuted | Status::Cancelled | Status::Unknown
+        ),
+        find: false,
+    }
+}
+
+fn read_lines<'a>(
+    read: &'a read_presentation::ReadWindow<'a>,
+    status: tool_presentation::Status,
+    expanded: bool,
+    colors: &work_line::CardColors,
+) -> LinesSpec<'a> {
+    let cap = read.head_tail(expanded);
+    let runs = read
+        .parts(expanded)
+        .into_iter()
+        .enumerate()
+        .map(|(n, part)| LinesRun {
+            label: if n == 0 { "OUT" } else { "OUT-tail" },
+            marks: part
+                .lines
+                .clone()
+                .map(|index| card_lines::Mark {
+                    text: read.number(index).into(),
+                    color: colors.faint,
+                    background: None,
+                })
+                .collect(),
+            lines: read.lines[part.lines].to_vec(),
+            bytes: part.bytes,
+        })
+        .collect();
+    LinesSpec {
+        style: card_lines::Style::Numbered,
+        text: read.text,
+        runs,
+        more: card_lines::collapses(cap.hidden).then(|| {
+            (
+                "read-disclosure".into(),
+                if cap.capped {
+                    card_lines::more_lines(cap.hidden)
+                } else {
+                    "Show fewer lines".into()
+                },
+            )
+        }),
+        scroll: false,
+        dimmed: status == tool_presentation::Status::Failed,
+        find: true,
+    }
+}
+
+/// A diff's or a read's lines in their card: the head, the middle line, the
+/// tail, each run one selectable editor beside its marks.
+#[allow(clippy::too_many_arguments)]
+fn lines_section(
+    presentation: &Presentation,
+    index: usize,
+    spec: LinesSpec<'_>,
+    inner: f32,
+    selector: &str,
+    editors: &Rc<RefCell<ToolEditors>>,
+    child: &WeakEntity<TranscriptView>,
+    window: &mut Window,
+    cx: &mut App,
+) -> Div {
+    let row = &presentation.rows[index];
+    let p = presentation.input.palette;
+    let colors = work_line::card_colors(&p);
+    // The panel's width less its sides and the marks: where the texts wrap.
+    let text_width = (inner + 32. - spec.style.text_left() - 16.).max(1.);
+    let style = ToolEditorStyle {
+        palette: p,
+        tone: Tone::Text,
+        terminal: false,
+        uncapped: true,
+    };
+    let all: Vec<std::ops::Range<usize>> = spec.runs.iter().map(|run| run.bytes.clone()).collect();
+    #[cfg(test)]
+    editors.borrow_mut().drawn_lines.insert(
+        selector.to_owned(),
+        DrawnLines {
+            runs: spec
+                .runs
+                .iter()
+                .map(|run| {
+                    (
+                        run.label,
+                        run.marks
+                            .iter()
+                            .map(|mark| (mark.text.to_string(), mark.background.is_some()))
+                            .collect(),
+                    )
+                })
+                .collect(),
+            more: spec.more.as_ref().map(|(_, label)| label.clone()),
+        },
+    );
+    let mut section = div()
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .when(spec.dimmed, |d| d.opacity(0.72));
+    // The card's selected find match, which its piece must draw to land on.
+    let selected = spec
+        .find
+        .then(|| row.projected.and_then(|projected| projected.result()))
+        .flatten()
+        .and_then(|source| {
+            let find = editors.borrow().active_find()?;
+            let id = &presentation.input.session.messages[source].id;
+            find.ranges(id)?.selected.clone()
+        });
+    let band = f32::from(window.viewport_size().height);
+    let mut drawn: Vec<&'static str> = Vec::new();
+    for (n, run) in spec.runs.iter().enumerate() {
+        let rows = editors.borrow_mut().run_rows(
+            &row.key,
+            run.label,
+            &spec.text[run.bytes.clone()],
+            text_width,
+            || card_lines::rows(CARD_MONO, run.lines.iter().copied(), text_width, window),
+        );
+        let mut pieces = div().w_full().flex().flex_col();
+        // A long run is drawn a piece at a time: only the pieces near the
+        // window are editors, the rest stand aside at their height, so an
+        // expanded read costs what is on screen.
+        let offset = |line: &str| line.as_ptr() as usize - spec.text.as_ptr() as usize;
+        for (k, lines) in card_lines::pieces(&rows).into_iter().enumerate() {
+            let label = card_lines::piece_label(run.label, k);
+            let last = run.lines[lines.end - 1];
+            let bytes = offset(run.lines[lines.start])..offset(last) + last.len();
+            let piece_rows = &rows[lines.clone()];
+            let height = piece_rows.iter().sum::<usize>() as f32 * card_lines::LINE_HEIGHT;
+            let placed = editors.borrow_mut().place(&row.key, label);
+            // The piece the reader is typing or selecting in stays an editor.
+            let focused = editors
+                .borrow()
+                .entries
+                .get(&(row.key.clone(), label))
+                .is_some_and(|entry| entry.editor.read(cx).focus_handle(cx).is_focused(window));
+            let near = focused
+                || placed.get().map_or(k < 4, |bounds| {
+                    f32::from(bounds.bottom()) > -band && f32::from(bounds.top()) < 2. * band
+                })
+                || selected
+                    .as_ref()
+                    .is_some_and(|selected| bytes.contains(&selected.start));
+            if !near {
+                pieces = pieces.child(
+                    div().relative().w_full().h(px(height)).child(
+                        canvas(
+                            move |bounds, window, _| {
+                                placed.set(Some(bounds));
+                                // A piece standing aside that comes near is
+                                // drawn on the next frame.
+                                let band = window.viewport_size().height;
+                                if bounds.bottom() > -band && bounds.top() < band * 2. {
+                                    window.request_animation_frame();
+                                }
+                            },
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    ),
+                );
+                continue;
+            }
+            let shown = &spec.text[bytes.clone()];
+            let (editor, measured) = editors.borrow_mut().section(
+                (index, row.key.clone(), label),
+                shown,
+                style,
+                text_width,
+                window,
+                cx,
+            );
+            drawn.push(label);
+            if let Some(entry) = editors
+                .borrow_mut()
+                .entries
+                .get_mut(&(row.key.clone(), label))
+            {
+                // Where the piece stands and wraps, for a find landing on it.
+                entry.lines_width = text_width;
+                entry.lines = Some((placed.clone(), piece_rows.to_vec()));
+            }
+            decorate_find_tool(
+                presentation,
+                index,
+                label,
+                shown,
+                spec.find.then_some((bytes.start, all.as_slice())),
+                false,
+                &editor,
+                editors,
+                child,
+                window,
+                cx,
+            );
+            pieces = pieces.child(card_lines::render(
+                format!("{selector}-{label}"),
+                spec.style,
+                &run.marks[lines.clone()],
+                piece_rows,
+                div()
+                    .id(SharedString::from(format!("{selector}-{label}-text")))
+                    .debug_selector({
+                        let selector = format!("{selector}-{label}-text");
+                        move || selector
+                    })
+                    .size_full()
+                    .child(editor)
+                    .into_any_element(),
+                height.max(measured),
+                placed,
+            ));
+        }
+        let block = pieces;
+        section = if n == 0 && spec.scroll {
+            // Every line of a long diff, in a scroll of its own past the
+            // terminal's cap. GPUI List registers its wheel listener after
+            // children; exclude its hitbox while this scroller is hit.
+            section.child(
+                div()
+                    .id(SharedString::from(format!(
+                        "{selector}-{}-scroll",
+                        run.label
+                    )))
+                    .debug_selector({
+                        let selector = format!("{selector}-{}-scroll", run.label);
+                        move || selector
+                    })
+                    .w_full()
+                    .max_h(px(TERMINAL_CAP))
+                    .overflow_y_scroll()
+                    .occlude()
+                    .on_scroll_wheel(|_, _, cx| cx.stop_propagation())
+                    .child(block),
+            )
+        } else {
+            section.child(block)
+        };
+        if n == 0
+            && let Some((name, label)) = spec.more.clone()
+        {
+            let child = child.clone();
+            let key = row.key.clone();
+            let chat_id = presentation.input.chat_id.clone();
+            let controller = presentation.input.controller.clone();
+            section = section.child(card_lines::more(
+                format!("{selector}-{name}"),
+                label,
+                colors.faint,
+                colors.muted,
+                CARD_MONO,
+                move |_, cx| {
+                    let _ = child.update(cx, |view, cx| {
+                        view.toggle_read(key.clone(), &chat_id, &controller, cx)
+                    });
+                },
+            ));
+        }
+    }
+    // The card's other line editors are not drawn now: a piece folded into
+    // the middle or standing aside gives up the keyboard.
+    for ((key, label), entry) in editors.borrow_mut().entries.iter_mut() {
+        if key == &row.key && entry.lines.is_some() {
+            entry.mounted = drawn.contains(label);
+        }
+    }
+    section
 }
 
 #[cfg(test)]

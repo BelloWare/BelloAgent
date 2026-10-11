@@ -75,7 +75,6 @@ mod transcript_actions;
 #[path = "../../../benches/transcript.rs"]
 mod transcript_benchmark;
 mod transcript_find_controller;
-mod transcript_find_numbered;
 mod transcript_find_presentation;
 mod transcript_find_search;
 mod transcript_find_state;
@@ -2346,7 +2345,9 @@ impl AgentView {
                 view
             } else {
                 let parent = cx.entity().downgrade();
-                let view = cx.new(|_| transcript_view::TranscriptView::new(parent, input));
+                let view = cx.new(|cx| {
+                    transcript_view::TranscriptView::following_settings(parent, input, cx)
+                });
                 self.transcript = Some(view.clone());
                 view
             };

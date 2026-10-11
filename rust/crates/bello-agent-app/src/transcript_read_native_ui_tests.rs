@@ -203,7 +203,15 @@ async fn read_native_workflow_trust_loopback_checkpoint_replay_and_numbered_ui(
     let child = transcript(&view, cx);
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     let editor = super::output(&child, cx);
-    assert_eq!(cx.read(|cx| editor.read(cx).text().to_owned()), "2  second");
+    assert_eq!(cx.read(|cx| editor.read(cx).text().to_owned()), "second");
+    let card = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    assert_eq!(
+        cx.read(|cx| child.read(cx).drawn_lines(&card))
+            .unwrap()
+            .runs[0]
+            .1,
+        [("2".to_owned(), false)]
+    );
     assert!(
         visual
             .debug_bounds(selector(&child, "read-note", cx))

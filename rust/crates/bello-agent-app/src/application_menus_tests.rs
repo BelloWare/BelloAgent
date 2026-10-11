@@ -96,6 +96,13 @@ fn menu_bar_follows_swift_order_titles_and_omits_unimplemented_commands() {
             "Compact Now",
             "Latest Messages",
             "-",
+            "Fold This Turn",
+            "Unfold This Turn",
+            "Fold Every Turn",
+            "Unfold Every Turn",
+            "Fold This Response to One Line",
+            "Show This Response",
+            "-",
             "Find…",
             "Find Next",
             "Find Previous",
@@ -124,9 +131,6 @@ fn menu_bar_follows_swift_order_titles_and_omits_unimplemented_commands() {
         "Background Requests",
         "Show Terminal",
         "Open Side",
-        "Fold This Turn",
-        "Fold Every Turn",
-        "Fold This Response to One Line",
     ] {
         assert!(!titles.iter().any(|t| t == missing), "{missing}");
     }
@@ -178,6 +182,10 @@ fn menu_key_equivalents_are_swifts(cx: &mut TestAppContext) {
         ("Narrow Sidebar", "ctrl-cmd-left"),
         ("Send / Steer Current Run", "cmd-enter"),
         ("Stop", "cmd-."),
+        ("Fold This Turn", "cmd-alt-["),
+        ("Unfold This Turn", "cmd-alt-]"),
+        ("Fold Every Turn", "cmd-alt-shift-["),
+        ("Unfold Every Turn", "cmd-alt-shift-]"),
         ("Find…", "cmd-f"),
         ("Find Next", "cmd-g"),
         ("Find Previous", "cmd-shift-g"),
@@ -523,4 +531,115 @@ fn menu_send_refuses_while_a_tabs_text_has_focus(cx: &mut TestAppContext) {
         assert!(root.read(cx).session.pending.is_empty());
         assert_eq!(root.read(cx).composer.read(cx).text(), "draft");
     });
+}
+
+/// A chat with one finished turn: its work folds behind one line.
+fn folded_turn_fixture(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    WindowHandle<AgentView>,
+    Entity<AgentView>,
+) {
+    let rows = crate::transcript_view_tests::turn_fold_ui::finished_turns();
+    fixture_with(cx, rows, 0, Some(usize::MAX), false)
+}
+
+fn turn_open(root: &Entity<AgentView>, cx: &TestAppContext) -> bool {
+    cx.read(|cx| {
+        let transcript = root.read(cx).transcript.clone().unwrap();
+        transcript.read(cx).fold_lines()[0].1
+    })
+}
+
+#[gpui::test]
+fn fold_commands_fold_and_open_the_turn_and_its_response(cx: &mut TestAppContext) {
+    cx.update(install);
+    let (_dir, window, root) = folded_turn_fixture(cx);
+    cx.update_window(window.into(), |_, w, cx| {
+        for action in [
+            &FoldTurn as &dyn Action,
+            &UnfoldTurn,
+            &FoldEveryTurn,
+            &UnfoldEveryTurn,
+            &FoldResponse,
+            &ShowResponse,
+        ] {
+            assert!(w.is_action_available(action, cx), "{}", action.name());
+        }
+    })
+    .unwrap();
+    assert!(!turn_open(&root, cx));
+    cx.dispatch_action(window.into(), UnfoldTurn);
+    cx.run_until_parked();
+    assert!(turn_open(&root, cx));
+    cx.dispatch_action(window.into(), FoldTurn);
+    cx.run_until_parked();
+    assert!(!turn_open(&root, cx));
+    cx.dispatch_action(window.into(), UnfoldEveryTurn);
+    cx.run_until_parked();
+    assert!(turn_open(&root, cx));
+    cx.dispatch_action(window.into(), FoldEveryTurn);
+    cx.run_until_parked();
+    assert!(!turn_open(&root, cx));
+    // The newest response folds to its line and opens again.
+    let newest = |cx: &TestAppContext| {
+        cx.read(|cx| {
+            let transcript = root.read(cx).transcript.clone().unwrap();
+            transcript
+                .read(cx)
+                .response_headers()
+                .last()
+                .cloned()
+                .unwrap()
+        })
+    };
+    assert!(!newest(cx).2);
+    cx.dispatch_action(window.into(), FoldResponse);
+    cx.run_until_parked();
+    assert_eq!(
+        newest(cx),
+        (
+            "Message(\"welcome\")".to_owned(),
+            "Answered · 1 part folded".to_owned(),
+            true
+        )
+    );
+    cx.dispatch_action(window.into(), ShowResponse);
+    cx.run_until_parked();
+    assert!(!newest(cx).2);
+}
+
+#[gpui::test]
+fn fold_commands_wait_for_something_to_fold(cx: &mut TestAppContext) {
+    cx.update(install);
+    let (_dir, window, _root) = fixture_with(cx, vec![], 0, None, false);
+    cx.update_window(window.into(), |_, w, cx| {
+        for action in [&FoldTurn as &dyn Action, &FoldEveryTurn, &FoldResponse] {
+            assert!(!w.is_action_available(action, cx), "{}", action.name());
+        }
+    })
+    .unwrap();
+}
+
+// ⌥⌘[ and ⌥⌘] reach the fold commands past the focused composer through
+// macOS's key-equivalent phase; GPUI on Linux has no such phase.
+#[cfg(target_os = "macos")]
+#[gpui::test]
+fn fold_key_equivalents_reach_their_commands(cx: &mut TestAppContext) {
+    cx.update(install);
+    let (_dir, window, root) = folded_turn_fixture(cx);
+    window
+        .update(cx, |v, w, cx| v.composer.read(cx).focus(w))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(equivalent(window, "cmd-alt-]", cx));
+    assert!(turn_open(&root, cx));
+    assert!(equivalent(window, "cmd-alt-[", cx));
+    assert!(!turn_open(&root, cx));
+    assert!(equivalent(window, "cmd-alt-shift-]", cx));
+    assert!(turn_open(&root, cx));
+    assert!(equivalent(window, "cmd-alt-shift-[", cx));
+    assert!(!turn_open(&root, cx));
+    cx.read(|cx| assert_eq!(root.read(cx).composer.read(cx).text(), "draft"));
 }
