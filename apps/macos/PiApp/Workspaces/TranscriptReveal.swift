@@ -102,6 +102,17 @@ extension WorkspaceModel {
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
         Task { [weak self] in
             guard let self else { return }
+            // A read that came to nothing pauses position reads for a second;
+            // then the place the reader is at by then (`jumpRetry`) is read.
+            @MainActor func pause(retrying retry: (position: Int, offset: Double)?) {
+                view.jumpFailedAt = ProcessInfo.processInfo.systemUptime; view.jumpRetry = retry
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak view] in
+                    guard let self, let view else { return }
+                    view.jumpFailedAt = nil
+                    guard let retry = view.jumpRetry else { return }
+                    self.jumpToHistoryPosition(item.id, position: retry.position, offset: retry.offset)
+                }
+            }
             defer {
                 if view.jumpRead == serial {
                     view.jumpRead = nil
@@ -120,7 +131,7 @@ extension WorkspaceModel {
                 guard current() else { return }
                 // A page with no row to draw is not landed on, nor asked for
                 // again at once.
-                guard let first = Self.landingMessageID(in: page.messages) else { view.jumpFailedAt = ProcessInfo.processInfo.systemUptime; return }
+                guard let first = Self.landingMessageID(in: page.messages) else { pause(retrying: nil); return }
                 // The chat changed elsewhere: said as a snapshot says it, with
                 // the way to read it again, rather than left as blank room.
                 guard sameSource(page) else {
@@ -148,14 +159,9 @@ extension WorkspaceModel {
                 if case HostError.failure(let message)? = error as? HostError, message.hasPrefix("History"), current() {
                     view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere); view.browsingHistory = true
                 } else if !(error is CancellationError), current() {
-                    view.jumpFailedAt = ProcessInfo.processInfo.systemUptime; view.jumpRetry = (position, offset)
-                    // Tried again in a moment unless the reader has gone
-                    // somewhere else by then (`abandonJump`).
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak view] in
-                        guard let self, let view, view.presentationGeneration == generation, let retry = view.jumpRetry else { return }
-                        view.jumpFailedAt = nil
-                        self.jumpToHistoryPosition(item.id, position: retry.position, offset: retry.offset)
-                    }
+                    // Tried again in a moment, where the reader is within the row
+                    // now, unless they have gone somewhere else (`abandonJump`).
+                    pause(retrying: (position, view.jumpOffset ?? offset))
                 }
             }
         }
