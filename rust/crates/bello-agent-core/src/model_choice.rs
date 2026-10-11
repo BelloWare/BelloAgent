@@ -99,8 +99,10 @@ impl ThinkingLevel {
 /// A trimmed model alias within the 1…200 character wire limit, or None.
 pub fn normalized_model(value: Option<&str>) -> Option<String> {
     let trimmed = value?.trim();
+    // Also within the 256 bytes a profile's model id may take.
     (!trimmed.is_empty()
         && trimmed.chars().count() <= MAXIMUM_MODEL_LENGTH
+        && trimmed.len() <= 256
         && !trimmed.bytes().any(|byte| byte < 32 || byte == 127))
     .then(|| trimmed.to_owned())
 }

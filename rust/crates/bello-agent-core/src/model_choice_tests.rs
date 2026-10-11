@@ -57,7 +57,12 @@ fn normalization_follows_turn_overrides() {
     );
     assert_eq!(normalized_model(Some("   ")), None);
     assert_eq!(normalized_model(Some(&"x".repeat(201))), None);
-    assert!(normalized_model(Some(&"é".repeat(200))).is_some());
+    assert!(normalized_model(Some(&"é".repeat(128))).is_some());
+    assert_eq!(
+        normalized_model(Some(&"é".repeat(200))),
+        None,
+        "over 256 bytes"
+    );
     assert_eq!(normalized_model(Some("a\u{7}b")), None);
     assert_eq!(normalized_thinking_level(Some("profile-default")), None);
     assert_eq!(

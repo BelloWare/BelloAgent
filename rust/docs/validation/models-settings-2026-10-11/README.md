@@ -69,7 +69,10 @@ Still different:
 - The pills keep Rust's chevron glyph, not `chevron.up.chevron.down`.
 - Context preview and manual compaction still use the connection's model.
 - As in Swift, an effort on a connection whose model is not marked as
-  reasoning is saved and shown but not sent.
+  reasoning is saved and shown but not sent (Codex flagged this; kept for
+  parity with pi, which sends effort only to reasoning models).
+- Aliases are limited to 200 characters and 256 bytes (the profile's model
+  limit); Swift checks characters only.
 
 ## 2. Settings sections
 
@@ -109,7 +112,8 @@ Still different:
 `bello-agent-core/src/title_generation.rs` ports `TitleGenerationPlan`
 (mini model choice, budgets, effort, prompt), `title(from:)` and
 `titles(from:limit:)`; `title_runtime.rs` adds `Controller::request_title`, one
-request on the chat's own connection outside its history. The catalog parser
+request on the chat's own connection outside its history. Retiring the chat
+cancels a request in flight; dropping the caller aborts it. The catalog parser
 now keeps the `mini` flag, and the model list shows the Mini tag.
 
 Checked against Swift by `title-oracle/`: `extract.py` copies the unchanged

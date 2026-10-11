@@ -20,8 +20,29 @@ impl Controller {
             .configuration()
             .ok_or_else(|| invalid("This chat's connection is unavailable."))?;
         let controller = self.clone();
+        // Retiring the chat stops the request: a watcher cancels it as soon
+        // as the controller retires, and nothing is sent after that.
+        let cancel = cancel.child_token();
+        let watched = cancel.clone();
+        let watcher = Arc::downgrade(self);
+        self.runtime.spawn(async move {
+            while !watched.is_cancelled() {
+                if watcher.upgrade().is_none_or(|c| c.is_retired()) {
+                    watched.cancel();
+                    break;
+                }
+                tokio::select! {
+                    _ = watched.cancelled() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
+                }
+            }
+        });
+        let finished = cancel.clone().drop_guard();
         let task = self.runtime.spawn(async move {
             config.confirm_for_request().await?;
+            if controller.is_retired() || cancel.is_cancelled() {
+                return Err(invalid("Title generation stopped."));
+            }
             let profile = plan.profile(&config.profile);
             let message = crate::Message {
                 task_root_id: None,
@@ -65,7 +86,18 @@ impl Controller {
                 invalid("The mini model did not return a usable title. The original title was kept.")
             })
         });
-        task.await
-            .map_err(|_| invalid("Title generation stopped."))?
+        // Dropping this future aborts the request rather than detaching it.
+        struct Abort<T>(tokio::task::JoinHandle<T>);
+        impl<T> Drop for Abort<T> {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        let mut task = Abort(task);
+        let result = (&mut task.0)
+            .await
+            .map_err(|_| invalid("Title generation stopped."))?;
+        drop(finished);
+        result
     }
 }

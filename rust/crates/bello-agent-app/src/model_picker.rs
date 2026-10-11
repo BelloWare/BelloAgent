@@ -132,6 +132,8 @@ pub(crate) struct ModelPickers {
     pub(crate) open: Option<OpenPicker>,
     /// Where the pill was pressed: the list opens above it.
     pub(crate) anchor: gpui::Point<gpui::Pixels>,
+    /// The saved connections the last listing read (Refresh rereads them).
+    loaded: Option<LoadedConnections>,
 }
 impl ModelPickers {
     pub(crate) fn open(directory: &Path) -> Self {
@@ -141,6 +143,7 @@ impl ModelPickers {
             catalogs: BTreeMap::new(),
             open: None,
             anchor: gpui::Point::default(),
+            loaded: None,
         }
     }
     /// A new chat starts from its connection's last deliberate choice
@@ -275,9 +278,18 @@ pub(crate) fn clock_time(at: SystemTime) -> String {
     )
 }
 
+struct Prepared {
+    configured: bool,
+    identity: String,
+    source_name: String,
+    label: String,
+    request: bello_agent_core::model_catalog::CatalogRequest,
+}
+
 enum Listed {
     Unprepared(&'static str),
     Done {
+        loaded: Box<LoadedConnections>,
         revision: i64,
         identity: String,
         configured: bool,
@@ -481,8 +493,13 @@ impl AgentView {
             cx.notify();
             return;
         }
+        let revision = self.connections.saved_revision().max(
+            self.model_pickers
+                .loaded
+                .as_ref()
+                .map(LoadedConnections::revision),
+        );
         let catalog = self.model_pickers.catalogs.entry(key.clone()).or_default();
-        let revision = self.connections.saved_revision();
         if catalog.loading || (!force && catalog.fresh(Instant::now(), revision)) {
             return;
         }
@@ -496,42 +513,72 @@ impl AgentView {
             open.refresh_error = None;
         }
         let authority = self.connections.authority().clone();
+        // The newest saved connections this window has read: Settings', or
+        // the ones an earlier Refresh read. Refresh always reads them again.
         let loaded = (!force)
-            .then(|| self.connections.loaded().cloned())
+            .then(|| {
+                [
+                    self.connections.loaded(),
+                    self.model_pickers.loaded.as_ref(),
+                ]
+                .into_iter()
+                .flatten()
+                .max_by_key(|loaded| loaded.revision())
+                .cloned()
+            })
             .flatten();
         let id = key.clone();
         let task = cx.background_executor().spawn(async move {
-            let loaded = match loaded {
-                Some(loaded) => loaded,
-                None => match authority.load_connections() {
-                    Ok(loaded) => loaded,
-                    Err(_) => return Listed::Unprepared(REFRESH_CONFIGURATION),
+            let prepare = |loaded: &LoadedConnections| -> Result<Prepared, &'static str> {
+                let saved = loaded
+                    .profiles()
+                    .iter()
+                    .find(|p| p.profile.id == id)
+                    .ok_or(REFRESH_MISSING)?;
+                if saved.profile.api != "openai-responses" {
+                    return Err(REFRESH_UNSUPPORTED);
+                }
+                let source = loaded.catalog_source(&id).map_err(|_| REFRESH_MISSING)?;
+                let request = LoadedConnections::edit(loaded, &id)
+                    .and_then(|draft| authority.prepare_catalog(loaded, &draft))
+                    .map_err(|_| REFRESH_CONFIGURATION)?;
+                Ok(Prepared {
+                    configured: source.catalog_url.is_some(),
+                    identity: format!(
+                        "{}\n{}",
+                        source.profile.id,
+                        source.catalog_url.as_ref().map_or("", |url| url.as_str())
+                    ),
+                    source_name: source.name.clone(),
+                    label: source_label(source.catalog_url.as_ref().map(|url| url.as_str())),
+                    request,
+                })
+            };
+            let reload = || {
+                authority
+                    .load_connections()
+                    .map_err(|_| REFRESH_CONFIGURATION)
+            };
+            // A retained snapshot the vault has moved past is read again once.
+            let attempt = match loaded {
+                Some(loaded) => match prepare(&loaded) {
+                    Ok(prepared) => Ok((loaded, prepared)),
+                    Err(_) => reload().and_then(|loaded| prepare(&loaded).map(|p| (loaded, p))),
                 },
+                None => reload().and_then(|loaded| prepare(&loaded).map(|p| (loaded, p))),
             };
-            let Some(saved) = loaded.profiles().iter().find(|p| p.profile.id == id) else {
-                return Listed::Unprepared(REFRESH_MISSING);
+            let (loaded, prepared) = match attempt {
+                Ok(found) => found,
+                Err(message) => return Listed::Unprepared(message),
             };
-            if saved.profile.api != "openai-responses" {
-                return Listed::Unprepared(REFRESH_UNSUPPORTED);
-            }
-            let Ok(source) = loaded.catalog_source(&id) else {
-                return Listed::Unprepared(REFRESH_MISSING);
-            };
-            let configured = source.catalog_url.is_some();
-            let identity = format!(
-                "{}\n{}",
-                source.profile.id,
-                source.catalog_url.as_ref().map_or("", |url| url.as_str())
-            );
+            let Prepared {
+                configured,
+                identity,
+                source_name,
+                label,
+                request,
+            } = prepared;
             let revision = loaded.revision();
-            let source_name = source.name.clone();
-            let label = source_label(source.catalog_url.as_ref().map(|url| url.as_str()));
-            let request = match LoadedConnections::edit(&loaded, &id)
-                .and_then(|draft| authority.prepare_catalog(&loaded, &draft))
-            {
-                Ok(request) => request,
-                Err(_) => return Listed::Unprepared(REFRESH_CONFIGURATION),
-            };
             let (retained, result) = match (force, request.shared()) {
                 (false, Some(SharedCatalog::Fresh(models))) => (None, Ok(models)),
                 (false, Some(SharedCatalog::Failed { models, error })) => {
@@ -541,6 +588,7 @@ impl AgentView {
                 (true, _) => (None, request.load(cancel).await),
             };
             Listed::Done {
+                loaded: Box::new(loaded),
                 revision,
                 identity,
                 configured,
@@ -586,6 +634,7 @@ impl AgentView {
                 }
             }
             Listed::Done {
+                loaded,
                 revision,
                 identity,
                 configured,
@@ -594,6 +643,14 @@ impl AgentView {
                 retained,
                 result,
             } => {
+                if self
+                    .model_pickers
+                    .loaded
+                    .as_ref()
+                    .is_none_or(|known| known.revision() <= revision)
+                {
+                    self.model_pickers.loaded = Some(*loaded);
+                }
                 // Another source's list is never shown for this one.
                 if catalog
                     .identity
@@ -709,10 +766,10 @@ impl AgentView {
         chat: &str,
         connection: Option<&str>,
         profile: Option<bello_agent_core::Profile>,
-    ) -> bool {
+    ) -> Result<bool, String> {
         let choice = self.model_pickers.choice(chat);
         let Some(profile) = profile else {
-            return false;
+            return Ok(false);
         };
         let catalog = self
             .model_pickers
@@ -729,16 +786,24 @@ impl AgentView {
         let next = choice.choosing_model(listed.as_deref(), &profile, descriptor.as_ref());
         if next != choice {
             if self.model_pickers.choices.has_chat(chat) {
-                if let Err(error) = self.model_pickers.choices.save(chat, None, next.clone()) {
-                    self.error = Some(format!("The model choice could not be saved. {error}"));
-                }
+                // The saved choice stays in force; say so rather than
+                // announce a model the next turn would not use.
+                self.model_pickers
+                    .choices
+                    .save(chat, None, next.clone())
+                    .map_err(|error| {
+                        format!(
+                            "The model choice could not be updated for this connection; the next turn still asks for {}. {error}",
+                            choice.model.as_deref().unwrap_or("the connection's model")
+                        )
+                    })?;
             } else {
                 self.model_pickers
                     .adopted
                     .insert(chat.to_owned(), next.clone());
             }
         }
-        choice.model.is_some() && next.model.is_none()
+        Ok(choice.model.is_some() && next.model.is_none())
     }
     pub(crate) fn submit_model_alias(
         &mut self,

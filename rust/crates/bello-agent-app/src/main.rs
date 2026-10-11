@@ -537,6 +537,11 @@ impl AgentView {
             close_dialog: false,
             _release: release,
         };
+        // Saved model choices that cannot be read are said once, rather than
+        // chats silently falling back to their connection's model.
+        if let Some(error) = view.model_pickers.choices.error() {
+            view.chat.notice = Some(error);
+        }
         view.bind_window(window, cx);
         view
     }

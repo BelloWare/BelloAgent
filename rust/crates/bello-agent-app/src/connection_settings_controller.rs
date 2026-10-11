@@ -1280,9 +1280,9 @@ impl AgentView {
                     let connection=changed.record.connection_id.clone().unwrap_or_default();
                     let name=view.connections.name_of(&connection).unwrap_or(connection);
                     // A model choice survives only where the new catalog lists it.
-                    let dropped=view.reconcile_model_choice_after_switch(&chat_id,changed.record.connection_id.as_deref(),changed.controller.profile());
-                    let model=if dropped{" with its default model."}else{"."};
-                    if let Some(chat)=view.chat_mut(&chat_id){chat.record=changed.record;chat.loading=false;chat.load_failed=false;chat.replace_controller(changed.controller,cx);chat.error=None;chat.notice=Some(format!("Next turn uses {name}{model}"));}
+                    let reconciled=view.reconcile_model_choice_after_switch(&chat_id,changed.record.connection_id.as_deref(),changed.controller.profile());
+                    let model=if reconciled==Ok(true){" with its default model."}else{"."};
+                    if let Some(chat)=view.chat_mut(&chat_id){chat.record=changed.record;chat.loading=false;chat.load_failed=false;chat.replace_controller(changed.controller,cx);chat.error=reconciled.err();chat.notice=Some(format!("Next turn uses {name}{model}"));}
                     view.connections.blocked.remove(&chat_id);
                     view.sidebar_search.installed(&chat_id);
                 },

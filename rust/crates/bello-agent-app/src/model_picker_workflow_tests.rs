@@ -14,7 +14,20 @@ fn saved_on_gateway(
     Gateway,
     String,
 ) {
-    let (dir, _control, window, root) = fixture(cx);
+    let (dir, _control, window, root, gateway, id) = saved_on_gateway_with_control(cx);
+    (dir, window, root, gateway, id)
+}
+fn saved_on_gateway_with_control(
+    cx: &mut TestAppContext,
+) -> (
+    tempfile::TempDir,
+    SyntheticAuthorityControl,
+    WindowHandle<AgentView>,
+    Entity<AgentView>,
+    Gateway,
+    String,
+) {
+    let (dir, control, window, root) = fixture(cx);
     let gateway = Gateway::new();
     edit(&root, cx, |f| {
         f.base_url = gateway.url.clone();
@@ -26,7 +39,7 @@ fn saved_on_gateway(
     root.update(cx, |view, cx| view.select_connection(&id, cx));
     cx.run_until_parked();
     assert_eq!(gateway.count("get"), 0, "saving and choosing list nothing");
-    (dir, window, root, gateway, id)
+    (dir, control, window, root, gateway, id)
 }
 fn open(window: WindowHandle<AgentView>, kind: PickerKind, cx: &mut TestAppContext) {
     window
@@ -391,21 +404,19 @@ fn a_connection_switch_keeps_only_a_listed_model(cx: &mut TestAppContext) {
         let chat = view.record.id.clone();
         let profile = view.controller.profile();
         // Listed by the (known) catalog: kept.
-        assert!(!view.reconcile_model_choice_after_switch(
-            &chat,
-            Some(&connection),
-            profile.clone()
-        ));
+        assert_eq!(
+            view.reconcile_model_choice_after_switch(&chat, Some(&connection), profile.clone()),
+            Ok(false)
+        );
         assert_eq!(
             view.chat_model_choice().model.as_deref(),
             Some("fixture-model-001")
         );
         // A catalog that is not known yet keeps it too.
-        assert!(!view.reconcile_model_choice_after_switch(
-            &chat,
-            Some("unlisted"),
-            profile.clone()
-        ));
+        assert_eq!(
+            view.reconcile_model_choice_after_switch(&chat, Some("unlisted"), profile.clone()),
+            Ok(false)
+        );
         // Known and not listed: the connection's default model, and only
         // this chat changes; the next-chat default stays.
         view.model_pickers
@@ -414,7 +425,10 @@ fn a_connection_switch_keeps_only_a_listed_model(cx: &mut TestAppContext) {
             .unwrap()
             .models
             .retain(|row| row.id != "fixture-model-001");
-        assert!(view.reconcile_model_choice_after_switch(&chat, Some(&connection), profile));
+        assert_eq!(
+            view.reconcile_model_choice_after_switch(&chat, Some(&connection), profile),
+            Ok(true)
+        );
         assert_eq!(view.chat_model_choice().model, None);
         assert_eq!(
             view.model_pickers
@@ -462,4 +476,43 @@ fn an_unsaved_adopted_choice_stays_in_force_and_says_why(cx: &mut TestAppContext
     let receipts = gateway.receipts.lock().unwrap();
     let post = receipts.iter().find(|r| r.method == "post").unwrap();
     assert_eq!(post.body["model"], "fixture-model-003");
+}
+
+#[gpui::test]
+fn a_vault_changed_elsewhere_lists_after_refresh_without_a_conflict(cx: &mut TestAppContext) {
+    let (_dir, control, window, root, gateway, id) = saved_on_gateway_with_control(cx);
+    open(window, PickerKind::Model, cx);
+    listed(&root, cx);
+    // Another writer renames the connection; this window never reads it.
+    let authority = control.authority();
+    let current = authority.load_connections().unwrap();
+    let mut changed = current.edit(&id).unwrap();
+    changed.name = "Renamed elsewhere".into();
+    authority.save_connection(&current, &changed).unwrap();
+    let picker = token(&root, cx);
+    root.update(cx, |view, cx| view.refresh_chat_catalog(picker, cx));
+    listed(&root, cx);
+    open(window, PickerKind::Model, cx);
+    open(window, PickerKind::Model, cx);
+    listed(&root, cx);
+    cx.read(|cx| {
+        let view = root.read(cx);
+        let catalog = view.chat_catalog().unwrap();
+        assert!(catalog.error.is_none(), "{:?}", catalog.error);
+        assert!(
+            view.model_pickers
+                .open
+                .as_ref()
+                .unwrap()
+                .refresh_error
+                .is_none()
+        );
+        assert_eq!(catalog.source_name, "Renamed elsewhere");
+        assert_eq!(catalog.models.len(), 170);
+    });
+    assert_eq!(
+        gateway.count("get"),
+        2,
+        "the refreshed list is fresh on reopening"
+    );
 }

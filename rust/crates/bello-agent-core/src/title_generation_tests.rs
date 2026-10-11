@@ -307,3 +307,40 @@ fn plans_titles_and_suggestions_match_the_swift_oracle() {
         );
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retiring_the_chat_stops_a_title_request_in_flight() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::open(dir.path().join("chat.json")).unwrap();
+    let controller = Controller::new(
+        store,
+        Some((
+            profile(&base),
+            Credential::new("synthetic-title-key".into()).unwrap(),
+        )),
+    )
+    .unwrap();
+    let plan = TitlePlan::new(&profile(&base), None, &[row("small", Some(true))], "Hi", 1).unwrap();
+    // Accept the request and never answer it.
+    let held = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        drop(stream);
+    });
+    let requester = Arc::clone(&controller);
+    let request = tokio::spawn(async move {
+        requester
+            .request_title(plan, CancellationToken::new())
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    controller.retire_and_wait().await.unwrap();
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), request)
+        .await
+        .expect("retirement stops the request promptly")
+        .unwrap();
+    assert!(outcome.is_err());
+    held.abort();
+}
