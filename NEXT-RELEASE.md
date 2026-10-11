@@ -1,6 +1,18 @@
 # Next release: 0.1.122
 
-**Released 2026-10-09:** 0.1.122 (build 126, tag `v0.1.122`) is the latest release; record `docs/validation/Bello-Agent-0.1.122-2026-10-09.md`. Nothing is planned beyond it yet.
+**Released 2026-10-09:** 0.1.122 (build 126, tag `v0.1.122`) is the latest release; record `docs/validation/Bello-Agent-0.1.122-2026-10-09.md`.
+
+## 0.1.123 (in progress, owner 2026-10-11)
+
+The Rust port is stopped (`rust` branch, `rust/docs/STATUS-2026-10-10.md`). Bring back into Swift what the port found (owner: "work on all of them"); no release without the owner's OK.
+
+- [ ] Chats missing from the sidebar: `ChatRecord` rows without `toolMode`/`imported` fail to decode and are skipped (`Storage/MetadataStore.swift`).
+- [ ] MCP outcome marker cleared before the result is journaled (`PiAgentCore/MCP.swift`).
+- [ ] Terminal: Quit leaves SIGHUP-ignoring shells running (`Terminal/PseudoTerminal.swift`); held keys may show the accent popup instead of repeating.
+- [ ] A crash mid-reply may lose the streamed text (`Workspaces/SessionStreaming.swift`); streaming CPU (~38% vs Rust 15–18%).
+- [ ] Later: Find deep in history (528 vs 260 ms), launch to settled window, CI for the Swift apps, perf harness and Swift golden corpora from the Rust oracles.
+
+
 
 **Scope (owner, 2026-10-08):**
 - [x] **Mark as Unread**: a chat can be marked unread from the sidebar's context menu and the File menu; it shows the unread dot until opened, and survives a relaunch. Done on `dev/sidebar`: row, side-row and marked-rows menus plus File ▸ Mark as Unread; it looks and counts like one unread reply, **including the Dock badge** (decided with Codex; a later run failure does not take it off); opening the chat (the reader focusing it, not launch reopening it) clears it, seeing a reply does not; persisted in the read state; not for archived chats, connection tests, background requests, unkept sides or unsent New chats. VoiceOver: "<title>, unread"; the dot says "Unread". Gallery `27-sidebar-marked-unread-*`.
