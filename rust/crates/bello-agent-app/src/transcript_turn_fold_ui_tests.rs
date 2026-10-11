@@ -8,7 +8,7 @@ use bello_agent_core::{
     },
 };
 
-fn with_calls(mut assistant: Message, calls: &[(&str, &str)]) -> Vec<Message> {
+pub(super) fn with_calls(mut assistant: Message, calls: &[(&str, &str)]) -> Vec<Message> {
     let owner = assistant.id.clone();
     assistant.tool_record = Some(ToolRecord::Assistant(AssistantRecord {
         tool_batch_timing: None,
@@ -47,7 +47,7 @@ fn with_calls(mut assistant: Message, calls: &[(&str, &str)]) -> Vec<Message> {
 
 /// A question, a reply that narrates and runs two commands and a subagent,
 /// and an answer that thought first; then a plain question and answer.
-fn finished_turns() -> Vec<Message> {
+pub(crate) fn finished_turns() -> Vec<Message> {
     let mut working = message("working", "assistant", "Looking at the parser.");
     working.reasoning = "Plan the change.".into();
     let mut answer = message("answer", "assistant", "Done: the parser keeps its offsets.");
@@ -65,7 +65,7 @@ fn finished_turns() -> Vec<Message> {
     rows
 }
 
-fn host_rows(
+pub(super) fn host_rows(
     rows: Vec<Message>,
     state: RunState,
     cx: &mut TestAppContext,
@@ -86,7 +86,7 @@ fn host_rows(
     (directory, visual, child, changed)
 }
 
-fn bounds(visual: &mut VisualTestContext, selector: &str) -> Option<Bounds<Pixels>> {
+pub(super) fn bounds(visual: &mut VisualTestContext, selector: &str) -> Option<Bounds<Pixels>> {
     visual.debug_bounds(Box::leak(selector.to_owned().into_boxed_str()))
 }
 

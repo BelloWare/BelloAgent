@@ -84,6 +84,21 @@ impl AssetSource for Assets {
                 r#"<circle cx="12" cy="4.8" r="2.3" stroke-width="2"/><circle cx="4.8" cy="18.2" r="2.3" stroke-width="2"/><circle cx="19.2" cy="18.2" r="2.3" stroke-width="2"/><path d="M10.7 7.3 6.1 15.7M13.3 7.3l4.6 8.4M7.6 18.2h8.8" stroke-width="2" stroke-dasharray="1.6 2.2"/>"#
             }
             "circle" => r#"<circle cx="12" cy="12" r="8" stroke-width="2"/>"#,
+            // A response header's fold button (SF arrow.up.right.and.arrow.down.left
+            // parting, arrow.down.left.and.arrow.up.right meeting) and its
+            // TranscriptSpinner: a 1.5 pt ring, its 0.2...1 track and 0...0.22 arc.
+            "arrow.up.right.and.arrow.down.left" => {
+                r#"<path d="M14 10 20 4M14 4h6v6M10 14l-6 6M4 14v6h6" stroke-width="2.2"/>"#
+            }
+            "arrow.down.left.and.arrow.up.right" => {
+                r#"<path d="M20 4l-6 6M14 4v6h6M4 20l6-6M10 20v-6H4" stroke-width="2.2"/>"#
+            }
+            "spinner.track" => {
+                r#"<path d="M15.245 21.986A10.5 10.5 0 1 1 22.5 12" stroke-width="3.27"/>"#
+            }
+            "spinner.arc" => {
+                r#"<path d="M22.5 12A10.5 10.5 0 0 1 13.967 22.314" stroke-width="3.27"/>"#
+            }
             "list.bullet" => {
                 r#"<path d="M9.5 6h11M9.5 12h11M9.5 18h11" stroke-width="2"/><circle cx="4.5" cy="6" r="1.2" fill="black"/><circle cx="4.5" cy="12" r="1.2" fill="black"/><circle cx="4.5" cy="18" r="1.2" fill="black"/>"#
             }

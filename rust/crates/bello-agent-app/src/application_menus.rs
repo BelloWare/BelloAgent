@@ -38,6 +38,12 @@ actions!(
         ResumeFollowUps,
         CompactNow,
         LatestMessages,
+        FoldTurn,
+        UnfoldTurn,
+        FoldEveryTurn,
+        UnfoldEveryTurn,
+        FoldResponse,
+        ShowResponse,
         Find,
         FindNext,
         FindPrevious,
@@ -91,6 +97,8 @@ pub(crate) fn install(cx: &mut App) {
         "cmd-alt-down" => NextChat, "cmd-alt-up" => PreviousChat,
         "ctrl-cmd-right" => WidenSidebar, "ctrl-cmd-left" => NarrowSidebar,
         "cmd-enter" => SendSteer, "cmd-." => Stop,
+        "cmd-alt-[" => FoldTurn, "cmd-alt-]" => UnfoldTurn,
+        "cmd-alt-shift-[" => FoldEveryTurn, "cmd-alt-shift-]" => UnfoldEveryTurn,
         "cmd-f" => Find, "cmd-g" => FindNext, "cmd-shift-g" => FindPrevious,
         "cmd-alt-f" => SearchConversation, "cmd-m" => Minimize,
         "cmd-h" => Hide, "cmd-alt-h" => HideOthers, "cmd-q" => Quit);
@@ -227,6 +235,13 @@ pub(crate) fn menus(state: &MenuState) -> Vec<Menu> {
                 MenuItem::action("Resume Follow-ups", ResumeFollowUps),
                 MenuItem::action("Compact Now", CompactNow),
                 MenuItem::action("Latest Messages", LatestMessages),
+                MenuItem::separator(),
+                MenuItem::action("Fold This Turn", FoldTurn),
+                MenuItem::action("Unfold This Turn", UnfoldTurn),
+                MenuItem::action("Fold Every Turn", FoldEveryTurn),
+                MenuItem::action("Unfold Every Turn", UnfoldEveryTurn),
+                MenuItem::action("Fold This Response to One Line", FoldResponse),
+                MenuItem::action("Show This Response", ShowResponse),
                 MenuItem::separator(),
                 MenuItem::action("Find…", Find),
                 MenuItem::action("Find Next", FindNext),
@@ -472,6 +487,27 @@ impl AgentView {
         );
         route!(active, CompactNow, |v, _, _, cx| v.compact_current(cx));
         route!(active, LatestMessages, |v, _, _, cx| v.latest_messages(cx));
+        // Swift's canFoldTurns / canFoldResponses: the rows answer.
+        use crate::transcript_view::FoldCommand as F;
+        let (turns, responses) = self.fold_availability(cx);
+        route!(active && turns, FoldTurn, |v, _, w, cx| v.fold_command(
+            F::Turn(true),
+            w,
+            cx
+        ));
+        route!(active && turns, UnfoldTurn, |v, _, w, cx| v.fold_command(
+            F::Turn(false),
+            w,
+            cx
+        ));
+        route!(active && turns, FoldEveryTurn, |v, _, w, cx| v
+            .fold_command(F::EveryTurn(true), w, cx));
+        route!(active && turns, UnfoldEveryTurn, |v, _, w, cx| v
+            .fold_command(F::EveryTurn(false), w, cx));
+        route!(active && responses, FoldResponse, |v, _, w, cx| v
+            .fold_command(F::Response(true), w, cx));
+        route!(active && responses, ShowResponse, |v, _, w, cx| v
+            .fold_command(F::Response(false), w, cx));
         route!(find, Find, |v, _, w, cx| v.show_transcript_find(w, cx));
         route!(find, FindNext, |v, _, w, cx| {
             if v.transcript_find.is_some() {

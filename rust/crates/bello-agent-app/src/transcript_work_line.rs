@@ -80,6 +80,9 @@ pub(crate) struct CardColors {
     pub danger: Hsla,
     pub warning: Hsla,
     pub success: Hsla,
+    pub panel: Hsla,
+    pub hair_strong: Hsla,
+    pub accent: Hsla,
 }
 
 pub(crate) fn card_colors(palette: &crate::Palette) -> CardColors {
@@ -94,6 +97,9 @@ pub(crate) fn card_colors(palette: &crate::Palette) -> CardColors {
         faint: colors.faint,
         hair: rgba(if dark { 0xffffff17 } else { 0x00000014 }).into(),
         code_background: rgb(if dark { 0x211d1a } else { 0xf6f1ea }).into(),
+        panel: colors.panel,
+        hair_strong: rgba(if dark { 0xffffff29 } else { 0x00000024 }).into(),
+        accent: colors.accent,
     }
 }
 

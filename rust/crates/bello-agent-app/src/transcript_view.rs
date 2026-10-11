@@ -12,6 +12,8 @@ mod markdown_view;
 pub(crate) use markdown_view::Child as MarkdownChild;
 #[path = "transcript_read_presentation.rs"]
 mod read_presentation;
+#[path = "transcript_response.rs"]
+mod response;
 #[path = "transcript_shaped_text.rs"]
 mod shaped_text;
 #[path = "transcript_tool_presentation.rs"]
@@ -20,6 +22,8 @@ mod tool_presentation;
 mod tool_row;
 #[path = "transcript_turn_fold.rs"]
 mod turn_fold;
+pub(crate) use response::FoldCommand;
+pub(crate) use turn_fold::TranscriptDisplayMode;
 #[path = "transcript_work_line.rs"]
 mod work_line;
 use gpui::{prelude::*, *};
@@ -60,12 +64,14 @@ thread_local! {
 pub(crate) fn loose_turns_for_test() {
     TURNS_LOOSE.with(|loose| loose.set(true));
 }
-/// Swift's compact display, its default: finished turns fold.
-fn turn_folds_apply() -> bool {
+/// The display a new transcript starts in: Swift's compact display, its
+/// default, unless a test asked for the turns loose.
+fn initial_display() -> TranscriptDisplayMode {
     #[cfg(test)]
-    return !TURNS_LOOSE.with(std::cell::Cell::get);
-    #[cfg(not(test))]
-    true
+    if TURNS_LOOSE.with(std::cell::Cell::get) {
+        return TranscriptDisplayMode::Normal;
+    }
+    TranscriptDisplayMode::Compact
 }
 fn tool_rows_open_by_default() -> bool {
     #[cfg(test)]
@@ -114,6 +120,12 @@ enum RowKey {
     /// A finished turn's fold control, by the row of the question that opened
     /// the turn. In the open set, the fold is open.
     Fold(Box<RowKey>),
+    /// A response by its reply's row key. In the open set, the response is
+    /// folded to its header line (Swift's `responseLine`). Never a row's key.
+    Response(Box<RowKey>),
+    /// In the open set, everything inside the response draws closed (Swift's
+    /// `response`). Never a row's key.
+    ResponseInside(Box<RowKey>),
     // A duplicate has no stable model identity. Scope its presentation key to
     // the exact immutable snapshot instead of guessing after replacement.
     Duplicate {
@@ -131,6 +143,7 @@ struct LogicalRow {
     read_expanded: bool,
     read_key: Option<RowKey>,
     fold: turn_fold::RowFold,
+    response: response::RowResponse,
 }
 
 struct Presentation {
@@ -146,14 +159,15 @@ struct Presentation {
 }
 
 impl Presentation {
-    fn new(input: TranscriptInput) -> Self {
-        Self::with_disclosure(input, &HashSet::new(), &HashSet::new())
+    fn new(input: TranscriptInput, display: TranscriptDisplayMode) -> Self {
+        Self::with_disclosure(input, &HashSet::new(), &HashSet::new(), display)
     }
 
     fn with_disclosure(
         input: TranscriptInput,
         opened: &HashSet<RowKey>,
         expanded_reads: &HashSet<RowKey>,
+        display: TranscriptDisplayMode,
     ) -> Self {
         let hidden_messages = input
             .session
@@ -170,6 +184,7 @@ impl Presentation {
                 read_expanded: false,
                 read_key: None,
                 fold: turn_fold::RowFold::default(),
+                response: Default::default(),
             });
         } else if input.load_failed {
             rows.push(LogicalRow {
@@ -180,6 +195,7 @@ impl Presentation {
                 read_expanded: false,
                 read_key: None,
                 fold: turn_fold::RowFold::default(),
+                response: Default::default(),
             });
         }
         if hidden_messages > 0 {
@@ -191,6 +207,7 @@ impl Presentation {
                 read_expanded: false,
                 read_key: None,
                 fold: turn_fold::RowFold::default(),
+                response: Default::default(),
             });
         }
         let mut counts = HashMap::<&str, usize>::new();
@@ -274,12 +291,21 @@ impl Presentation {
                 read_expanded,
                 read_key,
                 fold: turn_fold::RowFold::default(),
+                response: Default::default(),
             });
         }
-        if turn_folds_apply() {
+        response::apply(&mut rows, &input.session, opened);
+        for row in &mut rows {
+            // A response folded from inside draws its cards closed and keeps
+            // what the reader opened for when it opens again.
+            row.expanded &= !row.response.inside_folded;
+        }
+        if display == TranscriptDisplayMode::Compact {
             turn_fold::apply(&mut rows, &input.session, opened);
         }
-        let (folded, rows) = rows.into_iter().partition(|row| row.fold.hidden);
+        let (folded, rows) = rows
+            .into_iter()
+            .partition(|row| row.fold.hidden || row.response.line_hidden);
         Self {
             input,
             rows,
@@ -300,6 +326,7 @@ impl Presentation {
         let other_row = &other.rows[other_index];
         if row.key != other_row.key
             || row.fold != other_row.fold
+            || row.response != other_row.response
             || (index + 1 == self.rows.len()) != (other_index + 1 == other.rows.len())
         {
             return false;
@@ -779,6 +806,14 @@ fn row_gap(presentation: &Presentation, index: usize) -> f32 {
     }
 }
 
+/// The response strip a row draws: none when its turn's fold hides it.
+fn drawn_header(row: &LogicalRow) -> Option<&response::Header> {
+    row.response
+        .header
+        .as_ref()
+        .filter(|_| !row.fold.header_hidden)
+}
+
 fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) -> Pixels {
     #[cfg(test)]
     if let Some(height) = presentation.estimate_override.get() {
@@ -799,6 +834,11 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
                 _ => 29.25,
             });
     };
+    let header = drawn_header(row);
+    if let Some(header) = header.filter(|header| header.collapsed) {
+        // A response folded to its line is its strip and nothing else.
+        return px(gap + header.height());
+    }
     let message = &presentation.input.session.messages[source_index];
     if matches!(
         row.projected,
@@ -806,6 +846,7 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
     ) {
         // The line, and while open its card 2 under it and 8 above what follows.
         return px(gap
+            + header.map_or(0., response::Header::height)
             + work_line::HEIGHT
             + if row.expanded {
                 2. + 64. + tool_presentation::SECTION_CAP * 2. + 8.
@@ -844,7 +885,9 @@ fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) ->
         let (line, spacing) = markdown_view::body_line(bello_agent_core::markdown::Style::PROSE);
         plain(&message.text, 14.5, line + spacing) - spacing
     };
-    let mut height = 12. + 6. + transcript_actions::ACTION_BAND_HEIGHT + gap + body;
+    // A response's strip stands where the row's top room was.
+    let top = header.map_or(12., response::Header::height);
+    let mut height = top + 6. + transcript_actions::ACTION_BAND_HEIGHT + gap + body;
     if user {
         height += 18.;
         if let Some(content) = &message.user_content {
@@ -1036,6 +1079,8 @@ pub(crate) struct TranscriptView {
     /// Tool rows the reader opened; every other one is closed.
     opened: HashSet<RowKey>,
     expanded_reads: HashSet<RowKey>,
+    /// How finished turns read: Normal keeps them loose, Compact folds them.
+    display: TranscriptDisplayMode,
     tool_editors: Rc<RefCell<ToolEditors>>,
     focus: Option<FocusHandle>,
     removed_tool_focus: Rc<RefCell<Vec<FocusHandle>>>,
@@ -1060,11 +1105,13 @@ impl TranscriptView {
                 .is_some_and(|row| reply_end_visible(row, viewport.list.viewport_bounds()))
     }
     pub(crate) fn new(parent: WeakEntity<AgentView>, input: TranscriptInput) -> Self {
-        let presentation = Rc::new(Presentation::new(input));
+        let display = initial_display();
+        let presentation = Rc::new(Presentation::new(input, display));
         Self {
             parent,
             opened: HashSet::new(),
             expanded_reads: HashSet::new(),
+            display,
             tool_editors: Rc::new(RefCell::new(ToolEditors::default())),
             focus: None,
             removed_tool_focus: Rc::new(RefCell::new(Vec::new())),
@@ -1310,6 +1357,12 @@ impl TranscriptView {
         if let Some(group) = row.fold.group.clone() {
             self.opened.insert(RowKey::Fold(Box::new(group)));
         }
+        // And the response folded around it opens.
+        if let Some(owner) = row.response.owner.clone() {
+            self.opened
+                .remove(&RowKey::Response(Box::new(owner.clone())));
+            self.opened.remove(&RowKey::ResponseInside(Box::new(owner)));
+        }
         self.opened.insert(key.clone());
         if let Some(read_key) = read_key {
             self.expanded_reads.insert(read_key);
@@ -1318,6 +1371,7 @@ impl TranscriptView {
             self.presentation.input.clone(),
             &self.opened,
             &self.expanded_reads,
+            self.display,
         ));
         self.viewport.borrow_mut().reveal = Some(key);
         cx.notify();
@@ -1597,6 +1651,13 @@ impl TranscriptView {
             // The finished turn that folded the message away opens.
             changed |= self.opened.insert(RowKey::Fold(Box::new(group)));
         }
+        if let Some(owner) = row.response.owner.clone() {
+            // So does the response folded around it.
+            changed |= self
+                .opened
+                .remove(&RowKey::Response(Box::new(owner.clone())));
+            changed |= self.opened.remove(&RowKey::ResponseInside(Box::new(owner)));
+        }
         if matches!(
             row.projected,
             Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
@@ -1609,6 +1670,7 @@ impl TranscriptView {
                 self.presentation.input.clone(),
                 &self.opened,
                 &self.expanded_reads,
+                self.display,
             ));
         }
         self.viewport.borrow_mut().reveal = Some(key);
@@ -1670,6 +1732,7 @@ impl TranscriptView {
             input,
             &self.opened,
             &self.expanded_reads,
+            self.display,
         ));
         if !open_results.is_empty() {
             let session = self.presentation.input.session.clone();
@@ -1691,14 +1754,24 @@ impl TranscriptView {
                     self.presentation.input.clone(),
                     &self.opened,
                     &self.expanded_reads,
+                    self.display,
                 ));
             }
         }
         let keys: HashSet<_> = self.presentation.all_rows().map(|row| &row.key).collect();
+        let responses: HashSet<_> = self
+            .presentation
+            .all_rows()
+            .filter_map(|row| row.response.owner.as_ref())
+            .collect();
         // A fold's choice lasts as long as its question: a retry runs the turn
-        // again and its control comes back with the reader's choice.
+        // again and its control comes back with the reader's choice. A
+        // response's lasts as long as the response.
         self.opened.retain(|key| match key {
             RowKey::Fold(question) => keys.contains(question.as_ref()),
+            RowKey::Response(owner) | RowKey::ResponseInside(owner) => {
+                responses.contains(owner.as_ref())
+            }
             key => keys.contains(key),
         });
         let read_keys: HashSet<_> = self
@@ -1751,13 +1824,18 @@ impl TranscriptView {
         if !self.opened.remove(&key) {
             self.opened.insert(key);
         }
+        self.refold(window, cx);
+    }
+    /// Lays the page out again after a fold changed, leaving the keyboard
+    /// with a visible owner when the fold hid a focused card's payload, as
+    /// closing the card itself does.
+    fn refold(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.presentation = Rc::new(Presentation::with_disclosure(
             self.presentation.input.clone(),
             &self.opened,
             &self.expanded_reads,
+            self.display,
         ));
-        // Folding away a focused card's payload leaves a visible owner with
-        // the keyboard, as closing the card itself does.
         let folded: HashSet<_> = self
             .presentation
             .folded
@@ -1821,6 +1899,7 @@ impl TranscriptView {
             self.presentation.input.clone(),
             &self.opened,
             &self.expanded_reads,
+            self.display,
         ));
         self.invalidate_sidebar_geometry(cx);
         cx.notify();
@@ -1883,6 +1962,7 @@ impl TranscriptView {
             self.presentation.input.clone(),
             &self.opened,
             &self.expanded_reads,
+            self.display,
         ));
         self.invalidate_sidebar_geometry(cx);
         cx.notify();
@@ -2165,6 +2245,9 @@ impl TranscriptView {
                 } => format!("@tool:{assistant:?}:{call_id}:{occurrence}"),
                 RowKey::Duplicate { id, occurrence, .. } => format!("{id}#{occurrence}"),
                 RowKey::Fold(group) => format!("@fold:{group:?}"),
+                RowKey::Response(_) | RowKey::ResponseInside(_) => {
+                    unreachable!("a response's fold is never a row")
+                }
             })
             .collect()
     }
@@ -3110,6 +3193,30 @@ fn fold_control(
         .child(div().w_full().h(px(1.)).bg(colors.hair))
 }
 
+/// The response strip a row carries, and whether the response is folded to
+/// it. Pressing it folds or opens the response.
+fn response_strip(
+    presentation: &Presentation,
+    index: usize,
+    child: &WeakEntity<TranscriptView>,
+) -> Option<(bool, AnyElement)> {
+    let row = &presentation.rows[index];
+    let header = drawn_header(row)?;
+    let input = &presentation.input;
+    let (child, owner) = (child.clone(), header.owner.clone());
+    let (chat_id, controller) = (input.chat_id.clone(), input.controller.clone());
+    let selector = format!("transcript-response-{:?}", header.owner);
+    Some((
+        header.collapsed,
+        response::render(&selector, header, &input.palette, move |window, cx| {
+            let _ = child.update(cx, |view, cx| {
+                view.toggle_response(owner.clone(), &chat_id, &controller, window, cx)
+            });
+        })
+        .into_any_element(),
+    ))
+}
+
 fn row_width(width: Pixels) -> f32 {
     (f32::from(width) - 2. * ROW_GUTTER).clamp(0., ROW_MAX_WIDTH)
 }
@@ -3157,12 +3264,40 @@ fn render_row(
                 )),
         );
     }
-    let content = if matches!(
+    let (collapsed, strip) = match response_strip(presentation, index, child) {
+        Some((collapsed, strip)) => (collapsed, Some(strip)),
+        None => (false, None),
+    };
+    let content = if collapsed {
+        // A response folded to its line: its first row is the strip alone.
+        let selector = match &row.key {
+            RowKey::Message(id) => Some(format!("transcript-row-{id}")),
+            _ => None,
+        };
+        div()
+            .when_some(selector, |d, selector| d.debug_selector(|| selector))
+            .w_full()
+            .max_w(px(ROW_MAX_WIDTH))
+            .mx_auto()
+            .children(strip)
+            .into_any_element()
+    } else if matches!(
         row.projected,
         Some(ProjectedRow::Call { .. } | ProjectedRow::Result(_))
     ) {
-        render_tool_card(presentation, index, child, tool_editors, width, window, cx)
-            .into_any_element()
+        let card = render_tool_card(presentation, index, child, tool_editors, width, window, cx);
+        match strip {
+            Some(strip) => div()
+                .w_full()
+                .max_w(px(ROW_MAX_WIDTH))
+                .mx_auto()
+                .flex()
+                .flex_col()
+                .child(strip)
+                .child(card)
+                .into_any_element(),
+            None => card.into_any_element(),
+        }
     } else {
         match &row.key {
             RowKey::Loading => div()
@@ -3205,6 +3340,9 @@ fn render_row(
             }
             RowKey::Tool { .. } => unreachable!("tool card rendered above"),
             RowKey::Fold(_) => unreachable!("fold control rendered above"),
+            RowKey::Response(_) | RowKey::ResponseInside(_) => {
+                unreachable!("a response's fold is never a row")
+            }
             RowKey::Message(_) | RowKey::Duplicate { .. } => {
                 let source_index = row.message_index.expect("message row");
                 let message = &input.session.messages[source_index];
@@ -3245,7 +3383,9 @@ fn render_row(
                     // Swift's Think row: closed by default, even while it
                     // streams; open, the reasoning read as Markdown under it.
                     let streaming = message.state == "streaming";
-                    let open = tool_editors.borrow().open_thinking.contains(&message.id);
+                    // A response folded from inside draws its thought closed.
+                    let open = tool_editors.borrow().open_thinking.contains(&message.id)
+                        && !row.response.inside_folded;
                     let think = work_line::WorkLine {
                         icon: "brain",
                         title: "Think".into(),
@@ -3437,16 +3577,19 @@ fn render_row(
                         input.controller.clone(),
                     )
                 };
-                div()
+                // The row's selector names the whole row, its strip included.
+                let row_selector = selector.clone();
+                let message_row = div()
                     .group(group)
-                    .debug_selector(|| selector)
+                    .when(strip.is_none(), |d| d.debug_selector(|| row_selector))
                     // Keep the message content-sized, ending at its action band.
                     .w_full()
                     .max_w(px(ROW_MAX_WIDTH))
                     .mx_auto()
                     .min_w_0()
                     .flex_shrink_0()
-                    .pt(px(12.))
+                    // A response's strip stands in the row's top room.
+                    .when(strip.is_none(), |d| d.pt(px(12.)))
                     .flex()
                     .flex_col()
                     .gap(px(6.))
@@ -3458,8 +3601,22 @@ fn render_row(
                             .when(user, |d| d.justify_end().pl(px(40.)))
                             .child(body),
                     )
-                    .child(actions)
-                    .into_any_element()
+                    .child(actions);
+                match strip {
+                    Some(strip) => div()
+                        .debug_selector(|| selector)
+                        .w_full()
+                        .max_w(px(ROW_MAX_WIDTH))
+                        .mx_auto()
+                        .min_w_0()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .child(strip)
+                        .child(message_row)
+                        .into_any_element(),
+                    None => message_row.into_any_element(),
+                }
             }
         }
     };

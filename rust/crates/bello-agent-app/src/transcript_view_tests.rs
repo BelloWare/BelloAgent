@@ -2077,11 +2077,12 @@ fn native_large_wheel_preserves_mixed_height_distance(cx: &mut TestAppContext) {
         cx.run_until_parked();
         let offset = scroll(&child, cx).logical_scroll_top();
         // A message the reader sent: 21 pt lines in an 18 pt taller bubble;
-        // a reply: 18 pt lines 23.075 apart (Markdown), on whole points.
+        // a reply: its 14 pt quiet response strip in the row's top room, and
+        // 18 pt lines 23.075 apart (Markdown), on whole points.
         let prefix: f32 = (0..offset.item_ix)
             .map(|index| match (index % 2 == 0, index % 3 == 0) {
                 (true, three) => 95. + if three { 42. } else { 0. },
-                (false, three) => 74. + if three { 46. } else { 0. },
+                (false, three) => 76. + if three { 46. } else { 0. },
             })
             .sum();
         assert_eq!(px(prefix) + offset.offset_in_item, px(expected));
@@ -2866,10 +2867,12 @@ fn live_bash_output_remeasures_existing_card_then_settles_to_retained_result(
 #[path = "transcript_live_terminal_ui_tests.rs"]
 mod live_terminal_ui;
 
+#[path = "transcript_response_ui_tests.rs"]
+mod response_ui;
 #[path = "transcript_tool_timing_tests.rs"]
 mod tool_timing_ui;
 #[path = "transcript_turn_fold_ui_tests.rs"]
-mod turn_fold_ui;
+pub(crate) mod turn_fold_ui;
 #[path = "transcript_work_rows_ui_tests.rs"]
 mod work_rows_ui;
 
