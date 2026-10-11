@@ -694,8 +694,7 @@ impl Controller {
             ));
         }
         let config = self.configuration().ok_or_else(|| invalid("No connection configured. Launch with --profile and --credential-stdin; no credentials are discovered automatically."))?;
-        item.model = Some(config.profile.model_id.clone());
-        item.effort = Some(config.profile.thinking_level.clone());
+        crate::model_choice::capture(&mut item, &config.profile)?;
         inner.store.transact(|session| session.submit(item))?;
         self.note_semantic_activity();
         self.publish(&inner);

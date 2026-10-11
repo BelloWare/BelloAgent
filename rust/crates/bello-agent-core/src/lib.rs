@@ -10,6 +10,7 @@ pub mod instructions;
 pub mod markdown;
 pub mod mcp;
 pub mod model_catalog;
+pub mod model_choice;
 pub mod observed_source;
 pub mod profile;
 pub mod project_authority;
