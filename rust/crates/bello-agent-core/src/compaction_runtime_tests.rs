@@ -157,7 +157,7 @@ async fn manual_checkpoint_reopens_and_next_request_inspector_share_exact_projec
     let summary_request = timeout(DEADLINE, requests.recv()).await.unwrap().unwrap();
     assert_eq!(summary_request["tool_choice"], "none");
     let snapshot = settled(&actor).await;
-    assert_eq!(snapshot.version, 9);
+    assert_eq!(snapshot.version, 11);
     assert_eq!(
         snapshot.tool_timing.unwrap().total_us,
         Some(crate::tool_timing::DurationUs::new(75_000))

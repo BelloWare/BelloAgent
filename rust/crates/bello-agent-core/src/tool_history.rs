@@ -446,6 +446,17 @@ pub fn project(messages: &[Message], profile: &Profile) -> Result<Vec<Value>> {
 }
 
 pub(crate) fn project_active(messages: &[&Message], profile: &Profile) -> Result<Vec<Value>> {
+    project_active_with_ends(messages, profile, None)
+}
+
+/// The projection, and where each row's own items end in it (Swift
+/// `responsesProjection(...).ranges[id].upperBound`). A tool call's results
+/// are rows of their own: they follow its call's end.
+pub(crate) fn project_active_with_ends(
+    messages: &[&Message],
+    profile: &Profile,
+    mut ends: Option<&mut BTreeMap<String, usize>>,
+) -> Result<Vec<Value>> {
     let mut image_bytes = 0usize;
     let mut output = Vec::new();
     let mut pending: Vec<String> = Vec::new();
@@ -500,6 +511,9 @@ pub(crate) fn project_active(messages: &[&Message], profile: &Profile) -> Result
         }
         if let Some(ToolRecord::Assistant(record)) = &message.tool_record {
             output.extend(assistant_items(message, record, profile)?);
+            if let Some(ends) = ends.as_deref_mut() {
+                ends.insert(message.id.clone(), output.len());
+            }
             pending = record.calls.iter().map(|call| call.id.clone()).collect();
             active_owner = Some(&message.id);
             continue;
@@ -526,6 +540,9 @@ pub(crate) fn project_active(messages: &[&Message], profile: &Profile) -> Result
             },
             "assistant" => output.push(json!({"type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":message.text,"annotations":[]}]})),
             _ => return Err(invalid("Unsupported replay role in Rust session")),
+        }
+        if let Some(ends) = ends.as_deref_mut() {
+            ends.insert(message.id.clone(), output.len());
         }
     }
     settle(&mut output, &mut pending, &mut results);

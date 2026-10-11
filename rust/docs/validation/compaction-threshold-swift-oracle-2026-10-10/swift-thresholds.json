@@ -1,5 +1,9 @@
 [
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 101,
+        "contextTokens": 78,
+        "meterTokens": 78,
         "name": "short-65536",
         "requestTokens": 101,
         "safetyMargin": 655,
@@ -7,6 +11,10 @@
         "threshold": 31697
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 115473,
+        "contextTokens": 115274,
+        "meterTokens": 115274,
         "name": "long-65536",
         "requestTokens": 115473,
         "safetyMargin": 655,
@@ -14,6 +22,10 @@
         "threshold": 31714
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 109062,
+        "contextTokens": 108871,
+        "meterTokens": 108871,
         "name": "long-unanswered-65536",
         "requestTokens": 109062,
         "safetyMargin": 655,
@@ -21,6 +33,10 @@
         "threshold": 31676
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 63183,
+        "contextTokens": 63048,
+        "meterTokens": 63048,
         "name": "unicode-32000",
         "requestTokens": 63183,
         "safetyMargin": 320,
@@ -28,6 +44,10 @@
         "threshold": 15281
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 117957,
+        "contextTokens": 116030,
+        "meterTokens": 116030,
         "name": "many-rows-128000",
         "requestTokens": 117957,
         "safetyMargin": 1024,
@@ -35,6 +55,10 @@
         "threshold": 93770
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 72139,
+        "contextTokens": 72036,
+        "meterTokens": 72036,
         "name": "limit-2000-65536",
         "requestTokens": 72139,
         "safetyMargin": 655,
@@ -42,6 +66,10 @@
         "threshold": 44401
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 240457,
+        "contextTokens": 240130,
+        "meterTokens": 240130,
         "name": "big-max-output-200000",
         "requestTokens": 240457,
         "safetyMargin": 1024,
@@ -49,6 +77,10 @@
         "threshold": 118592
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 576687,
+        "contextTokens": 576200,
+        "meterTokens": 576200,
         "name": "window-1m",
         "requestTokens": 576687,
         "safetyMargin": 1024,
@@ -56,6 +88,10 @@
         "threshold": 950592
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 5855,
+        "contextTokens": 5784,
+        "meterTokens": 5784,
         "name": "window-8192",
         "requestTokens": 5855,
         "safetyMargin": 81,
@@ -63,6 +99,10 @@
         "threshold": 3618
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 2953,
+        "contextTokens": 2898,
+        "meterTokens": 2898,
         "name": "window-4096",
         "requestTokens": 2953,
         "safetyMargin": 40,
@@ -70,6 +110,10 @@
         "threshold": 1611
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 1011,
+        "contextTokens": 972,
+        "meterTokens": 972,
         "name": "window-2048",
         "requestTokens": 1011,
         "safetyMargin": 20,
@@ -77,6 +121,10 @@
         "threshold": 607
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 1011,
+        "contextTokens": 972,
+        "meterTokens": 972,
         "name": "window-1024",
         "requestTokens": 1011,
         "safetyMargin": 10,
@@ -84,6 +132,10 @@
         "threshold": 105
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 77,
+        "contextTokens": 54,
+        "meterTokens": 54,
         "name": "window-300-error",
         "requestTokens": 77,
         "safetyMargin": 3,
@@ -91,6 +143,10 @@
         "thresholdError": "compact_budget"
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 24110,
+        "contextTokens": 24030,
+        "meterTokens": 24030,
         "name": "empty-instructions",
         "requestTokens": 24110,
         "safetyMargin": 320,
@@ -98,10 +154,124 @@
         "threshold": 15282
     },
     {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 75015,
+        "contextTokens": 75000,
+        "meterTokens": 75000,
         "name": "single-huge-user",
         "requestTokens": 75015,
         "safetyMargin": 655,
         "summaryTokens": 16384,
         "threshold": 31684
+    },
+    {
+        "baselineMethod": "last-reply-usage",
+        "baselineRequestTokens": 30900,
+        "contextTokens": 30900,
+        "meterTokens": 30900,
+        "name": "usage-last-answer",
+        "requestTokens": 115473,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31714
+    },
+    {
+        "baselineMethod": "last-reply-usage",
+        "baselineRequestTokens": 68612,
+        "contextTokens": 68532,
+        "meterTokens": 68532,
+        "name": "usage-earlier-answer",
+        "requestTokens": 115473,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31714
+    },
+    {
+        "baselineMethod": "last-reply-usage",
+        "baselineRequestTokens": 54212,
+        "contextTokens": 54204,
+        "meterTokens": 54204,
+        "name": "usage-unanswered",
+        "requestTokens": 109062,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31676
+    },
+    {
+        "baselineMethod": "last-reply-usage",
+        "baselineRequestTokens": 40800,
+        "contextTokens": 40800,
+        "meterTokens": 40800,
+        "name": "usage-cached-no-total",
+        "requestTokens": 57783,
+        "safetyMargin": 1024,
+        "summaryTokens": 16384,
+        "threshold": 93771
+    },
+    {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 115473,
+        "contextTokens": 115274,
+        "meterTokens": 30900,
+        "name": "usage-stale-binding",
+        "requestTokens": 115473,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31714
+    },
+    {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 115473,
+        "contextTokens": 115274,
+        "meterTokens": 30900,
+        "name": "usage-no-binding",
+        "requestTokens": 115473,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31714
+    },
+    {
+        "baselineMethod": "last-reply-usage",
+        "baselineRequestTokens": 18744,
+        "contextTokens": 18712,
+        "meterTokens": 18712,
+        "name": "usage-zero-falls-back",
+        "requestTokens": 28939,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31715
+    },
+    {
+        "baselineMethod": "characters",
+        "baselineRequestTokens": 28939,
+        "contextTokens": 28836,
+        "meterTokens": 12100,
+        "name": "usage-latest-stale-wins",
+        "requestTokens": 28939,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31715
+    },
+    {
+        "baselineMethod": "last-reply-usage",
+        "baselineRequestTokens": 38991,
+        "contextTokens": 38943,
+        "meterTokens": 38943,
+        "name": "usage-unicode",
+        "requestTokens": 63183,
+        "safetyMargin": 320,
+        "summaryTokens": 8000,
+        "threshold": 15281
+    },
+    {
+        "baselineMethod": "last-reply-usage",
+        "baselineRequestTokens": 16714,
+        "contextTokens": 16682,
+        "meterTokens": 16682,
+        "name": "usage-empty-instructions",
+        "requestTokens": 24110,
+        "safetyMargin": 655,
+        "summaryTokens": 16384,
+        "threshold": 31715
     }
 ]

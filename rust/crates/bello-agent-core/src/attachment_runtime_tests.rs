@@ -126,7 +126,7 @@ async fn image_only_retains_exact_bytes_retry_and_reopen_never_reread_source() {
         .as_ref()
         .unwrap()
         .clone();
-    assert_eq!(failed.version, 9);
+    assert_eq!(failed.version, 11);
     assert_eq!(image.image_count(), 1);
     c.retry().unwrap();
     let (socket, retry) = request(&l).await;

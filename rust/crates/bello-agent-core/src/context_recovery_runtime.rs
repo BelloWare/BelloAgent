@@ -81,6 +81,14 @@ impl Controller {
         );
         let session_id = snapshot.id.clone();
         let measure_session = session_id.clone();
+        // What each reply's request measured: a reply's reported usage sizes
+        // the next request only when it measured the same prefix (Swift
+        // `contextUsageBinding`).
+        let bindings: std::collections::BTreeMap<String, String> = snapshot
+            .requests
+            .iter()
+            .filter_map(|record| Some((record.reply.clone()?, record.usage_binding.clone()?)))
+            .collect();
         let fits = tokio::task::spawn_blocking(move || -> Result<Option<bool>> {
             let request = crate::provider::request_body_with_tools(
                 &measure_profile,
@@ -106,12 +114,19 @@ impl Controller {
                 }
                 Err(error) => return Err(error),
             };
-            if compaction::estimated_request_tokens(&request) < threshold
-                || !compaction::can_compact(&measure_messages)
-            {
+            let (request_tokens, _) = compaction::request_tokens(
+                &measure_messages,
+                &measure_profile,
+                &request,
+                |reply| bindings.get(reply).map(String::as_str),
+            )?;
+            if request_tokens < threshold || !compaction::can_compact(&measure_messages) {
                 return Ok(None);
             }
-            Ok(Some(compaction::request_fits(&request, &measure_profile)))
+            Ok(Some(compaction::tokens_fit(
+                request_tokens,
+                &measure_profile,
+            )))
         })
         .await
         .map_err(|_| invalid("Compaction threshold worker failed"))??;

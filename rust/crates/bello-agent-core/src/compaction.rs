@@ -290,6 +290,197 @@ pub fn estimated_request_tokens(request: &Value) -> u64 {
         .map(|item| 8u64.saturating_add(content_tokens(item)))
         .fold(prefix.saturating_add(tool_tokens), u64::saturating_add)
 }
+/// Swift `RequestContextCounter.usageBinding`: what a reply's reported usage
+/// measured. Budgets and cache/correlation identifiers do not alter the
+/// rendered prefix; the model, route, headers, replay settings, instructions,
+/// tool schemas and reasoning options do.
+pub(crate) fn usage_binding(request: &Value, profile: &Profile) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut raw = serde_json::to_value(profile)?;
+    if let Some(map) = raw.as_object_mut() {
+        for key in [
+            "maxOutputTokens",
+            "outputCap",
+            "modelOutputLimit",
+            "contextWindow",
+        ] {
+            map.remove(key);
+        }
+    }
+    let input = request["input"].as_array();
+    let instructions = input
+        .and_then(|items| items.first())
+        .filter(|item| matches!(item["role"].as_str(), Some("system" | "developer")))
+        .and_then(|item| item["content"].as_str())
+        .unwrap_or("");
+    let value = json!({"profile": raw, "instructions": instructions, "tools": request["tools"],
+        "reasoning": request["reasoning"], "include": request["include"], "text": request["text"]});
+    Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(&value)?)))
+}
+
+/// pi's `calculateContextTokens` over a reply's provider usage, read as
+/// Swift `PiContext.usage` reads it: the reported total, else the sum of
+/// uncached input, output and both caches. Malformed usage counts as zero.
+pub fn context_tokens(usage: &Value) -> u64 {
+    if !usage.is_object() {
+        return 0;
+    }
+    let count = |value: &Value| value.as_u64().unwrap_or(0);
+    let details = &usage["input_tokens_details"];
+    let (read, write) = (
+        count(&details["cached_tokens"]),
+        count(&details["cache_write_tokens"]),
+    );
+    let input = count(&usage["input_tokens"])
+        .saturating_sub(read)
+        .saturating_sub(write);
+    let total = count(&usage["total_tokens"]);
+    if total > 0 {
+        return total;
+    }
+    [input, count(&usage["output_tokens"]), read, write]
+        .into_iter()
+        .try_fold(0u64, u64::checked_add)
+        .unwrap_or(0)
+}
+
+/// `PiContext.assistantUsage`: a replayed reply's usage tokens, unless the
+/// reply was interrupted or failed, or its usage is all zero.
+fn assistant_usage(row: &Message) -> Option<u64> {
+    (row.role == "assistant"
+        && row.replay_eligible
+        && !["interrupted", "failed", "error", "aborted"].contains(&row.state.as_str()))
+    .then(|| context_tokens(&row.usage))
+    .filter(|tokens| *tokens > 0)
+}
+
+/// pi's context estimate over the replayed rows (`PiContext.Estimate`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextEstimate {
+    pub tokens: u64,
+    pub usage_tokens: u64,
+    pub trailing_tokens: u64,
+    /// The reply whose reported usage anchors it.
+    pub last_usage_id: Option<String>,
+}
+
+/// `PiContext.contextUsage` over the active context: the last reply's
+/// reported tokens plus about four characters per token for every row since,
+/// or `None` after a compaction until a reply that came after it reports.
+pub fn context_usage(messages: &[Message]) -> Result<Option<ContextEstimate>> {
+    let active = active_context(messages)?;
+    Ok(context_usage_active(&active).map(|(estimate, _)| estimate))
+}
+
+fn context_usage_active(active: &[&Message]) -> Option<(ContextEstimate, Option<usize>)> {
+    // The latest compaction is the active context's first row; a row after it
+    // that it did not keep was appended after it (`PiContext.isAfter`).
+    let compaction = active
+        .first()
+        .and_then(|row| row.compaction.as_ref())
+        .map(|checkpoint| {
+            checkpoint
+                .kept_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+        });
+    let after = |index: usize| {
+        compaction
+            .as_ref()
+            .is_none_or(|kept| index > 0 && !kept.contains(active[index].id.as_str()))
+    };
+    if compaction.is_some()
+        && !(0..active.len()).any(|index| after(index) && assistant_usage(active[index]).is_some())
+    {
+        return None;
+    }
+    let anchor = (0..active.len())
+        .rev()
+        .find(|index| assistant_usage(active[*index]).is_some());
+    let sum = |rows: &[&Message]| {
+        rows.iter()
+            .filter(|row| row.replay_eligible)
+            .map(|row| message_tokens(row))
+            .fold(0u64, u64::saturating_add)
+    };
+    Some(match anchor {
+        None => {
+            let estimated = sum(active);
+            (
+                ContextEstimate {
+                    tokens: estimated,
+                    usage_tokens: 0,
+                    trailing_tokens: estimated,
+                    last_usage_id: None,
+                },
+                None,
+            )
+        }
+        Some(index) => {
+            let usage = assistant_usage(active[index]).unwrap_or(0);
+            let trailing = sum(&active[index + 1..]);
+            (
+                ContextEstimate {
+                    tokens: usage.saturating_add(trailing),
+                    usage_tokens: usage,
+                    trailing_tokens: trailing,
+                    last_usage_id: Some(active[index].id.clone()),
+                },
+                Some(index),
+            )
+        }
+    })
+}
+
+/// How a request's size was reached (Swift `requestMethod`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestMethod {
+    /// The anchor reply's reported tokens plus the items after it.
+    LastReplyUsage,
+    /// About four characters per token over the whole projection.
+    Characters,
+}
+
+/// Swift `RequestContextCounter.count(messages:profile:request:).requestTokens`
+/// with reported usage: when the last reply with usage measured this same
+/// prefix (`binding_of` gives the usage binding its request recorded), its
+/// reported tokens plus the provider items after it; otherwise, as before,
+/// the complete projection estimate.
+pub fn request_tokens<'a>(
+    messages: &[Message],
+    profile: &Profile,
+    request: &Value,
+    binding_of: impl Fn(&str) -> Option<&'a str>,
+) -> Result<(u64, RequestMethod)> {
+    let active = active_context(messages)?;
+    if let Some((estimate, Some(index))) = context_usage_active(&active) {
+        let anchor = &active[index];
+        let current = usage_binding(request, profile)?;
+        if binding_of(&anchor.id) == Some(current.as_str()) {
+            let mut ends = std::collections::BTreeMap::new();
+            let items =
+                crate::tool_history::project_active_with_ends(&active, profile, Some(&mut ends))?;
+            let end = ends.get(&anchor.id).copied().unwrap_or(items.len());
+            let trailing = items[end.min(items.len())..]
+                .iter()
+                .map(|item| 8u64.saturating_add(content_tokens(item)))
+                .fold(0u64, u64::saturating_add);
+            return Ok((
+                estimate.usage_tokens.saturating_add(trailing),
+                RequestMethod::LastReplyUsage,
+            ));
+        }
+    }
+    Ok((estimated_request_tokens(request), RequestMethod::Characters))
+}
+
+/// Whether a request sized as Swift sizes it fits the input budget
+/// (`RequestContextCount.fits`).
+pub(crate) fn tokens_fit(tokens: u64, profile: &Profile) -> bool {
+    tokens <= input_budget(profile)
+}
+
 fn message_tokens(row: &Message) -> u64 {
     let mut chars = row.text.encode_utf16().count() as u64;
     match &row.tool_record {
@@ -682,12 +873,6 @@ pub(crate) fn prepare_threshold_checked(
         Mode::Threshold,
         check_cancelled,
     )
-}
-
-/// Whether an intact request of this size fits beside the normal output reserve
-/// (Swift `RequestContextCount.fits`).
-pub(crate) fn request_fits(request: &Value, profile: &Profile) -> bool {
-    fits(request, profile)
 }
 
 /// Swift `hasRoom` for an automatic compaction: the retained tail with the full

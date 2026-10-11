@@ -47,13 +47,32 @@ var results: [JSON] = []
 for c in input {
     let profile = try Profile(toJSON(c["profile"]!))
     let instructions = c["instructions"] as! String
-    let messages: [ChatMessage] = expand(c["rows"] as! [String: Any]).map { row in
+    var messages: [ChatMessage] = expand(c["rows"] as! [String: Any]).map { row in
         var m = ChatMessage(role: row.role, content: [textBlock(row.text)]); m.id = row.id; return m
     }
     var out: JSON = ["name": JSON(c["name"] as! String)]
     do { out["threshold"] = JSON(try threshold(messages, instructions: instructions, profile: profile)) }
     catch let e as AgentError { out["thresholdError"] = JSON(e.code) }
     let body = try ProviderClient.requestBody(profile:profile,messages:messages,instructions:instructions,tools:[],sessionID:"oracle-session")
+    // Usage baseline (added 2026-10-11): replies keep their usage in pi's
+    // shape and the binding of the request that produced them, as
+    // SessionRun does; the count is RequestContextCounter's own.
+    for usage in (c["rows"] as! [String: Any])["usage"] as? [[String: Any]] ?? [] {
+        let index = messages.firstIndex { $0.id == usage["id"] as! String }!
+        messages[index].usage = PiContext.usage(UsageObservation.normalized(toJSON(usage["raw"]!), api: profile.api), api: profile.api)
+        switch usage["binding"] as? String {
+        case "match": messages[index].contextUsageBinding = try RequestContextCounter.usageBinding(body, profile: profile)
+        case "stale": messages[index].contextUsageBinding = "stale"
+        default: break
+        }
+        if usage["interrupted"] as? Bool == true { messages[index].stopReason = "interrupted" }
+    }
+    let count = try RequestContextCounter().count(messages: messages, profile: profile, request: body)
+    out["baselineRequestTokens"] = JSON(count.requestTokens)
+    out["baselineMethod"] = JSON(count.requestMethod)
+    out["contextTokens"] = count.tokens.map { JSON($0) } ?? .null
+    // The meter's own reading, counted without a request (`contextInfo`).
+    out["meterTokens"] = (try RequestContextCounter().count(messages: messages, profile: profile)).tokens.map { JSON($0) } ?? .null
     out["requestTokens"] = JSON(RequestContextCounter.projectedTokens(body))
     out["safetyMargin"] = JSON(RequestContextCount.safetyMargin(contextWindow: profile.contextWindow))
     out["summaryTokens"] = JSON(CompactionPolicy().summaryTokens(for: profile))

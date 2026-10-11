@@ -1,5 +1,6 @@
 use crate::{
-    Credential, Error, Message, Profile, Result, invalid, profile::correlation_value, sse::Parser,
+    Credential, Error, Message, Profile, Result, accounting::AttemptObservation, invalid,
+    profile::correlation_value, sse::Parser,
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -468,14 +469,52 @@ impl ResponsesClient {
         cancel: CancellationToken,
         on_delta: impl FnMut(Delta) -> Result<()>,
     ) -> Result<Reply> {
-        let body = request_body_with_tools(profile, messages, instructions, session_id, tools)?;
-        self.complete_prepared(
-            profile, credential, &body, session_id, turn_id, cancel, on_delta,
+        let mut observation = AttemptObservation::default();
+        self.complete_with_tools_observed(
+            profile,
+            credential,
+            messages,
+            instructions,
+            session_id,
+            turn_id,
+            tools,
+            cancel,
+            on_delta,
+            &mut observation,
         )
         .await
     }
-    /// Internal dispatch of an already counted, immutable compaction request.
-    /// Ordinary callers keep using the typed history builder above.
+    /// The same request, recording what it reported and when its output
+    /// came into `observation` (also when it fails or is stopped).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn complete_with_tools_observed(
+        &self,
+        profile: &Profile,
+        credential: &Credential,
+        messages: &[Message],
+        instructions: &str,
+        session_id: &str,
+        turn_id: &str,
+        tools: &[crate::tools::ToolDefinition],
+        cancel: CancellationToken,
+        on_delta: impl FnMut(Delta) -> Result<()>,
+        observation: &mut AttemptObservation,
+    ) -> Result<Reply> {
+        let body = request_body_with_tools(profile, messages, instructions, session_id, tools)?;
+        self.complete_observed(
+            profile,
+            credential,
+            &body,
+            session_id,
+            turn_id,
+            cancel,
+            on_delta,
+            observation,
+        )
+        .await
+    }
+    /// An already counted, immutable request, without accounting (tests).
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn complete_prepared(
         &self,
@@ -485,11 +524,96 @@ impl ResponsesClient {
         session_id: &str,
         turn_id: &str,
         cancel: CancellationToken,
-        mut on_delta: impl FnMut(Delta) -> Result<()>,
+        on_delta: impl FnMut(Delta) -> Result<()>,
     ) -> Result<Reply> {
-        let bytes = serialize_request(body)?;
+        let mut observation = AttemptObservation::default();
+        self.complete_observed(
+            profile,
+            credential,
+            body,
+            session_id,
+            turn_id,
+            cancel,
+            on_delta,
+            &mut observation,
+        )
+        .await
+    }
+    /// Sends `body` once and settles `observation`: its outcome, the usage
+    /// and cost the response reported, and the request's timing.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn complete_observed(
+        &self,
+        profile: &Profile,
+        credential: &Credential,
+        body: &Value,
+        session_id: &str,
+        turn_id: &str,
+        cancel: CancellationToken,
+        on_delta: impl FnMut(Delta) -> Result<()>,
+        observation: &mut AttemptObservation,
+    ) -> Result<Reply> {
         // A retry is a separate physical invocation, even within one turn.
         let attempt_id = uuid::Uuid::new_v4().to_string();
+        *observation = AttemptObservation {
+            id: attempt_id.clone(),
+            api: profile.api.clone(),
+            requested_model: profile.model_id.clone(),
+            usage_binding: crate::compaction::usage_binding(body, profile).ok(),
+            ..AttemptObservation::default()
+        };
+        let result = self
+            .send(
+                profile,
+                credential,
+                body,
+                session_id,
+                turn_id,
+                cancel,
+                on_delta,
+                &attempt_id,
+                observation,
+            )
+            .await;
+        observation.outcome = Some(
+            match &result {
+                Ok(reply) if reply.status == "incomplete" => "truncated",
+                Ok(_) => "completed",
+                Err(Error::Cancelled) => "cancelled",
+                Err(_) => "failed",
+            }
+            .into(),
+        );
+        match &result {
+            Ok(reply) if !reply.usage.is_null() => observation.usage = Some(reply.usage.clone()),
+            Err(Error::ProviderFailure(failure)) => {
+                if let Some(usage) = &failure.reported_usage {
+                    observation.usage = Some(usage.clone());
+                }
+            }
+            _ => {}
+        }
+        result
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn send(
+        &self,
+        profile: &Profile,
+        credential: &Credential,
+        body: &Value,
+        session_id: &str,
+        turn_id: &str,
+        cancel: CancellationToken,
+        mut on_delta: impl FnMut(Delta) -> Result<()>,
+        attempt_id: &str,
+        observation: &mut AttemptObservation,
+    ) -> Result<Reply> {
+        let bytes = serialize_request(body)?;
+        let attempt_id = attempt_id.to_owned();
+        let secret = |text: &str| {
+            let key = credential.expose();
+            !key.is_empty() && text.contains(key)
+        };
         let mut request = self
             .client
             .post(profile.endpoint()?)
@@ -504,13 +628,25 @@ impl ResponsesClient {
         for (name, value) in &profile.headers {
             request = request.header(name, value);
         }
+        observation.wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_secs_f64());
+        observation.clock.dispatched();
         let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|e|Error::Provider(profile.safe_error(credential,&format!("Transport failure: {e}"))))? };
         let status = response.status();
         let json_body = response
             .headers()
             .get("content-type")
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.contains("application/json"));
+            .is_some_and(|v| v.to_ascii_lowercase().contains("application/json"));
+        observation.cost.head(
+            response
+                .headers()
+                .get("x-litellm-response-cost")
+                .and_then(|v| v.to_str().ok()),
+            !json_body,
+            &secret,
+        );
         let mut stream = response.bytes_stream();
         let mut parser = Parser::default();
         let mut acc = Accumulator::default();
@@ -550,6 +686,15 @@ impl ResponsesClient {
                 }
                 let value: Value = serde_json::from_str(&event.data)
                     .map_err(|_| invalid("Provider emitted invalid SSE JSON"))?;
+                observation.cost.body(&value, true, &secret);
+                match value["type"].as_str().unwrap_or("") {
+                    "response.output_item.added" => observation.clock.opened(),
+                    "response.output_item.done" => observation.clock.produced(false),
+                    "response.completed" | "response.incomplete" | "response.failed" => {
+                        observation.clock.terminal()
+                    }
+                    _ => {}
+                }
                 if matches!(event.event.as_str(), "error" | "response.failed") {
                     return Err(safe_failure(
                         acc.rejection_with_usage(&value),
@@ -563,6 +708,15 @@ impl ResponsesClient {
                     safe_failure(e, profile, credential, status.as_u16(), &attempt_id)
                 })?;
                 for delta in deltas {
+                    let produced = match &delta {
+                        Delta::Text(text) | Delta::Reasoning(text) => !text.is_empty(),
+                        Delta::Tool {
+                            name, arguments, ..
+                        } => !name.is_empty() || !arguments.is_empty(),
+                    };
+                    if produced {
+                        observation.clock.produced(true);
+                    }
                     on_delta(delta)?;
                 }
             }
@@ -582,8 +736,11 @@ impl ResponsesClient {
             ));
         }
         if json_body {
-            let value = serde_json::from_slice(&raw)
+            let value: Value = serde_json::from_slice(&raw)
                 .map_err(|_| invalid("Provider emitted invalid JSON"))?;
+            observation.cost.body(&value, false, &secret);
+            observation.clock.final_content();
+            observation.clock.terminal();
             acc.accept_json(value)
                 .map_err(|e| safe_failure(e, profile, credential, status.as_u16(), &attempt_id))?;
         }

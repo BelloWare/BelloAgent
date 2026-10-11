@@ -1,0 +1,23 @@
+-- Swift 0.1.122 PayloadArchive.gatewayAggregateSQL (PayloadArchive+Accounting.swift),
+-- verbatim, with settledThroughputSQL evaluated at the 250 ms floor.
+SELECT COUNT(*) AS requests,COUNT(DISTINCT turn) AS turn_count,COUNT(cost_usd) AS cost_samples,SUM(cost_usd) AS cost_usd,
+SUM(cache_status='hit') AS cache_hits,SUM(cache_status='miss') AS cache_misses,
+SUM(cache_status='unreported') AS cache_unreported,SUM(cache_status IN ('invalid','conflict')) AS cache_conflicts,
+SUM(cache_read_tokens) AS cache_read_tokens,SUM(cache_write_tokens) AS cache_write_tokens,
+COUNT(cache_read_tokens) AS cache_read_samples,COUNT(cache_write_tokens) AS cache_write_samples,
+SUM(CASE WHEN input_tokens>=cache_read_tokens THEN input_tokens-cache_read_tokens END) AS uncached_input_tokens,
+COUNT(CASE WHEN input_tokens>=cache_read_tokens THEN 1 END) AS uncached_input_samples,
+SUM(CASE WHEN input_tokens>=cache_read_tokens THEN input_tokens END) AS split_input_total,
+SUM(CASE WHEN input_tokens>=cache_read_tokens THEN cache_read_tokens END) AS split_input_part,
+SUM(CASE WHEN output_tokens>=reasoning_tokens THEN output_tokens END) AS split_output_total,
+SUM(CASE WHEN output_tokens>=reasoning_tokens THEN reasoning_tokens END) AS split_output_part,
+COUNT(CASE WHEN output_tokens>=reasoning_tokens THEN 1 END) AS split_output_samples,
+SUM(input_tokens) AS input_tokens,SUM(output_tokens) AS output_tokens,
+COUNT(input_tokens) AS input_samples,COUNT(output_tokens) AS output_samples,
+SUM(input_tokens+output_tokens) AS total_tokens,COUNT(input_tokens+output_tokens) AS token_samples,
+SUM(reasoning_tokens) AS reasoning_tokens,COUNT(reasoning_tokens) AS reasoning_samples,
+SUM(reasoning_cost_usd) AS reasoning_cost_usd,COUNT(reasoning_cost_usd) AS reasoning_cost_samples,
+SUM(CASE WHEN outcome='completed' AND stream_ms>=250 AND stream_ms<=1.7976931348623157e308 AND output_tokens>=2 AND output_tokens<=1.7976931348623157e308 THEN stream_ms END) AS decode_ms,SUM(CASE WHEN outcome='completed' AND stream_ms>=250 AND stream_ms<=1.7976931348623157e308 AND output_tokens>=2 AND output_tokens<=1.7976931348623157e308 THEN output_tokens-1 END) AS decode_output_tokens,COUNT(CASE WHEN outcome='completed' AND stream_ms>=250 AND stream_ms<=1.7976931348623157e308 AND output_tokens>=2 AND output_tokens<=1.7976931348623157e308 THEN 1 END) AS decode_samples,
+SUM(ttft_ms) AS ttft_ms,COUNT(ttft_ms) AS ttft_samples,
+MAX(wall) AS last_wall
+FROM attempts

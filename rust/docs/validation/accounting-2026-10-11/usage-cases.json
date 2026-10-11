@@ -1,0 +1,457 @@
+[
+ {
+  "name": "plain",
+  "raw": {
+   "input_tokens": 1200,
+   "output_tokens": 340,
+   "total_tokens": 1540
+  },
+  "events": [
+   {
+    "type": "response.completed",
+    "response": {
+     "status": "completed",
+     "output": [],
+     "usage": {
+      "input_tokens": 1200,
+      "output_tokens": 340,
+      "total_tokens": 1540
+     }
+    }
+   }
+  ],
+  "api": "openai-responses",
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "cached",
+  "raw": {
+   "input_tokens": 10000,
+   "input_tokens_details": {
+    "cached_tokens": 7594
+   },
+   "output_tokens": 2500,
+   "output_tokens_details": {
+    "reasoning_tokens": 1200
+   },
+   "total_tokens": 12500,
+   "cost": 0.0025
+  },
+  "events": [
+   {
+    "type": "response.completed",
+    "response": {
+     "status": "completed",
+     "output": [],
+     "usage": {
+      "input_tokens": 10000,
+      "output_tokens": 2500,
+      "cost": 0.0025
+     }
+    }
+   }
+  ],
+  "api": "openai-responses",
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "cache-write",
+  "raw": {
+   "input_tokens": 5000,
+   "input_tokens_details": {
+    "cached_tokens": 1000,
+    "cache_write_tokens": 2000
+   },
+   "output_tokens": 10
+  },
+  "api": "openai-responses",
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "cache-over-input",
+  "raw": {
+   "input_tokens": 100,
+   "input_tokens_details": {
+    "cached_tokens": 101
+   },
+   "output_tokens": 5
+  },
+  "api": "openai-responses",
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "caches-sum-over-input",
+  "raw": {
+   "input_tokens": 100,
+   "input_tokens_details": {
+    "cached_tokens": 60,
+    "cache_write_tokens": 50
+   },
+   "output_tokens": 5
+  },
+  "api": "openai-responses",
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "reasoning-over-output",
+  "raw": {
+   "input_tokens": 10,
+   "output_tokens": 5,
+   "output_tokens_details": {
+    "reasoning_tokens": 6
+   }
+  },
+  "api": "openai-responses",
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "negative-input",
+  "raw": {
+   "input_tokens": -1,
+   "output_tokens": 5
+  },
+  "api": "openai-responses",
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "fractional",
+  "raw": {
+   "input_tokens": 10.5,
+   "output_tokens": 5.0
+  },
+  "api": "openai-responses",
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "string-count",
+  "raw": {
+   "input_tokens": "10",
+   "output_tokens": 5
+  },
+  "api": "openai-responses",
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "huge",
+  "raw": {
+   "input_tokens": 2000000000000,
+   "output_tokens": 1000000000000
+  },
+  "api": "openai-responses",
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "empty",
+  "raw": {},
+  "api": "openai-responses",
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "bad-total",
+  "raw": {
+   "input_tokens": 10,
+   "output_tokens": 5,
+   "total_tokens": 99
+  },
+  "api": "openai-responses",
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "anthropic",
+  "api": "anthropic-messages",
+  "raw": {
+   "input_tokens": 50,
+   "cache_read_input_tokens": 4000,
+   "cache_creation_input_tokens": 300,
+   "output_tokens": 20
+  },
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "anthropic-invalid-cache",
+  "api": "anthropic-messages",
+  "raw": {
+   "input_tokens": 50,
+   "cache_read_input_tokens": -3,
+   "output_tokens": 20
+  },
+  "events": [],
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "cost-string",
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "events": [
+   {
+    "type": "response.completed",
+    "response": {
+     "status": "completed",
+     "output": [],
+     "usage": {
+      "input_tokens": 1,
+      "output_tokens": 2,
+      "cost": "0.000421875"
+     }
+    }
+   }
+  ],
+  "api": "openai-responses",
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "cost-both-agree",
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "events": [
+   {
+    "type": "response.completed",
+    "response": {
+     "status": "completed",
+     "output": [],
+     "usage": {
+      "cost": 0.5,
+      "response_cost": 0.5
+     }
+    }
+   }
+  ],
+  "api": "openai-responses",
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "cost-conflict",
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "events": [
+   {
+    "type": "response.completed",
+    "response": {
+     "status": "completed",
+     "output": [],
+     "usage": {
+      "cost": 0.5,
+      "response_cost": 0.25
+     }
+    }
+   }
+  ],
+  "api": "openai-responses",
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "cost-invalid",
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "events": [
+   {
+    "type": "response.completed",
+    "response": {
+     "status": "completed",
+     "output": [],
+     "usage": {
+      "cost": -1
+     }
+    }
+   }
+  ],
+  "api": "openai-responses",
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "cost-null",
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "events": [
+   {
+    "type": "response.completed",
+    "response": {
+     "status": "completed",
+     "output": [],
+     "usage": {
+      "cost": null
+     }
+    }
+   }
+  ],
+  "api": "openai-responses",
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "cost-incomplete",
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "events": [
+   {
+    "type": "response.incomplete",
+    "response": {
+     "status": "incomplete",
+     "usage": {
+      "cost": 0.125
+     }
+    }
+   }
+  ],
+  "api": "openai-responses",
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "cost-not-terminal",
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "events": [
+   {
+    "type": "response.created",
+    "response": {
+     "usage": {
+      "cost": 0.125
+     }
+    }
+   }
+  ],
+  "api": "openai-responses",
+  "headers": {},
+  "streaming": true
+ },
+ {
+  "name": "header-streaming",
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "headers": {
+   "x-litellm-response-cost": "0.75"
+  },
+  "events": [],
+  "api": "openai-responses",
+  "streaming": true
+ },
+ {
+  "name": "header-json",
+  "streaming": false,
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "headers": {
+   "x-litellm-response-cost": "0.75"
+  },
+  "events": [
+   {
+    "usage": {
+     "input_tokens": 1
+    }
+   }
+  ],
+  "api": "openai-responses"
+ },
+ {
+  "name": "header-json-agree",
+  "streaming": false,
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "headers": {
+   "x-litellm-response-cost": "0.75"
+  },
+  "events": [
+   {
+    "usage": {
+     "cost": 0.75
+    }
+   }
+  ],
+  "api": "openai-responses"
+ },
+ {
+  "name": "header-json-conflict",
+  "streaming": false,
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "headers": {
+   "x-litellm-response-cost": "0.75"
+  },
+  "events": [
+   {
+    "usage": {
+     "cost": 0.5
+    }
+   }
+  ],
+  "api": "openai-responses"
+ },
+ {
+  "name": "header-json-invalid",
+  "streaming": false,
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "headers": {
+   "x-litellm-response-cost": "abc"
+  },
+  "events": [],
+  "api": "openai-responses"
+ },
+ {
+  "name": "header-streaming-invalid",
+  "raw": {
+   "input_tokens": 1,
+   "output_tokens": 2
+  },
+  "headers": {
+   "x-litellm-response-cost": "abc"
+  },
+  "events": [],
+  "api": "openai-responses",
+  "streaming": true
+ }
+]

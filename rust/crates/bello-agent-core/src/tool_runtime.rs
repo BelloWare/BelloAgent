@@ -509,6 +509,7 @@ impl Controller {
                 }
                 ready => ready.map(|()| None),
             };
+            let mut observation = crate::accounting::AttemptObservation::default();
             let mut response = match threshold {
                 Err(error) => Err(error),
                 Ok(Some(next)) => {
@@ -521,7 +522,7 @@ impl Controller {
                 }
                 Ok(None) => {
                     self.client
-                        .complete_with_tools(
+                        .complete_with_tools_observed(
                             &profile,
                             &config.credential,
                             &snapshot.messages,
@@ -531,10 +532,20 @@ impl Controller {
                             &definitions,
                             cancel.clone(),
                             move |delta| callback_self.stream_delta(&callback_id, delta),
+                            &mut observation,
                         )
                         .await
                 }
             };
+            // The request is kept before anything else is written for it,
+            // including a recovery that compacts and asks again.
+            if let Some(record) = observation.record("turn", Some(&item.id), Some(&reply_id)) {
+                self.inner
+                    .lock()
+                    .expect("session mutex poisoned")
+                    .store
+                    .note_request(record);
+            }
             let observed_failure = match &response {
                 Err(Error::ProviderFailure(failure)) => Some(failure.clone()),
                 _ => None,
