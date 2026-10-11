@@ -100,7 +100,12 @@ extension WorkspaceModel {
             do {
                 var page = try await self.readConversationWindow(item, cursor: nil, position: position)
                 guard current(), let first = page.messages.first?.id else { return }
-                guard lineage == nil || page.lineage == lineage else { return }
+                // The chat changed elsewhere: said as a snapshot says it, with
+                // the way to read it again, rather than left as blank room.
+                guard lineage == nil || page.lineage == lineage else {
+                    view.newerPage.error = Self.branchChangedElsewhere; view.browsingHistory = true
+                    return
+                }
                 page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
                 // The reader has gone on to another place: that one is read
                 // next, and this one is not landed on the way.
@@ -109,6 +114,9 @@ extension WorkspaceModel {
                 self.adoptInitialHistory(page, into: view, around: first, landing: offset)
                 view.browsingHistory = page.newer != nil
                 self.anchorChanged(view)
+                // At the newest row of a chat its helper has open: the reply
+                // being written is the helper's to show, not the journal's.
+                if page.newer == nil, self.opened.contains(item.id) { self.refresh(item.id) }
             } catch {
                 // Read again where the reader is, a moment from now, while
                 // they are still in the room (`TranscriptPage.readerReachedUnreadRows`).

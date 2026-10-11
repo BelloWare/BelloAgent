@@ -376,8 +376,11 @@ actor HistoryReader {
             // A run holds every record it reads twice over (its bytes and its
             // text), so it is bounded by bytes as well as by count.
             var end = cursor, bytes = 0
-            while end < min(limit, cursor + run), end == cursor || bytes < Self.searchRunBytes {
-                bytes += try index.branch.at(end).length; end += 1
+            while end < min(limit, cursor + run) {
+                let length = try index.branch.at(end).length
+                // A record larger than a run is a run of its own.
+                guard end == cursor || bytes + length <= Self.searchRunBytes else { break }
+                bytes += length; end += 1
             }
             run = min(run * 2, 512)
             let texts = try contents(cursor..<end, branch: index.branch, file: file)

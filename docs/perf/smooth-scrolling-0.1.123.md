@@ -56,6 +56,12 @@ probe sources. One-minute load was 4–8 (other agents were building).
   changes size the clip moves with it in the same pass, before anything is
   mounted or drawn where they were. Reads ahead are measured from the
   window's rows, not the document's ends.
+- **The window's edges read page by page only near its rows.** Past the
+  document's buffer into the room, the page where the reader is is read
+  instead; a read the reader has already moved on from does not land on the
+  way to the next, a failed one is read again a second later while they are
+  still there, and a page of another timeline (the chat changed elsewhere)
+  is not adopted: the newer edge says so, with Reload, as a snapshot does.
 - **Landing in room reads the page there.** Where the reader is in room no
   edge read can reach — a drag of the knob, a fling past the window — the
   page that starts at that row is read (`readConversationWindow(position:)`;
@@ -132,6 +138,7 @@ still where a page lands or a long reply is first measured (see
 | of which the search | 915–952 ms | 219–258 ms |
 | of which the debounce | 150 ms | 150 ms |
 | of which the reveal's read | 10–19 ms | 4–6 ms |
+| 2,000 turns (10,000 records), typed → marked, p50 of 3 / 5 runs | 5,082 ms (two search calls of ~2.4 s) | 1,337 ms |
 
 The Swift-vs-Rust record measured 528 ms for Swift and 260 ms for Rust on a
 smaller chat (2.1 MB, no tool output) with a different harness; this
