@@ -387,7 +387,7 @@ fn find_tool_read_middle_expands_and_inner_scroll_keeps_find_focus_and_caret(
                 .collect();
             assert_eq!(outputs.len(), 1);
             let editor = outputs[0].1.read(cx);
-            assert!(editor.text().contains("85  line-75 needle"));
+            assert!(editor.text().contains("line-75 needle"));
             assert_eq!(editor.engine.cursor, 0);
             assert!(!editor.focus_handle(cx).is_focused(window));
             assert!(

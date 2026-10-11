@@ -97,12 +97,23 @@ pub(super) fn file_link(session: &Session, row: ProjectedRow) -> Option<ReadFile
     })
 }
 
-pub(super) const READ_LINES: usize = 12;
+/// `TranscriptCardMetrics.readLines`.
+pub(super) const READ_LINES: usize = super::card_lines::MAX_LINES;
 
 pub(super) struct ReadWindow<'a> {
+    /// The result's text the lines are slices of.
+    pub text: &'a str,
     pub lines: Vec<&'a str>,
     pub note: Option<&'a str>,
     pub first_line: usize,
+}
+
+/// One run of the window's lines the card shows: which lines, and where they
+/// stand in the result's text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Part {
+    pub lines: std::ops::Range<usize>,
+    pub bytes: std::ops::Range<usize>,
 }
 
 impl<'a> ReadWindow<'a> {
@@ -125,42 +136,52 @@ impl<'a> ReadWindow<'a> {
             .filter(|n| n.is_finite() && n.fract() == 0. && *n >= 1. && *n <= 10_000_000.)
             .unwrap_or(1.) as usize;
         Self {
+            text,
             lines,
             note,
             first_line,
         }
     }
 
-    pub fn collapsible(&self) -> bool {
-        self.lines.len().saturating_sub(READ_LINES) > 1
+    pub fn head_tail(&self, expanded: bool) -> super::card_lines::HeadTail {
+        super::card_lines::head_tail(self.lines.len(), READ_LINES, expanded)
     }
+    /// Whether the window hides enough to offer its middle line at all.
+    pub fn collapsible(&self) -> bool {
+        super::card_lines::collapses(self.head_tail(false).hidden)
+    }
+    /// `TranscriptReadCardText.window(shown:total:)`.
     pub fn window_label(&self, expanded: bool) -> String {
         let total = self.lines.len();
-        if self.collapsible() && !expanded {
-            format!("Showing {READ_LINES} of {total} lines")
+        let cap = self.head_tail(expanded);
+        let shown = if cap.capped {
+            cap.head + cap.tail
         } else {
+            total
+        };
+        if shown >= total {
             format!("{total} line{}", if total == 1 { "" } else { "s" })
+        } else {
+            format!("Showing {shown} of {total} lines")
         }
     }
-    pub fn numbered(&self, expanded: bool) -> String {
-        let mut rows = Vec::new();
-        for (index, line) in self.lines.iter().enumerate() {
-            if self.collapsible()
-                && !expanded
-                && (READ_LINES / 2..self.lines.len() - READ_LINES / 2).contains(&index)
-            {
-                if index == READ_LINES / 2 {
-                    rows.push(format!("… {} more lines", self.lines.len() - READ_LINES));
-                }
-                continue;
-            }
-            rows.push(format!(
-                "{}  {}",
-                self.first_line + index,
-                if line.is_empty() { " " } else { line }
-            ));
-        }
-        rows.join("\n")
+    /// The head and, while capped, the tail: the runs of lines the card
+    /// draws, each an exact slice of the result's text.
+    pub fn parts(&self, expanded: bool) -> Vec<Part> {
+        super::card_lines::runs(self.lines.len(), self.head_tail(expanded))
+            .into_iter()
+            .filter(|run| !run.is_empty())
+            .map(|lines| {
+                let offset = |line: &str| line.as_ptr() as usize - self.text.as_ptr() as usize;
+                let last = self.lines[lines.end - 1];
+                let bytes = offset(self.lines[lines.start])..offset(last) + last.len();
+                Part { lines, bytes }
+            })
+            .collect()
+    }
+    /// Line `index`'s number in the file, as the card writes it.
+    pub fn number(&self, index: usize) -> String {
+        super::card_lines::number(self.first_line + index)
     }
 }
 
@@ -276,7 +297,8 @@ mod tests {
                 .unwrap()
                 .arguments,
         );
-        assert_eq!(read.numbered(false), "3  a\rb\n4  c");
+        assert_eq!(read.first_line, 3);
+        assert_eq!(read.lines, ["a\rb", "c"]);
     }
     #[test]
     fn whole_files_images_and_failed_reads_do_not_reveal_a_line_range() {
@@ -379,7 +401,10 @@ mod tests {
             value.note,
             Some("Truncated. 20 total lines; read another range.")
         );
-        assert_eq!(value.numbered(false), "3  a\n4  b");
+        let parts = value.parts(false);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(&value.text[parts[0].bytes.clone()], "a\nb");
+        assert_eq!((value.number(0), value.number(1)), ("3".into(), "4".into()));
     }
     #[test]
     fn head_tail_retains_source_numbers_and_one_extra_line_does_not_collapse() {
@@ -389,10 +414,18 @@ mod tests {
             .join("\n");
         let value = ReadWindow::new(&text, &json!({"offset":20}));
         assert_eq!(value.window_label(false), "Showing 12 of 14 lines");
-        let compact = value.numbered(false);
-        assert!(compact.contains("25  row6\n… 2 more lines\n28  row9"));
-        assert!(compact.ends_with("33  row14"));
-        assert!(value.numbered(true).contains("26  row7\n27  row8"));
+        assert_eq!(value.window_label(true), "14 lines");
+        let parts = value.parts(false);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].lines, 0..6);
+        assert_eq!(parts[1].lines, 8..14);
+        assert!(value.text[parts[0].bytes.clone()].ends_with("row6"));
+        assert!(value.text[parts[1].bytes.clone()].starts_with("row9"));
+        assert!(value.text[parts[1].bytes.clone()].ends_with("row14"));
+        assert_eq!(value.number(5), "25");
+        let whole = value.parts(true);
+        assert_eq!(whole.len(), 1);
+        assert_eq!(&value.text[whole[0].bytes.clone()], text);
         let text = (0..13).map(|_| "a").collect::<Vec<_>>().join("\n");
         assert!(!ReadWindow::new(&text, &json!({})).collapsible());
     }
@@ -407,9 +440,12 @@ mod tests {
         ] {
             assert_eq!(ReadWindow::new("a", &json!({"offset":value})).first_line, 1);
         }
+        let value = ReadWindow::new("a\n", &json!({}));
+        assert_eq!(value.lines, ["a", ""]);
+        assert_eq!(value.parts(false)[0].bytes, 0..2);
         assert_eq!(
-            ReadWindow::new("a\n", &json!({})).numbered(false),
-            "1  a\n2   "
+            ReadWindow::new("a", &json!({"offset":9999})).number(0),
+            "9,999"
         );
         assert_eq!(
             ReadWindow::new("", &json!({})).window_label(false),

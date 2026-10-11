@@ -69,7 +69,6 @@ mod transcript_actions;
 #[path = "../../../benches/transcript.rs"]
 mod transcript_benchmark;
 mod transcript_find_controller;
-mod transcript_find_numbered;
 mod transcript_find_presentation;
 mod transcript_find_search;
 mod transcript_find_state;

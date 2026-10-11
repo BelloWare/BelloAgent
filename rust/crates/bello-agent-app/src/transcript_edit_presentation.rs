@@ -173,7 +173,8 @@ impl<'a> EditRequest<'a> {
         format!("{base}{suffix}")
     }
     pub fn collapsible(&self) -> bool {
-        self.too_large || self.rows.len() > 13
+        self.too_large
+            || super::card_lines::collapses(self.rows.len() as isize - MAX_LINES as isize)
     }
     pub fn footer(&self) -> String {
         let plus = self
@@ -184,42 +185,41 @@ impl<'a> EditRequest<'a> {
             .removed
             .map(|n| n as usize)
             .unwrap_or_else(|| self.rows.iter().filter(|r| r.kind == Kind::Removed).count());
-        format!("+{plus} −{minus}")
+        format!(
+            "+{} −{}",
+            super::card_lines::number(plus),
+            super::card_lines::number(minus)
+        )
     }
-    pub fn preview(&self, expanded: bool) -> String {
-        if self.too_large {
-            if !expanded {
-                return format!(
-                    "Diff preview unavailable — {} lines. Expand to view full content.",
-                    self.lines
-                );
-            }
-            return if self.editing {
-                format!("Before\n{}\n\nAfter\n{}", self.before, self.after)
-            } else {
-                self.after.into()
-            };
-        }
+    /// The diff's rows' texts, one line each; their marks stand apart.
+    pub fn rows_text(&self) -> String {
         let mut text = String::new();
         for (i, row) in self.rows.iter().enumerate() {
-            if !expanded && self.rows.len() > 13 && (6..self.rows.len() - 6).contains(&i) {
-                if i == 6 {
-                    text.push_str(&format!("… {} more lines\n", self.rows.len() - 12));
-                }
-                continue;
+            if i > 0 {
+                text.push('\n');
             }
-            text.push_str(match row.kind {
-                Kind::Context => "  ",
-                Kind::Removed => "− ",
-                Kind::Added => "+ ",
-            });
-            text.push_str(if row.text.is_empty() { " " } else { row.text });
-            text.push('\n');
+            text.push_str(row.text);
         }
-        text.pop();
         text
     }
+    /// A change too large to diff: what the card says of it, and once the
+    /// reader asks, its whole content.
+    pub fn large_preview(&self, expanded: bool) -> String {
+        if !expanded {
+            return format!(
+                "Diff preview unavailable — {} lines. Full content is available below.",
+                super::card_lines::number(self.lines)
+            );
+        }
+        if self.editing {
+            format!("Before\n{}\n\nAfter\n{}", self.before, self.after)
+        } else {
+            self.after.into()
+        }
+    }
 }
+/// `TranscriptCardMetrics.diffLines`.
+const MAX_LINES: usize = super::card_lines::MAX_LINES;
 fn line_diff<'a>(before: &'a str, after: &'a str) -> Vec<DiffRow<'a>> {
     let a: Vec<_> = before.split('\n').collect();
     let b: Vec<_> = after.split('\n').collect();
@@ -302,7 +302,11 @@ mod tests {
         );
         let request = EditRequest::new(&input, Status::Unknown, None).unwrap();
         assert_eq!(request.label(), "Requested edit · outcome unknown");
-        assert_eq!(request.preview(false), "  é\n− old\n+ new\n  same");
+        assert_eq!(request.rows_text(), "é\nold\nnew\nsame");
+        assert_eq!(
+            request.rows.iter().map(|row| row.kind).collect::<Vec<_>>(),
+            [Kind::Context, Kind::Removed, Kind::Added, Kind::Context]
+        );
         assert_eq!(request.footer(), "+1 −1");
         for status in [Status::Unknown, Status::Missing, Status::Cancelled] {
             assert!(
@@ -323,7 +327,8 @@ mod tests {
     fn writes_show_requested_content_without_inventing_previous_contents() {
         let input = call("write", json!({"content":"new\n"}));
         let request = EditRequest::new(&input, Status::Completed, None).unwrap();
-        assert_eq!(request.preview(false), "  new\n   ");
+        assert_eq!(request.rows_text(), "new\n");
+        assert!(request.rows.iter().all(|row| row.kind == Kind::Context));
         assert_eq!(request.label(), "Requested content");
     }
     #[test]
@@ -335,14 +340,23 @@ mod tests {
         let input = call("write", json!({"content":text}));
         let request = EditRequest::new(&input, Status::Awaiting, None).unwrap();
         assert!(request.collapsible());
-        assert!(request.preview(false).contains("… 8 more lines"));
-        assert!(!request.preview(true).contains("more lines"));
+        assert_eq!(
+            super::super::card_lines::head_tail(request.rows.len(), MAX_LINES, false).hidden,
+            8
+        );
         let text = "x".repeat(256 * 1024 + 1);
         let input = call("write", json!({"content":text}));
         let request = EditRequest::new(&input, Status::Unknown, None).unwrap();
         assert!(request.too_large);
-        assert!(request.preview(false).contains("Diff preview unavailable"));
-        assert_eq!(request.preview(true), text);
+        assert_eq!(
+            request.large_preview(false),
+            "Diff preview unavailable — 1 lines. Full content is available below."
+        );
+        assert_eq!(request.large_preview(true), text);
+        let text = "x\n".repeat(9000);
+        let input = call("write", json!({"content":text}));
+        let request = EditRequest::new(&input, Status::Unknown, None).unwrap();
+        assert!(request.large_preview(false).contains("— 9,001 lines."));
     }
 }
 
@@ -371,14 +385,18 @@ struct CachedEdit {
 }
 pub(super) struct EditPreview {
     pub label: String,
+    /// The diff's rows' texts, one line each; empty when too large to diff.
+    pub rows: String,
+    pub kinds: Vec<Kind>,
+    /// A change too large to diff: its note, and once asked for, its content.
     pub collapsed: String,
     pub full: Option<String>,
     pub footer: Option<String>,
     pub collapsible: bool,
     pub too_large: bool,
-    pub hidden: usize,
 }
 impl EditPreview {
+    /// What a change too large to diff shows in its section.
     pub fn text(&self, expanded: bool) -> &str {
         if expanded {
             self.full.as_deref().unwrap_or(&self.collapsed)
@@ -415,7 +433,7 @@ impl EditCache {
             && entry.status == status
             && entry.added == added
             && entry.removed == removed
-            && (!expanded || entry.preview.full.is_some())
+            && (!expanded || !entry.preview.too_large || entry.preview.full.is_some())
         {
             entry.used = self.tick;
             return Some(entry.preview.clone());
@@ -427,19 +445,26 @@ impl EditCache {
         }
         let preview = std::sync::Arc::new(EditPreview {
             label: request.label(),
-            collapsed: request.preview(false),
-            full: (!request.too_large || expanded).then(|| request.preview(true)),
+            rows: request.rows_text(),
+            kinds: request.rows.iter().map(|row| row.kind).collect(),
+            collapsed: if request.too_large {
+                request.large_preview(false)
+            } else {
+                String::new()
+            },
+            full: (request.too_large && expanded).then(|| request.large_preview(true)),
             footer: (!request.too_large || added.is_some() || removed.is_some())
                 .then(|| request.footer()),
             collapsible: request.collapsible(),
             too_large: request.too_large,
-            hidden: request.rows.len().saturating_sub(12),
         });
         if let Some(previous) = self.entries.remove(key) {
             self.bytes -= previous.cost;
         }
         let cost = old.map_or(0, str::len)
             + new.map_or(0, str::len)
+            + preview.rows.len()
+            + preview.kinds.len()
             + preview.collapsed.len()
             + preview.full.as_ref().map_or(0, String::len)
             + 256;

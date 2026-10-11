@@ -101,6 +101,9 @@ pub(crate) struct CardColors {
     pub panel: Hsla,
     pub hair_strong: Hsla,
     pub accent: Hsla,
+    /// A diff's added row and its mark (`diffAdded`, `diffAddedMark`).
+    pub diff_added: Hsla,
+    pub diff_added_mark: Hsla,
 }
 
 pub(crate) fn card_colors(palette: &crate::Palette) -> CardColors {
@@ -118,6 +121,8 @@ pub(crate) fn card_colors(palette: &crate::Palette) -> CardColors {
         panel: colors.panel,
         hair_strong: rgba(if dark { 0xffffff29 } else { 0x00000024 }).into(),
         accent: colors.accent,
+        diff_added: rgba(if dark { 0x2f8f4e2e } else { 0x2f8f4e1f }).into(),
+        diff_added_mark: rgb(if dark { 0x7cc48f } else { 0x2f8f4e }).into(),
     }
 }
 
