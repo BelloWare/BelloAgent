@@ -339,3 +339,65 @@ fn the_fold_commands_act_on_the_turn_the_reader_is_on(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(open(cx), [false, true]);
 }
+
+#[gpui::test]
+fn folding_an_answer_inside_a_closed_turn_keeps_its_line(cx: &mut TestAppContext) {
+    let mut rows = finished_turns();
+    rows.truncate(rows.len() - 2);
+    let (_directory, mut visual, child, _) = host_rows(rows, RunState::Paused, cx);
+    // Compact: the turn is closed and its answer's strip folds with it.
+    assert!(headers(&child, cx).is_empty());
+    assert!(visual.update(|window, cx| {
+        child.update(cx, |view, cx| {
+            view.set_focused_response_collapsed(true, window, cx)
+        })
+    }));
+    cx.run_until_parked();
+    assert_eq!(
+        headers(&child, cx),
+        vec![(
+            "Message(\"answer\")".to_owned(),
+            "Reasoned · 2 parts folded".to_owned(),
+            true
+        )]
+    );
+    let index = row_ids(&child, cx)
+        .iter()
+        .position(|id| id == "answer")
+        .unwrap();
+    let row = scroll(&child, cx).bounds_for_item(index).unwrap();
+    assert_eq!(row.size.height, px(4. + 20. + 10.));
+}
+
+#[gpui::test]
+fn the_response_commands_act_on_the_response_holding_the_anchor(cx: &mut TestAppContext) {
+    let mut rows = finished_turns();
+    rows.extend((0..30).map(|n| {
+        message(
+            &format!("filler-{n}"),
+            if n % 2 == 0 { "user" } else { "assistant" },
+            "Between the turns.",
+        )
+    }));
+    let (_directory, mut visual, child, _) = host_rows(rows, RunState::Paused, cx);
+    normal(&child, &mut visual);
+    // The reader stands on the working reply's second card.
+    let index = row_ids(&child, cx)
+        .iter()
+        .position(|id| id.starts_with("@tool:Message(\"working\")"))
+        .unwrap()
+        + 1;
+    jump_to(&child, index, 0., cx);
+    assert!(visual.update(|window, cx| {
+        child.update(cx, |view, cx| {
+            view.set_focused_response_collapsed(true, window, cx)
+        })
+    }));
+    cx.run_until_parked();
+    let collapsed: Vec<_> = headers(&child, cx)
+        .into_iter()
+        .filter(|header| header.2)
+        .map(|header| header.0)
+        .collect();
+    assert_eq!(collapsed, ["Message(\"working\")"]);
+}

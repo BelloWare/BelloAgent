@@ -43,7 +43,10 @@ fn a_capped_lists_split_and_middle_line_are_swifts() {
     let caps = &swift["caps"];
     assert_eq!(card_lines::MAX_LINES as i64, int(caps, "diffLines"));
     assert_eq!(read_presentation::READ_LINES as i64, int(caps, "readLines"));
-    assert_eq!(super::TERMINAL_CAP as f64, caps["terminalCap"].as_f64().unwrap());
+    assert_eq!(
+        super::TERMINAL_CAP as f64,
+        caps["terminalCap"].as_f64().unwrap()
+    );
     assert_eq!(
         super::tool_presentation::SECTION_CAP as f64,
         caps["sectionCap"].as_f64().unwrap()
@@ -92,15 +95,21 @@ fn the_fold_line_and_the_display_modes_read_as_swifts() {
     }
     let modes = swift["modes"].as_array().unwrap();
     assert_eq!(modes.len(), 2);
-    for (mode, case) in [TranscriptDisplayMode::Normal, TranscriptDisplayMode::Compact]
-        .into_iter()
-        .zip(modes)
+    for (mode, case) in [
+        TranscriptDisplayMode::Normal,
+        TranscriptDisplayMode::Compact,
+    ]
+    .into_iter()
+    .zip(modes)
     {
         assert_eq!(mode.label(), text(case, "label"));
         assert_eq!(mode.detail(), text(case, "detail"));
     }
     assert_eq!(text(&swift, "fallback"), "compact");
-    assert_eq!(TranscriptDisplayMode::default(), TranscriptDisplayMode::Compact);
+    assert_eq!(
+        TranscriptDisplayMode::default(),
+        TranscriptDisplayMode::Compact
+    );
 }
 
 #[test]

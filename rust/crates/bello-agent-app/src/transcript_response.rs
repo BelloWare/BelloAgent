@@ -464,6 +464,10 @@ impl super::TranscriptView {
         let Some(anchor) = self.anchor() else {
             return rows.iter().rev().find_map(owner);
         };
+        // A row of a response is that response's.
+        if let Some(own) = rows[anchor].response.owner.clone() {
+            return Some(own);
+        }
         rows[anchor..]
             .iter()
             .find_map(owner)

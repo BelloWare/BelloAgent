@@ -12,11 +12,11 @@ mod edit_presentation;
 mod markdown_view;
 #[cfg(test)]
 pub(crate) use markdown_view::Child as MarkdownChild;
-#[path = "transcript_read_presentation.rs"]
-mod read_presentation;
 #[cfg(test)]
 #[path = "transcript_polish_oracle_tests.rs"]
 mod polish_oracle;
+#[path = "transcript_read_presentation.rs"]
+mod read_presentation;
 #[path = "transcript_response.rs"]
 mod response;
 #[path = "transcript_shaped_text.rs"]
@@ -815,10 +815,12 @@ fn row_gap(presentation: &Presentation, index: usize) -> f32 {
 
 /// The response strip a row draws: none when its turn's fold hides it.
 fn drawn_header(row: &LogicalRow) -> Option<&response::Header> {
+    // A response the reader folded to its line keeps that line even inside
+    // a closed turn: the fold is what they asked for, not the turn's.
     row.response
         .header
         .as_ref()
-        .filter(|_| !row.fold.header_hidden)
+        .filter(|header| !row.fold.header_hidden || header.collapsed)
 }
 
 fn estimated_height(presentation: &Presentation, index: usize, width: Pixels) -> Pixels {
@@ -1488,6 +1490,7 @@ impl TranscriptView {
     }
     /// Lands a find on line `line` of a lines section's run, from where the
     /// run's block was drawn; a block not drawn yet is tried on the next frame.
+    #[allow(clippy::too_many_arguments)]
     fn land_find_line(
         &mut self,
         find: &Rc<crate::transcript_find_presentation::FindPaint>,
@@ -1495,6 +1498,7 @@ impl TranscriptView {
         key: &RowKey,
         label: &'static str,
         line: usize,
+        within: usize,
         cx: &mut Context<Self>,
     ) {
         if self
@@ -1518,8 +1522,11 @@ impl TranscriptView {
             self.rearm_find_geometry(cx);
             return;
         };
-        let top = rows[..line].iter().sum::<usize>() as f32 * card_lines::LINE_HEIGHT;
-        let height = rows[line] as f32 * card_lines::LINE_HEIGHT;
+        // The editor row the match starts on: a long line wraps, and its
+        // start may be far above the match.
+        let within = within.min(rows[line].saturating_sub(1));
+        let top = (rows[..line].iter().sum::<usize>() + within) as f32 * card_lines::LINE_HEIGHT;
+        let height = card_lines::LINE_HEIGHT;
         self.land_find_point(
             find,
             index,
@@ -3897,6 +3904,8 @@ struct ToolEditor {
     /// A run of a lines section: where its block last stood in the window,
     /// and how many of the editor's rows each of its lines takes.
     lines: Option<LinesPlace>,
+    /// The width a lines run's texts wrap at.
+    lines_width: f32,
 }
 /// Where a lines run's block last stood, and its lines' rows.
 type LinesPlace = (Rc<std::cell::Cell<Option<Bounds<Pixels>>>>, Vec<usize>);
@@ -4084,6 +4093,7 @@ impl ToolEditors {
                     used: self.tick,
                     find_installed: None,
                     lines: None,
+                    lines_width: 0.,
                 },
             );
         }
@@ -4347,10 +4357,25 @@ fn decorate_find_tool(
             // them, and the match's place is the line's, from the lines'
             // own layout. The conversation goes there once the frame is drawn.
             let line = shown[..range.start].matches('\n').count();
+            let start = shown[..range.start].rfind('\n').map_or(0, |at| at + 1);
+            let width = editors
+                .borrow()
+                .entries
+                .get(&(row.key.clone(), label))
+                .map(|entry| entry.lines_width);
+            let within = width.map_or(0, |width| {
+                card_lines::row_of(
+                    CARD_MONO,
+                    &shown[start..],
+                    range.start - start,
+                    width,
+                    window,
+                )
+            });
             let (child, find, key) = (child.clone(), find.clone(), row.key.clone());
             window.defer(cx, move |_, cx| {
                 let _ = child.update(cx, |view, cx| {
-                    view.land_find_line(&find, index, &key, label, line, cx)
+                    view.land_find_line(&find, index, &key, label, line, within, cx)
                 });
             });
             return;
@@ -5200,6 +5225,14 @@ fn lines_section(
             window,
             cx,
         );
+        // Where the texts wrap, for a find landing on a wrapped line.
+        if let Some(entry) = editors
+            .borrow_mut()
+            .entries
+            .get_mut(&(row.key.clone(), run.label))
+        {
+            entry.lines_width = text_width;
+        }
         decorate_find_tool(
             presentation,
             index,

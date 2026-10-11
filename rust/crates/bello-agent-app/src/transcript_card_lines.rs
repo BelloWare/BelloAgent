@@ -136,6 +136,24 @@ pub(super) fn rows<'a>(
         .collect()
 }
 
+/// Which of the editor's rows of `line` (one line, without its ending)
+/// holds byte `at`, wrapped at `width` as the editor wraps it.
+pub(super) fn row_of(
+    family: &'static str,
+    line: &str,
+    at: usize,
+    width: f32,
+    window: &Window,
+) -> usize {
+    let line = line.split('\n').next().unwrap_or("");
+    let line = line.trim_end_matches(['\r', '\n']);
+    let mut wrapper = window.text_system().line_wrapper(font(family), px(12.));
+    wrapper
+        .wrap_line(&[gpui::LineFragment::text(line)], px(width.max(1.).round()))
+        .filter(|boundary| boundary.ix > 0 && boundary.ix < line.len() && boundary.ix <= at)
+        .count()
+}
+
 /// The lines under their marks: the tints across the whole width, the marks
 /// in their box, and the editor holding the texts at `text_left`.
 pub(super) fn render(
