@@ -30,7 +30,14 @@ extension WorkspaceModel {
             }
             if let around { params["around"] = .string(around) }
             if start { params["edge"] = .string("start") }
-            if let position, !start, around == nil { params["position"] = .number(Double(position)) }
+            if let position, !start, around == nil {
+                params["position"] = .number(Double(position))
+                // A window read from the journal hands over by a stable entry,
+                // which the helper checks is still in its branch.
+                if cursor == nil, let validating, validating.incarnation.hasPrefix("file:") {
+                    params["entry"] = .string(validating.entry); params["lineage"] = .string(validating.lineage)
+                }
+            }
             let result = try await host.request("session.history", sessionID: item.id, params: params)
             try Task.checkCancellation()
             return try ConversationHistoryPage(result)
@@ -42,6 +49,12 @@ extension WorkspaceModel {
                                                   after: newer ? cursor.entry : nil, targetTurns: HistoryWindowPolicy.turns)
                 guard page.lineage == cursor.lineage else { throw HostError.failure("History branch changed during source handoff. Reload history.") }
                 return try ConversationHistoryPage(page)
+            }
+            // A window the helper read hands over to the journal by a stable
+            // entry: still in the journal's branch, on the same lineage.
+            if cursor == nil, position != nil, let validating, !validating.incarnation.hasPrefix("file:") {
+                let held = try await history.read(path: path, around: validating.entry, targetTurns: 1)
+                guard held.lineage == validating.lineage else { throw HostError.failure("History branch changed during source handoff. Reload history.") }
             }
             let display = displays[item.id], generation = display?.presentationGeneration
             return try ConversationHistoryPage(await history.window(path: path, cursor: cursor, newer: newer, around: around, start: start,

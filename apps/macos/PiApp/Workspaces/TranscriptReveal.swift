@@ -71,7 +71,13 @@ extension WorkspaceModel {
         // A chat changed elsewhere is read again whole (Reload), not by place;
         // and a selection the reader holds keeps the window that has it.
         guard transcriptShows(id), let view = displays[id], let item = record(id), view.revealRead == nil,
-              view.newerPage.error != Self.branchChangedElsewhere, view.pinnedHistoryIDs.isEmpty else { return }
+              view.newerPage.error != Self.branchChangedElsewhere else { return }
+        // Reading the page there would let go of the selection: said at the
+        // edge, as an edge's read says it, instead of leaving room unexplained.
+        guard view.pinnedHistoryIDs.isEmpty else {
+            if view.olderPage.error == nil { view.olderPage.error = Self.selectionHoldsWindow }
+            return
+        }
         // The place being read already is not asked for again (layout passes
         // report where the reader is as often as they run).
         if view.jumpRead != nil {
@@ -163,7 +169,7 @@ extension WorkspaceModel {
                 // they are still in the room (`TranscriptPage.readerReachedUnreadRows`).
                 // The journal was replaced or edited under the window: said
                 // as a changed branch is, with Reload.
-                if case HostError.failure(let message)? = error as? HostError, message.hasPrefix("History"), current() {
+                if case HostError.failure(let message)? = error as? HostError, message.localizedCaseInsensitiveContains("history") || message.contains("changed"), current() {
                     view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere); view.browsingHistory = true
                 } else if !(error is CancellationError), current() {
                     // Tried again in a moment, where the reader is within the row
@@ -198,6 +204,8 @@ extension WorkspaceModel {
         let drawn = Set(TranscriptActivity.blocks(of: SessionDisplay.hidingBranchMarkers(messages), complete: false).flatMap(\.messageIDs))
         return messages.first { drawn.contains($0.id) }?.id
     }
+
+    static let selectionHoldsWindow = "The selected text is at the display boundary. Clear the selection to load more history."
 
     /// Whether chat `id`'s transcript is what the reader has in front of them:
     /// the chats page, with the chat selected or open as the side beside it.
