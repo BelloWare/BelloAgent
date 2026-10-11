@@ -41,7 +41,7 @@ trial() { # label exe kind index
   rm -rf "$run"; ditto "$FIXTURE" "$run"
   defaults delete "$DOMAIN" >/dev/null 2>&1 || true
   local cold=(); [ "$3" = cold ] && cold=(--cold)
-  "$BELLOPERF" launch --label "$1" --trials 1 --prime 0 --idle "$IDLE" "${cold[@]}" \
+  "$BELLOPERF" launch --label "$1" --trials 1 --prime 0 --idle "$IDLE" ${cold[@]+"${cold[@]}"} \
     --env HOME="$run/home" --env CFFIXED_USER_HOME="$run/home" --env PI_APP_LAUNCH_FIXTURE_VAULT="$run/vault.json" \
     --out "$OUT/raw/$1-$3-$4.json" -- "$2" | grep -E '^'"$1"' trial' | grep -oE '"(windowMs|settledMs)": [0-9.]+' | tr '\n' ' '
   echo " load $(sysctl -n vm.loadavg)"
