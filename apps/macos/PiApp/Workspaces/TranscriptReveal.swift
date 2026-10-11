@@ -68,9 +68,10 @@ extension WorkspaceModel {
     /// holds the newest wish and reads that next, so a drag reads at most one
     /// page at a time and always ends on where the drag ended.
     func jumpToHistoryPosition(_ id: String, position: Int, offset: Double) {
-        // A chat changed elsewhere is read again whole (Reload), not by place.
+        // A chat changed elsewhere is read again whole (Reload), not by place;
+        // and a selection the reader holds keeps the window that has it.
         guard transcriptShows(id), let view = displays[id], let item = record(id), view.revealRead == nil,
-              view.newerPage.error != Self.branchChangedElsewhere else { return }
+              view.newerPage.error != Self.branchChangedElsewhere, view.pinnedHistoryIDs.isEmpty else { return }
         // The place being read already is not asked for again (layout passes
         // report where the reader is as often as they run).
         if view.jumpRead != nil {
@@ -116,9 +117,16 @@ extension WorkspaceModel {
             do {
                 var page = try await self.readConversationWindow(item, cursor: nil, position: position,
                                                                  validating: view.olderPage.cursor ?? view.newerPage.cursor)
-                // The row landed on is one the transcript draws: an edit's
-                // marker the page starts with is not.
-                guard current(), let first = SessionDisplay.hidingBranchMarkers(page.messages).first?.id ?? page.messages.first?.id else { return }
+                // The row landed on is one the transcript draws: not an edit's
+                // marker, nor a record the plan folds into another row
+                // (`TaskTranscriptPlan.rows`).
+                let shown = SessionDisplay.hidingBranchMarkers(page.messages), ids = Set(page.messages.map(\.id))
+                let operations = Set(page.messages.filter { $0.kind == "execution" }.compactMap(\.operationID))
+                let drawn = shown.first { message in
+                    !(message.kind == "requestLedger" && message.presentationSourceID.map(ids.contains) == true)
+                        && !(message.kind == "compaction" && message.operationID.map(operations.contains) == true)
+                }
+                guard current(), let first = drawn?.id ?? shown.first?.id ?? page.messages.first?.id else { return }
                 // The chat changed elsewhere: said as a snapshot says it, with
                 // the way to read it again, rather than left as blank room.
                 guard sameSource(page) else {
