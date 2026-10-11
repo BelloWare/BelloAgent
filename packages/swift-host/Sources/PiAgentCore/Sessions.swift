@@ -326,7 +326,7 @@ public actor AgentSession {
         var unrestored=false
         if FileManager.default.fileExists(atPath: streamLog.path) {
             var settled=true
-            if stateRecord?["active"].flag == true, let cut=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size) {
+            if stateRecord?["active"].flag == true, let cut=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size, known: Set(history.map(\.id))) {
                 var reply=Self.interruptedReply(id:cut.header.reply,text:cut.text,thinking:cut.thinking,timeline:cut.timeline,
                                                 attemptIDs:cut.timeline.segments.first.map { [$0.part.attemptID] } ?? cut.header.attemptID.map { [$0] })
                 reply.timestamp=cut.at ?? Date().timeIntervalSince1970 * 1000

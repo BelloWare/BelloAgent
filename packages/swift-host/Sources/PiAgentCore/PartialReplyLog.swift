@@ -134,7 +134,7 @@ final class PartialReplyLog {
     /// journal at `journal` (`size` bytes) still has the record it was
     /// written after and holds no record of the reply after that: what a
     /// helper that died mid-reply never wrote. Nil otherwise.
-    static func unfinished(_ url: URL, journal: URL, size: UInt64) -> (header: Header, text: String, thinking: String, timeline: ResponseTimeline, at: Double?)? {
+    static func unfinished(_ url: URL, journal: URL, size: UInt64, known: Set<String>) -> (header: Header, text: String, thinking: String, timeline: ResponseTimeline, at: Double?)? {
         guard let reader = try? JournalRecordReader(url, allowIncompleteTail: true) else { return nil }
         var header: Header?, text = "", thinking = "", timeline = ResponseTimeline(), at: Double?
         let decoder = JSONDecoder()
@@ -155,8 +155,10 @@ final class PartialReplyLog {
             }
         }
         // The reply's id becomes a journal record's: one the journal would
-        // refuse on its next open is not written.
-        guard let header, (try? identity(JSON(header.reply))) != nil, !text.isEmpty || !thinking.isEmpty || !timeline.segments.isEmpty,
+        // refuse on its next open (not an id, or one a record has: the
+        // anchor's, a loaded row's, any after the anchor) is not written.
+        guard let header, (try? identity(JSON(header.reply))) != nil, header.reply != header.after.id, !known.contains(header.reply),
+              !text.isEmpty || !thinking.isEmpty || !timeline.segments.isEmpty,
               journalHolds(header.after, in: journal, size: size), !journalNames(header.reply, after: header.after, in: journal) else { return nil }
         return (header, text, thinking, timeline, at)
     }
@@ -263,10 +265,12 @@ extension AgentSession {
             }
         }
     }
-    func flushStreamed() {
+    /// `reply`: the reply what waits belongs to, when it is no longer the
+    /// streaming one (it ended, and the journal refused its row).
+    func flushStreamed(as reply: String? = nil) {
         partialReplyFlush?.cancel(); partialReplyFlush = nil
         guard let log = partialReplyLog, log.hasPending else { return }
-        guard let journal, let partialID else { log.discardPending(); return }
+        guard let journal, let partialID = reply ?? partialID else { log.discardPending(); return }
         var header: PartialReplyLog.Header?
         if log.reply != partialID {
             guard let head = journal.head, let span = journal.lastAppend else { log.discardPending(); return }

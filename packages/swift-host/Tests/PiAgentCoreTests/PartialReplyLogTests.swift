@@ -14,6 +14,16 @@ private actor StallingClient: ModelClient {
     }
 }
 
+/// A model that streams its pieces quickly, then answers with them.
+private actor DeltaThenAnswerClient: ModelClient {
+    let pieces: [String]
+    init(pieces: [String]) { self.pieces = pieces }
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        for piece in pieces { try await onDelta(.text(piece)) }
+        return answer(pieces.joined())
+    }
+}
+
 /// The reply a run is streaming survives a helper that dies mid-reply
 /// (`PartialReplyLog`): a reopen shows it as the interrupted reply a stop
 /// leaves, and sends nothing again.
@@ -145,7 +155,7 @@ final class PartialReplyLogTests: XCTestCase {
         await session.close()
         let damages: [(String, (inout PartialReplyLog.Header) -> Void)] = [
             ("another record", { $0.after.id = "someone-else" }), ("an id no record may have", { $0.reply = "not an id/../" }),
-            ("an empty id", { $0.reply = "" }), ("a place past any file", { $0.after.offset = UInt64.max }),
+            ("an empty id", { $0.reply = "" }), ("the anchor's id", { $0.reply = $0.after.id }), ("a loaded row's id", { $0.reply = "t1" }), ("a place past any file", { $0.after.offset = UInt64.max }),
         ]
         for (what, damage) in damages {
             let copy = try killedCopy(killed.path), logURL = PartialReplyLog.url(for: copy)
@@ -239,6 +249,26 @@ final class PartialReplyLogTests: XCTestCase {
         let aside = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix(copy.lastPathComponent + ".stream-unrestored-") }
         XCTAssertEqual(aside.count, 1, "kept beside the chat's file")
         await reopened.close()
+    }
+
+    /// A reply that ended but whose row the journal refused keeps its log
+    /// too, with its last moment.
+    func testAFinishedReplyTheJournalRefusesKeepsItsLogAside() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let client = DeltaThenAnswerClient(pieces: pieces)
+        let session = try chat.session("chat", client: client, beforeAppend: { record in
+            if record["message"]["role"].text == "assistant" { throw AgentError("session_record_limit", "fixture: the record will not write") }
+        })
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "a question"), steer: false)
+        try await eventually { !(await session.isRunning) }
+        let sessionPath = await session.path
+        let journal = URL(fileURLWithPath: try XCTUnwrap(sessionPath)), directory = journal.deletingLastPathComponent()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: PartialReplyLog.url(for: journal).path))
+        let aside = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix(journal.lastPathComponent + ".stream-unrestored-") }
+        XCTAssertEqual(aside.count, 1)
+        let kept = try String(contentsOf: directory.appendingPathComponent(try XCTUnwrap(aside.first)), encoding: .utf8)
+        XCTAssertTrue(kept.contains("piece 29"))
+        await session.close()
     }
 
     /// Text arrives token by token; it is written a batch at a time.

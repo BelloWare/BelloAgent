@@ -228,7 +228,9 @@ extension AgentSession {
                     // The reply keeps its usage in pi's shape: the next count rests on it.
                     assistant.usage=PiContext.usage(reply.usage,api:turnProfile.api)
                     assistant.contextUsageBinding = try reply.message.contextUsageBinding ?? RequestContextCounter.usageBinding(prepared.body,profile:turnProfile)
-                    try append(assistant); cumulativeUsage.observe(reply.usage)
+                    // A reply the journal refuses keeps its log, set aside when the run settles.
+                    do { try append(assistant) } catch { partialReplyUnsaved=true; flushStreamed(as:assistant.id); throw error }
+                    cumulativeUsage.observe(reply.usage)
                     if !outputLimited { overflowRecoveryAttempted=false }
                     event("message_end")
                     await flushRequestLinks()
