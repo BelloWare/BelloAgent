@@ -567,6 +567,8 @@ pub(super) struct SelectionHost {
     pub claimed: bool,
     /// The quote bar is up over the selection.
     pub bar: bool,
+    /// Frames the bar has waited for its selection to be painted.
+    pub bar_waits: u8,
     /// The transcript's focus: a press in its text takes it, so the
     /// selection's commands (Copy, Select All) reach the transcript.
     pub focus: Option<gpui::FocusHandle>,
@@ -827,6 +829,7 @@ pub(super) fn listen(
         let mut host = release.borrow_mut();
         if std::mem::take(&mut host.dragging) {
             host.bar = host.quotable().is_some();
+            host.bar_waits = 0;
             cx.notify(view);
         }
     });

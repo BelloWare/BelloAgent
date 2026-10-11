@@ -90,14 +90,25 @@ pub(super) fn bar(
     visible: Bounds<Pixels>,
     p: Palette,
     on_quote: impl Fn(&mut Window, &mut App) + 'static,
-    window: &Window,
+    window: &mut Window,
 ) -> Option<AnyElement> {
-    let state = host.borrow();
+    let mut state = host.borrow_mut();
     if !state.bar || state.quotable().is_none() {
         return None;
     }
     let size = bar_size(window);
-    let at = place(&state.painted, visible, size)?;
+    let Some(at) = place(&state.painted, visible, size) else {
+        // A selection made between two frames is painted by the next one:
+        // the bar is placed in the frame after it (a selection off screen
+        // stops asking after two).
+        if state.bar_waits < 2 {
+            state.bar_waits += 1;
+            window.request_animation_frame();
+        }
+        return None;
+    };
+    state.bar_waits = 0;
+    drop(state);
     let ink = rgb(p.ink);
     let tertiary = rgb(p.tertiary);
     let fill = rgba(if p.dark { 0xffffff0d } else { 0x0000000b });

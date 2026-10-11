@@ -91,6 +91,16 @@ Workstream B2 (`work/reply-actions`). Swift source: pi-app `6319e368`,
   caret, and every menu. `transcript_mixed_text` and
   `transcript_reply_files` have unit tests.
 
+- Codex (gpt-6.1-sol, xhigh, read-only) reviewed the branch twice; its
+  findings were fixed: quoting refused while an operation holds the draft,
+  a card editor's own Copy / Select All left to it, a large table read from
+  the blocks only when opened, the table window's Close Window and Edit
+  commands, and the quote bar placed the frame after a selection made
+  between frames. Its note that a heading's Copy is matched to the scanner's
+  sections by order (so an indented heading inside a loose list shifts the
+  later ones) is Swift's own behaviour (`headingIndex` against
+  `TranscriptCopy.targets`) and is kept for parity.
+
 ## What still differs
 
 - **Quote bar action**: Swift asks in a new side chat ("Ask in side chat");

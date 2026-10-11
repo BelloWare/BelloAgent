@@ -168,6 +168,23 @@ impl TableWindow {
         cx.notify();
     }
 
+    /// The menu's command as the detail's own key, when it has the focus.
+    fn editor_key(&self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let focus = self.detail.read(cx).focus_handle(cx);
+        if !focus.is_focused(window) {
+            return;
+        }
+        let Ok(key) = Keystroke::parse(key) else {
+            return;
+        };
+        // Leave the action's dispatch before the key's.
+        window.defer(cx, move |window, cx| {
+            if focus.is_focused(window) {
+                window.dispatch_keystroke(key, cx);
+            }
+        });
+    }
+
     fn copy_table(&self, cx: &mut App) {
         cx.write_to_clipboard(ClipboardItem::new_string(tsv(&self.header, &self.rows)));
     }
@@ -175,6 +192,10 @@ impl TableWindow {
     #[cfg(test)]
     pub(crate) fn detail_text(&self, cx: &App) -> String {
         self.detail.read(cx).text().to_owned()
+    }
+    #[cfg(test)]
+    pub(crate) fn focus_detail(&self, window: &mut Window, cx: &App) {
+        self.detail.read(cx).focus(window);
     }
 }
 
@@ -272,6 +293,18 @@ impl Render for TableWindow {
             .on_action(|_: &crate::application_menus::CloseWindow, window, _| {
                 window.remove_window()
             })
+            // Edit > Copy and Select All reach the cell's text, as the
+            // workspace's menus reach a focused editor: as its own keys.
+            .on_action(
+                cx.listener(|table, _: &crate::application_menus::Copy, window, cx| {
+                    table.editor_key("cmd-c", window, cx)
+                }),
+            )
+            .on_action(cx.listener(
+                |table, _: &crate::application_menus::SelectAll, window, cx| {
+                    table.editor_key("cmd-a", window, cx)
+                },
+            ))
             .size_full()
             .bg(rgb(p.window))
             .flex()

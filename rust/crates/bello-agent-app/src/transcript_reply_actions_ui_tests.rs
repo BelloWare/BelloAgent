@@ -332,7 +332,17 @@ fn open_full_table_shows_every_row(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let tsv = clipboard(cx).unwrap();
     assert!(tsv.starts_with("n\tv\n0\tvalue 0\n"), "{tsv:?}");
-    assert!(tsv.ends_with("44\tvalue 44"), "{tsv:?}"); // Close Window closes it.
+    assert!(tsv.ends_with("44\tvalue 44"), "{tsv:?}");
+    // Edit > Select All and Copy reach the cell's text.
+    table
+        .update(cx, |table, window, cx| table.focus_detail(window, cx))
+        .unwrap();
+    window.dispatch_action(crate::application_menus::SelectAll);
+    cx.run_until_parked();
+    window.dispatch_action(crate::application_menus::Copy);
+    cx.run_until_parked();
+    assert_eq!(clipboard(cx).as_deref(), Some("value 2"));
+    // Close Window closes it.
     window.dispatch_action(crate::application_menus::CloseWindow);
     cx.run_until_parked();
     assert_eq!(cx.windows().len(), before);
@@ -464,4 +474,25 @@ fn a_held_draft_takes_no_quote(cx: &mut TestAppContext) {
         cx.read(|cx| root.read(cx).composer.read(cx).text().to_owned()),
         "Draft"
     );
+}
+
+/// A word taken by a double click between two frames still gets its bar:
+/// the frame after the one that paints the selection places it.
+#[gpui::test]
+fn a_double_clicked_word_gets_the_quote_bar(cx: &mut TestAppContext) {
+    let (_directory, mut visual, child, _) = host_rows(reply_rows(), RunState::Paused, cx);
+    let text = element(&mut visual, "reply");
+    let at = point(text.left() + px(3.), text.top() + px(8.));
+    visual.simulate_event(gpui::MouseDownEvent {
+        button: MouseButton::Left,
+        position: at,
+        modifiers: Modifiers::none(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert!(cx.read(|cx| child.read(cx).quote_bar_up()));
+    let bar = bounds(&mut visual, "quote-in-draft").expect("the bar");
+    assert!(bar.bottom() <= text.top() + px(8.), "{bar:?} over {text:?}");
 }
