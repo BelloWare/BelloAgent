@@ -70,10 +70,15 @@ extension WorkspaceModel {
     func jumpToHistoryPosition(_ id: String, position: Int, offset: Double) {
         guard transcriptShows(id), let view = displays[id], let item = record(id), view.revealRead == nil else { return }
         if view.jumpRead != nil { view.jumpWanted = (position, offset); return }
-        if let failed = view.jumpFailedAt, ProcessInfo.processInfo.systemUptime - failed < 1 { return }
+        if let failed = view.jumpFailedAt, ProcessInfo.processInfo.systemUptime - failed < 1 { view.jumpRetry = (position, offset); return }
+        view.jumpRetry = nil
         revealSerial += 1
         let serial = revealSerial, generation = view.presentationGeneration, navigation = messageNavigationRevision
         view.jumpRead = serial; view.jumpWanted = nil
+        // The timeline the window holds: a position counts rows of it, and a
+        // page of another (the chat changed elsewhere) is not read in its
+        // place; that change is the page's to report.
+        let lineage = view.presentation.identity?.lineage
         func current() -> Bool {
             !Task.isCancelled && displays[item.id] === view && view.presentationGeneration == generation && view.jumpRead == serial
                 && view.revealRead == nil && transcriptShows(item.id) && messageNavigationRevision == navigation
@@ -95,8 +100,11 @@ extension WorkspaceModel {
             do {
                 var page = try await self.readConversationWindow(item, cursor: nil, position: position)
                 guard current(), let first = page.messages.first?.id else { return }
+                guard lineage == nil || page.lineage == lineage else { return }
                 page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
-                guard current() else { return }
+                // The reader has gone on to another place: that one is read
+                // next, and this one is not landed on the way.
+                guard current(), view.jumpWanted == nil else { return }
                 view.jumpFailedAt = nil
                 self.adoptInitialHistory(page, into: view, around: first, landing: offset)
                 view.browsingHistory = page.newer != nil
@@ -104,7 +112,16 @@ extension WorkspaceModel {
             } catch {
                 // Read again where the reader is, a moment from now, while
                 // they are still in the room (`TranscriptPage.readerReachedUnreadRows`).
-                if !(error is CancellationError), current() { view.jumpFailedAt = ProcessInfo.processInfo.systemUptime }
+                if !(error is CancellationError), current() {
+                    view.jumpFailedAt = ProcessInfo.processInfo.systemUptime; view.jumpRetry = (position, offset)
+                    // Tried again in a moment unless the reader has gone
+                    // somewhere else by then (`abandonJump`).
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak view] in
+                        guard let self, let view, view.presentationGeneration == generation, let retry = view.jumpRetry else { return }
+                        view.jumpFailedAt = nil
+                        self.jumpToHistoryPosition(item.id, position: retry.position, offset: retry.offset)
+                    }
+                }
             }
         }
     }

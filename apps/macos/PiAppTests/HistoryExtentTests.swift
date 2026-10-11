@@ -75,4 +75,39 @@ final class HistoryExtentTests: XCTestCase {
         positions.forget()
         XCTAssertNil(positions.extent(of: ["m10"].map(row), reachesStart: false, reachesEnd: false))
     }
+
+    /// A page read for where the reader dragged to that fails is read again
+    /// a moment later, while they are still there: the rows come.
+    @MainActor func testAFailedReadForWhereTheReaderDraggedIsTriedAgain() async throws {
+        // Longer than the window holds (`TranscriptPaging.residentCaps`).
+        let chat = try await LongChatScroll(turns: 200)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        final class Reads: @unchecked Sendable {
+            private let lock = NSLock(); private var count = 0
+            func next() -> Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
+            var total: Int { lock.lock(); defer { lock.unlock() }; return count }
+        }
+        let reads = Reads(), reader = HistoryReader(), path = try XCTUnwrap(chat.chat.path)
+        let marker = HistoryWindowEdge.position(0).dropLast()
+        chat.model.historyWindowLoader = { _, cursor, newer, around in
+            if let around, around.hasPrefix(marker), let row = Int(around.dropFirst(marker.count)) {
+                if reads.next() == 1 { throw HostError.failure("The first read fails") }
+                return try ConversationHistoryPage(await reader.window(path: path, position: row))
+            }
+            if around == HistoryWindowEdge.start { return try ConversationHistoryPage(await reader.window(path: path, start: true)) }
+            return try ConversationHistoryPage(await reader.window(path: path, cursor: cursor, newer: newer, around: around))
+        }
+        _ = await chat.drive(points: 0, seconds: 0.4, input: .drag({ min(0.5, 1 - CGFloat($0) / 0.8) })) { false }
+        chat.endGesture()
+        try await eventually("The rows never came after the failed read", timeout: .seconds(8)) {
+            chat.draw(); return !chat.blankViewport && chat.document?.visibleContentPrepared == true
+        }
+        let state = "window \(chat.view.messages.first?.id ?? "-")…\(chat.view.messages.last?.id ?? "-"), clip \(chat.clipY), knob \(chat.knobFraction), leading \(chat.document?.leadingSpace ?? -1), reading \(chat.readingRow()?.id ?? "-")"
+        XCTAssertGreaterThanOrEqual(reads.total, 2, "The failed read was tried again: \(state)")
+        let id = try XCTUnwrap(chat.readingRow()?.id)
+        let turn = try XCTUnwrap(Int(id.drop { !$0.isNumber }.prefix { $0.isNumber }))
+        XCTAssertEqual(Double(turn) / 199, 0.5, accuracy: 0.2, "The reader is where they dragged to (turn \(turn))")
+    }
 }

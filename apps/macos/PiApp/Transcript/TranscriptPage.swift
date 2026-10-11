@@ -36,6 +36,10 @@ struct ContentGeometry: Equatable {
     /// arrives while the reader is still that far from the edge, so a steady
     /// scroll or a fling never reaches an edge and waits there.
     static func prefetchDistance(viewport: CGFloat) -> CGFloat { max(2_400, viewport * 3) }
+    /// How far into the room kept for rows not read the window's edges still
+    /// read on, page by page: the document's buffer (`bufferMargin`). Past
+    /// it the page where the reader is is read instead.
+    static func roomReach(_ viewport: CGFloat) -> CGFloat { TranscriptNativeDocument.bufferMargin(viewport) }
 
     struct Snapshot: Equatable {
         var sessionID: String
@@ -719,7 +723,7 @@ struct ContentGeometry: Equatable {
     /// The reader is back among the rows the window holds: a page still being
     /// read for where they were in the room does not replace them.
     func readerLeftUnreadRows() {
-        guard let session = presentationSession, session.jumpRead != nil || session.jumpWanted != nil else { return }
+        guard let session = presentationSession, session.jumpRead != nil || session.jumpWanted != nil || session.jumpRetry != nil else { return }
         session.abandonJump()
     }
     /// The row the reader is on and where it sits, for a layout that has to
@@ -1181,7 +1185,10 @@ struct ContentGeometry: Equatable {
     private func requestNewerIfNearBottom() {
         let reach = travelingUp ? Self.earlierThreshold : Self.prefetchDistance(viewport: position.viewport)
         // Measured from the window's last row: the room below it is rows not read.
-        guard position.viewport > 0, !jumping, liveDistanceToBottom - content.trailing < reach, let sessionID,
+        // A reader in the room below the window, past its rows' reach, is
+        // read where they are (`readerReachedUnreadRows`), not page by page.
+        let toRows = liveDistanceToBottom - content.trailing
+        guard position.viewport > 0, !jumping, toRows < reach, toRows > -(position.viewport + Self.roomReach(position.viewport)), let sessionID,
               let session = presentationSession, session.newerPage.cursor != nil, !session.newerPage.loading,
               session.newerPage.error == nil, !session.historyState.loading, session.presentation.readyAt != nil else { return }
         reportPendingAnchor()
@@ -1199,7 +1206,9 @@ struct ContentGeometry: Equatable {
         // of a window too short for both distances would let each page push
         // out the rows the other end then asks for again.
         let reach = short || !travelingUp ? Self.earlierThreshold : Self.prefetchDistance(viewport: viewport.height)
-        guard scrollY < reach, !firstRow.isEmpty,
+        // A reader in the room above the window, past its rows' reach, is
+        // read where they are (`readerReachedUnreadRows`), not page by page.
+        guard scrollY < reach, scrollY + viewport.height > -Self.roomReach(viewport.height), !firstRow.isEmpty,
               let sessionID, let session = presentationSession,
               !session.historyState.loading, !session.olderPage.loading, session.olderPage.error == nil,
               session.olderPage.cursor != nil, session.presentation.readyAt != nil else { return }
@@ -1207,7 +1216,9 @@ struct ContentGeometry: Equatable {
         // page reads them until it does not, rather than leave the reader
         // looking at room. Such a read keeps the rows on screen
         // (`loadHistoryPage(automatic:)`), the live tail among them.
-        let roomShows = scrollY < 0
+        // (Room alone on screen, far from the rows, is read where the reader
+        // is instead: `readerReachedUnreadRows`.)
+        let roomShows = scrollY < 0 && scrollY + viewport.height > 0
         if short, !roomShows {
             // A page this short cannot be scrolled to ask again. Nor does a
             // window fill itself when it could not take another page without

@@ -113,7 +113,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The reader went somewhere else (a reveal, Back to bottom, Latest, back
     /// into the rows the window holds): a page read for where they were
     /// does not land.
-    func abandonJump() { jumpRead = nil; jumpWanted = nil }
+    func abandonJump() { jumpRead = nil; jumpWanted = nil; jumpRetry = nil }
+    /// A read that failed, to be tried again where the reader still is.
+    var jumpRetry: (position: Int, offset: Double)?
     /// When such a read last failed: the next waits a moment, then reads
     /// where the reader is again.
     var jumpFailedAt: TimeInterval?

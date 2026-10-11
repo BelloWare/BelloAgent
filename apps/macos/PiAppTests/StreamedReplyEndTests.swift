@@ -479,9 +479,10 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(firstRows.count, 6, "The window holds its six newest rows")
         XCTAssertNotNil(view.olderPage.cursor, "The rows that left have an earlier edge")
         XCTAssertFalse(view.browsingHistory, "The chat is on its live tail")
-        // The reader scrolls up to the top; the edge reads the rows back.
+        // The reader scrolls up to the top of the window's rows (above them is
+        // the room kept for the rows not read); the edge reads the rows back.
         launched.draw()
-        readerScrolls(launched, to: -(launched.scroll?.contentInsets.top ?? 0))
+        readerScrolls(launched, to: ((launched.scroll?.documentView as? TranscriptNativeDocument)?.leadingSpace ?? 0) - (launched.scroll?.contentInsets.top ?? 0))
         launched.draw()
         try await Task.sleep(for: .milliseconds(100)); launched.draw()
         let before = placesOnScreen(launched)
