@@ -366,7 +366,11 @@ fn allowed_path(path: &Path, directory: bool, namespace: Option<&str>) -> bool {
     if !directory
         && matches!(
             path,
-            MARKER | "catalog.json" | "catalog.workspace.lock" | "chats/layout.json"
+            MARKER
+                | "catalog.json"
+                | "catalog.workspace.lock"
+                | "chats/layout.json"
+                | "chats/recent-chats.json"
         )
     {
         return true;

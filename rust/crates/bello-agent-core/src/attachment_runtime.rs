@@ -195,6 +195,23 @@ impl Controller {
                 .configuration()
                 .is_some_and(|config| config.effective_profile(None).supports_images())
     }
+    /// As `supports_image_attachments`, for the model a chat's choice would
+    /// send: a chosen model takes images only when it is declared or listed so.
+    pub fn supports_image_attachments_for(
+        &self,
+        choice: &crate::model_choice::ModelChoice,
+    ) -> bool {
+        if choice.model.is_none() {
+            return self.supports_image_attachments();
+        }
+        let item = crate::model_choice::submission_with(choice);
+        !self.is_retired()
+            && self.configuration().is_some_and(|config| {
+                let mut item = item;
+                crate::model_choice::capture(&mut item, &config.profile).is_ok()
+                    && config.effective_profile(Some(&item)).supports_images()
+            })
+    }
     /// The passive model listing for this chat's saved native connection, or
     /// None when nothing needs fetching. Reads the vault: call it off the UI
     /// thread. Loading the request publishes its list to the chat, so
@@ -358,8 +375,7 @@ impl Controller {
             .configuration
             .clone()
             .ok_or_else(|| invalid("No connection configured"))?;
-        item.model = Some(config.profile.model_id.clone());
-        item.effort = Some(config.profile.thinking_level.clone());
+        crate::model_choice::capture(&mut item, &config.profile)?;
         let cancel = CancellationToken::new();
         let (frozen, mut resource_snapshot) = self
             .freeze_submission_skills(item, &selections, &config, cancel.clone())

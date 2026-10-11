@@ -38,6 +38,8 @@ pub use resource_runtime::{AppliedInstructionSnapshot, SyntheticResources, Synth
 
 #[path = "context_preview.rs"]
 mod context_preview;
+#[path = "title_runtime.rs"]
+mod title_runtime;
 pub use context_preview::{ContextPreview, ContextPreviewMetadata, ContextPreviewMode};
 
 use crate::{
@@ -694,8 +696,7 @@ impl Controller {
             ));
         }
         let config = self.configuration().ok_or_else(|| invalid("No connection configured. Launch with --profile and --credential-stdin; no credentials are discovered automatically."))?;
-        item.model = Some(config.profile.model_id.clone());
-        item.effort = Some(config.profile.thinking_level.clone());
+        crate::model_choice::capture(&mut item, &config.profile)?;
         inner.store.transact(|session| session.submit(item))?;
         self.note_semantic_activity();
         self.publish(&inner);
@@ -966,6 +967,14 @@ impl Controller {
     }
     pub fn reorder(&self, ids: &[String]) -> Result<()> {
         self.change(|s| s.reorder(ids))
+    }
+    /// Rename Chat…: persist a reader-chosen, already normalized title in
+    /// this chat's own checkpoint, from which the sidebar and catalog follow.
+    pub fn rename(&self, title: &str) -> Result<()> {
+        self.change(|session| {
+            session.title = title.to_owned();
+            Ok(())
+        })
     }
     /// Persist the lane change without interrupting or relaunching the worker.
     pub fn promote_to_steering(&self, id: &str) -> Result<()> {

@@ -395,6 +395,39 @@ impl super::TranscriptView {
             self.refold(window, cx);
         }
     }
+    /// A transcript that reads in Settings' display mode and follows it as
+    /// Settings changes it.
+    pub(crate) fn following_settings(
+        parent: gpui::WeakEntity<crate::AgentView>,
+        input: super::TranscriptInput,
+        cx: &mut gpui::Context<Self>,
+    ) -> Self {
+        let mut view = Self::new(parent, input);
+        if super::initial_display() == super::TranscriptDisplayMode::Compact {
+            view.show_display(crate::app_settings::transcript_display(cx), cx);
+        }
+        view._display = Some(crate::app_settings::observe_transcript_display(
+            cx,
+            |view: &mut Self, mode, cx| view.show_display(mode, cx),
+        ));
+        view
+    }
+    /// Reads the page in `mode` without a window at hand; a focused card the
+    /// change hides gives the keyboard back on the next frame.
+    fn show_display(&mut self, mode: super::TranscriptDisplayMode, cx: &mut gpui::Context<Self>) {
+        if self.display == mode {
+            return;
+        }
+        self.display = mode;
+        self.presentation = std::rc::Rc::new(super::Presentation::with_disclosure(
+            self.presentation.input.clone(),
+            &self.opened,
+            &self.expanded_reads,
+            self.display,
+        ));
+        self.invalidate_sidebar_geometry(cx);
+        cx.notify();
+    }
     /// The strip's press: the response folds to its line, or opens again.
     pub(super) fn toggle_response(
         &mut self,

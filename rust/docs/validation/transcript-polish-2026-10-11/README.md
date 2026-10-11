@@ -21,8 +21,10 @@ Workstream B (`work/transcript-polish`). Swift source: pi-app `6319e368`,
   draw closed and keep what the reader opened, as Swift's `responseFolded`.
 - **End-of-turn fold** (`transcript_turn_fold.rs`): the answer's own strip
   now folds with the work (Swift `answerHeader`); `TranscriptDisplayMode`
-  (Normal / Compact, default Compact, Swift labels and details) is a view
-  input — `TranscriptView::set_display_mode` relays out in place.
+  (Normal / Compact, default Compact) is Settings' own
+  `app_settings::TranscriptDisplayMode`; the chat's transcript
+  (`TranscriptView::following_settings`) reads it and relays out in place
+  when Settings saves another.
 - **Conversation menu** (`application_menus.rs`): Fold This Turn ⌥⌘[,
   Unfold This Turn ⌥⌘], Fold Every Turn ⇧⌥⌘[, Unfold Every Turn ⇧⌥⌘],
   Fold This Response to One Line, Show This Response, in Swift's order
@@ -40,7 +42,9 @@ Workstream B (`work/transcript-polish`). Swift source: pi-app `6319e368`,
   number right-aligned in a 34 pt gutter, text 12 pt past it; numbers grouped
   ("1,000"); `headTail` (12 lines, 6 + 6) with the middle
   `TranscriptCardMoreLines` line ("… N more lines" / "Show fewer lines")
-  between head and tail; an expanded diff scrolls past 224 pt; a failed
+  between head and tail; an expanded diff scrolls past 224 pt; a run longer
+  than 64 lines is drawn in 32-line pieces, only those near the window as
+  editors (Swift builds only the rows in view); a failed
   change's or read's body dims to 72%; "Diff preview unavailable — N lines.
   Full content is available below."; `└ +N −M` grouped.
 
@@ -79,9 +83,9 @@ Workstream B (`work/transcript-polish`). Swift source: pi-app `6319e368`,
 - No context menus on the strip or rows (Rust's transcript has none).
 - Work rows have no keyboard focus ring: the main window has no key loop
   (Tab) for transcript rows yet; adding one is a window-wide decision.
-- A read's expanded window and lines use one editor per run; selection runs
-  across a run's lines (Swift selects per line), and each mark is placed by
-  re-wrapping the line with the editor's wrapper.
+- A run's lines share one editor per piece; selection runs across a
+  piece's lines (Swift selects per line), and each mark is placed by
+  re-wrapping the line with the editor's own wrapper.
 - A change too large to diff keeps Rust's in-section full content rather
   than Swift's Before/After disclosure.
 - Not started: reply text selection with Copy and quote into draft

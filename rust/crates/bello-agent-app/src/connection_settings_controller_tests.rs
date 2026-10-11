@@ -2446,3 +2446,6 @@ fn untouched_native_new_form_is_clean_with_blank_manual_fields() {
     assert!(!form.dirty());
     assert!(!form.draft.has_changes());
 }
+
+#[path = "settings_sections_tests.rs"]
+mod settings_sections;

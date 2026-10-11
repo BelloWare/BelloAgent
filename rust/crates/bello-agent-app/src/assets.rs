@@ -12,6 +12,7 @@ impl AssetSource for Assets {
         }
         let body = match path {
             "folder" => r#"<path d="M3 6h7l2 2h9v11H3z"/>"#,
+            "trash" => r#"<path d="M4 7h16M10 3h4M6 7l1 13h10l1-13M10 11v6M14 11v6"/>"#,
             "pencil" => r#"<path d="m5 16-1 4 4-1L20 7l-3-3zM14 7l3 3"/>"#,
             "pencil.line" => r#"<path d="m5 14-1 4 4-1L19 6l-3-3zM13 6l3 3M4 22h16"/>"#,
             "pause.circle" => r#"<circle cx="12" cy="12" r="9"/><path d="M9 8v8M15 8v8"/>"#,
@@ -98,6 +99,10 @@ impl AssetSource for Assets {
             }
             "spinner.arc" => {
                 r#"<path d="M22.5 12A10.5 10.5 0 0 1 13.967 22.314" stroke-width="3.27"/>"#
+            }
+            // SF Symbol arrow.clockwise, for Refresh.
+            "arrow.clockwise" => {
+                r#"<path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4v4.5H15" stroke-width="2"/>"#
             }
             "list.bullet" => {
                 r#"<path d="M9.5 6h11M9.5 12h11M9.5 18h11" stroke-width="2"/><circle cx="4.5" cy="6" r="1.2" fill="black"/><circle cx="4.5" cy="12" r="1.2" fill="black"/><circle cx="4.5" cy="18" r="1.2" fill="black"/>"#

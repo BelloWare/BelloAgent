@@ -9,38 +9,9 @@ use super::{LogicalRow, ProjectedRow, RowKey};
 use bello_agent_core::{Message, RunState, Session, tool_history::ToolRecord};
 use std::collections::HashSet;
 
-/// How a finished turn reads (Swift's `TranscriptDisplayMode`). While a turn
-/// runs its work is loose; when it ends with an answer, Compact folds
-/// everything that produced the answer behind one line above it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum TranscriptDisplayMode {
-    /// A finished turn keeps every row it had while it ran. Settings
-    /// chooses it; until that control lands only tests do.
-    #[cfg_attr(not(test), allow(dead_code))]
-    Normal,
-    /// A finished turn's work folds behind one line above its answer.
-    #[default]
-    Compact,
-}
-
-impl TranscriptDisplayMode {
-    /// What Settings calls the mode.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Normal => "Normal",
-            Self::Compact => "Compact",
-        }
-    }
-    /// The line under the choice in Settings.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn detail(self) -> &'static str {
-        match self {
-            Self::Normal => "A finished turn keeps every tool call and thought on screen.",
-            Self::Compact => "A finished turn folds its work behind one line above the answer.",
-        }
-    }
-}
+/// How a finished turn reads (Swift's `TranscriptDisplayMode`): Settings'
+/// own value, so the transcript follows Settings without translating it.
+pub(crate) use crate::app_settings::TranscriptDisplayMode;
 
 /// Where a row stands in a finished turn's fold.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

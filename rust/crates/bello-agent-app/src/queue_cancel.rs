@@ -586,6 +586,10 @@ impl AgentView {
             }
         };
         let read_only = self.chat_is_archived(&key.chat);
+        if applied {
+            // The settlement wrote the draft: the sidebar marker follows it.
+            self.note_draft_mark(&key.chat, reconciled.holds_unsent());
+        }
         let chat = self.chat_mut(&key.chat).unwrap();
         if applied {
             chat.draft_save_status

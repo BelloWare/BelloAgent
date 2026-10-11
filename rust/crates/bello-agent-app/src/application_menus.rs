@@ -13,7 +13,10 @@ actions!(
         About,
         Settings,
         NewChat,
+        OpenProject,
         OpenFile,
+        RenameChat,
+        DeleteChat,
         ToggleArchived,
         TogglePinned,
         MarkRead,
@@ -90,7 +93,7 @@ pub(crate) fn install(cx: &mut App) {
             cx.bind_keys([$ (KeyBinding::new($key, $action, Some("BelloMenuEquivalent"))),*]);
         };
     }
-    keys!("cmd-," => Settings, "cmd-n" => NewChat, "cmd-p" => OpenFile,
+    keys!("cmd-," => Settings, "cmd-n" => NewChat, "cmd-o" => OpenProject, "cmd-p" => OpenFile,
         "cmd-w" => CloseWindow, "cmd-z" => Undo, "cmd-shift-z" => Redo,
         "cmd-x" => Cut, "cmd-c" => Copy, "cmd-v" => Paste, "cmd-a" => SelectAll,
         "cmd-alt-i" => SessionInspector, "cmd-shift-g" => Changes,
@@ -163,7 +166,10 @@ pub(crate) fn menus(state: &MenuState) -> Vec<Menu> {
             "File",
             vec![
                 MenuItem::action("New Chat", NewChat),
+                MenuItem::action("Open Project…", OpenProject),
                 MenuItem::action("Open File…", OpenFile),
+                MenuItem::action("Rename Chat…", RenameChat),
+                MenuItem::action("Delete Chat…", DeleteChat),
                 MenuItem::separator(),
                 MenuItem::action(
                     if state.archived {
@@ -366,6 +372,7 @@ impl AgentView {
             || self.mcp.open
             || self.compaction_menu.is_some()
             || self.topic_panel.is_some()
+            || self.sidebar_chats.modal_open()
             || self.connections.open
             || self.connections.picker
             || self.projects.view.read(cx).is_open()
@@ -406,6 +413,16 @@ impl AgentView {
                 v.quick_open.update(cx, |view, cx| view.show(w, cx));
                 cx.notify();
             }
+        });
+        // Swift's pickWorkspace: the project-adding flow (Manage Projects).
+        route!(!modal, OpenProject, |v, _, w, cx| v.open_projects(w, cx));
+        route!(active, RenameChat, |v, _, w, cx| {
+            let id = v.record.id.clone();
+            v.open_rename_sheet(&id, w, cx);
+        });
+        route!(active, DeleteChat, |v, _, _, cx| {
+            let id = v.record.id.clone();
+            v.ask_delete_chat(&id, cx);
         });
         route!(!modal || self.connections.open, Settings, |v, _, w, cx| v
             .open_connections(w, cx));

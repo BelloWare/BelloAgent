@@ -1,3 +1,4 @@
+mod app_settings;
 #[cfg(any(target_os = "macos", test))]
 mod application_menus;
 mod assets;
@@ -24,6 +25,8 @@ mod layout;
 mod mcp_inspector_controller;
 mod mcp_inspector_host;
 mod mcp_inspector_view;
+mod model_picker;
+mod model_picker_view;
 #[cfg(any(target_os = "macos", test))]
 mod native_menu;
 #[cfg(feature = "native-lifecycle-smoke")]
@@ -49,6 +52,9 @@ mod shutdown_barrier;
 mod sidebar_actions;
 mod sidebar_activity;
 mod sidebar_cache_cleanup;
+mod sidebar_chat_delete;
+mod sidebar_chat_rename;
+mod sidebar_chats;
 mod sidebar_inspection;
 mod sidebar_read_state;
 mod sidebar_run_state;
@@ -155,6 +161,7 @@ struct AgentView {
     chat: ChatState,
     attachment_picker: Option<composer_attachments::PickerOperation>,
     chat_models: composer_attachments::ChatModelListing,
+    model_pickers: model_picker::ModelPickers,
     skill_picker: Option<project_skills_view::SkillPicker>,
     inactive: BTreeMap<String, ChatState>,
     records: Vec<ChatRecord>,
@@ -184,6 +191,7 @@ struct AgentView {
     archive_visibility_errors: BTreeMap<String, String>,
     cancelled_prompt_key: Option<String>,
     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
+    sidebar_chats: sidebar_chats::SidebarChats,
     sidebar_activity_hold: sidebar_activity::SidebarActivityHold,
     sidebar_run_states: sidebar_run_state::SidebarRunStates,
     sidebar_search: sidebar_search_controller::SidebarSearch,
@@ -260,6 +268,9 @@ impl AgentView {
         if !cx.has_global::<notifications::Notifications>() {
             cx.set_global(notifications::Notifications::new(None));
         }
+        if !cx.has_global::<app_settings::AppSettings>() {
+            cx.set_global(app_settings::AppSettings::new(None));
+        }
         let palette = current_palette(window);
         let mut state = workspace.lock().expect("workspace lock").snapshot();
         state
@@ -296,6 +307,14 @@ impl AgentView {
             record.snapshot.parent().unwrap().join("layout.json"),
         ));
         let layout = layout_store.load();
+        // Beside every saved chat, whichever chat the window opened on.
+        let chat_folder = workspace
+            .lock()
+            .expect("workspace lock")
+            .chat_path(&uuid::Uuid::nil().to_string())
+            .expect("valid chat id");
+        let model_pickers =
+            model_picker::ModelPickers::open(chat_folder.parent().expect("chat folder"));
         let legacy_configuration = cx
             .try_global::<connection_settings_controller::LaunchLegacyConfiguration>()
             .map(|source| source.0.clone())
@@ -435,9 +454,22 @@ impl AgentView {
         }
         let launch_archive_reveal = chat.record.archived_at.is_some() && !state.show_archived;
         let launch_topic_reveal = state.effective_topic_id(&chat.record).map(str::to_owned);
+        let chats_directory = workspace
+            .lock()
+            .expect("workspace lock")
+            .chat_path(&chat.record.id)
+            .ok()
+            .and_then(|path| path.parent().map(std::path::Path::to_owned));
+        let sidebar_chats = sidebar_chats::SidebarChats::restore(
+            &state.drafts,
+            &records,
+            &chat.record,
+            chats_directory.as_deref(),
+        );
         let mut view = Self {
             attachment_picker: None,
             chat_models: Default::default(),
+            model_pickers,
             skill_picker: None,
             chat,
             inactive: BTreeMap::new(),
@@ -473,6 +505,7 @@ impl AgentView {
             archive_visibility_errors: BTreeMap::new(),
             cancelled_prompt_key: None,
             sidebar_menu: None,
+            sidebar_chats,
             sidebar_activity_hold: Default::default(),
             sidebar_run_states: Default::default(),
             sidebar_search: Default::default(),
@@ -520,6 +553,11 @@ impl AgentView {
             close_dialog: false,
             _release: release,
         };
+        // Saved model choices that cannot be read are said once, rather than
+        // chats silently falling back to their connection's model.
+        if let Some(error) = view.model_pickers.choices.error() {
+            view.chat.notice = Some(error);
+        }
         view.bind_window(window, cx);
         view
     }
@@ -695,13 +733,14 @@ impl AgentView {
         let task = cx.background_executor().spawn(async move {
             let flushed = if let Some(draft) = flush {
                 let revision = draft.revision;
+                let holds = draft.holds_unsent();
                 let saved = chat_organization::catalog_operation(&workspace, |store| {
                     store.flush_draft_exact(&flush_id, draft)
                 });
                 if let Err(error) = saved.result {
                     return (None, Err(error), saved.uncertain);
                 }
-                Some(revision)
+                Some((revision, holds))
             } else {
                 None
             };
@@ -736,8 +775,11 @@ impl AgentView {
                     return;
                 }
                 let archived = view.chat_is_archived(&id);
+                if let Some((_, holds)) = flushed {
+                    view.note_draft_mark(&id, holds);
+                }
                 if let Some(chat) = view.chat_mut(&id) {
-                    if let Some(revision) = flushed {
+                    if let Some((revision, _)) = flushed {
                         chat.draft_save_status.confirm(revision, &mut chat.error);
                     }
                     chat.busy = false;
@@ -1005,6 +1047,11 @@ impl AgentView {
             self.skill_picker_key(event, window, cx);
             return;
         }
+        if self.model_pickers.open.is_some() && self.model_picker_key(event, window, cx) {
+            self.cancelled_prompt_key = Some(event.keystroke.key.clone());
+            cx.stop_propagation();
+            return;
+        }
         if self.mcp.open {
             if self
                 .mcp
@@ -1037,6 +1084,10 @@ impl AgentView {
         }
         if self.topic_panel.is_some() {
             self.topics_key(event, window, cx);
+            return;
+        }
+        if self.sidebar_chats.modal_open() {
+            self.sidebar_chats_key(event, window, cx);
             return;
         }
         if self.connections.view.read(cx).is_open() {
@@ -2294,7 +2345,9 @@ impl AgentView {
                 view
             } else {
                 let parent = cx.entity().downgrade();
-                let view = cx.new(|_| transcript_view::TranscriptView::new(parent, input));
+                let view = cx.new(|cx| {
+                    transcript_view::TranscriptView::following_settings(parent, input, cx)
+                });
                 self.transcript = Some(view.clone());
                 view
             };
@@ -2476,50 +2529,6 @@ impl AgentView {
             );
         let compact = self.pane_width < 620.;
         let icons = self.pane_width < 480.;
-        let model = self
-            .controller
-            .profile()
-            .map(|profile| profile.model_id.clone())
-            .unwrap_or_else(|| "No model".into());
-        let effort = self
-            .controller
-            .profile()
-            .map(|profile| profile.thinking_level.clone())
-            .unwrap_or_else(|| "Default".into());
-        let mut model_pill = div()
-            .flex()
-            .items_center()
-            .gap(px(5.))
-            .px(px(7.))
-            .py(px(4.))
-            .rounded_full()
-            .bg(p.fill())
-            .text_size(px(12.))
-            .text_color(rgb(p.secondary))
-            .child(self.icon("cpu", 11.));
-        if !icons {
-            model_pill = model_pill.child(
-                div()
-                    .max_w(px(if compact { 110. } else { 170. }))
-                    .truncate()
-                    .child(model),
-            );
-        }
-        model_pill = model_pill.child(self.icon("down", 9.));
-        let mut effort_pill = div()
-            .flex()
-            .items_center()
-            .gap(px(5.))
-            .px(px(7.))
-            .py(px(4.))
-            .rounded_full()
-            .bg(p.fill())
-            .text_size(px(12.))
-            .text_color(rgb(p.secondary))
-            .child(self.icon("sparkles", 11.));
-        if !compact {
-            effort_pill = effort_pill.child(effort);
-        }
         let connection_choices = self.connections.choices();
         if connection_choices.len() > 1
             || !self.controller.configured()
@@ -2558,9 +2567,7 @@ impl AgentView {
                 );
             bar = bar.child(choice);
         }
-        bar = bar
-            .child(model_pill)
-            .child(effort_pill.child(self.icon("down", 9.)));
+        bar = bar.children(self.model_switch_pills(compact, icons, cx));
         let can_send = self.controller.configured()
             && !self.load_failed
             && !self.actor_mutation_blocked(&self.record.id)
@@ -3015,7 +3022,11 @@ impl AgentView {
                     .gap(px(8.))
                     .items_center()
                     .cursor_pointer()
-                    .on_click(cx.listener(move |view, _, window, cx| {
+                    .map(|row| self.decorate_sidebar_row(&record.id, selected, row))
+                    .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
+                        if view.sidebar_row_clicked(&id, event, window, cx) {
+                            return;
+                        }
                         view.open_sidebar_result(&id, ticket.clone(), window, cx);
                         // Reselecting the focused row also refreshes saved
                         // status without opening any unloaded controller.
@@ -3074,6 +3085,31 @@ impl AgentView {
                                             .truncate()
                                             .child(title.replace('\n', " ")),
                                     )
+                                    .when(self.shows_draft_mark(&record.id), |row| {
+                                        row.child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "chat-draft-{}",
+                                                    record.id
+                                                )))
+                                                .debug_selector({
+                                                    let id = record.id.clone();
+                                                    move || format!("chat-draft-{id}")
+                                                })
+                                                .tooltip(|_, cx| {
+                                                    cx.new(|_| {
+                                                        sidebar_actions::ArchiveVisibilityHint(
+                                                            "Unsent draft",
+                                                        )
+                                                    })
+                                                    .into()
+                                                })
+                                                .child(
+                                                    self.icon("pencil", 10.)
+                                                        .text_color(rgb(p.secondary)),
+                                                ),
+                                        )
+                                    })
                                     .when(record.pinned_at.is_some(), |row| {
                                         row.child(self.icon("pin", 9.).text_color(rgb(p.tertiary)))
                                     }),
@@ -3551,11 +3587,17 @@ impl Render for AgentView {
         if let Some(menu) = self.compaction_menu_element(cx) {
             element = element.child(menu);
         }
+        if let Some(picker) = self.model_picker_element(window, cx) {
+            element = element.children(picker);
+        }
         if let Some(menu) = self.sidebar_menu_element(cx) {
             element = element.child(menu);
         }
         if let Some(panel) = self.topics_element(window, cx) {
             element = element.child(panel);
+        }
+        if let Some(sheet) = self.sidebar_chats_element(window, cx) {
+            element = element.child(sheet);
         }
         if let Some(picker) = self.skill_picker_element(window, cx) {
             element = element.child(picker);
@@ -4053,6 +4095,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .parent()
                     .unwrap()
                     .join("notifications.json"),
+            )));
+            cx.set_global(app_settings::AppSettings::new(Some(
+                default_session()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("app-settings.json"),
             )));
             #[cfg(target_os = "macos")]
             application_menus::install(cx);

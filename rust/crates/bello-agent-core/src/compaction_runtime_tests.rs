@@ -665,13 +665,14 @@ async fn pending_compaction_fences_retry_and_one_resume_after_stop_delivers_queu
     }
     actor.compact(None).unwrap();
     let mut accepted = Submission::new("Appended while compaction waits".into(), Lane::FollowUp);
-    accepted.model = Some("caller-model-overridden-at-admission".into());
+    // The chat's chosen model is carried; effort left to the connection.
+    accepted.model = Some(" chosen-at-admission ".into());
     let appended_id = accepted.id.clone();
     actor.submit_identified(accepted).unwrap();
     let admitted = actor.snapshot().pending.last().unwrap().clone();
     assert_eq!(admitted.id, appended_id);
     assert_eq!(admitted.text, "Appended while compaction waits");
-    assert_eq!(admitted.model.as_deref(), Some("fixture"));
+    assert_eq!(admitted.model.as_deref(), Some("chosen-at-admission"));
     assert_eq!(admitted.effort.as_deref(), Some("default"));
     assert!(actor.snapshot().active_reply.is_none());
     let before = actor.snapshot();

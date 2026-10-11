@@ -1092,6 +1092,8 @@ pub(crate) struct TranscriptView {
     expanded_reads: HashSet<RowKey>,
     /// How finished turns read: Normal keeps them loose, Compact folds them.
     display: TranscriptDisplayMode,
+    /// Settings' display preference, while this view follows it.
+    _display: Option<Subscription>,
     tool_editors: Rc<RefCell<ToolEditors>>,
     focus: Option<FocusHandle>,
     removed_tool_focus: Rc<RefCell<Vec<FocusHandle>>>,
@@ -1123,6 +1125,7 @@ impl TranscriptView {
             opened: HashSet::new(),
             expanded_reads: HashSet::new(),
             display,
+            _display: None,
             tool_editors: Rc::new(RefCell::new(ToolEditors::default())),
             focus: None,
             removed_tool_focus: Rc::new(RefCell::new(Vec::new())),

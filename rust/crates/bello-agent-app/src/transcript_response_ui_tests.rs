@@ -401,3 +401,32 @@ fn the_response_commands_act_on_the_response_holding_the_anchor(cx: &mut TestApp
         .collect();
     assert_eq!(collapsed, ["Message(\"working\")"]);
 }
+
+#[gpui::test]
+fn the_chats_transcript_follows_the_display_mode_settings_saves(cx: &mut TestAppContext) {
+    use crate::app_settings::AppSettings;
+    cx.update(|cx| cx.set_global(AppSettings::new(None)));
+    let (_directory, _window, root) =
+        fixture_with_visible(cx, finished_turns(), 0, Some(usize::MAX));
+    let child = transcript(&root, cx);
+    assert_eq!(cx.read(|cx| child.read(cx).fold_lines()).len(), 1);
+    cx.update(|cx| {
+        cx.global_mut::<AppSettings>()
+            .set_transcript_display(TranscriptDisplayMode::Normal)
+            .unwrap()
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| child.read(cx).display_mode()),
+        TranscriptDisplayMode::Normal
+    );
+    assert!(cx.read(|cx| child.read(cx).fold_lines()).is_empty());
+    assert!(row_ids(&child, cx).contains(&"working".to_owned()));
+    cx.update(|cx| {
+        cx.global_mut::<AppSettings>()
+            .set_transcript_display(TranscriptDisplayMode::Compact)
+            .unwrap()
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| child.read(cx).fold_lines()).len(), 1);
+}

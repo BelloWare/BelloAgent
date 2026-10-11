@@ -10,6 +10,7 @@ pub mod instructions;
 pub mod markdown;
 pub mod mcp;
 pub mod model_catalog;
+pub mod model_choice;
 pub mod observed_source;
 pub mod profile;
 pub mod project_authority;
@@ -35,6 +36,7 @@ pub mod swift_migration;
 pub mod syntax;
 #[cfg(feature = "synthetic-authority")]
 pub mod synthetic_project_runtime;
+pub mod title_generation;
 pub mod tool_content;
 pub mod tool_history;
 pub mod tool_timing;
