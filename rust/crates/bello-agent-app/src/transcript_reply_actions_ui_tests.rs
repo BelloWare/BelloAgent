@@ -332,7 +332,10 @@ fn open_full_table_shows_every_row(cx: &mut TestAppContext) {
     cx.run_until_parked();
     let tsv = clipboard(cx).unwrap();
     assert!(tsv.starts_with("n\tv\n0\tvalue 0\n"), "{tsv:?}");
-    assert!(tsv.ends_with("44\tvalue 44"), "{tsv:?}");
+    assert!(tsv.ends_with("44\tvalue 44"), "{tsv:?}"); // Close Window closes it.
+    window.dispatch_action(crate::application_menus::CloseWindow);
+    cx.run_until_parked();
+    assert_eq!(cx.windows().len(), before);
 }
 
 /// While a reply is being written its caret follows its last paragraph or
@@ -431,5 +434,34 @@ fn replies_offer_their_menus(cx: &mut TestAppContext) {
     assert!(
         REPLY.starts_with(&copied) && !copied.is_empty(),
         "{copied:?}"
+    );
+}
+
+/// While an operation holds the draft (it adopts a draft of its own when it
+/// settles), quoting leaves the draft alone.
+#[gpui::test]
+fn a_held_draft_takes_no_quote(cx: &mut TestAppContext) {
+    let (_directory, _window, root) = fixture(cx, reply_rows(), 0);
+    let mut changed = input(&root, cx);
+    changed.visible_messages = usize::MAX;
+    let (mut visual, _child) = host(&root, changed, cx);
+    root.update(cx, |view, cx| {
+        view.composer
+            .update(cx, |editor, cx| editor.set_text("Draft".into(), cx));
+        view.busy = true;
+    });
+    let text = element(&mut visual, "reply");
+    let start = point(text.left() + px(1.), text.top() + px(5.));
+    let end = point(text.left() + px(60.), text.top() + px(5.));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::none());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    let bar = bounds(&mut visual, "quote-in-draft").expect("the quote bar");
+    visual.simulate_click(bar.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| root.read(cx).composer.read(cx).text().to_owned()),
+        "Draft"
     );
 }

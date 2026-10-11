@@ -194,8 +194,17 @@ impl AgentView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The draft is not the reader's while an operation holds it (it
+        // adopts a draft of its own when it settles).
         if !self.active_transcript_matches(chat_id, controller)
             || quote.trim().is_empty()
+            || self.busy
+            || self.loading
+            || self.load_failed
+            || self.shutting_down
+            || self.queue_operation.is_some()
+            || self.edit_recovery.blocked
+            || self.has_pending_cancel(&self.record.id)
             || self.editing.is_some()
             || self.chat_is_archived(&self.record.id)
             || self.composer.read(cx).has_marked_text()

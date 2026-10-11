@@ -164,6 +164,29 @@ pub(super) struct Context<'a> {
     pub corner: Option<&'a CopyTarget>,
     /// While the reply streams: its caret, after the text at this path.
     pub caret: Option<(String, shaped_text::Caret)>,
+    /// The blocks drawn, which a large table's full grid is read from when
+    /// it is opened.
+    pub blocks: Option<Rc<Vec<Block>>>,
+}
+
+/// The block at `path` (".2.0.1": a top-level block, then an item and its
+/// block, or a quote's child), as `render` names them.
+fn block_at<'a>(blocks: &'a [Block], path: &str) -> Option<&'a Block> {
+    let mut steps = path
+        .split('.')
+        .skip(1)
+        .map(|step| step.parse::<usize>().ok());
+    let mut block = blocks.get(steps.next()??)?;
+    loop {
+        let Some(step) = steps.next() else {
+            return Some(block);
+        };
+        block = match block {
+            Block::Quote(children) => children.get(step?)?,
+            Block::List { items, .. } => items.get(step?)?.get(steps.next()??)?,
+            _ => return None,
+        };
+    }
 }
 
 /// Where a streaming reply's caret stands: after its last block, when that
@@ -1162,7 +1185,6 @@ fn table(
     room: Room,
 ) -> Part {
     let large = large_table(header, rows);
-    let full_header = header.to_vec();
     let shown_columns = if large { PREVIEW_COLUMNS } else { usize::MAX };
     let shown_rows = if large {
         &rows[..rows.len().min(PREVIEW_ROWS)]
@@ -1345,15 +1367,8 @@ fn table(
     let column = cx.column.unwrap_or(PROSE_WIDTH);
     let end = column - column.min(cx.prose_width.unwrap_or(column));
     let full = {
-        let plain = |row: &Vec<Vec<Span>>| -> Vec<String> {
-            row.iter()
-                .map(|cell| cell.iter().map(|span| span.text.as_str()).collect())
-                .collect()
-        };
-        let (header, rows) = (
-            plain(&full_header),
-            rows.iter().map(plain).collect::<Vec<_>>(),
-        );
+        // Read from the blocks when it is opened, not on every frame.
+        let (blocks, at) = (cx.blocks.clone(), path.to_owned());
         let palette = cx.palette;
         div()
             .id(SharedString::from(format!(
@@ -1372,7 +1387,18 @@ fn table(
             .cursor_pointer()
             .child("Open full table")
             .on_click(move |_, _, cx| {
-                super::table_window::open(header.clone(), rows.clone(), palette, cx)
+                let Some(Block::Table { header, rows, .. }) =
+                    blocks.as_deref().and_then(|blocks| block_at(blocks, &at))
+                else {
+                    return;
+                };
+                let plain = |row: &Vec<Vec<Span>>| -> Vec<String> {
+                    row.iter()
+                        .map(|cell| cell.iter().map(|span| span.text.as_str()).collect())
+                        .collect()
+                };
+                let rows = rows.iter().map(plain).collect();
+                super::table_window::open(plain(header), rows, palette, cx)
             })
     };
     Part {

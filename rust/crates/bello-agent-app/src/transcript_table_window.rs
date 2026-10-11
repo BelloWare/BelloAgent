@@ -77,6 +77,7 @@ pub(crate) struct TableWindow {
     selected: Option<(usize, Option<usize>)>,
     detail: Entity<EditorView>,
     scroll: UniformListScrollHandle,
+    focus: FocusHandle,
 }
 
 /// Opens the full table in a window of its own.
@@ -97,7 +98,9 @@ pub(crate) fn open(header: Vec<String>, rows: Vec<Vec<String>>, palette: Palette
         ..Default::default()
     };
     let _ = cx.open_window(options, move |window, cx| {
-        cx.new(|cx| TableWindow::new(header, rows, palette, window, cx))
+        let table = cx.new(|cx| TableWindow::new(header, rows, palette, window, cx));
+        table.read(cx).focus.focus(window);
+        table
     });
 }
 
@@ -123,6 +126,7 @@ impl TableWindow {
             selected: None,
             detail,
             scroll: UniformListScrollHandle::new(),
+            focus: cx.focus_handle(),
         }
     }
 
@@ -263,6 +267,11 @@ impl Render for TableWindow {
                 .when(surface, |frame| frame.bg(rgb(p.surface)))
         };
         div()
+            .track_focus(&self.focus)
+            // File > Close Window (⌘W) closes the table's own window.
+            .on_action(|_: &crate::application_menus::CloseWindow, window, _| {
+                window.remove_window()
+            })
             .size_full()
             .bg(rgb(p.window))
             .flex()

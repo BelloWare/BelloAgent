@@ -3178,19 +3178,38 @@ impl Render for TranscriptView {
             .on_any_mouse_down(|_, window, _| window.prevent_default())
             // The selection's commands, while a press in its text gave the
             // transcript the focus.
-            .on_action(move |_: &crate::application_menus::Copy, _, cx| {
-                if let Some(text) = copy.borrow().copy() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+            // A card's own editor with the focus keeps its own commands.
+            .on_action({
+                let focus = focus.clone();
+                move |_: &crate::application_menus::Copy, window, cx| {
+                    if !focus.is_focused(window) {
+                        cx.propagate();
+                    } else if let Some(text) = copy.borrow().copy() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
                 }
             })
-            .on_action(
-                cx.listener(move |_, _: &crate::application_menus::SelectAll, _, cx| {
-                    if all.borrow_mut().select_all() {
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_key_down(cx.listener(move |_, event: &KeyDownEvent, window, cx| {
+            .on_action({
+                let focus = focus.clone();
+                cx.listener(
+                    move |_, _: &crate::application_menus::SelectAll, window, cx| {
+                        if !focus.is_focused(window) {
+                            cx.propagate();
+                        } else if all.borrow_mut().select_all() {
+                            cx.notify();
+                        }
+                    },
+                )
+            })
+            .on_key_down(cx.listener(move |view, event: &KeyDownEvent, window, cx| {
+                // Only the transcript's own keys: a card's editor keeps its own.
+                if !view
+                    .focus
+                    .as_ref()
+                    .is_some_and(|focus| focus.is_focused(window))
+                {
+                    return;
+                }
                 let key = event.keystroke.key.as_str();
                 let plain = !event.keystroke.modifiers.modified();
                 if key == "escape" && std::mem::take(&mut keys.borrow_mut().bar) {
@@ -3802,6 +3821,7 @@ fn render_row(
                                         }),
                                         headings: &headings,
                                         corner,
+                                        blocks: Some(blocks.clone()),
                                         caret: (message.state == "streaming")
                                             .then(|| markdown_view::caret_path(&blocks))
                                             .flatten()
@@ -4042,6 +4062,7 @@ fn reasoning_markdown(
             headings: &[],
             corner: None,
             caret: None,
+            blocks: Some(blocks.clone()),
         },
         &markdown_view::Placement {
             slots: &[],
