@@ -244,6 +244,7 @@ pub(super) fn message_text(
             select: select.as_ref().map(|select| select.at(range.start)),
             text: SharedString::from(text[range].to_owned()),
             styled: None,
+            caret: None,
         })
         .collect()
 }
@@ -321,6 +322,7 @@ pub(super) fn styled_text(
         text,
         styled: Some(Rc::new(styled)),
         select: select.map(|select| select.at(0)),
+        caret: None,
     }
 }
 
@@ -344,6 +346,7 @@ pub(super) fn styled_lines(
             owner: owner.clone(),
             ordinal,
             select: select.as_ref().map(|select| select.at(range.start)),
+            caret: None,
             styled: Some(Rc::new(Styled {
                 runs: runs_within(&styled.runs, range.clone()),
                 last: ordinal + 1 == count && styled.last,
@@ -394,6 +397,34 @@ pub(super) struct ShapedText {
     text: SharedString,
     styled: Option<Rc<Styled>>,
     select: Option<Rc<Select>>,
+    caret: Option<Caret>,
+}
+
+/// Swift's `MarkdownCaretView`: the 2-point bar in the accent after the last
+/// word of a reply still being written, as tall as the body text, standing
+/// on its line's used bottom 5 points past the last glyph, blinking once a
+/// second (on for the first half).
+#[derive(Clone)]
+pub(super) struct Caret {
+    pub color: Hsla,
+    pub height: Pixels,
+    /// The next blink already asked for.
+    pub next: Rc<Cell<Option<std::time::Instant>>>,
+}
+
+fn caret_epoch() -> std::time::Instant {
+    thread_local! {
+        static EPOCH: std::time::Instant = std::time::Instant::now();
+    }
+    EPOCH.with(|epoch| *epoch)
+}
+
+impl ShapedText {
+    /// The streaming caret after this text's last glyph.
+    pub(super) fn with_caret(mut self, caret: Option<Caret>) -> Self {
+        self.caret = caret;
+        self
+    }
 }
 
 impl IntoElement for ShapedText {
@@ -572,6 +603,9 @@ impl Element for ShapedText {
             line.paint(glyphs, shaped.line_height, align, bounds, window, cx);
             origin.y += line.size(shaped.line_height).height;
         }
+        if let Some(caret) = &self.caret {
+            paint_caret(caret, &hit, self.styled.as_deref(), window, cx);
+        }
         if let (Some(select), Some(hitbox)) = (self.select.as_ref(), hitbox.as_ref()) {
             selection_events(select, &self.owner, hit.clone(), hitbox, window);
         }
@@ -579,6 +613,54 @@ impl Element for ShapedText {
             link_events(id, hitbox, hit, self.select.clone(), window);
         }
     }
+}
+
+/// The caret after the last glyph, on in the first half of each second; a
+/// frame is asked for when it next turns.
+fn paint_caret(caret: &Caret, hit: &Hit, styled: Option<&Styled>, window: &mut Window, cx: &mut App) {
+    let pitch = hit.shaped.line_height;
+    let Some(line) = hit.shaped.lines.last() else {
+        return;
+    };
+    let mut top = hit.bounds.origin.y;
+    for line in &hit.shaped.lines[..hit.shaped.lines.len() - 1] {
+        top += line.size(pitch).height;
+    }
+    let layout = &line.unwrapped_layout;
+    let row = line.wrap_boundaries.len();
+    let row_x = line.wrap_boundaries.last().map_or(Pixels::ZERO, |boundary| {
+        layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].position.x
+    });
+    let end = layout.width - row_x + hit.row_offset(line, row);
+    let used = styled.map_or(pitch, |styled| styled.line_height);
+    let bottom = top + pitch * row as f32 + used;
+    let elapsed = caret_epoch().elapsed();
+    let phase = elapsed.as_millis() % 1000;
+    if phase < 500 {
+        window.paint_quad(gpui::fill(
+            Bounds {
+                origin: gpui::point(hit.bounds.origin.x + end + gpui::px(5.), bottom - caret.height),
+                size: gpui::size(gpui::px(2.), caret.height),
+            },
+            caret.color,
+        ));
+    }
+    let turn = std::time::Instant::now() + std::time::Duration::from_millis(500 - (phase % 500) as u64);
+    if caret.next.get().is_some_and(|next| next > std::time::Instant::now()) {
+        return;
+    }
+    caret.next.set(Some(turn));
+    let view = window.current_view();
+    let wait = turn.saturating_duration_since(std::time::Instant::now());
+    let timer = cx.background_executor().timer(wait);
+    let next = caret.next.clone();
+    window
+        .spawn(cx, async move |cx| {
+            timer.await;
+            next.set(None);
+            let _ = cx.update(|_, cx| cx.notify(view));
+        })
+        .detach();
 }
 
 /// The selection's rows in this element, recorded for the quote bar.

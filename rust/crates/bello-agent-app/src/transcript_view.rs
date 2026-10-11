@@ -3388,6 +3388,15 @@ fn response_strip(
     ))
 }
 
+/// Where a streaming reply's caret would stand.
+#[cfg(test)]
+pub(crate) fn caret_path_for_test(source: &str) -> Option<String> {
+    markdown_view::caret_path(&bello_agent_core::markdown::parse(
+        source,
+        bello_agent_core::markdown::Style::PROSE,
+    ))
+}
+
 fn row_width(width: Pixels) -> f32 {
     (f32::from(width) - 2. * ROW_GUTTER).clamp(0., ROW_MAX_WIDTH)
 }
@@ -3677,6 +3686,7 @@ fn render_row(
                                         targets,
                                     )
                                 };
+                                let caret_clock = tool_editors.borrow().caret.clone();
                                 let headings: Vec<copy_targets::CopyTarget> = targets
                                     .iter()
                                     .filter(|target| {
@@ -3728,6 +3738,19 @@ fn render_row(
                                         }),
                                         headings: &headings,
                                         corner,
+                                        caret: (message.state == "streaming")
+                                            .then(|| markdown_view::caret_path(&blocks))
+                                            .flatten()
+                                            .map(|path| {
+                                                (
+                                                    path,
+                                                    shaped_text::Caret {
+                                                        color: rgb(p.accent).into(),
+                                                        height: px(style.base_size),
+                                                        next: caret_clock.clone(),
+                                                    },
+                                                )
+                                            }),
                                     },
                                     &markdown_view::Placement {
                                         slots: &slots,
@@ -3882,6 +3905,8 @@ struct ToolEditors {
     selection: Rc<RefCell<selection::SelectionHost>>,
     /// Which of the replies' code spans name a project file.
     file_links: Rc<RefCell<reply_files::FileLinks>>,
+    /// The streaming caret's next blink.
+    caret: Rc<std::cell::Cell<Option<std::time::Instant>>>,
     /// The fence whose Copy was pressed last and the press's number: it
     /// reads "Copied" for two seconds, as Swift's button does.
     copied_code: Option<(SharedString, u64)>,
@@ -3945,6 +3970,7 @@ fn reasoning_markdown(
             files: None,
             headings: &[],
             corner: None,
+            caret: None,
         },
         &markdown_view::Placement {
             slots: &[],

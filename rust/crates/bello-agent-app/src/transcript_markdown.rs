@@ -162,6 +162,15 @@ pub(super) struct Context<'a> {
     /// The reply's introduction (or the whole reply), copied by the Copy
     /// over its top corner while the pointer is on its words.
     pub corner: Option<&'a CopyTarget>,
+    /// While the reply streams: its caret, after the text at this path.
+    pub caret: Option<(String, shaped_text::Caret)>,
+}
+
+/// Where a streaming reply's caret stands: after its last block, when that
+/// is a paragraph or a heading (Swift's `updateCaret`).
+pub(super) fn caret_path(blocks: &[Block]) -> Option<String> {
+    matches!(blocks.last(), Some(Block::Paragraph(_) | Block::Heading { .. }))
+        .then(|| format!(".{}", blocks.len() - 1))
 }
 
 /// A reply's file links, by its message.
@@ -730,6 +739,12 @@ fn text(spans: &[Span], size: f32, line: Line, cx: &Context, path: &str) -> AnyE
             scaled,
         },
         cx.select.clone(),
+    )
+    .with_caret(
+        cx.caret
+            .as_ref()
+            .filter(|(at, _)| at == path)
+            .map(|(_, caret)| caret.clone()),
     )
     .into_any_element()
 }

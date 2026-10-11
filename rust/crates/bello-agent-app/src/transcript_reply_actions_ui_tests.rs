@@ -298,3 +298,31 @@ fn open_full_table_shows_every_row(cx: &mut TestAppContext) {
     assert!(tsv.starts_with("n\tv\n0\tvalue 0\n"), "{tsv:?}");
     assert!(tsv.ends_with("44\tvalue 44"), "{tsv:?}");
 }
+
+/// While a reply is being written its caret follows its last paragraph or
+/// heading; after a fence, a list or a table it shows nowhere.
+#[::core::prelude::v1::test]
+fn the_caret_follows_a_last_paragraph_or_heading() {
+    use crate::transcript_view::caret_path_for_test as path;
+    assert_eq!(path("one\n\ntwo").as_deref(), Some(".1"));
+    assert_eq!(path("# Title").as_deref(), Some(".0"));
+    assert_eq!(path("text\n\n```\ncode"), None);
+    assert_eq!(path("- item"), None);
+    assert_eq!(path(""), None);
+}
+
+#[gpui::test]
+fn a_streaming_reply_draws_and_settles(cx: &mut TestAppContext) {
+    let mut reply = message("reply", "assistant", "Still writing this");
+    reply.state = "streaming".into();
+    let (_directory, mut visual, _child, _) = host_rows(
+        vec![message("question", "user", "Go."), reply],
+        RunState::Running,
+        cx,
+    );
+    let before = element(&mut visual, "reply");
+    // Blinking asks for frames, and changes no layout.
+    cx.executor().advance_clock(std::time::Duration::from_millis(1_600));
+    cx.run_until_parked();
+    assert_eq!(element(&mut visual, "reply"), before);
+}
