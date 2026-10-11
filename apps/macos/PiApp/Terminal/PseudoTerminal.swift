@@ -249,6 +249,35 @@ import Darwin
         pendingKill?.cancel(); pendingKill = work
         queue.asyncAfter(deadline: .now() + 2, execute: work)
     }
+
+    /// How long Quit waits after SIGHUP before SIGKILL, in seconds.
+    static let quitGrace: TimeInterval = 0.05
+    /// Ends terminals on the way out of the app. `terminate`'s forced stop is
+    /// a timer the app does not live to run, so a program ignoring SIGHUP
+    /// outlived it. Each program and its process group get SIGHUP, then all
+    /// of them share at most `grace` to exit, then SIGKILL. Nothing is reaped
+    /// here: until its exit is handled on the main actor, a child's pid and
+    /// group id cannot be handed to another process.
+    static func endForQuit(_ terminals: [PseudoTerminal], grace: TimeInterval = quitGrace) {
+        let live = terminals.filter { $0.running && $0.processID > 0 }
+        for terminal in live {
+            terminal.inputLifetime.cancel()
+            terminal.pendingKill?.cancel(); terminal.pendingKill = nil
+            // forkpty made the child a session and group leader: the group is
+            // the program and what it started outside its own jobs.
+            kill(-terminal.processID, SIGHUP); kill(terminal.processID, SIGHUP)
+        }
+        let deadline = ProcessInfo.processInfo.systemUptime + grace
+        while ProcessInfo.processInfo.systemUptime < deadline, live.contains(where: { !exited($0.processID) }) { usleep(1_000) }
+        for terminal in live { kill(-terminal.processID, SIGKILL); kill(terminal.processID, SIGKILL) }
+    }
+    /// The child has exited, without reaping it.
+    private static func exited(_ pid: pid_t) -> Bool {
+        var info = siginfo_t()
+        var result: Int32
+        repeat { result = waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT) } while result < 0 && errno == EINTR
+        return result < 0 || info.si_pid == pid
+    }
 }
 
 /// Source suspension and cancellation are balanced under one lock. Descriptor

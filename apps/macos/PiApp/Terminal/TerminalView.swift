@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import CoreText
 
 /// Draws a TerminalEmulator with CoreText and turns keys, mouse and paste into
@@ -30,6 +31,12 @@ import CoreText
     private var selection: Selection?
     private var selectionAnchor: Position?
     private var markedText = ""
+    /// Hands key events to the text input system; a seam, so a test can stand
+    /// in for an input method that holds repeats back.
+    var interpretKeys: (([NSEvent]) -> Void)?
+    /// Whether the keyboard is a plain layout rather than an input method. A
+    /// seam for the same reason.
+    var keyboardIsLayout: () -> Bool = TerminalView.currentKeyboardIsLayout
     /// A run's line, and whether every glyph in it starts on its own cell.
     private struct CachedLine { let line: CTLine; let onGrid: Bool }
     private var lineCache: [LineKey: CachedLine] = [:]
@@ -37,6 +44,12 @@ import CoreText
     static let lineCacheByteLimit = 8 * 1024 * 1024
     private func clearLineCache() { lineCache.removeAll(keepingCapacity: true); lineCacheBytes = 0 }
     private var focused = false
+    /// The key that went down in this view and has not come up. Only its
+    /// repeats are typed: a key held to answer a question went down in the
+    /// question's sheet, and its repeats, which come to this window once the
+    /// sheet goes, are not the shell's.
+    private var heldKeyCode: UInt16?
+    private var resignKeyObserver: NSObjectProtocol?
 
     init(emulator: TerminalEmulator, font: NSFont = .monospacedSystemFont(ofSize: 12, weight: .regular)) {
         self.emulator = emulator
@@ -57,6 +70,14 @@ import CoreText
     var focusWhenInWindow = false
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        // A key released while another window had the keyboard never came up here.
+        heldKeyCode = nil
+        if let resignKeyObserver { NotificationCenter.default.removeObserver(resignKeyObserver) }
+        resignKeyObserver = window.map {
+            NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: $0, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.heldKeyCode = nil }
+            }
+        }
         guard focusWhenInWindow, window != nil else { return }
         focusWhenInWindow = false
         // After the SwiftUI update that added the view, not inside it.
@@ -323,7 +344,7 @@ import CoreText
     // MARK: Focus
 
     override func becomeFirstResponder() -> Bool {
-        focused = true; needsDisplay = true
+        focused = true; needsDisplay = true; heldKeyCode = nil
         if emulator.focusReporting { send("\u{1b}[I") }
         return true
     }
@@ -331,6 +352,15 @@ import CoreText
         focused = false; needsDisplay = true
         if emulator.focusReporting { send("\u{1b}[O") }
         return true
+    }
+    /// AppKit takes the keyboard from a view it removes without asking it to
+    /// resign: showing another terminal left this one's program focused.
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window, let window, window.firstResponder === self {
+            focused = false
+            if emulator.focusReporting { send("\u{1b}[O") }
+        }
+        super.viewWillMove(toWindow: newWindow)
     }
 
     // MARK: Keyboard
@@ -342,6 +372,7 @@ import CoreText
         onInput?(data)
     }
     override func keyDown(with event: NSEvent) {
+        if event.isARepeat { guard event.keyCode == heldKeyCode else { return } } else { heldKeyCode = event.keyCode }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) { super.keyDown(with: event); return }
         let shift = flags.contains(.shift), control = flags.contains(.control), option = flags.contains(.option)
@@ -371,7 +402,27 @@ import CoreText
         if option, optionSendsMeta, !control, let characters = event.charactersIgnoringModifiers, characters.utf8.count == 1, characters.unicodeScalars.first!.value < 0x80 {
             send(Data([0x1b]) + Data(characters.utf8)); return
         }
-        interpretKeyEvents([event])
+        // macOS's press-and-hold holds a held key's repeats back to offer
+        // its accents, through the text input system; a terminal repeats the
+        // key instead. Only for a plain keyboard layout and nothing being
+        // composed, so input methods and dead keys work as before.
+        if event.isARepeat, markedText.isEmpty, let characters = event.characters, Self.repeatsAsTyped(characters), keyboardIsLayout() {
+            send(characters); return
+        }
+        if let interpretKeys { interpretKeys([event]) } else { interpretKeyEvents([event]) }
+    }
+    override func keyUp(with event: NSEvent) {
+        if event.keyCode == heldKeyCode { heldKeyCode = nil }
+        super.keyUp(with: event)
+    }
+    /// Printable text: no control characters and none of AppKit's function-key characters.
+    nonisolated static func repeatsAsTyped(_ characters: String) -> Bool {
+        !characters.isEmpty && characters.unicodeScalars.allSatisfy { $0.value >= 0x20 && $0.value != 0x7f && !(0x80..<0xa0).contains($0.value) && !(0xf700...0xf8ff).contains($0.value) }
+    }
+    static func currentKeyboardIsLayout() -> Bool {
+        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue(),
+              let type = TISGetInputSourceProperty(source, kTISPropertyInputSourceType) else { return false }
+        return (Unmanaged<CFString>.fromOpaque(type).takeUnretainedValue() as String) == (kTISTypeKeyboardLayout as String)
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         // ⌘V and ⌘C reach copy: and paste: through the responder chain; nothing else is captured.

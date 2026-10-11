@@ -104,6 +104,39 @@ class NativeAcceptance(unittest.TestCase):
             after_resume = len(fixture.Fixture.requests)
         self.assertEqual(after_resume, before_resume + 1, 'Explicit resume dispatches the pending input once')
 
+    def test_killed_host_keeps_the_reply_it_was_streaming_as_an_interrupted_reply(self):
+        self.open(model='stall-mid-reply')
+        with fixture.Fixture.lock:
+            initial_requests = len(fixture.Fixture.requests)
+        self.submit(text='a question whose reply is cut off')
+        streamed = ''.join(f'streamed part {n} 中文🙂 ' for n in range(40))
+        # The whole reply so far has reached the helper: the streaming row shows it.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            shown = self.peer.command('session.snapshot', session='s')
+            if any(streamed in (message.get('text') or '') for message in shown['messages']):
+                break
+            time.sleep(.02)
+        else:
+            self.fail('The reply never streamed')
+        # Longer than the helper waits before it writes what streamed.
+        time.sleep(.5)
+        path = shown['path']
+        self.peer.process.kill(); self.peer.process.wait(timeout=5)
+        self.restart(); restored = self.open(model='stall-mid-reply', path=path)
+        self.assertEqual(restored['state'], 'paused')
+        replies = [message for message in restored['messages'] if message['role'] == 'assistant']
+        self.assertEqual(len(replies), 1, restored['messages'])
+        self.assertEqual(replies[0]['text'], streamed)
+        self.assertEqual(replies[0]['thinking'], 'Thinking about the answer.')
+        self.assertEqual(replies[0].get('stopReason'), 'interrupted')
+        with fixture.Fixture.lock:
+            self.assertEqual(len(fixture.Fixture.requests), initial_requests + 1, 'Reopening must not send the request again')
+        # A second reopen shows it once, from the journal alone.
+        self.peer.command('session.close', session='s')
+        again = self.open(model='stall-mid-reply', path=path)
+        self.assertEqual([message['text'] for message in again['messages'] if message['role'] == 'assistant'], [streamed])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

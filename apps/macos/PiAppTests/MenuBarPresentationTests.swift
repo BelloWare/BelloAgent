@@ -5,6 +5,28 @@ import SwiftUI
 @testable import PiApp
 
 final class MenuBarPresentationTests: XCTestCase {
+    /// The status item's panel is built the first time it opens, not at
+    /// launch, and once: launch does not pay for views no one has looked at.
+    @MainActor func testThePanelIsBuiltTheFirstTimeItOpens() async throws {
+        let controller = MenuBarController()
+        var built = 0
+        controller.install(title: "B·Lazy", accessibilityLabel: "Lazy panel fixture") {
+            built += 1
+            return MenuBarMetricsView(load: { _, _, _ in throw CaptureFailure.unavailable }, openApp: {}, openReport: {})
+        }
+        defer { controller.remove() }
+        XCTAssertTrue(controller.isInstalled)
+        XCTAssertEqual(built, 0, "installing the status item builds no panel")
+        controller.pressButton()
+        XCTAssertEqual(built, 1, "the first open builds it")
+        XCTAssertTrue(controller.isShown)
+        controller.close()
+        try await eventually("the panel to close") { !controller.isShown }
+        controller.pressButton()
+        XCTAssertEqual(built, 1, "and later opens reuse it")
+        controller.close()
+    }
+
     @MainActor func testTextAndDraftDoNotProjectActivityAndFooterUpdatesOneID() throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

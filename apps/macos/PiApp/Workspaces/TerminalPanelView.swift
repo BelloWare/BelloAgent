@@ -353,10 +353,14 @@ import Combine
         return views.reduce(0) { $0 + $1.intrinsicContentSize.width } + Self.spacing * CGFloat(max(0, views.count - 1))
     }
     /// How wide the tab row may be: its tabs, but never more than leaves room
-    /// for the mark, New and the controls after it; at least one tab's worth.
+    /// for the mark, New and the controls after it; at least one tab's worth
+    /// where that fits. In a narrow pane with a badge it gives way first,
+    /// clipped and faded, so New and the controls stay whole and apart.
     private func tabsRoom(_ inner: CGFloat) -> CGFloat {
-        let others = controlsWidth + 16 + 22 + Self.spacing * 5
-        return max(72, min(TerminalPanel.tabsLimit, inner - others))
+        let controls = controlsWidth
+        let others = controls + 16 + 22 + Self.spacing * 5
+        let fits = inner - (mark.intrinsicContentSize.width + Self.spacing) - (22 + Self.spacing) - (Self.spacing + controls)
+        return max(0, min(max(72, min(TerminalPanel.tabsLimit, inner - others)), fits))
     }
 
     override func layout() {

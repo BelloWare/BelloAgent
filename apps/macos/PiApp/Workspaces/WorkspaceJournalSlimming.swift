@@ -79,7 +79,8 @@ extension WorkspaceModel {
                 continue
             }
             let reason = result["reason"]?.string
-            if ["session-open", "locked"].contains(reason ?? "") { continue }
+            // A chat with an unfinished reply is slimmed once it has been opened.
+            if ["session-open", "locked", "unfinished-reply"].contains(reason ?? "") { continue }
             let mark = JournalSlimMark(chatID: chat.id, slimmed: result["slimmed"]?.bool == true, reason: reason,
                                        bytesBefore: result["bytesBefore"]?.number ?? 0, bytesAfter: result["bytesAfter"]?.number ?? 0)
             try? await store.put(mark, kind: JournalSlimMark.kind, id: chat.id)

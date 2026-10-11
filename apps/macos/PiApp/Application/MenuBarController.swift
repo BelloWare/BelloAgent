@@ -9,10 +9,14 @@ import Combine
     private let popover = NSPopover()
     private let layout = MenuBarPanelLayout()
     private var panel: MenuBarMetricsView?
+    /// Builds the panel the first time it opens: nothing it shows is read
+    /// until then, and launch does not pay for views no one has looked at.
+    private var makePanel: (() -> MenuBarMetricsView)?
     var onOpen: (() -> Void)?
     var isShown: Bool { popover.isShown }
+    var isInstalled: Bool { item != nil }
 
-    func install(title: String? = nil, accessibilityLabel: String = "Bello Agent activity and usage", content: () -> MenuBarMetricsView) {
+    func install(title: String? = nil, accessibilityLabel: String = "Bello Agent activity and usage", content: @escaping () -> MenuBarMetricsView) {
         guard item == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.item = item
@@ -25,18 +29,25 @@ import Combine
         item.button?.target = self; item.button?.action = #selector(toggle)
         item.button?.sendAction(on: Self.clickEvents)
         popover.behavior = .transient
-        let panel = content()
-        self.panel = panel
-        let controller = NSViewController()
-        controller.view = panel
-        popover.contentViewController = controller
-        popover.contentSize = NSSize(width: MenuBarPanelLayout.width, height: 720)
+        makePanel = content
+    }
+    private func preparedPanel() -> MenuBarMetricsView? {
+        if panel == nil, let makePanel {
+            let panel = makePanel()
+            self.panel = panel; self.makePanel = nil
+            let controller = NSViewController()
+            controller.view = panel
+            popover.contentViewController = controller
+            popover.contentSize = NSSize(width: MenuBarPanelLayout.width, height: 720)
+        }
+        return panel
     }
 
     @objc private func toggle(_ sender: Any?) {
         guard let button = item?.button else { return }
         if popover.isShown { close() }
         else {
+            let panel = preparedPanel()
             layout.height = MenuBarPanelLayout.height(available: button.window?.screen?.visibleFrame.height ?? 744)
             panel?.panelHeight = layout.height
             popover.contentSize = NSSize(width: MenuBarPanelLayout.width, height: layout.height)
