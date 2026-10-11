@@ -41,6 +41,8 @@ const MARK_HEIGHT: f32 = 13.;
 const TABS_INSET: f32 = 3.;
 const TABS_SPACING: f32 = 2.;
 const TAB_HEIGHT: f32 = 25.;
+/// How long shells have after SIGHUP at Quit before SIGKILL.
+const QUIT_GRACE: Duration = Duration::from_millis(50);
 /// Composer field ceiling while a terminal is open below the chat.
 pub(crate) const COMPOSER_BESIDE_TERMINAL: f32 = 88.;
 
@@ -148,6 +150,11 @@ impl TerminalPanel {
             cx.on_focus(&focus, window, |panel, _, cx| panel.focus_changed(true, cx)),
             cx.on_blur(&focus, window, |panel, _, cx| {
                 panel.focus_changed(false, cx)
+            }),
+            // Before the window's entities are released at Quit.
+            cx.on_app_quit(|panel, _| {
+                panel.registry.end_all_now(QUIT_GRACE);
+                async {}
             }),
         ];
         let height_store = height_path.map(|path| Arc::new(HeightStore::new(path)));
@@ -632,14 +639,18 @@ impl TerminalPanel {
             && let Some(character) = bare.or(if k.key == "space" { Some(' ') } else { None })
             && character.is_ascii()
         {
-            let character = if m.shift {
+            // The key without Option, as `charactersIgnoringModifiers` reads
+            // it: Shift still applies (`key_char` carries Option's own letter).
+            let character = if !m.shift {
+                character
+            } else if character.is_ascii_alphabetic() {
+                character.to_ascii_uppercase()
+            } else {
                 k.key_char
                     .as_deref()
                     .and_then(|c| c.chars().next())
                     .filter(char::is_ascii)
                     .unwrap_or(character)
-            } else {
-                character
             };
             let mut bytes = vec![0x1b];
             bytes.extend(character.to_string().as_bytes());
@@ -926,15 +937,16 @@ impl TerminalPanel {
             (false, None)
         };
 
+        // The leading group gives way in a narrow pane; the trailing
+        // controls stay whole at the edge.
         let mut row = div()
-            .debug_selector(|| "terminal-header".into())
-            .flex_none()
-            .h(px(self.header_height()))
-            .px(px(PAD_X))
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_hidden()
             .flex()
             .items_center()
             .gap(px(SPACING))
-            .bg(rgb(p.window))
             .child(
                 div()
                     .flex_none()
@@ -1048,7 +1060,17 @@ impl TerminalPanel {
                     .child(project_name),
             );
         }
-        row = row.child(div().flex_1());
+        let leading = row;
+        let mut row = div()
+            .debug_selector(|| "terminal-header".into())
+            .flex_none()
+            .h(px(self.header_height()))
+            .px(px(PAD_X))
+            .flex()
+            .items_center()
+            .gap(px(SPACING))
+            .bg(rgb(p.window))
+            .child(leading);
         if let Some((text, tone)) = badge {
             let mut wash: Hsla = rgb(tone).into();
             wash.a = 0.13;

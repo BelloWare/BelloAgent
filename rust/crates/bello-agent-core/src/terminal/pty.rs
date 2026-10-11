@@ -356,6 +356,20 @@ impl PseudoTerminal {
             libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ, &size);
         }
     }
+    /// The program has been reaped.
+    pub fn reaped(&self) -> bool {
+        self.shared.lock().reaped
+    }
+    /// SIGKILL now, unless the program was already reaped: for the app's
+    /// exit, when no thread outlives the process to send the delayed one.
+    pub fn kill_now(&mut self) {
+        let mut state = self.shared.lock();
+        state.input_cancelled = true;
+        state.closed = true;
+        if !state.reaped && state.pid > 0 {
+            unsafe { libc::kill(state.pid, libc::SIGKILL) };
+        }
+    }
     /// Asks the program to stop (SIGHUP), then kills it if it lingers.
     pub fn terminate(&mut self) {
         let pid = {

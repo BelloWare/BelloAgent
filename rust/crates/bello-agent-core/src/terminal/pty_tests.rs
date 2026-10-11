@@ -556,3 +556,31 @@ fn ending_questions_read_as_swift_asks_them() {
     );
     assert_eq!(action, "Close Terminal");
 }
+
+#[test]
+fn quitting_kills_a_shell_that_ignores_hangup_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = registry("trap '' HUP; read x; read y");
+    let first = registry.create("p", dir.path());
+    let second = registry.create("p", dir.path());
+    std::thread::sleep(Duration::from_millis(200));
+    let pids: Vec<_> = [first, second]
+        .iter()
+        .map(|id| {
+            registry
+                .find(*id, "p")
+                .unwrap()
+                .process
+                .as_ref()
+                .unwrap()
+                .process_id()
+        })
+        .collect();
+    let started = Instant::now();
+    registry.end_all_now(Duration::from_millis(50));
+    assert!(registry.open_projects().is_empty());
+    for pid in pids {
+        assert!(wait_gone(pid, Duration::from_secs(1)), "{pid}");
+    }
+    assert!(started.elapsed() < Duration::from_secs(1));
+}

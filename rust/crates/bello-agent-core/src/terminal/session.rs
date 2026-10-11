@@ -399,6 +399,26 @@ impl TerminalRegistry {
             }
         }
     }
+    /// Ends every shell as the app quits: SIGHUP to all, `grace` for them to
+    /// go, then SIGKILL to any left. Swift's two-second SIGKILL would need a
+    /// thread that outlives the app, so a shell ignoring SIGHUP survived Quit.
+    pub fn end_all_now(&mut self, grace: Duration) {
+        let mut processes: Vec<PseudoTerminal> = std::mem::take(&mut self.projects)
+            .into_values()
+            .flat_map(|entry| entry.sessions)
+            .filter_map(|mut session| session.process.take())
+            .collect();
+        for process in &mut processes {
+            process.terminate();
+        }
+        let deadline = Instant::now() + grace;
+        while Instant::now() < deadline && processes.iter().any(|p| !p.reaped()) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for process in &mut processes {
+            process.kill_now();
+        }
+    }
     /// Ends every shell, on the way out of the app.
     pub fn shutdown(&mut self) {
         for (_, entry) in std::mem::take(&mut self.projects) {

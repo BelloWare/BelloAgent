@@ -218,6 +218,16 @@ fn keys_reach_the_shell_in_the_project_folder(cx: &mut TestAppContext) {
     std::thread::sleep(Duration::from_millis(200));
     cx.simulate_keystrokes(window.into(), "alt-b tab backspace");
     wait_screen(cx, &panel, "1b 62 09 7f");
+    // Option-Shift-B is ESC B: Shift applies to the key, as Swift reads it.
+    typed(
+        cx,
+        window,
+        "stty raw -echo; dd bs=1 count=2 2>/dev/null | od -An -tx1; stty sane",
+    );
+    cx.simulate_keystrokes(window.into(), "enter");
+    std::thread::sleep(Duration::from_millis(200));
+    cx.simulate_keystrokes(window.into(), "alt-shift-b");
+    wait_screen(cx, &panel, "1b 42");
 }
 
 #[gpui::test]
@@ -577,4 +587,39 @@ fn a_focused_shell_keeps_its_control_keys_on_linux(cx: &mut TestAppContext) {
     wait_screen(cx, &panel, "17 0e 10");
     assert_eq!(cx.read(|cx| view.read(cx).records.len()), chats);
     assert!(cx.read(|cx| !view.read(cx).quick_open.read(cx).is_open()));
+}
+
+#[gpui::test]
+fn the_controls_stay_in_a_narrow_pane(cx: &mut TestAppContext) {
+    let (_dir, window, view, panel) = open(cx);
+    window
+        .update(cx, |view, _, cx| {
+            view.show_files = true;
+            cx.notify();
+        })
+        .unwrap();
+    let visual = VisualTestContext::from_window(window.into(), cx);
+    visual.simulate_resize(size(px(920.), px(812.)));
+    typed(cx, window, "exit");
+    cx.simulate_keystrokes(window.into(), "enter");
+    let p = panel.clone();
+    wait(cx, "the shell to exit", |cx| {
+        cx.read(|cx| p.read(cx).selected_session().unwrap().exited)
+    });
+    assert!(cx.read(|cx| view.read(cx).pane_width) < 320.);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let slot = visual.debug_bounds("terminal-slot").unwrap();
+    for control in [
+        "terminal-badge",
+        "terminal-rename",
+        "terminal-restart",
+        "terminal-close",
+        "terminal-hide",
+    ] {
+        let bounds = visual.debug_bounds(control).unwrap();
+        assert!(
+            bounds.right() <= slot.right() && bounds.left() >= slot.left(),
+            "{control} {bounds:?} outside {slot:?}"
+        );
+    }
 }
