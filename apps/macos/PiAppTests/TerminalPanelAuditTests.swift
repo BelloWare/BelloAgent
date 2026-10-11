@@ -521,6 +521,78 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
             process.terminate()
         }
     }
+    /// A shell, and what it started, that ignore SIGHUP. The forced stop
+    /// that follows SIGHUP used to be a two-second timer, which the app
+    /// never lives to run at Quit: such shells outlived the app.
+    @MainActor private func hangUpIgnoringShell(_ name: String) throws -> (directory: URL, restore: () -> Void) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("terminal-\(name)-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let script = directory.appendingPathComponent("shell")
+        // Login-shell arguments are ignored; the script and its child both ignore SIGHUP.
+        try "#!/bin/sh\ntrap '' HUP\n/bin/sleep 60 &\necho $! > child.pid.tmp; mv child.pid.tmp child.pid\nwhile :; do /bin/sleep 1; done\n"
+            .write(to: script, atomically: true, encoding: .utf8)
+        chmod(script.path, 0o755)
+        let previous = ProcessInfo.processInfo.environment["SHELL"]
+        setenv("SHELL", script.path, 1)
+        return (directory, {
+            if let previous { setenv("SHELL", previous, 1) } else { unsetenv("SHELL") }
+            try? FileManager.default.removeItem(at: directory)
+        })
+    }
+    private static func gone(_ pid: pid_t) -> Bool { kill(pid, 0) != 0 && errno == ESRCH }
+    /// The child exited (it may stay unreaped: nothing on the main actor runs here).
+    private static func exited(_ pid: pid_t) -> Bool {
+        var info = siginfo_t()
+        return waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT) == 0 && info.si_pid == pid
+    }
+    @MainActor private func startedChild(in directory: URL, session: TerminalSession) async throws -> pid_t {
+        var child: pid_t = 0
+        try await eventually("start the shell and its child") {
+            child = (try? String(contentsOf: directory.appendingPathComponent("child.pid"), encoding: .utf8))
+                .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+            return session.process.running && child > 0
+        }
+        return child
+    }
+
+    @MainActor func testQuitEndsAShellThatIgnoresHangUpBeforeTheAppGoes() async throws {
+        let registry = TerminalRegistry.shared
+        registry.shutdown()
+        let (directory, restore) = try hangUpIgnoringShell("quit")
+        defer { restore() }
+        let session = registry.session(for: WorkspaceRecord(id: "quit-" + UUID().uuidString, path: directory.path, trusted: true))
+        let shell = session.process.processID
+        let child = try await startedChild(in: directory, session: session)
+
+        let started = ProcessInfo.processInfo.systemUptime
+        registry.shutdown()
+        let took = ProcessInfo.processInfo.systemUptime - started
+        XCTAssertLessThan(took, 0.25, "Quit waits only briefly for the shells")
+        // The main actor stays busy, as it does while the app exits: no timer
+        // or main-queue hop can run, so the shells must already be ending.
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while ProcessInfo.processInfo.systemUptime < deadline, !(Self.exited(shell) && Self.gone(child)) { usleep(2_000) }
+        XCTAssertTrue(Self.exited(shell), "the shell ignoring SIGHUP is killed at Quit")
+        XCTAssertTrue(Self.gone(child), "and so is what it started, in its process group")
+        if !Self.gone(child) { kill(child, SIGKILL) }
+        try await eventually("reap the shell", timeout: 10) { !session.process.running }
+    }
+
+    /// Closing one terminal keeps the two-second grace before the forced stop.
+    @MainActor func testClosingATerminalStillGivesItsShellTheGrace() async throws {
+        let registry = TerminalRegistry.shared
+        registry.shutdown()
+        let (directory, restore) = try hangUpIgnoringShell("close")
+        defer { restore() }
+        let workspace = WorkspaceRecord(id: "close-" + UUID().uuidString, path: directory.path, trusted: true)
+        let session = registry.session(for: workspace)
+        let child = try await startedChild(in: directory, session: session)
+        defer { if !Self.gone(child) { kill(child, SIGKILL) } }
+        registry.close(session.id, in: workspace.id, generation: session.generation)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(session.process.running, "a closed terminal's shell is asked first and given time")
+        try await eventually("end the shell after the grace", timeout: 10) { !session.process.running }
+    }
 }
 
 

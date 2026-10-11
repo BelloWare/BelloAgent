@@ -176,7 +176,9 @@ import Combine
     func shutdown() {
         let all = projects.values.flatMap(\.sessions)
         projects.removeAll()
-        for session in all { end(session) }
+        // Briefly and at once: the app does not live to run a delayed SIGKILL.
+        PseudoTerminal.endForQuit(all.map(\.process))
+        for session in all { session.view.removeFromSuperview() }
     }
     private func end(_ session: TerminalSession) { session.process.terminate(); session.view.removeFromSuperview() }
 
