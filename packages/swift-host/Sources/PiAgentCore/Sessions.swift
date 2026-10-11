@@ -314,6 +314,31 @@ public actor AgentSession {
         if replayed.resumed { checkpointLineage=opened.resumedFrom?.lineage; partialHistory=true }
         liveStateSource=replayed.stateSource
         let stateRecord=replayed.stateRecord
+        // A reply the previous runtime was streaming when it died is kept as
+        // the interrupted reply a stop leaves, from the log beside the
+        // journal (`PartialReplyLog`); nothing is sent again. The log goes
+        // once the journal holds the row, or when there is nothing to keep.
+        // Before the interrupted task is pieced together from the rows: the
+        // reply is its last.
+        let streamLog=PartialReplyLog.url(for: url)
+        if FileManager.default.fileExists(atPath: streamLog.path) {
+            var settled=true
+            if stateRecord?["active"].flag == true, let cut=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size) {
+                var reply=Self.interruptedReply(id:cut.header.reply,text:cut.text,thinking:cut.thinking,timeline:cut.timeline,
+                                                attemptIDs:cut.timeline.segments.first.map { [$0.part.attemptID] } ?? cut.header.attemptID.map { [$0] })
+                reply.timestamp=cut.at ?? Date().timeIntervalSince1970 * 1000
+                reply.turn=cut.header.turn; reply.taskRootID=cut.header.taskRootID; reply.taskExecutionID=cut.header.taskExecutionID
+                do {
+                    try opened.append(["type":"message","message":reply.pi],id:reply.id)
+                    history.append(reply); context.append(reply); visible.append(reply)
+                    if let span=opened.lastAppend { rowSpans[reply.id] = .init(id:reply.id,kind:.message,offset:span.offset,length:span.length) }
+                    for attempt in reply.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(reply.id) }
+                    assistantMessageCount += 1; latestAssistantMessageID=reply.id
+                    presentationOrdinal=max(presentationOrdinal, Self.maxOrdinal(reply))
+                } catch { settled=false }
+            }
+            if settled { _=unlink(streamLog.path) }
+        }
         if let saved=stateRecord {
             if !saved["taskPresentation"].isNull,
                var task = try? JSONDecoder().decode(TaskPresentationRecord.self, from: saved["taskPresentation"].data()),
@@ -355,29 +380,6 @@ public actor AgentSession {
             else if saved["runStatus"].text == RunStatus.failed.rawValue {
                 runStatus = .failed; errorMessage=saved["errorMessage"].text ?? "Run failed."; errorCode=saved["errorCode"].text
             }
-        }
-        // A reply the previous runtime was streaming when it died is kept as
-        // the interrupted reply a stop leaves, from the log beside the
-        // journal (`PartialReplyLog`); nothing is sent again. The log goes
-        // once the journal holds the row, or when there is nothing to keep.
-        let streamLog=PartialReplyLog.url(for: url)
-        if FileManager.default.fileExists(atPath: streamLog.path) {
-            var settled=true
-            if stateRecord?["active"].flag == true, let cut=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size) {
-                var reply=Self.interruptedReply(id:cut.header.reply,text:cut.text,thinking:cut.thinking,timeline:cut.timeline,
-                                                attemptIDs:cut.timeline.segments.first.map { [$0.part.attemptID] } ?? cut.header.attemptID.map { [$0] })
-                reply.timestamp=cut.at ?? Date().timeIntervalSince1970 * 1000
-                reply.turn=cut.header.turn; reply.taskRootID=cut.header.taskRootID; reply.taskExecutionID=cut.header.taskExecutionID
-                do {
-                    try opened.append(["type":"message","message":reply.pi],id:reply.id)
-                    history.append(reply); context.append(reply); visible.append(reply)
-                    if let span=opened.lastAppend { rowSpans[reply.id] = .init(id:reply.id,kind:.message,offset:span.offset,length:span.length) }
-                    for attempt in reply.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(reply.id) }
-                    assistantMessageCount += 1; latestAssistantMessageID=reply.id
-                    presentationOrdinal=max(presentationOrdinal, Self.maxOrdinal(reply))
-                } catch { settled=false }
-            }
-            if settled { _=unlink(streamLog.path) }
         }
         // Never repeat a tool after a crash. Pair unresolved calls with explicit
         // unknown outcomes so future requests remain protocol-valid.

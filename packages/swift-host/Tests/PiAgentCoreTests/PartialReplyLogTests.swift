@@ -74,6 +74,9 @@ final class PartialReplyLogTests: XCTestCase {
         XCTAssertEqual(reply.responseTimeline?.terminal, "interrupted")
         XCTAssertEqual(reply.responseTimeline?.segments.map(\.text), ["Thinking it over.", pieces.joined()], "the parts read as they streamed")
         XCTAssertEqual(reply.requestAttemptIDs, ["attempt"])
+        // The interrupted task ends at the reply and counts it.
+        let task = await reopened.recentTaskPresentations.last
+        XCTAssertEqual(task?.outcome, "interrupted"); XCTAssertEqual(task?.lastSourceID, reply.id); XCTAssertEqual(task?.replies, 1)
         let state = await reopened.state, running = await reopened.isRunning
         XCTAssertEqual(state, .paused); XCTAssertFalse(running, "nothing is sent again")
         XCTAssertFalse(FileManager.default.fileExists(atPath: PartialReplyLog.url(for: copy).path), "the journal holds it now")
