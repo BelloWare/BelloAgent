@@ -402,6 +402,40 @@ final class TerminalTabsPanelTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(String(decoding: typed, as: UTF8.self).debugDescription, "\r\r\r\r".debugDescription, "a Return held in the terminal repeats")
     }
 
+    /// In a 309-point pane with a badge showing, New and the controls stay
+    /// whole and apart: the tab row gives way first.
+    @MainActor func testANarrowPaneWithABadgeKeepsNewClearOfTheControls() async throws {
+        let registry = TerminalRegistry.shared
+        registry.shutdown()
+        let folder = scratchRoot("terminal-narrow")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let project = WorkspaceRecord(id: "narrow-" + UUID().uuidString, path: folder.path, trusted: true)
+        let model = makeWorkspaceModel(stateRoot: folder.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { registry.shutdown(); model.shutdown() }
+        registry.create(for: project); registry.create(for: project)
+        let shown = registry.create(for: project)
+        let panel = TerminalPanelView(model: model, workspace: project)
+        for (failure, exited) in [("Terminal input queue is full; the newest input was dropped.", true), (nil, true)] as [(String?, Bool)] {
+            shown.failure = failure; shown.exited = exited
+            panel.frame = NSRect(x: 0, y: 0, width: 309, height: 300)
+            panel.needsLayout = true; panel.layoutSubtreeIfNeeded()
+            let header = panel.header
+            let badge = try XCTUnwrap(header.subviews.compactMap { $0 as? PiKit.Badge }.first)
+            XCTAssertFalse(badge.isHidden)
+            let new = header.newTerminal.frame
+            let controls = [badge, header.rename, header.restart, header.close, header.hide].map(\.frame)
+            let tabs = try XCTUnwrap(header.subviews.compactMap { $0 as? NSScrollView }.first)
+            for (index, control) in controls.enumerated() {
+                XCTAssertFalse(new.intersects(control), "New (\(new)) is clear of control \(index) (\(control)) with \(badge.text)")
+                XCTAssertGreaterThanOrEqual(control.minX, new.maxX, "the controls follow New")
+                XCTAssertLessThanOrEqual(control.maxX, header.bounds.maxX, "control \(index) inside the header")
+            }
+            XCTAssertLessThanOrEqual(tabs.frame.maxX, new.minX, "the tabs end before New")
+            XCTAssertGreaterThan(tabs.frame.width, 0, "some of the tab row still shows")
+            XCTAssertGreaterThanOrEqual(new.minX, 0)
+        }
+    }
+
     /// Opt-in pictures of the panel with several terminals, wide and narrow,
     /// light and dark: `PI_APP_TERMINAL_SNAPSHOT=<folder>`.
     @MainActor func testSnapshotOfSeveralTerminals() async throws {
