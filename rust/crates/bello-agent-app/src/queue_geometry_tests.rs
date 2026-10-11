@@ -131,6 +131,18 @@ fn measured_composer_adds_source_outer_space_once() {
     bounds[3].size.height = px(60.);
     assert_eq!(QueueGeometry::from_children(&bounds).unwrap().room(), 210.);
     assert!(QueueGeometry::from_children(&bounds[..4]).is_none());
+    // An open terminal is one more child before the composer, and the
+    // queue's room keeps its minimum and chrome (Swift's QueuePanel.room).
+    let mut with_terminal = bounds.clone();
+    with_terminal.insert(2, gpui::Bounds::default());
+    let open = QueueGeometry::from_children(&with_terminal).unwrap();
+    assert!(open.terminal);
+    assert_eq!(open.composer_height, 114.);
+    assert_eq!(open.room(), 210. - 162.);
+    assert!(
+        QueueGeometry::from_children(&[with_terminal.clone(), vec![Default::default()]].concat())
+            .is_none()
+    );
     bounds[4].size.height = px(f32::NAN);
     assert!(QueueGeometry::from_children(&bounds).is_none());
 }
@@ -309,6 +321,7 @@ fn queue_geometry_collapse_and_stale_measurements_do_not_change_drafts(cx: &mut 
                 pane_width: 1.,
                 composer_height: 999.,
                 footer_height: 36.,
+                terminal: false,
             };
             view.record_queue_geometry("other chat", binding, stale, cx);
             assert_eq!(view.queue_geometry, Some(geometry));

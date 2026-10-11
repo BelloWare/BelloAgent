@@ -31,6 +31,7 @@ actions!(
         ToggleArchivedChats,
         SessionInspector,
         Changes,
+        ToggleTerminal,
         NextChat,
         PreviousChat,
         WidenSidebar,
@@ -72,6 +73,7 @@ pub(crate) struct MenuState {
     pub(crate) pinned: bool,
     pub(crate) archived: bool,
     pub(crate) archived_shown: bool,
+    pub(crate) terminal_visible: bool,
     pub(crate) topics: Vec<(String, String)>,
 }
 
@@ -90,7 +92,7 @@ pub(crate) fn install(cx: &mut App) {
     keys!("cmd-," => Settings, "cmd-n" => NewChat, "cmd-o" => OpenProject, "cmd-p" => OpenFile,
         "cmd-w" => CloseWindow, "cmd-z" => Undo, "cmd-shift-z" => Redo,
         "cmd-x" => Cut, "cmd-c" => Copy, "cmd-v" => Paste, "cmd-a" => SelectAll,
-        "cmd-alt-i" => SessionInspector, "cmd-shift-g" => Changes,
+        "cmd-alt-i" => SessionInspector, "cmd-shift-g" => Changes, "ctrl-`" => ToggleTerminal,
         "cmd-alt-down" => NextChat, "cmd-alt-up" => PreviousChat,
         "ctrl-cmd-right" => WidenSidebar, "ctrl-cmd-left" => NarrowSidebar,
         "cmd-enter" => SendSteer, "cmd-." => Stop,
@@ -216,6 +218,14 @@ pub(crate) fn menus(state: &MenuState) -> Vec<Menu> {
                 ),
                 MenuItem::action("Session Inspector…", SessionInspector),
                 MenuItem::action("Changes and History…", Changes),
+                MenuItem::action(
+                    if state.terminal_visible {
+                        "Hide Terminal"
+                    } else {
+                        "Show Terminal"
+                    },
+                    ToggleTerminal,
+                ),
                 MenuItem::separator(),
                 MenuItem::action("Next Chat", NextChat),
                 MenuItem::action("Previous Chat", PreviousChat),
@@ -275,6 +285,7 @@ impl AgentView {
             pinned: record.is_some_and(|r| r.pinned_at.is_some()),
             archived: record.is_some_and(|r| r.archived_at.is_some()),
             archived_shown: self.effective_archive_visibility(),
+            terminal_visible: self.terminal.visible,
             topics: self
                 .topics
                 .iter()
@@ -361,7 +372,8 @@ impl AgentView {
             || self.connections.open
             || self.connections.picker
             || self.projects.view.read(cx).is_open()
-            || self.quick_open.read(cx).is_open();
+            || self.quick_open.read(cx).is_open()
+            || self.terminal_asking(cx);
         let chat = !modal && self.records.iter().any(|r| r.id == self.record.id);
         // Swift's conversationCommandsEnabled, plus Rust's load state.
         let active = chat && !self.loading && !self.load_failed;
@@ -466,6 +478,8 @@ impl AgentView {
         });
         route!(!modal && !close_prompt, Changes, |v, _, _, cx| v
             .open_changes(cx));
+        // Swift enables it while a chat is selected.
+        route!(chat, ToggleTerminal, |v, _, w, cx| v.toggle_terminal(w, cx));
         route!(!modal, NextChat, |v, _, w, cx| v
             .select_adjacent_chat(true, w, cx));
         route!(!modal, PreviousChat, |v, _, w, cx| v
@@ -589,7 +603,7 @@ fn native_system_menus() {
 fn native_system_menus() {}
 
 /// The titles Swift changes as state changes: (menu, both titles, which one).
-fn retitles(state: &MenuState) -> [(&'static str, [&'static str; 2], bool); 3] {
+fn retitles(state: &MenuState) -> [(&'static str, [&'static str; 2], bool); 4] {
     [
         ("File", ["Archive Chat", "Restore Chat"], state.archived),
         ("File", ["Pin Chat", "Unpin Chat"], state.pinned),
@@ -597,6 +611,11 @@ fn retitles(state: &MenuState) -> [(&'static str, [&'static str; 2], bool); 3] {
             "View",
             ["Show Archived Chats", "Hide Archived Chats"],
             state.archived_shown,
+        ),
+        (
+            "View",
+            ["Show Terminal", "Hide Terminal"],
+            state.terminal_visible,
         ),
     ]
 }
