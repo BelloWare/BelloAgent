@@ -19,6 +19,8 @@ mod polish_oracle;
 mod read_presentation;
 #[path = "transcript_response.rs"]
 mod response;
+#[path = "transcript_selection.rs"]
+mod selection;
 #[path = "transcript_shaped_text.rs"]
 mod shaped_text;
 #[path = "transcript_tool_presentation.rs"]
