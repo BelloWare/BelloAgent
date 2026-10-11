@@ -68,15 +68,20 @@ extension WorkspaceModel {
     /// holds the newest wish and reads that next, so a drag reads at most one
     /// page at a time and always ends on where the drag ended.
     func jumpToHistoryPosition(_ id: String, position: Int, offset: Double) {
-        guard transcriptShows(id), let view = displays[id], let item = record(id), view.revealRead == nil else { return }
+        // A chat changed elsewhere is read again whole (Reload), not by place.
+        guard transcriptShows(id), let view = displays[id], let item = record(id), view.revealRead == nil,
+              view.newerPage.error != Self.branchChangedElsewhere else { return }
         // The place being read already is not asked for again (layout passes
         // report where the reader is as often as they run).
-        if view.jumpRead != nil { view.jumpWanted = view.jumpReading == position ? nil : (position, offset); return }
+        if view.jumpRead != nil {
+            if view.jumpReading == position { view.jumpWanted = nil; view.jumpOffset = offset } else { view.jumpWanted = (position, offset) }
+            return
+        }
         if let failed = view.jumpFailedAt, ProcessInfo.processInfo.systemUptime - failed < 1 { view.jumpRetry = (position, offset); return }
         view.jumpRetry = nil
         revealSerial += 1
         let serial = revealSerial, generation = view.presentationGeneration, navigation = messageNavigationRevision
-        view.jumpRead = serial; view.jumpWanted = nil; view.jumpReading = position
+        view.jumpRead = serial; view.jumpWanted = nil; view.jumpReading = position; view.jumpOffset = offset
         // The timeline the window holds: a position counts rows of it, and a
         // page of another (the chat changed elsewhere) is not read in its
         // place; that change is the page's to report.
@@ -117,7 +122,8 @@ extension WorkspaceModel {
                 // next, and this one is not landed on the way.
                 guard current(), view.jumpWanted == nil else { return }
                 view.jumpFailedAt = nil
-                self.adoptInitialHistory(page, into: view, around: first, landing: offset)
+                // Where the reader is now within the row read for.
+                self.adoptInitialHistory(page, into: view, around: first, landing: view.jumpOffset ?? offset)
                 view.browsingHistory = page.newer != nil
                 self.anchorChanged(view)
                 // At the newest row of a chat its helper has open: the reply
