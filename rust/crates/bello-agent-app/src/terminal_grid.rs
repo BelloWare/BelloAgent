@@ -436,7 +436,7 @@ impl Element for TerminalGrid {
     ) {
         window.handle_input(
             &self.focus,
-            ElementInputHandler::new(bounds, self.panel.clone()),
+            TerminalInput(ElementInputHandler::new(bounds, self.panel.clone())),
             cx,
         );
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
@@ -449,6 +449,80 @@ impl Element for TerminalGrid {
                 }
             }
         });
+    }
+}
+
+/// The panel's text input, without macOS press-and-hold: a held key
+/// repeats into the shell as in any terminal, never opening the accent
+/// picker. Input methods still compose through the panel's marked text.
+struct TerminalInput(ElementInputHandler<TerminalPanel>);
+impl InputHandler for TerminalInput {
+    fn selected_text_range(
+        &mut self,
+        ignore_disabled_input: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<UTF16Selection> {
+        self.0
+            .selected_text_range(ignore_disabled_input, window, cx)
+    }
+    fn marked_text_range(
+        &mut self,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<std::ops::Range<usize>> {
+        self.0.marked_text_range(window, cx)
+    }
+    fn text_for_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        adjusted: &mut Option<std::ops::Range<usize>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<String> {
+        self.0.text_for_range(range, adjusted, window, cx)
+    }
+    fn replace_text_in_range(
+        &mut self,
+        range: Option<std::ops::Range<usize>>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0.replace_text_in_range(range, text, window, cx)
+    }
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range: Option<std::ops::Range<usize>>,
+        text: &str,
+        selected: Option<std::ops::Range<usize>>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0
+            .replace_and_mark_text_in_range(range, text, selected, window, cx)
+    }
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut App) {
+        self.0.unmark_text(window, cx)
+    }
+    fn bounds_for_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<Bounds<Pixels>> {
+        self.0.bounds_for_range(range, window, cx)
+    }
+    fn character_index_for_point(
+        &mut self,
+        point: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Option<usize> {
+        self.0.character_index_for_point(point, window, cx)
+    }
+    fn apple_press_and_hold_enabled(&mut self) -> bool {
+        false
     }
 }
 

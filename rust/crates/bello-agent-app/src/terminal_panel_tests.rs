@@ -610,6 +610,7 @@ fn the_controls_stay_in_a_narrow_pane(cx: &mut TestAppContext) {
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     let slot = visual.debug_bounds("terminal-slot").unwrap();
     for control in [
+        "terminal-new",
         "terminal-badge",
         "terminal-rename",
         "terminal-restart",

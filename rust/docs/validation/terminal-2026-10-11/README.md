@@ -82,9 +82,23 @@ parser (no `vte`/`alacritty_terminal`), so the emulator is a port of Swift's.
 - **Native look.** Debug build launched with a scratch `HOME` and project
   (`screens/01-starter.jpg`, `screens/02-terminal-open.jpg`): the starter's
   Terminal button opens the panel with Terminal 1 running the login zsh.
-- Gate: `cargo fmt --all`, `cargo clippy --workspace --all-targets -D warnings`,
-  `cargo test -p bello-agent-core`, `cargo test -p bello-agent-app` (see the
-  final report for counts).
+- Gate: `cargo fmt --all`, `cargo clippy --workspace --all-targets -D warnings`
+  clean; `cargo test -p bello-agent-core` 999 passed, `cargo test -p
+  bello-agent-app` 743 passed (1 pre-existing ignore).
+
+## Codex review (three rounds, gpt-6.1-sol xhigh, read-only)
+
+Fixed: on Linux a focused shell keeps ⌃W/⌃N/⌃P/⌃F (the app's ⌃-commands
+yield); ⌃` waits behind open pickers and sheets; a key held to answer a
+question never reaches the shell; the chosen tab scrolls into view (tabs are
+the scroll row's own children); switching terminals sends focus-out/in to
+programs that asked (`?1004h`); a worker thread that cannot start ends and
+reaps the child; height saves are ordered and atomic (`HeightStore`, like
+`LayoutStore`); at Quit every shell gets SIGHUP, 50 ms, then SIGKILL (Swift's
+2-second kill needs a thread that outlives the app, so a shell ignoring
+SIGHUP survived Quit); Option-Shift-letter sends ESC + the capital; the
+controls and New stay inside a 309-point pane (the tabs clip first); the grid
+opts out of macOS press-and-hold so held keys repeat into the shell.
 
 ## What still differs
 
@@ -100,5 +114,7 @@ parser (no `vte`/`alacritty_terminal`), so the emulator is a port of Swift's.
 - `TERM_PROGRAM_VERSION` is the Rust crate version until packaging stamps one.
 - OSC 7 parses with the `url` crate: a URL Foundation rejects (unescaped
   spaces) becomes a path here; nothing in the UI shows the directory.
-- Linux CI only: the app's ⌃-commands (⌃N, ⌃W, ⌃F…) take precedence over the
-  shell, and clipboard keys are ⇧⌃C/⇧⌃V/⇧⌃A; `forkpty` needs glibc ≥ 2.34.
+- In a very narrow pane the tab row clips (New and the controls stay whole);
+  Swift's frames would overlap there instead.
+- At Quit shells get 50 ms after SIGHUP, not Swift's 2 s (see above).
+- Linux CI only: clipboard keys are ⇧⌃C/⇧⌃V/⇧⌃A; `forkpty` needs glibc ≥ 2.34.

@@ -937,10 +937,11 @@ impl TerminalPanel {
             (false, None)
         };
 
-        // The leading group gives way in a narrow pane; the trailing
-        // controls stay whole at the edge.
+        // The mark and the tabs give way in a narrow pane (clipped, New kept
+        // whole after them); the title and folder take what is left; the
+        // trailing controls stay whole at the edge.
         let mut row = div()
-            .flex_1()
+            .flex_shrink()
             .min_w_0()
             .h_full()
             .overflow_hidden()
@@ -1028,15 +1029,23 @@ impl TerminalPanel {
             }
             row = row.child(tabs);
         }
-        row = row.child(self.icon_button(
+        let new_button = self.icon_button(
             "terminal-new",
             "plus",
             "Open another terminal in this project",
             cx,
             |panel, _, cx| panel.create(cx),
-        ));
+        );
+        let mut tail = div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .gap(px(SPACING));
         if show_title {
-            row = row.child(
+            tail = tail.child(
                 div()
                     .debug_selector(|| "terminal-shell-title".into())
                     .flex_none()
@@ -1048,7 +1057,7 @@ impl TerminalPanel {
             );
         }
         if let Some(width) = folder {
-            row = row.child(
+            tail = tail.child(
                 div()
                     .debug_selector(|| "terminal-project".into())
                     .flex_none()
@@ -1070,7 +1079,9 @@ impl TerminalPanel {
             .items_center()
             .gap(px(SPACING))
             .bg(rgb(p.window))
-            .child(leading);
+            .child(leading)
+            .child(new_button)
+            .child(tail);
         if let Some((text, tone)) = badge {
             let mut wash: Hsla = rgb(tone).into();
             wash.a = 0.13;
