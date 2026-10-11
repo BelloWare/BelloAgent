@@ -112,7 +112,7 @@ extension WorkspaceModel {
         page == .chats && (id == selectedID || sides[selectedID ?? ""]?.id == id)
     }
     private func land(_ view: SessionDisplay, on messageID: String, landing: Double = TranscriptReveal.landing) {
-        view.revealRead = nil
+        view.revealRead = nil; view.abandonJump()
         view.scrollAnchor = .init(id: messageID, offset: landing, followsBottom: false)
         view.viewportRequestOpens = false; view.viewportRequest += 1
         anchorChanged(view)
@@ -126,7 +126,7 @@ extension WorkspaceModel {
         // must not land on an earlier match whose read came back last.
         revealSerial += 1
         let serial = revealSerial, navigation = messageNavigationRevision
-        view.revealRead = serial; view.revealFailure = nil
+        view.revealRead = serial; view.revealFailure = nil; view.abandonJump()
         // Only into a transcript that still shows this chat: a read that
         // lands after the reader went to another chat leaves this one as it was.
         func current() -> Bool {

@@ -110,6 +110,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// window does not hold (`WorkspaceModel.jumpToHistoryPosition`).
     var jumpRead: Int?
     var jumpWanted: (position: Int, offset: Double)?
+    /// The reader went somewhere else (a reveal, Back to bottom, Latest, back
+    /// into the rows the window holds): a page read for where they were
+    /// does not land.
+    func abandonJump() { jumpRead = nil; jumpWanted = nil }
     /// The place the transcript was last asked to show (`revealInTranscript`):
     /// the page lands on it and marks its range.
     @Published var reveal: TranscriptReveal?

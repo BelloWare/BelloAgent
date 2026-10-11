@@ -255,6 +255,9 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// The height one row not read takes in the room: the chat's average,
     /// or less in a chat too long for the room (`roomLimit`).
     private(set) var roomRowHeight: CGFloat = 0
+    /// How far the room above the rows changed in this pass, for a reader
+    /// among them, who moves with the rows.
+    private var roomShift: CGFloat = 0
     /// The rooms for this pass, from the snapshot's extent.
     private func roomHeights() -> (leading: CGFloat, trailing: CGFloat) {
         guard let extent = snapshot?.extent, !rows.isEmpty else { roomRowHeight = 0; return (0, 0) }
@@ -1113,7 +1116,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         // Where the page is parked right now counts too: until it has moved to
         // its opening position, that is what the reader is looking at. A pass
         // that is about to park the page has no such moment.
-        if !parking { wanted.append(enclosingScrollView?.contentView.bounds.minY ?? 0) }
+        if !parking { wanted.append((enclosingScrollView?.contentView.bounds.minY ?? 0) + roomShift) }
         var band: Set<Int> = []
         for want in wanted {
             let top = min(max(0, want), bottom)
@@ -1209,15 +1212,21 @@ final class TranscriptNativeScrollView: NSScrollView {
         }
         dirty = false
         page?.preserveReadingPositionForLayout()
-        // Room that changes moves every row: the pass places them all again.
+        // Room that changes moves every row: the pass places them all again,
+        // and a reader among the rows moves with them in the same pass
+        // (`finishPass`), before anything is mounted or drawn where they were.
         let rooms = roomHeights()
-        if abs(rooms.leading - leadingSpace) > 0.01 { markDirty(from: 0) }
+        if abs(rooms.leading - leadingSpace) > 0.01 {
+            markDirty(from: 0)
+            if let clip = enclosingScrollView?.contentView, !rows.isEmpty, !(page?.followsBottom ?? true),
+               clip.bounds.minY >= TranscriptMetrics.pageTopInset + leadingSpace - 1 { roomShift += rooms.leading - leadingSpace }
+        }
         leadingSpace = rooms.leading; trailingSpace = rooms.trailing
         rowWidth = nextWidth
         let left = (width - nextWidth) / 2
         // Only the buffered viewport needs its native tree laid out now; a row
         // outside it lays out when the reader scrolls it back into the buffer.
-        let buffered: CGRect? = enclosingScrollView.map { Self.buffered($0.contentView.bounds) }
+        let buffered: CGRect? = enclosingScrollView.map { Self.buffered($0.contentView.bounds.offsetBy(dx: 0, dy: roomShift)) }
         // Anchor and viewport stay exact at every width; unseen rows are
         // reconciled later, including after mouse-up and interrupted drags.
         let selected = rowOwningFirstResponder()
@@ -1418,6 +1427,8 @@ final class TranscriptNativeScrollView: NSScrollView {
             let rowsIn = min(extent.after - 1, max(0, Int((view.minY - last.frame.maxY) / height)))
             let top = last.frame.maxY + CGFloat(rowsIn) * height
             page?.readerReachedUnreadRows(position: extent.firstAfter + rowsIn, offset: top - view.minY)
+        } else if view.maxY > first.frame.minY, view.minY < last.frame.maxY {
+            page?.readerLeftUnreadRows()
         }
     }
 
@@ -1441,6 +1452,11 @@ final class TranscriptNativeScrollView: NSScrollView {
         if !rows.isEmpty { measureHistoryRowHeight(placedHeight: y - TranscriptMetrics.pageTopInset - leadingSpace) }
         let size = CGSize(width: width, height: y + (rows.isEmpty ? 0 : trailingSpace) + TranscriptMetrics.pageBottomInset)
         if frame.size != size { setFrameSize(size) }
+        if abs(roomShift) > 0.5, let scroll = enclosingScrollView {
+            let clip = scroll.contentView
+            scroll.transcriptReading.setOrigin(NSPoint(x: clip.bounds.minX, y: clip.bounds.minY + roomShift))
+        }
+        roomShift = 0
         enclosingScrollView?.transcriptReading.geometryChanged()
         // A page that is placing itself lands in this pass, before anything
         // is drawn (`TranscriptPage.layoutPlacement`).

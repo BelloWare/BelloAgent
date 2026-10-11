@@ -628,7 +628,9 @@ struct ContentGeometry: Equatable {
         guard geometry != content else { return }
         let previous = content
         content = geometry
-        if geometry.height != previous.height {
+        // Rows read in before the window can take exactly the room they stood
+        // in, leaving the height as it was: the room above shrank all the same.
+        if geometry.height != previous.height || geometry.leading != previous.leading {
             scheduleSettle()
             requestEarlierIfNearTop(scrollY: followsBottom ? max(0, geometry.height - viewport.height) : scrollY)
             // Rows joined below a reader at the end of a window with rows
@@ -713,6 +715,12 @@ struct ContentGeometry: Equatable {
         guard let sessionID, let session = presentationSession, session.presentationGeneration == generation,
               session.historyState == .ready, session.presentation.readyAt != nil, !jumping else { return }
         onJump(sessionID, position, Double(offset))
+    }
+    /// The reader is back among the rows the window holds: a page still being
+    /// read for where they were in the room does not replace them.
+    func readerLeftUnreadRows() {
+        guard let session = presentationSession, session.jumpRead != nil || session.jumpWanted != nil else { return }
+        session.abandonJump()
     }
     /// The row the reader is on and where it sits, for a layout that has to
     /// work out which rows they will be able to see once it lands. Nil while
@@ -1294,6 +1302,7 @@ struct ContentGeometry: Equatable {
         scroll(to: max(0, p.height - p.viewport), animated: animated, completion: completion)
     }
     func jumpToLatest() {
+        presentationSession?.abandonJump()
         scrollView?.transcriptReading.readerMoved()
         followsBottom = true; jumping = true; detached = false
         pendingAnchor = nil; openingPlacementPending = false; openingReadingAnchor = nil

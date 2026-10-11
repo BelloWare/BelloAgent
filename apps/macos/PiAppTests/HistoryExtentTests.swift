@@ -58,6 +58,12 @@ final class HistoryExtentTests: XCTestCase {
         // The window that holds the first and the newest rows has no room around it.
         XCTAssertNil(positions.extent(of: ["m10"].map(row), reachesStart: true, reachesEnd: true))
         XCTAssertEqual(positions.extent(of: ["m10"].map(row), reachesStart: false, reachesEnd: true), HistoryExtent(before: 10, after: 0, total: 50))
+        // Live rows a run adds take their places from the window, so it is
+        // still placed once every row a page named has left it.
+        let live = ["m13", "m14", "live1", "live2"]
+        XCTAssertEqual(positions.extent(of: live.map(row), reachesStart: false, reachesEnd: true), HistoryExtent(before: 13, after: 0, total: 50))
+        XCTAssertEqual(positions.extent(of: ["live1", "live2", "live3"].map(row), reachesStart: false, reachesEnd: true),
+                       HistoryExtent(before: 15, after: 0, total: 50))
         // A timeline that changed knows nothing until the next page.
         positions.forget()
         XCTAssertNil(positions.extent(of: ["m10"].map(row), reachesStart: false, reachesEnd: false))

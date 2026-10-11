@@ -285,6 +285,8 @@ actor HistoryReader {
                           changed: value.st_ctimespec.tv_sec, changedNS: value.st_ctimespec.tv_nsec)
         return HistoryRevision(path: path, stamp: revision(stamp))
     }
+    /// The most record bytes one run of a search holds at once.
+    static let searchRunBytes = 16 * 1_048_576
     /// The searchable text of each record in `range`, in order: read in
     /// order from the file, decoded concurrently. A record that cannot be
     /// read or decoded carries its error, thrown when the search reaches it.
@@ -371,7 +373,13 @@ actor HistoryReader {
         var run = 32
         let needle = ConversationContent.asciiNeedle(query)
         while cursor < limit && hits.count < 100 {
-            let end = min(limit, cursor + run); run = min(run * 2, 512)
+            // A run holds every record it reads twice over (its bytes and its
+            // text), so it is bounded by bytes as well as by count.
+            var end = cursor, bytes = 0
+            while end < min(limit, cursor + run), end == cursor || bytes < Self.searchRunBytes {
+                bytes += try index.branch.at(end).length; end += 1
+            }
+            run = min(run * 2, 512)
             let texts = try contents(cursor..<end, branch: index.branch, file: file)
             for (offset, decoded) in texts.enumerated() where hits.count < 100 {
                 let ref = decoded.ref, text = try decoded.text.get()

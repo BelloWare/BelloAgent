@@ -56,8 +56,11 @@ struct HistoryExtent: Equatable {
     /// The rows outside `rows` (the window, in order). `reachesStart` and
     /// `reachesEnd` say the window holds the timeline's first and newest rows.
     /// Nil when the history has not said where the window stands, or when
-    /// nothing lies outside it.
+    /// nothing lies outside it. The rows of the window no page named — the
+    /// live rows a run adds — take their places from it, so the window is
+    /// still placed once the rows a page named have left it.
     func extent(of rows: [TranscriptMessage], reachesStart: Bool, reachesEnd: Bool) -> HistoryExtent? {
+        defer { if let total, let placed = placed(rows, reachesStart: reachesStart) { adopt(rows, from: placed, reachesEnd: reachesEnd, total: total) } }
         guard let total, !rows.isEmpty, !positions.isEmpty else { return nil }
         var before: Int? = reachesStart ? 0 : nil
         if before == nil, let index = rows.firstIndex(where: { positions[$0.id] != nil }), let position = positions[rows[index].id] {
@@ -69,5 +72,18 @@ struct HistoryExtent: Equatable {
         }
         guard let before, let after, before + after > 0 else { return nil }
         return HistoryExtent(before: before, after: after, total: max(total, before + rows.count + after))
+    }
+    /// Where the window's first row stands, from the first of its rows a
+    /// page named.
+    private func placed(_ rows: [TranscriptMessage], reachesStart: Bool) -> Int? {
+        if reachesStart { return 0 }
+        guard let index = rows.firstIndex(where: { positions[$0.id] != nil }), let position = positions[rows[index].id] else { return nil }
+        return max(0, position - index)
+    }
+    private func adopt(_ rows: [TranscriptMessage], from first: Int, reachesEnd: Bool, total: Int) {
+        for (offset, row) in rows.enumerated() where positions[row.id] == nil { positions[row.id] = first + offset }
+        // A window at the newest row is the timeline's end: rows a run added
+        // count in its total.
+        if reachesEnd { self.total = max(total, first + rows.count) }
     }
 }
