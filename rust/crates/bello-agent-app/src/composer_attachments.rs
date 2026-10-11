@@ -189,7 +189,9 @@ impl AgentView {
             && self.cancel_operation.is_none()
             && !self.edit_recovery.blocked
             && (!self.busy || self.inflight_submission.is_some())
-            && self.controller.supports_image_attachments()
+            && self
+                .controller
+                .supports_image_attachments_for(&self.chat_model_choice())
     }
     pub(crate) fn held_input_has_images(&self) -> bool {
         self.editing.is_some()

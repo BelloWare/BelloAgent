@@ -272,6 +272,7 @@ impl AgentView {
                     window,
                     cx,
                 );
+                self.model_pickers.adopt(&record);
                 self.records.insert(0, record);
                 self.install_chat(chat, window, cx);
             }
@@ -469,6 +470,13 @@ impl AgentView {
         self.dismissed_error = None;
         let mut item = Submission::new(text.clone(), lane);
         item.attachments = self.attachments.clone();
+        // The chat's model and effort choice goes with this turn (Swift
+        // `TurnOverrides.params`); nothing chosen sends the connection's.
+        let choice = self.chat_model_choice();
+        item.model = choice.model;
+        item.effort = choice.thinking_level;
+        let chat_id = self.record.id.clone();
+        self.model_pickers.settle_adopted(&chat_id);
         let intent = SubmissionIntent {
             skills: self.skills.clone(),
             attachments: item.attachments.clone(),

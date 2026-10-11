@@ -375,6 +375,10 @@ impl ConnectionSettingsController {
     pub(crate) fn authority(&self) -> &Arc<ProjectAuthority> {
         &self.authority
     }
+    /// The saved connections this window last read, if any.
+    pub(crate) fn loaded(&self) -> Option<&LoadedConnections> {
+        self.loaded.as_ref()
+    }
 }
 
 impl AgentView {

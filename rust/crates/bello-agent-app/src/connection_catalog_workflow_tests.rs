@@ -633,3 +633,6 @@ fn native_settings_catalog_browse_refresh_choose_and_save_are_explicit_and_fixtu
         "Native presentation never relaxes fixture provenance"
     );
 }
+
+#[path = "model_picker_workflow_tests.rs"]
+mod model_picker_workflow;
