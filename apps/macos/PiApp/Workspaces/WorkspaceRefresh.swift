@@ -294,9 +294,6 @@ extension WorkspaceModel {
             if view.messages != messages {
                 let accountingChanged = Self.accountingTargetsChanged(from: view.messages, to: messages)
                 view.messages = messages
-                // Live rows with no page to say where they stand (a new side,
-                // an edit's new branch): it is read once.
-                if view.historyPositions.total == nil { reacquireHistoryPositions(id) }
                 // A newly visible answer can take ownership of
                 // a request whose metadata arrived before it.
                 if accountingChanged { scheduleAccounting(id, workspaceID: item.workspaceID) }
@@ -333,6 +330,11 @@ extension WorkspaceModel {
                 }
                 if view.before != view.olderPage.cursor?.entry { view.before = view.olderPage.cursor?.entry }
             }
+            // Live rows past the window's start with no page to say where
+            // they stand (a new side, an edit's new branch): where the window
+            // stands is read once, and only then — a chat whose window holds
+            // every row needs no room, and asks the helper for nothing more.
+            if view.historyPositions.total == nil, view.olderPage.cursor != nil { reacquireHistoryPositions(id) }
             if view.historyState == .dormant || view.historyState == .empty { view.historyState = messages.isEmpty ? .empty : .preparing }
         }
     }
