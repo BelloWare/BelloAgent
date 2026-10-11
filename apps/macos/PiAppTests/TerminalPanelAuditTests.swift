@@ -521,6 +521,156 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
             process.terminate()
         }
     }
+    /// A shell, and what it started, that ignore SIGHUP. The forced stop
+    /// that follows SIGHUP used to be a two-second timer, which the app
+    /// never lives to run at Quit: such shells outlived the app.
+    @MainActor private func hangUpIgnoringShell(_ name: String) throws -> (directory: URL, restore: () -> Void) {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("terminal-\(name)-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let script = directory.appendingPathComponent("shell")
+        // Login-shell arguments are ignored; the script and its child both ignore SIGHUP.
+        try "#!/bin/sh\ntrap '' HUP\n/bin/sleep 60 &\necho $! > child.pid.tmp; mv child.pid.tmp child.pid\nwhile :; do /bin/sleep 1; done\n"
+            .write(to: script, atomically: true, encoding: .utf8)
+        chmod(script.path, 0o755)
+        let previous = ProcessInfo.processInfo.environment["SHELL"]
+        setenv("SHELL", script.path, 1)
+        return (directory, {
+            if let previous { setenv("SHELL", previous, 1) } else { unsetenv("SHELL") }
+            try? FileManager.default.removeItem(at: directory)
+        })
+    }
+    private static func gone(_ pid: pid_t) -> Bool { kill(pid, 0) != 0 && errno == ESRCH }
+    /// The child exited (it may stay unreaped: nothing on the main actor runs here).
+    private static func exited(_ pid: pid_t) -> Bool {
+        var info = siginfo_t()
+        return waitid(P_PID, id_t(pid), &info, WEXITED | WNOHANG | WNOWAIT) == 0 && info.si_pid == pid
+    }
+    @MainActor private func startedChild(in directory: URL, session: TerminalSession) async throws -> pid_t {
+        var child: pid_t = 0
+        try await eventually("start the shell and its child") {
+            child = (try? String(contentsOf: directory.appendingPathComponent("child.pid"), encoding: .utf8))
+                .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
+            return session.process.running && child > 0
+        }
+        // Never 0 or less: kill(0, …) would signal the test runner's own group.
+        return try XCTUnwrap(child > 0 ? child : nil, "the fixture shell never started its child")
+    }
+
+    @MainActor func testQuitEndsAShellThatIgnoresHangUpBeforeTheAppGoes() async throws {
+        let registry = TerminalRegistry.shared
+        registry.shutdown()
+        let (directory, restore) = try hangUpIgnoringShell("quit")
+        defer { restore() }
+        let session = registry.session(for: WorkspaceRecord(id: "quit-" + UUID().uuidString, path: directory.path, trusted: true))
+        let shell = session.process.processID
+        let child = try await startedChild(in: directory, session: session)
+
+        let started = ProcessInfo.processInfo.systemUptime
+        registry.shutdown()
+        let took = ProcessInfo.processInfo.systemUptime - started
+        XCTAssertLessThan(took, 0.25, "Quit waits only briefly for the shells")
+        // The main actor stays busy, as it does while the app exits: no timer
+        // or main-queue hop can run, so the shells must already be ending.
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while ProcessInfo.processInfo.systemUptime < deadline, !(Self.exited(shell) && Self.gone(child)) { usleep(2_000) }
+        XCTAssertTrue(Self.exited(shell), "the shell ignoring SIGHUP is killed at Quit")
+        XCTAssertTrue(Self.gone(child), "and so is what it started, in its process group")
+        if !Self.gone(child) { kill(child, SIGKILL) }
+        try await eventually("reap the shell", timeout: 10) { !session.process.running }
+    }
+
+    /// Closing one terminal keeps the two-second grace before the forced stop.
+    @MainActor func testClosingATerminalStillGivesItsShellTheGrace() async throws {
+        let registry = TerminalRegistry.shared
+        registry.shutdown()
+        let (directory, restore) = try hangUpIgnoringShell("close")
+        defer { restore() }
+        let workspace = WorkspaceRecord(id: "close-" + UUID().uuidString, path: directory.path, trusted: true)
+        let session = registry.session(for: workspace)
+        let child = try await startedChild(in: directory, session: session)
+        defer { if !Self.gone(child) { kill(child, SIGKILL) } }
+        registry.close(session.id, in: workspace.id, generation: session.generation)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertTrue(session.process.running, "a closed terminal's shell is asked first and given time")
+        try await eventually("end the shell after the grace", timeout: 10) { !session.process.running }
+    }
+
+    /// Showing another terminal takes the shown one's view out of the
+    /// window while it has the keyboard, and AppKit does not ask a view it
+    /// removes to resign: a program that asked for focus reports (vim,
+    /// tmux) never heard that it lost focus. Shown again, it hears it back.
+    @MainActor func testATerminalTakenOutOfTheWindowReportsLosingFocus() throws {
+        let emulator = TerminalEmulator(columns: 40, rows: 8)
+        let view = TerminalView(emulator: emulator)
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 180))
+        let window = window(holder, width: 420, height: 180)
+        defer { window.contentView = nil; window.close() }
+        var sent = Data()
+        func taken() -> String { defer { sent = Data() }; return String(decoding: sent, as: UTF8.self) }
+        view.onInput = { sent.append($0) }
+        emulator.feed("\u{1b}[?1004h")
+        view.frame = holder.bounds; holder.addSubview(view)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        XCTAssertEqual(taken(), "\u{1b}[I")
+        view.removeFromSuperview()
+        XCTAssertEqual(taken(), "\u{1b}[O", "the program hears it lost focus")
+        holder.addSubview(view)
+        XCTAssertTrue(window.makeFirstResponder(view))
+        XCTAssertEqual(taken(), "\u{1b}[I", "and that it has it again")
+        // Removed without the keyboard: nothing to report.
+        XCTAssertTrue(window.makeFirstResponder(nil)); XCTAssertEqual(taken(), "\u{1b}[O")
+        view.removeFromSuperview()
+        XCTAssertEqual(taken(), "")
+    }
+    /// A held key repeats into the program. macOS's press-and-hold holds the
+    /// repeats back in the text input system to offer accents (a key window
+    /// and the input method server are needed for the real one, so a stand-in
+    /// swallows repeats the same way); what is being composed, and input
+    /// methods, still go through the text input system.
+    @MainActor func testAHeldKeyRepeatsIntoTheProgram() throws {
+        let emulator = TerminalEmulator(columns: 40, rows: 8)
+        let view = TerminalView(emulator: emulator)
+        view.frame = NSRect(x: 0, y: 0, width: 420, height: 180)
+        let window = window(view, width: 420, height: 180)
+        defer { window.contentView = nil; window.close() }
+        window.makeFirstResponder(view)
+        var sent = Data(), interpreted: [String] = []
+        view.onInput = { sent.append($0) }
+        func taken() -> String { defer { sent = Data() }; return String(decoding: sent, as: UTF8.self) }
+        view.interpretKeys = { [weak view] events in
+            for event in events {
+                interpreted.append(event.characters ?? "")
+                if !event.isARepeat { view?.interpretKeyEvents([event]) }   // press-and-hold keeps the repeats
+            }
+        }
+        var layout = true
+        view.keyboardIsLayout = { layout }
+        func press(_ characters: String, code: UInt16, repeat: Bool) {
+            guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber,
+                                               context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: `repeat`, keyCode: code)
+            else { return XCTFail("Could not make a key event") }
+            view.keyDown(with: event)
+        }
+        press("e", code: 14, repeat: false)
+        for _ in 0..<5 { press("e", code: 14, repeat: true) }
+        XCTAssertEqual(taken(), "eeeeee", "every repeat of a held e reaches the program")
+        XCTAssertEqual(interpreted, ["e"], "only the first press goes through the text input system")
+
+        interpreted = []
+
+        // Something being composed: the repeat is the input method's.
+        view.setMarkedText("´", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+        press("e", code: 14, repeat: true)
+        XCTAssertEqual(interpreted, ["e"], "a repeat while composing goes to the input method")
+        XCTAssertEqual(taken(), "")
+        view.unmarkText()
+
+        // An input method rather than a keyboard layout: its repeats are its own.
+        interpreted = []; layout = false
+        press("a", code: 0, repeat: true)
+        XCTAssertEqual(interpreted, ["a"], "an input method's repeats go to it")
+        XCTAssertEqual(taken(), "")
+    }
 }
 
 
