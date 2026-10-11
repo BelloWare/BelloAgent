@@ -512,10 +512,12 @@ actor HistoryReader {
     /// `start`: the chat's first page, wherever the reader is. It indexes the
     /// whole journal: an index built from a checkpoint begins at its retained
     /// rows, and the chat's first message is before them.
+    /// `validating`: a boundary of the window a read without a cursor (a
+    /// position) lands in; the journal must still be the one it was read from.
     func window(path: String, cursor: ConversationCursor? = nil, newer: Bool = false, around: String? = nil, start: Bool = false,
-                position: Int? = nil, progress: Progress? = nil) throws -> HistoryPage {
+                position: Int? = nil, validating: ConversationCursor? = nil, progress: Progress? = nil) throws -> HistoryPage {
         try read(path: path, before: newer ? nil : cursor?.entry, around: around,
-                 after: newer ? cursor?.entry : nil, start: start, position: position, targetTurns: HistoryWindowPolicy.turns, expected: cursor, progress: progress)
+                 after: newer ? cursor?.entry : nil, start: start, position: position, targetTurns: HistoryWindowPolicy.turns, expected: cursor ?? validating, progress: progress)
     }
     /// `whole` indexes every record: what reads the whole chat (search, copy,
     /// an edit's timeline, a record's role in any version) needs it.

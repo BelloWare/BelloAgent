@@ -114,7 +114,8 @@ extension WorkspaceModel {
                 }
             }
             do {
-                var page = try await self.readConversationWindow(item, cursor: nil, position: position)
+                var page = try await self.readConversationWindow(item, cursor: nil, position: position,
+                                                                 validating: view.olderPage.cursor ?? view.newerPage.cursor)
                 // The row landed on is one the transcript draws: an edit's
                 // marker the page starts with is not.
                 guard current(), let first = SessionDisplay.hidingBranchMarkers(page.messages).first?.id ?? page.messages.first?.id else { return }
@@ -140,7 +141,11 @@ extension WorkspaceModel {
             } catch {
                 // Read again where the reader is, a moment from now, while
                 // they are still in the room (`TranscriptPage.readerReachedUnreadRows`).
-                if !(error is CancellationError), current() {
+                // The journal was replaced or edited under the window: said
+                // as a changed branch is, with Reload.
+                if case HostError.failure(let message)? = error as? HostError, message.hasPrefix("History"), current() {
+                    view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere); view.browsingHistory = true
+                } else if !(error is CancellationError), current() {
                     view.jumpFailedAt = ProcessInfo.processInfo.systemUptime; view.jumpRetry = (position, offset)
                     // Tried again in a moment unless the reader has gone
                     // somewhere else by then (`abandonJump`).

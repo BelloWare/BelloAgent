@@ -12,8 +12,11 @@ extension WorkspaceModel {
     /// `start`: the chat's first page (Home), read in place of `around`.
     /// `position`: the page that starts at that row of the timeline shown,
     /// read in place of `around` (a scroller dragged into rows not read yet).
+    /// `validating`: for a position read, a boundary of the window it lands
+    /// in, which a journal read checks the file against.
     func readConversationWindow(_ item: ChatRecord, cursor: ConversationCursor?, newer: Bool = false,
-                                around: String? = nil, start: Bool = false, position: Int? = nil) async throws -> ConversationHistoryPage {
+                                around: String? = nil, start: Bool = false, position: Int? = nil,
+                                validating: ConversationCursor? = nil) async throws -> ConversationHistoryPage {
         if let historyWindowLoader { return try await historyWindowLoader(item.id, cursor, newer, start ? HistoryWindowEdge.start : position.map(HistoryWindowEdge.position) ?? around) }
         try Task.checkCancellation()
         if opened.contains(item.id), let host = hosts[item.workspaceID] {
@@ -42,7 +45,8 @@ extension WorkspaceModel {
             }
             let display = displays[item.id], generation = display?.presentationGeneration
             return try ConversationHistoryPage(await history.window(path: path, cursor: cursor, newer: newer, around: around, start: start,
-                                                                     position: around == nil && !start ? position : nil, progress: { [weak display] records, bytes, total in
+                                                                     position: around == nil && !start ? position : nil,
+                                                                     validating: validating.flatMap { $0.incarnation.hasPrefix("file:") ? $0 : nil }, progress: { [weak display] records, bytes, total in
                 Task { @MainActor [weak display] in
                     guard let display, display.presentationGeneration == generation, display.historyState == .loading else { return }
                     display.historyProgress = "Reading history · \(records.formatted()) records · \(Int(Double(bytes) / Double(max(1, total)) * 100))%"
