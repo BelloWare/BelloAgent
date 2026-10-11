@@ -64,6 +64,30 @@ pub(super) const PIECE: usize = 32;
 /// The most pieces a run is named for; a longer run's pieces grow.
 pub(super) const PIECES: usize = 256;
 
+/// A run's pieces, by line index, from each line's editor rows: one piece
+/// for a run of at most twice `PIECE` rows, else pieces of at least `PIECE`
+/// rows (more for a run so long it would need over `PIECES`). A line is never
+/// split, so one line that wraps very far is one piece.
+pub(super) fn pieces(rows: &[usize]) -> Vec<std::ops::Range<usize>> {
+    let total: usize = rows.iter().sum();
+    if total <= 2 * PIECE || rows.len() < 2 {
+        return std::iter::once(0..rows.len()).collect();
+    }
+    let target = PIECE.max(total.div_ceil(PIECES - 1));
+    let (mut pieces, mut start, mut sum) = (Vec::new(), 0, 0);
+    for (line, rows) in rows.iter().enumerate() {
+        sum += rows;
+        if sum >= target {
+            pieces.push(start..line + 1);
+            (start, sum) = (line + 1, 0);
+        }
+    }
+    if start < rows.len() {
+        pieces.push(start..rows.len());
+    }
+    pieces
+}
+
 /// The editor section a run's `k`th piece is: the run's own for the first,
 /// "OUT#3" and so on after it.
 pub(super) fn piece_label(run: &'static str, k: usize) -> &'static str {
@@ -323,6 +347,18 @@ mod tests {
         assert_eq!(number(999), "999");
         assert_eq!(number(9000), "9,000");
         assert_eq!(number(1234567), "1,234,567");
+    }
+
+    #[test]
+    fn long_runs_split_by_their_wrapped_rows() {
+        assert_eq!(pieces(&[1; 64]), [0..64]);
+        assert_eq!(pieces(&[1; 65]), [0..32, 32..64, 64..65]);
+        // A line that wraps far fills its piece alone.
+        assert_eq!(pieces(&[1, 40, 1, 1, 30, 1]), [0..2, 2..5, 5..6]);
+        let many = pieces(&[1; 100_000]);
+        assert!(many.len() <= PIECES);
+        assert_eq!(many.last().unwrap().end, 100_000);
+        assert!(many.windows(2).all(|w| w[0].end == w[1].start));
     }
 
     #[test]

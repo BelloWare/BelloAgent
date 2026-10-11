@@ -4295,6 +4295,7 @@ fn decorate_find_tool(
         return;
     }
     let mut selected = None;
+    let mut leads = true;
     let mut decorations = vec![];
     if section == "IN"
         && let Some(hit) = find.sidebar_input()
@@ -4324,8 +4325,9 @@ fn decorate_find_tool(
             .is_some_and(|(start, _)| source.text.get(start..start + shown.len()) == Some(shown));
         let map = |range: &std::ops::Range<usize>| {
             if let Some((start, _)) = slice {
-                (slice_verified && range.start >= start && range.end <= start + shown.len())
-                    .then(|| range.start - start..range.end - start)
+                // A match running across pieces shows its part in each.
+                let (low, high) = (range.start.max(start), range.end.min(start + shown.len()));
+                (slice_verified && low < high).then(|| low - start..high - start)
             } else {
                 (generic_verified && range.end <= prefix).then_some(range.clone())
             }
@@ -4334,6 +4336,12 @@ fn decorate_find_tool(
             ranges.all.iter().filter_map(map).collect(),
         );
         selected = ranges.selected.as_ref().and_then(map);
+        // The piece the selected match starts in is the one that lands it.
+        leads = slice.is_none_or(|(start, _)| {
+            ranges.selected.as_ref().is_some_and(|selected| {
+                selected.start >= start && selected.start < start + shown.len()
+            })
+        });
         // The match another of the card's runs draws is that run's to show.
         let elsewhere = slice.is_some_and(|(_, runs)| {
             ranges.selected.as_ref().is_some_and(|selected| {
@@ -4347,6 +4355,7 @@ fn decorate_find_tool(
             *find.notice.borrow_mut() = Some("Only the first 4096 matches in this output are softly highlighted; the selected occurrence is still revealed.".into());
         }
         if let Some(destination) = find.destination.clone()
+            && leads
             && destination.found.id == source.id
             && !ranges.limited
             && selected.is_some()
@@ -4388,6 +4397,7 @@ fn decorate_find_tool(
         entry.find_installed = Some(find.clone());
     }
     if let Some(range) = selected
+        && leads
         && find.navigating()
         && !find.measuring.get()
     {
@@ -5295,25 +5305,27 @@ fn lines_section(
         // A long run is drawn a piece at a time: only the pieces near the
         // window are editors, the rest stand aside at their height, so an
         // expanded read costs what is on screen.
-        let size = if run.lines.len() > 2 * card_lines::PIECE {
-            card_lines::PIECE.max(run.lines.len().div_ceil(card_lines::PIECES))
-        } else {
-            run.lines.len().max(1)
-        };
         let offset = |line: &str| line.as_ptr() as usize - spec.text.as_ptr() as usize;
-        for (k, first) in (0..run.lines.len()).step_by(size).enumerate() {
-            let lines = first..(first + size).min(run.lines.len());
+        for (k, lines) in card_lines::pieces(&rows).into_iter().enumerate() {
             let label = card_lines::piece_label(run.label, k);
             let last = run.lines[lines.end - 1];
             let bytes = offset(run.lines[lines.start])..offset(last) + last.len();
             let piece_rows = &rows[lines.clone()];
             let height = piece_rows.iter().sum::<usize>() as f32 * card_lines::LINE_HEIGHT;
             let placed = editors.borrow_mut().place(&row.key, label);
-            let near = placed.get().map_or(k < 4, |bounds| {
-                f32::from(bounds.bottom()) > -band && f32::from(bounds.top()) < 2. * band
-            }) || selected
-                .as_ref()
-                .is_some_and(|selected| bytes.contains(&selected.start));
+            // The piece the reader is typing or selecting in stays an editor.
+            let focused = editors
+                .borrow()
+                .entries
+                .get(&(row.key.clone(), label))
+                .is_some_and(|entry| entry.editor.read(cx).focus_handle(cx).is_focused(window));
+            let near = focused
+                || placed.get().map_or(k < 4, |bounds| {
+                    f32::from(bounds.bottom()) > -band && f32::from(bounds.top()) < 2. * band
+                })
+                || selected
+                    .as_ref()
+                    .is_some_and(|selected| bytes.contains(&selected.start));
             if !near {
                 pieces = pieces.child(
                     div().relative().w_full().h(px(height)).child(
