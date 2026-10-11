@@ -460,6 +460,7 @@ impl ToolFocusRestore {
             .iter()
             .any(|((key, section), entry)| {
                 &entry.editor.read(cx).focus_handle(cx) == previous
+                    && entry.mounted
                     && tool_section_visible(
                         &view.presentation,
                         &view.viewport.borrow().list,
@@ -3027,15 +3028,16 @@ impl Element for ViewportList {
             .entries
             .iter()
             .find(|(_, entry)| entry.editor.read(cx).focus_handle(cx).is_focused(window))
-            .map(|((key, section), entry)| (key.clone(), *section, entry.row_index));
-        let hidden_focused = focused_row.is_some_and(|(key, section, index)| {
-            !tool_section_visible(
-                &self.presentation,
-                &self.viewport.borrow().list,
-                &key,
-                section,
-                index,
-            )
+            .map(|((key, section), entry)| (key.clone(), *section, entry.row_index, entry.mounted));
+        let hidden_focused = focused_row.is_some_and(|(key, section, index, mounted)| {
+            !mounted
+                || !tool_section_visible(
+                    &self.presentation,
+                    &self.viewport.borrow().list,
+                    &key,
+                    section,
+                    index,
+                )
         });
         if removed_focused || hidden_focused {
             // This component's cached read-only editor left the rendered page.
@@ -3922,6 +3924,10 @@ struct ToolEditor {
     lines: Option<LinesPlace>,
     /// The width a lines run's texts wrap at.
     lines_width: f32,
+    /// Whether the card still draws this editor: a lines piece the card's
+    /// last drawing left out (folded into the middle, or standing aside) is
+    /// not, though its editor is kept.
+    mounted: bool,
 }
 /// Where a lines run's block last stood, and its lines' rows.
 type LinesPlace = (Placed, Vec<usize>);
@@ -4148,6 +4154,7 @@ impl ToolEditors {
                     find_installed: None,
                     lines: None,
                     lines_width: 0.,
+                    mounted: true,
                 },
             );
         }
@@ -5316,6 +5323,7 @@ fn lines_section(
             find.ranges(id)?.selected.clone()
         });
     let band = f32::from(window.viewport_size().height);
+    let mut drawn: Vec<&'static str> = Vec::new();
     for (n, run) in spec.runs.iter().enumerate() {
         let rows = editors.borrow_mut().run_rows(
             &row.key,
@@ -5379,6 +5387,7 @@ fn lines_section(
                 window,
                 cx,
             );
+            drawn.push(label);
             if let Some(entry) = editors
                 .borrow_mut()
                 .entries
@@ -5463,6 +5472,13 @@ fn lines_section(
                     });
                 },
             ));
+        }
+    }
+    // The card's other line editors are not drawn now: a piece folded into
+    // the middle or standing aside gives up the keyboard.
+    for ((key, label), entry) in editors.borrow_mut().entries.iter_mut() {
+        if key == &row.key && entry.lines.is_some() {
+            entry.mounted = drawn.contains(label);
         }
     }
     section

@@ -601,3 +601,45 @@ fn read_ui_a_long_expanded_window_draws_only_the_pieces_near_the_screen(cx: &mut
         2000
     );
 }
+
+#[gpui::test]
+fn read_ui_folding_the_middle_away_releases_a_focused_piece(cx: &mut TestAppContext) {
+    crate::transcript_view::open_tool_rows_for_test();
+    let text = (1..=100)
+        .map(|n| format!("line-{n}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (_directory, window, root) =
+        fixture(cx, read_rows(&text, json!({"path":"fixture.txt"}), None), 0);
+    let child = transcript(&root, cx);
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+    let more = selector(&child, "read-disclosure", cx);
+    click(&mut visual, more, cx);
+    let piece = cx.read(|cx| {
+        child
+            .read(cx)
+            .tool_section_editors()
+            .into_iter()
+            .find(|(label, _)| *label == "OUT#1")
+            .expect("the second piece")
+            .1
+    });
+    window
+        .update(cx, |_, window, cx| {
+            piece.read(cx).focus_handle(cx).focus(window)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    click(&mut visual, more, cx);
+    child.update(cx, |_, cx| cx.notify());
+    cx.run_until_parked();
+    assert!(
+        !window
+            .update(cx, |_, window, cx| piece
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window))
+            .unwrap(),
+        "a piece folded into the middle gives up the keyboard"
+    );
+}
