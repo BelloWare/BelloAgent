@@ -131,7 +131,8 @@ final class PartialReplyLogTests: XCTestCase {
     }
 
     /// A log that does not belong to the journal as it is (its record is
-    /// gone, or the run settled) adds nothing, and is removed.
+    /// gone), or a damaged one (an id no record may have, a place past any
+    /// file), adds nothing, and is removed; the chat opens as it is.
     func testALogTheJournalDoesNotMatchAddsNothing() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let client = StallingClient(), session = try chat.session("chat", client: client)
@@ -140,21 +141,52 @@ final class PartialReplyLogTests: XCTestCase {
         let sessionPath = await session.path
         let path = try XCTUnwrap(sessionPath)
         try await Task.sleep(nanoseconds: 3 * PartialReplyLog.flushDelayNanoseconds)
-        let copy = try killedCopy(path)
+        let killed = try killedCopy(path)
         await session.close()
-        // The log's header names a record the journal does not have there.
-        let logURL = PartialReplyLog.url(for: copy)
-        var lines = try String(contentsOf: logURL, encoding: .utf8).components(separatedBy: "\n")
-        var header = try JSONDecoder().decode(PartialReplyLog.Header.self, from: Data(lines[0].utf8))
-        header.after.id = "someone-else"
-        lines[0] = String(decoding: try JSONEncoder().encode(header), as: UTF8.self)
-        try lines.joined(separator: "\n").write(to: logURL, atomically: true, encoding: .utf8)
+        let damages: [(String, (inout PartialReplyLog.Header) -> Void)] = [
+            ("another record", { $0.after.id = "someone-else" }), ("an id no record may have", { $0.reply = "not an id/../" }),
+            ("an empty id", { $0.reply = "" }), ("a place past any file", { $0.after.offset = UInt64.max }),
+        ]
+        for (what, damage) in damages {
+            let copy = try killedCopy(killed.path), logURL = PartialReplyLog.url(for: copy)
+            var lines = try String(contentsOf: logURL, encoding: .utf8).components(separatedBy: "\n")
+            var header = try JSONDecoder().decode(PartialReplyLog.Header.self, from: Data(lines[0].utf8))
+            damage(&header)
+            lines[0] = String(decoding: try JSONEncoder().encode(header), as: UTF8.self)
+            try lines.joined(separator: "\n").write(to: logURL, atomically: true, encoding: .utf8)
 
-        let reopened = try chat.session("chat", client: StallingClient(), resume: copy.path, in: copy.deletingLastPathComponent())
-        let kept = await replies(reopened)
-        XCTAssertEqual(kept.count, 0)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: logURL.path))
-        await reopened.close()
+            let reopened = try chat.session("chat", client: StallingClient(), resume: copy.path, in: copy.deletingLastPathComponent())
+            let kept = await replies(reopened)
+            XCTAssertEqual(kept.count, 0, what)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: logURL.path), what)
+            await reopened.close()
+            // And it opens again: nothing it wrote is refused.
+            let again = try chat.session("chat", client: StallingClient(), resume: copy.path, in: copy.deletingLastPathComponent())
+            await again.close()
+        }
+    }
+
+    /// A cut-off reply the run cannot journal keeps its log, set aside,
+    /// when the run settles.
+    func testAReplyTheRunCannotJournalKeepsItsLogAside() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let client = StallingClient()
+        let session = try chat.session("chat", client: client, beforeAppend: { record in
+            if record["message"]["role"].text == "assistant" { throw AgentError("session_record_limit", "fixture: the record will not write") }
+        })
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "a question"), steer: false)
+        try await stream(client)
+        let sessionPath = await session.path
+        let path = try XCTUnwrap(sessionPath), journal = URL(fileURLWithPath: path)
+        await session.stop()
+        try await eventually { !(await session.isRunning) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: PartialReplyLog.url(for: journal).path))
+        let directory = journal.deletingLastPathComponent()
+        let aside = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix(journal.lastPathComponent + ".stream-unrestored-") }
+        XCTAssertEqual(aside.count, 1)
+        let kept = try String(contentsOf: directory.appendingPathComponent(try XCTUnwrap(aside.first)), encoding: .utf8)
+        XCTAssertTrue(kept.contains("piece 29"), "everything that streamed, the last moment too")
+        await session.close()
     }
 
     /// A journal torn by the same crash opens only as a recovered copy; the

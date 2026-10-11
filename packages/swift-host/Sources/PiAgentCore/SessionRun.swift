@@ -275,7 +275,7 @@ extension AgentSession {
                 // Publishing links can suspend below. Once the durable row
                 // exists, its former streaming placeholder must not duplicate
                 // the same row ID in snapshots taken during that suspension.
-                do { try append(partial); partialID=nil } catch { }
+                do { try append(partial); partialID=nil } catch { partialReplyUnsaved=true; flushStreamed() }
             }
             do { try finishPresentedTask(runStatus == .cancelled ? "cancelled" : "failed", detail:errorMessage, code:errorCode) }
             catch { activeTaskPresentation=nil; errorMessage="Task outcome could not be saved. Inspect the retained conversation and tool effects before retrying." }

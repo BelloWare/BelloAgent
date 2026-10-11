@@ -111,6 +111,13 @@ final class PartialReplyLog {
         } catch { stop(); return }
         if writeAll(fd, data) { writes += 1 } else { stop() }
     }
+    /// Closes the file and moves it aside (`setAside`): the journal did not
+    /// take a reply it holds.
+    func keepAside() {
+        if fd >= 0 { _ = close(fd); fd = -1 }
+        if let path { _ = Self.setAside(URL(fileURLWithPath: path)) }
+        path = nil; reply = nil; discardPending()
+    }
     /// Closes and removes the file: the run settled and its journal is on disk.
     func remove() {
         if fd >= 0 { _ = close(fd); fd = -1 }
@@ -147,7 +154,9 @@ final class PartialReplyLog {
                 timeline.consume(part)
             }
         }
-        guard let header, !text.isEmpty || !thinking.isEmpty || !timeline.segments.isEmpty,
+        // The reply's id becomes a journal record's: one the journal would
+        // refuse on its next open is not written.
+        guard let header, (try? identity(JSON(header.reply))) != nil, !text.isEmpty || !thinking.isEmpty || !timeline.segments.isEmpty,
               journalHolds(header.after, in: journal, size: size), !journalNames(header.reply, after: header.after, in: journal) else { return nil }
         return (header, text, thinking, timeline, at)
     }
@@ -166,28 +175,35 @@ final class PartialReplyLog {
         let log = url(for: source)
         guard FileManager.default.fileExists(atPath: log.path) else { return }
         let reader = try JournalRecordReader(log, allowIncompleteTail: true)
-        let decoder = JSONDecoder(), encoder = JSONEncoder()
-        var data = Data()
-        while let line = try? reader.nextLine() {
-            if line.isEmpty { continue }
-            guard let value = try? JSON.parse(line) else { break }
-            if !value["reply"].isNull {
-                guard var header = try? decoder.decode(Header.self, from: line), Int64(header.after.offset) + shift >= 0 else { break }
-                header.after.offset = UInt64(Int64(header.after.offset) + shift)
-                data.append(try encoder.encode(header))
-            } else { data.append(line) }
-            data.append(10)
-        }
         let target = url(for: destination)
         let fd = open(target.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw AgentError("session_write", "Cannot write the recovered copy's unfinished reply") }
         let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        do { try file.write(contentsOf: data); try file.synchronize() } catch { try? file.close(); _ = unlink(target.path); throw error }
+        let decoder = JSONDecoder(), encoder = JSONEncoder()
+        do {
+            // Written as read, a batch at a time: a long run's log is never
+            // held whole.
+            var data = Data()
+            while let line = try? reader.nextLine() {
+                if line.isEmpty { continue }
+                guard let value = try? JSON.parse(line) else { break }
+                if !value["reply"].isNull {
+                    guard var header = try? decoder.decode(Header.self, from: line), let offset = Int64(exactly: header.after.offset) else { break }
+                    let (moved, overflow) = offset.addingReportingOverflow(shift)
+                    guard !overflow, moved >= 0 else { break }
+                    header.after.offset = UInt64(moved)
+                    data.append(try encoder.encode(header))
+                } else { data.append(line) }
+                data.append(10)
+                if data.count >= 1 << 20 { try file.write(contentsOf: data); data.removeAll(keepingCapacity: true) }
+            }
+            try file.write(contentsOf: data); try file.synchronize()
+        } catch { try? file.close(); _ = unlink(target.path); throw error }
         try file.close()
     }
     /// Whether the journal's record at `anchor` is still the one named.
     private static func journalHolds(_ anchor: Anchor, in journal: URL, size: UInt64) -> Bool {
-        guard anchor.length > 0, anchor.length <= JournalRecordReader.maximumRecordBytes, anchor.offset + UInt64(anchor.length) < size,
+        guard anchor.length > 0, anchor.length <= JournalRecordReader.maximumRecordBytes, anchor.offset < size, UInt64(anchor.length) < size - anchor.offset,
               let file = try? FileHandle(forReadingFrom: journal) else { return false }
         defer { try? file.close() }
         guard (try? file.seek(toOffset: anchor.offset)) != nil, let bytes = try? file.read(upToCount: anchor.length + 1),
@@ -265,8 +281,11 @@ extension AgentSession {
         partialReplyFlush?.cancel(); partialReplyFlush = nil
         partialReplyLog?.discardPending()
     }
-    /// The run settled and its journal is on disk: the log is no longer needed.
+    /// The run settled and its journal is on disk: the log is no longer
+    /// needed, unless a reply it holds could not be written there.
     func removeStreamedLog() {
-        dropStreamed(); partialReplyLog?.remove(); partialReplyLog = nil
+        dropStreamed()
+        if partialReplyUnsaved { partialReplyLog?.keepAside() } else { partialReplyLog?.remove() }
+        partialReplyLog = nil; partialReplyUnsaved = false
     }
 }

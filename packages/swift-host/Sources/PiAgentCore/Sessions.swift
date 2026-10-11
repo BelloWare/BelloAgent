@@ -110,6 +110,8 @@ public actor AgentSession {
     /// waiting to gather what arrives meanwhile (`PartialReplyLog`).
     var partialReplyLog: PartialReplyLog?
     var partialReplyFlush: Task<Void, Never>?
+    /// Set when a cut-off reply could not be journaled: its log is kept aside.
+    var partialReplyUnsaved = false
     /// Advanced whenever the partial is reset, so a reader's copy of one
     /// partial's text is never extended into the next one's.
     var partialGeneration: UInt64 = 0
