@@ -44,6 +44,12 @@ import CoreText
     static let lineCacheByteLimit = 8 * 1024 * 1024
     private func clearLineCache() { lineCache.removeAll(keepingCapacity: true); lineCacheBytes = 0 }
     private var focused = false
+    /// The key that went down in this view and has not come up. Only its
+    /// repeats are typed: a key held to answer a question went down in the
+    /// question's sheet, and its repeats, which come to this window once the
+    /// sheet goes, are not the shell's.
+    private var heldKeyCode: UInt16?
+    private var resignKeyObserver: NSObjectProtocol?
 
     init(emulator: TerminalEmulator, font: NSFont = .monospacedSystemFont(ofSize: 12, weight: .regular)) {
         self.emulator = emulator
@@ -64,6 +70,14 @@ import CoreText
     var focusWhenInWindow = false
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        // A key released while another window had the keyboard never came up here.
+        heldKeyCode = nil
+        if let resignKeyObserver { NotificationCenter.default.removeObserver(resignKeyObserver) }
+        resignKeyObserver = window.map {
+            NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: $0, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.heldKeyCode = nil }
+            }
+        }
         guard focusWhenInWindow, window != nil else { return }
         focusWhenInWindow = false
         // After the SwiftUI update that added the view, not inside it.
@@ -330,7 +344,7 @@ import CoreText
     // MARK: Focus
 
     override func becomeFirstResponder() -> Bool {
-        focused = true; needsDisplay = true
+        focused = true; needsDisplay = true; heldKeyCode = nil
         if emulator.focusReporting { send("\u{1b}[I") }
         return true
     }
@@ -358,6 +372,7 @@ import CoreText
         onInput?(data)
     }
     override func keyDown(with event: NSEvent) {
+        if event.isARepeat { guard event.keyCode == heldKeyCode else { return } } else { heldKeyCode = event.keyCode }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) { super.keyDown(with: event); return }
         let shift = flags.contains(.shift), control = flags.contains(.control), option = flags.contains(.option)
@@ -395,6 +410,10 @@ import CoreText
             send(characters); return
         }
         if let interpretKeys { interpretKeys([event]) } else { interpretKeyEvents([event]) }
+    }
+    override func keyUp(with event: NSEvent) {
+        if event.keyCode == heldKeyCode { heldKeyCode = nil }
+        super.keyUp(with: event)
     }
     /// Printable text: no control characters and none of AppKit's function-key characters.
     nonisolated static func repeatsAsTyped(_ characters: String) -> Bool {

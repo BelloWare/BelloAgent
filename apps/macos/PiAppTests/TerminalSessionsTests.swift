@@ -363,6 +363,45 @@ final class TerminalTabsPanelTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(registry.selected(for: project.id) === fresh, "the new terminal was not restarted by a stale press")
     }
 
+    /// Return held to answer the Restart question went down in the question's
+    /// sheet. Its repeats come to the window once the sheet goes, where the
+    /// new shell has the keyboard: they must not type into it. A key pressed
+    /// in the terminal still repeats.
+    @MainActor func testAKeyHeldToAnswerTheRestartQuestionDoesNotReachTheNewShell() async throws {
+        let registry = TerminalRegistry.shared
+        registry.shutdown()
+        let folder = scratchRoot("terminal-held-answer")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let project = WorkspaceRecord(id: "held-" + UUID().uuidString, path: folder.path, trusted: true)
+        let model = makeWorkspaceModel(stateRoot: folder.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = TerminalPanelView(model: model, workspace: project)
+        window.makeKeyAndOrderFront(nil)
+        defer { window.contentView = nil; window.close(); registry.shutdown(); model.shutdown(); PiQuestion.shared.answerAlert = nil }
+
+        try await eventually("Terminal 1 opened") { registry.selected(for: project.id) != nil }
+        let one = try XCTUnwrap(registry.selected(for: project.id))
+        try await eventually("its shell started", timeout: .seconds(20)) { one.process.running }
+        try await eventually("Terminal 1 has the keyboard") { window.firstResponder === one.view }
+        PiQuestion.shared.answerAlert = { _ in .alertFirstButtonReturn }
+        let restarted = await registry.requestEnding(.restart, one.id, generation: one.generation, in: project, over: window)
+        let fresh = try XCTUnwrap(restarted)
+        try await eventually("the new shell has the keyboard") { window.firstResponder === fresh.view }
+        var typed = Data()
+        fresh.view.onInput = { typed.append($0) }
+        func returnKey(repeat: Bool) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r",
+                                           isARepeat: `repeat`, keyCode: 36))
+        }
+        for _ in 0..<5 { window.sendEvent(try returnKey(repeat: true)) }
+        XCTAssertEqual(String(decoding: typed, as: UTF8.self).debugDescription, "".debugDescription, "the answer's held Return types nothing into the new shell")
+        window.sendEvent(try returnKey(repeat: false))
+        for _ in 0..<3 { window.sendEvent(try returnKey(repeat: true)) }
+        XCTAssertEqual(String(decoding: typed, as: UTF8.self).debugDescription, "\r\r\r\r".debugDescription, "a Return held in the terminal repeats")
+    }
+
     /// Opt-in pictures of the panel with several terminals, wide and narrow,
     /// light and dark: `PI_APP_TERMINAL_SNAPSHOT=<folder>`.
     @MainActor func testSnapshotOfSeveralTerminals() async throws {
