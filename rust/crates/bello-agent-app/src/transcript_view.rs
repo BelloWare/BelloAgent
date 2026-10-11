@@ -370,9 +370,8 @@ fn tool_section_visible(
             &row.key == key
                 && row.expanded
                 // A capped list's tail is drawn only while the list is capped.
-                && !(section.ends_with("-tail") && row.read_expanded)
-                // A long run's later pieces exist only while it is expanded.
-                && !(section.contains('#') && !row.read_expanded)
+                && !(section.split('#').next().is_some_and(|run| run.ends_with("-tail"))
+                    && row.read_expanded)
                 && row.projected.is_some_and(|projected| match card_lines::section_of(section) {
                     "IN" => {
                         (matches!(projected, ProjectedRow::Call { .. })
@@ -1503,7 +1502,7 @@ impl TranscriptView {
         key: &RowKey,
         label: &'static str,
         first: (usize, usize),
-        last: (usize, usize),
+        (last, past): ((usize, usize), usize),
         cx: &mut Context<Self>,
     ) {
         if self
@@ -1537,7 +1536,7 @@ impl TranscriptView {
                 * card_lines::LINE_HEIGHT
         };
         let top = top_of(first);
-        let height = top_of(last) - top + card_lines::LINE_HEIGHT;
+        let height = top_of(last) - top + (1 + past) as f32 * card_lines::LINE_HEIGHT;
         self.land_find_point(
             find,
             index,
@@ -2982,6 +2981,8 @@ impl Element for ViewportList {
                 row.message_index
                     .is_some_and(|i| self.presentation.input.session.messages[i].id == target)
             })
+            // A response folded to its strip shows none of its end.
+            && !drawn_header(&self.presentation.rows[index]).is_some_and(|header| header.collapsed)
             && measured_reply_end_visible(&list, index)
         {
             let parent = self.parent.clone();
@@ -4296,6 +4297,8 @@ fn decorate_find_tool(
     }
     let mut selected = None;
     let mut leads = true;
+    // A read match running past this piece: the text beyond it.
+    let mut beyond = String::new();
     let mut decorations = vec![];
     if section == "IN"
         && let Some(hit) = find.sidebar_input()
@@ -4336,6 +4339,16 @@ fn decorate_find_tool(
             ranges.all.iter().filter_map(map).collect(),
         );
         selected = ranges.selected.as_ref().and_then(map);
+        if let (Some((start, _)), Some(full)) = (slice, ranges.selected.as_ref()) {
+            let end = start + shown.len();
+            if full.end > end {
+                beyond = source
+                    .text
+                    .get(end..full.end)
+                    .unwrap_or_default()
+                    .to_owned();
+            }
+        }
         // The piece the selected match starts in is the one that lands it.
         leads = slice.is_none_or(|(start, _)| {
             ranges.selected.as_ref().is_some_and(|selected| {
@@ -4439,10 +4452,20 @@ fn decorate_find_tool(
                 end -= 1;
             }
             let last = position(end.max(range.start));
+            // The match's rows past this piece, wrapped as the next pieces
+            // wrap them (the text after this piece starts at a line's end).
+            let past = match (width, beyond.strip_prefix('\n')) {
+                (Some(width), Some(rest)) => {
+                    card_lines::rows(CARD_MONO, rest.split('\n'), width, window)
+                        .iter()
+                        .sum()
+                }
+                _ => 0,
+            };
             let (child, find, key) = (child.clone(), find.clone(), row.key.clone());
             window.defer(cx, move |_, cx| {
                 let _ = child.update(cx, |view, cx| {
-                    view.land_find_line(&find, index, &key, label, first, last, cx)
+                    view.land_find_line(&find, index, &key, label, first, (last, past), cx)
                 });
             });
             return;
@@ -5336,7 +5359,7 @@ fn lines_section(
                                 // drawn on the next frame.
                                 let band = window.viewport_size().height;
                                 if bounds.bottom() > -band && bounds.top() < band * 2. {
-                                    window.refresh();
+                                    window.request_animation_frame();
                                 }
                             },
                             |_, _, _, _| {},

@@ -351,7 +351,8 @@ mod tests {
 
     #[test]
     fn long_runs_split_by_their_wrapped_rows() {
-        assert_eq!(pieces(&[1; 64]), [0..64]);
+        let whole = pieces(&[1; 64]);
+        assert_eq!((whole.len(), whole[0].clone()), (1, 0..64));
         assert_eq!(pieces(&[1; 65]), [0..32, 32..64, 64..65]);
         // A line that wraps far fills its piece alone.
         assert_eq!(pieces(&[1, 40, 1, 1, 30, 1]), [0..2, 2..5, 5..6]);
