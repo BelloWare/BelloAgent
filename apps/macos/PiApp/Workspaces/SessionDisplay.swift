@@ -114,6 +114,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// into the rows the window holds): a page read for where they were
     /// does not land.
     func abandonJump() { jumpRead = nil; jumpWanted = nil }
+    /// When such a read last failed: the next waits a moment, then reads
+    /// where the reader is again.
+    var jumpFailedAt: TimeInterval?
     /// The place the transcript was last asked to show (`revealInTranscript`):
     /// the page lands on it and marks its range.
     @Published var reveal: TranscriptReveal?

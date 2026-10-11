@@ -64,6 +64,13 @@ final class HistoryExtentTests: XCTestCase {
         XCTAssertEqual(positions.extent(of: live.map(row), reachesStart: false, reachesEnd: true), HistoryExtent(before: 13, after: 0, total: 50))
         XCTAssertEqual(positions.extent(of: ["live1", "live2", "live3"].map(row), reachesStart: false, reachesEnd: true),
                        HistoryExtent(before: 15, after: 0, total: 50))
+        // A chat just made: its one page is the whole timeline, said or not,
+        // and the rows a run adds are placed from it.
+        let fresh = HistoryPositions()
+        fresh.reset(try ConversationHistoryPage(.object(["version": .number(2), "messages": .array([]), "incarnation": .string("new:x"), "lineage": .string("root"),
+                                                          "older": .null, "newer": .null])))
+        XCTAssertNil(fresh.extent(of: ["n0", "n1"].map(row), reachesStart: true, reachesEnd: true))
+        XCTAssertEqual(fresh.extent(of: ["n1", "n2"].map(row), reachesStart: false, reachesEnd: true), HistoryExtent(before: 1, after: 0, total: 3))
         // A timeline that changed knows nothing until the next page.
         positions.forget()
         XCTAssertNil(positions.extent(of: ["m10"].map(row), reachesStart: false, reachesEnd: false))

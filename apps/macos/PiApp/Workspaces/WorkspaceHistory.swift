@@ -354,6 +354,7 @@ extension WorkspaceModel {
             // window they are about to follow. It is let go of, rather than
             // the whole conversation being read again behind the cover.
             if view.olderPage.loading { view.presentation.olderTask?.cancel() }
+            view.abandonJump()
             view.scrollAnchor = .init(id: view.messages.last?.id ?? "", offset: 0, followsBottom: true)
             view.viewportRequestOpens = false; view.viewportRequest += 1; anchorChanged(view)
             if refreshing { refresh(id) }

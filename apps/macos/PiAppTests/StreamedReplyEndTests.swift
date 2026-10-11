@@ -526,7 +526,9 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         // before it, and the reply makes room for them.
         launched.draw()
         for _ in 0..<6 where !view.browsingHistory {
-            readerScrolls(launched, to: -(launched.scroll?.contentInsets.top ?? 0))
+            // The top of the rows the window holds; above them is the room
+            // kept for the rows of the chat not read (`HistoryExtent`).
+            readerScrolls(launched, to: ((launched.scroll?.documentView as? TranscriptNativeDocument)?.leadingSpace ?? 0) - (launched.scroll?.contentInsets.top ?? 0))
             _ = await wait(5) { view.browsingHistory }
             launched.draw()
         }
@@ -540,7 +542,8 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         while (view.browsingHistory || !view.messages.contains(where: { $0.id == reply })) && returns < 12 {
             returns += 1
             let last = view.messages.last?.id
-            let bottom = max(0, (launched.scroll?.documentView?.frame.height ?? 0) - (launched.scroll?.contentView.bounds.height ?? 0))
+            let room = (launched.scroll?.documentView as? TranscriptNativeDocument)?.trailingSpace ?? 0
+            let bottom = max(0, (launched.scroll?.documentView?.frame.height ?? 0) - room - (launched.scroll?.contentView.bounds.height ?? 0))
             readerScrolls(launched, to: bottom)
             launched.draw()
             let before = placesOnScreen(launched)

@@ -255,6 +255,21 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// The height one row not read takes in the room: the chat's average,
     /// or less in a chat too long for the room (`roomLimit`).
     private(set) var roomRowHeight: CGFloat = 0
+    /// When the viewport last moved, and how long it must stand still before
+    /// the room is measured again.
+    private var viewportMovedAt: TimeInterval = 0
+    static let roomQuietPeriod: TimeInterval = 0.3
+    private var roomMeasurementScheduled = false
+    /// Measures the room again once the reader has stood still.
+    private func scheduleRoomMeasurement() {
+        guard !roomMeasurementScheduled else { return }
+        roomMeasurementScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.roomQuietPeriod) { [weak self] in
+            guard let self else { return }
+            self.roomMeasurementScheduled = false
+            self.dirty = true; self.scheduleLayout()
+        }
+    }
     /// How far the room above the rows changed in this pass, for a reader
     /// among them, who moves with the rows.
     private var roomShift: CGFloat = 0
@@ -1061,6 +1076,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         // the shared quiet deadline, retaining the last real travel direction.
         if let lastViewportTop, abs(clip.bounds.minY - lastViewportTop) > 0.5 {
             travelingForward = clip.bounds.minY > lastViewportTop
+            viewportMovedAt = ProcessInfo.processInfo.systemUptime
         }
         lastViewportTop = clip.bounds.minY
         if !highlights.isEmpty { markMountedRows() }
@@ -1394,8 +1410,13 @@ final class TranscriptNativeScrollView: NSScrollView {
         guard let page, let snapshot, !snapshot.messages.isEmpty, placedHeight > 0 else { return }
         let count = snapshot.messages.count
         if let known = page.historyRowHeight, known > 0 {
+            // A wheel AppKit is still applying lands on the old geometry.
             let scrolling = (enclosingScrollView as? TranscriptNativeScrollView)?.readerIsScrolling ?? false
-            guard count >= page.historyRowHeightSample * 2, !scrolling, estimated.count * 4 < rows.count else { return }
+                || (!page.followsBottom && ProcessInfo.processInfo.systemUptime - viewportMovedAt < Self.roomQuietPeriod)
+            guard count >= page.historyRowHeightSample * 2, !scrolling, estimated.count * 4 < rows.count else {
+                if count >= page.historyRowHeightSample * 2 { scheduleRoomMeasurement() }
+                return
+            }
         }
         let height = max(24, placedHeight / CGFloat(count))
         let before = page.historyRowHeight
@@ -1452,10 +1473,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         if !rows.isEmpty { measureHistoryRowHeight(placedHeight: y - TranscriptMetrics.pageTopInset - leadingSpace) }
         let size = CGSize(width: width, height: y + (rows.isEmpty ? 0 : trailingSpace) + TranscriptMetrics.pageBottomInset)
         if frame.size != size { setFrameSize(size) }
-        if abs(roomShift) > 0.5, let scroll = enclosingScrollView {
-            let clip = scroll.contentView
-            scroll.transcriptReading.setOrigin(NSPoint(x: clip.bounds.minX, y: clip.bounds.minY + roomShift))
-        }
+        if abs(roomShift) > 0.5, let scroll = enclosingScrollView { scroll.transcriptReading.moveWithDocument(by: roomShift) }
         roomShift = 0
         enclosingScrollView?.transcriptReading.geometryChanged()
         // A page that is placing itself lands in this pass, before anything

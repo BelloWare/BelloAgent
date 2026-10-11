@@ -350,6 +350,18 @@ extension NSScrollView {
         }
         writing = false
     }
+    /// Everything above the reader moved by `delta` (the room kept for rows
+    /// not read changed size): the clip moves with it, and the place the
+    /// anchor expects its line moves too, so a movement of the reader's
+    /// that lands before the next restore does not pay the same move again.
+    func moveWithDocument(by delta: CGFloat) {
+        guard let scroll else { return }
+        let clip = scroll.contentView, before = clip.bounds.minY
+        setOrigin(NSPoint(x: clip.bounds.minX, y: before + delta))
+        let moved = clip.bounds.minY - before
+        if let paid = anchorDocumentTop { anchorDocumentTop = paid + moved }
+        if let paid = anchorSourceTop { anchorSourceTop = paid + moved }
+    }
     /// A scroll this pane is about to run as an animation. AppKit delivers
     /// every frame of it, so the whole corridor between the two ends belongs
     /// to the page until it lands.

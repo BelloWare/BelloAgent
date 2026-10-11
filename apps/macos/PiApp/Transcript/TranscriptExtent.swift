@@ -36,6 +36,12 @@ struct HistoryExtent: Equatable {
     /// belong to another timeline.
     func reset(_ page: ConversationHistoryPage) {
         positions = [:]; total = nil
+        // A page with nothing before or after it is the whole timeline, said
+        // or not (a chat just made is authoritatively empty).
+        if page.start == nil, page.older == nil, page.newer == nil {
+            total = page.messages.count
+            for (offset, message) in page.messages.enumerated() { positions[message.id] = offset }
+        }
         record(page)
     }
     /// The timeline changed under the window (an edit's new branch): nothing
@@ -85,5 +91,6 @@ struct HistoryExtent: Equatable {
         // A window at the newest row is the timeline's end: rows a run added
         // count in its total.
         if reachesEnd { self.total = max(total, first + rows.count) }
+        prune(keeping: rows)
     }
 }
