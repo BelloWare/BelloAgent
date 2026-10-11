@@ -2,13 +2,19 @@ import Foundation
 
 /// What the history-window test seam is handed as `around` for a read of
 /// the chat's first page (`readConversationWindow(start:)`).
-enum HistoryWindowEdge { static let start = "\u{0}start" }
+enum HistoryWindowEdge {
+    static let start = "\u{0}start"
+    /// A read of the page starting at a row of the timeline (`position`).
+    static func position(_ row: Int) -> String { "\u{0}position:\(row)" }
+}
 
 extension WorkspaceModel {
     /// `start`: the chat's first page (Home), read in place of `around`.
+    /// `position`: the page that starts at that row of the timeline shown,
+    /// read in place of `around` (a scroller dragged into rows not read yet).
     func readConversationWindow(_ item: ChatRecord, cursor: ConversationCursor?, newer: Bool = false,
-                                around: String? = nil, start: Bool = false) async throws -> ConversationHistoryPage {
-        if let historyWindowLoader { return try await historyWindowLoader(item.id, cursor, newer, start ? HistoryWindowEdge.start : around) }
+                                around: String? = nil, start: Bool = false, position: Int? = nil) async throws -> ConversationHistoryPage {
+        if let historyWindowLoader { return try await historyWindowLoader(item.id, cursor, newer, start ? HistoryWindowEdge.start : position.map(HistoryWindowEdge.position) ?? around) }
         try Task.checkCancellation()
         if opened.contains(item.id), let host = hosts[item.workspaceID] {
             var params: [String: WireValue] = ["version": .number(2), "direction": .string(newer ? "newer" : "older")]
@@ -21,6 +27,7 @@ extension WorkspaceModel {
             }
             if let around { params["around"] = .string(around) }
             if start { params["edge"] = .string("start") }
+            if let position, !start, around == nil { params["position"] = .number(Double(position)) }
             let result = try await host.request("session.history", sessionID: item.id, params: params)
             try Task.checkCancellation()
             return try ConversationHistoryPage(result)
@@ -34,7 +41,8 @@ extension WorkspaceModel {
                 return try ConversationHistoryPage(page)
             }
             let display = displays[item.id], generation = display?.presentationGeneration
-            return try ConversationHistoryPage(await history.window(path: path, cursor: cursor, newer: newer, around: around, start: start, progress: { [weak display] records, bytes, total in
+            return try ConversationHistoryPage(await history.window(path: path, cursor: cursor, newer: newer, around: around, start: start,
+                                                                     position: around == nil && !start ? position : nil, progress: { [weak display] records, bytes, total in
                 Task { @MainActor [weak display] in
                     guard let display, display.presentationGeneration == generation, display.historyState == .loading else { return }
                     display.historyProgress = "Reading history · \(records.formatted()) records · \(Int(Double(bytes) / Double(max(1, total)) * 100))%"
@@ -56,6 +64,7 @@ extension WorkspaceModel {
         view.historyProgress = nil
         view.presentation.partialTurnInput = page.partialTurnInput
         view.olderPage = .init(cursor: page.older); view.newerPage = .init(cursor: page.newer)
+        view.historyPositions.reset(page)
         view.before = page.older?.entry; view.hostBefore = nil; view.historyRevision = page.revision
         if let around { view.scrollAnchor = .init(id: around, offset: landing, followsBottom: false) }
         else if let anchor = view.scrollAnchor, !anchor.followsBottom, !page.messages.contains(where: { $0.id == anchor.id }) { view.scrollAnchor = nil }
@@ -280,6 +289,7 @@ extension WorkspaceModel {
                     if var old = view.newerPage.cursor { old.incarnation = page.incarnation; old.committedBytes = sourceCursor?.committedBytes; old.fingerprint = sourceCursor?.fingerprint; view.newerPage.cursor = old }
                 }
                 for index in joined.indices { joined[index].accounting = view.messageAccounting[joined[index].id] }
+                view.historyPositions.record(page); view.historyPositions.prune(keeping: joined)
                 if newer {
                     view.newerPage = .init(cursor: page.newer)
                     if trimmedFar, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge) }
@@ -381,6 +391,7 @@ extension WorkspaceModel {
         // this one. The earlier boundary is re-pointed as the rows land.
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
         view.olderPage = .init(cursor: view.olderPage.cursor); view.newerPage = .init()
+        view.historyPositions.forget()
         view.pinnedHistoryIDs = []
         // A window that reaches no row held replaces the rows: nothing
         // vouches for what would lie between, and the rows before it are

@@ -103,6 +103,13 @@ struct TranscriptVersionView: Equatable, Sendable {
     }
     @Published var historyProgress: String?
     @Published var olderPage = ConversationPageBoundary()
+    /// Where the window stands in the whole chat, for the room the transcript
+    /// keeps for the rows it has not read (`HistoryExtent`).
+    let historyPositions = HistoryPositions()
+    /// The page read for where the reader dragged or scrolled to, in rows the
+    /// window does not hold (`WorkspaceModel.jumpToHistoryPosition`).
+    var jumpRead: Int?
+    var jumpWanted: (position: Int, offset: Double)?
     /// The place the transcript was last asked to show (`revealInTranscript`):
     /// the page lands on it and marks its range.
     @Published var reveal: TranscriptReveal?

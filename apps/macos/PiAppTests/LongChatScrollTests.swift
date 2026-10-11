@@ -89,6 +89,36 @@ final class LongChatScrollTests: XCTestCase, SerialTestLane {
         assertSmooth(back, "scroller to the bottom", checkStalls: false, loading: true)
     }
 
+    /// The scroller is the whole chat's from the moment it opens, as in any
+    /// document: its knob dragged to a place shows that place of the
+    /// conversation — a quarter of the way down, the turns a quarter of the
+    /// way through — with its rows on screen as soon as the hand stops, and
+    /// the knob stays where the hand left it. Before 0.1.123 the scroller was
+    /// the rows the window held (the newest few turns), so the middle of it
+    /// was a turn near the end, and reaching the start meant holding the knob
+    /// at the top while page after page was read.
+    @MainActor func testTheScrollerIsTheWholeChat() async throws {
+        let chat = try await chat()
+        for fraction in [0.25, 0.5, 0.75, 0.0, 1.0] as [CGFloat] {
+            let from = chat.knobFraction
+            let drag = await chat.drive(points: 0, seconds: 0.5, input: .drag({ from + (fraction - from) * min(1, CGFloat($0) / 0.4) })) { false }
+            chat.endGesture()
+            print(drag.summary("drag to \(fraction)"))
+            let stopped = ProcessInfo.processInfo.systemUptime
+            try await eventually("Dragged to \(fraction), the rows never came", timeout: .seconds(5)) {
+                chat.draw(); return !chat.blankViewport && chat.document?.visibleContentPrepared == true
+            }
+            let shown = ProcessInfo.processInfo.systemUptime - stopped
+            XCTAssertLessThan(shown, releaseBudget(0.5), "Dragged to \(fraction), the rows took \(Int(shown * 1000)) ms")
+            for _ in 0..<20 { chat.draw(); try await Task.sleep(for: .milliseconds(16)) }
+            let id = try XCTUnwrap(chat.readingRow()?.id)
+            let turn = try XCTUnwrap(Int(id.drop { !$0.isNumber }.prefix { $0.isNumber }), "\(id) names no turn")
+            let place = CGFloat(turn) / CGFloat(chat.turns - 1)
+            XCTAssertEqual(place, fraction, accuracy: 0.15, "Dragged to \(fraction) of the scroller, the reader is at turn \(turn) of \(chat.turns)")
+            XCTAssertEqual(chat.knobFraction, fraction, accuracy: 0.05, "The knob stays where the hand left it")
+        }
+    }
+
     /// Home, pressed with the conversation focused, goes to the chat's first
     /// message — not the top of the rows the page happens to hold — and the
     /// first message then stays exactly where it landed while the rest of

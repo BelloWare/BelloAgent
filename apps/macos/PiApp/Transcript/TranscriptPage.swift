@@ -13,6 +13,9 @@ import Combine
 struct ContentGeometry: Equatable {
     var top: CGFloat
     var height: CGFloat
+    /// The room kept for the rows before and after the window (`HistoryExtent`).
+    var leading: CGFloat = 0
+    var trailing: CGFloat = 0
 }
 
 /// Holds one session's page: the rows on display, the live turn, and where the
@@ -46,6 +49,9 @@ struct ContentGeometry: Equatable {
         /// The page ends with a message the reader has sent that the helper
         /// has not shown yet.
         var sending = false
+        /// The rows of the chat before and after these, which the document
+        /// keeps room for.
+        var extent: HistoryExtent? = nil
     }
 
     @Published private(set) var snapshot: Snapshot?
@@ -100,6 +106,10 @@ struct ContentGeometry: Equatable {
     var onLoadEarlier: (String) -> Void = { _ in }
     var onLoadNewer: (String) -> Void = { _ in }
     var onViewportReady: (String, UUID) -> Void = { _, _ in }
+    /// The reader is in room kept for rows not read yet: read the page that
+    /// starts at row `position` of the timeline and land its first row
+    /// `offset` points below the viewport's top.
+    var onJump: (String, Int, Double) -> Void = { _, _, _ in }
 
     private var subscription: AnyCancellable?
     private var pendingPresentation: (input: TranscriptPresentationInput, request: Int)?
@@ -443,7 +453,13 @@ struct ContentGeometry: Equatable {
             }
         }
         if projectionError != nil { projectionError = nil }
-        if let current = snapshot, current.lifecycle == input.lifecycle, initialized,
+        // Where the window stands in the whole chat, for the room the
+        // document keeps for the rest. An earlier version shown in place of
+        // the latest is not the timeline the history counted.
+        let extent = session.versionView == nil
+            ? session.historyPositions.extent(of: page, reachesStart: session.olderPage.cursor == nil,
+                                              reachesEnd: !session.newerPage.available && !session.browsingHistory) : nil
+        if let current = snapshot, current.lifecycle == input.lifecycle, initialized, current.extent == extent,
            patch.map({ !$0.changed }) ?? (current.messages == page) { return }
         var fresh: Set<String> = []
         if !sameIdentities {
@@ -485,7 +501,7 @@ struct ContentGeometry: Equatable {
         sequence += 1
         lastPresentationAt = ProcessInfo.processInfo.systemUptime
         let next = Snapshot(sessionID: session.id, generation: generation, messages: page, items: items, fresh: fresh, sequence: sequence, lifecycle: input.lifecycle, liveTurn: TaskTranscriptPlan.live(input.lifecycle, messages: messages),
-                            sending: page.last(where: { $0.role == "user" })?.isSending == true)
+                            sending: page.last(where: { $0.role == "user" })?.isSending == true, extent: extent)
         // The scroll document always adopts its final geometry immediately.
         // Animating a complete snapshot also animates every existing row's
         // position and races AppKit's exact anchor/bottom placement. Controls
@@ -593,7 +609,7 @@ struct ContentGeometry: Equatable {
         viewport = size
         // A page the reader can scroll through now asks for earlier rows on
         // its own again, as they reach the top.
-        if content.height > viewport.height + Self.earlierThreshold { earlierWaits = false }
+        if content.height - content.leading - content.trailing > viewport.height + Self.earlierThreshold { earlierWaits = false }
         // AppKit may adjust the origin more than once during this resize.
         // Those changes belong to layout until its deferred placement lands.
         viewportResizePending = true
@@ -681,6 +697,23 @@ struct ContentGeometry: Equatable {
     }
     /// A row's frame in content coordinates, for tests.
     func rowFrame(of id: String) -> CGRect? { frames[id] }
+    /// The height one row of this chat's timeline takes on average, as the
+    /// document measured it (`HistoryPositions.rowHeight`).
+    var historyRowHeight: CGFloat? { presentationSession?.historyPositions.rowHeight }
+    var historyRowHeightSample: Int { presentationSession?.historyPositions.rowHeightSample ?? 0 }
+    func measuredHistoryRowHeight(_ height: CGFloat, over rows: Int) {
+        guard let positions = presentationSession?.historyPositions, height.isFinite, height > 0 else { return }
+        positions.rowHeight = height; positions.rowHeightSample = rows
+    }
+    /// The reader stands in room kept for rows the window does not hold, too
+    /// far from its rows for an edge's read to reach them: the page there is
+    /// read and placed where they are. Nothing while the chat is still
+    /// opening, or while the page is taking the reader somewhere itself.
+    func readerReachedUnreadRows(position: Int, offset: CGFloat) {
+        guard let sessionID, let session = presentationSession, session.presentationGeneration == generation,
+              session.historyState == .ready, session.presentation.readyAt != nil, !jumping else { return }
+        onJump(sessionID, position, Double(offset))
+    }
     /// The row the reader is on and where it sits, for a layout that has to
     /// work out which rows they will be able to see once it lands. Nil while
     /// the page follows the newest row, or while a jump owns the scroll.
@@ -1139,14 +1172,17 @@ struct ContentGeometry: Equatable {
     /// being written goes on arriving where the reader is.
     private func requestNewerIfNearBottom() {
         let reach = travelingUp ? Self.earlierThreshold : Self.prefetchDistance(viewport: position.viewport)
-        guard position.viewport > 0, !jumping, liveDistanceToBottom < reach, let sessionID,
+        // Measured from the window's last row: the room below it is rows not read.
+        guard position.viewport > 0, !jumping, liveDistanceToBottom - content.trailing < reach, let sessionID,
               let session = presentationSession, session.newerPage.cursor != nil, !session.newerPage.loading,
               session.newerPage.error == nil, !session.historyState.loading, session.presentation.readyAt != nil else { return }
         reportPendingAnchor()
         onLoadNewer(sessionID)
     }
-    private func requestEarlierIfNearTop(scrollY: CGFloat) {
-        let short = content.height <= viewport.height + Self.earlierThreshold
+    private func requestEarlierIfNearTop(scrollY offset: CGFloat) {
+        // Measured from the window's first row: the room above it is rows not read.
+        let scrollY = offset - content.leading
+        let short = content.height - content.leading - content.trailing <= viewport.height + Self.earlierThreshold
         // Rows the reader can scroll through again ask for the page before
         // them again on their own.
         if !short { earlierWaits = false }
@@ -1159,7 +1195,12 @@ struct ContentGeometry: Equatable {
               let sessionID, let session = presentationSession,
               !session.historyState.loading, !session.olderPage.loading, session.olderPage.error == nil,
               session.olderPage.cursor != nil, session.presentation.readyAt != nil else { return }
-        if short {
+        // Room kept for the rows before the window shows on screen: the
+        // page reads them until it does not, rather than leave the reader
+        // looking at room. Such a read keeps the rows on screen
+        // (`loadHistoryPage(automatic:)`), the live tail among them.
+        let roomShows = scrollY < 0
+        if short, !roomShows {
             // A page this short cannot be scrolled to ask again. Nor does a
             // window fill itself when it could not take another page without
             // letting go of rows it holds: the rows it pushed out would be the

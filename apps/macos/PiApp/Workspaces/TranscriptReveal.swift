@@ -58,6 +58,54 @@ extension WorkspaceModel {
         return await readWindow(item, view: view, around: nil)
     }
 
+    /// The reader has scrolled, or dragged the scroller, into room the
+    /// transcript keeps for rows it has not read (`HistoryExtent`): the page
+    /// that starts at row `position` of the timeline is read and replaces the
+    /// window, its first row landed `offset` points below the viewport's top,
+    /// where the room put it — so the reader stays where they are and the
+    /// rows appear around them. The reader's own movement does not cancel it,
+    /// as it does a reveal: it is where they are going. A read under way
+    /// holds the newest wish and reads that next, so a drag reads at most one
+    /// page at a time and always ends on where the drag ended.
+    func jumpToHistoryPosition(_ id: String, position: Int, offset: Double) {
+        guard transcriptShows(id), let view = displays[id], let item = record(id), view.revealRead == nil else { return }
+        if view.jumpRead != nil { view.jumpWanted = (position, offset); return }
+        revealSerial += 1
+        let serial = revealSerial, generation = view.presentationGeneration, navigation = messageNavigationRevision
+        view.jumpRead = serial; view.jumpWanted = nil
+        func current() -> Bool {
+            !Task.isCancelled && displays[item.id] === view && view.presentationGeneration == generation && view.jumpRead == serial
+                && view.revealRead == nil && transcriptShows(item.id) && messageNavigationRevision == navigation
+        }
+        // Reads at the old window's edges join rows that are about to go.
+        view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
+        Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if view.jumpRead == serial {
+                    view.jumpRead = nil
+                    // Where the reader went while this page was read.
+                    if let wanted = view.jumpWanted, view.presentationGeneration == generation {
+                        view.jumpWanted = nil
+                        self.jumpToHistoryPosition(item.id, position: wanted.position, offset: wanted.offset)
+                    }
+                }
+            }
+            do {
+                var page = try await self.readConversationWindow(item, cursor: nil, position: position)
+                guard current(), let first = page.messages.first?.id else { return }
+                page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
+                guard current() else { return }
+                self.adoptInitialHistory(page, into: view, around: first, landing: offset)
+                view.browsingHistory = page.newer != nil
+                self.anchorChanged(view)
+            } catch {
+                // The edge the reader reaches says what failed and offers Retry.
+                if !(error is CancellationError), current() { view.olderPage.error = error.localizedDescription }
+            }
+        }
+    }
+
     /// Whether chat `id`'s transcript is what the reader has in front of them:
     /// the chats page, with the chat selected or open as the side beside it.
     private func transcriptShows(_ id: String) -> Bool {

@@ -32,6 +32,10 @@ struct ConversationHistoryPage: Sendable {
     /// The journal's last record was cut off: this is every complete record,
     /// shown read-only until a recovered copy is made.
     var damagedTail = false
+    /// Where the page's first row stands in the timeline shown, and how many
+    /// rows that timeline has, when the source says (`HistoryExtent`).
+    var start: Int?
+    var total: Int?
 
     init(_ wire: WireValue) throws {
         guard let value = wire.object, value["version"]?.number == 2,
@@ -53,6 +57,9 @@ struct ConversationHistoryPage: Sendable {
                   messages.contains(where: { $0.id == boundary.entry }) else { throw HostError.failure("Invalid history boundary. Reload history.") }
         }
         partialTurnInput = value["partialTurnInput"]?.string
+        if let start = value["start"]?.number, let total = value["total"]?.number, start >= 0, total >= start + Double(messages.count) {
+            self.start = Int(start); self.total = Int(total)
+        }
         if let raw = value["taskRecords"] {
             taskRecords = try JSONDecoder().decode([TaskPresentationRecord].self, from:JSONEncoder().encode(raw))
             guard taskRecords.count <= 64, taskRecords.allSatisfy({ $0.valid && $0.terminal }) else { throw HostError.failure("Invalid task history evidence") }
@@ -68,6 +75,7 @@ struct ConversationHistoryPage: Sendable {
         latestAssistantID = page.latestAssistantMessageID; failure = page.failureMessage
         taskRecords = page.taskRecords
         fromJournal = true; retainedRun = page.retainedRun
+        if let start = page.start, page.total >= start + messages.count { self.start = start; total = page.total }
         if page.incompleteTail {
             damagedTail = true
             notice = "The last record of this chat was cut off while it was written. Everything before it is shown, read-only."

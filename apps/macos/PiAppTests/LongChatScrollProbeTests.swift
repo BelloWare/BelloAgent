@@ -38,6 +38,30 @@ final class LongChatScrollProbeTests: XCTestCase, SerialTestLane {
         report(chat, await chat.drive(points: 1, seconds: 60, input: .scroller) { chat.atFirstMessage }, "scroller top")
         report(chat, await chat.drive(points: -1, seconds: 60, input: .scroller) { chat.atLastMessage }, "scroller bottom")
     }
+    /// The scroller's knob dragged the way a hand drags it: from the bottom
+    /// to the top over three seconds, then held; then to the middle and
+    /// held. Counts the frames the reader saw no rows, and how long after
+    /// the hand stops the rows are there.
+    @MainActor func testProbeScrollerDragAcrossTheChat() async throws {
+        let chat = try await chat()
+        func settle(_ label: String) async {
+            let stopped = ProcessInfo.processInfo.systemUptime
+            var shown: Double?
+            while ProcessInfo.processInfo.systemUptime - stopped < 20 {
+                chat.draw()
+                if !chat.blankViewport, chat.document?.visibleContentPrepared == true { shown = ProcessInfo.processInfo.systemUptime - stopped; break }
+                try? await Task.sleep(for: .milliseconds(4))
+            }
+            print(String(format: "LONGSCROLL %@ rows on screen %@ after the hand stopped; knob %.3f, first %@", label,
+                         shown.map { String(format: "%.0f ms", $0 * 1000) } ?? "NEVER", chat.knobFraction, chat.readingRow()?.id ?? "-"))
+        }
+        report(chat, await chat.drive(points: 0, seconds: 3, input: .drag({ max(0, 1 - $0 / 3) })) { false }, "drag bottom→top 3 s")
+        chat.endGesture(); await settle("drag bottom→top 3 s")
+        report(chat, await chat.drive(points: 0, seconds: 1.5, input: .drag({ min(0.5, $0 / 3) })) { false }, "drag top→middle 1.5 s")
+        chat.endGesture(); await settle("drag top→middle 1.5 s")
+        report(chat, await chat.drive(points: 0, seconds: 1.5, input: .drag({ 0.5 + min(0.5, $0 / 3) })) { false }, "drag middle→bottom 1.5 s")
+        chat.endGesture(); await settle("drag middle→bottom 1.5 s")
+    }
     @MainActor func testProbeWheelFling() async throws {
         let chat = try await chat()
         report(chat, await chat.drive(points: 400, seconds: 60, input: .wheel) { chat.atFirstMessage }, "wheel up 400")

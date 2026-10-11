@@ -4,6 +4,10 @@ import CryptoKit
 
 struct HistoryPage: Sendable {
     var messages: [TranscriptMessage]; var before: String?; var total: Int
+    /// Where the page's first row stands among the `total` rows of the
+    /// timeline shown, counting from the chat's first: what the transcript
+    /// sizes the rows it has not read from (`HistoryExtent`).
+    var start: Int? = nil
     /// The journal is damaged or truncated: Continue and search need an
     /// explicit validation or recovery first.
     var notice: String?
@@ -498,20 +502,31 @@ actor HistoryReader {
     /// whole journal: an index built from a checkpoint begins at its retained
     /// rows, and the chat's first message is before them.
     func window(path: String, cursor: ConversationCursor? = nil, newer: Bool = false, around: String? = nil, start: Bool = false,
-                progress: Progress? = nil) throws -> HistoryPage {
+                position: Int? = nil, progress: Progress? = nil) throws -> HistoryPage {
         try read(path: path, before: newer ? nil : cursor?.entry, around: around,
-                 after: newer ? cursor?.entry : nil, start: start, targetTurns: HistoryWindowPolicy.turns, expected: cursor, progress: progress)
+                 after: newer ? cursor?.entry : nil, start: start, position: position, targetTurns: HistoryWindowPolicy.turns, expected: cursor, progress: progress)
     }
     /// `whole` indexes every record: what reads the whole chat (search, copy,
     /// an edit's timeline, a record's role in any version) needs it.
+    /// `position`: the page that starts at that row of the timeline shown
+    /// (0 is the chat's first), in place of `around` — where the reader has
+    /// dragged the scroller to, in rows the transcript has not read.
     func read(path: String, before: String? = nil, around: String? = nil, after: String? = nil, start atStart: Bool = false,
-              targetTurns: Int? = nil, expected: ConversationCursor? = nil, progress: Progress? = nil, whole: Bool = false) throws -> HistoryPage {
+              position: Int? = nil, targetTurns: Int? = nil, expected: ConversationCursor? = nil, progress: Progress? = nil, whole: Bool = false) throws -> HistoryPage {
         try Task.checkCancellation()
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file)
         let size = try file.seekToEnd(); try file.seek(toOffset: 0)
-        let journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
-                                       targetTurns: targetTurns, progress: progress, whole: whole || atStart)
+        // A row before those an index built from the metadata file holds
+        // needs the whole journal indexed, as the chat's first page does.
+        var whole = whole || atStart
+        if let position, let cached = indexes[path], cached.stamp == identity, cached.partial, position < cached.olderRows { whole = true }
+        var journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
+                                       targetTurns: targetTurns, progress: progress, whole: whole)
+        if let position, !whole, position < journal.olderRows {
+            journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
+                                       targetTurns: targetTurns, progress: progress, whole: true)
+        }
         let branch = journal.branch, notice = journal.notice, olderRows = journal.olderRows, versions = journal.versions
         let assistantCount = journal.assistantCount, latestAssistantID = journal.latestAssistantID, failureMessage = journal.failureMessage
         let taskRecords = journal.taskRecords, retainedRun = journal.retainedRun, incompleteTail = journal.incompleteTail
@@ -543,10 +558,11 @@ actor HistoryReader {
             if let digest { cursor.committedBytes = size; cursor.fingerprint = digest }
             return cursor
         }
-        let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, start: atStart, targetTurns: targetTurns)
+        let at = position.map { min(max(0, $0 - olderRows), max(0, branch.count - 1)) }
+        let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, start: atStart, at: at, targetTurns: targetTurns)
         let (messages, start, end) = try decodePage(range, forward: forward, from: file, path: path, identity: identity,
                                                     branch: branch, versions: versions, retainedRun: retainedRun)
-        return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, notice: notice,
+        return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, start: olderRows + start, notice: notice,
                            assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
                            failureMessage: notice == nil ? failureMessage : nil,
                            revision: notice == nil ? HistoryRevision(path: path, stamp: revision(identity)) : nil,
@@ -848,8 +864,9 @@ actor HistoryReader {
     /// the turns around, after or before a row, or sixty rows when no count
     /// of turns is asked for. A boundary no longer in the branch throws.
     private static func pageRange(in branch: HistoryOffsetIndex, before: String?, around: String?, after: String?, start: Bool = false,
-                                  targetTurns: Int?) throws -> (range: Range<Int>, forward: Bool) {
-        let anchorIndex = start ? (branch.count > 0 ? 0 : nil) : try around.flatMap { try branch.index(of: $0) }
+                                  at position: Int? = nil, targetTurns: Int?) throws -> (range: Range<Int>, forward: Bool) {
+        let found = try around.flatMap { try branch.index(of: $0) }
+        let anchorIndex = start ? (branch.count > 0 ? 0 : nil) : position.flatMap { branch.count > 0 ? $0 : nil } ?? found
         let beforeIndex = try before.flatMap { try branch.index(of: $0) }
         let afterIndex = try after.flatMap { try branch.index(of: $0) }
         guard (around == nil || anchorIndex != nil), (before == nil || beforeIndex != nil), (after == nil || afterIndex != nil) else {
