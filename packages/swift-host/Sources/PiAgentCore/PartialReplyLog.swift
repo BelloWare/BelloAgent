@@ -151,6 +151,40 @@ final class PartialReplyLog {
               journalHolds(header.after, in: journal, size: size), !journalNames(header.reply, after: header.after, in: journal) else { return nil }
         return (header, text, thinking, timeline, at)
     }
+    /// A log the journal could not take its reply from (the record would not
+    /// write), moved aside beside it, kept for inspection: the next settled
+    /// run or open would otherwise remove it.
+    static func setAside(_ url: URL) -> Bool {
+        let kept = url.path + "-unrestored-" + String(Int(Date().timeIntervalSince1970 * 1000))
+        return rename(url.path, kept) == 0
+    }
+    /// The log beside `source`, written beside `destination`: a recovered copy
+    /// of a journal whose records start `shift` bytes later than the
+    /// original's (its header written again). Up to a torn or unreadable
+    /// line, as a reopen reads it. Nothing is written when there is no log.
+    static func carry(from source: URL, to destination: URL, shift: Int64) throws {
+        let log = url(for: source)
+        guard FileManager.default.fileExists(atPath: log.path) else { return }
+        let reader = try JournalRecordReader(log, allowIncompleteTail: true)
+        let decoder = JSONDecoder(), encoder = JSONEncoder()
+        var data = Data()
+        while let line = try? reader.nextLine() {
+            if line.isEmpty { continue }
+            guard let value = try? JSON.parse(line) else { break }
+            if !value["reply"].isNull {
+                guard var header = try? decoder.decode(Header.self, from: line), Int64(header.after.offset) + shift >= 0 else { break }
+                header.after.offset = UInt64(Int64(header.after.offset) + shift)
+                data.append(try encoder.encode(header))
+            } else { data.append(line) }
+            data.append(10)
+        }
+        let target = url(for: destination)
+        let fd = open(target.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw AgentError("session_write", "Cannot write the recovered copy's unfinished reply") }
+        let file = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do { try file.write(contentsOf: data); try file.synchronize() } catch { try? file.close(); _ = unlink(target.path); throw error }
+        try file.close()
+    }
     /// Whether the journal's record at `anchor` is still the one named.
     private static func journalHolds(_ anchor: Anchor, in journal: URL, size: UInt64) -> Bool {
         guard anchor.length > 0, anchor.length <= JournalRecordReader.maximumRecordBytes, anchor.offset + UInt64(anchor.length) < size,

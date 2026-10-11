@@ -20,9 +20,10 @@ private actor StallingClient: ModelClient {
 final class PartialReplyLogTests: XCTestCase {
     private struct Chat {
         let root: URL, state: URL, profile: Profile
-        func session(_ id: String, client: any ModelClient, resume: String? = nil, in directory: URL? = nil) throws -> AgentSession {
+        func session(_ id: String, client: any ModelClient, resume: String? = nil, in directory: URL? = nil,
+                     beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }) throws -> AgentSession {
             try AgentSession(id: id, profile: profile, apiKey: "fixture", cwd: root, directory: directory ?? state, readOnly: false, resources: Resources(cwd: root, home: root),
-                             client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: resume, autoCompaction: false)
+                             client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: resume, autoCompaction: false, beforeJournalAppend: beforeAppend)
         }
     }
     private func chat() throws -> Chat {
@@ -153,6 +154,58 @@ final class PartialReplyLogTests: XCTestCase {
         let kept = await replies(reopened)
         XCTAssertEqual(kept.count, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: logURL.path))
+        await reopened.close()
+    }
+
+    /// A journal torn by the same crash opens only as a recovered copy; the
+    /// reply goes with the copy, its place moved with the copy's header.
+    func testARecoveredCopyOfATornJournalKeepsTheReply() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let client = StallingClient(), session = try chat.session("chat", client: client)
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "a question"), steer: false)
+        try await stream(client)
+        let sessionPath = await session.path, streamingID = await session.partialID
+        let path = try XCTUnwrap(sessionPath)
+        try await Task.sleep(nanoseconds: 3 * PartialReplyLog.flushDelayNanoseconds)
+        let copy = try killedCopy(path), directory = copy.deletingLastPathComponent()
+        await session.close()
+        let torn = try FileHandle(forWritingTo: copy); try torn.seekToEnd()
+        try torn.write(contentsOf: Data(#"{"type":"custom","id":"unfinish"#.utf8)); try torn.close()
+        XCTAssertThrowsError(try chat.session("chat", client: StallingClient(), resume: copy.path, in: directory))
+
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(chat.root.path), "directory": JSON(directory.path), "mcp": ["servers": [:]]])
+        let recovered = try await host.command("session.recover", sessionID: nil, params: ["path": JSON(copy.path), "newSessionId": "recovered-chat"])
+        await host.shutdown()
+        let recoveredPath = try XCTUnwrap(recovered["sessionFile"].text)
+        let reopened = try chat.session("recovered-chat", client: StallingClient(), resume: recoveredPath, in: directory)
+        let kept = await replies(reopened)
+        XCTAssertEqual(kept.map(\.id), [try XCTUnwrap(streamingID)]); XCTAssertEqual(kept.first?.text, pieces.joined())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: PartialReplyLog.url(for: copy).path), "the original is left as it was")
+        await reopened.close()
+    }
+
+    /// A reply the journal will not take is kept aside, and the chat says so.
+    func testAReplyThatCannotBeWrittenBackIsKeptAsideAndSaid() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let client = StallingClient(), session = try chat.session("chat", client: client)
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "a question"), steer: false)
+        try await stream(client)
+        let sessionPath = await session.path
+        let path = try XCTUnwrap(sessionPath)
+        try await Task.sleep(nanoseconds: 3 * PartialReplyLog.flushDelayNanoseconds)
+        let copy = try killedCopy(path), directory = copy.deletingLastPathComponent()
+        await session.close()
+
+        let reopened = try chat.session("chat", client: StallingClient(), resume: copy.path, in: directory, beforeAppend: { record in
+            if record["message"]["role"].text == "assistant" { throw AgentError("session_record_limit", "fixture: the record will not write") }
+        })
+        let kept = await replies(reopened), notice = await reopened.errorMessage
+        XCTAssertEqual(kept.count, 0)
+        XCTAssertTrue(notice?.contains("could not be added back") == true, notice ?? "no notice")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: PartialReplyLog.url(for: copy).path))
+        let aside = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix(copy.lastPathComponent + ".stream-unrestored-") }
+        XCTAssertEqual(aside.count, 1, "kept beside the chat's file")
         await reopened.close()
     }
 

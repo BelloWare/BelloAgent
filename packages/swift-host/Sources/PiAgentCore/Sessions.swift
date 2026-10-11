@@ -321,6 +321,7 @@ public actor AgentSession {
         // Before the interrupted task is pieced together from the rows: the
         // reply is its last.
         let streamLog=PartialReplyLog.url(for: url)
+        var unrestored=false
         if FileManager.default.fileExists(atPath: streamLog.path) {
             var settled=true
             if stateRecord?["active"].flag == true, let cut=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size) {
@@ -338,6 +339,8 @@ public actor AgentSession {
                 } catch { settled=false }
             }
             if settled { _=unlink(streamLog.path) }
+            // Kept aside, and said: left in place, a later settle or open removes it.
+            else { _=PartialReplyLog.setAside(streamLog); unrestored=true }
         }
         if let saved=stateRecord {
             if !saved["taskPresentation"].isNull,
@@ -381,6 +384,7 @@ public actor AgentSession {
                 runStatus = .failed; errorMessage=saved["errorMessage"].text ?? "Run failed."; errorCode=saved["errorCode"].text
             }
         }
+        if unrestored { errorMessage=(errorMessage.map { $0 + " " } ?? "") + "The reply that was arriving could not be added back to the chat; it is kept beside the chat's file." }
         // Never repeat a tool after a crash. Pair unresolved calls with explicit
         // unknown outcomes so future requests remain protocol-valid.
         let recoveredTools=ToolHistoryIndex(context)

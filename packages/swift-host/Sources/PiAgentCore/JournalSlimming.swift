@@ -61,9 +61,6 @@ enum JournalSlimming {
         removeLeftovers(in: directory)
         var outcome = Outcome()
         guard var binding = try nativeBinding(url) else { outcome.reason = "not-native"; return outcome }
-        // A reply a dead helper was streaming waits for the chat's next open,
-        // anchored where the journal is now: written again, it could not land.
-        guard !FileManager.default.fileExists(atPath: PartialReplyLog.url(for: url).path) else { outcome.reason = "unfinished-reply"; return outcome }
         // The session's own lock, as an open takes it: a session open in any
         // process holds it, and none can open while this does.
         let original: SessionJournal
@@ -77,6 +74,10 @@ enum JournalSlimming {
             do { original = try SessionJournal(url: url, id: id, cwd: directory, binding: binding, create: false) }
             catch let error as AgentError where error.code == "session_locked" { outcome.reason = "locked"; return outcome }
         }
+        // A reply a dead helper was streaming waits for the chat's next open,
+        // anchored where the journal is now: written again, it could not
+        // land. Looked for under the lock, which every writer of it holds.
+        guard !FileManager.default.fileExists(atPath: PartialReplyLog.url(for: url).path) else { outcome.reason = "unfinished-reply"; return outcome }
         return try withExtendedLifetime(original) { try slim(original, url: url, id: id, binding: binding, minimumSaving: minimumSaving, discard: discard, tamper: tamper) }
     }
 
