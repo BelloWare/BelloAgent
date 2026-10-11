@@ -357,6 +357,12 @@ impl Accumulator {
         Ok(reply)
     }
 }
+/// Whether a response body carries any output item.
+fn has_output(response: &Value) -> bool {
+    response["output"]
+        .as_array()
+        .is_some_and(|items| !items.is_empty())
+}
 fn string(v: &Value) -> String {
     v.as_str().unwrap_or("").into()
 }
@@ -690,7 +696,16 @@ impl ResponsesClient {
                 match value["type"].as_str().unwrap_or("") {
                     "response.output_item.added" => observation.clock.opened(),
                     "response.output_item.done" => observation.clock.produced(false),
-                    "response.completed" | "response.incomplete" | "response.failed" => {
+                    kind @ ("response.completed" | "response.incomplete" | "response.failed") => {
+                        // Usage is kept as reported, whatever later validation says.
+                        let usage = &value["response"]["usage"];
+                        if usage.is_object() {
+                            observation.usage = Some(usage.clone());
+                        }
+                        // A response whose output only the terminal carried.
+                        if kind != "response.failed" && has_output(&value["response"]) {
+                            observation.clock.final_content();
+                        }
                         observation.clock.terminal()
                     }
                     _ => {}
@@ -724,6 +739,10 @@ impl ResponsesClient {
         if !status.is_success() {
             let value = serde_json::from_slice::<Value>(&raw)
                 .unwrap_or_else(|_| json!({"message":String::from_utf8_lossy(&raw)}));
+            observation.cost.body(&value, false, &secret);
+            if value["usage"].is_object() {
+                observation.usage = Some(value["usage"].clone());
+            }
             let mut failure =
                 crate::provider_failure::Failure::rejection(&value, Some(status.as_u16()));
             failure.message = format!("HTTP {}: {}", status.as_u16(), failure.message);
@@ -739,7 +758,12 @@ impl ResponsesClient {
             let value: Value = serde_json::from_slice(&raw)
                 .map_err(|_| invalid("Provider emitted invalid JSON"))?;
             observation.cost.body(&value, false, &secret);
-            observation.clock.final_content();
+            if value["usage"].is_object() {
+                observation.usage = Some(value["usage"].clone());
+            }
+            if has_output(&value) {
+                observation.clock.final_content();
+            }
             observation.clock.terminal();
             acc.accept_json(value)
                 .map_err(|e| safe_failure(e, profile, credential, status.as_u16(), &attempt_id))?;
@@ -866,6 +890,111 @@ mod tests {
             ),
             Error::Provider(_)
         ));
+    }
+
+    /// One loopback response, sent through `complete_observed`.
+    async fn observed_fixture(
+        status: u16,
+        content_type: &str,
+        headers: &str,
+        body: String,
+    ) -> (Result<Reply>, AttemptObservation) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut profile = fixture_profile();
+        profile.base_url = format!("http://{}", listener.local_addr().unwrap());
+        let response = format!(
+            "HTTP/1.1 {status} Fixture\r\nContent-Type: {content_type}\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            loop {
+                let n = socket.read(&mut chunk).await.unwrap();
+                request.extend_from_slice(&chunk[..n]);
+                if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                    let length: usize = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length: "))
+                        .map_or(0, |v| v.trim().parse().unwrap());
+                    if request.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let client = ResponsesClient::new_synthetic_fixture().unwrap();
+        let mut observation = AttemptObservation::default();
+        let result = client
+            .complete_observed(
+                &profile,
+                &Credential::new("credential-secret".into()).unwrap(),
+                &json!({}),
+                "session",
+                "turn",
+                CancellationToken::new(),
+                |_| Ok(()),
+                &mut observation,
+            )
+            .await;
+        server.await.unwrap();
+        (result, observation)
+    }
+
+    #[tokio::test]
+    async fn accounting_keeps_usage_cost_and_timing_whatever_follows() {
+        // Output only in the terminal event: the request still has a TTFT.
+        let terminal = json!({"type":"response.completed","response":{"status":"completed",
+            "output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],
+            "usage":{"input_tokens":5,"output_tokens":2,"cost":0.25}}});
+        let (result, observation) = observed_fixture(
+            200,
+            "text/event-stream",
+            "",
+            format!("data: {terminal}\n\n"),
+        )
+        .await;
+        assert!(result.is_ok());
+        let record = observation.record("turn", None, None).unwrap();
+        assert!(record.ttft_ms.is_some() && record.stream_ms.is_some());
+        assert_eq!((record.usage.input, record.cost.usd), (Some(5), Some(0.25)));
+        // Malformed tool arguments fail the reply, not its reported usage.
+        let broken = json!({"type":"response.completed","response":{"status":"completed",
+            "output":[{"type":"function_call","call_id":"c","name":"ls","arguments":"{"}],
+            "usage":{"input_tokens":7,"output_tokens":3}}});
+        let (result, observation) =
+            observed_fixture(200, "text/event-stream", "", format!("data: {broken}\n\n")).await;
+        assert!(result.is_err());
+        let record = observation.record("turn", None, None).unwrap();
+        assert_eq!(record.outcome, "failed");
+        assert_eq!(record.usage.input, Some(7));
+        // An HTTP failure body's cost disagrees with its header: a conflict.
+        let (result, observation) = observed_fixture(
+            400,
+            "application/json",
+            "x-litellm-response-cost: 0.5\r\n",
+            json!({"error":{"message":"bad"},"usage":{"input_tokens":1,"cost":0.75}}).to_string(),
+        )
+        .await;
+        assert!(result.is_err());
+        let record = observation.record("turn", None, None).unwrap();
+        assert_eq!(record.cost.status, "conflict");
+        // An empty JSON reply has no first output.
+        let (_, observation) = observed_fixture(
+            200,
+            "application/json",
+            "",
+            json!({"status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":0}})
+                .to_string(),
+        )
+        .await;
+        let record = observation.record("turn", None, None).unwrap();
+        assert_eq!(record.ttft_ms, None);
+        assert!(record.request_ms.is_some());
     }
 
     async fn rejected_fixture(

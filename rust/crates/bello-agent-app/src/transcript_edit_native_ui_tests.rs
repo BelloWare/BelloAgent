@@ -202,7 +202,7 @@ async fn edit_native_workflow_trust_loopback_mutation_checkpoint_replay_and_diff
     server.join().unwrap();
     let restored = SessionStore::open(&path).unwrap();
     // This fixture creates a fresh session and records a completed tool batch.
-    assert_eq!(restored.snapshot().version, 9);
+    assert_eq!(restored.snapshot().version, 11);
     let rows = restored
         .snapshot()
         .messages

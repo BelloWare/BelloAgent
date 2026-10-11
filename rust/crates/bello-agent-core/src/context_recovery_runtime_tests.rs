@@ -1109,7 +1109,7 @@ async fn each_request_is_recorded_with_its_usage_and_survives_reopen() {
     assert!(
         done.requests
             .iter()
-            .all(|r| r.ttft_ms.is_some() && r.wall > 0.0)
+            .all(|r| r.wall > 0.0 && (r.ttft_ms.is_some() == (r.outcome == "completed")))
     );
     let totals = done.request_totals();
     assert_eq!((totals.requests, totals.turn_count), (3, 1));

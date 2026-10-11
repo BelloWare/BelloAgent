@@ -325,7 +325,18 @@ pub fn context_tokens(usage: &Value) -> u64 {
     if !usage.is_object() {
         return 0;
     }
-    let count = |value: &Value| value.as_u64().unwrap_or(0);
+    // Swift `UsageObservation.count`: any integral, non-negative number.
+    let count = |value: &Value| {
+        value
+            .as_u64()
+            .or_else(|| {
+                value
+                    .as_f64()
+                    .filter(|n| n.is_finite() && *n >= 0.0 && n.fract() == 0.0 && *n < 9.2e18)
+                    .map(|n| n as u64)
+            })
+            .unwrap_or(0)
+    };
     let details = &usage["input_tokens_details"];
     let (read, write) = (
         count(&details["cached_tokens"]),
