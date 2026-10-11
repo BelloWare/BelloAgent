@@ -17,6 +17,8 @@ pub(crate) use markdown_view::Child as MarkdownChild;
 mod polish_oracle;
 #[path = "transcript_read_presentation.rs"]
 mod read_presentation;
+#[path = "transcript_reply_files.rs"]
+mod reply_files;
 #[path = "transcript_response.rs"]
 mod response;
 #[path = "transcript_mixed_text.rs"]
@@ -3653,7 +3655,7 @@ fn render_row(
                                 // so a streaming reply redoes its tail.
                                 let style = bello_agent_core::markdown::Style::PROSE;
                                 let owner = SharedString::from(selector.clone());
-                                let (blocks, (slots, text_top, whole), shapes, copied, select) = {
+                                let (blocks, (slots, text_top, whole), shapes, copied, select, links) = {
                                     let mut editors = tool_editors.borrow_mut();
                                     let blocks = editors.markdown(&owner, &text, style);
                                     (
@@ -3662,8 +3664,18 @@ fn render_row(
                                         editors.shaped_text.clone(),
                                         editors.copied_code.as_ref().map(|(key, _)| key.clone()),
                                         editors.select(&owner, &message.id, !ambiguous, p),
+                                        editors.file_links.clone(),
                                     )
                                 };
+                                // Its code spans link the project's files.
+                                let select = select.map(|select| shaped_text::Select {
+                                    open_file: Some(reply_files::opener(
+                                        parent,
+                                        &input.chat_id,
+                                        &input.controller,
+                                    )),
+                                    ..select
+                                });
                                 // A viewport's height of blocks above and below
                                 // the screen is drawn; the rest stands aside.
                                 let visible = visible.clone().filter(|_| !whole).zip(text_top).map(
@@ -3686,11 +3698,23 @@ fn render_row(
                                         text: None,
                                         on_copy: copy_code(tool_editors, child),
                                         select,
+                                        files: (!ambiguous).then(|| markdown_view::Files {
+                                            links: links.clone(),
+                                            message: message.id.clone(),
+                                        }),
                                     },
                                     &markdown_view::Placement {
                                         slots: &slots,
                                         visible,
                                     },
+                                );
+                                reply_files::check(
+                                    &links,
+                                    parent,
+                                    child,
+                                    &input.chat_id,
+                                    &input.controller,
+                                    cx,
                                 );
                                 let editors = tool_editors.clone();
                                 vec![
@@ -3830,6 +3854,8 @@ struct ToolEditors {
     markdown: HashMap<SharedString, MarkdownEntry>,
     /// The transcript's text selection.
     selection: Rc<RefCell<selection::SelectionHost>>,
+    /// Which of the replies' code spans name a project file.
+    file_links: Rc<RefCell<reply_files::FileLinks>>,
     /// The fence whose Copy was pressed last and the press's number: it
     /// reads "Copied" for two seconds, as Swift's button does.
     copied_code: Option<(SharedString, u64)>,
@@ -3890,6 +3916,7 @@ fn reasoning_markdown(
             on_copy: copy_code(tool_editors, child),
             text: Some(muted),
             select,
+            files: None,
         },
         &markdown_view::Placement {
             slots: &[],
@@ -4221,6 +4248,7 @@ impl ToolEditors {
             quotable,
             base: 0,
             fill: selection_fill(p),
+            open_file: None,
         }
     }
     /// The slots a reply's blocks were last drawn in at this width, where its

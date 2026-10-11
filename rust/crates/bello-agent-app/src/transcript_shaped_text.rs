@@ -259,6 +259,8 @@ pub(super) struct Select {
     pub base: usize,
     /// The selection's fill, while the transcript has the focus and not.
     pub fill: (Hsla, Hsla),
+    /// Opens a file link's file (`bello-file:` links), where files open.
+    pub open_file: Option<Rc<dyn Fn(&str, &mut Window, &mut App)>>,
 }
 
 impl Select {
@@ -752,7 +754,17 @@ fn link_events(
                     && !selecting
                     && let Some(styled) = &hit.styled
                 {
-                    cx.open_url(&styled.links[began].url);
+                    let url = &styled.links[began].url;
+                    match url.strip_prefix(super::reply_files::SCHEME) {
+                        Some(file) => {
+                            if let Some(open) =
+                                select.as_ref().and_then(|select| select.open_file.clone())
+                            {
+                                open(file, window, cx);
+                            }
+                        }
+                        None => cx.open_url(url),
+                    }
                 }
             }
         });

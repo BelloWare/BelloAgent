@@ -147,3 +147,67 @@ fn the_quote_bar_quotes_the_selection_into_the_draft(cx: &mut TestAppContext) {
     // The bar is gone, and the draft has the focus.
     assert!(!cx.read(|cx| child.read(cx).quote_bar_up()));
 }
+
+/// A code span naming a file of the project is a link that opens the file
+/// in a tab at its line; one naming a file outside the project is not.
+#[gpui::test]
+fn a_code_span_that_names_a_project_file_opens_it(cx: &mut TestAppContext) {
+    let (directory, _window, root) = fixture(cx, messages(1), 0);
+    let project = std::fs::canonicalize(directory.path()).unwrap();
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(project.join("src/lib.rs"), "one\ntwo\nthree\n").unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let secret = std::fs::canonicalize(outside.path()).unwrap().join("secret.txt");
+    std::fs::write(&secret, "x").unwrap();
+    let mut changed = input(&root, cx);
+    let mut session = (*changed.session).clone();
+    session.messages = vec![
+        message("question", "user", "Where?"),
+        message(
+            "reply",
+            "assistant",
+            &format!("Open `src/lib.rs:2` or `{}`", secret.display()),
+        ),
+    ];
+    changed.session = Arc::new(session);
+    changed.visible_messages = usize::MAX;
+    let (mut visual, _child) = host(&root, changed, cx);
+    cx.run_until_parked();
+    let width = |text: &str, size: f32, visual: &mut VisualTestContext| {
+        visual.update(|window, _| {
+            let run = gpui::TextRun {
+                len: text.len(),
+                font: gpui::font(".SystemUIFont"),
+                color: gpui::black(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window
+                .text_system()
+                .shape_line(text.to_owned().into(), px(size), &[run], None)
+                .width
+        })
+    };
+    let into = width("Open ", 14.5, &mut visual) + width("sr", 13.05, &mut visual);
+    let opened = |cx: &TestAppContext| {
+        cx.read(|cx| {
+            root.read(cx)
+                .files
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<Vec<_>>()
+        })
+    };
+    let text = bounds(&mut visual, "transcript-text-reply").unwrap();
+    let not = width("Open ", 14.5, &mut visual)
+        + width("src/lib.rs:2", 13.05, &mut visual)
+        + width(" or ", 14.5, &mut visual)
+        + width("/v", 13.05, &mut visual);
+    visual.simulate_click(point(text.left() + not, text.top() + px(9.)), Modifiers::none());
+    cx.run_until_parked();
+    assert!(opened(cx).is_empty());
+    visual.simulate_click(point(text.left() + into, text.top() + px(9.)), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(opened(cx), vec![project.join("src/lib.rs")]);
+}

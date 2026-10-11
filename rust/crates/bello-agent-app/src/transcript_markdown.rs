@@ -152,6 +152,14 @@ pub(super) struct Context<'a> {
     pub text: Option<gpui::Hsla>,
     /// The reply's selectable text, which every text element is part of.
     pub select: Option<Select>,
+    /// A reply's file links: its code spans that name a project file.
+    pub files: Option<Files>,
+}
+
+/// A reply's file links, by its message.
+pub(super) struct Files {
+    pub links: Rc<RefCell<super::reply_files::FileLinks>>,
+    pub message: String,
 }
 
 /// A fence's Copy: its key and code.
@@ -598,7 +606,25 @@ fn scaled(spans: &[Span], size: f32) -> Vec<(std::ops::Range<usize>, gpui::Pixel
 
 fn text(spans: &[Span], size: f32, line: Line, cx: &Context, path: &str) -> AnyElement {
     let joined: String = spans.iter().map(|span| span.text.as_str()).collect();
-    let runs = spans.iter().map(|span| run(span, cx)).collect();
+    // A code span that names a project file reads as a link.
+    let files: Vec<bool> = spans
+        .iter()
+        .map(|span| {
+            span.code
+                && span.link.is_none()
+                && cx.files.as_ref().is_some_and(|files| {
+                    files.links.borrow_mut().link(&files.message, &span.text)
+                })
+        })
+        .collect();
+    let runs = spans
+        .iter()
+        .zip(&files)
+        .map(|(span, file)| TextRun {
+            color: if *file { cx.accent() } else { run(span, cx).color },
+            ..run(span, cx)
+        })
+        .collect();
     let scaled = scaled(spans, size);
     shaped_text::styled_text(
         cx.cache,
@@ -610,7 +636,7 @@ fn text(spans: &[Span], size: f32, line: Line, cx: &Context, path: &str) -> AnyE
             line_height: px(line.height),
             line_spacing: px(line.spacing),
             last: true,
-            links: links(spans),
+            links: links(spans, &files),
             scaled,
         },
         cx.select.clone(),
@@ -620,12 +646,16 @@ fn text(spans: &[Span], size: f32, line: Line, cx: &Context, path: &str) -> AnyE
 
 /// The spans' links by their bytes in the joined text; neighbouring spans of
 /// one link (a bold word inside it) are one link.
-fn links(spans: &[Span]) -> Vec<Link> {
+fn links(spans: &[Span], files: &[bool]) -> Vec<Link> {
     let mut links: Vec<Link> = Vec::new();
     let mut at = 0;
-    for span in spans {
+    for (index, span) in spans.iter().enumerate() {
         let end = at + span.text.len();
-        if let Some(url) = &span.link {
+        let file = files
+            .get(index)
+            .is_some_and(|file| *file)
+            .then(|| format!("{}{}", super::reply_files::SCHEME, span.text));
+        if let Some(url) = span.link.as_ref().or(file.as_ref()) {
             match links.last_mut() {
                 Some(last) if last.range.end == at && last.url.as_ref() == url => {
                     last.range.end = end;
