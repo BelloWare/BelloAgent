@@ -1447,7 +1447,9 @@ final class TranscriptNativeScrollView: NSScrollView {
         return count >= sample * 2 || count >= sample + 128
     }
     private func measureHistoryRowHeight(placedHeight: CGFloat) {
-        guard let page, let snapshot, !snapshot.messages.isEmpty, placedHeight > 0 else { return }
+        // Only the chat's own timeline, with room to size: an earlier version
+        // shown in its place (no extent) is not what the room stands for.
+        guard let page, let snapshot, snapshot.extent != nil, !snapshot.messages.isEmpty, placedHeight > 0 else { return }
         let count = snapshot.messages.count
         if let known = page.historyRowHeight, known > 0 {
             // A wheel AppKit is still applying lands on the old geometry.

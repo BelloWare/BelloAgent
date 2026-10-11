@@ -359,9 +359,16 @@ extension WorkspaceModel {
         guard view.positionsReadFor != (lineage ?? "") else { return }
         view.positionsReadFor = lineage ?? ""
         Task { [weak self, weak view] in
-            guard let self, let view, let page = try? await self.readConversationWindow(item, cursor: nil),
-                  lineage == nil || page.lineage == lineage, view.historyPositions.total == nil,
-                  view.presentation.identity?.lineage == lineage else { return }
+            guard let self, let view else { return }
+            guard let page = try? await self.readConversationWindow(item, cursor: nil) else {
+                // Not read (a helper busy, say): asked again by the next update.
+                if view.positionsReadFor == (lineage ?? "") { view.positionsReadFor = nil }
+                return
+            }
+            // The timeline the window shows now (a new side's first snapshot
+            // names it after this was asked).
+            let shown = view.presentation.identity?.lineage
+            guard shown == nil || page.lineage == shown, view.historyPositions.total == nil else { return }
             view.historyPositions.record(page)
             // The page works out the room again for the rows it shows.
             view.presentationChanges.send(view.presentationChanges.value)
