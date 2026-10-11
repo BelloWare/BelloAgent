@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Launch to a settled window, over synthetic data only (docs/perf/launch-0.1.123.md).
+#
+#   scripts/perf-launch.sh <fixture> <out> <label>=<app> [<label>=<app> ...]
+#
+# <fixture>  a folder from LaunchFixtureWriter (PI_APP_LAUNCH_FIXTURE), best
+#            "settled" by one launch and quit of the app first, so the request
+#            archive and search index exist as they do on a reader's Mac.
+# <app>      a Release build made with
+#            SWIFT_ACTIVE_COMPILATION_CONDITIONS='$(inherited) PI_LAUNCH_FIXTURE':
+#            it reads the fixture's vault.json and never the Keychain. Each app
+#            is copied and given the bundle id com.belloware.PiApp.launchperf,
+#            so its preferences never touch the reader's com.belloware.PiApp.
+# BELLOPERF  the belloperf harness binary (Rust port's validation harness,
+#            rust/docs/validation/swift-rust-performance-2026-10-10/harness).
+# WARM, COLD trials per app (default 8 and 5); cold runs `sudo -n purge` first.
+#
+# Every trial starts from a fresh copy of the fixture, with HOME and
+# CFFIXED_USER_HOME pointing into it, and trials alternate between the apps.
+# Results: <out>/raw/<label>-<warm|cold>-<n>.json; summarize with the
+# harness's analyze-launch.py <out>.
+set -euo pipefail
+FIXTURE=$1 OUT=$2; shift 2
+: "${BELLOPERF:?Set BELLOPERF to the belloperf binary}"
+WARM=${WARM:-8} COLD=${COLD:-5} IDLE=${IDLE:-2}
+DOMAIN=com.belloware.PiApp.launchperf
+mkdir -p "$OUT/raw" "$OUT/apps"
+OWNER_PREFS="$HOME/Library/Preferences/com.belloware.PiApp.plist"
+owner_mark=$(stat -f %m "$OWNER_PREFS" 2>/dev/null || echo none)
+labels=() exes=()
+for spec in "$@"; do
+  label=${spec%%=*} app=${spec#*=}
+  rm -rf "$OUT/apps/$label"; mkdir -p "$OUT/apps/$label"
+  ditto "$app" "$OUT/apps/$label/LaunchProbe-$label.app"
+  plist="$OUT/apps/$label/LaunchProbe-$label.app/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $DOMAIN" -c "Set :CFBundleName LaunchProbe-$label" "$plist"
+  labels+=("$label"); exes+=("$OUT/apps/$label/LaunchProbe-$label.app/Contents/MacOS/Bello Agent")
+done
+trial() { # label exe kind index
+  local run="$OUT/run"
+  rm -rf "$run"; ditto "$FIXTURE" "$run"
+  defaults delete "$DOMAIN" >/dev/null 2>&1 || true
+  local cold=(); [ "$3" = cold ] && cold=(--cold)
+  "$BELLOPERF" launch --label "$1" --trials 1 --prime 0 --idle "$IDLE" "${cold[@]}" \
+    --env HOME="$run/home" --env CFFIXED_USER_HOME="$run/home" --env PI_APP_LAUNCH_FIXTURE_VAULT="$run/vault.json" \
+    --out "$OUT/raw/$1-$3-$4.json" -- "$2" | grep -E '^'"$1"' trial' | grep -oE '"(windowMs|settledMs)": [0-9.]+' | tr '\n' ' '
+  echo " load $(sysctl -n vm.loadavg)"
+}
+echo "priming"; for i in "${!labels[@]}"; do trial "${labels[$i]}" "${exes[$i]}" prime 0 >/dev/null; done
+for kind in warm cold; do
+  count=$WARM; [ $kind = cold ] && count=$COLD
+  for ((n = 1; n <= count; n++)); do
+    order=("${!labels[@]}"); [ $((n % 2)) = 0 ] && order=($(printf '%s\n' "${!labels[@]}" | sort -rn))
+    for i in "${order[@]}"; do printf '%s %s %d: ' "${labels[$i]}" $kind $n; trial "${labels[$i]}" "${exes[$i]}" $kind $n; done
+  done
+done
+rm -rf "$OUT/run" "$OUT/raw/"*-prime-*.json
+defaults delete "$DOMAIN" >/dev/null 2>&1 || true
+[ "$(stat -f %m "$OWNER_PREFS" 2>/dev/null || echo none)" = "$owner_mark" ] || echo "WARNING: $OWNER_PREFS changed during the run" >&2
