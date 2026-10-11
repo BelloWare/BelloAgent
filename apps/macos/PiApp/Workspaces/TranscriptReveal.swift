@@ -58,13 +58,172 @@ extension WorkspaceModel {
         return await readWindow(item, view: view, around: nil)
     }
 
+    /// The reader has scrolled, or dragged the scroller, into room the
+    /// transcript keeps for rows it has not read (`HistoryExtent`): the page
+    /// that starts at row `position` of the timeline is read and replaces the
+    /// window, its first row landed `offset` points below the viewport's top,
+    /// where the room put it — so the reader stays where they are and the
+    /// rows appear around them. The reader's own movement does not cancel it,
+    /// as it does a reveal: it is where they are going. A read under way
+    /// holds the newest wish and reads that next, so a drag reads at most one
+    /// page at a time and always ends on where the drag ended.
+    func jumpToHistoryPosition(_ id: String, position: Int, offset: Double) {
+        // A chat changed elsewhere is read again whole (Reload), not by place;
+        // and a selection the reader holds keeps the window that has it.
+        guard transcriptShows(id), let view = displays[id], let item = record(id), view.revealRead == nil,
+              view.newerPage.error != Self.branchChangedElsewhere else { return }
+        // Reading the page there would let go of the selection: said at the
+        // edge, as an edge's read says it, instead of leaving room unexplained.
+        guard view.pinnedHistoryIDs.isEmpty else {
+            if view.olderPage.error == nil { view.olderPage.error = Self.selectionHoldsWindow }
+            return
+        }
+        // The place being read already is not asked for again (layout passes
+        // report where the reader is as often as they run).
+        if view.jumpRead != nil {
+            if view.jumpReading == position { view.jumpWanted = nil; view.jumpOffset = offset } else { view.jumpWanted = (position, offset) }
+            return
+        }
+        if let failed = view.jumpFailedAt, ProcessInfo.processInfo.systemUptime - failed < 1 { view.jumpRetry = (position, offset); return }
+        view.jumpRetry = nil
+        revealSerial += 1
+        let serial = revealSerial, generation = view.presentationGeneration, navigation = messageNavigationRevision
+        view.jumpRead = serial; view.jumpWanted = nil; view.jumpReading = position; view.jumpOffset = offset
+        // The timeline the window holds: a position counts rows of it, and a
+        // page of another (the chat changed elsewhere) is not read in its
+        // place; that change is the page's to report.
+        let lineage = view.presentation.identity?.lineage, incarnation = view.presentation.identity?.incarnation
+        // The same source, or the other kind of it (the journal and the
+        // helper hand a chat over); a journal replaced under the window is
+        // not, and is reported as a change.
+        func sameSource(_ page: ConversationHistoryPage) -> Bool {
+            guard let lineage, let incarnation else { return true }
+            return page.lineage == lineage && (page.incarnation == incarnation || page.incarnation.hasPrefix("file:") != incarnation.hasPrefix("file:"))
+        }
+        func current() -> Bool {
+            !Task.isCancelled && displays[item.id] === view && view.presentationGeneration == generation && view.jumpRead == serial
+                && view.revealRead == nil && transcriptShows(item.id) && messageNavigationRevision == navigation
+        }
+        // Reads at the old window's edges join rows that are about to go.
+        view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
+        Task { [weak self] in
+            guard let self else { return }
+            // A read that came to nothing pauses position reads for a second;
+            // then the place the reader is at by then (`jumpRetry`) is read.
+            @MainActor func pause(retrying retry: (position: Int, offset: Double)?) {
+                view.jumpFailedAt = ProcessInfo.processInfo.systemUptime; view.jumpRetry = retry
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak view] in
+                    guard let self, let view else { return }
+                    view.jumpFailedAt = nil
+                    guard let retry = view.jumpRetry else { return }
+                    self.jumpToHistoryPosition(item.id, position: retry.position, offset: retry.offset)
+                }
+            }
+            defer {
+                if view.jumpRead == serial {
+                    view.jumpRead = nil
+                    // Where the reader went while this page was read.
+                    // (Asked for where the reader is now, even if the chat was
+                    // opened again meanwhile.)
+                    if let wanted = view.jumpWanted {
+                        view.jumpWanted = nil
+                        self.jumpToHistoryPosition(item.id, position: wanted.position, offset: wanted.offset)
+                    }
+                }
+            }
+            do {
+                var page = try await self.readConversationWindow(item, cursor: nil, position: position,
+                                                                 validating: view.olderPage.cursor ?? view.newerPage.cursor)
+                guard current() else { return }
+                // A page with no row to draw (old records with nothing to
+                // show) is read past, after it and then before it; one with
+                // nothing drawn on either side within reach is not asked for
+                // again at once.
+                guard let found = try await Self.drawablePage(from: page, reading: { boundary, newer in
+                    try await self.readConversationWindow(item, cursor: boundary, newer: newer)
+                }) else { pause(retrying: nil); return }
+                guard current() else { return }
+                page = found.page
+                let first = found.landing
+                // The chat changed elsewhere: said as a snapshot says it, with
+                // the way to read it again, rather than left as blank room.
+                guard sameSource(page) else {
+                    view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere); view.browsingHistory = true
+                    return
+                }
+                page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
+                // The reader has gone on to another place: that one is read
+                // next, and this one is not landed on the way.
+                guard current(), view.jumpWanted == nil, view.newerPage.error != Self.branchChangedElsewhere,
+                      view.presentation.identity?.lineage == lineage else { return }
+                view.jumpFailedAt = nil
+                // Where the reader is now within the row read for.
+                self.adoptInitialHistory(page, into: view, around: first, landing: view.jumpOffset ?? offset)
+                view.browsingHistory = page.newer != nil
+                self.anchorChanged(view)
+                // At the newest row of a chat its helper has open: the reply
+                // being written is the helper's to show, not the journal's.
+                if page.newer == nil, self.opened.contains(item.id) { self.refresh(item.id) }
+            } catch {
+                // Read again where the reader is, a moment from now, while
+                // they are still in the room (`TranscriptPage.readerReachedUnreadRows`).
+                // The journal was replaced or edited under the window: said
+                // as a changed branch is, with Reload.
+                if Self.isSourceChange(error), current() {
+                    view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere); view.browsingHistory = true
+                } else if !(error is CancellationError), current() {
+                    // Tried again in a moment, where the reader is within the row
+                    // now, unless they have gone somewhere else (`abandonJump`).
+                    pause(retrying: (position, view.jumpOffset ?? offset))
+                }
+            }
+        }
+    }
+
+    /// The page a position read lands on, and its row: the page read, or —
+    /// when it holds no row to draw (old records with nothing to show) — the
+    /// next page after it that does, then the one before.
+    @MainActor static func drawablePage(from page: ConversationHistoryPage, limit: Int = 8,
+                                        reading: (ConversationCursor, Bool) async throws -> ConversationHistoryPage) async throws -> (page: ConversationHistoryPage, landing: String)? {
+        if let landing = landingMessageID(in: page.messages) { return (page, landing) }
+        for newer in [true, false] {
+            var current = page
+            for _ in 0..<limit {
+                guard let next = newer ? current.newer : current.older else { break }
+                current = try await reading(next, newer)
+                if let landing = landingMessageID(in: current.messages) { return (current, landing) }
+            }
+        }
+        return nil
+    }
+    /// The message of a page a position read lands on: the first one the
+    /// transcript draws a row for, as the page's own row plan says
+    /// (`TranscriptActivity.blocks`) — not an edit's marker, a record folded
+    /// into another row, or an old reply with nothing to show.
+    @MainActor static func landingMessageID(in messages: [TranscriptMessage]) -> String? {
+        let drawn = Set(TranscriptActivity.blocks(of: SessionDisplay.hidingBranchMarkers(messages), complete: false).flatMap(\.messageIDs))
+        return messages.first { drawn.contains($0.id) }?.id
+    }
+
+    /// Whether a read failed because the history is no longer the one the
+    /// window was read from (replaced, edited, or a boundary gone).
+    nonisolated static func isSourceChange(_ error: Error) -> Bool {
+        switch error as? HostError {
+        case .failure(let message)?: return message.localizedCaseInsensitiveContains("history") || message.contains("changed")
+        // The helper's own word for it (`session.history`).
+        case .rejected(let code, _)?: return code == "history_changed" || code == "message_missing"
+        case nil: return false
+        }
+    }
+    static let selectionHoldsWindow = "The selected text is at the display boundary. Clear the selection to load more history."
+
     /// Whether chat `id`'s transcript is what the reader has in front of them:
     /// the chats page, with the chat selected or open as the side beside it.
     private func transcriptShows(_ id: String) -> Bool {
         page == .chats && (id == selectedID || sides[selectedID ?? ""]?.id == id)
     }
     private func land(_ view: SessionDisplay, on messageID: String, landing: Double = TranscriptReveal.landing) {
-        view.revealRead = nil
+        view.revealRead = nil; view.abandonJump()
         view.scrollAnchor = .init(id: messageID, offset: landing, followsBottom: false)
         view.viewportRequestOpens = false; view.viewportRequest += 1
         anchorChanged(view)
@@ -78,7 +237,7 @@ extension WorkspaceModel {
         // must not land on an earlier match whose read came back last.
         revealSerial += 1
         let serial = revealSerial, navigation = messageNavigationRevision
-        view.revealRead = serial; view.revealFailure = nil
+        view.revealRead = serial; view.revealFailure = nil; view.abandonJump()
         // Only into a transcript that still shows this chat: a read that
         // lands after the reader went to another chat leaves this one as it was.
         func current() -> Bool {

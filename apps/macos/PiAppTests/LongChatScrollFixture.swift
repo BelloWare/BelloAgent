@@ -21,7 +21,10 @@ import AppKit
     /// `bigOutputTurn`: that turn's first tool output is larger than a page
     /// may hold (`HistoryWindowPolicy.envelopeBytes`), and its second one
     /// ends with a line nothing else says, "zephyr checkpoint 42".
-    static func journal(turns: Int, bigOutputTurn: Int? = nil) throws -> Data {
+    /// `markTurn`: that turn's reply ends with "zephyr checkpoint 42", which
+    /// nothing else in the chat says (the Swift-vs-Rust find benchmark's
+    /// query, `longchat_fixture.py`).
+    static func journal(turns: Int, bigOutputTurn: Int? = nil, markTurn: Int? = nil) throws -> Data {
         let encoder = JSONEncoder()
         var data = Data(), parent: String? = nil
         func add(_ id: String, _ message: [String: WireValue]) throws {
@@ -59,18 +62,18 @@ import AppKit
                 let block: String = "```swift\n" + code(8 + (turn + section) % 22, turn * 100 + section) + "\n```\n"
                 parts.append(heading + body + list + block)
             }
-            let reply = parts.joined(separator: "\n") + "\n\nThat is everything for question \(turn)."
+            let reply = parts.joined(separator: "\n") + "\n\nThat is everything for question \(turn)." + (turn == markTurn ? " zephyr checkpoint 42" : "")
             try add("a\(turn)b", ["role": .string("assistant"), "content": .string(reply)])
         }
         return data
     }
 
-    init(turns: Int, width: CGFloat = 900, height: CGFloat = 760, bigOutputTurn: Int? = nil) async throws {
+    init(turns: Int, width: CGFloat = 900, height: CGFloat = 760, bigOutputTurn: Int? = nil, markTurn: Int? = nil) async throws {
         self.turns = turns
         root = scratchRoot("long-chat-scroll")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let file = root.appendingPathComponent("long.jsonl")
-        try Self.journal(turns: turns, bigOutputTurn: bigOutputTurn).write(to: file)
+        try Self.journal(turns: turns, bigOutputTurn: bigOutputTurn, markTurn: markTurn).write(to: file)
         model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         try await model.reloadConfiguration()
         chat = ChatRecord(id: "long", workspaceID: "project", title: "Long", path: file.path, profileID: "profile")
@@ -124,7 +127,14 @@ import AppKit
     }
 
     /// How the reader moves.
-    enum Input { case gesture, wheel, scroller }
+    enum Input {
+        case gesture, wheel, scroller
+        /// The scroller's knob dragged along a path: its fraction at each
+        /// second of the run.
+        case drag((Double) -> CGFloat)
+        var isWheel: Bool { if case .wheel = self { return true }; return false }
+        var isDrag: Bool { if case .drag = self { return true }; return false }
+    }
     /// One wheel event of `points` (positive scrolls up, toward the start).
     /// AppKit applies it on its own schedule, up to a frame later.
     func wheel(_ points: CGFloat) {
@@ -171,6 +181,8 @@ import AppKit
         var jumps: [String] = []
         var lost = 0
         var stallFrames = 0                // frames the reader pushed at an edge with more to read
+        var blankFrames = 0                // frames where rows covered less than half the viewport
+        var documentHeights: [CGFloat] = []
         var loads = 0
         var errors: [String] = []
         var reached = false
@@ -185,9 +197,15 @@ import AppKit
             let sorted = values.sorted(); return sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * p))]
         }
         func summary(_ label: String) -> String {
-            String(format: "LONGSCROLL %@: reached=%@ %.1f s, %d frames, interval p50/p95/p99/max %.1f/%.1f/%.1f/%.1f ms, work p95/max %.1f/%.1f ms, over 25 ms %d, over 50 ms %d, jumps %d, lost %d, stall frames %d, loads %d, errors %d",
+            String(format: "LONGSCROLL %@: reached=%@ %.1f s, %d frames, interval p50/p95/p99/max %.1f/%.1f/%.1f/%.1f ms, work p95/max %.1f/%.1f ms, over 25 ms %d, over 50 ms %d, jumps %d, lost %d, stall frames %d, blank frames %d, loads %d, errors %d, document %.0f…%.0f pt (%d resizes over 5%%)",
                    label, reached ? "yes" : "NO", seconds, frames.count, percentile(frames, 0.5), percentile(frames, 0.95), percentile(frames, 0.99), frames.max() ?? 0,
-                   percentile(work, 0.95), work.max() ?? 0, frames.filter { $0 > 25 }.count, frames.filter { $0 > 50 }.count, jumps.count, lost, stallFrames, loads, errors.count)
+                   percentile(work, 0.95), work.max() ?? 0, frames.filter { $0 > 25 }.count, frames.filter { $0 > 50 }.count, jumps.count, lost, stallFrames, blankFrames, loads, errors.count,
+                   documentHeights.min() ?? 0, documentHeights.max() ?? 0, documentResizes)
+        }
+        /// Frames where the document's height changed by more than 5%: the
+        /// scroller's knob changing size or place under the reader.
+        var documentResizes: Int {
+            zip(documentHeights, documentHeights.dropFirst()).filter { abs($1 - $0) > max(1, $0 * 0.05) }.count
         }
     }
 
@@ -234,18 +252,20 @@ import AppKit
                 case .gesture: wrong = abs(moved) > 1
                 case .wheel: wrong = along < -1 || along > abs(points) * 4 + 1
                 case .scroller: wrong = along < -1
+                // A drag puts the reader anywhere; only blank frames count.
+                case .drag: wrong = false
                 }
                 if wrong {
                     run.jumps.append(String(format: "between frames %d: %@ moved %.1f pt (row in document %.1f -> %.1f, clip %.1f -> %.1f, rows %d, first %@, anchor %@ %@)", run.frames.count, previous.id, moved,
                                             previousRowY, now + clipY, previousClip, clipY, view.messages.count, view.messages.first?.id ?? "-",
                                             scroll?.transcriptReading.hasAnchor == true ? "held" : "none", scroll?.transcriptReading.lastInvalidation ?? "-"))
                 }
-            } else if previous != nil { run.lost += 1 }
+            } else if previous != nil, !input.isDrag { run.lost += 1 }
             onFrame()
             let before = readingRow(), y = clipY
             let room = points > 0 ? max(0, y - lowest) : max(0, highest - y)
             let expected = points > 0 ? min(points, room) : -min(-points, room)
-            if room < 0.5 { run.stallFrames += 1 }
+            if room < 0.5, !input.isDrag { run.stallFrames += 1 }
             switch input {
             case .wheel: wheel(points)
             case .gesture:
@@ -254,14 +274,19 @@ import AppKit
             case .scroller:
                 if run.frames.isEmpty { beginGesture() }
                 dragKnob(to: points > 0 ? 0 : 1)
+            case .drag(let path):
+                if run.frames.isEmpty { beginGesture() }
+                dragKnob(to: path(clock.systemUptime - began))
             }
             draw()
             run.work.append((clock.systemUptime - start) * 1000)
-            if input == .gesture, let before, let now = screenTop(of: before.id) {
+            if blankViewport { run.blankFrames += 1 }
+            run.documentHeights.append(document?.frame.height ?? 0)
+            if case .gesture = input, let before, let now = screenTop(of: before.id) {
                 // Rows move down on screen as the reader scrolls up.
                 let moved = now - before.top
                 if abs(moved - expected) > 1 { run.jumps.append(String(format: "frame %d: %@ moved %.1f pt, scroll %.1f", run.frames.count, before.id, moved, expected)) }
-            } else if input == .gesture, before != nil { run.lost += 1 }
+            } else if case .gesture = input, before != nil { run.lost += 1 }
             previous = readingRow()
             previousClip = clipY; previousRowY = (previous?.top ?? 0) + clipY
             let loading = view.olderPage.loading || view.newerPage.loading
@@ -273,11 +298,21 @@ import AppKit
             if next < now { next = now }
             try? await Task.sleep(for: .seconds(next - now))
         }
-        if input != .wheel { endGesture() }
+        if !input.isWheel { endGesture() }
         if !run.reached, done() { run.reached = true }
         run.seconds = clock.systemUptime - began
         return run
     }
+    /// Less than half the viewport is covered by rows: the reader is looking
+    /// at room kept for rows not read yet, or past the page's end.
+    var blankViewport: Bool {
+        guard let document, let scroll, let first = document.retainedRows.first, let last = document.retainedRows.last else { return false }
+        let view = scroll.contentView.bounds
+        let covered = max(0, min(view.maxY, last.frame.maxY) - max(view.minY, first.frame.minY))
+        return covered < view.height / 2
+    }
+    /// The scroller's knob as a fraction of the document (0 is the top).
+    var knobFraction: CGFloat { highest > lowest ? (clipY - lowest) / (highest - lowest) : 0 }
     var atFirstMessage: Bool {
         view.messages.first?.id == firstID && view.olderPage.cursor == nil && clipY <= lowest + 0.5
     }

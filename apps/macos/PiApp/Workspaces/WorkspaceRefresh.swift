@@ -294,6 +294,9 @@ extension WorkspaceModel {
             if view.messages != messages {
                 let accountingChanged = Self.accountingTargetsChanged(from: view.messages, to: messages)
                 view.messages = messages
+                // Live rows with no page to say where they stand (a new side,
+                // an edit's new branch): it is read once.
+                if view.historyPositions.total == nil { reacquireHistoryPositions(id) }
                 // A newly visible answer can take ownership of
                 // a request whose metadata arrived before it.
                 if accountingChanged { scheduleAccounting(id, workspaceID: item.workspaceID) }
@@ -416,6 +419,10 @@ extension WorkspaceModel {
         guard bounded.count < view.messages.count, let first = bounded.first,
               heldRows(view).isSubset(of: Set(bounded.map(\.id))) else { return }
         let accountingChanged = Self.accountingTargetsChanged(from: view.messages, to: bounded)
+        // The rows and their earlier boundary are published together: the
+        // transcript keeps room for the rows let go of only once it knows
+        // there are rows before the window (`HistoryExtent`).
+        view.beginTranscriptBatch(); defer { view.endTranscriptBatch() }
         view.messages = bounded
         let edge = ConversationCursor(incarnation: identity.incarnation, lineage: identity.lineage, entry: first.id)
         if !view.olderPage.loading { view.olderPage = .init(cursor: edge) } else { view.olderPage.cursor = edge }

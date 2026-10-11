@@ -241,6 +241,48 @@ final class TranscriptNativeScrollView: NSScrollView {
     static let emptyLabelHeight: CGFloat = 22
     static let emptyPageHeight: CGFloat = 74
     private var liveResizing = false
+    /// The room kept above the first row and below the last for the rows of
+    /// the chat the window does not hold (`HistoryExtent`): as many rows as
+    /// the history says, at the height this chat's rows take on average.
+    private(set) var leadingSpace: CGFloat = 0
+    private(set) var trailingSpace: CGFloat = 0
+    /// What a row is taken to be worth before any of the chat has been laid out.
+    static let provisionalRowHeight: CGFloat = 200
+    /// The most room a chat is given, in points. A drawn layer's place is
+    /// kept in single precision past the app, which stops resolving a point
+    /// past 2²⁴; a chat longer than this keeps its proportions in less room.
+    static let roomLimit: CGFloat = 8_000_000
+    /// The height one row not read takes in the room: the chat's average,
+    /// or less in a chat too long for the room (`roomLimit`).
+    private(set) var roomRowHeight: CGFloat = 0
+    /// When the viewport last moved, and how long it must stand still before
+    /// the room is measured again.
+    private var viewportMovedAt: TimeInterval = 0
+    static let roomQuietPeriod: TimeInterval = 0.3
+    private var roomMeasurementScheduled = false
+    /// Measures the room again once the reader has stood still.
+    private func scheduleRoomMeasurement() {
+        guard !roomMeasurementScheduled else { return }
+        roomMeasurementScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.roomQuietPeriod) { [weak self] in
+            guard let self else { return }
+            self.roomMeasurementScheduled = false
+            self.dirty = true; self.scheduleLayout()
+        }
+    }
+    /// How far the room above the rows changed in this pass, for a reader
+    /// among them, who moves with the rows.
+    private var roomShift: CGFloat = 0
+    /// For a reader in the room below the window, how many of its rows lie
+    /// between the window's last row and the top of their screen.
+    private var trailingPlace: CGFloat?
+    /// The rooms for this pass, from the snapshot's extent.
+    private func roomHeights() -> (leading: CGFloat, trailing: CGFloat) {
+        guard let extent = snapshot?.extent, !rows.isEmpty else { roomRowHeight = 0; return (0, 0) }
+        let unread = CGFloat(extent.before + extent.after)
+        roomRowHeight = min(page?.historyRowHeight ?? Self.provisionalRowHeight, Self.roomLimit / max(1, unread))
+        return (CGFloat(extent.before) * roomRowHeight, CGFloat(extent.after) * roomRowHeight)
+    }
     /// What the last idle unit spent placing the page. The next one measures
     /// rows for at least that long before placing it again.
     private var slicePlacementSeconds: TimeInterval = 0
@@ -977,7 +1019,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.mountSeconds += TranscriptLayoutClock.now - clock } }
         var buffered = Self.buffered(clip.bounds)
         let selected = rowOwningFirstResponder()
-        page?.pinSelectedRow(selected?.contentItem)
+        page?.pinSelectedRow(Self.responderHoldsRow(window?.firstResponder) ? selected?.contentItem : nil)
         // No estimate is ever drawn: a row standing at one that the reader has
         // reached is measured now, whatever the slice budget says, and the page
         // placed again around it. Each round makes at least one more row exact,
@@ -1037,11 +1079,13 @@ final class TranscriptNativeScrollView: NSScrollView {
         // the shared quiet deadline, retaining the last real travel direction.
         if let lastViewportTop, abs(clip.bounds.minY - lastViewportTop) > 0.5 {
             travelingForward = clip.bounds.minY > lastViewportTop
+            viewportMovedAt = ProcessInfo.processInfo.systemUptime
         }
         lastViewportTop = clip.bounds.minY
         if !highlights.isEmpty { markMountedRows() }
         if focusPending { scheduleFocusReveal() }
         if cold || !approximate.isEmpty { scheduleSlice() }
+        noteReaderInRoom(clip)
     }
     /// Builds the trees the reader is about to need, in the direction they
     /// are going. Returns whether it constructed a host.
@@ -1077,8 +1121,8 @@ final class TranscriptNativeScrollView: NSScrollView {
         guard !rows.isEmpty else { return [] }
         let tops = Self.rowTops(rows.map { row in
             row.measuredHeight(width: width) ?? (row.neverMeasured ? row.estimatedHeight(width: width) : max(1, row.frame.height))
-        })
-        let total = tops[rows.count] + TranscriptMetrics.pageBottomInset
+        }, from: TranscriptMetrics.pageTopInset + leadingSpace)
+        let total = tops[rows.count] + trailingSpace + TranscriptMetrics.pageBottomInset
         let buffer = Self.bufferMargin(viewportHeight)
         let bottom = max(0, total - viewportHeight)
         var wanted: [CGFloat] = []
@@ -1091,7 +1135,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         // Where the page is parked right now counts too: until it has moved to
         // its opening position, that is what the reader is looking at. A pass
         // that is about to park the page has no such moment.
-        if !parking { wanted.append(enclosingScrollView?.contentView.bounds.minY ?? 0) }
+        if !parking { wanted.append((enclosingScrollView?.contentView.bounds.minY ?? 0) + roomShift) }
         var band: Set<Int> = []
         for want in wanted {
             let top = min(max(0, want), bottom)
@@ -1112,10 +1156,10 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// Where each row of these heights starts when they are placed in order
     /// from the top of the page, as `layoutRows` places them, and where the
     /// last one ends.
-    static func rowTops(_ heights: [CGFloat]) -> [CGFloat] {
+    static func rowTops(_ heights: [CGFloat], from top: CGFloat = TranscriptMetrics.pageTopInset) -> [CGFloat] {
         var tops: [CGFloat] = []
         tops.reserveCapacity(heights.count + 1)
-        var y = TranscriptMetrics.pageTopInset
+        var y = top
         for height in heights {
             tops.append(y)
             y += height
@@ -1187,15 +1231,45 @@ final class TranscriptNativeScrollView: NSScrollView {
         }
         dirty = false
         page?.preserveReadingPositionForLayout()
+        // Room that changes moves every row: the pass places them all again,
+        // and a reader among the rows moves with them in the same pass
+        // (`finishPass`), before anything is mounted or drawn where they were.
+        let previousRowHeight = roomRowHeight
+        let rooms = roomHeights()
+        // A reader whose whole screen is room below the window keeps their
+        // row of the chat there too (`finishPass`), not the window's last row.
+        if let clip = enclosingScrollView?.contentView, let last = rows.last, last.frame.height > 0, previousRowHeight > 0,
+           abs(roomRowHeight - previousRowHeight) > 0.01, !(page?.followsBottom ?? true), (snapshot?.extent?.after ?? 0) > 0,
+           clip.bounds.minY >= last.frame.maxY {
+            trailingPlace = (clip.bounds.minY - last.frame.maxY) / previousRowHeight
+            enclosingScrollView?.transcriptReading.letGo()
+            markDirty(from: 0)
+        }
+        if abs(rooms.leading - leadingSpace) > 0.01 {
+            markDirty(from: 0)
+            if trailingPlace == nil, let clip = enclosingScrollView?.contentView, !rows.isEmpty, !(page?.followsBottom ?? true) {
+                let top = TranscriptMetrics.pageTopInset
+                if clip.bounds.minY >= top + leadingSpace - 1 { roomShift += rooms.leading - leadingSpace }
+                else if previousRowHeight > 0, clip.bounds.maxY <= top + leadingSpace {
+                    // A reader in the room above the window keeps their row
+                    // of the chat (the one the room put at the top of their
+                    // screen), not a row of the window off their screen.
+                    let place = (clip.bounds.minY - top) / previousRowHeight
+                    roomShift += top + place * roomRowHeight - clip.bounds.minY
+                    enclosingScrollView?.transcriptReading.letGo()
+                }
+            }
+        }
+        leadingSpace = rooms.leading; trailingSpace = rooms.trailing
         rowWidth = nextWidth
         let left = (width - nextWidth) / 2
         // Only the buffered viewport needs its native tree laid out now; a row
         // outside it lays out when the reader scrolls it back into the buffer.
-        let buffered: CGRect? = enclosingScrollView.map { Self.buffered($0.contentView.bounds) }
+        let buffered: CGRect? = enclosingScrollView.map { Self.buffered($0.contentView.bounds.offsetBy(dx: 0, dy: roomShift)) }
         // Anchor and viewport stay exact at every width; unseen rows are
         // reconciled later, including after mouse-up and interrupted drags.
         let selected = rowOwningFirstResponder()
-        page?.pinSelectedRow(selected?.contentItem)
+        page?.pinSelectedRow(Self.responderHoldsRow(window?.firstResponder) ? selected?.contentItem : nil)
         let deferring = liveResizing
         let viewportHeight = enclosingScrollView?.contentView.bounds.height ?? 0
         let pass = preparePass(width: width, rowWidth: nextWidth, deferring: deferring, viewportHeight: viewportHeight)
@@ -1287,7 +1361,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         let loopClock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         var standing: Set<String> = []
         var guesses: Set<String> = []
-        var y: CGFloat = firstPlaced > 0 ? rows[firstPlaced - 1].frame.maxY : TranscriptMetrics.pageTopInset
+        var y: CGFloat = firstPlaced > 0 ? rows[firstPlaced - 1].frame.maxY : TranscriptMetrics.pageTopInset + leadingSpace
         partialPassCount += firstPlaced > 0 ? 1 : 0
         for index in firstPlaced..<rows.count {
             let row = rows[index]
@@ -1349,6 +1423,88 @@ final class TranscriptNativeScrollView: NSScrollView {
         return Placement(bottom: y, standing: standing, guesses: guesses)
     }
 
+    /// Measures what a row of this chat is worth from the rows this pass
+    /// placed: once the chat's first rows are laid out, and again each time
+    /// the window holds twice the rows it was last measured over — never
+    /// while the reader's hand is on the page, whose scroller this sizes.
+    /// A new figure resizes the room kept for the rows not read, and the
+    /// pass that follows places the rows again around the reader's line.
+    /// Whether the window's first responder holds the row it is in: what a
+    /// read that would let go of the row must wait for.
+    /// Text the reader has selected, or is editing, holds it; the keyboard
+    /// alone (a click in a reply's text) does not, or every far scroll and
+    /// drag of the scroller would be refused.
+    static func responderHoldsRow(_ responder: NSResponder?) -> Bool {
+        guard let text = responder as? NSTextView else { return false }
+        return text.isEditable || text.selectedRanges.contains { $0.rangeValue.length > 0 }
+    }
+    /// Whether the chat's row height is measured again: the rows were
+    /// measured at another width, or the window holds twice the rows it was
+    /// measured over, or (near its cap, where it cannot double) a good many
+    /// more.
+    static func remeasuresHistoryRowHeight(count: Int, sample: Int, width: CGFloat, sampleWidth: CGFloat?) -> Bool {
+        if let sampleWidth, abs(width - sampleWidth) > 1 { return true }
+        return count >= sample * 2 || count >= sample + 128
+    }
+    private func measureHistoryRowHeight(placedHeight: CGFloat) {
+        // Only the chat's own timeline, with room to size: an earlier version
+        // shown in its place (no extent) is not what the room stands for.
+        guard let page, let snapshot, snapshot.extent != nil, !snapshot.messages.isEmpty, placedHeight > 0 else { return }
+        let count = snapshot.messages.count
+        if let known = page.historyRowHeight, known > 0 {
+            // A wheel AppKit is still applying lands on the old geometry.
+            let scrolling = (enclosingScrollView as? TranscriptNativeScrollView)?.readerIsScrolling ?? false
+                || (!page.followsBottom && ProcessInfo.processInfo.systemUptime - viewportMovedAt < Self.roomQuietPeriod)
+            let wanted = Self.remeasuresHistoryRowHeight(count: count, sample: page.historyRowHeightSample, width: rowWidth, sampleWidth: page.historyRowHeightWidth)
+            // Measured once the rows stand at their own heights: after a
+            // resize settles, not on the old width's.
+            guard wanted, !scrolling, !liveResizing, estimated.count * 4 < rows.count, approximate.count * 4 < rows.count else {
+                if wanted { scheduleRoomMeasurement() }
+                return
+            }
+        }
+        let height = max(24, placedHeight / CGFloat(count))
+        let before = page.historyRowHeight
+        page.measuredHistoryRowHeight(height, over: count, width: rowWidth)
+        if snapshot.extent != nil, before.map({ abs($0 - height) > 0.5 }) ?? true { dirty = true; scheduleLayout() }
+    }
+    /// Says again where the reader is, when the page has become ready to
+    /// read for it.
+    func recheckRoom() {
+        guard let clip = enclosingScrollView?.contentView else { return }
+        noteReaderInRoom(clip)
+    }
+    /// Whether the viewport shows none of the window's rows, only room kept
+    /// for rows not read.
+    var viewportInRoom: Bool {
+        guard snapshot?.extent != nil, let first = rows.first, let last = rows.last, first.frame.height > 0, last.frame.height > 0,
+              let clip = enclosingScrollView?.contentView else { return false }
+        return clip.bounds.maxY <= first.frame.minY || clip.bounds.minY >= last.frame.maxY
+    }
+    /// The reader stands in the room kept for rows the window does not
+    /// hold, beyond the reach of its edges' reads: says which row of the
+    /// timeline is where they are, and where its top belongs on screen.
+    private func noteReaderInRoom(_ clip: NSClipView) {
+        // Only on placed rows: between an update and the pass that places
+        // it, rows just read in stand nowhere yet.
+        let height = roomRowHeight
+        guard !dirty, !layoutPending, let extent = snapshot?.extent, let first = rows.first, let last = rows.last,
+              first.frame.height > 0, last.frame.height > 0, page?.historyRowHeight != nil, height > 0 else { return }
+        let view = clip.bounds, margin = Self.bufferMargin(view.height)
+        if extent.before > 0, view.maxY + margin < first.frame.minY {
+            let position = min(extent.before - 1, max(0, Int((view.minY - TranscriptMetrics.pageTopInset) / height)))
+            let top = TranscriptMetrics.pageTopInset + CGFloat(position) * height
+            page?.readerReachedUnreadRows(position: position, offset: top - view.minY)
+        } else if extent.after > 0, view.minY - margin > last.frame.maxY {
+            let rowsIn = min(extent.after - 1, max(0, Int((view.minY - last.frame.maxY) / height)))
+            let top = last.frame.maxY + CGFloat(rowsIn) * height
+            page?.readerReachedUnreadRows(position: extent.firstAfter + rowsIn, offset: top - view.minY)
+        } else {
+            // Back within the reach of the window's rows (and its edges' reads).
+            page?.readerLeftUnreadRows()
+        }
+    }
+
     /// Records what the pass left, sizes the document to it, and lands the
     /// page where it belongs before anything is drawn.
     private func finishPass(_ pass: Pass, _ placement: Placement, width: CGFloat, left: CGFloat, deferring: Bool) {
@@ -1366,8 +1522,16 @@ final class TranscriptNativeScrollView: NSScrollView {
             emptyLabel.frame = CGRect(x: left, y: Self.emptyLabelTop, width: nextWidth, height: Self.emptyLabelHeight)
             y = Self.emptyPageHeight
         }
-        let size = CGSize(width: width, height: y + TranscriptMetrics.pageBottomInset)
+        if !rows.isEmpty { measureHistoryRowHeight(placedHeight: y - TranscriptMetrics.pageTopInset - leadingSpace) }
+        let size = CGSize(width: width, height: y + (rows.isEmpty ? 0 : trailingSpace) + TranscriptMetrics.pageBottomInset)
         if frame.size != size { setFrameSize(size) }
+        if abs(roomShift) > 0.5, let scroll = enclosingScrollView { scroll.transcriptReading.moveWithDocument(by: roomShift) }
+        roomShift = 0
+        if let place = trailingPlace, let last = rows.last, let scroll = enclosingScrollView {
+            let target = last.frame.maxY + place * roomRowHeight, clip = scroll.contentView
+            if abs(target - clip.bounds.minY) > 0.5 { scroll.transcriptReading.moveWithDocument(by: target - clip.bounds.minY) }
+        }
+        trailingPlace = nil
         enclosingScrollView?.transcriptReading.geometryChanged()
         // A page that is placing itself lands in this pass, before anything
         // is drawn (`TranscriptPage.layoutPlacement`).
@@ -1389,9 +1553,13 @@ final class TranscriptNativeScrollView: NSScrollView {
         }
         if let scroll = enclosingScrollView {
             page?.viewportChanged(scroll.contentView.bounds.size)
-            page?.contentChanged(ContentGeometry(top: -scroll.contentView.bounds.minY, height: size.height))
+            page?.contentChanged(ContentGeometry(top: -scroll.contentView.bounds.minY, height: size.height,
+                                                 leading: rows.isEmpty ? 0 : leadingSpace, trailing: rows.isEmpty ? 0 : trailingSpace))
         }
         marker.locate()
-        page?.visibleBandLaidOut { [weak self] in self?.visibleContentPrepared ?? false }
+        // A page read for where the reader dragged to may land while they
+        // are already somewhere else, in room for other rows: it is ready
+        // as it is, and where they are now is read next.
+        page?.visibleBandLaidOut { [weak self] in guard let self else { return false }; return self.visibleContentPrepared || self.viewportInRoom }
     }
 }

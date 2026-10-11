@@ -4,6 +4,10 @@ import CryptoKit
 
 struct HistoryPage: Sendable {
     var messages: [TranscriptMessage]; var before: String?; var total: Int
+    /// Where the page's first row stands among the `total` rows of the
+    /// timeline shown, counting from the chat's first: what the transcript
+    /// sizes the rows it has not read from (`HistoryExtent`).
+    var start: Int? = nil
     /// The journal is damaged or truncated: Continue and search need an
     /// explicit validation or recovery first.
     var notice: String?
@@ -281,6 +285,41 @@ actor HistoryReader {
                           changed: value.st_ctimespec.tv_sec, changedNS: value.st_ctimespec.tv_nsec)
         return HistoryRevision(path: path, stamp: revision(stamp))
     }
+    /// The most record bytes one run of a search holds at once.
+    static let searchRunBytes = 16 * 1_048_576
+    /// The searchable text of each record in `range`, in order: read in
+    /// order from the file, decoded concurrently. A record that cannot be
+    /// read or decoded carries its error, thrown when the search reaches it.
+    private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle) throws -> [(ref: Ref, text: Result<String, Error>)] {
+        var refs: [Ref] = [], records: [Result<Data, Error>?] = []
+        refs.reserveCapacity(range.count); records.reserveCapacity(range.count)
+        for position in range {
+            let ref = try branch.at(position)
+            refs.append(ref)
+            if ref.type == "branch" { records.append(nil); continue }
+            decodedRecords += 1
+            do {
+                try file.seek(toOffset: ref.offset)
+                guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
+                records.append(.success(bytes))
+            } catch { records.append(.failure(error)) }
+        }
+        var texts = [Result<String, Error>](repeating: .success(""), count: refs.count)
+        let edit = "## Edit\n\n" + Self.branchText + "\n\n", read = records
+        texts.withUnsafeMutableBufferPointer { buffer in
+            // Each iteration writes its own element only.
+            nonisolated(unsafe) let output = buffer
+            DispatchQueue.concurrentPerform(iterations: read.count) { index in
+                switch read[index] {
+                case nil: output[index] = .success(edit)
+                case .failure(let error)?: output[index] = .failure(error)
+                case .success(let bytes)?:
+                    output[index] = Result { ConversationContent.text(try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]) }
+                }
+            }
+        }
+        return zip(refs, texts).map { ($0, $1) }
+    }
     private func content(_ ref: Ref, file: FileHandle) throws -> String {
         if ref.type == "branch" { return "## Edit\n\n" + Self.branchText + "\n\n" }
         decodedRecords += 1
@@ -326,15 +365,38 @@ actor HistoryReader {
         // caller continue from `next`, exactly as a full page of hits does.
         let limit = min(index.branch.count, min(start, index.branch.count) + 5_000)
         var hits: [ContentHit] = [], cursor = min(start, index.branch.count)
+        // Records are read in order and decoded a run at a time on every
+        // core: decoding is nearly all a search costs, one record's text
+        // never depends on another's, and the hits are taken in order from
+        // the run as before. A run starts small, so a query that fills its
+        // hundred hits early decodes little past them, and grows.
+        var run = 32
+        let needle = ConversationContent.asciiNeedle(query)
         while cursor < limit && hits.count < 100 {
-            let ref = try index.branch.at(cursor), text = try content(ref, file: file)
-            if query.isEmpty { hits.append(.init(id: ref.id, position: cursor + 1, preview: String(text.prefix(240)))) }
-            else if let range = text.range(of: query, options: [.caseInsensitive]) {
-                let from = text.index(range.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
-                hits.append(.init(id: ref.id, position: cursor + 1, preview: String(text[from...].prefix(240)),
-                                  count: ConversationContent.occurrences(of: query, in: text)))
+            // A run holds every record it reads twice over (its bytes and its
+            // text), so it is bounded by bytes as well as by count.
+            var end = cursor, bytes = 0
+            while end < min(limit, cursor + run) {
+                let length = try index.branch.at(end).length
+                // A record larger than a run is a run of its own.
+                guard end == cursor || bytes + length <= Self.searchRunBytes else { break }
+                bytes += length; end += 1
             }
-            cursor += 1
+            run = min(run * 2, 512)
+            let texts = try contents(cursor..<end, branch: index.branch, file: file)
+            for (offset, decoded) in texts.enumerated() where hits.count < 100 {
+                let ref = decoded.ref, text = try decoded.text.get()
+                let position = cursor + offset
+                if query.isEmpty { hits.append(.init(id: ref.id, position: position + 1, preview: String(text.prefix(240)))) }
+                else if let needle, ConversationContent.excludes(needle, from: text) { }
+                else if let range = text.range(of: query, options: [.caseInsensitive]) {
+                    let from = text.index(range.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
+                    hits.append(.init(id: ref.id, position: position + 1, preview: String(text[from...].prefix(240)),
+                                      count: ConversationContent.occurrences(of: query, in: text)))
+                }
+                if hits.count == 100 { cursor = position + 1; break }
+                if offset == texts.count - 1 { cursor = end }
+            }
         }
         guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
         return .init(hits: hits, total: index.branch.count, next: cursor < index.branch.count ? cursor : nil, revision: revision(index.stamp))
@@ -450,21 +512,34 @@ actor HistoryReader {
     /// `start`: the chat's first page, wherever the reader is. It indexes the
     /// whole journal: an index built from a checkpoint begins at its retained
     /// rows, and the chat's first message is before them.
+    /// `validating`: a boundary of the window a read without a cursor (a
+    /// position) lands in; the journal must still be the one it was read from.
     func window(path: String, cursor: ConversationCursor? = nil, newer: Bool = false, around: String? = nil, start: Bool = false,
-                progress: Progress? = nil) throws -> HistoryPage {
+                position: Int? = nil, validating: ConversationCursor? = nil, progress: Progress? = nil) throws -> HistoryPage {
         try read(path: path, before: newer ? nil : cursor?.entry, around: around,
-                 after: newer ? cursor?.entry : nil, start: start, targetTurns: HistoryWindowPolicy.turns, expected: cursor, progress: progress)
+                 after: newer ? cursor?.entry : nil, start: start, position: position, targetTurns: HistoryWindowPolicy.turns, expected: cursor ?? validating, progress: progress)
     }
     /// `whole` indexes every record: what reads the whole chat (search, copy,
     /// an edit's timeline, a record's role in any version) needs it.
+    /// `position`: the page that starts at that row of the timeline shown
+    /// (0 is the chat's first), in place of `around` — where the reader has
+    /// dragged the scroller to, in rows the transcript has not read.
     func read(path: String, before: String? = nil, around: String? = nil, after: String? = nil, start atStart: Bool = false,
-              targetTurns: Int? = nil, expected: ConversationCursor? = nil, progress: Progress? = nil, whole: Bool = false) throws -> HistoryPage {
+              position: Int? = nil, targetTurns: Int? = nil, expected: ConversationCursor? = nil, progress: Progress? = nil, whole: Bool = false) throws -> HistoryPage {
         try Task.checkCancellation()
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file)
         let size = try file.seekToEnd(); try file.seek(toOffset: 0)
-        let journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
-                                       targetTurns: targetTurns, progress: progress, whole: whole || atStart)
+        // A row before those an index built from the metadata file holds
+        // needs the whole journal indexed, as the chat's first page does.
+        var whole = whole || atStart
+        if let position, let cached = indexes[path], cached.stamp == identity, cached.partial, position < cached.olderRows { whole = true }
+        var journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
+                                       targetTurns: targetTurns, progress: progress, whole: whole)
+        if let position, !whole, position < journal.olderRows {
+            journal = try journalIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
+                                       targetTurns: targetTurns, progress: progress, whole: true)
+        }
         let branch = journal.branch, notice = journal.notice, olderRows = journal.olderRows, versions = journal.versions
         let assistantCount = journal.assistantCount, latestAssistantID = journal.latestAssistantID, failureMessage = journal.failureMessage
         let taskRecords = journal.taskRecords, retainedRun = journal.retainedRun, incompleteTail = journal.incompleteTail
@@ -496,10 +571,11 @@ actor HistoryReader {
             if let digest { cursor.committedBytes = size; cursor.fingerprint = digest }
             return cursor
         }
-        let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, start: atStart, targetTurns: targetTurns)
+        let at = position.map { min(max(0, $0 - olderRows), max(0, branch.count - 1)) }
+        let (range, forward) = try Self.pageRange(in: branch, before: before, around: around, after: after, start: atStart, at: at, targetTurns: targetTurns)
         let (messages, start, end) = try decodePage(range, forward: forward, from: file, path: path, identity: identity,
                                                     branch: branch, versions: versions, retainedRun: retainedRun)
-        return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, notice: notice,
+        return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, start: olderRows + start, notice: notice,
                            assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
                            failureMessage: notice == nil ? failureMessage : nil,
                            revision: notice == nil ? HistoryRevision(path: path, stamp: revision(identity)) : nil,
@@ -801,8 +877,9 @@ actor HistoryReader {
     /// the turns around, after or before a row, or sixty rows when no count
     /// of turns is asked for. A boundary no longer in the branch throws.
     private static func pageRange(in branch: HistoryOffsetIndex, before: String?, around: String?, after: String?, start: Bool = false,
-                                  targetTurns: Int?) throws -> (range: Range<Int>, forward: Bool) {
-        let anchorIndex = start ? (branch.count > 0 ? 0 : nil) : try around.flatMap { try branch.index(of: $0) }
+                                  at position: Int? = nil, targetTurns: Int?) throws -> (range: Range<Int>, forward: Bool) {
+        let found = try around.flatMap { try branch.index(of: $0) }
+        let anchorIndex = start ? (branch.count > 0 ? 0 : nil) : position.flatMap { branch.count > 0 ? $0 : nil } ?? found
         let beforeIndex = try before.flatMap { try branch.index(of: $0) }
         let afterIndex = try after.flatMap { try branch.index(of: $0) }
         guard (around == nil || anchorIndex != nil), (before == nil || beforeIndex != nil), (after == nil || afterIndex != nil) else {

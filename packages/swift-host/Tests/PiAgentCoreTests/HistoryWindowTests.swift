@@ -33,6 +33,15 @@ final class HistoryWindowTests: XCTestCase {
         let around = try await session.historyWindow(["around": "m4"])
         XCTAssertEqual(around["messages"].list.first?["id"].text, "m4")
         do { _ = try await session.historyWindow(["cursor": ["incarnation":"stale", "lineage":"root", "entry":"m4"]]); XCTFail("Stale source accepted") } catch { }
+        // A page can be read at any row of the timeline: where the reader
+        // dragged the transcript's scroller to. It says where it stands.
+        let middle = try await session.historyWindow(["position": 1101])
+        XCTAssertEqual(middle["messages"].list.first?["id"].text, "m1101")
+        XCTAssertEqual(middle["start"].int, 1101); XCTAssertEqual(middle["total"].int, 2202)
+        XCTAssertFalse(middle["older"].isNull); XCTAssertFalse(middle["newer"].isNull)
+        let past = try await session.historyWindow(["position": 9999])
+        XCTAssertEqual(past["messages"].list.last?["id"].text, "m2201", "a position past the end reads the last row's page")
+        XCTAssertTrue(past["newer"].isNull)
     }
 
     func testPropertyGeneratedTurnRangesHaveNoOmissionsAcrossSegmentation() {

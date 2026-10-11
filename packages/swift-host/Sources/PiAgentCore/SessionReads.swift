@@ -18,13 +18,16 @@ extension AgentSession {
         let entry = cursor?.entry ?? params["entry"].text
         // "edge": "start" reads the chat's first page, wherever the reader is.
         let fromStart = params["edge"].text == "start"
+        // "position": the page starting at that row of the timeline shown
+        // (0 is the chat's first), where the reader dragged the scroller to.
+        let position = params["around"].isNull && !fromStart ? params["position"].int.map { max(0, $0) } : nil
         // A chat opened from its metadata file learns where its older rows
         // are the first time a page reaches past the rows it loaded, without
         // holding the actor: the chat is read again after.
         if olderRows > 0, olderIndex == nil {
             let at = entry.flatMap { id in visible.firstIndex { $0.id == id } }, target = params["around"].text
             let older = params["direction"].text != "newer" && target == nil
-            if fromStart || (entry != nil && at == nil) || (target.map { id in !visible.contains { $0.id == id } } ?? false) || (older && at == 0) { try await loadOlderRows() }
+            if fromStart || (position.map { $0 < olderRows } ?? false) || (entry != nil && at == nil) || (target.map { id in !visible.contains { $0.id == id } } ?? false) || (older && at == 0) { try await loadOlderRows() }
         }
         let lineage = presentationTimeline
         if let cursor, cursor.incarnation != displayEpoch || cursor.lineage != lineage {
@@ -35,7 +38,8 @@ extension AgentSession {
             let boundary = entry.flatMap(shown.position)
             if entry != nil && boundary == nil { throw AgentError("history_changed", "The history boundary is no longer available. Reload history.") }
             let target = params["around"].text
-            let around = fromStart ? (shown.count > 0 ? 0 : nil) : target.flatMap(shown.position)
+            let around = fromStart ? (shown.count > 0 ? 0 : nil)
+                : position.map { shown.count > 0 ? min(max(0, $0 - shown.base), shown.count - 1) : nil } ?? target.flatMap(shown.position)
             if !fromStart && target != nil && around == nil { throw AgentError("message_missing", "That message is outside the current branch. Its retained content is still inspectable.") }
             let forward = params["direction"].text == "newer" || around != nil
             let range = HistoryWindowPolicy.range(count: shown.count, before: forward ? nil : boundary,
