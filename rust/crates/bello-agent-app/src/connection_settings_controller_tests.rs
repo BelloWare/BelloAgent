@@ -662,7 +662,6 @@ fn exercise_settings_send(cx: &mut TestAppContext, mode: crate::launch_authority
     );
     cx.read(|cx| {
         let view = root.read(cx);
-        assert!(view.controller.has_available_tool_definitions());
         assert!(view.runtime.mcp_manager().is_ok());
         let label = crate::saved_runtime_adapter::tool_runtime_label(
             &view.controller,
@@ -698,6 +697,11 @@ fn exercise_settings_send(cx: &mut TestAppContext, mode: crate::launch_authority
     worker.join().unwrap();
     wait(cx, |cx| {
         cx.read(|cx| root.read(cx).session.state != bello_agent_core::RunState::Running)
+    });
+    // Checked once the turn settles: mid-turn the runtime holds its state
+    // lock, so the non-blocking probe can read false on a slow runner.
+    wait(cx, |cx| {
+        cx.read(|cx| root.read(cx).controller.has_available_tool_definitions())
     });
     assert!(cx.read(|cx| root.read(cx).record.snapshot.exists()));
 }
