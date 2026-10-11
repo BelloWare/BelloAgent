@@ -117,16 +117,10 @@ extension WorkspaceModel {
             do {
                 var page = try await self.readConversationWindow(item, cursor: nil, position: position,
                                                                  validating: view.olderPage.cursor ?? view.newerPage.cursor)
-                // The row landed on is one the transcript draws: not an edit's
-                // marker, nor a record the plan folds into another row
-                // (`TaskTranscriptPlan.rows`).
-                let shown = SessionDisplay.hidingBranchMarkers(page.messages), ids = Set(page.messages.map(\.id))
-                let operations = Set(page.messages.filter { $0.kind == "execution" }.compactMap(\.operationID))
-                let drawn = shown.first { message in
-                    !(message.kind == "requestLedger" && message.presentationSourceID.map(ids.contains) == true)
-                        && !(message.kind == "compaction" && message.operationID.map(operations.contains) == true)
-                }
-                guard current(), let first = drawn?.id ?? shown.first?.id ?? page.messages.first?.id else { return }
+                guard current() else { return }
+                // A page with no row to draw is not landed on, nor asked for
+                // again at once.
+                guard let first = Self.landingMessageID(in: page.messages) else { view.jumpFailedAt = ProcessInfo.processInfo.systemUptime; return }
                 // The chat changed elsewhere: said as a snapshot says it, with
                 // the way to read it again, rather than left as blank room.
                 guard sameSource(page) else {
@@ -165,6 +159,15 @@ extension WorkspaceModel {
                 }
             }
         }
+    }
+
+    /// The message of a page a position read lands on: the first one the
+    /// transcript draws a row for, as the page's own row plan says
+    /// (`TranscriptActivity.blocks`) — not an edit's marker, a record folded
+    /// into another row, or an old reply with nothing to show.
+    @MainActor static func landingMessageID(in messages: [TranscriptMessage]) -> String? {
+        let drawn = Set(TranscriptActivity.blocks(of: SessionDisplay.hidingBranchMarkers(messages), complete: false).flatMap(\.messageIDs))
+        return messages.first { drawn.contains($0.id) }?.id
     }
 
     /// Whether chat `id`'s transcript is what the reader has in front of them:

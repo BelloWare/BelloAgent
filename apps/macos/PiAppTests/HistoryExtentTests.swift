@@ -110,4 +110,17 @@ final class HistoryExtentTests: XCTestCase {
         let turn = try XCTUnwrap(Int(id.drop { !$0.isNumber }.prefix { $0.isNumber }))
         XCTAssertEqual(Double(turn) / 199, 0.5, accuracy: 0.2, "The reader is where they dragged to (turn \(turn))")
     }
+
+    /// A page read by position lands on the first row the transcript draws:
+    /// an assistant record with nothing to show (an old empty reply) draws no
+    /// row, and landing on it left the reader in blank room.
+    @MainActor func testAPositionReadLandsOnARowTheTranscriptDraws() {
+        let empty = TranscriptMessage(id: "a0", role: "assistant", text: "")
+        let question = TranscriptMessage(id: "u1", role: "user", text: "Question 1?")
+        let reply = TranscriptMessage(id: "a1", role: "assistant", text: "An answer.")
+        let drawn = Set(TranscriptActivity.blocks(of: [empty, question, reply], complete: false).flatMap(\.messageIDs))
+        XCTAssertFalse(drawn.contains("a0"), "The fixture's empty reply draws no row")
+        XCTAssertEqual(WorkspaceModel.landingMessageID(in: [empty, question, reply]), "u1")
+        XCTAssertEqual(WorkspaceModel.landingMessageID(in: [question, reply]), "u1")
+    }
 }
