@@ -103,33 +103,36 @@ window and its first frame cost 15–35 ms more after the change, against the
 
 ## Before and after
 
-Final run, settled fixture read in place, warm n=15, cold n=6, p50 [min–max]:
+Final run: the fixture settled in place, its journals read in place, its two
+paused chats kept; warm n=15, cold n=6, p50 [min–max], one-minute load 4.9–5.8:
 
 | Build | Launch | First window ms | Settled ms | Idle CPU % | Footprint MB |
 |---|---|---|---|---|---|
-| before | warm | 268 [231–353] | 597 [541–748] | 0.03 | 39.7 |
-| after | warm | **213** [183–263] | **524** [474–582] | 0.03 | 38.7 |
-| before | cold | 1133 [971–1285] | 1686 [1520–1929] | 0.03 | 38.1 |
-| after | cold | **963** [926–1200] | **1522** [1490–1802] | 0.03 | 36.8 |
+| before | warm | 264 [220–394] | 573 [495–760] | 0.03 | 39.5 |
+| after | warm | **235** [173–348] | **555** [468–707] | 0.03 | 38.5 |
+| before | cold | 1078 [988–1720] | 1645 [1532–2379] | 0.02 | 37.9 |
+| after | cold | **1038** [952–1214] | **1611** [1556–1792] | 0.03 | 36.7 |
 
-One-minute load 4.9–5.4 throughout.
+Earlier interleaved runs, warm p50 before → after (r1–r3 on a first layout of
+the fixture, whose records named another copy's journals; r4 is left out:
+its trials read copied journals, which the search index read again in full
+during the idle window; r5 had lost the paused chats in settling):
 
-Earlier interleaved runs used a first layout of the fixture (its records
-named the unsettled fixture's journals; same files for both builds):
-
-| Run | n warm/cold | window warm p50 before → after | settled warm p50 | window cold p50 | settled cold p50 |
+| Run | n warm/cold | window warm | settled warm | window cold | settled cold |
 |---|---|---|---|---|---|
 | r1 | 8/5 | 239 → 221 | 546 → 542 | 1180 → 1192 | 1780 → 1769 |
 | r2 | 10/5 | 242 → 222 | 569 → 506 | 1184 → 1110 | 1727 → 1675 |
 | r3 | 15/6 | 250 → 228 | 557 → 561 | 1124 → 1070 | 1686 → 1689 |
+| r5 | 15/6 | 268 → 213 | 597 → 524 | 1133 → 963 | 1686 → 1522 |
 
-Every run puts the first window sooner warm, by 18–55 ms (8–21%). The
-settled window moves from 4 ms later to 73 ms sooner warm; in the three earlier runs that was
-within the run-to-run noise (±30 ms at this load), in the final run it was
-not. Cold moves the same way with more spread (n=6). Idle CPU and footprint
-are unchanged. The port measured Rust settled at 154 ms warm on a quieter
-machine; most of what Swift has left before it settles is the sidebar and the
-transcript laid out and drawn on the main thread (below).
+Every run puts the first window sooner warm, by 18–55 ms (p50 8–21%, about
+25 ms typically). The settled window moves from 4 ms later to 73 ms sooner,
+mostly within the run-to-run noise at this load (±30 ms): what came out ran
+while the main thread was otherwise waiting for the first frame. Cold moves
+the same way with more spread (n=6). Idle CPU and footprint are unchanged.
+The port measured Rust settled at 154 ms warm on a quieter machine; most of
+what Swift has left before it settles is the sidebar and the transcript laid
+out and drawn on the main thread (below).
 
 ## Tried and not kept
 
