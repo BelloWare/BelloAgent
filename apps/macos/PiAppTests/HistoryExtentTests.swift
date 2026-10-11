@@ -123,4 +123,57 @@ final class HistoryExtentTests: XCTestCase {
         XCTAssertEqual(WorkspaceModel.landingMessageID(in: [empty, question, reply]), "u1")
         XCTAssertEqual(WorkspaceModel.landingMessageID(in: [question, reply]), "u1")
     }
+
+    /// A page holding only rows with nothing to draw is not the end of the
+    /// read: the pages after it are read until one draws a row, and that one
+    /// is landed on.
+    @MainActor func testAPositionReadFollowsPastPagesWithNothingToDraw() async throws {
+        func cursor(_ entry: String) -> WireValue { .object(["incarnation": .string("i"), "lineage": .string("l"), "entry": .string(entry)]) }
+        func page(_ rows: [(String, String, String)], older: String?, newer: String?) throws -> ConversationHistoryPage {
+            try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("i"), "lineage": .string("l"),
+                "messages": .array(rows.map { .object(["id": .string($0.0), "role": .string($0.1), "text": .string($0.2)]) }),
+                "older": older.map(cursor) ?? .null, "newer": newer.map(cursor) ?? .null]))
+        }
+        let empty = try page([("a0", "assistant", "")], older: nil, newer: "a0")
+        let alsoEmpty = try page([("a1", "assistant", "")], older: "a1", newer: "a1")
+        let drawn = try page([("u2", "user", "Question 2?"), ("a2", "assistant", "An answer.")], older: "u2", newer: nil)
+        var reads: [String] = []
+        let found = try await WorkspaceModel.drawablePage(from: empty) { boundary, newer in
+            reads.append(boundary.entry + (newer ? " newer" : " older"))
+            return boundary.entry == "a0" ? alsoEmpty : drawn
+        }
+        XCTAssertEqual(found?.landing, "u2")
+        XCTAssertEqual(found?.page.messages.first?.id, "u2")
+        XCTAssertEqual(reads, ["a0 newer", "a1 newer"])
+        // Nothing after it draws: the pages before it are read.
+        let last = try page([("a9", "assistant", "")], older: "a9", newer: nil)
+        let before = try await WorkspaceModel.drawablePage(from: last) { _, newer in newer ? last : drawn }
+        XCTAssertEqual(before?.landing, "u2")
+    }
+
+    /// A window that lets go of its earliest rows as the chat grows (the
+    /// window was at the chat's start) keeps room for them: the rows and the
+    /// earlier boundary are published together.
+    @MainActor func testAWindowThatLetsGoOfItsFirstRowsKeepsRoomForThem() async throws {
+        let chat = try await LongChatScroll(turns: 60)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        await chat.model.revealStartOfChat(sessionID: chat.chat.id)
+        try await eventually("Home never read the chat's first page") { chat.draw(); return chat.view.olderPage.cursor == nil && chat.view.messages.first?.id == "u0" }
+        for _ in 0..<10 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+        let caps = TranscriptPaging.residentCaps
+        TranscriptPaging.residentCaps = (rows: 4, bytes: caps.bytes)
+        defer { TranscriptPaging.residentCaps = caps }
+        // Nothing holds the window: the reader's anchor has gone (they moved).
+        // (Once no page is being read, which is when a window lets go.)
+        try await eventually("The window never let go of its first rows", timeout: .seconds(10)) {
+            chat.view.scrollAnchor = nil; chat.view.pinnedHistoryIDs = []
+            chat.model.releaseHeldWindow(chat.view); chat.draw()
+            return chat.view.messages.first?.id != "u0"
+        }
+        // As it lets go (the page reads them back as the reader scrolls).
+        XCTAssertNotNil(chat.view.olderPage.cursor)
+        XCTAssertGreaterThan(chat.page?.snapshot?.extent?.before ?? 0, 0, "The rows let go of keep their room")
+    }
 }

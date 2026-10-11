@@ -129,9 +129,16 @@ extension WorkspaceModel {
                 var page = try await self.readConversationWindow(item, cursor: nil, position: position,
                                                                  validating: view.olderPage.cursor ?? view.newerPage.cursor)
                 guard current() else { return }
-                // A page with no row to draw is not landed on, nor asked for
+                // A page with no row to draw (old records with nothing to
+                // show) is read past, after it and then before it; one with
+                // nothing drawn on either side within reach is not asked for
                 // again at once.
-                guard let first = Self.landingMessageID(in: page.messages) else { pause(retrying: nil); return }
+                guard let found = try await Self.drawablePage(from: page, reading: { boundary, newer in
+                    try await self.readConversationWindow(item, cursor: boundary, newer: newer)
+                }) else { pause(retrying: nil); return }
+                guard current() else { return }
+                page = found.page
+                let first = found.landing
                 // The chat changed elsewhere: said as a snapshot says it, with
                 // the way to read it again, rather than left as blank room.
                 guard sameSource(page) else {
@@ -167,6 +174,22 @@ extension WorkspaceModel {
         }
     }
 
+    /// The page a position read lands on, and its row: the page read, or —
+    /// when it holds no row to draw (old records with nothing to show) — the
+    /// next page after it that does, then the one before.
+    @MainActor static func drawablePage(from page: ConversationHistoryPage, limit: Int = 8,
+                                        reading: (ConversationCursor, Bool) async throws -> ConversationHistoryPage) async throws -> (page: ConversationHistoryPage, landing: String)? {
+        if let landing = landingMessageID(in: page.messages) { return (page, landing) }
+        for newer in [true, false] {
+            var current = page
+            for _ in 0..<limit {
+                guard let next = newer ? current.newer : current.older else { break }
+                current = try await reading(next, newer)
+                if let landing = landingMessageID(in: current.messages) { return (current, landing) }
+            }
+        }
+        return nil
+    }
     /// The message of a page a position read lands on: the first one the
     /// transcript draws a row for, as the page's own row plan says
     /// (`TranscriptActivity.blocks`) — not an edit's marker, a record folded
