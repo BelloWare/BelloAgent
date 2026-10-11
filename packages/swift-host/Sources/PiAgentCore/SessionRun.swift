@@ -288,6 +288,9 @@ extension AgentSession {
         modelActive=false; partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); end=nowMS(); runTask=nil
         retrySubmission = runStatus == .idle ? nil : activeSubmission; activeSubmission=nil
         if let pending=pendingConfiguration { apply(profile:pending.profile, apiKey:pending.apiKey) }
+        // A reply the journal refused has its log set aside before the run
+        // is saved as settled: a reopen of a settled run removes the log.
+        if partialReplyUnsaved { removeStreamedLog() }
         do { try persistState(active:false); removeStreamedLog() } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; errorCode=nil; state = .error; runStatus = .failed; queuePaused=true }
         event("agent_settled")
         // submit() may accept another message while the last request links

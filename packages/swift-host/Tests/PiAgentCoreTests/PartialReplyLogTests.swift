@@ -14,6 +14,12 @@ private actor StallingClient: ModelClient {
     }
 }
 
+/// A value set from a journal hook, read by the test.
+private final class LockedFlags: @unchecked Sendable {
+    private let lock = NSLock(); private var stored: String?
+    var value: String? { get { lock.lock(); defer { lock.unlock() }; return stored } set { lock.lock(); stored = newValue; lock.unlock() } }
+}
+
 /// A model that streams its pieces quickly, then answers with them.
 private actor DeltaThenAnswerClient: ModelClient {
     let pieces: [String]
@@ -185,15 +191,23 @@ final class PartialReplyLogTests: XCTestCase {
     func testAReplyTheRunCannotJournalKeepsItsLogAside() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let client = StallingClient()
+        // When the run is saved as settled, the log is already aside: a
+        // crash just after must not leave it where a reopen removes it.
+        let logAtSettle = LockedFlags(), logPath = LockedFlags()
         let session = try chat.session("chat", client: client, beforeAppend: { record in
             if record["message"]["role"].text == "assistant" { throw AgentError("session_record_limit", "fixture: the record will not write") }
+            if record["customType"].text == JournalRecordKind.state, record["data"]["active"].flag == false, let path = logPath.value {
+                logAtSettle.value = FileManager.default.fileExists(atPath: path) ? "in place" : "aside"
+            }
         })
         _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "a question"), steer: false)
         try await stream(client)
         let sessionPath = await session.path
         let path = try XCTUnwrap(sessionPath), journal = URL(fileURLWithPath: path)
+        logPath.value = PartialReplyLog.url(for: journal).path
         await session.stop()
         try await eventually { !(await session.isRunning) }
+        XCTAssertEqual(logAtSettle.value, "aside")
         XCTAssertFalse(FileManager.default.fileExists(atPath: PartialReplyLog.url(for: journal).path))
         let directory = journal.deletingLastPathComponent()
         let aside = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix(journal.lastPathComponent + ".stream-unrestored-") }
