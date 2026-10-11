@@ -36,6 +36,7 @@ pub mod swift_migration;
 pub mod syntax;
 #[cfg(feature = "synthetic-authority")]
 pub mod synthetic_project_runtime;
+pub mod terminal;
 pub mod title_generation;
 pub mod tool_content;
 pub mod tool_history;

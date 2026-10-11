@@ -1,0 +1,486 @@
+up 0 0 0 0 1b5b41
+up 0 1 0 0 1b5b313b3241
+up 0 0 1 0 1b5b313b3541
+up 0 1 1 0 1b5b313b3641
+up 0 0 0 1 1b5b313b3341
+up 0 1 0 1 1b5b313b3441
+up 0 0 1 1 1b5b313b3741
+up 0 1 1 1 1b5b313b3841
+up 1 0 0 0 1b4f41
+up 1 1 0 0 1b5b313b3241
+up 1 0 1 0 1b5b313b3541
+up 1 1 1 0 1b5b313b3641
+up 1 0 0 1 1b5b313b3341
+up 1 1 0 1 1b5b313b3441
+up 1 0 1 1 1b5b313b3741
+up 1 1 1 1 1b5b313b3841
+down 0 0 0 0 1b5b42
+down 0 1 0 0 1b5b313b3242
+down 0 0 1 0 1b5b313b3542
+down 0 1 1 0 1b5b313b3642
+down 0 0 0 1 1b5b313b3342
+down 0 1 0 1 1b5b313b3442
+down 0 0 1 1 1b5b313b3742
+down 0 1 1 1 1b5b313b3842
+down 1 0 0 0 1b4f42
+down 1 1 0 0 1b5b313b3242
+down 1 0 1 0 1b5b313b3542
+down 1 1 1 0 1b5b313b3642
+down 1 0 0 1 1b5b313b3342
+down 1 1 0 1 1b5b313b3442
+down 1 0 1 1 1b5b313b3742
+down 1 1 1 1 1b5b313b3842
+left 0 0 0 0 1b5b44
+left 0 1 0 0 1b5b313b3244
+left 0 0 1 0 1b5b313b3544
+left 0 1 1 0 1b5b313b3644
+left 0 0 0 1 1b5b313b3344
+left 0 1 0 1 1b5b313b3444
+left 0 0 1 1 1b5b313b3744
+left 0 1 1 1 1b5b313b3844
+left 1 0 0 0 1b4f44
+left 1 1 0 0 1b5b313b3244
+left 1 0 1 0 1b5b313b3544
+left 1 1 1 0 1b5b313b3644
+left 1 0 0 1 1b5b313b3344
+left 1 1 0 1 1b5b313b3444
+left 1 0 1 1 1b5b313b3744
+left 1 1 1 1 1b5b313b3844
+right 0 0 0 0 1b5b43
+right 0 1 0 0 1b5b313b3243
+right 0 0 1 0 1b5b313b3543
+right 0 1 1 0 1b5b313b3643
+right 0 0 0 1 1b5b313b3343
+right 0 1 0 1 1b5b313b3443
+right 0 0 1 1 1b5b313b3743
+right 0 1 1 1 1b5b313b3843
+right 1 0 0 0 1b4f43
+right 1 1 0 0 1b5b313b3243
+right 1 0 1 0 1b5b313b3543
+right 1 1 1 0 1b5b313b3643
+right 1 0 0 1 1b5b313b3343
+right 1 1 0 1 1b5b313b3443
+right 1 0 1 1 1b5b313b3743
+right 1 1 1 1 1b5b313b3843
+home 0 0 0 0 1b5b48
+home 0 1 0 0 1b5b313b3248
+home 0 0 1 0 1b5b313b3548
+home 0 1 1 0 1b5b313b3648
+home 0 0 0 1 1b5b313b3348
+home 0 1 0 1 1b5b313b3448
+home 0 0 1 1 1b5b313b3748
+home 0 1 1 1 1b5b313b3848
+home 1 0 0 0 1b4f48
+home 1 1 0 0 1b5b313b3248
+home 1 0 1 0 1b5b313b3548
+home 1 1 1 0 1b5b313b3648
+home 1 0 0 1 1b5b313b3348
+home 1 1 0 1 1b5b313b3448
+home 1 0 1 1 1b5b313b3748
+home 1 1 1 1 1b5b313b3848
+end 0 0 0 0 1b5b46
+end 0 1 0 0 1b5b313b3246
+end 0 0 1 0 1b5b313b3546
+end 0 1 1 0 1b5b313b3646
+end 0 0 0 1 1b5b313b3346
+end 0 1 0 1 1b5b313b3446
+end 0 0 1 1 1b5b313b3746
+end 0 1 1 1 1b5b313b3846
+end 1 0 0 0 1b4f46
+end 1 1 0 0 1b5b313b3246
+end 1 0 1 0 1b5b313b3546
+end 1 1 1 0 1b5b313b3646
+end 1 0 0 1 1b5b313b3346
+end 1 1 0 1 1b5b313b3446
+end 1 0 1 1 1b5b313b3746
+end 1 1 1 1 1b5b313b3846
+pageUp 0 0 0 0 1b5b357e
+pageUp 0 1 0 0 1b5b353b327e
+pageUp 0 0 1 0 1b5b353b357e
+pageUp 0 1 1 0 1b5b353b367e
+pageUp 0 0 0 1 1b5b353b337e
+pageUp 0 1 0 1 1b5b353b347e
+pageUp 0 0 1 1 1b5b353b377e
+pageUp 0 1 1 1 1b5b353b387e
+pageUp 1 0 0 0 1b5b357e
+pageUp 1 1 0 0 1b5b353b327e
+pageUp 1 0 1 0 1b5b353b357e
+pageUp 1 1 1 0 1b5b353b367e
+pageUp 1 0 0 1 1b5b353b337e
+pageUp 1 1 0 1 1b5b353b347e
+pageUp 1 0 1 1 1b5b353b377e
+pageUp 1 1 1 1 1b5b353b387e
+pageDown 0 0 0 0 1b5b367e
+pageDown 0 1 0 0 1b5b363b327e
+pageDown 0 0 1 0 1b5b363b357e
+pageDown 0 1 1 0 1b5b363b367e
+pageDown 0 0 0 1 1b5b363b337e
+pageDown 0 1 0 1 1b5b363b347e
+pageDown 0 0 1 1 1b5b363b377e
+pageDown 0 1 1 1 1b5b363b387e
+pageDown 1 0 0 0 1b5b367e
+pageDown 1 1 0 0 1b5b363b327e
+pageDown 1 0 1 0 1b5b363b357e
+pageDown 1 1 1 0 1b5b363b367e
+pageDown 1 0 0 1 1b5b363b337e
+pageDown 1 1 0 1 1b5b363b347e
+pageDown 1 0 1 1 1b5b363b377e
+pageDown 1 1 1 1 1b5b363b387e
+insert 0 0 0 0 1b5b327e
+insert 0 1 0 0 1b5b323b327e
+insert 0 0 1 0 1b5b323b357e
+insert 0 1 1 0 1b5b323b367e
+insert 0 0 0 1 1b5b323b337e
+insert 0 1 0 1 1b5b323b347e
+insert 0 0 1 1 1b5b323b377e
+insert 0 1 1 1 1b5b323b387e
+insert 1 0 0 0 1b5b327e
+insert 1 1 0 0 1b5b323b327e
+insert 1 0 1 0 1b5b323b357e
+insert 1 1 1 0 1b5b323b367e
+insert 1 0 0 1 1b5b323b337e
+insert 1 1 0 1 1b5b323b347e
+insert 1 0 1 1 1b5b323b377e
+insert 1 1 1 1 1b5b323b387e
+delete 0 0 0 0 1b5b337e
+delete 0 1 0 0 1b5b333b327e
+delete 0 0 1 0 1b5b333b357e
+delete 0 1 1 0 1b5b333b367e
+delete 0 0 0 1 1b5b333b337e
+delete 0 1 0 1 1b5b333b347e
+delete 0 0 1 1 1b5b333b377e
+delete 0 1 1 1 1b5b333b387e
+delete 1 0 0 0 1b5b337e
+delete 1 1 0 0 1b5b333b327e
+delete 1 0 1 0 1b5b333b357e
+delete 1 1 1 0 1b5b333b367e
+delete 1 0 0 1 1b5b333b337e
+delete 1 1 0 1 1b5b333b347e
+delete 1 0 1 1 1b5b333b377e
+delete 1 1 1 1 1b5b333b387e
+tab 0 0 0 0 09
+tab 0 1 0 0 09
+tab 0 0 1 0 09
+tab 0 1 1 0 09
+tab 0 0 0 1 09
+tab 0 1 0 1 09
+tab 0 0 1 1 09
+tab 0 1 1 1 09
+tab 1 0 0 0 09
+tab 1 1 0 0 09
+tab 1 0 1 0 09
+tab 1 1 1 0 09
+tab 1 0 0 1 09
+tab 1 1 0 1 09
+tab 1 0 1 1 09
+tab 1 1 1 1 09
+backTab 0 0 0 0 1b5b5a
+backTab 0 1 0 0 1b5b5a
+backTab 0 0 1 0 1b5b5a
+backTab 0 1 1 0 1b5b5a
+backTab 0 0 0 1 1b5b5a
+backTab 0 1 0 1 1b5b5a
+backTab 0 0 1 1 1b5b5a
+backTab 0 1 1 1 1b5b5a
+backTab 1 0 0 0 1b5b5a
+backTab 1 1 0 0 1b5b5a
+backTab 1 0 1 0 1b5b5a
+backTab 1 1 1 0 1b5b5a
+backTab 1 0 0 1 1b5b5a
+backTab 1 1 0 1 1b5b5a
+backTab 1 0 1 1 1b5b5a
+backTab 1 1 1 1 1b5b5a
+enter 0 0 0 0 0d
+enter 0 1 0 0 0d
+enter 0 0 1 0 0d
+enter 0 1 1 0 0d
+enter 0 0 0 1 0d
+enter 0 1 0 1 0d
+enter 0 0 1 1 0d
+enter 0 1 1 1 0d
+enter 1 0 0 0 0d
+enter 1 1 0 0 0d
+enter 1 0 1 0 0d
+enter 1 1 1 0 0d
+enter 1 0 0 1 0d
+enter 1 1 0 1 0d
+enter 1 0 1 1 0d
+enter 1 1 1 1 0d
+escape 0 0 0 0 1b
+escape 0 1 0 0 1b
+escape 0 0 1 0 1b
+escape 0 1 1 0 1b
+escape 0 0 0 1 1b
+escape 0 1 0 1 1b
+escape 0 0 1 1 1b
+escape 0 1 1 1 1b
+escape 1 0 0 0 1b
+escape 1 1 0 0 1b
+escape 1 0 1 0 1b
+escape 1 1 1 0 1b
+escape 1 0 0 1 1b
+escape 1 1 0 1 1b
+escape 1 0 1 1 1b
+escape 1 1 1 1 1b
+backspace 0 0 0 0 7f
+backspace 0 1 0 0 7f
+backspace 0 0 1 0 7f
+backspace 0 1 1 0 7f
+backspace 0 0 0 1 1b7f
+backspace 0 1 0 1 1b7f
+backspace 0 0 1 1 1b7f
+backspace 0 1 1 1 1b7f
+backspace 1 0 0 0 7f
+backspace 1 1 0 0 7f
+backspace 1 0 1 0 7f
+backspace 1 1 1 0 7f
+backspace 1 0 0 1 1b7f
+backspace 1 1 0 1 1b7f
+backspace 1 0 1 1 1b7f
+backspace 1 1 1 1 1b7f
+f1 0 0 0 0 1b4f50
+f1 0 1 0 0 1b5b313b3250
+f1 0 0 1 0 1b5b313b3550
+f1 0 1 1 0 1b5b313b3650
+f1 0 0 0 1 1b5b313b3350
+f1 0 1 0 1 1b5b313b3450
+f1 0 0 1 1 1b5b313b3750
+f1 0 1 1 1 1b5b313b3850
+f1 1 0 0 0 1b4f50
+f1 1 1 0 0 1b5b313b3250
+f1 1 0 1 0 1b5b313b3550
+f1 1 1 1 0 1b5b313b3650
+f1 1 0 0 1 1b5b313b3350
+f1 1 1 0 1 1b5b313b3450
+f1 1 0 1 1 1b5b313b3750
+f1 1 1 1 1 1b5b313b3850
+f2 0 0 0 0 1b4f51
+f2 0 1 0 0 1b5b313b3251
+f2 0 0 1 0 1b5b313b3551
+f2 0 1 1 0 1b5b313b3651
+f2 0 0 0 1 1b5b313b3351
+f2 0 1 0 1 1b5b313b3451
+f2 0 0 1 1 1b5b313b3751
+f2 0 1 1 1 1b5b313b3851
+f2 1 0 0 0 1b4f51
+f2 1 1 0 0 1b5b313b3251
+f2 1 0 1 0 1b5b313b3551
+f2 1 1 1 0 1b5b313b3651
+f2 1 0 0 1 1b5b313b3351
+f2 1 1 0 1 1b5b313b3451
+f2 1 0 1 1 1b5b313b3751
+f2 1 1 1 1 1b5b313b3851
+f3 0 0 0 0 1b4f52
+f3 0 1 0 0 1b5b313b3252
+f3 0 0 1 0 1b5b313b3552
+f3 0 1 1 0 1b5b313b3652
+f3 0 0 0 1 1b5b313b3352
+f3 0 1 0 1 1b5b313b3452
+f3 0 0 1 1 1b5b313b3752
+f3 0 1 1 1 1b5b313b3852
+f3 1 0 0 0 1b4f52
+f3 1 1 0 0 1b5b313b3252
+f3 1 0 1 0 1b5b313b3552
+f3 1 1 1 0 1b5b313b3652
+f3 1 0 0 1 1b5b313b3352
+f3 1 1 0 1 1b5b313b3452
+f3 1 0 1 1 1b5b313b3752
+f3 1 1 1 1 1b5b313b3852
+f4 0 0 0 0 1b4f53
+f4 0 1 0 0 1b5b313b3253
+f4 0 0 1 0 1b5b313b3553
+f4 0 1 1 0 1b5b313b3653
+f4 0 0 0 1 1b5b313b3353
+f4 0 1 0 1 1b5b313b3453
+f4 0 0 1 1 1b5b313b3753
+f4 0 1 1 1 1b5b313b3853
+f4 1 0 0 0 1b4f53
+f4 1 1 0 0 1b5b313b3253
+f4 1 0 1 0 1b5b313b3553
+f4 1 1 1 0 1b5b313b3653
+f4 1 0 0 1 1b5b313b3353
+f4 1 1 0 1 1b5b313b3453
+f4 1 0 1 1 1b5b313b3753
+f4 1 1 1 1 1b5b313b3853
+f5 0 0 0 0 1b5b31357e
+f5 0 1 0 0 1b5b31353b327e
+f5 0 0 1 0 1b5b31353b357e
+f5 0 1 1 0 1b5b31353b367e
+f5 0 0 0 1 1b5b31353b337e
+f5 0 1 0 1 1b5b31353b347e
+f5 0 0 1 1 1b5b31353b377e
+f5 0 1 1 1 1b5b31353b387e
+f5 1 0 0 0 1b5b31357e
+f5 1 1 0 0 1b5b31353b327e
+f5 1 0 1 0 1b5b31353b357e
+f5 1 1 1 0 1b5b31353b367e
+f5 1 0 0 1 1b5b31353b337e
+f5 1 1 0 1 1b5b31353b347e
+f5 1 0 1 1 1b5b31353b377e
+f5 1 1 1 1 1b5b31353b387e
+f6 0 0 0 0 1b5b31377e
+f6 0 1 0 0 1b5b31373b327e
+f6 0 0 1 0 1b5b31373b357e
+f6 0 1 1 0 1b5b31373b367e
+f6 0 0 0 1 1b5b31373b337e
+f6 0 1 0 1 1b5b31373b347e
+f6 0 0 1 1 1b5b31373b377e
+f6 0 1 1 1 1b5b31373b387e
+f6 1 0 0 0 1b5b31377e
+f6 1 1 0 0 1b5b31373b327e
+f6 1 0 1 0 1b5b31373b357e
+f6 1 1 1 0 1b5b31373b367e
+f6 1 0 0 1 1b5b31373b337e
+f6 1 1 0 1 1b5b31373b347e
+f6 1 0 1 1 1b5b31373b377e
+f6 1 1 1 1 1b5b31373b387e
+f7 0 0 0 0 1b5b31387e
+f7 0 1 0 0 1b5b31383b327e
+f7 0 0 1 0 1b5b31383b357e
+f7 0 1 1 0 1b5b31383b367e
+f7 0 0 0 1 1b5b31383b337e
+f7 0 1 0 1 1b5b31383b347e
+f7 0 0 1 1 1b5b31383b377e
+f7 0 1 1 1 1b5b31383b387e
+f7 1 0 0 0 1b5b31387e
+f7 1 1 0 0 1b5b31383b327e
+f7 1 0 1 0 1b5b31383b357e
+f7 1 1 1 0 1b5b31383b367e
+f7 1 0 0 1 1b5b31383b337e
+f7 1 1 0 1 1b5b31383b347e
+f7 1 0 1 1 1b5b31383b377e
+f7 1 1 1 1 1b5b31383b387e
+f8 0 0 0 0 1b5b31397e
+f8 0 1 0 0 1b5b31393b327e
+f8 0 0 1 0 1b5b31393b357e
+f8 0 1 1 0 1b5b31393b367e
+f8 0 0 0 1 1b5b31393b337e
+f8 0 1 0 1 1b5b31393b347e
+f8 0 0 1 1 1b5b31393b377e
+f8 0 1 1 1 1b5b31393b387e
+f8 1 0 0 0 1b5b31397e
+f8 1 1 0 0 1b5b31393b327e
+f8 1 0 1 0 1b5b31393b357e
+f8 1 1 1 0 1b5b31393b367e
+f8 1 0 0 1 1b5b31393b337e
+f8 1 1 0 1 1b5b31393b347e
+f8 1 0 1 1 1b5b31393b377e
+f8 1 1 1 1 1b5b31393b387e
+f9 0 0 0 0 1b5b32307e
+f9 0 1 0 0 1b5b32303b327e
+f9 0 0 1 0 1b5b32303b357e
+f9 0 1 1 0 1b5b32303b367e
+f9 0 0 0 1 1b5b32303b337e
+f9 0 1 0 1 1b5b32303b347e
+f9 0 0 1 1 1b5b32303b377e
+f9 0 1 1 1 1b5b32303b387e
+f9 1 0 0 0 1b5b32307e
+f9 1 1 0 0 1b5b32303b327e
+f9 1 0 1 0 1b5b32303b357e
+f9 1 1 1 0 1b5b32303b367e
+f9 1 0 0 1 1b5b32303b337e
+f9 1 1 0 1 1b5b32303b347e
+f9 1 0 1 1 1b5b32303b377e
+f9 1 1 1 1 1b5b32303b387e
+f10 0 0 0 0 1b5b32317e
+f10 0 1 0 0 1b5b32313b327e
+f10 0 0 1 0 1b5b32313b357e
+f10 0 1 1 0 1b5b32313b367e
+f10 0 0 0 1 1b5b32313b337e
+f10 0 1 0 1 1b5b32313b347e
+f10 0 0 1 1 1b5b32313b377e
+f10 0 1 1 1 1b5b32313b387e
+f10 1 0 0 0 1b5b32317e
+f10 1 1 0 0 1b5b32313b327e
+f10 1 0 1 0 1b5b32313b357e
+f10 1 1 1 0 1b5b32313b367e
+f10 1 0 0 1 1b5b32313b337e
+f10 1 1 0 1 1b5b32313b347e
+f10 1 0 1 1 1b5b32313b377e
+f10 1 1 1 1 1b5b32313b387e
+f11 0 0 0 0 1b5b32337e
+f11 0 1 0 0 1b5b32333b327e
+f11 0 0 1 0 1b5b32333b357e
+f11 0 1 1 0 1b5b32333b367e
+f11 0 0 0 1 1b5b32333b337e
+f11 0 1 0 1 1b5b32333b347e
+f11 0 0 1 1 1b5b32333b377e
+f11 0 1 1 1 1b5b32333b387e
+f11 1 0 0 0 1b5b32337e
+f11 1 1 0 0 1b5b32333b327e
+f11 1 0 1 0 1b5b32333b357e
+f11 1 1 1 0 1b5b32333b367e
+f11 1 0 0 1 1b5b32333b337e
+f11 1 1 0 1 1b5b32333b347e
+f11 1 0 1 1 1b5b32333b377e
+f11 1 1 1 1 1b5b32333b387e
+f12 0 0 0 0 1b5b32347e
+f12 0 1 0 0 1b5b32343b327e
+f12 0 0 1 0 1b5b32343b357e
+f12 0 1 1 0 1b5b32343b367e
+f12 0 0 0 1 1b5b32343b337e
+f12 0 1 0 1 1b5b32343b347e
+f12 0 0 1 1 1b5b32343b377e
+f12 0 1 1 1 1b5b32343b387e
+f12 1 0 0 0 1b5b32347e
+f12 1 1 0 0 1b5b32343b327e
+f12 1 0 1 0 1b5b32343b357e
+f12 1 1 1 0 1b5b32343b367e
+f12 1 0 0 1 1b5b32343b337e
+f12 1 1 0 1 1b5b32343b347e
+f12 1 0 1 1 1b5b32343b377e
+f12 1 1 1 1 1b5b32343b387e
+code 36 0 enter
+code 36 1 enter
+code 48 0 tab
+code 48 1 backTab
+code 51 0 backspace
+code 51 1 backspace
+code 53 0 escape
+code 53 1 escape
+code 76 0 enter
+code 76 1 enter
+code 96 0 function(5)
+code 96 1 function(5)
+code 97 0 function(6)
+code 97 1 function(6)
+code 98 0 function(7)
+code 98 1 function(7)
+code 99 0 function(3)
+code 99 1 function(3)
+code 100 0 function(8)
+code 100 1 function(8)
+code 101 0 function(9)
+code 101 1 function(9)
+code 103 0 function(11)
+code 103 1 function(11)
+code 109 0 function(10)
+code 109 1 function(10)
+code 111 0 function(12)
+code 111 1 function(12)
+code 114 0 insert
+code 114 1 insert
+code 115 0 home
+code 115 1 home
+code 116 0 pageUp
+code 116 1 pageUp
+code 117 0 delete
+code 117 1 delete
+code 118 0 function(4)
+code 118 1 function(4)
+code 119 0 end
+code 119 1 end
+code 120 0 function(2)
+code 120 1 function(2)
+code 121 0 pageDown
+code 121 1 pageDown
+code 122 0 function(1)
+code 122 1 function(1)
+code 123 0 left
+code 123 1 left
+code 124 0 right
+code 124 1 right
+code 125 0 down
+code 125 1 down
+code 126 0 up
+code 126 1 up
