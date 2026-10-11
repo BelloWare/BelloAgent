@@ -273,6 +273,9 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// How far the room above the rows changed in this pass, for a reader
     /// among them, who moves with the rows.
     private var roomShift: CGFloat = 0
+    /// For a reader in the room below the window, how many of its rows lie
+    /// between the window's last row and the top of their screen.
+    private var trailingPlace: CGFloat?
     /// The rooms for this pass, from the snapshot's extent.
     private func roomHeights() -> (leading: CGFloat, trailing: CGFloat) {
         guard let extent = snapshot?.extent, !rows.isEmpty else { roomRowHeight = 0; return (0, 0) }
@@ -1233,9 +1236,18 @@ final class TranscriptNativeScrollView: NSScrollView {
         // (`finishPass`), before anything is mounted or drawn where they were.
         let previousRowHeight = roomRowHeight
         let rooms = roomHeights()
+        // A reader whose whole screen is room below the window keeps their
+        // row of the chat there too (`finishPass`), not the window's last row.
+        if let clip = enclosingScrollView?.contentView, let last = rows.last, last.frame.height > 0, previousRowHeight > 0,
+           abs(roomRowHeight - previousRowHeight) > 0.01, !(page?.followsBottom ?? true), (snapshot?.extent?.after ?? 0) > 0,
+           clip.bounds.minY >= last.frame.maxY {
+            trailingPlace = (clip.bounds.minY - last.frame.maxY) / previousRowHeight
+            enclosingScrollView?.transcriptReading.letGo()
+            markDirty(from: 0)
+        }
         if abs(rooms.leading - leadingSpace) > 0.01 {
             markDirty(from: 0)
-            if let clip = enclosingScrollView?.contentView, !rows.isEmpty, !(page?.followsBottom ?? true) {
+            if trailingPlace == nil, let clip = enclosingScrollView?.contentView, !rows.isEmpty, !(page?.followsBottom ?? true) {
                 let top = TranscriptMetrics.pageTopInset
                 if clip.bounds.minY >= top + leadingSpace - 1 { roomShift += rooms.leading - leadingSpace }
                 else if previousRowHeight > 0, clip.bounds.maxY <= top + leadingSpace {
@@ -1513,6 +1525,11 @@ final class TranscriptNativeScrollView: NSScrollView {
         if frame.size != size { setFrameSize(size) }
         if abs(roomShift) > 0.5, let scroll = enclosingScrollView { scroll.transcriptReading.moveWithDocument(by: roomShift) }
         roomShift = 0
+        if let place = trailingPlace, let last = rows.last, let scroll = enclosingScrollView {
+            let target = last.frame.maxY + place * roomRowHeight, clip = scroll.contentView
+            if abs(target - clip.bounds.minY) > 0.5 { scroll.transcriptReading.moveWithDocument(by: target - clip.bounds.minY) }
+        }
+        trailingPlace = nil
         enclosingScrollView?.transcriptReading.geometryChanged()
         // A page that is placing itself lands in this pass, before anything
         // is drawn (`TranscriptPage.layoutPlacement`).

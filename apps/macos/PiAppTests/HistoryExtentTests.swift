@@ -279,4 +279,52 @@ final class HistoryExtentTests: XCTestCase {
         XCTAssertTrue(chat.view.jumpWanted == nil || abs((chat.view.jumpWanted?.position ?? place) - place) <= 1,
                       "No read for another place was asked for (\(chat.view.jumpWanted?.position ?? -1) vs \(place))")
     }
+
+    /// A reader in the room below the window (the window at the chat's
+    /// start, no room above it) keeps their row of the chat when the room is
+    /// measured again.
+    @MainActor func testAReaderInRoomBelowKeepsTheirPlaceWhenTheRoomIsMeasuredAgain() async throws {
+        let chat = try await LongChatScroll(turns: 200)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        await chat.model.revealStartOfChat(sessionID: chat.chat.id)
+        try await eventually("Home never read the chat's first page") { chat.draw(); return chat.view.olderPage.cursor == nil && chat.view.messages.first?.id == "u0" }
+        for _ in 0..<10 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+        chat.model.historyWindowLoader = { _, _, _, _ in try await Task.sleep(for: .seconds(60)); throw CancellationError() }
+        let scroll = try XCTUnwrap(chat.scroll), document = try XCTUnwrap(chat.document), page = try XCTUnwrap(chat.page)
+        XCTAssertEqual(document.leadingSpace, 0, "No room above the chat's first page")
+        let clip = scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: 0, y: document.frame.height * 0.6)); scroll.reflectScrolledClipView(clip)
+        for _ in 0..<5 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+        func place() throws -> Int {
+            let extent = try XCTUnwrap(page.snapshot?.extent), last = try XCTUnwrap(document.retainedRows.last)
+            return extent.firstAfter + Int((clip.bounds.minY - last.frame.maxY) / document.roomRowHeight)
+        }
+        let before = try place()
+        XCTAssertEqual(chat.view.jumpReading, before, "The read under way is for where the reader is")
+        page.measuredHistoryRowHeight(document.roomRowHeight * 1.5, over: page.historyRowHeightSample, width: page.historyRowHeightWidth ?? 0)
+        document.layoutNow()
+        for _ in 0..<5 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(Double(try place()), Double(before), accuracy: 1, "The reader is at the same row of the chat")
+        XCTAssertTrue(chat.view.jumpWanted == nil || abs((chat.view.jumpWanted?.position ?? before) - before) <= 1,
+                      "No read for another place was asked for (\(chat.view.jumpWanted?.position ?? -1) vs \(before))")
+    }
+
+    /// When nothing says where the window stands (a new side, an edit's new
+    /// branch: `HistoryPositions.forget`), it is read again, so the room
+    /// and the whole-chat scroller come back.
+    @MainActor func testWhereTheWindowStandsIsReadAgainWhenNothingSays() async throws {
+        let chat = try await LongChatScroll(turns: 200)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        XCTAssertNotNil(chat.page?.snapshot?.extent)
+        chat.view.historyPositions.forget()
+        chat.model.reacquireHistoryPositions(chat.chat.id)
+        try await eventually("Where the window stands was never read again", timeout: .seconds(10)) {
+            chat.draw(); return chat.view.historyPositions.total != nil && chat.page?.snapshot?.extent != nil
+        }
+        XCTAssertGreaterThan(chat.page?.snapshot?.extent?.before ?? 0, 0)
+    }
 }

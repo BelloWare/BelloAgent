@@ -349,6 +349,24 @@ extension WorkspaceModel {
         if newer { view.presentation.newerTask = task } else { view.presentation.olderTask = task }
         return await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
+    /// Reads where the window stands again when nothing says (`HistoryPositions.total`
+    /// is unknown: a new side, an edit's new branch), so the room and the
+    /// whole-chat scroller come back without waiting for a page read.
+    func reacquireHistoryPositions(_ id: String) {
+        guard let view = displays[id], let item = record(id), view.historyPositions.total == nil, !view.messages.isEmpty else { return }
+        // Once per timeline: a source that does not say stays unsaid.
+        let lineage = view.presentation.identity?.lineage
+        guard view.positionsReadFor != (lineage ?? "") else { return }
+        view.positionsReadFor = lineage ?? ""
+        Task { [weak self, weak view] in
+            guard let self, let view, let page = try? await self.readConversationWindow(item, cursor: nil),
+                  lineage == nil || page.lineage == lineage, view.historyPositions.total == nil,
+                  view.presentation.identity?.lineage == lineage else { return }
+            view.historyPositions.record(page)
+            // The page works out the room again for the rows it shows.
+            view.presentationChanges.send(view.presentationChanges.value)
+        }
+    }
     func latest(sessionID: String? = nil) {
         if let id = sessionID ?? selectedID, let view = displays[id] {
             view.abandonReveal(); view.abandonJump()
@@ -410,6 +428,7 @@ extension WorkspaceModel {
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
         view.olderPage = .init(cursor: view.olderPage.cursor); view.newerPage = .init()
         view.historyPositions.forget()
+        reacquireHistoryPositions(view.id)
         view.pinnedHistoryIDs = []
         // A window that reaches no row held replaces the rows: nothing
         // vouches for what would lie between, and the rows before it are

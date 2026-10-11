@@ -118,6 +118,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     var jumpOffset: Double?
     /// The position the read under way is for.
     var jumpReading: Int?
+    /// The timeline whose positions were last read for want of any
+    /// (`WorkspaceModel.reacquireHistoryPositions`).
+    var positionsReadFor: String?
     /// A read that failed, to be tried again where the reader still is.
     var jumpRetry: (position: Int, offset: Double)?
     /// When such a read last failed: the next waits a moment, then reads
