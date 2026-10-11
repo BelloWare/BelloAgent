@@ -42,6 +42,17 @@ Workstream C, branch `work/sidebar-chats`. Swift source of truth: 0.1.122
   the temp root; in the app on macOS it is the user's Trash.
 - `cargo fmt --all`, `cargo clippy --workspace --all-targets -D warnings` clean (macOS).
 
+## Codex review
+
+Two rounds (`codex exec review`, gpt-6.1-sol, xhigh, read-only). Fixed: deletion now refuses
+a running reply, queued/held work in an unloaded checkpoint (read-only
+`SessionInspectionLease` under the writer lock, held across the catalog removal) and
+failed-load placeholders; settled cancellation receipts no longer block and are removed;
+read state is forgotten only after a confirmed deletion; shutdown waits for rename/delete;
+titles are capped to the catalog's 512 bytes on grapheme boundaries; the draft marker
+follows cancellation settlements; reading acknowledgement is suspended while the sheets are
+open; the startup anchor is not resurrected after deletion.
+
 ## What still differs
 
 - No title suggestions (no mini-model titling in Rust): the sheet always shows Swift's
@@ -58,6 +69,9 @@ Workstream C, branch `work/sidebar-chats`. Swift source of truth: 0.1.122
   reported"; the file line says "Conversation file (JSON)" with an adapted description
   (Rust checkpoints are JSON, not Pi JSONL); without a bound project ID it prints
   "Project folder: <path>".
+- The app's own startup checkpoint (`default.json`) is treated as managed and trashed; a
+  checkpoint passed with `--session` is treated like an imported original and kept, so it is
+  registered again if it is the only chat at the next launch.
 - Delete detail text keeps Swift's wording about memory traces; Rust has none to remove.
 - Native "Delete Chat…" is not tinted red; the drawn (non-macOS) menu has no destructive tint.
 - Non-macOS: "Trash" is `<state>/Deleted Chats` (files are kept, never unlinked).

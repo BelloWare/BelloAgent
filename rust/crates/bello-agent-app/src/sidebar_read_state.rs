@@ -934,6 +934,7 @@ impl AgentView {
             && self.queue_detail.is_none()
             && self.sidebar_menu.is_none()
             && self.topic_panel.is_none()
+            && !self.sidebar_chats.modal_open()
             && self.compaction_menu.is_none()
             && self.conversation_content.is_none()
             && self.skill_picker.is_none()

@@ -126,6 +126,7 @@ impl AgentView {
         {
             self.sidebar_chats.rename = None;
             self.focus_visible_composer(window, cx);
+            self.refresh_read_geometry_route(cx);
             cx.notify();
         }
     }
@@ -222,6 +223,7 @@ impl AgentView {
         match result {
             Ok(_) if current => {
                 self.sidebar_chats.rename = None;
+                self.refresh_read_geometry_route(cx);
                 if let Some(handle) = self.organization_window {
                     let owner = cx.weak_entity();
                     cx.defer(move |cx| {

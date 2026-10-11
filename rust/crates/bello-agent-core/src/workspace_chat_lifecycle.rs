@@ -117,7 +117,15 @@ impl WorkspaceStore {
     /// settled receipts. A retained submission or cancellation receipt is
     /// unfinished work, refused like Swift's busy/queued guard. Nothing is
     /// removed from disk here.
-    pub fn delete_chat(&mut self, id: &str, expected_snapshot: &Path) -> Result<DeletedChat> {
+    /// `startup_anchor` is the app's own first-chat checkpoint (not a chat
+    /// path, but app-managed all the same); a relaunch would re-register it
+    /// if it stayed.
+    pub fn delete_chat(
+        &mut self,
+        id: &str,
+        expected_snapshot: &Path,
+        startup_anchor: Option<&Path>,
+    ) -> Result<DeletedChat> {
         self.ensure_certain()?;
         let chat = self
             .state
@@ -142,7 +150,8 @@ impl WorkspaceStore {
         {
             return Err(invalid(DELETE_WORK_NOTICE));
         }
-        let managed = self.chat_path(id)? == chat.snapshot;
+        let managed =
+            self.chat_path(id)? == chat.snapshot || startup_anchor == Some(chat.snapshot.as_path());
         self.transact(|state| {
             state.chats.retain(|chat| chat.id != id);
             state.drafts.remove(id);

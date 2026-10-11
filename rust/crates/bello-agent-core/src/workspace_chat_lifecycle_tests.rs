@@ -117,8 +117,12 @@ fn delete_removes_only_the_chats_own_rows_and_lists_its_own_files() {
     }
     fs::write(first.snapshot.with_extension("lock"), b"").unwrap();
 
-    assert!(store.delete_chat(&first.id, &second.snapshot).is_err());
-    let deleted = store.delete_chat(&first.id, &first.snapshot).unwrap();
+    assert!(
+        store
+            .delete_chat(&first.id, &second.snapshot, None)
+            .is_err()
+    );
+    let deleted = store.delete_chat(&first.id, &first.snapshot, None).unwrap();
     assert_eq!(deleted.record.id, first.id);
     assert_eq!(deleted.managed_files, vec![first.snapshot.clone(), journal]);
     assert_eq!(
@@ -159,7 +163,7 @@ fn delete_refuses_unfinished_work_and_lists_no_foreign_files() {
     );
     assert_eq!(
         store
-            .delete_chat(&first.id, &first.snapshot)
+            .delete_chat(&first.id, &first.snapshot, None)
             .unwrap_err()
             .to_string(),
         invalid(DELETE_WORK_NOTICE).to_string()
@@ -176,7 +180,7 @@ fn delete_refuses_unfinished_work_and_lists_no_foreign_files() {
     store
         .register(imported.clone(), DraftRecord::default())
         .unwrap();
-    let deleted = store.delete_chat(&imported.id, &original).unwrap();
+    let deleted = store.delete_chat(&imported.id, &original, None).unwrap();
     assert!(deleted.managed_files.is_empty());
     assert_eq!(deleted.lock_file, None);
     assert!(original.exists());
@@ -208,6 +212,23 @@ fn settled_cancellation_receipts_do_not_block_and_leave_with_the_chat() {
             state: QueuedCancelState::Settled,
         },
     );
-    store.delete_chat(&first.id, &first.snapshot).unwrap();
+    store.delete_chat(&first.id, &first.snapshot, None).unwrap();
     assert!(store.state.queued_cancellations.is_empty());
+}
+
+#[test]
+fn the_apps_startup_anchor_is_managed_storage() {
+    let (_dir, mut store, _first, second) = fixture();
+    let outside = tempfile::tempdir().unwrap();
+    let anchor = outside.path().join("default.json");
+    fs::write(&anchor, b"{}").unwrap();
+    let mut chat = second.clone();
+    chat.id = Uuid::new_v4().to_string();
+    chat.snapshot = anchor.clone();
+    store
+        .register(chat.clone(), DraftRecord::default())
+        .unwrap();
+    let deleted = store.delete_chat(&chat.id, &anchor, Some(&anchor)).unwrap();
+    assert_eq!(deleted.managed_files, vec![anchor.clone()]);
+    assert_eq!(deleted.lock_file, Some(anchor.with_extension("lock")));
 }

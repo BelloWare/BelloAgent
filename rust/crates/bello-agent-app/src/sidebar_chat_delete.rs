@@ -80,7 +80,8 @@ impl AgentView {
             .try_lock()
             .ok()
             .and_then(|store| store.chat_path(id).ok())
-            .is_none_or(|path| path == record.snapshot);
+            .is_none_or(|path| path == record.snapshot)
+            || record.snapshot == crate::default_session();
         let title = if record.archived_at.is_some() {
             format!(
                 "Delete the archived chat “{}”?",
@@ -108,6 +109,7 @@ impl AgentView {
     pub(crate) fn dismiss_delete_question(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.sidebar_chats.delete.take().is_some() {
             self.focus_visible_composer(window, cx);
+            self.refresh_read_geometry_route(cx);
             cx.notify();
         }
     }
@@ -125,6 +127,7 @@ impl AgentView {
         else {
             return;
         };
+        self.refresh_read_geometry_route(cx);
         cx.notify();
         let id = question.chat_id;
         let Some(record) = self
@@ -178,7 +181,6 @@ impl AgentView {
             .or_else(|| self.unloaded_drafts.get(&id).cloned())
             .unwrap_or_default();
         let controller = chat.map(|chat| chat.controller.clone());
-        self.read_states.lock().unwrap().forget(&id);
         let index = self.records.iter().position(|row| row.id == id);
         self.records.retain(|row| row.id != id);
         self.sidebar_chats.busy.insert(id.clone());
@@ -187,9 +189,14 @@ impl AgentView {
         let snapshot = record.snapshot.clone();
         let saved_id = id.clone();
         let trash_root = self.deleted_chats_directory(&record);
+        let anchor = Some(crate::default_session());
         let task = cx.background_executor().spawn(async move {
             // session.forget: the chat's writer releases its checkpoint.
-            let loaded = controller.is_some();
+            // Only a verified persistent writer speaks for the checkpoint; a
+            // placeholder left by a failed load does not.
+            let loaded = controller
+                .as_ref()
+                .is_some_and(|controller| controller.is_persistent());
             let retire_error = match controller {
                 Some(controller) => controller
                     .retire_and_wait()
@@ -198,31 +205,21 @@ impl AgentView {
                     .map(|error| error.to_string()),
                 None => None,
             };
-            // An unloaded chat's checkpoint is the authority on its queue:
-            // take its writer lock and keep it until the catalog has let go.
+            // An unloaded (or never verified) chat's checkpoint is the
+            // authority on its queue: inspect it read-only under its writer
+            // lock, and keep that lock until the catalog has let go.
             let mut _writer = None;
             if !loaded && snapshot.exists() {
-                match bello_agent_core::SessionStore::open_existing_with_id(&snapshot, &saved_id) {
-                    Ok(store) => {
-                        let session = store.snapshot();
-                        if !session.pending.is_empty()
-                            || session.edit.is_some()
-                            || session.active.is_some()
-                            || session.state == bello_agent_core::RunState::Running
-                        {
-                            return DeleteOutcome {
-                                catalog: crate::chat_organization::CatalogOutcome {
-                                    result: Err(bello_agent_core::Error::Invalid(
-                                        DELETE_WORK_NOTICE.into(),
-                                    )),
-                                    uncertain: false,
-                                },
-                                retire_error: None,
-                                trash_error: None,
-                            };
-                        }
-                        _writer = Some(store);
-                    }
+                let lease = bello_agent_core::session::SessionInspectionLease::acquire(
+                    &snapshot, &saved_id,
+                )
+                .and_then(|lease| {
+                    lease
+                        .into_idle_lease()
+                        .map_err(|_| bello_agent_core::Error::Invalid(DELETE_WORK_NOTICE.into()))
+                });
+                match lease {
+                    Ok(lease) => _writer = Some(lease),
                     Err(error) => {
                         return DeleteOutcome {
                             catalog: crate::chat_organization::CatalogOutcome {
@@ -236,7 +233,7 @@ impl AgentView {
                 }
             }
             let catalog = crate::chat_organization::catalog_operation(&workspace, |store| {
-                store.delete_chat(&saved_id, &snapshot)
+                store.delete_chat(&saved_id, &snapshot, anchor.as_deref())
             });
             drop(_writer);
             let trash_error = match (&catalog.result, &retire_error) {
@@ -273,6 +270,7 @@ impl AgentView {
         self.observe_catalog_uncertainty(outcome.catalog.uncertain, cx);
         match outcome.catalog.display_result() {
             Ok(_) => {
+                self.read_states.lock().unwrap().forget(id);
                 self.forget_deleted_chat(id);
                 if let Some(error) = outcome.trash_error {
                     self.error = Some(format!(
