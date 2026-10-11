@@ -160,6 +160,10 @@ extension AgentSession {
         let message: ChatMessage
         let observedAt: Double
         let cancelled: Bool
+        /// An MCP invocation that returned, and whether its result is in
+        /// `message` (it may not fit): the MCP outcome marker stays until
+        /// the row is in the journal (`MCPManager.resultsRetained`).
+        var mcpResult = false, recorded = true
     }
 
     /// Pi 0.85.1's executeToolCallsParallel: a reply's calls run together, each
@@ -184,26 +188,41 @@ extension AgentSession {
         }
         let wall=nowMS()-began
         turnToolMs += wall; cumulativeToolMs = ObservedDuration.adding(cumulativeToolMs, wall)
-        for outcome in outcomes.compactMap({ $0 }) { try append(outcome.message, observedAt: outcome.observedAt) }
+        let finished=outcomes.compactMap { $0 }, invoked=finished.filter(\.mcpResult)
+        do {
+            for outcome in finished { try append(outcome.message, observedAt: outcome.observedAt) }
+            // An MCP call may have changed something outside the project:
+            // its result is on disk before its outcome marker goes.
+            if !invoked.isEmpty { try journal?.synchronize() }
+        } catch {
+            if !invoked.isEmpty { await tools.resultsRetained(invoked.map { calls[$0.index].id }, retained:false) }
+            throw error
+        }
+        if !invoked.isEmpty {
+            let lost=invoked.filter { !$0.recorded }.map { calls[$0.index].id }, kept=invoked.filter(\.recorded).map { calls[$0.index].id }
+            if !lost.isEmpty { await tools.resultsRetained(lost, retained:false) }
+            if !kept.isEmpty { await tools.resultsRetained(kept, retained:true) }
+        }
         if Task.isCancelled || outcomes.contains(where: { $0?.cancelled == true }) { throw CancellationError() }
     }
 
     /// Runs one call of a batch and ends its card; the row waits for the batch.
     func runToolCall(_ call: ToolCall, index: Int) async -> ToolOutcome {
         let start=nowMS()
-        func outcome(_ result: JSON, started: Double?, state: ToolRunState, uncertain: Bool = false, cancelled: Bool = false) -> ToolOutcome {
+        func outcome(_ result: JSON, started: Double?, state: ToolRunState, uncertain: Bool = false, cancelled: Bool = false, mcpResult: Bool = false) -> ToolOutcome {
             if let recorded=try? recordTool(call,result:result,started:started,state:state,uncertain:uncertain,appendNow:false,countsTime:false) {
-                return ToolOutcome(index:index,message:recorded.message,observedAt:recorded.observedAt,cancelled:cancelled)
+                return ToolOutcome(index:index,message:recorded.message,observedAt:recorded.observedAt,cancelled:cancelled,mcpResult:mcpResult)
             }
             // A result too large to retain still leaves a row in its place.
             var message=ChatMessage(role:"toolResult",content:[textBlock("Tool result could not be recorded; inspect its effects before retrying.")])
             message.toolCallId=call.id; message.toolName=call.name; message.isError=true
-            return ToolOutcome(index:index,message:message,observedAt:displayClock(),cancelled:cancelled)
+            return ToolOutcome(index:index,message:message,observedAt:displayClock(),cancelled:cancelled,mcpResult:mcpResult,recorded:false)
         }
         if Task.isCancelled { return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:.cancelled, cancelled:true) }
         do {
             let result=try await invokeTool(call)
-            return outcome(result, started:start, state:result["isError"].flag == true ? .failed : .completed)
+            return outcome(result, started:start, state:result["isError"].flag == true ? .failed : .completed,
+                           mcpResult:call.name == "mcp" && call.arguments["action"].text == "invoke")
         } catch {
             let cancelled=Task.isCancelled || error is CancellationError
             // A call stopped before its tool was entered never ran.
