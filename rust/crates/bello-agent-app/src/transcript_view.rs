@@ -6,6 +6,8 @@ use bello_agent_core::{Controller, RunState, Session};
 use bello_workbench_ui::{EditorAppearance, EditorView, TextDecoration, TextPresentation};
 #[path = "transcript_card_lines.rs"]
 mod card_lines;
+#[path = "transcript_copy_targets.rs"]
+mod copy_targets;
 #[path = "transcript_edit_presentation.rs"]
 mod edit_presentation;
 #[path = "transcript_markdown.rs"]
@@ -29,6 +31,8 @@ mod quote;
 mod selection;
 #[path = "transcript_shaped_text.rs"]
 mod shaped_text;
+#[path = "transcript_table_window.rs"]
+pub(crate) mod table_window;
 #[path = "transcript_tool_presentation.rs"]
 mod tool_presentation;
 #[path = "transcript_tool_row.rs"]
@@ -3655,9 +3659,14 @@ fn render_row(
                                 // so a streaming reply redoes its tail.
                                 let style = bello_agent_core::markdown::Style::PROSE;
                                 let owner = SharedString::from(selector.clone());
-                                let (blocks, (slots, text_top, whole), shapes, copied, select, links) = {
+                                let (blocks, (slots, text_top, whole), shapes, copied, select, links, targets) = {
                                     let mut editors = tool_editors.borrow_mut();
                                     let blocks = editors.markdown(&owner, &text, style);
+                                    // A settled reply's Copy buttons: by section,
+                                    // and the whole (or its introduction).
+                                    let targets = (message.state != "streaming" && !ambiguous)
+                                        .then(|| editors.copy_targets(&owner))
+                                        .unwrap_or_default();
                                     (
                                         blocks,
                                         editors.placement(&owner, width),
@@ -3665,8 +3674,23 @@ fn render_row(
                                         editors.copied_code.as_ref().map(|(key, _)| key.clone()),
                                         editors.select(&owner, &message.id, !ambiguous, p),
                                         editors.file_links.clone(),
+                                        targets,
                                     )
                                 };
+                                let headings: Vec<copy_targets::CopyTarget> = targets
+                                    .iter()
+                                    .filter(|target| {
+                                        matches!(target.kind, copy_targets::TargetKind::Section(_))
+                                    })
+                                    .cloned()
+                                    .collect();
+                                let corner = targets.iter().find(|target| {
+                                    matches!(
+                                        target.kind,
+                                        copy_targets::TargetKind::Introduction
+                                            | copy_targets::TargetKind::Whole
+                                    )
+                                });
                                 // Its code spans link the project's files.
                                 let select = select.map(|select| shaped_text::Select {
                                     open_file: Some(reply_files::opener(
@@ -3702,6 +3726,8 @@ fn render_row(
                                             links: links.clone(),
                                             message: message.id.clone(),
                                         }),
+                                        headings: &headings,
+                                        corner,
                                     },
                                     &markdown_view::Placement {
                                         slots: &slots,
@@ -3917,6 +3943,8 @@ fn reasoning_markdown(
             text: Some(muted),
             select,
             files: None,
+            headings: &[],
+            corner: None,
         },
         &markdown_view::Placement {
             slots: &[],
@@ -4021,6 +4049,8 @@ struct MarkdownEntry {
     blocks: Rc<Vec<bello_agent_core::markdown::Block>>,
     /// The blocks as one selectable text.
     source: Rc<selection::Source>,
+    /// What its Copy buttons copy, found when first asked for.
+    targets: std::cell::OnceCell<Rc<Vec<copy_targets::CopyTarget>>>,
     used: u64,
     place: ReplyPlace,
 }
@@ -4205,12 +4235,22 @@ impl ToolEditors {
                 text: text.to_owned(),
                 style,
                 source: Rc::new(selection::Source::markdown(owner.clone(), blocks.clone())),
+                targets: std::cell::OnceCell::new(),
                 blocks: blocks.clone(),
                 used: self.tick,
                 place,
             },
         );
         blocks
+    }
+    /// The copy targets of the Markdown last read for `owner`.
+    fn copy_targets(&self, owner: &SharedString) -> Rc<Vec<copy_targets::CopyTarget>> {
+        self.markdown.get(owner).map_or_else(Default::default, |entry| {
+            entry
+                .targets
+                .get_or_init(|| Rc::new(copy_targets::targets(&entry.text)))
+                .clone()
+        })
     }
     /// The selectable text of the Markdown last read for `owner`, kept in
     /// step with the selection in it.

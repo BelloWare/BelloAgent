@@ -211,3 +211,90 @@ fn a_code_span_that_names_a_project_file_opens_it(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(opened(cx), vec![project.join("src/lib.rs")]);
 }
+
+/// A settled reply's headings each copy their section, and its words copy
+/// it whole from the Copy over their top corner, as the author wrote them.
+#[gpui::test]
+fn headings_and_the_reply_copy_their_markdown(cx: &mut TestAppContext) {
+    let source = "Intro **bold**.\n\n# One\nfirst `x`\n## Two\nsecond\n# Three\nthird";
+    let (_directory, mut visual, _child, _) = host_rows(
+        vec![
+            message("question", "user", "Explain."),
+            message("reply", "assistant", source),
+        ],
+        RunState::Paused,
+        cx,
+    );
+    let text = element(&mut visual, "reply");
+    let press = |heading: usize, visual: &mut VisualTestContext, cx: &mut TestAppContext| {
+        let line = bounds(visual, &format!("heading-transcript-row-reply.{heading}")).unwrap();
+        visual.simulate_mouse_move(line.center(), None, Modifiers::none());
+        cx.run_until_parked();
+        let button = bounds(visual, &format!("heading-copy-transcript-row-reply.{heading}"))
+            .expect("the heading's copy");
+        // 30 points past the prose's 640, its 64 points before that.
+        assert_eq!(button.left() - text.left(), px(640. + 30. - 64.));
+        visual.simulate_mouse_move(button.center(), None, Modifiers::none());
+        visual.simulate_click(button.center(), Modifiers::none());
+        cx.run_until_parked();
+        clipboard(cx)
+    };
+    assert_eq!(press(3, &mut visual, cx).as_deref(), Some("## Two\nsecond\n"));
+    assert_eq!(
+        press(1, &mut visual, cx).as_deref(),
+        Some("# One\nfirst `x`\n## Two\nsecond\n")
+    );
+    visual.simulate_mouse_move(text.center(), None, Modifiers::none());
+    cx.run_until_parked();
+    let corner = bounds(&mut visual, "reply-copy-transcript-row-reply").unwrap();
+    assert_eq!(corner.right(), text.right());
+    assert_eq!(corner.top(), text.top() - px(3.));
+    visual.simulate_mouse_move(corner.center(), None, Modifiers::none());
+    visual.simulate_click(corner.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(clipboard(cx).as_deref(), Some("Intro **bold**.\n\n"));
+}
+
+/// A large table's preview offers its whole table in a window: the grid,
+/// the chosen cell's text and the TSV copy.
+#[gpui::test]
+fn open_full_table_shows_every_row(cx: &mut TestAppContext) {
+    let rows: String = (0..45).map(|row| format!("| {row} | value {row} |\n")).collect();
+    let (_directory, mut visual, _child, _) = host_rows(
+        vec![
+            message("question", "user", "Table?"),
+            message("reply", "assistant", &format!("| n | v |\n|---|---|\n{rows}")),
+        ],
+        RunState::Paused,
+        cx,
+    );
+    let open = bounds(&mut visual, "open-full-table-transcript-row-reply.0").expect("the control");
+    let text = element(&mut visual, "reply");
+    assert_eq!(open.right(), text.left() + px(640.));
+    let before = cx.windows().len();
+    visual.simulate_click(open.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(cx.windows().len(), before + 1);
+    let table = cx
+        .windows()
+        .into_iter()
+        .find_map(|window| window.downcast::<crate::transcript_view::table_window::TableWindow>())
+        .expect("the table window");
+    let mut window = VisualTestContext::from_window(table.into(), cx);
+    window.simulate_resize(size(px(880.), px(600.)));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.read(|cx| table.read(cx).unwrap().detail_text(cx)),
+        crate::transcript_view::table_window::PLACEHOLDER
+    );
+    let row = bounds(&mut window, "markdown-table-row-2").expect("a row");
+    window.simulate_click(point(row.left() + px(140.), row.center().y), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(cx.read(|cx| table.read(cx).unwrap().detail_text(cx)), "value 2");
+    let copy = bounds(&mut window, "table-window-copy").unwrap();
+    window.simulate_click(copy.center(), Modifiers::none());
+    cx.run_until_parked();
+    let tsv = clipboard(cx).unwrap();
+    assert!(tsv.starts_with("n\tv\n0\tvalue 0\n"), "{tsv:?}");
+    assert!(tsv.ends_with("44\tvalue 44"), "{tsv:?}");
+}

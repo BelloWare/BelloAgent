@@ -16,12 +16,14 @@
 //! A code span is set at 0.9 of its paragraph's size, as Swift sets it, on its
 //! paragraph's baseline (`transcript_mixed_text`), in the monospaced face on
 //! the code background.
+use super::copy_targets::CopyTarget;
+use super::selection::{PREVIEW_COLUMNS, PREVIEW_ROWS, large_table, preview_note};
 use super::shaped_text::{self, Link, Select, ShapeCache, Styled};
 use crate::Palette;
 use bello_agent_core::markdown::{Alignment, Block, Span, Style};
 use bello_agent_core::syntax::{TokenKind, fence_tokens};
 use gpui::{
-    AnyElement, App, Div, Font, FontFeatures, FontStyle, FontWeight, InteractiveElement,
+    AnyElement, App, AppContext as _, Div, Font, FontFeatures, FontStyle, FontWeight, InteractiveElement,
     IntoElement, ParentElement, SharedString, StatefulInteractiveElement, StrikethroughStyle,
     Styled as _, TextAlign, TextRun, Window, div, px, rgb, rgba, svg,
 };
@@ -154,6 +156,12 @@ pub(super) struct Context<'a> {
     pub select: Option<Select>,
     /// A reply's file links: its code spans that name a project file.
     pub files: Option<Files>,
+    /// Each top-level heading's section, as its Copy copies it, in order
+    /// (a settled reply's; none while it streams).
+    pub headings: &'a [CopyTarget],
+    /// The reply's introduction (or the whole reply), copied by the Copy
+    /// over its top corner while the pointer is on its words.
+    pub corner: Option<&'a CopyTarget>,
 }
 
 /// A reply's file links, by its message.
@@ -389,8 +397,13 @@ pub(super) fn render(
     // Swift's surface keeps room above the reply's first line (`firstInset`)
     // and below its last (`lastInset`, its last paragraph's pad).
     let first_inset = blocks.first().map_or(0., |block| first_inset(block, style));
+    let mut headings = cx.headings.iter();
     for (index, block) in blocks.iter().enumerate() {
         let block_edges = edges(block, style);
+        // Swift numbers the reply's own headings, not those in lists or quotes.
+        let heading = matches!(block, Block::Heading { .. })
+            .then(|| headings.next())
+            .flatten();
         let slot = placement.slots.get(index).copied().flatten();
         let off_screen = placement
             .visible
@@ -413,13 +426,11 @@ pub(super) fn render(
                 above: previous.map(|previous| (previous, BLOCK_GAP)),
                 pad: true,
             };
-            column = column.child(
-                div()
-                    .pt(px(top))
-                    .min_w_0()
-                    .w_full()
-                    .child(block_part(block, style, cx, &format!(".{index}"), room).element),
-            );
+            let mut element = block_part(block, style, cx, &format!(".{index}"), room).element;
+            if let Some(target) = heading {
+                element = heading_copy(element, target, cx, index);
+            }
+            column = column.child(div().pt(px(top)).min_w_0().w_full().child(element));
             children.push(Child::Block(index));
         }
         previous = Some(block_edges);
@@ -431,7 +442,86 @@ pub(super) fn render(
     if let Some(last) = previous {
         column = column.pb(px(last.after));
     }
+    // Swift's reply Copy: over the text's top corner, three points above it.
+    if let Some(target) = cx.corner {
+        let group = SharedString::from(format!("reply-copy{}", cx.owner));
+        column = column.relative().group(group.clone()).child(
+            div()
+                .absolute()
+                .top(px(-3.))
+                .right_0()
+                .invisible()
+                .group_hover(group, |corner| corner.visible())
+                .child(
+                    copy_button(
+                        SharedString::from(format!("reply-copy-button{}", cx.owner)),
+                        SharedString::from(format!("{}#whole", cx.owner)),
+                        target.text.clone(),
+                        cx,
+                    )
+                    .debug_selector(|| format!("reply-copy-{}", cx.owner))
+                    .tooltip(tooltip(target.label.clone())),
+                ),
+        );
+    }
     (column, children)
+}
+
+/// A heading with its section's Copy, which stands while the pointer is on
+/// the heading's line, 30 points past the prose's end, centred on the line.
+fn heading_copy(element: AnyElement, target: &CopyTarget, cx: &Context, index: usize) -> AnyElement {
+    let group = SharedString::from(format!("heading-copy{}.{index}", cx.owner));
+    let trailing = cx
+        .column
+        .map_or(PROSE_WIDTH, |column| column.min(cx.prose_width.unwrap_or(column)))
+        + 30.;
+    div()
+        .debug_selector(|| format!("heading-{}.{index}", cx.owner))
+        .relative()
+        .w_full()
+        .group(group.clone())
+        .child(element)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(trailing - 64.))
+                .flex()
+                .items_center()
+                .invisible()
+                .group_hover(group, |copy| copy.visible())
+                .child(
+                    copy_button(
+                        SharedString::from(format!("heading-copy-button{}.{index}", cx.owner)),
+                        SharedString::from(format!("{}#heading.{index}", cx.owner)),
+                        target.text.clone(),
+                        cx,
+                    )
+                    .debug_selector(|| format!("heading-copy-{}.{index}", cx.owner))
+                    .tooltip(tooltip(target.label.clone())),
+                ),
+        )
+        .into_any_element()
+}
+
+/// A plain tooltip with the control's words, as AppKit's `toolTip` shows them.
+fn tooltip(label: String) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    move |_, cx| {
+        let label = label.clone();
+        cx.new(|_| Tooltip(label)).into()
+    }
+}
+
+struct Tooltip(String);
+impl gpui::Render for Tooltip {
+    fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(8.))
+            .py(px(4.))
+            .text_size(px(11.))
+            .child(self.0.clone())
+    }
 }
 
 /// The room Swift's surface keeps above a reply that opens with `block`: a
@@ -867,7 +957,6 @@ fn code_block(language: Option<&str>, code: &str, style: Style, cx: &Context, pa
     };
     let key = SharedString::from(format!("{}{path}", cx.owner));
     let group = SharedString::from(format!("code{key}"));
-    let copied = cx.copied.as_ref() == Some(&key);
     let lines = shaped_text::styled_lines(
         cx.cache,
         key.clone(),
@@ -883,62 +972,12 @@ fn code_block(language: Option<&str>, code: &str, style: Style, cx: &Context, pa
         },
         cx.select.clone(),
     );
-    // Swift's `TranscriptCopyButton` in the fence's toolbar: muted, the
-    // text colour under the pointer, the accent once it has copied.
-    let (tint, hover_tint) = if copied {
-        (cx.accent(), cx.accent())
-    } else {
-        (cx.muted(), cx.ink())
-    };
-    let (stroke, hover_stroke) = if copied {
-        let accent = gpui::Hsla {
-            a: 0.4,
-            ..cx.accent()
-        };
-        (accent, accent)
-    } else {
-        (gpui::transparent_black(), cx.hair_strong())
-    };
-    let hover_fill = cx.panel_strong();
-    let on_copy = cx.on_copy.clone();
-    let source = code.to_owned();
-    let copy_key = key.clone();
-    let button = div()
-        .id(SharedString::from(format!("copy-code{key}")))
-        .group(SharedString::from(format!("copy-code{key}")))
-        .flex_none()
-        .w(px(64.))
-        .h(px(22.5))
-        .rounded(px(5.))
-        .bg(cx.code_panel())
-        .border_1()
-        .border_color(stroke)
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_center()
-        .gap(px(4.))
-        .text_size(px(10.5))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(tint)
-        .cursor_pointer()
-        .hover(move |button| {
-            button
-                .bg(hover_fill)
-                .border_color(hover_stroke)
-                .text_color(hover_tint)
-        })
-        .child(
-            svg()
-                .path(if copied { "checkmark" } else { "doc.on.doc" })
-                .size(px(10.))
-                .text_color(tint)
-                .group_hover(format!("copy-code{key}"), move |icon| {
-                    icon.text_color(hover_tint)
-                }),
-        )
-        .child(if copied { "Copied" } else { "Copy" })
-        .on_click(move |_, _, cx| on_copy(copy_key.clone(), &source, cx));
+    let button = copy_button(
+        SharedString::from(format!("copy-code{key}")),
+        key.clone(),
+        code.to_owned(),
+        cx,
+    );
     let mut toolbar = div()
         .absolute()
         .top(px(5.))
@@ -988,10 +1027,68 @@ fn code_block(language: Option<&str>, code: &str, style: Style, cx: &Context, pa
     }
 }
 
-/// Swift's `MarkdownTablePresentation`: a table with more rows or columns
-/// than this is shown as a preview of its first ones, under a note.
-const PREVIEW_ROWS: usize = 20;
-const PREVIEW_COLUMNS: usize = 8;
+/// Swift's `TranscriptCopyButton`: "Copy" and its glyph on the code panel,
+/// muted, the text colour under the pointer, the accent once it has copied
+/// (for two seconds, `key` naming what it copied).
+pub(super) fn copy_button(
+    id: SharedString,
+    key: SharedString,
+    text: String,
+    cx: &Context,
+) -> gpui::Stateful<Div> {
+    let copied = cx.copied.as_ref() == Some(&key);
+    let (tint, hover_tint) = if copied {
+        (cx.accent(), cx.accent())
+    } else {
+        (cx.muted(), cx.ink())
+    };
+    let (stroke, hover_stroke) = if copied {
+        let accent = gpui::Hsla {
+            a: 0.4,
+            ..cx.accent()
+        };
+        (accent, accent)
+    } else {
+        (gpui::transparent_black(), cx.hair_strong())
+    };
+    let hover_fill = cx.panel_strong();
+    let on_copy = cx.on_copy.clone();
+    div()
+        .id(id.clone())
+        .group(id.clone())
+        .flex_none()
+        .w(px(64.))
+        .h(px(22.5))
+        .rounded(px(5.))
+        .bg(cx.code_panel())
+        .border_1()
+        .border_color(stroke)
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_center()
+        .gap(px(4.))
+        .text_size(px(10.5))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(tint)
+        .cursor_pointer()
+        .hover(move |button| {
+            button
+                .bg(hover_fill)
+                .border_color(hover_stroke)
+                .text_color(hover_tint)
+        })
+        .child(
+            svg()
+                .path(if copied { "checkmark" } else { "doc.on.doc" })
+                .size(px(10.))
+                .text_color(tint)
+                .group_hover(id, move |icon| icon.text_color(hover_tint)),
+        )
+        .child(if copied { "Copied" } else { "Copy" })
+        .on_click(move |_, _, cx| on_copy(key.clone(), &text, cx))
+}
+
 /// No preview column is wider than this on one line.
 const PREVIEW_COLUMN: f32 = 320.;
 /// A cell's padding (`NSTextTableBlock`), its border, and both together
@@ -1000,25 +1097,6 @@ const CELL_PAD_X: f32 = 10.;
 const CELL_PAD_Y: f32 = 6.;
 const CELL_BORDER: f32 = 0.5;
 const CELL_CHROME: f32 = 2. * (CELL_PAD_X + CELL_BORDER);
-
-fn large_table(header: &[Vec<Span>], rows: &[Vec<Vec<Span>>]) -> bool {
-    rows.len() > 40
-        || header.len() > PREVIEW_COLUMNS
-        || rows.iter().any(|row| row.len() > PREVIEW_COLUMNS)
-}
-
-/// A count as Swift's `formatted()` writes it here: thousands grouped.
-fn grouped(count: usize) -> String {
-    let digits = count.to_string();
-    let mut out = String::new();
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
-}
 
 /// Each cell's width, border to border: its column's widest cell set on one
 /// line (at least 1 pt, a preview's at most 320), padded. A table wider than
@@ -1057,6 +1135,7 @@ fn table(
     room: Room,
 ) -> Part {
     let large = large_table(header, rows);
+    let full_header = header.to_vec();
     let shown_columns = if large { PREVIEW_COLUMNS } else { usize::MAX };
     let shown_rows = if large {
         &rows[..rows.len().min(PREVIEW_ROWS)]
@@ -1221,11 +1300,7 @@ fn table(
         };
     }
     let note = Span {
-        text: format!(
-            "Preview · first {} of {} rows · up to {PREVIEW_COLUMNS} columns",
-            rows.len().min(PREVIEW_ROWS),
-            grouped(rows.len())
-        ),
+        text: preview_note(rows.len()),
         size: 11.,
         bold: false,
         italic: false,
@@ -1239,13 +1314,47 @@ fn table(
         height: natural_line(Face::Sans, 11.),
         spacing: 0.,
     };
+    // "Open full table" beside the note, its end at the prose's end.
+    let column = cx.column.unwrap_or(PROSE_WIDTH);
+    let end = column - column.min(cx.prose_width.unwrap_or(column));
+    let full = {
+        let plain = |row: &Vec<Vec<Span>>| -> Vec<String> {
+            row.iter()
+                .map(|cell| cell.iter().map(|span| span.text.as_str()).collect())
+                .collect()
+        };
+        let (header, rows) = (plain(&full_header), rows.iter().map(plain).collect::<Vec<_>>());
+        let palette = cx.palette;
+        div()
+            .id(SharedString::from(format!("open-full-table{}{path}", cx.owner)))
+            .debug_selector(|| format!("open-full-table-{}{path}", cx.owner))
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .right(px(end))
+            .flex()
+            .items_center()
+            .text_size(px(11.))
+            .text_color(cx.accent())
+            .cursor_pointer()
+            .child("Open full table")
+            .on_click(move |_, _, cx| {
+                super::table_window::open(header.clone(), rows.clone(), palette, cx)
+            })
+    };
     Part {
         element: div()
             .flex()
             .flex_col()
             .min_w_0()
             .w_full()
-            .child(muted_text(&note, note_line, cx, &format!("{path}.note")))
+            .child(
+                div()
+                    .relative()
+                    .w_full()
+                    .child(muted_text(&note, note_line, cx, &format!("{path}.note")))
+                    .child(full),
+            )
             .child(div().pt(px(INNER_GAP + TABLE_PAD)).child(table))
             .into_any_element(),
         edges: Edges {
@@ -1302,7 +1411,8 @@ fn muted_text(span: &Span, line: Line, cx: &Context, path: &str) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use super::{Edges, between, grouped};
+    use super::super::selection::grouped;
+    use super::{Edges, between};
 
     /// NSTextTable's narrowing, from the widths Swift measured: each case of
     /// the oracle (`docs/validation/table-swift-oracle-2026-10-10`) at the
