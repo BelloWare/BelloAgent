@@ -49,19 +49,24 @@ pub(crate) struct ChatCatalog {
     /// The source connection's name and its host and path, never its query.
     pub source_name: String,
     pub source_label: String,
+    /// The saved connections' revision and the source this list was read
+    /// from: either changing makes the list stale.
+    revision: Option<i64>,
+    identity: Option<String>,
     generation: uuid::Uuid,
     cancel: Option<CancellationToken>,
 }
 impl ChatCatalog {
-    fn fresh(&self, now: Instant) -> bool {
-        self.fetched.is_some_and(|(at, _)| {
-            now.saturating_duration_since(at)
-                < if self.error.is_some() {
-                    FAILURE_RETRY
-                } else {
-                    CATALOG_TTL
-                }
-        })
+    fn fresh(&self, now: Instant, revision: Option<i64>) -> bool {
+        (revision.is_none() || revision == self.revision)
+            && self.fetched.is_some_and(|(at, _)| {
+                now.saturating_duration_since(at)
+                    < if self.error.is_some() {
+                        FAILURE_RETRY
+                    } else {
+                        CATALOG_TTL
+                    }
+            })
     }
     pub(crate) fn descriptor(&self, model: &str) -> Option<&ModelDescriptor> {
         self.models.iter().find(|row| row.id == model)
@@ -151,6 +156,10 @@ impl ModelPickers {
             self.adopted.insert(record.id.clone(), choice);
         }
     }
+    #[cfg(all(test, feature = "synthetic-authority"))]
+    pub(crate) fn adopted_for_test(&mut self, chat: &str, choice: ModelChoice) {
+        self.adopted.insert(chat.to_owned(), choice);
+    }
     pub(crate) fn choice(&self, chat: &str) -> ModelChoice {
         if self.choices.has_chat(chat) {
             self.choices.chat(chat)
@@ -160,12 +169,17 @@ impl ModelPickers {
     }
     /// The choice a chat's first send carries is kept with the chat from then
     /// on, without changing the connection's next-chat default.
-    pub(crate) fn settle_adopted(&mut self, chat: &str) {
-        if let Some(choice) = self.adopted.remove(chat)
-            && !self.choices.has_chat(chat)
+    /// A failed save keeps the choice in memory, so the pills and later
+    /// sends still use it, and says why.
+    pub(crate) fn settle_adopted(&mut self, chat: &str) -> Option<String> {
+        let choice = self.adopted.get(chat)?.clone();
+        if !self.choices.has_chat(chat)
+            && let Err(error) = self.choices.save(chat, None, choice)
         {
-            let _ = self.choices.save(chat, None, choice);
+            return Some(format!("The model choice could not be saved. {error}"));
         }
+        self.adopted.remove(chat);
+        None
     }
 }
 
@@ -264,6 +278,8 @@ pub(crate) fn clock_time(at: SystemTime) -> String {
 enum Listed {
     Unprepared(&'static str),
     Done {
+        revision: i64,
+        identity: String,
         configured: bool,
         source_name: String,
         source_label: String,
@@ -353,7 +369,7 @@ impl AgentView {
                 return;
             }
         }
-        if self.model_pill_reading().disabled {
+        if self.model_pill_reading().disabled || self.model_picker_suppressed(cx) {
             return;
         }
         let palette = self.palette;
@@ -413,6 +429,20 @@ impl AgentView {
         self.load_chat_catalog(false, cx);
         cx.notify();
     }
+    /// Another window-wide surface owns the keyboard and the pointer; an
+    /// open list gives way to it.
+    pub(crate) fn model_picker_suppressed(&self, cx: &gpui::App) -> bool {
+        self.shutting_down
+            || self.close_dialog
+            || self.connections.open
+            || self.connections.picker
+            || self.mcp.open
+            || self.topic_panel.is_some()
+            || self.skill_picker.is_some()
+            || self.conversation_content.is_some()
+            || self.projects.view.read(cx).is_open()
+            || self.quick_open.read(cx).is_open()
+    }
     pub(crate) fn close_model_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.model_pickers.open.take().is_some() {
             self.focus_visible_composer(window, cx);
@@ -452,7 +482,8 @@ impl AgentView {
             return;
         }
         let catalog = self.model_pickers.catalogs.entry(key.clone()).or_default();
-        if catalog.loading || (!force && catalog.fresh(Instant::now())) {
+        let revision = self.connections.saved_revision();
+        if catalog.loading || (!force && catalog.fresh(Instant::now(), revision)) {
             return;
         }
         let cancel = CancellationToken::new();
@@ -487,6 +518,12 @@ impl AgentView {
                 return Listed::Unprepared(REFRESH_MISSING);
             };
             let configured = source.catalog_url.is_some();
+            let identity = format!(
+                "{}\n{}",
+                source.profile.id,
+                source.catalog_url.as_ref().map_or("", |url| url.as_str())
+            );
+            let revision = loaded.revision();
             let source_name = source.name.clone();
             let label = source_label(source.catalog_url.as_ref().map(|url| url.as_str()));
             let request = match LoadedConnections::edit(&loaded, &id)
@@ -504,6 +541,8 @@ impl AgentView {
                 (true, _) => (None, request.load(cancel).await),
             };
             Listed::Done {
+                revision,
+                identity,
                 configured,
                 source_name,
                 source_label: label,
@@ -547,12 +586,24 @@ impl AgentView {
                 }
             }
             Listed::Done {
+                revision,
+                identity,
                 configured,
                 source_name,
                 source_label,
                 retained,
                 result,
             } => {
+                // Another source's list is never shown for this one.
+                if catalog
+                    .identity
+                    .as_ref()
+                    .is_some_and(|known| *known != identity)
+                {
+                    catalog.models.clear();
+                }
+                catalog.identity = Some(identity);
+                catalog.revision = Some(revision);
                 catalog.configured = configured;
                 catalog.source_name = source_name;
                 catalog.source_label = source_label;
@@ -649,6 +700,46 @@ impl AgentView {
         }
         cx.notify();
     }
+    /// Swift `setConnection`: after a chat moves to another connection, its
+    /// model choice survives only when that connection's catalog lists it,
+    /// or the list is not known; the effort is checked against the model in
+    /// force. Not remembered for new chats. True when the model was dropped.
+    pub(crate) fn reconcile_model_choice_after_switch(
+        &mut self,
+        chat: &str,
+        connection: Option<&str>,
+        profile: Option<bello_agent_core::Profile>,
+    ) -> bool {
+        let choice = self.model_pickers.choice(chat);
+        let Some(profile) = profile else {
+            return false;
+        };
+        let catalog = self
+            .model_pickers
+            .catalogs
+            .get(connection.unwrap_or(LEGACY_SOURCE));
+        let known = catalog.is_some_and(|c| c.error.is_none() && !c.models.is_empty());
+        let listed = choice
+            .model
+            .clone()
+            .filter(|alias| !known || catalog.is_some_and(|c| c.descriptor(alias).is_some()));
+        let descriptor = catalog
+            .and_then(|c| c.descriptor(listed.as_deref().unwrap_or(&profile.model_id)))
+            .cloned();
+        let next = choice.choosing_model(listed.as_deref(), &profile, descriptor.as_ref());
+        if next != choice {
+            if self.model_pickers.choices.has_chat(chat) {
+                if let Err(error) = self.model_pickers.choices.save(chat, None, next.clone()) {
+                    self.error = Some(format!("The model choice could not be saved. {error}"));
+                }
+            } else {
+                self.model_pickers
+                    .adopted
+                    .insert(chat.to_owned(), next.clone());
+            }
+        }
+        choice.model.is_some() && next.model.is_none()
+    }
     pub(crate) fn submit_model_alias(
         &mut self,
         token: uuid::Uuid,
@@ -707,7 +798,7 @@ impl AgentView {
         let Some(open) = self.model_pickers.open.as_ref() else {
             return false;
         };
-        if open.chat != self.record.id {
+        if open.chat != self.record.id || self.model_picker_suppressed(cx) {
             self.model_pickers.open = None;
             cx.notify();
             return false;

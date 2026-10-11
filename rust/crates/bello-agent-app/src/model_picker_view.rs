@@ -130,7 +130,7 @@ impl AgentView {
         cx: &mut Context<Self>,
     ) -> Option<[AnyElement; 2]> {
         let open = self.model_pickers.open.as_ref()?;
-        if open.chat != self.record.id {
+        if open.chat != self.record.id || self.model_picker_suppressed(cx) {
             self.model_pickers.open = None;
             return None;
         }

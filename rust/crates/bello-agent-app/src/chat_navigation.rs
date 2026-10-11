@@ -476,7 +476,9 @@ impl AgentView {
         item.model = choice.model;
         item.effort = choice.thinking_level;
         let chat_id = self.record.id.clone();
-        self.model_pickers.settle_adopted(&chat_id);
+        if let Some(error) = self.model_pickers.settle_adopted(&chat_id) {
+            self.notice = Some(error);
+        }
         let intent = SubmissionIntent {
             skills: self.skills.clone(),
             attachments: item.attachments.clone(),

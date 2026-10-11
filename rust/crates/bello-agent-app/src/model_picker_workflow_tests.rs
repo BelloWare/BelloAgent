@@ -160,8 +160,10 @@ fn pills_list_refresh_choose_remember_and_send_the_chosen_model(cx: &mut TestApp
         assert_eq!(view.chat_model_choice(), chosen);
     });
     // Saved for the chat and as the connection's next-chat default, on disk.
+    // Kept beside the saved chats, not the launch anchor, so every chat
+    // the window opens on finds the same choices.
     let project = std::fs::canonicalize(dir.path()).unwrap();
-    let reopened = ModelChoiceStore::open(project.join("chat-models.json"));
+    let reopened = ModelChoiceStore::open(project.join("chats").join("chat-models.json"));
     assert_eq!(reopened.chat(&chat), chosen);
     assert_eq!(reopened.default_for(&connection), Some(chosen.clone()));
     assert_eq!(gateway.count("post"), 0, "choosing sends nothing");
@@ -336,4 +338,128 @@ fn pills_and_lists_draw_and_answer_the_pointer_and_escape(cx: &mut TestAppContex
     cx.run_until_parked();
     assert!(cx.read(|cx| root.read(cx).model_pickers.open.is_none()));
     assert_eq!(gateway.count("post"), 0);
+}
+
+#[gpui::test]
+fn saved_connection_changes_and_other_surfaces_refresh_or_close_the_list(cx: &mut TestAppContext) {
+    let (_dir, window, root, gateway, _) = saved_on_gateway(cx);
+    open(window, PickerKind::Model, cx);
+    listed(&root, cx);
+    assert_eq!(gateway.count("get"), 1);
+    // Settings takes the keyboard and the pointer: the list gives way.
+    window
+        .update(cx, |view, window, cx| view.open_connections(window, cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert!(cx.read(|cx| root.read(cx).model_pickers.open.is_none()));
+    window
+        .update(cx, |view, window, cx| {
+            assert!(view.model_picker_suppressed(cx));
+            view.toggle_model_picker(PickerKind::Model, window, cx);
+            assert!(view.model_pickers.open.is_none(), "no list over Settings");
+        })
+        .unwrap();
+    // A saved change to the connections makes the list stale within its TTL.
+    edit(&root, cx, |f| f.name = "Renamed gateway".into());
+    act(window, Intent::SaveAll, cx);
+    assert!(cx.read(|cx| !root.read(cx).connections.open));
+    open(window, PickerKind::Model, cx);
+    listed(&root, cx);
+    assert_eq!(
+        gateway.count("get"),
+        2,
+        "a newer saved revision lists again"
+    );
+    assert_eq!(
+        cx.read(|cx| root.read(cx).chat_catalog().unwrap().source_name.clone()),
+        "Renamed gateway"
+    );
+}
+
+#[gpui::test]
+fn a_connection_switch_keeps_only_a_listed_model(cx: &mut TestAppContext) {
+    let (_dir, window, root, _gateway, connection) = saved_on_gateway(cx);
+    open(window, PickerKind::Model, cx);
+    listed(&root, cx);
+    let picker = token(&root, cx);
+    window
+        .update(cx, |view, window, cx| {
+            view.choose_chat_model(picker, Some("fixture-model-001".into()), window, cx)
+        })
+        .unwrap();
+    root.update(cx, |view, _| {
+        let chat = view.record.id.clone();
+        let profile = view.controller.profile();
+        // Listed by the (known) catalog: kept.
+        assert!(!view.reconcile_model_choice_after_switch(
+            &chat,
+            Some(&connection),
+            profile.clone()
+        ));
+        assert_eq!(
+            view.chat_model_choice().model.as_deref(),
+            Some("fixture-model-001")
+        );
+        // A catalog that is not known yet keeps it too.
+        assert!(!view.reconcile_model_choice_after_switch(
+            &chat,
+            Some("unlisted"),
+            profile.clone()
+        ));
+        // Known and not listed: the connection's default model, and only
+        // this chat changes; the next-chat default stays.
+        view.model_pickers
+            .catalogs
+            .get_mut(&connection)
+            .unwrap()
+            .models
+            .retain(|row| row.id != "fixture-model-001");
+        assert!(view.reconcile_model_choice_after_switch(&chat, Some(&connection), profile));
+        assert_eq!(view.chat_model_choice().model, None);
+        assert_eq!(
+            view.model_pickers
+                .choices
+                .default_for(&connection)
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("fixture-model-001")
+        );
+    });
+}
+
+#[gpui::test]
+fn an_unsaved_adopted_choice_stays_in_force_and_says_why(cx: &mut TestAppContext) {
+    let (dir, _window, root, gateway, _) = saved_on_gateway(cx);
+    let broken = dir.path().join("broken-chat-models.json");
+    std::fs::write(&broken, b"{not json").unwrap();
+    root.update(cx, |view, cx| {
+        view.model_pickers.choices = std::sync::Arc::new(ModelChoiceStore::open(&broken));
+        let chat = view.record.id.clone();
+        view.model_pickers.adopted_for_test(
+            &chat,
+            ModelChoice {
+                model: Some("fixture-model-003".into()),
+                thinking_level: None,
+            },
+        );
+        view.composer
+            .update(cx, |editor, cx| editor.set_text("hello".into(), cx));
+        view.submit(Lane::FollowUp, cx);
+        assert!(
+            view.notice
+                .as_deref()
+                .is_some_and(|notice| notice.starts_with("The model choice could not be saved.")),
+            "{:?}",
+            view.notice
+        );
+        assert_eq!(
+            view.chat_model_choice().model.as_deref(),
+            Some("fixture-model-003")
+        );
+    });
+    wait(cx, |_| gateway.count("post") == 1);
+    let receipts = gateway.receipts.lock().unwrap();
+    let post = receipts.iter().find(|r| r.method == "post").unwrap();
+    assert_eq!(post.body["model"], "fixture-model-003");
 }

@@ -1,5 +1,5 @@
-#[cfg(any(target_os = "macos", test))]
 mod app_settings;
+#[cfg(any(target_os = "macos", test))]
 mod application_menus;
 mod assets;
 #[cfg(all(feature = "synthetic-authority", debug_assertions))]
@@ -304,7 +304,14 @@ impl AgentView {
             record.snapshot.parent().unwrap().join("layout.json"),
         ));
         let layout = layout_store.load();
-        let model_pickers = model_picker::ModelPickers::open(record.snapshot.parent().unwrap());
+        // Beside every saved chat, whichever chat the window opened on.
+        let chat_folder = workspace
+            .lock()
+            .expect("workspace lock")
+            .chat_path(&uuid::Uuid::nil().to_string())
+            .expect("valid chat id");
+        let model_pickers =
+            model_picker::ModelPickers::open(chat_folder.parent().expect("chat folder"));
         let legacy_configuration = cx
             .try_global::<connection_settings_controller::LaunchLegacyConfiguration>()
             .map(|source| source.0.clone())
