@@ -1232,6 +1232,12 @@ struct ContentGeometry: Equatable {
                 return
             }
             session.presentation.automaticFills += 1
+        } else if short, !TranscriptPaging.takesAnotherPage(session.messages) {
+            // Room shows, but the window cannot take another page without
+            // letting go of the rows on screen (one row past its budget): the
+            // reader asks, at the edge, as a short page without room does.
+            earlierWaits = true
+            return
         }
         earlierWaits = false
         reportPendingAnchor()
