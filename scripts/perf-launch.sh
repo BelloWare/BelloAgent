@@ -20,7 +20,11 @@
 # Results: <out>/raw/<label>-<warm|cold>-<n>.json; summarize with the
 # harness's analyze-launch.py <out>.
 set -euo pipefail
-FIXTURE=$1 OUT=$2; shift 2
+FIXTURE=$(cd "$1" && pwd) OUT=$(mkdir -p "$2" && cd "$2" && pwd); shift 2
+# The fixture's records name its journals and projects by absolute path:
+# each trial's copy is rebased onto itself, so it reads only its own files.
+ORIGIN=$(cat "$FIXTURE/fixture-root")
+REBASE="$(cd "$(dirname "$0")" && pwd)/rebase-launch-fixture.py"
 : "${BELLOPERF:?Set BELLOPERF to the belloperf binary}"
 WARM=${WARM:-8} COLD=${COLD:-5} IDLE=${IDLE:-2}
 DOMAIN=com.belloware.PiApp.launchperf
@@ -39,6 +43,7 @@ done
 trial() { # label exe kind index
   local run="$OUT/run"
   rm -rf "$run"; ditto "$FIXTURE" "$run"
+  python3 -I "$REBASE" "$run/home/Library/Application Support/com.belloware.PiApp/desktop.sqlite" "$run/vault.json" "$ORIGIN" "$run"
   defaults delete "$DOMAIN" >/dev/null 2>&1 || true
   local cold=(); [ "$3" = cold ] && cold=(--cold)
   "$BELLOPERF" launch --label "$1" --trials 1 --prime 0 --idle "$IDLE" ${cold[@]+"${cold[@]}"} \

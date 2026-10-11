@@ -8,6 +8,7 @@ import XCTest
 ///   home/Library/Application Support/com.belloware.PiApp/   the app's state
 ///   projects/alpha, projects/beta                          two projects
 ///   vault.json                                             the configuration
+///   fixture-root                                           the folder the paths in both name
 ///
 /// 60 chats in two projects; the one reopened at launch has 200 turns of
 /// Markdown; five are unread, one marked unread, two paused, three hold a
@@ -36,6 +37,8 @@ final class LaunchFixtureWriter: XCTestCase {
         configuration.completionSoundEnabled = false
         try configuration.validate()
         try JSONEncoder().encode(configuration).write(to: root.appendingPathComponent("vault.json"))
+        // The records name files by absolute path; the launch script rebases copies from this one.
+        try Data(root.path.utf8).write(to: root.appendingPathComponent("fixture-root"))
 
         let store = MetadataStore(url: state.appendingPathComponent("desktop.sqlite"))
         try await store.open()
