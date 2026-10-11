@@ -361,7 +361,11 @@ impl AgentView {
     /// ring always. The first two open the inspector, the ring the next request.
     pub(crate) fn session_stats_pills(&self, width: f32, cx: &mut Context<Self>) -> Stateful<Div> {
         let p = self.palette;
-        let profile = self.controller.profile();
+        // The window of the model the next request goes to (the chat's choice).
+        let choice = self.chat_model_choice();
+        let profile = self
+            .controller
+            .next_request_profile(choice.model, choice.thinking_level);
         let readings = readings(&self.session, profile.as_ref());
         let stats = readings.stats();
         let target = self.context_inspector_target();

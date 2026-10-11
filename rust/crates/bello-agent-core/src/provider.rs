@@ -637,6 +637,10 @@ impl ResponsesClient {
         observation.wall = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64());
+        // A request stopped before it went out was never a request.
+        if cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
         observation.clock.dispatched();
         let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|e|Error::Provider(profile.safe_error(credential,&format!("Transport failure: {e}"))))? };
         let status = response.status();
@@ -695,7 +699,11 @@ impl ResponsesClient {
                 observation.cost.body(&value, true, &secret);
                 match value["type"].as_str().unwrap_or("") {
                     "response.output_item.added" => observation.clock.opened(),
-                    "response.output_item.done" => observation.clock.produced(false),
+                    // An item done is output, even with no item-added event before it.
+                    "response.output_item.done" => {
+                        observation.clock.opened();
+                        observation.clock.produced(false)
+                    }
                     kind @ ("response.completed" | "response.incomplete" | "response.failed") => {
                         // Usage is kept as reported, whatever later validation says.
                         let usage = &value["response"]["usage"];
@@ -983,6 +991,40 @@ mod tests {
         assert!(result.is_err());
         let record = observation.record("turn", None, None).unwrap();
         assert_eq!(record.cost.status, "conflict");
+        // Items done, then a terminal with an empty output list: still timed.
+        let item = json!({"type":"response.output_item.done","output_index":0,
+            "item":{"type":"message","content":[{"type":"output_text","text":"hi"}]}});
+        let done =
+            json!({"type":"response.completed","response":{"status":"completed","output":[]}});
+        let (result, observation) = observed_fixture(
+            200,
+            "text/event-stream",
+            "",
+            format!("data: {item}\n\ndata: {done}\n\n"),
+        )
+        .await;
+        assert_eq!(result.unwrap().text, "hi");
+        assert!(observation.clock.ttft_ms().is_some());
+        // A request stopped before it went out is no request.
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut stopped = AttemptObservation::default();
+        let error = ResponsesClient::new_synthetic_fixture()
+            .unwrap()
+            .complete_observed(
+                &fixture_profile(),
+                &Credential::new("credential-secret".into()).unwrap(),
+                &json!({}),
+                "session",
+                "turn",
+                cancel,
+                |_| Ok(()),
+                &mut stopped,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Cancelled));
+        assert!(stopped.record("turn", None, None).is_none());
         // An empty JSON reply has no first output.
         let (_, observation) = observed_fixture(
             200,

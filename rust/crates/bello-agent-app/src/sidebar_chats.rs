@@ -589,10 +589,24 @@ impl AgentView {
         }
         let task = cx.background_executor().spawn(async move {
             let mut read = BTreeMap::new();
-            for (id, path) in unread {
-                let lease = bello_agent_core::session::SessionInspectionLease::acquire(&path, &id)
+            if !unread.is_empty() {
+                // Through the shared inspection lane, one parse at a time, as
+                // the sidebar reads saved chats.
+                let lane = workspace
+                    .lock()
+                    .map_err(|_| "The workspace is unavailable.".to_owned())?
+                    .inspection_coordinator();
+                let cancel = bello_agent_core::inspection::InspectionCancellation::new();
+                let mut permit = lane
+                    .background(&cancel)
+                    .await
                     .map_err(|error| error.to_string())?;
-                read.insert(id, lease.snapshot().request_totals());
+                for (id, path) in unread {
+                    let lease = permit
+                        .inspect(&path, &id)
+                        .map_err(|error| error.to_string())?;
+                    read.insert(id, lease.snapshot().request_totals());
+                }
             }
             Ok::<_, String>((
                 crate::chat_organization::catalog_operation(&workspace, |store| {
