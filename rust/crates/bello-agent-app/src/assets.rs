@@ -31,6 +31,10 @@ impl AssetSource for Assets {
             "pin" => r#"<path d="M8 3h8l-1 7 4 4H5l4-4zM12 14v7"/>"#,
             "unpin" => r#"<path d="M8 3h8l-1 7 4 4H5l4-4M12 14v7M3 3l18 18"/>"#,
             "chat" => r#"<path d="M3 4h18v13H9l-5 4v-4H3z"/>"#,
+            // SF Symbol bubble.left.and.bubble.right, the quote bar's glyph.
+            "bubble.left.and.bubble.right" => {
+                r#"<path d="M2.5 4.5h11v7.5H7l-3 2.5V12H2.5zM16 8.5h5.5V16H20v2.5L17 16h-5.5v-2" stroke-width="2"/>"#
+            }
             "chevron" => r#"<path d="m8 5 7 7-7 7"/>"#,
             "down" => r#"<path d="m5 8 7 7 7-7"/>"#,
             "steering" => r#"<path d="M5 20V10a4 4 0 0 1 4-4h10m-5-4 5 4-5 4"/>"#,

@@ -15,7 +15,7 @@
 //!
 //! GPUI shapes one text at one size, so a code span keeps its paragraph's size
 //! (Swift draws it at 0.9×) in the monospaced face on the code background.
-use super::shaped_text::{self, Link, ShapeCache, Styled};
+use super::shaped_text::{self, Link, Select, ShapeCache, Styled};
 use crate::Palette;
 use bello_agent_core::markdown::{Alignment, Block, Span, Style};
 use bello_agent_core::syntax::{TokenKind, fence_tokens};
@@ -149,6 +149,8 @@ pub(super) struct Context<'a> {
     /// The style's text colour (Swift's `MarkdownStyle.textColor`); None is
     /// the ink.
     pub text: Option<gpui::Hsla>,
+    /// The reply's selectable text, which every text element is part of.
+    pub select: Option<Select>,
 }
 
 /// A fence's Copy: its key and code.
@@ -591,6 +593,7 @@ fn text(spans: &[Span], size: f32, line: Line, cx: &Context, path: &str) -> AnyE
             last: true,
             links: links(spans),
         },
+        cx.select.clone(),
     )
     .into_any_element()
 }
@@ -827,6 +830,7 @@ fn code_block(language: Option<&str>, code: &str, style: Style, cx: &Context, pa
             last: true,
             links: Vec::new(),
         },
+        cx.select.clone(),
     );
     // Swift's `TranscriptCopyButton` in the fence's toolbar: muted, the
     // text colour under the pointer, the accent once it has copied.
@@ -1231,6 +1235,7 @@ fn muted_text(span: &Span, line: Line, cx: &Context, path: &str) -> AnyElement {
             last: true,
             links: Vec::new(),
         },
+        cx.select.clone(),
     )
     .into_any_element()
 }

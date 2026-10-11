@@ -2867,6 +2867,8 @@ fn live_bash_output_remeasures_existing_card_then_settles_to_retained_result(
 #[path = "transcript_live_terminal_ui_tests.rs"]
 mod live_terminal_ui;
 
+#[path = "transcript_reply_actions_ui_tests.rs"]
+mod reply_actions_ui;
 #[path = "transcript_response_ui_tests.rs"]
 mod response_ui;
 #[path = "transcript_tool_timing_tests.rs"]

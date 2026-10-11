@@ -12,11 +12,12 @@
 //! Styled text may carry links, which act as links in Swift's transcript
 //! NSTextView: the pointing hand over one, and a press released on the link
 //! it began on opens it.
+use super::selection::{Region, SelectionHost, Source};
 use gpui::{
     App, AvailableSpace, Bounds, CursorStyle, DispatchPhase, Element, ElementId, GlobalElementId,
-    Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Size, Style, TextAlign, TextRun,
-    WhiteSpace, Window, WrapBoundary, WrappedLine,
+    Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, SharedString, Size, Style,
+    TextAlign, TextRun, WhiteSpace, Window, WrapBoundary, WrappedLine,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -167,6 +168,7 @@ pub(super) fn message_text(
     cache: &Rc<RefCell<ShapeCache>>,
     owner: SharedString,
     text: &str,
+    select: Option<Select>,
 ) -> Vec<ShapedText> {
     run_ranges(text)
         .into_iter()
@@ -175,10 +177,33 @@ pub(super) fn message_text(
             cache: cache.clone(),
             owner: owner.clone(),
             ordinal,
+            select: select.as_ref().map(|select| select.at(range.start)),
             text: SharedString::from(text[range].to_owned()),
             styled: None,
         })
         .collect()
+}
+
+/// A text element's place in a reply's selectable text.
+#[derive(Clone)]
+pub(super) struct Select {
+    pub host: Rc<RefCell<SelectionHost>>,
+    pub source: Rc<Source>,
+    pub message: String,
+    pub quotable: bool,
+    /// Where the element's text begins in its piece of the reply's text.
+    pub base: usize,
+    /// The selection's fill, while the transcript has the focus and not.
+    pub fill: (Hsla, Hsla),
+}
+
+impl Select {
+    fn at(&self, base: usize) -> Rc<Self> {
+        Rc::new(Self {
+            base: self.base + base,
+            ..self.clone()
+        })
+    }
 }
 
 /// Text in explicit runs at its own size (rendered Markdown), set in lines as
@@ -218,6 +243,7 @@ pub(super) fn styled_text(
     owner: SharedString,
     text: SharedString,
     styled: Styled,
+    select: Option<Select>,
 ) -> ShapedText {
     ShapedText {
         cache: cache.clone(),
@@ -225,6 +251,7 @@ pub(super) fn styled_text(
         ordinal: 0,
         text,
         styled: Some(Rc::new(styled)),
+        select: select.map(|select| select.at(0)),
     }
 }
 
@@ -236,6 +263,7 @@ pub(super) fn styled_lines(
     owner: SharedString,
     text: &str,
     styled: Styled,
+    select: Option<Select>,
 ) -> Vec<ShapedText> {
     let ranges = run_ranges(text);
     let count = ranges.len();
@@ -246,6 +274,7 @@ pub(super) fn styled_lines(
             cache: cache.clone(),
             owner: owner.clone(),
             ordinal,
+            select: select.as_ref().map(|select| select.at(range.start)),
             styled: Some(Rc::new(Styled {
                 runs: runs_within(&styled.runs, range.clone()),
                 last: ordinal + 1 == count && styled.last,
@@ -294,6 +323,7 @@ pub(super) struct ShapedText {
     ordinal: usize,
     text: SharedString,
     styled: Option<Rc<Styled>>,
+    select: Option<Rc<Select>>,
 }
 
 impl IntoElement for ShapedText {
@@ -310,6 +340,10 @@ impl ShapedText {
             .as_ref()
             .filter(|styled| !styled.links.is_empty())
     }
+    /// Whether the pointer acts on this text: its links, its selection.
+    fn interactive(&self) -> bool {
+        self.links().is_some() || self.select.is_some()
+    }
 }
 
 impl Element for ShapedText {
@@ -320,8 +354,8 @@ impl Element for ShapedText {
     /// Text with links keeps where a press began; `owner` and the run's
     /// ordinal name it uniquely within the transcript.
     fn id(&self) -> Option<ElementId> {
-        self.links()
-            .map(|_| ElementId::named_usize(self.owner.clone(), self.ordinal))
+        self.interactive()
+            .then(|| ElementId::named_usize(self.owner.clone(), self.ordinal))
     }
 
     fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
@@ -415,8 +449,8 @@ impl Element for ShapedText {
         window: &mut Window,
         _cx: &mut App,
     ) -> Option<Hitbox> {
-        self.links()
-            .map(|_| window.insert_hitbox(bounds, HitboxBehavior::Normal))
+        self.interactive()
+            .then(|| window.insert_hitbox(bounds, HitboxBehavior::Normal))
     }
 
     fn paint(
@@ -433,10 +467,24 @@ impl Element for ShapedText {
             return;
         };
         let align = window.text_style().text_align;
+        let hit = Rc::new(Hit {
+            shaped: shaped.clone(),
+            bounds,
+            align,
+            styled: self.styled.clone(),
+        });
         let mut origin = bounds.origin;
         for line in &shaped.lines {
             let _ =
                 line.paint_background(origin, shaped.line_height, align, Some(bounds), window, cx);
+            origin.y += line.size(shaped.line_height).height;
+        }
+        // The selection over the lines' backgrounds, under their glyphs.
+        if let Some(select) = self.select.as_ref() {
+            paint_selection(select, &self.owner, self.text.len(), &hit, window);
+        }
+        let mut origin = bounds.origin;
+        for line in &shaped.lines {
             // GPUI centres a line's glyphs in its pitch; TextKit stands them
             // on the line's height less its rounded descent, the spacing below.
             let lift = self.styled.as_ref().map_or(Pixels::ZERO, |styled| {
@@ -448,16 +496,108 @@ impl Element for ShapedText {
             let _ = line.paint(glyphs, shaped.line_height, align, Some(bounds), window, cx);
             origin.y += line.size(shaped.line_height).height;
         }
-        if let (Some(id), Some(hitbox), Some(styled)) = (id, hitbox.as_ref(), self.links()) {
-            let hit = Hit {
-                shaped,
-                bounds,
-                align,
-                styled: styled.clone(),
-            };
-            link_events(id, hitbox, hit, window);
+        if let (Some(select), Some(hitbox)) = (self.select.as_ref(), hitbox.as_ref()) {
+            selection_events(select, &self.owner, hit.clone(), hitbox, window);
+        }
+        if let (Some(id), Some(hitbox), Some(_)) = (id, hitbox.as_ref(), self.links()) {
+            link_events(id, hitbox, hit, self.select.clone(), window);
         }
     }
+}
+
+/// The selection's rows in this element, recorded for the quote bar.
+fn paint_selection(select: &Select, owner: &SharedString, len: usize, hit: &Hit, window: &mut Window) {
+    let host = select.host.borrow();
+    let Some(range) = host.range_in(select.source.owner()) else {
+        return;
+    };
+    let active = host
+        .focus
+        .as_ref()
+        .is_some_and(|focus| focus.is_focused(window));
+    drop(host);
+    let text = select.source.text();
+    let Some(piece) = text.piece(owner).map(|index| &text.pieces[index]) else {
+        return;
+    };
+    let start = piece.start + select.base;
+    let (from, to) = match piece.kind {
+        super::selection::Kind::Text => (
+            range.start.clamp(start, start + len) - start,
+            range.end.clamp(start, start + len) - start,
+        ),
+        super::selection::Kind::Marker(_) => {
+            let whole = piece.range();
+            if range.start < whole.end && whole.start < range.end {
+                (0, len)
+            } else {
+                return;
+            }
+        }
+    };
+    // The selection runs on past the element's end (a break, the next block).
+    let beyond = range.end > start + len;
+    if from == to && !(beyond && range.start <= start + len) {
+        return;
+    }
+    let fill = if active { select.fill.0 } else { select.fill.1 };
+    let rects = hit.rows_between(from, to, beyond);
+    for rect in &rects {
+        window.paint_quad(gpui::fill(*rect, fill));
+    }
+    select.host.borrow_mut().painted.extend(rects);
+}
+
+/// A press in selectable text starts a selection there (a double click a
+/// word, a triple click a paragraph; Shift extends the one there is) and
+/// gives the transcript the focus, so Copy and Select All reach it.
+fn selection_events(
+    select: &Rc<Select>,
+    owner: &SharedString,
+    hit: Rc<Hit>,
+    hitbox: &Hitbox,
+    window: &mut Window,
+) {
+    let view = window.current_view();
+    let closest = {
+        let hit = hit.clone();
+        Rc::new(move |point: Point<Pixels>| hit.closest(point))
+    };
+    let region = Rc::new(Region {
+        reply: select.source.owner().clone(),
+        message: select.message.clone(),
+        quotable: select.quotable,
+        source: select.source.clone(),
+        owner: owner.clone(),
+        base: select.base,
+        bounds: hit.bounds,
+        closest,
+    });
+    select.host.borrow_mut().regions.push(region.clone());
+    window.set_cursor_style(CursorStyle::IBeam, hitbox);
+    let (host, hitbox) = (select.host.clone(), hitbox.clone());
+    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+        if phase != DispatchPhase::Bubble
+            || event.button != MouseButton::Left
+            || !hitbox.is_hovered(window)
+        {
+            return;
+        }
+        let focus = {
+            let mut host = host.borrow_mut();
+            host.press(
+                &region,
+                event.position,
+                event.click_count,
+                event.modifiers.shift,
+            );
+            host.focus.clone()
+        };
+        if let Some(focus) = focus {
+            focus.focus(window);
+        }
+        cx.notify(view);
+    });
 }
 
 /// Which link the pointer is over and the link a press began on, kept from
@@ -468,9 +608,14 @@ struct LinkState {
     pressed: Rc<Cell<Option<usize>>>,
 }
 
-fn link_events(id: &GlobalElementId, hitbox: &Hitbox, hit: Hit, window: &mut Window) {
+fn link_events(
+    id: &GlobalElementId,
+    hitbox: &Hitbox,
+    hit: Rc<Hit>,
+    select: Option<Rc<Select>>,
+    window: &mut Window,
+) {
     let view = window.current_view();
-    let hit = Rc::new(hit);
     window.with_element_state::<LinkState, _>(id, |state, window| {
         let state = state.unwrap_or_default();
         let under = |hitbox: &Hitbox, position, window: &Window| {
@@ -519,11 +664,21 @@ fn link_events(id: &GlobalElementId, hitbox: &Hitbox, hit: Hit, window: &mut Win
                 if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
                     return;
                 }
+                // A press that dragged out a selection opens nothing.
+                let selecting = select.as_ref().is_some_and(|select| {
+                    select
+                        .host
+                        .borrow()
+                        .range_in(select.source.owner())
+                        .is_some()
+                });
                 if let Some(began) = pressed.take()
                     && hitbox.is_hovered(window)
                     && hit.link(event.position) == Some(began)
+                    && !selecting
+                    && let Some(styled) = &hit.styled
                 {
-                    cx.open_url(&hit.styled.links[began].url);
+                    cx.open_url(&styled.links[began].url);
                 }
             }
         });
@@ -536,7 +691,7 @@ struct Hit {
     shaped: Rc<Shaped>,
     bounds: Bounds<Pixels>,
     align: TextAlign,
-    styled: Rc<Styled>,
+    styled: Option<Rc<Styled>>,
 }
 
 impl Hit {
@@ -544,9 +699,86 @@ impl Hit {
     fn link(&self, position: Point<Pixels>) -> Option<usize> {
         let index = self.index(position)?;
         self.styled
+            .as_ref()?
             .links
             .iter()
             .position(|link| link.range.contains(&index))
+    }
+
+    /// The text's byte nearest `position`, within the text or not: a drag
+    /// past a line's end takes its end, above the text its first line.
+    fn closest(&self, position: Point<Pixels>) -> usize {
+        let pitch = self.shaped.line_height;
+        let y = position
+            .y
+            .clamp(self.bounds.top(), (self.bounds.bottom() - gpui::px(0.5)).max(self.bounds.top()));
+        let mut top = self.bounds.origin.y;
+        let mut start = 0;
+        let count = self.shaped.lines.len();
+        for (number, line) in self.shaped.lines.iter().enumerate() {
+            let height = line.size(pitch).height;
+            if y >= top + height && number + 1 < count {
+                top += height;
+                start += line.len() + 1;
+                continue;
+            }
+            let local = (y - top).clamp(Pixels::ZERO, (height - gpui::px(0.5)).max(Pixels::ZERO));
+            let row = (local / pitch) as usize;
+            let x = position.x - self.bounds.origin.x - self.row_offset(line, row);
+            let index = line
+                .closest_index_for_position(gpui::point(x, local), pitch)
+                .unwrap_or_else(|index| index);
+            return start + index;
+        }
+        start
+    }
+
+    /// The rows of the text between bytes `from` and `to` as rectangles; with
+    /// `beyond`, the selection runs past `to`, and its last row (and every
+    /// row it leaves by a break or a wrap) reaches the text's trailing edge.
+    fn rows_between(&self, from: usize, to: usize, beyond: bool) -> Vec<Bounds<Pixels>> {
+        let pitch = self.shaped.line_height;
+        let mut rects = Vec::new();
+        let mut top = self.bounds.origin.y;
+        let mut start = 0;
+        for line in &self.shaped.lines {
+            let layout = &line.unwrapped_layout;
+            let end = start + line.len();
+            let mut rows: Vec<(usize, Pixels)> = vec![(0, Pixels::ZERO)];
+            for boundary in line.wrap_boundaries.iter() {
+                let glyph = &layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix];
+                rows.push((glyph.index, glyph.position.x));
+            }
+            for (row, &(row_start, row_x)) in rows.iter().enumerate() {
+                let row_end = rows.get(row + 1).map_or(line.len(), |next| next.0);
+                let (a, b) = ((start + row_start).max(from), (start + row_end).min(to));
+                // The row's break (or wrap) is selected too.
+                let on = to > start + row_end || (beyond && to >= start + row_end);
+                if a > start + row_end || (a >= b && !on) || b < start + row_start {
+                    continue;
+                }
+                let x = |index: usize| {
+                    layout.x_for_index(index - start) - row_x + self.row_offset(line, row)
+                };
+                let left = x(a.min(start + row_end).max(start + row_start));
+                let right = if on {
+                    self.bounds.size.width
+                } else {
+                    x(b.max(start + row_start))
+                };
+                let y = top + pitch * row as f32;
+                let bottom = (y + pitch).min(self.bounds.bottom()).max(y);
+                if right > left {
+                    rects.push(Bounds::from_corners(
+                        gpui::point(self.bounds.origin.x + left, y),
+                        gpui::point(self.bounds.origin.x + right, bottom),
+                    ));
+                }
+            }
+            top += line.size(pitch).height;
+            start = end + 1;
+        }
+        rects
     }
 
     /// The byte of the glyph under `position`, found as
@@ -627,7 +859,7 @@ mod tests {
                 .child(
                     column()
                         .debug_selector(|| "runs".into())
-                        .children(message_text(&self.cache, "owner".into(), &self.text)),
+                        .children(message_text(&self.cache, "owner".into(), &self.text, None)),
                 )
         }
     }
@@ -730,6 +962,7 @@ mod tests {
                             "fence".into(),
                             &self.text,
                             styled.clone(),
+                            None,
                         ),
                     ))
                     .child(div().w(px(600.)).debug_selector(|| "one".into()).child(
@@ -744,6 +977,7 @@ mod tests {
                                 }],
                                 ..styled
                             },
+                            None,
                         ),
                     ))
             }
@@ -800,6 +1034,7 @@ mod tests {
                                 url: url.into(),
                             }],
                         },
+                        None,
                     )
                 };
                 div()

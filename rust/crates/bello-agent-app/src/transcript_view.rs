@@ -19,6 +19,8 @@ mod polish_oracle;
 mod read_presentation;
 #[path = "transcript_response.rs"]
 mod response;
+#[path = "transcript_quote.rs"]
+mod quote;
 #[path = "transcript_selection.rs"]
 mod selection;
 #[path = "transcript_shaped_text.rs"]
@@ -2281,6 +2283,13 @@ impl TranscriptView {
             whole: place.whole,
         }
     }
+    /// Whether the quote bar is up over a selection.
+    #[cfg(test)]
+    pub(crate) fn quote_bar_up(&self) -> bool {
+        let editors = self.tool_editors.borrow();
+        let host = editors.selection.borrow();
+        host.bar && host.quotable().is_some()
+    }
     /// The fence whose Copy reads "Copied".
     #[cfg(test)]
     pub(crate) fn copied_code(&self) -> Option<String> {
@@ -2855,6 +2864,13 @@ impl Element for ViewportList {
                 cx.notify(current_view);
             }
         });
+        {
+            // The rows' text registers what it paints of the selection.
+            let selection = self.tool_editors.borrow().selection.clone();
+            let frame = self.viewport.borrow().frame.number;
+            selection.borrow_mut().begin_frame(frame);
+            selection::listen(&selection, window);
+        }
         self.list
             .paint(id, inspector_id, bounds, state, &mut prepaint.0, window, cx);
         if let Some(find) = self.tool_editors.borrow().active_find()
@@ -3078,8 +3094,36 @@ pub(crate) fn reply_end_visible(row: Bounds<Pixels>, viewport: Bounds<Pixels>) -
 }
 
 impl Render for TranscriptView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let focus = self.focus.get_or_insert_with(|| cx.focus_handle()).clone();
+        let selection = self.tool_editors.borrow().selection.clone();
+        selection.borrow_mut().focus = Some(focus.clone());
+        let quote_bar = {
+            let input = &self.presentation.input;
+            let quote = quote::quote_target(
+                &self.parent,
+                input.chat_id.clone(),
+                input.controller.clone(),
+            );
+            let host = selection.clone();
+            let visible = self.viewport.borrow().list.viewport_bounds();
+            quote::bar(
+                &selection,
+                visible,
+                input.palette,
+                move |window, cx| {
+                    let text = {
+                        let mut host = host.borrow_mut();
+                        host.bar = false;
+                        host.quotable().map(|(_, text)| text)
+                    };
+                    if let Some(text) = text {
+                        quote(&text, window, cx);
+                    }
+                },
+                window,
+            )
+        };
         #[cfg(test)]
         {
             self.render_count += 1;
@@ -3109,10 +3153,46 @@ impl Render for TranscriptView {
             self.offered_jump = jump;
         }
         let p = self.presentation.input.palette;
+        let (copy, all, keys) = (selection.clone(), selection.clone(), selection.clone());
+        let quote_key = {
+            let input = &self.presentation.input;
+            quote::quote_target(&self.parent, input.chat_id.clone(), input.controller.clone())
+        };
         div()
             .id("transcript")
             .track_focus(&focus)
             .on_any_mouse_down(|_, window, _| window.prevent_default())
+            // The selection's commands, while a press in its text gave the
+            // transcript the focus.
+            .on_action(move |_: &crate::application_menus::Copy, _, cx| {
+                if let Some(text) = copy.borrow().copy() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            })
+            .on_action(cx.listener(move |_, _: &crate::application_menus::SelectAll, _, cx| {
+                if all.borrow_mut().select_all() {
+                    cx.notify();
+                }
+            }))
+            .on_key_down(cx.listener(move |_, event: &KeyDownEvent, window, cx| {
+                let key = event.keystroke.key.as_str();
+                let plain = !event.keystroke.modifiers.modified();
+                if key == "escape" && std::mem::take(&mut keys.borrow_mut().bar) {
+                    cx.stop_propagation();
+                    cx.notify();
+                } else if key == "enter" && plain && keys.borrow().bar {
+                    let text = {
+                        let mut host = keys.borrow_mut();
+                        host.bar = false;
+                        host.quotable().map(|(_, text)| text)
+                    };
+                    if let Some(text) = text {
+                        cx.stop_propagation();
+                        quote_key(&text, window, cx);
+                    }
+                    cx.notify();
+                }
+            }))
             .debug_selector(|| "queue-measured-transcript".into())
             .relative()
             .w_full()
@@ -3121,6 +3201,7 @@ impl Render for TranscriptView {
             .flex()
             .flex_col()
             .child(element)
+            .children(quote_bar)
             .when(jump, |transcript| {
                 // Swift's PiKit.BackToBottomPill: a 34 pt circle centred twelve
                 // points above the transcript's foot.
@@ -3511,6 +3592,7 @@ fn render_row(
                                 .pb(px(4.))
                                 .child(reasoning_markdown(
                                     &message.reasoning,
+                                    &message.id,
                                     &selector,
                                     tool_editors,
                                     child,
@@ -3569,7 +3651,7 @@ fn render_row(
                                 // so a streaming reply redoes its tail.
                                 let style = bello_agent_core::markdown::Style::PROSE;
                                 let owner = SharedString::from(selector.clone());
-                                let (blocks, (slots, text_top, whole), shapes, copied) = {
+                                let (blocks, (slots, text_top, whole), shapes, copied, select) = {
                                     let mut editors = tool_editors.borrow_mut();
                                     let blocks = editors.markdown(&owner, &text, style);
                                     (
@@ -3577,6 +3659,7 @@ fn render_row(
                                         editors.placement(&owner, width),
                                         editors.shaped_text.clone(),
                                         editors.copied_code.as_ref().map(|(key, _)| key.clone()),
+                                        editors.select(&owner, &message.id, !ambiguous, p),
                                     )
                                 };
                                 // A viewport's height of blocks above and below
@@ -3600,6 +3683,7 @@ fn render_row(
                                         copied,
                                         text: None,
                                         on_copy: copy_code(tool_editors, child),
+                                        select,
                                     },
                                     &markdown_view::Placement {
                                         slots: &slots,
@@ -3619,8 +3703,22 @@ fn render_row(
                             } else {
                                 // Shaped lines are reused across frames, so a
                                 // streaming reply re-shapes only its tail.
-                                let shapes = tool_editors.borrow().shaped_text.clone();
-                                shaped_text::message_text(&shapes, selector.clone().into(), &text)
+                                let (shapes, select) = {
+                                    let editors = tool_editors.borrow();
+                                    let owner = SharedString::from(selector.clone());
+                                    let source =
+                                        Rc::new(selection::Source::plain(owner, text.clone()));
+                                    (
+                                        editors.shaped_text.clone(),
+                                        editors.select_source(source, &message.id, false, p),
+                                    )
+                                };
+                                shaped_text::message_text(
+                                    &shapes,
+                                    selector.clone().into(),
+                                    &text,
+                                    Some(select),
+                                )
                                     .into_iter()
                                     .map(IntoElement::into_any_element)
                                     .collect()
@@ -3728,6 +3826,8 @@ struct ToolEditors {
     edit_previews: edit_presentation::EditCache,
     shaped_text: Rc<RefCell<shaped_text::ShapeCache>>,
     markdown: HashMap<SharedString, MarkdownEntry>,
+    /// The transcript's text selection.
+    selection: Rc<RefCell<selection::SelectionHost>>,
     /// The fence whose Copy was pressed last and the press's number: it
     /// reads "Copied" for two seconds, as Swift's button does.
     copied_code: Option<(SharedString, u64)>,
@@ -3753,6 +3853,7 @@ pub(crate) struct DrawnLines {
 /// reasoning style (13 pt, muted), the whole width, drawn whole.
 fn reasoning_markdown(
     reasoning: &str,
+    message: &str,
     selector: &str,
     tool_editors: &Rc<RefCell<ToolEditors>>,
     child: &WeakEntity<TranscriptView>,
@@ -3762,12 +3863,14 @@ fn reasoning_markdown(
 ) -> impl IntoElement {
     let style = bello_agent_core::markdown::Style::REASONING;
     let owner = format!("{selector}-think");
-    let (blocks, shapes, copied) = {
+    let (blocks, shapes, copied, select) = {
         let mut editors = tool_editors.borrow_mut();
+        let key = SharedString::from(owner.clone());
         (
-            editors.markdown(&SharedString::from(owner.clone()), reasoning, style),
+            editors.markdown(&key, reasoning, style),
             editors.shaped_text.clone(),
             editors.copied_code.as_ref().map(|(key, _)| key.clone()),
+            editors.select(&key, message, false, p),
         )
     };
     let muted = rgb(if p.dark { 0xa9a59b } else { 0x6e6a61 }).into();
@@ -3784,6 +3887,7 @@ fn reasoning_markdown(
             copied,
             on_copy: copy_code(tool_editors, child),
             text: Some(muted),
+            select,
         },
         &markdown_view::Placement {
             slots: &[],
@@ -3836,6 +3940,16 @@ fn record_reply_slots(
     }
 }
 
+/// AppKit's selected text background (the system's default blue), and its
+/// fill while the text's view is not the one with the focus.
+fn selection_fill(p: Palette) -> (Hsla, Hsla) {
+    if p.dark {
+        (rgb(0x3f638b).into(), rgb(0x464646).into())
+    } else {
+        (rgb(0xb3d7ff).into(), rgb(0xdcdcdc).into())
+    }
+}
+
 /// A fence's Copy: the code to the clipboard, and the button reads "Copied"
 /// until two seconds pass or another fence is copied.
 fn copy_code(
@@ -3876,6 +3990,8 @@ struct MarkdownEntry {
     text: String,
     style: bello_agent_core::markdown::Style,
     blocks: Rc<Vec<bello_agent_core::markdown::Block>>,
+    /// The blocks as one selectable text.
+    source: Rc<selection::Source>,
     used: u64,
     place: ReplyPlace,
 }
@@ -4059,12 +4175,51 @@ impl ToolEditors {
             MarkdownEntry {
                 text: text.to_owned(),
                 style,
+                source: Rc::new(selection::Source::markdown(owner.clone(), blocks.clone())),
                 blocks: blocks.clone(),
                 used: self.tick,
                 place,
             },
         );
         blocks
+    }
+    /// The selectable text of the Markdown last read for `owner`, kept in
+    /// step with the selection in it.
+    fn select(
+        &self,
+        owner: &SharedString,
+        message: &str,
+        quotable: bool,
+        p: Palette,
+    ) -> Option<shaped_text::Select> {
+        let source = self.markdown.get(owner)?.source.clone();
+        Some(self.select_source(source, message, quotable, p))
+    }
+    fn select_source(
+        &self,
+        source: Rc<selection::Source>,
+        message: &str,
+        quotable: bool,
+        p: Palette,
+    ) -> shaped_text::Select {
+        let selected = self
+            .selection
+            .borrow()
+            .selected
+            .as_ref()
+            .is_some_and(|selected| &selected.reply == source.owner());
+        if selected {
+            let text = source.text();
+            self.selection.borrow_mut().follow(source.owner(), &text);
+        }
+        shaped_text::Select {
+            host: self.selection.clone(),
+            source,
+            message: message.to_owned(),
+            quotable,
+            base: 0,
+            fill: selection_fill(p),
+        }
     }
     /// The slots a reply's blocks were last drawn in at this width, where its
     /// column sits in its row, and whether it must be drawn whole.
