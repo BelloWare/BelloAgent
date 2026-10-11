@@ -38,6 +38,8 @@ pub use resource_runtime::{AppliedInstructionSnapshot, SyntheticResources, Synth
 
 #[path = "context_preview.rs"]
 mod context_preview;
+#[path = "title_runtime.rs"]
+mod title_runtime;
 pub use context_preview::{ContextPreview, ContextPreviewMetadata, ContextPreviewMode};
 
 use crate::{

@@ -504,6 +504,14 @@ impl AgentView {
                         .text_size(px(13.))
                         .child(item.display_name().to_owned()),
                 );
+                if item.mini == Some(true) {
+                    name_row = name_row.child(
+                        div()
+                            .text_size(px(11.5))
+                            .text_color(rgb(p.accent))
+                            .child("Mini"),
+                    );
+                }
                 if item
                     .input
                     .as_ref()

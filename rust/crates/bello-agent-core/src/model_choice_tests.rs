@@ -15,6 +15,7 @@ fn descriptor(id: &str, reasoning: Option<&[&str]>) -> ModelDescriptor {
         deprecated: false,
         order: None,
         input: None,
+        mini: None,
     }
 }
 

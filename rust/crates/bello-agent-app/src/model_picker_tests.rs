@@ -11,6 +11,7 @@ fn row(id: &str, name: &str, context: Option<u32>, output: Option<u32>) -> Model
         deprecated: false,
         order: None,
         input: None,
+        mini: None,
     }
 }
 
