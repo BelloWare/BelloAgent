@@ -100,6 +100,16 @@ pub(super) fn file_link(session: &Session, row: ProjectedRow) -> Option<ReadFile
 /// `TranscriptCardMetrics.readLines`.
 pub(super) const READ_LINES: usize = super::card_lines::MAX_LINES;
 
+/// `TranscriptReadCardText.window(shown:total:)`: "Showing 12 of 340
+/// lines", and only the count when every line shows.
+pub(super) fn window(shown: usize, total: usize) -> String {
+    if shown >= total {
+        format!("{total} line{}", if total == 1 { "" } else { "s" })
+    } else {
+        format!("Showing {shown} of {total} lines")
+    }
+}
+
 pub(super) struct ReadWindow<'a> {
     /// The result's text the lines are slices of.
     pub text: &'a str,
@@ -159,11 +169,7 @@ impl<'a> ReadWindow<'a> {
         } else {
             total
         };
-        if shown >= total {
-            format!("{total} line{}", if total == 1 { "" } else { "s" })
-        } else {
-            format!("Showing {shown} of {total} lines")
-        }
+        window(shown, total)
     }
     /// The head and, while capped, the tail: the runs of lines the card
     /// draws, each an exact slice of the result's text.

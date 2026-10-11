@@ -14,6 +14,9 @@ mod markdown_view;
 pub(crate) use markdown_view::Child as MarkdownChild;
 #[path = "transcript_read_presentation.rs"]
 mod read_presentation;
+#[cfg(test)]
+#[path = "transcript_polish_oracle_tests.rs"]
+mod polish_oracle;
 #[path = "transcript_response.rs"]
 mod response;
 #[path = "transcript_shaped_text.rs"]

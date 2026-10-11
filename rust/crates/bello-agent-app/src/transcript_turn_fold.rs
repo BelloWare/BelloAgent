@@ -87,7 +87,7 @@ pub(super) fn label(tool_calls: usize, messages: usize, subagents: usize) -> Str
 }
 
 /// `TurnFoldSpec.isSubagent`: a delegation call is a subagent, not a tool call.
-fn subagent(name: &str) -> bool {
+pub(super) fn subagent(name: &str) -> bool {
     name == "subagent" || name.starts_with("subagent_")
 }
 
