@@ -153,9 +153,13 @@ final class PartialReplyLogTests: XCTestCase {
         try await Task.sleep(nanoseconds: 3 * PartialReplyLog.flushDelayNanoseconds)
         let killed = try killedCopy(path)
         await session.close()
+        // The record after the header: the native marker, never a row.
+        let journalIDs = try String(contentsOf: killed, encoding: .utf8).components(separatedBy: "\n").dropFirst().prefix(1)
+            .compactMap { try? JSON.parse(Data($0.utf8))["id"].text }
+        XCTAssertEqual(journalIDs.count, 1)
         let damages: [(String, (inout PartialReplyLog.Header) -> Void)] = [
             ("another record", { $0.after.id = "someone-else" }), ("an id no record may have", { $0.reply = "not an id/../" }),
-            ("an empty id", { $0.reply = "" }), ("the anchor's id", { $0.reply = $0.after.id }), ("a loaded row's id", { $0.reply = "t1" }), ("a place past any file", { $0.after.offset = UInt64.max }),
+            ("an empty id", { $0.reply = "" }), ("the anchor's id", { $0.reply = $0.after.id }), ("a loaded row's id", { $0.reply = "t1" }), ("an earlier record's id", { $0.reply = journalIDs.first ?? "" }), ("a place past any file", { $0.after.offset = UInt64.max }),
         ]
         for (what, damage) in damages {
             let copy = try killedCopy(killed.path), logURL = PartialReplyLog.url(for: copy)

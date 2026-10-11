@@ -134,7 +134,7 @@ final class PartialReplyLog {
     /// journal at `journal` (`size` bytes) still has the record it was
     /// written after and holds no record of the reply after that: what a
     /// helper that died mid-reply never wrote. Nil otherwise.
-    static func unfinished(_ url: URL, journal: URL, size: UInt64, known: Set<String>) -> (header: Header, text: String, thinking: String, timeline: ResponseTimeline, at: Double?)? {
+    static func unfinished(_ url: URL, journal: URL, size: UInt64) -> (header: Header, text: String, thinking: String, timeline: ResponseTimeline, at: Double?)? {
         guard let reader = try? JournalRecordReader(url, allowIncompleteTail: true) else { return nil }
         var header: Header?, text = "", thinking = "", timeline = ResponseTimeline(), at: Double?
         let decoder = JSONDecoder()
@@ -155,11 +155,11 @@ final class PartialReplyLog {
             }
         }
         // The reply's id becomes a journal record's: one the journal would
-        // refuse on its next open (not an id, or one a record has: the
-        // anchor's, a loaded row's, any after the anchor) is not written.
-        guard let header, (try? identity(JSON(header.reply))) != nil, header.reply != header.after.id, !known.contains(header.reply),
-              !text.isEmpty || !thinking.isEmpty || !timeline.segments.isEmpty,
-              journalHolds(header.after, in: journal, size: size), !journalNames(header.reply, after: header.after, in: journal) else { return nil }
+        // refuse on its next open (not an id, or one a record already has,
+        // the reply's own row among them) is not written. The whole journal
+        // is read for it, as only a reopen after a crash does.
+        guard let header, (try? identity(JSON(header.reply))) != nil, !text.isEmpty || !thinking.isEmpty || !timeline.segments.isEmpty,
+              journalHolds(header.after, in: journal, size: size), !journalNames(header.reply, in: journal) else { return nil }
         return (header, text, thinking, timeline, at)
     }
     /// A log the journal could not take its reply from (the record would not
@@ -214,9 +214,10 @@ final class PartialReplyLog {
         let id = JournalLineScan.fields(line)?.id ?? (try? JSON.parse(line))?["id"].text
         return id == anchor.id
     }
-    /// Whether a record after `anchor` has the reply's id: the reply was journaled.
-    private static func journalNames(_ reply: String, after anchor: Anchor, in journal: URL) -> Bool {
-        guard let reader = try? JournalRecordReader(journal, startingAt: anchor.offset + UInt64(anchor.length) + 1) else { return true }
+    /// Whether a record of the journal has the reply's id: the reply was
+    /// journaled, or the id is taken.
+    private static func journalNames(_ reply: String, in journal: URL) -> Bool {
+        guard let reader = try? JournalRecordReader(journal) else { return true }
         while true {
             // A journal that cannot be read through counts as naming it.
             let next: Data?
