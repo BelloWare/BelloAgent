@@ -429,6 +429,9 @@ extension WorkspaceModel {
         let edge = ConversationCursor(incarnation: identity.incarnation, lineage: identity.lineage, entry: first.id)
         if !view.olderPage.loading { view.olderPage = .init(cursor: edge) } else { view.olderPage.cursor = edge }
         if view.before != edge.entry { view.before = edge.entry }
+        // The window now has rows before it: where it stands is read, if no
+        // page has said (a new side), so they keep their room.
+        if view.historyPositions.total == nil { reacquireHistoryPositions(view.id) }
         // A read of the figures for the rows before is not for these.
         if accountingChanged, let workspaceID = record(view.id)?.workspaceID { scheduleAccounting(view.id, workspaceID: workspaceID) }
     }
