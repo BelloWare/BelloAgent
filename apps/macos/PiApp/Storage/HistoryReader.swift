@@ -281,6 +281,39 @@ actor HistoryReader {
                           changed: value.st_ctimespec.tv_sec, changedNS: value.st_ctimespec.tv_nsec)
         return HistoryRevision(path: path, stamp: revision(stamp))
     }
+    /// The searchable text of each record in `range`, in order: read in
+    /// order from the file, decoded concurrently. A record that cannot be
+    /// read or decoded carries its error, thrown when the search reaches it.
+    private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle) throws -> [(ref: Ref, text: Result<String, Error>)] {
+        var refs: [Ref] = [], records: [Result<Data, Error>?] = []
+        refs.reserveCapacity(range.count); records.reserveCapacity(range.count)
+        for position in range {
+            let ref = try branch.at(position)
+            refs.append(ref)
+            if ref.type == "branch" { records.append(nil); continue }
+            decodedRecords += 1
+            do {
+                try file.seek(toOffset: ref.offset)
+                guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
+                records.append(.success(bytes))
+            } catch { records.append(.failure(error)) }
+        }
+        var texts = [Result<String, Error>](repeating: .success(""), count: refs.count)
+        let edit = "## Edit\n\n" + Self.branchText + "\n\n", read = records
+        texts.withUnsafeMutableBufferPointer { buffer in
+            // Each iteration writes its own element only.
+            nonisolated(unsafe) let output = buffer
+            DispatchQueue.concurrentPerform(iterations: read.count) { index in
+                switch read[index] {
+                case nil: output[index] = .success(edit)
+                case .failure(let error)?: output[index] = .failure(error)
+                case .success(let bytes)?:
+                    output[index] = Result { ConversationContent.text(try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]) }
+                }
+            }
+        }
+        return zip(refs, texts).map { ($0, $1) }
+    }
     private func content(_ ref: Ref, file: FileHandle) throws -> String {
         if ref.type == "branch" { return "## Edit\n\n" + Self.branchText + "\n\n" }
         decodedRecords += 1
@@ -326,15 +359,29 @@ actor HistoryReader {
         // caller continue from `next`, exactly as a full page of hits does.
         let limit = min(index.branch.count, min(start, index.branch.count) + 5_000)
         var hits: [ContentHit] = [], cursor = min(start, index.branch.count)
+        // Records are read in order and decoded a run at a time on every
+        // core: decoding is nearly all a search costs, one record's text
+        // never depends on another's, and the hits are taken in order from
+        // the run as before. A run starts small, so a query that fills its
+        // hundred hits early decodes little past them, and grows.
+        var run = 32
+        let needle = ConversationContent.asciiNeedle(query)
         while cursor < limit && hits.count < 100 {
-            let ref = try index.branch.at(cursor), text = try content(ref, file: file)
-            if query.isEmpty { hits.append(.init(id: ref.id, position: cursor + 1, preview: String(text.prefix(240)))) }
-            else if let range = text.range(of: query, options: [.caseInsensitive]) {
-                let from = text.index(range.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
-                hits.append(.init(id: ref.id, position: cursor + 1, preview: String(text[from...].prefix(240)),
-                                  count: ConversationContent.occurrences(of: query, in: text)))
+            let end = min(limit, cursor + run); run = min(run * 2, 512)
+            let texts = try contents(cursor..<end, branch: index.branch, file: file)
+            for (offset, decoded) in texts.enumerated() where hits.count < 100 {
+                let ref = decoded.ref, text = try decoded.text.get()
+                let position = cursor + offset
+                if query.isEmpty { hits.append(.init(id: ref.id, position: position + 1, preview: String(text.prefix(240)))) }
+                else if let needle, ConversationContent.excludes(needle, from: text) { }
+                else if let range = text.range(of: query, options: [.caseInsensitive]) {
+                    let from = text.index(range.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
+                    hits.append(.init(id: ref.id, position: position + 1, preview: String(text[from...].prefix(240)),
+                                      count: ConversationContent.occurrences(of: query, in: text)))
+                }
+                if hits.count == 100 { cursor = position + 1; break }
+                if offset == texts.count - 1 { cursor = end }
             }
-            cursor += 1
         }
         guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
         return .init(hits: hits, total: index.branch.count, next: cursor < index.branch.count ? cursor : nil, revision: revision(index.stamp))
