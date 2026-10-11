@@ -1016,7 +1016,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.mountSeconds += TranscriptLayoutClock.now - clock } }
         var buffered = Self.buffered(clip.bounds)
         let selected = rowOwningFirstResponder()
-        page?.pinSelectedRow(selected?.contentItem)
+        page?.pinSelectedRow(Self.responderHoldsRow(window?.firstResponder) ? selected?.contentItem : nil)
         // No estimate is ever drawn: a row standing at one that the reader has
         // reached is measured now, whatever the slice budget says, and the page
         // placed again around it. Each round makes at least one more row exact,
@@ -1246,7 +1246,7 @@ final class TranscriptNativeScrollView: NSScrollView {
         // Anchor and viewport stay exact at every width; unseen rows are
         // reconciled later, including after mouse-up and interrupted drags.
         let selected = rowOwningFirstResponder()
-        page?.pinSelectedRow(selected?.contentItem)
+        page?.pinSelectedRow(Self.responderHoldsRow(window?.firstResponder) ? selected?.contentItem : nil)
         let deferring = liveResizing
         let viewportHeight = enclosingScrollView?.contentView.bounds.height ?? 0
         let pass = preparePass(width: width, rowWidth: nextWidth, deferring: deferring, viewportHeight: viewportHeight)
@@ -1406,6 +1406,23 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// while the reader's hand is on the page, whose scroller this sizes.
     /// A new figure resizes the room kept for the rows not read, and the
     /// pass that follows places the rows again around the reader's line.
+    /// Whether the window's first responder holds the row it is in: what a
+    /// read that would let go of the row must wait for.
+    /// Text the reader has selected, or is editing, holds it; the keyboard
+    /// alone (a click in a reply's text) does not, or every far scroll and
+    /// drag of the scroller would be refused.
+    static func responderHoldsRow(_ responder: NSResponder?) -> Bool {
+        guard let text = responder as? NSTextView else { return false }
+        return text.isEditable || text.selectedRanges.contains { $0.rangeValue.length > 0 }
+    }
+    /// Whether the chat's row height is measured again: the rows were
+    /// measured at another width, or the window holds twice the rows it was
+    /// measured over, or (near its cap, where it cannot double) a good many
+    /// more.
+    static func remeasuresHistoryRowHeight(count: Int, sample: Int, width: CGFloat, sampleWidth: CGFloat?) -> Bool {
+        if let sampleWidth, abs(width - sampleWidth) > 1 { return true }
+        return count >= sample * 2 || count >= sample + 128
+    }
     private func measureHistoryRowHeight(placedHeight: CGFloat) {
         guard let page, let snapshot, !snapshot.messages.isEmpty, placedHeight > 0 else { return }
         let count = snapshot.messages.count
@@ -1413,14 +1430,17 @@ final class TranscriptNativeScrollView: NSScrollView {
             // A wheel AppKit is still applying lands on the old geometry.
             let scrolling = (enclosingScrollView as? TranscriptNativeScrollView)?.readerIsScrolling ?? false
                 || (!page.followsBottom && ProcessInfo.processInfo.systemUptime - viewportMovedAt < Self.roomQuietPeriod)
-            guard count >= page.historyRowHeightSample * 2, !scrolling, estimated.count * 4 < rows.count else {
-                if count >= page.historyRowHeightSample * 2 { scheduleRoomMeasurement() }
+            let wanted = Self.remeasuresHistoryRowHeight(count: count, sample: page.historyRowHeightSample, width: rowWidth, sampleWidth: page.historyRowHeightWidth)
+            // Measured once the rows stand at their own heights: after a
+            // resize settles, not on the old width's.
+            guard wanted, !scrolling, !liveResizing, estimated.count * 4 < rows.count, approximate.count * 4 < rows.count else {
+                if wanted { scheduleRoomMeasurement() }
                 return
             }
         }
         let height = max(24, placedHeight / CGFloat(count))
         let before = page.historyRowHeight
-        page.measuredHistoryRowHeight(height, over: count)
+        page.measuredHistoryRowHeight(height, over: count, width: rowWidth)
         if snapshot.extent != nil, before.map({ abs($0 - height) > 0.5 }) ?? true { dirty = true; scheduleLayout() }
     }
     /// Says again where the reader is, when the page has become ready to

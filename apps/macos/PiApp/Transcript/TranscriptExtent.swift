@@ -31,6 +31,8 @@ struct HistoryExtent: Equatable {
     var rowHeight: CGFloat?
     /// How many rows that height was measured over.
     var rowHeightSample = 0
+    /// The row width it was measured at.
+    var rowHeightWidth: CGFloat?
 
     /// A page that replaces the window: what was known of the old one may
     /// belong to another timeline.

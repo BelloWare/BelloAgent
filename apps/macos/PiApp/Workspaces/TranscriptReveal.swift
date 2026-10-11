@@ -169,7 +169,7 @@ extension WorkspaceModel {
                 // they are still in the room (`TranscriptPage.readerReachedUnreadRows`).
                 // The journal was replaced or edited under the window: said
                 // as a changed branch is, with Reload.
-                if case HostError.failure(let message)? = error as? HostError, message.localizedCaseInsensitiveContains("history") || message.contains("changed"), current() {
+                if Self.isSourceChange(error), current() {
                     view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere); view.browsingHistory = true
                 } else if !(error is CancellationError), current() {
                     // Tried again in a moment, where the reader is within the row
@@ -205,6 +205,16 @@ extension WorkspaceModel {
         return messages.first { drawn.contains($0.id) }?.id
     }
 
+    /// Whether a read failed because the history is no longer the one the
+    /// window was read from (replaced, edited, or a boundary gone).
+    nonisolated static func isSourceChange(_ error: Error) -> Bool {
+        switch error as? HostError {
+        case .failure(let message)?: return message.localizedCaseInsensitiveContains("history") || message.contains("changed")
+        // The helper's own word for it (`session.history`).
+        case .rejected(let code, _)?: return code == "history_changed" || code == "message_missing"
+        case nil: return false
+        }
+    }
     static let selectionHoldsWindow = "The selected text is at the display boundary. Clear the selection to load more history."
 
     /// Whether chat `id`'s transcript is what the reader has in front of them:

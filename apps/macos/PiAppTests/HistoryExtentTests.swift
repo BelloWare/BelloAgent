@@ -176,4 +176,79 @@ final class HistoryExtentTests: XCTestCase {
         XCTAssertNotNil(chat.view.olderPage.cursor)
         XCTAssertGreaterThan(chat.page?.snapshot?.extent?.before ?? 0, 0, "The rows let go of keep their room")
     }
+
+    /// A source that says its history changed (the helper rejects the
+    /// boundary with `history_changed`) is a changed conversation, offered
+    /// Reload, not a read to try again forever.
+    func testAHelperThatSaysItsHistoryChangedIsASourceChange() {
+        XCTAssertTrue(WorkspaceModel.isSourceChange(HostError.rejected("history_changed", "The history boundary is no longer available. Reload history.")))
+        XCTAssertTrue(WorkspaceModel.isSourceChange(HostError.rejected("message_missing", "That message is outside the current branch.")))
+        XCTAssertTrue(WorkspaceModel.isSourceChange(HostError.failure("History was replaced or edited. Reload it to reanchor safely.")))
+        XCTAssertFalse(WorkspaceModel.isSourceChange(HostError.rejected("timeout", "The helper did not answer.")))
+        XCTAssertFalse(WorkspaceModel.isSourceChange(HostError.failure("The helper stopped.")))
+    }
+
+    /// Clicking a reply's text gives it the keyboard without selecting
+    /// anything: that must not hold its row, or every far scroll and drag
+    /// would be refused. A selection, or text being edited, does.
+    @MainActor func testOnlyASelectionOrAnEditorHoldsItsRow() {
+        let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 40))
+        text.string = "A reply the reader clicked."
+        text.isEditable = false; text.isSelectable = true
+        text.setSelectedRange(NSRange(location: 3, length: 0))
+        XCTAssertFalse(TranscriptNativeDocument.responderHoldsRow(text), "focus alone")
+        text.setSelectedRange(NSRange(location: 2, length: 5))
+        XCTAssertTrue(TranscriptNativeDocument.responderHoldsRow(text), "a selection")
+        text.setSelectedRange(NSRange(location: 0, length: 0)); text.isEditable = true
+        XCTAssertTrue(TranscriptNativeDocument.responderHoldsRow(text), "an editor")
+        XCTAssertFalse(TranscriptNativeDocument.responderHoldsRow(nil))
+        XCTAssertFalse(TranscriptNativeDocument.responderHoldsRow(NSButton()), "a control")
+    }
+
+    /// The chat's row height is measured again when the pane's width
+    /// changes (every row's height does), and as the window grows near its
+    /// cap, not only when it doubles.
+    @MainActor func testTheRowHeightIsMeasuredAgainAfterAResizeAndNearTheCap() {
+        XCTAssertFalse(TranscriptNativeDocument.remeasuresHistoryRowHeight(count: 20, sample: 15, width: 800, sampleWidth: 800))
+        XCTAssertTrue(TranscriptNativeDocument.remeasuresHistoryRowHeight(count: 30, sample: 15, width: 800, sampleWidth: 800))
+        XCTAssertTrue(TranscriptNativeDocument.remeasuresHistoryRowHeight(count: 20, sample: 15, width: 500, sampleWidth: 800), "the width changed")
+        XCTAssertTrue(TranscriptNativeDocument.remeasuresHistoryRowHeight(count: 480, sample: 300, width: 800, sampleWidth: 800), "near the cap")
+        XCTAssertFalse(TranscriptNativeDocument.remeasuresHistoryRowHeight(count: 320, sample: 300, width: 800, sampleWidth: 800))
+    }
+
+    /// A far read refused because the reader holds a selection says so at
+    /// the earlier edge.
+    @MainActor func testAFarReadRefusedForASelectionSaysSo() async throws {
+        let chat = try await LongChatScroll(turns: 60)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        chat.view.pinnedHistoryIDs = [chat.view.messages.last!.id]
+        chat.model.jumpToHistoryPosition(chat.chat.id, position: 10, offset: 0)
+        XCTAssertEqual(chat.view.olderPage.error, WorkspaceModel.selectionHoldsWindow)
+        XCTAssertNil(chat.view.jumpRead, "No read was made")
+    }
+
+    /// A position read whose window came from the other source (the helper)
+    /// checks that window's entry is still in the journal's branch.
+    @MainActor func testAPositionReadHandedOverChecksTheWindowsEntry() async throws {
+        let chat = try await LongChatScroll(turns: 30)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        let lineage = try XCTUnwrap(chat.view.presentation.identity?.lineage)
+        let held = ConversationCursor(incarnation: "helper:x", lineage: lineage, entry: "u3")
+        let page = try await chat.model.readConversationWindow(chat.chat, cursor: nil, position: 50, validating: held)
+        XCTAssertEqual(page.start, 50)
+        do {
+            _ = try await chat.model.readConversationWindow(chat.chat, cursor: nil, position: 50,
+                                                            validating: ConversationCursor(incarnation: "helper:x", lineage: lineage, entry: "gone"))
+            XCTFail("A window whose entry is gone was read by position")
+        } catch { XCTAssertTrue(WorkspaceModel.isSourceChange(error), "\(error)") }
+        do {
+            _ = try await chat.model.readConversationWindow(chat.chat, cursor: nil, position: 50,
+                                                            validating: ConversationCursor(incarnation: "helper:x", lineage: "another", entry: "u3"))
+            XCTFail("A window of another branch was read by position")
+        } catch { XCTAssertTrue(WorkspaceModel.isSourceChange(error), "\(error)") }
+    }
 }

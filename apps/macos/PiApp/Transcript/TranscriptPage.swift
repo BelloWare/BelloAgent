@@ -707,9 +707,10 @@ struct ContentGeometry: Equatable {
     /// document measured it (`HistoryPositions.rowHeight`).
     var historyRowHeight: CGFloat? { presentationSession?.historyPositions.rowHeight }
     var historyRowHeightSample: Int { presentationSession?.historyPositions.rowHeightSample ?? 0 }
-    func measuredHistoryRowHeight(_ height: CGFloat, over rows: Int) {
+    var historyRowHeightWidth: CGFloat? { presentationSession?.historyPositions.rowHeightWidth }
+    func measuredHistoryRowHeight(_ height: CGFloat, over rows: Int, width: CGFloat) {
         guard let positions = presentationSession?.historyPositions, height.isFinite, height > 0 else { return }
-        positions.rowHeight = height; positions.rowHeightSample = rows
+        positions.rowHeight = height; positions.rowHeightSample = rows; positions.rowHeightWidth = width
     }
     /// The reader stands in room kept for rows the window does not hold, too
     /// far from its rows for an edge's read to reach them: the page there is

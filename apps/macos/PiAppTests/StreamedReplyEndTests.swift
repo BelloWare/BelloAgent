@@ -338,16 +338,18 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         }
         let view = try XCTUnwrap(model.displays[chat.id])
         XCTAssertGreaterThanOrEqual(view.messages.count, 8, "The window is full")
-        // The reader clicks into the first reply's text, as they do to select
-        // and copy some of it: that row holds the cursor.
+        // The reader selects some of the first reply's text, to copy it: that
+        // row holds the selection. (The keyboard alone, a click with nothing
+        // selected, holds nothing: `TranscriptNativeDocument.responderHoldsRow`.)
         let first = try XCTUnwrap(view.messages.first(where: { $0.role == "assistant" }))
         launched.draw()
         let held = try XCTUnwrap(launched.views(NativeMarkdownContainer.self).first { $0.readingIdentity == first.id || $0.textView.string.contains(first.text.prefix(20)) },
                                  "The first reply is drawn")
         launched.window.makeFirstResponder(held.textView)
+        held.textView.setSelectedRange(NSRange(location: 0, length: min(5, (held.textView.string as NSString).length)))
         launched.draw()
         _ = await wait(2) { view.pinnedHistoryIDs.contains(first.id) }
-        XCTAssertTrue(view.pinnedHistoryIDs.contains(first.id), "The row holding the cursor is kept on the page")
+        XCTAssertTrue(view.pinnedHistoryIDs.contains(first.id), "The row holding the selection is kept on the page")
         // A long reply streams in: its turn's two rows need the window's room.
         launched.window.makeFirstResponder(held.textView)
         view.draft = "A large answer, please"
