@@ -6,12 +6,45 @@
 
 use crate::sidebar_actions::{SidebarAction, SidebarMenuEntry};
 
-/// The action of the item the native target recorded: its 1-based index in
-/// the entries the menu was built from, 0 for none (a dismissal).
-fn selected_action(selected: u8, entries: &[SidebarMenuEntry]) -> Option<SidebarAction> {
+/// One line of a native menu, whatever its commands do (PiMenuEntry).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MenuEntry {
+    Item {
+        title: String,
+        symbol: Option<&'static str>,
+        enabled: bool,
+    },
+    Note(String),
+    Separator,
+}
+
+impl From<&SidebarMenuEntry> for MenuEntry {
+    fn from(entry: &SidebarMenuEntry) -> Self {
+        match entry {
+            SidebarMenuEntry::Item(item) => MenuEntry::Item {
+                title: item.title.clone(),
+                symbol: item.symbol,
+                enabled: item.enabled,
+            },
+            SidebarMenuEntry::Note(note) => MenuEntry::Note(note.clone()),
+            SidebarMenuEntry::Separator => MenuEntry::Separator,
+        }
+    }
+}
+
+/// The entry the native target recorded: its 1-based index in the entries
+/// the menu was built from, 0 for none (a dismissal); only an enabled item.
+fn selected_index(selected: u8, entries: &[MenuEntry]) -> Option<usize> {
     let index = usize::from(selected).checked_sub(1)?;
-    match entries.get(index)? {
-        SidebarMenuEntry::Item(item) if item.enabled => Some(item.action),
+    matches!(entries.get(index)?, MenuEntry::Item { enabled: true, .. }).then_some(index)
+}
+
+/// The action of the item the native target recorded.
+#[cfg(test)]
+fn selected_action(selected: u8, entries: &[SidebarMenuEntry]) -> Option<SidebarAction> {
+    let native: Vec<MenuEntry> = entries.iter().map(MenuEntry::from).collect();
+    match &entries[selected_index(selected, &native)?] {
+        SidebarMenuEntry::Item(item) => Some(item.action),
         _ => None,
     }
 }
@@ -128,6 +161,8 @@ fn gpui_child_index(content_attached: bool, children: &[ViewCategory]) -> Option
 }
 
 #[cfg(all(target_os = "macos", not(test)))]
+pub(crate) use native::show_menu;
+#[cfg(all(target_os = "macos", not(test)))]
 pub(crate) use native::{application_active, readable_window};
 #[cfg(target_os = "macos")]
 pub(crate) use native::{current_sidebar_pointer, show_sidebar_menu};
@@ -135,8 +170,8 @@ pub(crate) use native::{current_sidebar_pointer, show_sidebar_menu};
 #[cfg(target_os = "macos")]
 mod native {
     use super::{
-        SidebarAction, SidebarMenuEntry, Tracking, ViewCategory, anchor_in_view, finish_if_open,
-        gpui_child_index, pointer_from_view, selected_action,
+        MenuEntry, SidebarAction, SidebarMenuEntry, Tracking, ViewCategory, anchor_in_view,
+        finish_if_open, gpui_child_index, pointer_from_view, selected_index,
     };
     use cocoa::{
         base::{BOOL, NO, YES, id, nil},
@@ -152,14 +187,14 @@ mod native {
     };
     use std::{ffi::c_void, sync::OnceLock};
 
-    type MenuResult = (Option<SidebarAction>, Option<Point<Pixels>>);
-    type Completion = Box<dyn FnOnce(Option<SidebarAction>, Option<Point<Pixels>>, &mut App)>;
+    type MenuResult = (Option<usize>, Option<Point<Pixels>>);
+    type Completion = Box<dyn FnOnce(Option<usize>, Option<Point<Pixels>>, &mut App)>;
 
     struct Request {
         app: AsyncApp,
         expected: WindowId,
         position: Point<Pixels>,
-        entries: Vec<SidebarMenuEntry>,
+        entries: Vec<MenuEntry>,
         completion: Completion,
     }
 
@@ -187,6 +222,25 @@ mod native {
         position: Point<Pixels>,
         entries: Vec<SidebarMenuEntry>,
         completion: impl FnOnce(Option<SidebarAction>, Option<Point<Pixels>>, &mut App) + 'static,
+    ) {
+        let native = entries.iter().map(MenuEntry::from).collect();
+        show_menu(cx, window, position, native, move |index, pointer, cx| {
+            let action = index.and_then(|index| match &entries[index] {
+                SidebarMenuEntry::Item(item) => Some(item.action),
+                _ => None,
+            });
+            completion(action, pointer, cx)
+        });
+    }
+
+    /// Asynchronously opens a menu of `entries` at a content-area position,
+    /// as `show_sidebar_menu` does, and gives the chosen entry's index.
+    pub(crate) fn show_menu(
+        cx: &mut App,
+        window: AnyWindowHandle,
+        position: Point<Pixels>,
+        entries: Vec<MenuEntry>,
+        completion: impl FnOnce(Option<usize>, Option<Point<Pixels>>, &mut App) + 'static,
     ) {
         let request = Box::new(Request {
             app: cx.to_async(),
@@ -416,13 +470,13 @@ mod native {
                 .enumerate()
                 .take(usize::from(u8::MAX))
             {
-                let item = match entry {
-                    SidebarMenuEntry::Separator => {
+                let (title, symbol, enabled) = match entry {
+                    MenuEntry::Separator => {
                         let separator: id = msg_send![class!(NSMenuItem), separatorItem];
                         let _: () = msg_send![menu.0, addItem: separator];
                         continue;
                     }
-                    SidebarMenuEntry::Note(note) => {
+                    MenuEntry::Note(note) => {
                         // PiMenuEntry.note: a disabled line that only informs.
                         let title = OwnedObject::from_owned(NSString::alloc(nil).init_str(note))?;
                         let item: id = msg_send![class!(NSMenuItem), alloc];
@@ -434,9 +488,13 @@ mod native {
                         let _: () = msg_send![menu.0, addItem: item.0];
                         continue;
                     }
-                    SidebarMenuEntry::Item(item) => item,
+                    MenuEntry::Item {
+                        title,
+                        symbol,
+                        enabled,
+                    } => (title, symbol, enabled),
                 };
-                let title = OwnedObject::from_owned(NSString::alloc(nil).init_str(&item.title))?;
+                let title = OwnedObject::from_owned(NSString::alloc(nil).init_str(title))?;
                 let native: id = msg_send![class!(NSMenuItem), alloc];
                 let native = OwnedObject::from_owned(msg_send![native,
                     initWithTitle: title.0 action: sel!(selectItem:) keyEquivalent: empty.0
@@ -446,8 +504,8 @@ mod native {
                 let _: () = msg_send![native.0, setTarget: target.0];
                 let _: () = msg_send![native.0, setRepresentedObject: target.0];
                 let _: () = msg_send![native.0, setTag: (index + 1) as isize];
-                let _: () = msg_send![native.0, setEnabled: if item.enabled { YES } else { NO }];
-                if let Some(symbol) = item.symbol {
+                let _: () = msg_send![native.0, setEnabled: if *enabled { YES } else { NO }];
+                if let Some(symbol) = symbol {
                     let symbol = OwnedObject::from_owned(NSString::alloc(nil).init_str(symbol))?;
                     let image: id = msg_send![class!(NSImage),
                         imageWithSystemSymbolName: symbol.0 accessibilityDescription: nil
@@ -462,7 +520,7 @@ mod native {
             ];
             let selected = *(*target.0).get_ivar::<u8>(SELECTED_IVAR);
             let pointer = current_pointer(window, &content, &view);
-            Some((selected_action(selected, &request.entries), pointer))
+            Some((selected_index(selected, &request.entries), pointer))
         }
     }
 

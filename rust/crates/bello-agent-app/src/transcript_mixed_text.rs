@@ -92,9 +92,8 @@ pub(super) fn shape(
             merged.ascent = merged.ascent.max(stretch.ascent);
             merged.descent = merged.descent.max(stretch.descent);
         }
-        let boundaries = wrap_width.map_or_else(SmallVec::new, |width| {
-            wrap_boundaries(&merged, line, width)
-        });
+        let boundaries =
+            wrap_width.map_or_else(SmallVec::new, |width| wrap_boundaries(&merged, line, width));
         lines.push(Mixed {
             layout: WrappedLineLayout {
                 unwrapped_layout: Arc::new(merged),
@@ -144,7 +143,11 @@ fn is_word_char(c: char) -> bool {
 /// Where `layout` wraps at `wrap_width`: `gpui::LineLayout::compute_wrap_boundaries`
 /// (gpui 0.2.2, Apache-2.0), unchanged but for the line clamp, which a
 /// reply's text never sets.
-fn wrap_boundaries(layout: &LineLayout, text: &str, wrap_width: Pixels) -> SmallVec<[WrapBoundary; 1]> {
+fn wrap_boundaries(
+    layout: &LineLayout,
+    text: &str,
+    wrap_width: Pixels,
+) -> SmallVec<[WrapBoundary; 1]> {
     let mut boundaries = SmallVec::new();
     let mut first_non_whitespace_ix = None;
     let mut last_candidate_ix = None;
@@ -162,7 +165,11 @@ fn wrap_boundaries(layout: &LineLayout, text: &str, wrap_width: Pixels) -> Small
         .flat_map(move |(run_ix, run)| {
             run.glyphs.iter().enumerate().map(move |(glyph_ix, glyph)| {
                 let character = text[glyph.index..].chars().next().unwrap_or(' ');
-                (WrapBoundary { run_ix, glyph_ix }, character, glyph.position.x)
+                (
+                    WrapBoundary { run_ix, glyph_ix },
+                    character,
+                    glyph.position.x,
+                )
             })
         })
         .peekable();
@@ -212,7 +219,13 @@ impl Mixed {
     }
 
     /// How far a row is moved to align it, as `WrappedLine::paint` moves it.
-    fn offset(&self, row: usize, rows: &[(usize, Pixels)], align: TextAlign, width: Pixels) -> Pixels {
+    fn offset(
+        &self,
+        row: usize,
+        rows: &[(usize, Pixels)],
+        align: TextAlign,
+        width: Pixels,
+    ) -> Pixels {
         let start = rows[row].1;
         let end = rows
             .get(row + 1)
@@ -304,9 +317,9 @@ impl Mixed {
             let size = self.sizes[run_ix];
             for glyph in &run.glyphs {
                 let row = Self::row_of(&rows, glyph.index);
-                let x = origin.x + self.offset(row, &rows, align, bounds.size.width)
-                    + glyph.position.x
-                    - rows[row].1;
+                let x =
+                    origin.x + self.offset(row, &rows, align, bounds.size.width) + glyph.position.x
+                        - rows[row].1;
                 let y = origin.y + pitch * row as f32 + baseline;
                 let at = point(x, y);
                 let near = Bounds {
@@ -390,14 +403,29 @@ mod tests {
             .update(cx, |_, window, _| {
                 let base = gpui::px(14.5);
                 let small = gpui::px(13.05);
-                let lines = super::shape(window, text, base, &[run.clone()], &[(4..10, small)], None);
+                let lines = super::shape(
+                    window,
+                    text,
+                    base,
+                    std::slice::from_ref(&run),
+                    &[(4..10, small)],
+                    None,
+                );
                 assert_eq!(lines.len(), 1);
                 let layout = &lines[0].layout.unwrapped_layout;
                 assert_eq!(lines[0].sizes, [base, small, base]);
                 let width = |part: &str, size| {
                     window
                         .text_system()
-                        .layout_line(part, size, &[TextRun { len: part.len(), ..run.clone() }], None)
+                        .layout_line(
+                            part,
+                            size,
+                            &[TextRun {
+                                len: part.len(),
+                                ..run.clone()
+                            }],
+                            None,
+                        )
                         .width
                 };
                 let parts = width("see ", base) + width("`code`", small) + width(" here", base);
@@ -409,7 +437,7 @@ mod tests {
                     window,
                     text,
                     base,
-                    &[run.clone()],
+                    std::slice::from_ref(&run),
                     &[(4..10, small)],
                     Some(width("see `code`", base)),
                 );

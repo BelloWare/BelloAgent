@@ -23,9 +23,9 @@ use crate::Palette;
 use bello_agent_core::markdown::{Alignment, Block, Span, Style};
 use bello_agent_core::syntax::{TokenKind, fence_tokens};
 use gpui::{
-    AnyElement, App, AppContext as _, Div, Font, FontFeatures, FontStyle, FontWeight, InteractiveElement,
-    IntoElement, ParentElement, SharedString, StatefulInteractiveElement, StrikethroughStyle,
-    Styled as _, TextAlign, TextRun, Window, div, px, rgb, rgba, svg,
+    AnyElement, App, AppContext as _, Div, Font, FontFeatures, FontStyle, FontWeight,
+    InteractiveElement, IntoElement, ParentElement, SharedString, StatefulInteractiveElement,
+    StrikethroughStyle, Styled as _, TextAlign, TextRun, Window, div, px, rgb, rgba, svg,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -169,8 +169,11 @@ pub(super) struct Context<'a> {
 /// Where a streaming reply's caret stands: after its last block, when that
 /// is a paragraph or a heading (Swift's `updateCaret`).
 pub(super) fn caret_path(blocks: &[Block]) -> Option<String> {
-    matches!(blocks.last(), Some(Block::Paragraph(_) | Block::Heading { .. }))
-        .then(|| format!(".{}", blocks.len() - 1))
+    matches!(
+        blocks.last(),
+        Some(Block::Paragraph(_) | Block::Heading { .. })
+    )
+    .then(|| format!(".{}", blocks.len() - 1))
 }
 
 /// A reply's file links, by its message.
@@ -478,12 +481,16 @@ pub(super) fn render(
 
 /// A heading with its section's Copy, which stands while the pointer is on
 /// the heading's line, 30 points past the prose's end, centred on the line.
-fn heading_copy(element: AnyElement, target: &CopyTarget, cx: &Context, index: usize) -> AnyElement {
+fn heading_copy(
+    element: AnyElement,
+    target: &CopyTarget,
+    cx: &Context,
+    index: usize,
+) -> AnyElement {
     let group = SharedString::from(format!("heading-copy{}.{index}", cx.owner));
-    let trailing = cx
-        .column
-        .map_or(PROSE_WIDTH, |column| column.min(cx.prose_width.unwrap_or(column)))
-        + 30.;
+    let trailing = cx.column.map_or(PROSE_WIDTH, |column| {
+        column.min(cx.prose_width.unwrap_or(column))
+    }) + 30.;
     div()
         .debug_selector(|| format!("heading-{}.{index}", cx.owner))
         .relative()
@@ -711,16 +718,21 @@ fn text(spans: &[Span], size: f32, line: Line, cx: &Context, path: &str) -> AnyE
         .map(|span| {
             span.code
                 && span.link.is_none()
-                && cx.files.as_ref().is_some_and(|files| {
-                    files.links.borrow_mut().link(&files.message, &span.text)
-                })
+                && cx
+                    .files
+                    .as_ref()
+                    .is_some_and(|files| files.links.borrow_mut().link(&files.message, &span.text))
         })
         .collect();
     let runs = spans
         .iter()
         .zip(&files)
         .map(|(span, file)| TextRun {
-            color: if *file { cx.accent() } else { run(span, cx).color },
+            color: if *file {
+                cx.accent()
+            } else {
+                run(span, cx).color
+            },
             ..run(span, cx)
         })
         .collect();
@@ -1338,10 +1350,16 @@ fn table(
                 .map(|cell| cell.iter().map(|span| span.text.as_str()).collect())
                 .collect()
         };
-        let (header, rows) = (plain(&full_header), rows.iter().map(plain).collect::<Vec<_>>());
+        let (header, rows) = (
+            plain(&full_header),
+            rows.iter().map(plain).collect::<Vec<_>>(),
+        );
         let palette = cx.palette;
         div()
-            .id(SharedString::from(format!("open-full-table{}{path}", cx.owner)))
+            .id(SharedString::from(format!(
+                "open-full-table{}{path}",
+                cx.owner
+            )))
             .debug_selector(|| format!("open-full-table-{}{path}", cx.owner))
             .absolute()
             .top_0()

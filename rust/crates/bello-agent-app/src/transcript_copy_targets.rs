@@ -76,7 +76,10 @@ fn trim_spaces(text: &str) -> &str {
 }
 
 fn drop_chars(text: &str, count: usize) -> &str {
-    let at = text.char_indices().nth(count).map_or(text.len(), |(at, _)| at);
+    let at = text
+        .char_indices()
+        .nth(count)
+        .map_or(text.len(), |(at, _)| at);
     &text[at..]
 }
 
@@ -115,7 +118,10 @@ fn fence(text: &str) -> Option<Fence<'_>> {
         return None;
     }
     let candidate = &body[indent..];
-    let character = candidate.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let character = candidate
+        .chars()
+        .next()
+        .filter(|c| *c == '`' || *c == '~')?;
     let length = candidate.chars().take_while(|c| *c == character).count();
     if length < 3 {
         return None;
@@ -134,11 +140,8 @@ fn fence(text: &str) -> Option<Fence<'_>> {
 
 fn stripping_prefix<'a>(text: &'a str, prefix: &str) -> &'a str {
     let mut remaining = text;
-    let mut expected = prefix.chars();
-    loop {
-        let (Some(p), Some(t)) = (expected.clone().next(), remaining.chars().next()) else {
-            break;
-        };
+    let mut expected = prefix.chars().peekable();
+    while let (Some(&p), Some(t)) = (expected.peek(), remaining.chars().next()) {
         if p == t || (p == ' ' && t == '\t') {
             expected.next();
             remaining = &remaining[t.len_utf8()..];
@@ -219,7 +222,10 @@ pub(crate) fn targets(source: &str) -> Vec<CopyTarget> {
             while close < lines.len() {
                 let stripped = stripping_prefix(lines[close].text, &fence.prefix);
                 let trimmed = stripped.trim_start_matches(' ');
-                let run = trimmed.chars().take_while(|c| *c == fence.character).count();
+                let run = trimmed
+                    .chars()
+                    .take_while(|c| *c == fence.character)
+                    .count();
                 if indentation(stripped) <= 3
                     && run >= fence.length
                     && trimmed

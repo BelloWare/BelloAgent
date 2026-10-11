@@ -37,12 +37,18 @@ pub(crate) fn tsv(header: &[String], rows: &[Vec<String>]) -> String {
 /// Each column's width: from its title and the first 40 rows, a bounded
 /// sample, so scrolling never changes a column's width.
 pub(crate) fn column_widths(header: &[String], rows: &[Vec<String>]) -> Vec<f32> {
-    let columns = header.len().max(rows.iter().map(Vec::len).max().unwrap_or(0));
+    let columns = header
+        .len()
+        .max(rows.iter().map(Vec::len).max().unwrap_or(0));
     (0..columns)
         .map(|index| {
             let title = title(header, index);
             let length = std::iter::once(title.as_str())
-                .chain(rows.iter().take(40).filter_map(|row| row.get(index).map(String::as_str)))
+                .chain(
+                    rows.iter()
+                        .take(40)
+                        .filter_map(|row| row.get(index).map(String::as_str)),
+                )
                 .map(|text| text.chars().take(60).count())
                 .max()
                 .unwrap_or(12);
@@ -309,25 +315,21 @@ impl Render for TableWindow {
                     ),
             )
             .child(
-                frame(false)
-                    .mx(px(SPACING))
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        div()
-                            .id("markdown-table-grid")
-                            .size_full()
-                            .overflow_x_scroll()
-                            .child(
-                                div()
-                                    .w(px(total))
-                                    .h_full()
-                                    .flex()
-                                    .flex_col()
-                                    .child(header)
-                                    .child(list),
-                            ),
-                    ),
+                frame(false).mx(px(SPACING)).flex_1().min_h_0().child(
+                    div()
+                        .id("markdown-table-grid")
+                        .size_full()
+                        .overflow_x_scroll()
+                        .child(
+                            div()
+                                .w(px(total))
+                                .h_full()
+                                .flex()
+                                .flex_col()
+                                .child(header)
+                                .child(list),
+                        ),
+                ),
             )
             .child(
                 frame(true)

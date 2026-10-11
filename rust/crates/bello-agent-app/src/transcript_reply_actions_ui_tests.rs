@@ -3,7 +3,8 @@
 use super::turn_fold_ui::{bounds, host_rows};
 use super::*;
 
-const REPLY: &str = "First paragraph here.\n\n- one item\n- two item\n\n| a | b |\n|---|---|\n| 1 | 2 |";
+const REPLY: &str =
+    "First paragraph here.\n\n- one item\n- two item\n\n| a | b |\n|---|---|\n| 1 | 2 |";
 
 fn reply_rows() -> Vec<Message> {
     vec![
@@ -24,7 +25,7 @@ fn copy(visual: &mut VisualTestContext, cx: &mut TestAppContext) -> Option<Strin
 }
 
 fn element(visual: &mut VisualTestContext, path: &str) -> Bounds<Pixels> {
-    bounds(visual, &format!("transcript-text-reply")).unwrap_or_else(|| panic!("{path}"))
+    bounds(visual, &format!("transcript-text-{path}")).unwrap_or_else(|| panic!("{path}"))
 }
 
 /// A drag from inside the first paragraph to the table copies what it
@@ -72,7 +73,10 @@ fn a_double_click_takes_a_word_and_select_all_the_reply(cx: &mut TestAppContext)
     );
     // A press outside any text ends the selection.
     let row = bounds(&mut visual, "transcript-row-reply").unwrap();
-    visual.simulate_click(point(row.right() - px(4.), row.bottom() - px(2.)), Modifiers::none());
+    visual.simulate_click(
+        point(row.right() - px(4.), row.bottom() - px(2.)),
+        Modifiers::none(),
+    );
     cx.run_until_parked();
     assert_eq!(copy(&mut visual, cx), None);
 }
@@ -83,7 +87,10 @@ fn a_double_click_takes_a_word_and_select_all_the_reply(cx: &mut TestAppContext)
 fn a_click_selects_nothing_and_sent_text_selects(cx: &mut TestAppContext) {
     let (_directory, mut visual, _child, _) = host_rows(reply_rows(), RunState::Paused, cx);
     let text = element(&mut visual, "reply");
-    visual.simulate_click(point(text.left() + px(3.), text.top() + px(8.)), Modifiers::none());
+    visual.simulate_click(
+        point(text.left() + px(3.), text.top() + px(8.)),
+        Modifiers::none(),
+    );
     cx.run_until_parked();
     assert_eq!(copy(&mut visual, cx), None);
     assert!(bounds(&mut visual, "quote-in-draft").is_none());
@@ -129,7 +136,10 @@ fn the_quote_bar_quotes_the_selection_into_the_draft(cx: &mut TestAppContext) {
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
     cx.run_until_parked();
     let selected = copy(&mut visual, cx).expect("a selection");
-    assert!(selected.starts_with("First paragraph here.\n\n- "), "{selected:?}");
+    assert!(
+        selected.starts_with("First paragraph here.\n\n- "),
+        "{selected:?}"
+    );
     let bar = bounds(&mut visual, "quote-in-draft").expect("the quote bar");
     // Above the selection's first line, inside the transcript.
     assert!(bar.bottom() <= text.top() + px(1.) || bar.top() >= text.top());
@@ -157,7 +167,9 @@ fn a_code_span_that_names_a_project_file_opens_it(cx: &mut TestAppContext) {
     std::fs::create_dir_all(project.join("src")).unwrap();
     std::fs::write(project.join("src/lib.rs"), "one\ntwo\nthree\n").unwrap();
     let outside = tempfile::tempdir().unwrap();
-    let secret = std::fs::canonicalize(outside.path()).unwrap().join("secret.txt");
+    let secret = std::fs::canonicalize(outside.path())
+        .unwrap()
+        .join("secret.txt");
     std::fs::write(&secret, "x").unwrap();
     let mut changed = input(&root, cx);
     let mut session = (*changed.session).clone();
@@ -204,10 +216,16 @@ fn a_code_span_that_names_a_project_file_opens_it(cx: &mut TestAppContext) {
         + width("src/lib.rs:2", 13.05, &mut visual)
         + width(" or ", 14.5, &mut visual)
         + width("/v", 13.05, &mut visual);
-    visual.simulate_click(point(text.left() + not, text.top() + px(9.)), Modifiers::none());
+    visual.simulate_click(
+        point(text.left() + not, text.top() + px(9.)),
+        Modifiers::none(),
+    );
     cx.run_until_parked();
     assert!(opened(cx).is_empty());
-    visual.simulate_click(point(text.left() + into, text.top() + px(9.)), Modifiers::none());
+    visual.simulate_click(
+        point(text.left() + into, text.top() + px(9.)),
+        Modifiers::none(),
+    );
     cx.run_until_parked();
     assert_eq!(opened(cx), vec![project.join("src/lib.rs")]);
 }
@@ -230,8 +248,11 @@ fn headings_and_the_reply_copy_their_markdown(cx: &mut TestAppContext) {
         let line = bounds(visual, &format!("heading-transcript-row-reply.{heading}")).unwrap();
         visual.simulate_mouse_move(line.center(), None, Modifiers::none());
         cx.run_until_parked();
-        let button = bounds(visual, &format!("heading-copy-transcript-row-reply.{heading}"))
-            .expect("the heading's copy");
+        let button = bounds(
+            visual,
+            &format!("heading-copy-transcript-row-reply.{heading}"),
+        )
+        .expect("the heading's copy");
         // 30 points past the prose's 640, its 64 points before that.
         assert_eq!(button.left() - text.left(), px(640. + 30. - 64.));
         visual.simulate_mouse_move(button.center(), None, Modifiers::none());
@@ -239,7 +260,10 @@ fn headings_and_the_reply_copy_their_markdown(cx: &mut TestAppContext) {
         cx.run_until_parked();
         clipboard(cx)
     };
-    assert_eq!(press(3, &mut visual, cx).as_deref(), Some("## Two\nsecond\n"));
+    assert_eq!(
+        press(3, &mut visual, cx).as_deref(),
+        Some("## Two\nsecond\n")
+    );
     assert_eq!(
         press(1, &mut visual, cx).as_deref(),
         Some("# One\nfirst `x`\n## Two\nsecond\n")
@@ -259,11 +283,17 @@ fn headings_and_the_reply_copy_their_markdown(cx: &mut TestAppContext) {
 /// the chosen cell's text and the TSV copy.
 #[gpui::test]
 fn open_full_table_shows_every_row(cx: &mut TestAppContext) {
-    let rows: String = (0..45).map(|row| format!("| {row} | value {row} |\n")).collect();
+    let rows: String = (0..45)
+        .map(|row| format!("| {row} | value {row} |\n"))
+        .collect();
     let (_directory, mut visual, _child, _) = host_rows(
         vec![
             message("question", "user", "Table?"),
-            message("reply", "assistant", &format!("| n | v |\n|---|---|\n{rows}")),
+            message(
+                "reply",
+                "assistant",
+                &format!("| n | v |\n|---|---|\n{rows}"),
+            ),
         ],
         RunState::Paused,
         cx,
@@ -288,9 +318,15 @@ fn open_full_table_shows_every_row(cx: &mut TestAppContext) {
         crate::transcript_view::table_window::PLACEHOLDER
     );
     let row = bounds(&mut window, "markdown-table-row-2").expect("a row");
-    window.simulate_click(point(row.left() + px(140.), row.center().y), Modifiers::none());
+    window.simulate_click(
+        point(row.left() + px(140.), row.center().y),
+        Modifiers::none(),
+    );
     cx.run_until_parked();
-    assert_eq!(cx.read(|cx| table.read(cx).unwrap().detail_text(cx)), "value 2");
+    assert_eq!(
+        cx.read(|cx| table.read(cx).unwrap().detail_text(cx)),
+        "value 2"
+    );
     let copy = bounds(&mut window, "table-window-copy").unwrap();
     window.simulate_click(copy.center(), Modifiers::none());
     cx.run_until_parked();
@@ -322,7 +358,78 @@ fn a_streaming_reply_draws_and_settles(cx: &mut TestAppContext) {
     );
     let before = element(&mut visual, "reply");
     // Blinking asks for frames, and changes no layout.
-    cx.executor().advance_clock(std::time::Duration::from_millis(1_600));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(1_600));
     cx.run_until_parked();
     assert_eq!(element(&mut visual, "reply"), before);
+}
+
+/// A right-click on a response's strip offers its fold and Copy Reply; on
+/// the reply's words, Fold This Response to One Line and Copy Reply; on a
+/// selection, the selection's Copy.
+#[gpui::test]
+fn replies_offer_their_menus(cx: &mut TestAppContext) {
+    use crate::transcript_view::reply_menu::{choose, opened_titles};
+    // The chat holds the reply, so Copy Reply finds it by its identity.
+    let (_directory, _window, root) = fixture(cx, reply_rows(), 0);
+    let mut changed = input(&root, cx);
+    changed.visible_messages = usize::MAX;
+    let (mut visual, child) = host(&root, changed, cx);
+    let right = |at: Point<Pixels>, visual: &mut VisualTestContext| {
+        visual.simulate_mouse_down(at, MouseButton::Right, Modifiers::none());
+        visual.simulate_mouse_up(at, MouseButton::Right, Modifiers::none());
+    };
+    let text = element(&mut visual, "reply");
+    right(
+        point(text.left() + px(30.), text.top() + px(8.)),
+        &mut visual,
+    );
+    assert_eq!(
+        opened_titles(),
+        ["Fold This Response to One Line", "-", "Copy Reply"]
+    );
+    cx.write_to_clipboard(ClipboardItem::new_string("before".into()));
+    assert!(visual.update(|window, cx| choose("Copy Reply", window, cx)));
+    cx.run_until_parked();
+    assert_eq!(clipboard(cx).as_deref(), Some(REPLY));
+    // The strip's menu folds the response, and then shows it.
+    let strip = bounds(&mut visual, "transcript-response-Message(\"reply\")").unwrap();
+    right(strip.center(), &mut visual);
+    assert_eq!(
+        opened_titles(),
+        ["Fold This Response to One Line", "-", "Copy Reply"]
+    );
+    assert!(visual.update(|window, cx| choose("Fold This Response to One Line", window, cx)));
+    cx.run_until_parked();
+    let folded = |cx: &TestAppContext| {
+        cx.read(|cx| child.read(cx).response_headers())
+            .iter()
+            .any(|(owner, _, collapsed)| owner == "Message(\"reply\")" && *collapsed)
+    };
+    assert!(folded(cx));
+    let strip = bounds(&mut visual, "transcript-response-Message(\"reply\")").unwrap();
+    right(strip.center(), &mut visual);
+    assert_eq!(opened_titles(), ["Show This Response", "-", "Copy Reply"]);
+    assert!(visual.update(|window, cx| choose("Show This Response", window, cx)));
+    cx.run_until_parked();
+    assert!(!folded(cx));
+    // Over a selection: its own Copy.
+    let text = element(&mut visual, "reply");
+    let start = point(text.left() + px(1.), text.top() + px(5.));
+    let end = point(text.left() + px(80.), text.top() + px(5.));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::none());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::none());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    right(
+        point(text.left() + px(20.), text.top() + px(8.)),
+        &mut visual,
+    );
+    assert_eq!(opened_titles(), ["Copy"]);
+    assert!(visual.update(|window, cx| choose("Copy", window, cx)));
+    let copied = clipboard(cx).unwrap();
+    assert!(
+        REPLY.starts_with(&copied) && !copied.is_empty(),
+        "{copied:?}"
+    );
 }

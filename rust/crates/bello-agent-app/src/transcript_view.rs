@@ -14,19 +14,21 @@ mod edit_presentation;
 mod markdown_view;
 #[cfg(test)]
 pub(crate) use markdown_view::Child as MarkdownChild;
+#[path = "transcript_mixed_text.rs"]
+mod mixed_text;
 #[cfg(test)]
 #[path = "transcript_polish_oracle_tests.rs"]
 mod polish_oracle;
+#[path = "transcript_quote.rs"]
+mod quote;
 #[path = "transcript_read_presentation.rs"]
 mod read_presentation;
 #[path = "transcript_reply_files.rs"]
 mod reply_files;
+#[path = "transcript_reply_menu.rs"]
+pub(crate) mod reply_menu;
 #[path = "transcript_response.rs"]
 mod response;
-#[path = "transcript_mixed_text.rs"]
-mod mixed_text;
-#[path = "transcript_quote.rs"]
-mod quote;
 #[path = "transcript_selection.rs"]
 mod selection;
 #[path = "transcript_shaped_text.rs"]
@@ -3164,7 +3166,11 @@ impl Render for TranscriptView {
         let (copy, all, keys) = (selection.clone(), selection.clone(), selection.clone());
         let quote_key = {
             let input = &self.presentation.input;
-            quote::quote_target(&self.parent, input.chat_id.clone(), input.controller.clone())
+            quote::quote_target(
+                &self.parent,
+                input.chat_id.clone(),
+                input.controller.clone(),
+            )
         };
         div()
             .id("transcript")
@@ -3177,11 +3183,13 @@ impl Render for TranscriptView {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
             })
-            .on_action(cx.listener(move |_, _: &crate::application_menus::SelectAll, _, cx| {
-                if all.borrow_mut().select_all() {
-                    cx.notify();
-                }
-            }))
+            .on_action(
+                cx.listener(move |_, _: &crate::application_menus::SelectAll, _, cx| {
+                    if all.borrow_mut().select_all() {
+                        cx.notify();
+                    }
+                }),
+            )
             .on_key_down(cx.listener(move |_, event: &KeyDownEvent, window, cx| {
                 let key = event.keystroke.key.as_str();
                 let plain = !event.keystroke.modifiers.modified();
@@ -3370,6 +3378,7 @@ fn response_strip(
     presentation: &Presentation,
     index: usize,
     child: &WeakEntity<TranscriptView>,
+    menu: Option<reply_menu::Target>,
 ) -> Option<(bool, AnyElement)> {
     let row = &presentation.rows[index];
     let header = drawn_header(row)?;
@@ -3377,15 +3386,53 @@ fn response_strip(
     let (child, owner) = (child.clone(), header.owner.clone());
     let (chat_id, controller) = (input.chat_id.clone(), input.controller.clone());
     let selector = format!("transcript-response-{:?}", header.owner);
+    let collapsed = header.collapsed;
     Some((
         header.collapsed,
-        response::render(&selector, header, &input.palette, move |window, cx| {
-            let _ = child.update(cx, |view, cx| {
-                view.toggle_response(owner.clone(), &chat_id, &controller, window, cx)
-            });
-        })
+        response::render(
+            &selector,
+            header,
+            &input.palette,
+            move |window, cx| {
+                let _ = child.update(cx, |view, cx| {
+                    view.toggle_response(owner.clone(), &chat_id, &controller, window, cx)
+                });
+            },
+            move |event, window, cx| {
+                if let Some(target) = &menu {
+                    cx.stop_propagation();
+                    let place = reply_menu::Place::Strip { collapsed };
+                    target.open(place, event.position, window, cx);
+                }
+            },
+        )
         .into_any_element(),
     ))
+}
+
+/// What a reply's menus act on: its response and its message.
+fn menu_target(
+    presentation: &Presentation,
+    index: usize,
+    parent: &WeakEntity<AgentView>,
+    child: &WeakEntity<TranscriptView>,
+    selection: &Rc<RefCell<selection::SelectionHost>>,
+) -> Option<reply_menu::Target> {
+    let row = &presentation.rows[index];
+    let owner = row.response.owner.clone()?;
+    let message = match &owner {
+        RowKey::Message(id) => id.clone(),
+        _ => return None,
+    };
+    Some(reply_menu::Target {
+        transcript: child.clone(),
+        parent: parent.clone(),
+        chat_id: presentation.input.chat_id.clone(),
+        controller: presentation.input.controller.clone(),
+        owner,
+        message,
+        selection: selection.clone(),
+    })
 }
 
 /// Where a streaming reply's caret would stand.
@@ -3444,7 +3491,14 @@ fn render_row(
                 )),
         );
     }
-    let (collapsed, strip) = match response_strip(presentation, index, child) {
+    let menu = menu_target(
+        presentation,
+        index,
+        parent,
+        child,
+        &tool_editors.borrow().selection,
+    );
+    let (collapsed, strip) = match response_strip(presentation, index, child, menu.clone()) {
         Some((collapsed, strip)) => (collapsed, Some(strip)),
         None => (false, None),
     };
@@ -3668,14 +3722,24 @@ fn render_row(
                                 // so a streaming reply redoes its tail.
                                 let style = bello_agent_core::markdown::Style::PROSE;
                                 let owner = SharedString::from(selector.clone());
-                                let (blocks, (slots, text_top, whole), shapes, copied, select, links, targets) = {
+                                let (
+                                    blocks,
+                                    (slots, text_top, whole),
+                                    shapes,
+                                    copied,
+                                    select,
+                                    links,
+                                    targets,
+                                ) = {
                                     let mut editors = tool_editors.borrow_mut();
                                     let blocks = editors.markdown(&owner, &text, style);
                                     // A settled reply's Copy buttons: by section,
                                     // and the whole (or its introduction).
-                                    let targets = (message.state != "streaming" && !ambiguous)
-                                        .then(|| editors.copy_targets(&owner))
-                                        .unwrap_or_default();
+                                    let targets = if message.state != "streaming" && !ambiguous {
+                                        editors.copy_targets(&owner)
+                                    } else {
+                                        Rc::default()
+                                    };
                                     (
                                         blocks,
                                         editors.placement(&owner, width),
@@ -3794,9 +3858,9 @@ fn render_row(
                                     &text,
                                     Some(select),
                                 )
-                                    .into_iter()
-                                    .map(IntoElement::into_any_element)
-                                    .collect()
+                                .into_iter()
+                                .map(IntoElement::into_any_element)
+                                .collect()
                             }
                         }),
                 );
@@ -3835,8 +3899,14 @@ fn render_row(
                 };
                 // The row's selector names the whole row, its strip included.
                 let row_selector = selector.clone();
+                // A reply's own row offers the response's menu.
+                let menu =
+                    menu.filter(|target| reply && !ambiguous && target.message == message.id);
                 let message_row = div()
                     .group(group)
+                    .when_some(menu, |d, target| {
+                        d.on_mouse_down(MouseButton::Right, reply_menu::on_reply(target))
+                    })
                     .when(strip.is_none(), |d| d.debug_selector(|| row_selector))
                     // Keep the message content-sized, ending at its action band.
                     .w_full()
@@ -3930,6 +4000,7 @@ pub(crate) struct DrawnLines {
 }
 /// A reply's reasoning as Swift's Think row opens it: Markdown in the
 /// reasoning style (13 pt, muted), the whole width, drawn whole.
+#[allow(clippy::too_many_arguments)]
 fn reasoning_markdown(
     reasoning: &str,
     message: &str,
@@ -4271,12 +4342,14 @@ impl ToolEditors {
     }
     /// The copy targets of the Markdown last read for `owner`.
     fn copy_targets(&self, owner: &SharedString) -> Rc<Vec<copy_targets::CopyTarget>> {
-        self.markdown.get(owner).map_or_else(Default::default, |entry| {
-            entry
-                .targets
-                .get_or_init(|| Rc::new(copy_targets::targets(&entry.text)))
-                .clone()
-        })
+        self.markdown
+            .get(owner)
+            .map_or_else(Default::default, |entry| {
+                entry
+                    .targets
+                    .get_or_init(|| Rc::new(copy_targets::targets(&entry.text)))
+                    .clone()
+            })
     }
     /// The selectable text of the Markdown last read for `owner`, kept in
     /// step with the selection in it.

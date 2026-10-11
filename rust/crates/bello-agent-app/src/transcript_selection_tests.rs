@@ -71,7 +71,8 @@ fn copies_are_swifts_copies() {
 
 #[test]
 fn owners_name_the_elements_markdown_draws() {
-    let reply = text("Intro\n\n- one\n- ```\n  code\n  ```\n\n> quote\n\n| a | b |\n|---|---|\n| 1 | 2 |");
+    let reply =
+        text("Intro\n\n- one\n- ```\n  code\n  ```\n\n> quote\n\n| a | b |\n|---|---|\n| 1 | 2 |");
     let owners: Vec<&str> = reply
         .pieces
         .iter()
@@ -85,7 +86,10 @@ fn owners_name_the_elements_markdown_draws() {
         ]
     );
     assert_eq!(reply.piece("r.1.1.0"), Some(4));
-    assert_eq!(reply.copy(0..reply.len), "Intro\n\n- one\n- \ncode\n\nquote\n\na\tb\n1\t2");
+    assert_eq!(
+        reply.copy(0..reply.len),
+        "Intro\n\n- one\n- \ncode\n\nquote\n\na\tb\n1\t2"
+    );
 }
 
 #[test]
@@ -102,7 +106,10 @@ fn a_marker_copies_once_and_whole() {
 fn a_preview_note_is_never_copied() {
     let rows: String = (0..45).map(|row| format!("| {row} | x |\n")).collect();
     let reply = text(&format!("| a | b |\n|---|---|\n{rows}"));
-    assert_eq!(reply.pieces[0].text, "Preview · first 20 of 45 rows · up to 8 columns");
+    assert_eq!(
+        reply.pieces[0].text,
+        "Preview · first 20 of 45 rows · up to 8 columns"
+    );
     let copy = reply.copy(0..reply.len);
     assert!(copy.starts_with("a\tb\n0\tx\n"), "{copy:?}");
     assert!(copy.ends_with("19\tx"), "{copy:?}");
@@ -117,14 +124,14 @@ fn double_and_triple_clicks_take_a_word_and_a_paragraph() {
     let item = reply.piece("r.1.0.0").unwrap();
     let at = reply.pieces[item].start + 1;
     // The paragraph of a list item's text starts at its marker.
-    assert_eq!(
-        reply.copy(reply.paragraph(at)),
-        "- item text"
-    );
+    assert_eq!(reply.copy(reply.paragraph(at)), "- item text");
 }
 
 #[test]
 fn quotes_each_line_below_the_draft() {
-    assert_eq!(quoted_draft("", "one\r\ntwo\rthree"), "> one\n> two\n> three\n\n");
+    assert_eq!(
+        quoted_draft("", "one\r\ntwo\rthree"),
+        "> one\n> two\n> three\n\n"
+    );
     assert_eq!(quoted_draft("Draft", "x"), "Draft\n\n> x\n\n");
 }

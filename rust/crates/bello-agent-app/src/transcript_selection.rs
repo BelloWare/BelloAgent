@@ -233,7 +233,9 @@ fn paragraphs(block: &Block, owner: &str, path: &str, depth: usize, out: &mut Ve
             let last_row = cells.len() - 1;
             for (row_index, row) in cells.iter().enumerate() {
                 for column in 0..columns {
-                    let text = row.get(column).map_or_else(String::new, |spans| joined(spans));
+                    let text = row
+                        .get(column)
+                        .map_or_else(String::new, |spans| joined(spans));
                     out.push(Built {
                         pieces: vec![(
                             format!("{owner}{path}.{row_index}.{column}").into(),
@@ -454,11 +456,13 @@ impl ReplyText {
             if mine.start >= upto {
                 return true;
             }
-            if mine.start != theirs.start || mine.owner != theirs.owner || mine.kind != theirs.kind {
+            if mine.start != theirs.start || mine.owner != theirs.owner || mine.kind != theirs.kind
+            {
                 return false;
             }
             let end = (upto - mine.start).min(mine.text.len());
-            if theirs.text.len() < end || mine.text.as_bytes()[..end] != theirs.text.as_bytes()[..end]
+            if theirs.text.len() < end
+                || mine.text.as_bytes()[..end] != theirs.text.as_bytes()[..end]
             {
                 return false;
             }
@@ -637,10 +641,22 @@ impl SelectionHost {
             .filter(|range| !range.is_empty())
     }
 
+    /// The range selected in the message `message`'s text, if any.
+    pub fn range_in_message(&self, message: &str) -> Option<Range<usize>> {
+        self.selected
+            .as_ref()
+            .filter(|selected| selected.message == message)
+            .map(Selected::range)
+            .filter(|range| !range.is_empty())
+    }
+
     /// The reply's text changed: a selection in what it already said stays,
     /// any other goes.
     pub fn follow(&mut self, reply: &str, text: &std::rc::Rc<ReplyText>) {
-        let Some(selected) = self.selected.as_mut().filter(|selected| selected.reply == reply)
+        let Some(selected) = self
+            .selected
+            .as_mut()
+            .filter(|selected| selected.reply == reply)
         else {
             return;
         };
@@ -657,7 +673,13 @@ impl SelectionHost {
     }
 
     /// A press in `region` at `point`.
-    pub fn press(&mut self, region: &Region, point: gpui::Point<gpui::Pixels>, clicks: usize, extend: bool) {
+    pub fn press(
+        &mut self,
+        region: &Region,
+        point: gpui::Point<gpui::Pixels>,
+        clicks: usize,
+        extend: bool,
+    ) {
         self.claimed = true;
         self.bar = false;
         let text = region.source.text();
@@ -712,7 +734,9 @@ impl SelectionHost {
             // Above or below the text, a drag takes the line's start or end.
             let clamped = gpui::point(
                 point.x,
-                point.y.clamp(region.bounds.top(), region.bounds.bottom() - gpui::px(0.5)),
+                point
+                    .y
+                    .clamp(region.bounds.top(), region.bounds.bottom() - gpui::px(0.5)),
             );
             region.offset(clamped)
         }) else {
@@ -744,7 +768,10 @@ impl SelectionHost {
 
     /// The quote bar can stand over the selection.
     pub fn quotable(&self) -> Option<(String, String)> {
-        let selected = self.selected.as_ref().filter(|selected| selected.quotable)?;
+        let selected = self
+            .selected
+            .as_ref()
+            .filter(|selected| selected.quotable)?;
         let text = self.copy()?;
         (!text.trim().is_empty()).then(|| (selected.message.clone(), text))
     }
@@ -754,8 +781,13 @@ impl SelectionHost {
 /// rows so that theirs run first: a press no text took ends the selection, a
 /// drag extends it, a release puts the quote bar up, a scroll takes it down
 /// (as Swift's `TranscriptQuoteSelectionController` does).
-pub(super) fn listen(host: &std::rc::Rc<std::cell::RefCell<SelectionHost>>, window: &mut gpui::Window) {
-    use gpui::{DispatchPhase, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent};
+pub(super) fn listen(
+    host: &std::rc::Rc<std::cell::RefCell<SelectionHost>>,
+    window: &mut gpui::Window,
+) {
+    use gpui::{
+        DispatchPhase, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollWheelEvent,
+    };
     let view = window.current_view();
     let press = host.clone();
     window.on_mouse_event(move |event: &MouseDownEvent, phase, _, cx| {

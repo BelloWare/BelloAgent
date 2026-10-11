@@ -44,9 +44,9 @@ pub(crate) fn resolve(text: &str, root: &Path) -> Option<ReplyFileLocation> {
         path = before;
     }
     let expanded: PathBuf = match path.strip_prefix('~') {
-        Some(rest) if rest.is_empty() || rest.starts_with('/') => {
-            std::env::var_os("HOME").map(PathBuf::from)?.join(rest.trim_start_matches('/'))
-        }
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => std::env::var_os("HOME")
+            .map(PathBuf::from)?
+            .join(rest.trim_start_matches('/')),
         _ => PathBuf::from(path),
     };
     let candidate = if expanded.is_absolute() {
@@ -162,13 +162,16 @@ pub(super) fn check(
     .detach();
 }
 
+/// Opens a file link's file by its name.
+pub(super) type OpenFile = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+
 /// A click on a file link: the name is checked again, against the chat's
 /// project as it is now, and the file opens in a tab at its line.
 pub(super) fn opener(
     parent: &gpui::WeakEntity<AgentView>,
     chat_id: &str,
     controller: &Weak<Controller>,
-) -> Rc<dyn Fn(&str, &mut Window, &mut App)> {
+) -> OpenFile {
     let (parent, chat_id, controller) = (parent.clone(), chat_id.to_owned(), controller.clone());
     Rc::new(move |text, window, cx| {
         let Some(root) = parent
@@ -216,7 +219,9 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
         std::fs::write(root.join("name:with:colons"), "").unwrap();
-        let secret = std::fs::canonicalize(outside.path()).unwrap().join("secret.txt");
+        let secret = std::fs::canonicalize(outside.path())
+            .unwrap()
+            .join("secret.txt");
         std::fs::write(&secret, "x").unwrap();
         let file = |line| {
             Some(ReplyFileLocation {

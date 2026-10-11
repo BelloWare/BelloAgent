@@ -34,7 +34,7 @@ const BUDGET: usize = 16 * 1024 * 1024;
 
 /// A shaped line: GPUI's own, or one set at more than one size.
 pub(super) enum Line {
-    Gpui(WrappedLine),
+    Gpui(Box<WrappedLine>),
     Mixed(super::mixed_text::Mixed),
 }
 
@@ -154,7 +154,7 @@ impl ShapeCache {
                 .shape_text(text.clone(), font_size, runs, wrap_width, line_clamp)
                 .unwrap_or_default()
                 .into_iter()
-                .map(Line::Gpui)
+                .map(|line| Line::Gpui(Box::new(line)))
                 .collect()
         } else {
             super::mixed_text::shape(window, text, font_size, runs, scaled, wrap_width)
@@ -261,7 +261,7 @@ pub(super) struct Select {
     /// The selection's fill, while the transcript has the focus and not.
     pub fill: (Hsla, Hsla),
     /// Opens a file link's file (`bello-file:` links), where files open.
-    pub open_file: Option<Rc<dyn Fn(&str, &mut Window, &mut App)>>,
+    pub open_file: Option<super::reply_files::OpenFile>,
 }
 
 impl Select {
@@ -617,7 +617,13 @@ impl Element for ShapedText {
 
 /// The caret after the last glyph, on in the first half of each second; a
 /// frame is asked for when it next turns.
-fn paint_caret(caret: &Caret, hit: &Hit, styled: Option<&Styled>, window: &mut Window, cx: &mut App) {
+fn paint_caret(
+    caret: &Caret,
+    hit: &Hit,
+    styled: Option<&Styled>,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let pitch = hit.shaped.line_height;
     let Some(line) = hit.shaped.lines.last() else {
         return;
@@ -628,9 +634,14 @@ fn paint_caret(caret: &Caret, hit: &Hit, styled: Option<&Styled>, window: &mut W
     }
     let layout = &line.unwrapped_layout;
     let row = line.wrap_boundaries.len();
-    let row_x = line.wrap_boundaries.last().map_or(Pixels::ZERO, |boundary| {
-        layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix].position.x
-    });
+    let row_x = line
+        .wrap_boundaries
+        .last()
+        .map_or(Pixels::ZERO, |boundary| {
+            layout.runs[boundary.run_ix].glyphs[boundary.glyph_ix]
+                .position
+                .x
+        });
     let end = layout.width - row_x + hit.row_offset(line, row);
     let used = styled.map_or(pitch, |styled| styled.line_height);
     let bottom = top + pitch * row as f32 + used;
@@ -639,14 +650,22 @@ fn paint_caret(caret: &Caret, hit: &Hit, styled: Option<&Styled>, window: &mut W
     if phase < 500 {
         window.paint_quad(gpui::fill(
             Bounds {
-                origin: gpui::point(hit.bounds.origin.x + end + gpui::px(5.), bottom - caret.height),
+                origin: gpui::point(
+                    hit.bounds.origin.x + end + gpui::px(5.),
+                    bottom - caret.height,
+                ),
                 size: gpui::size(gpui::px(2.), caret.height),
             },
             caret.color,
         ));
     }
-    let turn = std::time::Instant::now() + std::time::Duration::from_millis(500 - (phase % 500) as u64);
-    if caret.next.get().is_some_and(|next| next > std::time::Instant::now()) {
+    let turn =
+        std::time::Instant::now() + std::time::Duration::from_millis(500 - (phase % 500) as u64);
+    if caret
+        .next
+        .get()
+        .is_some_and(|next| next > std::time::Instant::now())
+    {
         return;
     }
     caret.next.set(Some(turn));
@@ -664,7 +683,13 @@ fn paint_caret(caret: &Caret, hit: &Hit, styled: Option<&Styled>, window: &mut W
 }
 
 /// The selection's rows in this element, recorded for the quote bar.
-fn paint_selection(select: &Select, owner: &SharedString, len: usize, hit: &Hit, window: &mut Window) {
+fn paint_selection(
+    select: &Select,
+    owner: &SharedString,
+    len: usize,
+    hit: &Hit,
+    window: &mut Window,
+) {
     let host = select.host.borrow();
     let Some(range) = host.range_in(select.source.owner()) else {
         return;
@@ -877,9 +902,10 @@ impl Hit {
     /// past a line's end takes its end, above the text its first line.
     fn closest(&self, position: Point<Pixels>) -> usize {
         let pitch = self.shaped.line_height;
-        let y = position
-            .y
-            .clamp(self.bounds.top(), (self.bounds.bottom() - gpui::px(0.5)).max(self.bounds.top()));
+        let y = position.y.clamp(
+            self.bounds.top(),
+            (self.bounds.bottom() - gpui::px(0.5)).max(self.bounds.top()),
+        );
         let mut top = self.bounds.origin.y;
         let mut start = 0;
         let count = self.shaped.lines.len();

@@ -255,6 +255,7 @@ pub(super) fn render(
     header: &Header,
     palette: &crate::Palette,
     toggle: impl Fn(&mut Window, &mut App) + 'static,
+    menu: impl Fn(&gpui::MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let colors = work_line::card_colors(palette);
     let group = SharedString::from(format!("{selector}-group"));
@@ -276,7 +277,11 @@ pub(super) fn render(
         .flex_row()
         .items_center()
         .gap(px(4.))
-        .on_click(move |_, window, cx| toggle(window, cx));
+        .on_click(move |_, window, cx| toggle(window, cx))
+        // Its right-click menu (`TranscriptNativeResponseRow.menu(for:)`).
+        .on_mouse_down(gpui::MouseButton::Right, move |event, window, cx| {
+            menu(event, window, cx)
+        });
     if header.live {
         strip = strip.child(spinner(selector, palette));
     }
