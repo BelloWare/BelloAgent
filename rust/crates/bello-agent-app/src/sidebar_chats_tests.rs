@@ -144,12 +144,14 @@ fn session_reference_has_swifts_lines_for_a_saved_and_an_unsaved_chat() {
         "Ignored".into(),
         "/tmp/it's here.json".into(),
     );
+    let none = bello_agent_core::accounting::GatewayTotals::default();
     let text = session_reference(
         &record,
         "Plan",
         Some("PROJECT"),
         Path::new("/project"),
         true,
+        &none,
     );
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(
@@ -164,11 +166,33 @@ fn session_reference_has_swifts_lines_for_a_saved_and_an_unsaved_chat() {
     );
     assert!(lines.contains(&"Reported cost: not reported"));
     assert!(lines.contains(&"cat -- '/tmp/it'\"'\"'s here.json'"));
-    let unsaved = session_reference(&record, "Plan", None, Path::new("/project"), false);
+    let unsaved = session_reference(&record, "Plan", None, Path::new("/project"), false, &none);
     assert!(unsaved.contains("Project folder: /project"));
     assert!(unsaved.ends_with(
         "Conversation file: not created yet. This session has no saved journal to inspect."
     ));
+    let records: Vec<bello_agent_core::accounting::RequestRecord> =
+        serde_json::from_value(serde_json::json!([
+            {"id":"a","purpose":"turn","wall":1.0,"requested_model":"m","outcome":"completed",
+             "usage":{"input":1200,"output":34,"cache_read":1000},"cost":{"status":"reported","usd":0.000421875}},
+            {"id":"b","purpose":"turn","wall":2.0,"requested_model":"m","outcome":"failed",
+             "usage":{},"cost":{"status":"unreported"}}
+        ]))
+        .unwrap();
+    let usage = bello_agent_core::accounting::GatewayTotals::of(&records);
+    let text = session_reference(&record, "Plan", None, Path::new("/project"), true, &usage);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        &lines[4..9],
+        [
+            "Gateway-reported usage (retained requests): 2 requests",
+            "Total tokens (input + output): 1234 (1/2 requests reported)",
+            "Input tokens (includes cache): 1200 (1/2 requests reported)",
+            "Output tokens (includes reasoning): 34 (1/2 requests reported)",
+            "Cached input tokens: 1000 (1/2 requests reported)",
+        ]
+    );
+    assert!(lines.contains(&"Reported cost: $0.00042188 USD (1/2 requests reported)"));
 }
 
 #[gpui::test]

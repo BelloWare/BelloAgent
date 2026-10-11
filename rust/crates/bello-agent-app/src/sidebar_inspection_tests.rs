@@ -142,3 +142,27 @@ fn already_cancelled_search_keeps_coalesced_run_read_demand() {
     assert!(matches!(output.search, Some(Err(SearchError::Cancelled))));
     assert_eq!(output.run_read.unwrap().0, SavedRunState::Interrupted);
 }
+
+#[test]
+fn the_run_read_parse_also_reads_the_request_totals() {
+    let (_dir, owner, record) = fixture();
+    {
+        let mut store = SessionStore::open(&record.snapshot).unwrap();
+        store
+            .transact(|s| {
+                s.requests = serde_json::from_value(serde_json::json!([
+                    {"id":"a","purpose":"turn","wall":1.0,"requested_model":"m","outcome":"completed",
+                     "usage":{"input":10,"output":5},"cost":{"status":"reported","usd":0.5}}
+                ]))
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+    }
+    let lane = owner.lock().unwrap().inspection_coordinator();
+    let mut permit = lane.try_background().unwrap().unwrap();
+    let output = inspect(&record, &mut permit, InspectionDemand::run_read()).unwrap();
+    let totals = output.totals.unwrap();
+    assert_eq!(totals.requests, 1);
+    assert_eq!(totals.cost.value(), Some(0.5));
+}

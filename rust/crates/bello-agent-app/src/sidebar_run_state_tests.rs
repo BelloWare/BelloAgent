@@ -337,6 +337,7 @@ fn loaded_controller_always_wins_over_saved_ready_and_stale_completion(cx: &mut 
                 record.id.clone(),
                 Observation {
                     file_identity: None,
+                    totals: None,
                     record: record.clone(),
                     state: SavedRunState::Ready,
                 },

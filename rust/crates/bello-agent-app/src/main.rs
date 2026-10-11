@@ -57,6 +57,7 @@ mod sidebar_chat_delete;
 mod sidebar_chat_rename;
 mod sidebar_chats;
 mod sidebar_inspection;
+mod sidebar_metrics;
 mod sidebar_read_state;
 mod sidebar_run_state;
 mod sidebar_search_controller;
@@ -3089,15 +3090,7 @@ impl AgentView {
                                         )),
                                 )
                             })
-                            .child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(rgb(p.secondary))
-                                    .child(match &attention {
-                                        Some(attention) => format!("{status} · {attention}"),
-                                        None => status.to_owned(),
-                                    }),
-                            ),
+                            .child(self.sidebar_metrics_line(record, status, attention.as_deref())),
                     ),
             );
         }

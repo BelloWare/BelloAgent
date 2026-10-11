@@ -38,6 +38,9 @@ impl InspectionDemand {
 }
 pub(crate) struct InspectionOutput {
     pub(crate) run_read: Option<(SavedRunState, OutputProjection, Option<FileIdentity>)>,
+    /// The chat's request totals, read in the same parse as its run state
+    /// (Swift reads them from the request log without opening the chat).
+    pub(crate) totals: Option<bello_agent_core::accounting::GatewayTotals>,
     #[allow(dead_code)] // Not served by production UI until lifecycle gates pass.
     pub(crate) search: Option<std::result::Result<UnloadedObserved, SearchError>>,
 }
@@ -68,6 +71,7 @@ fn inspect_impl(
             OutputProjection::Unknown,
             None,
         )),
+        totals: None,
         search: demand
             .search
             .as_ref()
@@ -120,6 +124,7 @@ fn inspect_impl(
             before.clone(),
         )
     });
+    let totals = demand.run_read.then(|| lease.snapshot().request_totals());
     let query_handle = cache.as_ref().map(|cache| cache.query_handle());
     let mut replacement = match (cache.as_deref_mut(), active_search) {
         (Some(cache), Some(work)) => Some(cache.begin_replacement_for_work(work)),
@@ -166,14 +171,20 @@ fn inspect_impl(
     if cancel.is_cancelled() {
         return Err(Error::Cancelled);
     }
+    let changed = demand.run_read && FileIdentity::read(&record.snapshot) != before;
     let run_read = run_read.map(|summary| {
-        if FileIdentity::read(&record.snapshot) != before {
+        if changed {
             (SavedRunState::Unknown, OutputProjection::Unknown, None)
         } else {
             summary
         }
     });
-    Ok(InspectionOutput { run_read, search })
+    let totals = totals.filter(|_| !changed);
+    Ok(InspectionOutput {
+        run_read,
+        totals,
+        search,
+    })
 }
 #[cfg(test)]
 #[path = "sidebar_inspection_tests.rs"]
