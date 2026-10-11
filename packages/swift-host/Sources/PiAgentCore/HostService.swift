@@ -590,6 +590,8 @@ public actor NativeHostService {
         guard var header=try reader.next(), header["type"].text == "session", header["version"].int == 3 else { throw AgentError("legacy_session","Only a native chat can be recovered this way") }
         header["id"]=JSON(id)
         var copy=try header.data(); copy.append(10)
+        // Every record after the header moves by the difference in its length.
+        let shift=Int64(copy.count)-Int64(reader.completeBytes)
         // Written beside the destination, then linked into place: an existing
         // chat of that id is never replaced and a failed write leaves nothing.
         let temporary=sessions.appendingPathComponent(".recover-\(UUID().uuidString).jsonl")
@@ -611,6 +613,9 @@ public actor NativeHostService {
         guard native else { throw AgentError("legacy_session","Only a native chat can be recovered this way") }
         try file.synchronize(); try file.close()
         guard link(temporary.path,destination.path) == 0 else { throw AgentError("session_exists","A chat with that identity already exists") }
+        // A reply the helper was streaming goes with the copy, which then
+        // opens with it as the original would have.
+        try? PartialReplyLog.carry(from:source,to:destination,shift:shift)
         return ["sessionId":JSON(id),"sessionFile":JSON(destination.path),"records":JSON(count),"omittedBytes":JSON(Double(reader.omittedBytes))]
     }
     private func portable(_ params:JSON) throws -> JSON {

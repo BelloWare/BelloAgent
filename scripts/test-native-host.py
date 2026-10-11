@@ -99,6 +99,8 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             output = b'{"error":{"message":"fixture provider error"}}'
             record['response'] = output
             self.send_response(400); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(output); return
+        if model == 'stall-mid-reply':
+            self.stall_mid_reply(record); return
         if model == 'slow':
             time.sleep(2)
         text = 'Hello 中文🙂'
@@ -198,6 +200,23 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         self.send_response(422); self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(record['response']))); self.end_headers()
         self.wfile.write(record['response'])
+
+    def stall_mid_reply(self, record):
+        """A reply that streams some thought and text, then never finishes:
+        the helper is killed while it waits for more."""
+        self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
+        events = [{'type': 'response.reasoning_summary_text.delta', 'delta': 'Thinking about '},
+                  {'type': 'response.reasoning_summary_text.delta', 'delta': 'the answer.'}]
+        events += [{'type': 'response.output_text.delta', 'delta': f'streamed part {n} 中文🙂 '} for n in range(40)]
+        try:
+            for event in events:
+                payload = b'data: ' + encoded(event) + b'\n\n'
+                record['response'] += payload; self.wfile.write(payload); self.wfile.flush(); time.sleep(.005)
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                self.wfile.write(b': pending\n\n'); self.wfile.flush(); time.sleep(.2)
+        except (BrokenPipeError, ConnectionResetError):
+            record['cancelled'] = True
 
     def observation_response(self, record, body):
         """Request-aware three-response tool loop with real interim boundaries."""
