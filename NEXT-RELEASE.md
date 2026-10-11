@@ -10,6 +10,8 @@ The Rust port is stopped (`rust` branch, `rust/docs/STATUS-2026-10-10.md`). Brin
 - [x] MCP outcome marker cleared before the result is journaled (`PiAgentCore/MCP.swift`). Done on `dev/chat-records-mcp`: the marker is cleared only after the batch's result rows are appended and synced (one fsync per batch with an MCP call); a failed write or sync leaves the outcome unknown. Left: the Inspector's one-shot invoke still clears on return; reopening a workspace while a result waits can let the old manager delete the shared marker.
 - [ ] Terminal: Quit leaves SIGHUP-ignoring shells running (`Terminal/PseudoTerminal.swift`); held keys may show the accent popup instead of repeating.
 - [ ] A crash mid-reply may lose the streamed text (`Workspaces/SessionStreaming.swift`); streaming CPU (~38% vs Rust 15–18%).
+- [ ] **Smooth scrolling in long chats** (owner, 2026-10-11, top priority): scrolling a long chat keeps loading bounded areas and "doesn't really work"; the whole chat should scroll as one continuous document (honest scrollbar, no load stalls or jumps). Owner tests by hand and gives feedback.
+- [ ] Release both Bello Agent and Bello Box once the fixes and smooth scrolling are done (owner, 2026-10-11).
 - [ ] Later: Find deep in history (528 vs 260 ms), launch to settled window, CI for the Swift apps, perf harness and Swift golden corpora from the Rust oracles.
 
 
