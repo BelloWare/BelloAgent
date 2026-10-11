@@ -42,6 +42,17 @@ impl AssetSource for Assets {
                 r#"<circle cx="12" cy="12" r="3"/><path d="m10 3 4 0 1 3 3 1 3 3v4l-3 1-1 3-3 3h-4l-1-3-3-1-3-3v-4l3-1 1-3z"/>"#
             }
             "chart" => r#"<path d="M3 3v18h18M6 16l5-6 4 3 6-9"/>"#,
+            // SF Symbols' chart.pie, gauge.with.dots.needle.67percent and
+            // cylinder.split.1x2 (the session pills and the usage button).
+            "chart.pie" => {
+                r#"<path d="M11 4a8 8 0 1 0 8 9h-8z"/><path d="M14 2v8h8a8 8 0 0 0-8-8z"/>"#
+            }
+            "gauge" => {
+                r#"<path d="M4.5 18a9 9 0 1 1 15 0"/><path d="m12 13 4-5"/><circle cx="12" cy="13" r="1.4"/><path d="M6.5 13h.01M8 9h.01M12 7h.01M17.5 13h.01" stroke-width="2.4"/>"#
+            }
+            "cylinder.split" => {
+                r#"<ellipse cx="12" cy="5.5" rx="7" ry="2.5"/><path d="M5 5.5v13c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-13M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/>"#
+            }
             "book" => r#"<path d="M4 4h14v16H4c-3-2 0-4 0-4h14M4 4v12"/>"#,
             "bug" => {
                 r#"<rect x="7" y="7" width="10" height="13" rx="5"/><path d="M9 7V4h6v3M3 8l4 2M3 14h4M3 20l4-3M17 10l4-2M17 14h4M17 17l4 3M12 8v12"/>"#

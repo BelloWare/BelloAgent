@@ -289,82 +289,6 @@ fn context_recovery_feedback_rejects_stale_controller_publications(cx: &mut Test
     });
 }
 
-#[::core::prelude::v1::test]
-fn context_recovery_usage_is_observed_sparse_and_never_double_counted() {
-    use super::recovery_usage_label;
-    use serde_json::json;
-    assert_eq!(recovery_usage_label(&Session::new()), None);
-    let mut session = recovery(Session::new());
-    let failed = session.context_recoveries[0].failed_reply_id.clone();
-    assert_eq!(
-        recovery_usage_label(&session).unwrap(),
-        "Reported tokens · unknown in · unknown out"
-    );
-    session
-        .messages
-        .iter_mut()
-        .find(|r| r.id == failed)
-        .unwrap()
-        .usage = json!({"input_tokens": 12});
-    session.context_recoveries[0]
-        .failure
-        .as_mut()
-        .unwrap()
-        .reported_usage = Some(json!({"input_tokens": 999, "output_tokens": 999}));
-    assert_eq!(
-        recovery_usage_label(&session).unwrap(),
-        "Reported tokens · 12 in · unknown out"
-    );
-    // No summary request yet: the empty progress row is not another attempt.
-    session
-        .messages
-        .iter_mut()
-        .find(|r| r.id == failed)
-        .unwrap()
-        .usage = json!({"input_tokens": 0, "output_tokens": 0});
-    assert_eq!(
-        recovery_usage_label(&session).unwrap(),
-        "Reported tokens · 0 in · 0 out"
-    );
-    session.context_recoveries[0].summary_attempts = 1;
-    assert_eq!(
-        recovery_usage_label(&session).unwrap(),
-        "Reported tokens · 0 (partial) in · 0 (partial) out"
-    );
-    session
-        .messages
-        .iter_mut()
-        .find(|r| r.id == "recovery-progress")
-        .unwrap()
-        .usage = json!({"input_tokens": 5, "output_tokens": 8});
-    assert_eq!(
-        recovery_usage_label(&session).unwrap(),
-        "Reported tokens · 5 in · 8 out"
-    );
-    for unknown in [serde_json::Value::Null, json!(-1), json!(1.5), json!("8")] {
-        session
-            .messages
-            .iter_mut()
-            .find(|r| r.id == failed)
-            .unwrap()
-            .usage = json!({"input_tokens": unknown, "output_tokens": 2});
-        assert_eq!(
-            recovery_usage_label(&session).unwrap(),
-            "Reported tokens · 5 (partial) in · 10 out"
-        );
-    }
-    session
-        .messages
-        .iter_mut()
-        .find(|r| r.id == failed)
-        .unwrap()
-        .usage = json!({"input_tokens": u64::MAX, "output_tokens": 2});
-    assert_eq!(
-        recovery_usage_label(&session).unwrap(),
-        "Reported tokens · unknown in · 10 out"
-    );
-}
-
 #[gpui::test]
 fn context_recovery_usage_narrow_footer_preserves_reading_composer_selection_and_scroll(
     cx: &mut TestAppContext,
@@ -456,7 +380,7 @@ fn context_recovery_usage_narrow_footer_preserves_reading_composer_selection_and
         let footer = visual.debug_bounds("queue-measured-footer").unwrap();
         let field = visual.debug_bounds("queue-measured-composer").unwrap();
         let transcript = visual.debug_bounds("queue-measured-transcript").unwrap();
-        let tokens = visual.debug_bounds("composer-reported-tokens").unwrap();
+        let tokens = visual.debug_bounds("session-stats-context").unwrap();
         assert!(
             tokens.left() >= footer.left() && tokens.right() <= footer.right(),
             "usage escaped footer: {tokens:?} {footer:?}"
@@ -495,31 +419,6 @@ fn context_recovery_usage_narrow_footer_preserves_reading_composer_selection_and
             );
         });
     }
-}
-
-#[::core::prelude::v1::test]
-fn context_recovery_usage_missing_explicit_retry_remains_partial() {
-    let mut session = recovery(Session::new());
-    let failed = session.context_recoveries[0].failed_reply_id.clone();
-    let original = session
-        .messages
-        .iter_mut()
-        .find(|row| row.id == failed)
-        .unwrap();
-    original.usage = serde_json::json!({"input_tokens": 12, "output_tokens": 3});
-    let mut retry = original.clone();
-    retry.id = "explicit-retry".into();
-    retry.usage = serde_json::Value::Null;
-    session.messages.push(retry);
-    assert_eq!(
-        super::recovery_usage_label(&session).unwrap(),
-        "Reported tokens · 12 (partial) in · 3 (partial) out"
-    );
-    session.context_recoveries[0].resolved_reply_id = Some("explicit-retry".into());
-    assert_eq!(
-        super::recovery_usage_label(&session).unwrap(),
-        "Reported tokens · 12 (partial) in · 3 (partial) out"
-    );
 }
 
 #[::core::prelude::v1::test]

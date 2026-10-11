@@ -49,7 +49,7 @@ pub fn project_outputs(session: &Session) -> OutputProjection {
 }
 fn project_checked(session: &Session) -> Option<OutputSummary> {
     session.validate_checkpoint().ok()?;
-    if !(1..=10).contains(&session.version) || uuid::Uuid::parse_str(&session.id).is_err() {
+    if !(1..=11).contains(&session.version) || uuid::Uuid::parse_str(&session.id).is_err() {
         return None;
     }
     let progress: BTreeSet<&str> = session

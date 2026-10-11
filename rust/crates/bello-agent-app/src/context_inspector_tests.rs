@@ -135,7 +135,7 @@ fn footer_opens_once_and_reading_never_materializes_or_changes_chat(cx: &mut Tes
         )
     });
     let footer = visual
-        .debug_bounds("context-inspector-open")
+        .debug_bounds("session-stats-context")
         .expect("visible Context footer entry");
     visual.simulate_click(footer.center(), Modifiers::none());
     cx.run_until_parked();
