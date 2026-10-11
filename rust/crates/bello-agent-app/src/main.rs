@@ -49,6 +49,9 @@ mod shutdown_barrier;
 mod sidebar_actions;
 mod sidebar_activity;
 mod sidebar_cache_cleanup;
+mod sidebar_chat_delete;
+mod sidebar_chat_rename;
+mod sidebar_chats;
 mod sidebar_inspection;
 mod sidebar_read_state;
 mod sidebar_run_state;
@@ -185,6 +188,7 @@ struct AgentView {
     archive_visibility_errors: BTreeMap<String, String>,
     cancelled_prompt_key: Option<String>,
     sidebar_menu: Option<sidebar_actions::SidebarMenu>,
+    sidebar_chats: sidebar_chats::SidebarChats,
     sidebar_activity_hold: sidebar_activity::SidebarActivityHold,
     sidebar_run_states: sidebar_run_state::SidebarRunStates,
     sidebar_search: sidebar_search_controller::SidebarSearch,
@@ -436,6 +440,8 @@ impl AgentView {
         }
         let launch_archive_reveal = chat.record.archived_at.is_some() && !state.show_archived;
         let launch_topic_reveal = state.effective_topic_id(&chat.record).map(str::to_owned);
+        let sidebar_chats =
+            sidebar_chats::SidebarChats::restore(&state.drafts, &records, &chat.record);
         let mut view = Self {
             attachment_picker: None,
             chat_models: Default::default(),
@@ -474,6 +480,7 @@ impl AgentView {
             archive_visibility_errors: BTreeMap::new(),
             cancelled_prompt_key: None,
             sidebar_menu: None,
+            sidebar_chats,
             sidebar_activity_hold: Default::default(),
             sidebar_run_states: Default::default(),
             sidebar_search: Default::default(),
@@ -1038,6 +1045,10 @@ impl AgentView {
         }
         if self.topic_panel.is_some() {
             self.topics_key(event, window, cx);
+            return;
+        }
+        if self.sidebar_chats.modal_open() {
+            self.sidebar_chats_key(event, window, cx);
             return;
         }
         if self.connections.view.read(cx).is_open() {
@@ -3016,7 +3027,11 @@ impl AgentView {
                     .gap(px(8.))
                     .items_center()
                     .cursor_pointer()
-                    .on_click(cx.listener(move |view, _, window, cx| {
+                    .map(|row| self.decorate_sidebar_row(&record.id, selected, row))
+                    .on_click(cx.listener(move |view, event: &ClickEvent, window, cx| {
+                        if view.sidebar_row_clicked(&id, event, window, cx) {
+                            return;
+                        }
                         view.open_sidebar_result(&id, ticket.clone(), window, cx);
                         // Reselecting the focused row also refreshes saved
                         // status without opening any unloaded controller.
@@ -3075,6 +3090,31 @@ impl AgentView {
                                             .truncate()
                                             .child(title.replace('\n', " ")),
                                     )
+                                    .when(self.shows_draft_mark(&record.id), |row| {
+                                        row.child(
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "chat-draft-{}",
+                                                    record.id
+                                                )))
+                                                .debug_selector({
+                                                    let id = record.id.clone();
+                                                    move || format!("chat-draft-{id}")
+                                                })
+                                                .tooltip(|_, cx| {
+                                                    cx.new(|_| {
+                                                        sidebar_actions::ArchiveVisibilityHint(
+                                                            "Unsent draft",
+                                                        )
+                                                    })
+                                                    .into()
+                                                })
+                                                .child(
+                                                    self.icon("pencil", 10.)
+                                                        .text_color(rgb(p.secondary)),
+                                                ),
+                                        )
+                                    })
                                     .when(record.pinned_at.is_some(), |row| {
                                         row.child(self.icon("pin", 9.).text_color(rgb(p.tertiary)))
                                     }),
@@ -3557,6 +3597,9 @@ impl Render for AgentView {
         }
         if let Some(panel) = self.topics_element(window, cx) {
             element = element.child(panel);
+        }
+        if let Some(sheet) = self.sidebar_chats_element(window, cx) {
+            element = element.child(sheet);
         }
         if let Some(picker) = self.skill_picker_element(window, cx) {
             element = element.child(picker);

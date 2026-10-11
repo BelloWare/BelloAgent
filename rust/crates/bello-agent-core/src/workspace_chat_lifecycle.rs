@@ -67,6 +67,10 @@ pub struct DeletedChat {
 }
 
 impl WorkspaceStore {
+    /// The saved project identity this catalog is bound to, if any.
+    pub fn project_id(&self) -> Option<&str> {
+        self.state.project_id.as_deref()
+    }
     /// Rename a registered chat's catalog row. The caller has already
     /// written the same title to the chat's own checkpoint, which stays the
     /// source the sidebar reads once the chat is loaded.
