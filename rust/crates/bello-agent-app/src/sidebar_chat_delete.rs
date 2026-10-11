@@ -49,8 +49,10 @@ impl AgentView {
                 || chat.cancel_operation.is_some()
                 || !chat.session.pending.is_empty()
                 || chat.session.edit.is_some()
+                || chat.session.state == bello_agent_core::RunState::Running
+                || chat.session.active.is_some()
+                || chat.session.active_reply.is_some()
         }) || self.recoveries.values().any(|intent| intent.chat_id == id)
-            || self.queued_cancellations.contains_key(id)
             || self.has_pending_cancel(id);
         if work {
             return Some(DELETE_WORK_NOTICE);
@@ -187,6 +189,7 @@ impl AgentView {
         let trash_root = self.deleted_chats_directory(&record);
         let task = cx.background_executor().spawn(async move {
             // session.forget: the chat's writer releases its checkpoint.
+            let loaded = controller.is_some();
             let retire_error = match controller {
                 Some(controller) => controller
                     .retire_and_wait()
@@ -195,9 +198,47 @@ impl AgentView {
                     .map(|error| error.to_string()),
                 None => None,
             };
+            // An unloaded chat's checkpoint is the authority on its queue:
+            // take its writer lock and keep it until the catalog has let go.
+            let mut _writer = None;
+            if !loaded && snapshot.exists() {
+                match bello_agent_core::SessionStore::open_existing_with_id(&snapshot, &saved_id) {
+                    Ok(store) => {
+                        let session = store.snapshot();
+                        if !session.pending.is_empty()
+                            || session.edit.is_some()
+                            || session.active.is_some()
+                            || session.state == bello_agent_core::RunState::Running
+                        {
+                            return DeleteOutcome {
+                                catalog: crate::chat_organization::CatalogOutcome {
+                                    result: Err(bello_agent_core::Error::Invalid(
+                                        DELETE_WORK_NOTICE.into(),
+                                    )),
+                                    uncertain: false,
+                                },
+                                retire_error: None,
+                                trash_error: None,
+                            };
+                        }
+                        _writer = Some(store);
+                    }
+                    Err(error) => {
+                        return DeleteOutcome {
+                            catalog: crate::chat_organization::CatalogOutcome {
+                                result: Err(error),
+                                uncertain: false,
+                            },
+                            retire_error: None,
+                            trash_error: None,
+                        };
+                    }
+                }
+            }
             let catalog = crate::chat_organization::catalog_operation(&workspace, |store| {
                 store.delete_chat(&saved_id, &snapshot)
             });
+            drop(_writer);
             let trash_error = match (&catalog.result, &retire_error) {
                 (Ok(deleted), None) => trash_chat_files(deleted, trash_root.as_deref()).err(),
                 (Ok(deleted), Some(_)) if !deleted.managed_files.is_empty() => Some(
@@ -259,6 +300,7 @@ impl AgentView {
     }
     fn forget_deleted_chat(&mut self, id: &str) {
         self.unloaded_drafts.remove(id);
+        self.queued_cancellations.remove(id);
         self.sidebar_chats.forget(id);
         self.organization_errors
             .retain(|display, error| display != id && error.target_id() != id);

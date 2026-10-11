@@ -39,9 +39,12 @@ fn chat_titles_normalize_like_swift_chat_record() {
     );
     let cluster = "👩🏽‍💻";
     assert_eq!(
-        ChatRecord::normalized_title(&cluster.repeat(130)).unwrap(),
-        cluster.repeat(120)
+        ChatRecord::normalized_title(&"e\u{301}".repeat(130)).unwrap(),
+        "e\u{301}".repeat(120)
     );
+    // Whole graphemes within the catalog's 512-byte title limit.
+    let long = ChatRecord::normalized_title(&cluster.repeat(130)).unwrap();
+    assert_eq!(long, cluster.repeat(512 / cluster.len()));
 }
 
 #[test]
@@ -193,4 +196,18 @@ fn unloaded_checkpoint_rename_writes_the_chats_own_title() {
     rename_saved_checkpoint(&path, &id, "  Renamed\nchat ").unwrap();
     let reopened = crate::SessionStore::open_existing_with_id(&path, &id).unwrap();
     assert_eq!(reopened.snapshot().title, "Renamed chat");
+}
+
+#[test]
+fn settled_cancellation_receipts_do_not_block_and_leave_with_the_chat() {
+    let (_dir, mut store, first, _second) = fixture();
+    store.state.queued_cancellations.insert(
+        first.id.clone(),
+        QueuedCancelReceipt {
+            revision: 0,
+            state: QueuedCancelState::Settled,
+        },
+    );
+    store.delete_chat(&first.id, &first.snapshot).unwrap();
+    assert!(store.state.queued_cancellations.is_empty());
 }

@@ -25,7 +25,15 @@ impl ChatRecord {
         if normalized.is_empty() {
             return Err(invalid("Enter a title for this chat."));
         }
-        Ok(normalized.graphemes(true).take(120).collect())
+        // The catalog keeps titles to 512 bytes: whole graphemes only.
+        let mut title = String::new();
+        for grapheme in normalized.graphemes(true).take(120) {
+            if title.len() + grapheme.len() > 512 {
+                break;
+            }
+            title.push_str(grapheme);
+        }
+        Ok(title)
     }
 }
 
@@ -126,7 +134,11 @@ impl WorkspaceStore {
             .intents
             .values()
             .any(|intent| intent.chat_id == id)
-            || self.state.queued_cancellations.contains_key(id)
+            || self
+                .state
+                .queued_cancellations
+                .get(id)
+                .is_some_and(|receipt| matches!(receipt.state, QueuedCancelState::Pending { .. }))
         {
             return Err(invalid(DELETE_WORK_NOTICE));
         }
@@ -136,6 +148,7 @@ impl WorkspaceStore {
             state.drafts.remove(id);
             state.read_states.remove(id);
             state.settled_submissions.remove(id);
+            state.queued_cancellations.remove(id);
             if state.selected.as_deref() == Some(id) {
                 state.selected = None;
             }

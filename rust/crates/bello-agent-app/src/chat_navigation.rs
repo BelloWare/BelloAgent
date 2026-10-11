@@ -1093,6 +1093,7 @@ impl AgentView {
             || self.archive_visibility_writes != 0
             || !self.read_manual_operations.is_empty()
             || self.topic_write.is_some()
+            || !self.sidebar_chats.busy.is_empty()
             || self.busy
             || self.loading
             || self.queue_operation.is_some()

@@ -179,3 +179,37 @@ fn an_unsaved_chat_is_dropped_and_an_outside_checkpoint_stays(cx: &mut TestAppCo
     assert!(original.exists());
     assert!(!catalog(&dir).chats.iter().any(|c| c.id == id));
 }
+
+#[gpui::test]
+fn an_unloaded_checkpoint_with_queued_messages_is_not_deleted(cx: &mut TestAppContext) {
+    let (dir, window, root, chats) = app_fixture(cx, &[("Queued", ""), ("Other", "")]);
+    let mut store =
+        bello_agent_core::SessionStore::open_existing_with_id(&chats[0].snapshot, &chats[0].id)
+            .unwrap();
+    store
+        .transact(|session| {
+            session.pending.push(bello_agent_core::Submission::new(
+                "later".into(),
+                bello_agent_core::session::Lane::FollowUp,
+            ));
+            Ok(())
+        })
+        .unwrap();
+    drop(store);
+    window
+        .update(cx, |view, window, cx| {
+            view.ask_delete_chat(&chats[0].id, cx);
+            let token = view.sidebar_chats.delete.as_ref().unwrap().token;
+            view.confirm_delete_chat(token, window, cx);
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.read(|cx| {
+        let view = root.read(cx);
+        assert!(view.error.as_deref().unwrap().contains(DELETE_WORK_NOTICE));
+        assert!(view.records.iter().any(|r| r.id == chats[0].id));
+        assert!(view.sidebar_chats.busy.is_empty());
+    });
+    assert_eq!(catalog(&dir).chats.len(), 2);
+    assert!(chats[0].snapshot.exists());
+}
