@@ -17,8 +17,10 @@ What matches Swift:
   commits both together. Choosing an unchanged option still updates the default.
   New chats start from the remembered default (`ChatModelDefaults` in
   `newChat`); the first send keeps that choice with the chat. The file is
-  `chats/chat-models.json` beside every saved chat. An unreadable file is
-  reported and never overwritten.
+  `chats/chat-models.json` beside every saved chat. Each save starts from the
+  file on disk, so two windows on the same chats keep each other's choices
+  (there is no cross-process lock; simultaneous saves can still race). An
+  unreadable file is reported and never overwritten.
 - **Sending.** The composer puts the chat's choice on each submission;
   `model_choice::capture` (both submit paths in `runtime.rs` and
   `attachment_runtime.rs`) sends it, or the connection's own model and effort
@@ -113,7 +115,8 @@ Still different:
 (mini model choice, budgets, effort, prompt), `title(from:)` and
 `titles(from:limit:)`; `title_runtime.rs` adds `Controller::request_title`, one
 request on the chat's own connection outside its history. Retiring the chat
-cancels a request in flight; dropping the caller aborts it. The catalog parser
+cancels a request in flight; dropping the caller aborts it. The title budget
+is sent as the output cap, as Swift's `applyingTaskCap`. The catalog parser
 now keeps the `mini` flag, and the model list shows the Mini tag.
 
 Checked against Swift by `title-oracle/`: `extract.py` copies the unchanged

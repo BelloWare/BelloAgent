@@ -216,6 +216,10 @@ async fn a_title_request_sends_the_mini_model_outside_the_chat_history() {
     assert_eq!(title, "Kyoto trip plan");
     let body = server.await.unwrap();
     assert_eq!(body["model"], "small");
+    assert_eq!(
+        body["max_output_tokens"], 512,
+        "the title budget caps output"
+    );
     assert_eq!(body["reasoning"]["effort"], "low");
     assert!(
         body.get("tools")

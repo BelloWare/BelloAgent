@@ -111,7 +111,8 @@ impl TitlePlan {
         profile.context_window = self.context_window;
         profile.max_output_tokens = self.max_output_tokens;
         profile.model_output_limit = self.model_output_limit;
-        profile.output_cap = None;
+        // Swift's `applyingTaskCap`: a title task's budget is its output cap.
+        profile.output_cap = Some(self.max_output_tokens);
         profile.thinking_level.clone_from(&self.thinking_level);
         profile.input = vec!["text".into()];
         profile

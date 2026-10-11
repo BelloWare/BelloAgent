@@ -332,8 +332,11 @@ impl ModelChoiceStore {
             .state
             .lock()
             .map_err(|_| invalid("Model choices are unavailable."))?;
-        let current = state.as_ref().map_err(|e| invalid(e.clone()))?;
-        let mut next = current.clone();
+        state.as_ref().map_err(|e| invalid(e.clone()))?;
+        // Another window on the same chats may have saved since: start from
+        // what is on disk, so its choices are kept (an unreadable file is
+        // never overwritten).
+        let mut next = Self::read(&self.path).map_err(invalid)?;
         next.chats.insert(chat.to_owned(), choice.clone());
         if let Some(connection) = connection {
             next.defaults.insert(connection.to_owned(), choice);
@@ -351,13 +354,13 @@ impl ModelChoiceStore {
             .state
             .lock()
             .map_err(|_| invalid("Model choices are unavailable."))?;
-        let Ok(current) = state.as_ref() else {
-            return Ok(());
-        };
-        if !current.chats.contains_key(chat) {
+        if state.is_err() {
             return Ok(());
         }
-        let mut next = current.clone();
+        let mut next = Self::read(&self.path).map_err(invalid)?;
+        if !next.chats.contains_key(chat) {
+            return Ok(());
+        }
         next.chats.remove(chat);
         self.write(&next)?;
         *state = Ok(next);

@@ -230,3 +230,25 @@ fn unreadable_store_is_reported_and_never_overwritten() {
     std::fs::write(&path, br#"{"version":2,"chats":{}}"#).unwrap();
     assert!(ModelChoiceStore::open(&path).error().is_some());
 }
+
+#[test]
+fn two_windows_on_the_same_chats_keep_each_others_choices() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("chat-models.json");
+    let first = ModelChoiceStore::open(&path);
+    let second = ModelChoiceStore::open(&path);
+    let choice = |model: &str| ModelChoice {
+        model: Some(model.into()),
+        thinking_level: None,
+    };
+    first.save("one", Some("a"), choice("first")).unwrap();
+    second.save("two", Some("b"), choice("second")).unwrap();
+    let reopened = ModelChoiceStore::open(&path);
+    assert_eq!(reopened.chat("one"), choice("first"));
+    assert_eq!(reopened.chat("two"), choice("second"));
+    assert_eq!(
+        second.chat("one"),
+        choice("first"),
+        "the writer sees what it merged"
+    );
+}

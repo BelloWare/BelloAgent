@@ -273,8 +273,12 @@ impl AgentView {
             .or_else(|| catalog.and_then(|c| c.error.clone()));
         let fetched = catalog.and_then(|c| c.fetched).map(|(_, at)| at);
 
+        // The whole list fits the window and scrolls when it cannot.
+        let available = (f32::from(window.viewport_size().height) - 16.).max(200.);
         let mut column = div()
             .id("model-catalog-picker")
+            .max_h(px(available))
+            .overflow_y_scroll()
             .debug_selector(|| "model-catalog-picker".into())
             .w(px(PICKER_WIDTH))
             .p(px(16.))
@@ -717,7 +721,6 @@ impl AgentView {
                     .child(INCLUDED_NOTE),
             );
         }
-        let _ = window;
         column
     }
 }
