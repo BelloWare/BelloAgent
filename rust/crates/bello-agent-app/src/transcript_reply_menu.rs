@@ -5,7 +5,7 @@
 //! selection, the selection's own Copy. Request Details (the Session
 //! Inspector) and Fork from Here are not offered: Rust has neither yet.
 use super::{RowKey, TranscriptView, selection::SelectionHost};
-use crate::{AgentView, native_menu::MenuEntry, transcript_actions::MessageKey};
+use crate::{AgentView, transcript_actions::MessageKey};
 use bello_agent_core::Controller;
 use gpui::{App, ClipboardItem, MouseDownEvent, Pixels, Point, WeakEntity, Window};
 use std::{cell::RefCell, rc::Rc, sync::Weak};
@@ -16,6 +16,13 @@ pub(crate) enum ReplyCommand {
     Show,
     CopyReply,
     CopySelection,
+}
+
+/// One line of a reply menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MenuEntry {
+    Item(&'static str),
+    Separator,
 }
 
 /// Where the right-click landed.
@@ -31,16 +38,7 @@ pub(crate) enum Place {
 
 /// The menu's lines and what each does, in Swift's order.
 pub(crate) fn entries(place: Place) -> Vec<(Option<ReplyCommand>, MenuEntry)> {
-    let item = |command, title: &str| {
-        (
-            Some(command),
-            MenuEntry::Item {
-                title: title.into(),
-                symbol: None,
-                enabled: true,
-            },
-        )
-    };
+    let item = |command, title: &'static str| (Some(command), MenuEntry::Item(title));
     match place {
         Place::Selection => vec![item(ReplyCommand::CopySelection, "Copy")],
         Place::Strip { collapsed } => vec![
@@ -63,6 +61,7 @@ pub(crate) fn entries(place: Place) -> Vec<(Option<ReplyCommand>, MenuEntry)> {
 /// What a menu acts on, captured when it opens; checked again when the
 /// reader chooses.
 #[derive(Clone)]
+#[cfg_attr(all(not(target_os = "macos"), not(test)), allow(dead_code))]
 pub(super) struct Target {
     pub transcript: WeakEntity<TranscriptView>,
     pub parent: WeakEntity<AgentView>,
@@ -75,6 +74,7 @@ pub(super) struct Target {
 }
 
 impl Target {
+    #[cfg_attr(all(not(target_os = "macos"), not(test)), allow(dead_code))]
     pub(super) fn perform(&self, command: ReplyCommand, window: &mut Window, cx: &mut App) {
         match command {
             ReplyCommand::CopySelection => {
@@ -125,7 +125,17 @@ impl Target {
         }
         #[cfg(all(target_os = "macos", not(test)))]
         {
-            let native = entries.iter().map(|(_, entry)| entry.clone()).collect();
+            let native = entries
+                .iter()
+                .map(|(_, entry)| match entry {
+                    MenuEntry::Item(title) => crate::native_menu::MenuEntry::Item {
+                        title: (*title).into(),
+                        symbol: None,
+                        enabled: true,
+                    },
+                    MenuEntry::Separator => crate::native_menu::MenuEntry::Separator,
+                })
+                .collect();
             let target = self.clone();
             let handle = window.window_handle();
             crate::native_menu::show_menu(cx, handle, position, native, move |index, _, cx| {
@@ -181,7 +191,7 @@ pub(crate) fn choose(title: &str, window: &mut Window, cx: &mut App) -> bool {
         return false;
     };
     let Some(command) = entries.iter().find_map(|(command, entry)| match entry {
-        MenuEntry::Item { title: item, .. } if item == title => *command,
+        MenuEntry::Item(item) if *item == title => *command,
         _ => None,
     }) else {
         return false;
@@ -201,8 +211,7 @@ pub(crate) fn opened_titles() -> Vec<String> {
                 entries
                     .iter()
                     .map(|(_, entry)| match entry {
-                        MenuEntry::Item { title, .. } => title.clone(),
-                        MenuEntry::Note(note) => note.clone(),
+                        MenuEntry::Item(title) => (*title).to_owned(),
                         MenuEntry::Separator => "-".into(),
                     })
                     .collect()
