@@ -196,8 +196,11 @@ extension WorkspaceModel {
             opened.remove(item.id)
             try await traces.clear(sessionID: item.id)
             if !item.imported, let path = item.path, FileManager.default.fileExists(atPath: path) {
+                // A reply the helper was streaming when it died waits beside
+                // the journal until the chat is next opened; it goes with it.
+                let files = [path, path + ".stream"].filter { FileManager.default.fileExists(atPath: $0) }.map { URL(fileURLWithPath: $0) }
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    NSWorkspace.shared.recycle([URL(fileURLWithPath: path)]) { _, error in if let error { continuation.resume(throwing: error) } else { continuation.resume() } }
+                    NSWorkspace.shared.recycle(files) { _, error in if let error { continuation.resume(throwing: error) } else { continuation.resume() } }
                 }
             }
             forgetReadState(item.id); forgetRunHold(item.id)

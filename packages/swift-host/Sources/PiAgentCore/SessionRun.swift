@@ -106,10 +106,7 @@ extension AgentSession {
     /// and shown, never sent to the model again. Nil when nothing arrived.
     func interruptedPartial(attemptIDs: [String]?) -> ChatMessage? {
         guard let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty else { return nil }
-        var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
-        partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
-        partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"; partial.requestAttemptIDs=attemptIDs
-        return partial
+        return Self.interruptedReply(id:partialID,text:partialText,thinking:partialThinking,timeline:partialTimeline,attemptIDs:attemptIDs)
     }
     func run(compactOnly: Bool) async {
         do {
@@ -289,7 +286,7 @@ extension AgentSession {
         modelActive=false; partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); end=nowMS(); runTask=nil
         retrySubmission = runStatus == .idle ? nil : activeSubmission; activeSubmission=nil
         if let pending=pendingConfiguration { apply(profile:pending.profile, apiKey:pending.apiKey) }
-        do { try persistState(active:false) } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; errorCode=nil; state = .error; runStatus = .failed; queuePaused=true }
+        do { try persistState(active:false); removeStreamedLog() } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; errorCode=nil; state = .error; runStatus = .failed; queuePaused=true }
         event("agent_settled")
         // submit() may accept another message while the last request links
         // are being flushed above. It sees a runTask and queues instead of
