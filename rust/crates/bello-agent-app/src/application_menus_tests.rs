@@ -63,7 +63,10 @@ fn menu_bar_follows_swift_order_titles_and_omits_unimplemented_commands() {
         ],
         &[
             "New Chat",
+            "Open Project…",
             "Open File…",
+            "Rename Chat…",
+            "Delete Chat…",
             "-",
             "Archive Chat",
             "Pin Chat",
@@ -116,10 +119,7 @@ fn menu_bar_follows_swift_order_titles_and_omits_unimplemented_commands() {
         .collect::<Vec<_>>();
     for missing in [
         "Check for Updates…",
-        "Open Project…",
         "Import Pi Session…",
-        "Rename Chat…",
-        "Delete Chat…",
         "Usage Report",
         "Background Requests",
         "Show Terminal",
@@ -138,9 +138,9 @@ fn menu_bar_follows_swift_order_titles_and_omits_unimplemented_commands() {
         topics: vec![("t1".into(), "Alpha".into()), ("t2".into(), "Beta".into())],
     };
     let menus = super::menus(&state);
-    assert_eq!(labels(&menus[1])[3..5], ["Restore Chat", "Unpin Chat"]);
+    assert_eq!(labels(&menus[1])[6..8], ["Restore Chat", "Unpin Chat"]);
     assert_eq!(labels(&menus[3])[0], "Hide Archived Chats");
-    let MenuItem::Submenu(topics) = &menus[1].items[5] else {
+    let MenuItem::Submenu(topics) = &menus[1].items[8] else {
         panic!("Move to Topic is a submenu");
     };
     assert_eq!(labels(topics), ["Project root", "Alpha", "Beta"]);
@@ -161,6 +161,7 @@ fn menu_key_equivalents_are_swifts(cx: &mut TestAppContext) {
         ("Hide Others", "cmd-alt-h"),
         ("Quit Bello Agent", "cmd-q"),
         ("New Chat", "cmd-n"),
+        ("Open Project…", "cmd-o"),
         ("Open File…", "cmd-p"),
         ("Close Window", "cmd-w"),
         ("Undo", "cmd-z"),
