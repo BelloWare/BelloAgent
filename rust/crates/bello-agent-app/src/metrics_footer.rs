@@ -170,9 +170,12 @@ impl FooterReadings {
     }
 }
 
+/// What of a profile the readings depend on: its identity, model, window and
+/// output-limit settings.
+type ProfileKey = (String, String, u32, Option<u32>, Option<bool>);
 struct Cached {
     session: Weak<Session>,
-    profile: Option<(String, String, u32, Option<u32>, Option<bool>)>,
+    profile: Option<ProfileKey>,
     readings: Rc<FooterReadings>,
 }
 thread_local! {

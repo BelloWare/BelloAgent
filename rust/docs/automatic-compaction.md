@@ -50,10 +50,11 @@ without a reason read as context-rejection receipts, byte for byte as before.
 
 ## Deliberate differences
 
-- Request size: Swift uses the last reply's reported usage when its usage
-  binding matches the request; Rust records no usage bindings, so it always
-  uses Swift's own fallback, the projection estimate. Rust may therefore
-  compact at a different point than Swift on long tool-heavy chats.
+- Request size: as Swift, the last reply's reported usage sizes the request
+  when the usage binding its request recorded matches (Rust keeps the binding
+  in the request records, not on the message), else the projection estimate;
+  checked by the same oracle
+  ([accounting-2026-10-11](validation/accounting-2026-10-11/README.md)).
 - One compaction per logical request: the request after a threshold
   compaction cannot use context-rejection recovery (Swift would allow one), and
   after a failed or stopped threshold compaction the turn cannot compact again
