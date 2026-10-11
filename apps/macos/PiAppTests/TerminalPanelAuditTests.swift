@@ -666,7 +666,9 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
         view.unmarkText()
 
         // An input method rather than a keyboard layout: its repeats are its own.
-        interpreted = []; layout = false
+        layout = false
+        press("a", code: 0, repeat: false)
+        interpreted = []; _ = taken()
         press("a", code: 0, repeat: true)
         XCTAssertEqual(interpreted, ["a"], "an input method's repeats go to it")
         XCTAssertEqual(taken(), "")

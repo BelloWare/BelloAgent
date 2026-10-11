@@ -200,7 +200,11 @@ protocol VaultStorage: Sendable {
 
 actor ConfigurationVault {
     static let maximumBytes = 2_097_152
+    #if PI_LAUNCH_FIXTURE
+    static let shared = ConfigurationVault(storage: LaunchFixtureVaultStorage.fromEnvironment())
+    #else
     static let shared = ConfigurationVault(storage: KeychainVaultStorage())
+    #endif
     private let storage: any VaultStorage
     private let worker = KeychainWorker()
     private var occupied = false

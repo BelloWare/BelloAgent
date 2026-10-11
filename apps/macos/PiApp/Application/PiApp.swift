@@ -73,10 +73,28 @@ import Combine
                                  revealWorkspace: { [weak self] in self?.revealWorkspace() },
                                  showSettings: { [weak self] in self?.showSettings() })
         menus?.install()
-        installMenuBar()
         revealWorkspace()
         configurationChanged()
-        Task { await workspaceModel.restore() }
+        // The status item is not part of the window: making it held the
+        // first window back by 60-90 ms of the main thread (the status bar's
+        // own setup and the panel's views), and the restored chat behind it.
+        // It comes once launch has put the chat on screen, or after two
+        // seconds if that takes longer (a Keychain that asks first); its
+        // panel is built the first time it opens (docs/perf/launch-0.1.123.md).
+        Task {
+            await workspaceModel.restore()
+            Self.afterNextFrame { [weak self] in self?.installMenuBar() }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.installMenuBar() }
+    }
+
+    /// Runs `work` once, as the main run loop goes idle after committing the
+    /// frame it was drawing (just after Core Animation's commit observer).
+    private static func afterNextFrame(_ work: @escaping @MainActor () -> Void) {
+        let observer = CFRunLoopObserverCreateWithHandler(nil, CFRunLoopActivity.beforeWaiting.rawValue, false, 2_000_001) { _, _ in
+            MainActor.assumeIsolated { work() }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -141,6 +159,7 @@ import Combine
     }
 
     private func installMenuBar() {
+        guard !menuBar.isInstalled, !workspaceModel.isShutDown else { return }
         let model = workspaceModel
         menuBar.install { [weak self] in
             MenuBarMetricsView(load: { period, until, offset in
