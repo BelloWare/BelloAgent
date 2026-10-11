@@ -116,6 +116,68 @@ final class NativeApplicationTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(archive.title, "Hide Archived Chats")
     }
 
+    /// ⌃` (Show/Hide Terminal) waits behind a sheet or an open picker, as the
+    /// conversation's own shortcuts do: the terminal must not appear or go
+    /// behind a question or a choice it would take the keyboard from.
+    @MainActor func testShowTerminalWaitsBehindSheetsAndPickers() async throws {
+        let (model, root) = try fixture()
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let previous = NSApp.mainMenu
+        defer { NSApp.mainMenu = previous }
+        let workspace = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
+                                 styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        workspace.isReleasedWhenClosed = false
+        defer { workspace.close() }
+        let chat = ChatRecord(id: "chat", workspaceID: "project", title: "Chat", path: nil, profileID: "fixture")
+        model.chats = [chat]; model.selectedID = chat.id; model.displays[chat.id] = SessionDisplay(id: chat.id)
+        let menus = ApplicationMenus(model: model, updates: UpdateController(), workspaceWindow: { workspace }, revealWorkspace: {}, showSettings: {})
+        menus.install()
+        let toggle = try XCTUnwrap(NSApp.mainMenu?.items.compactMap(\.submenu).flatMap(\.items).first { $0.title == "Show Terminal" })
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .control, timestamp: 0, windowNumber: workspace.windowNumber,
+                                                 context: nil, characters: "`", charactersIgnoringModifiers: "`", isARepeat: false, keyCode: 50))
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        workspace.makeKeyAndOrderFront(nil)
+        workspace.makeKey()
+        try await eventually("workspace to own the keyboard") { NSApp.keyWindow === workspace }
+        XCTAssertTrue(menus.validateMenuItem(toggle))
+
+        // A question's sheet.
+        let alert = NSAlert(); alert.messageText = "A question"; alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: workspace) { _ in }
+        try await eventually("the sheet to show") { workspace.attachedSheet != nil }
+        XCTAssertFalse(menus.validateMenuItem(toggle), "off while a sheet is up")
+        _ = NSApp.mainMenu?.performKeyEquivalent(with: key)
+        XCTAssertFalse(model.terminalVisible, "⌃` does nothing behind the sheet")
+        workspace.endSheet(alert.window)
+        try await eventually("the sheet to go") { workspace.attachedSheet == nil }
+
+        // One of the model's own sheets.
+        model.showResources = true
+        XCTAssertFalse(menus.validateMenuItem(toggle), "off while the model presents a sheet")
+        model.showResources = false
+
+        // A picker: a popover with a search field, shown from the window.
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        let content = NSViewController(); content.view = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 60)); content.view.addSubview(field)
+        let picker = NSPopover(); picker.contentViewController = content; picker.behavior = .transient; picker.animates = false
+        let anchor = try XCTUnwrap(workspace.contentView)
+        picker.show(relativeTo: NSRect(x: 20, y: 20, width: 10, height: 10), of: anchor, preferredEdge: .maxY)
+        defer { picker.close() }
+        try await eventually("the picker to show") { content.view.window?.isVisible == true }
+        XCTAssertFalse(menus.validateMenuItem(toggle), "off while a picker is open")
+        _ = NSApp.mainMenu?.performKeyEquivalent(with: key)
+        XCTAssertFalse(model.terminalVisible, "⌃` does nothing behind the picker")
+        picker.close()
+        try await eventually("the picker to go") { content.view.window?.isVisible != true }
+        workspace.makeKey()
+        try await eventually("the workspace to own the keyboard again") { NSApp.keyWindow === workspace }
+
+        XCTAssertTrue(menus.validateMenuItem(toggle))
+        _ = NSApp.mainMenu?.performKeyEquivalent(with: key)
+        XCTAssertTrue(model.terminalVisible, "with nothing over the window ⌃` shows the terminal")
+    }
+
     @MainActor func testLeavingATextFieldDoesNotSubmitButReturnDoes() async throws {
         var submissions = 0
         let field = PiKit.TextField(placeholder: "Search", onSubmit: { submissions += 1 })

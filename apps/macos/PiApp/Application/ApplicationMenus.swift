@@ -25,6 +25,14 @@ import AppKit
     var conversationCommands: Bool {
         NSApp.keyWindow != nil && NSApp.keyWindow === workspaceWindow() && model.conversationCommandsEnabled
     }
+    /// A sheet or a picker is over the workspace window: one of the model's
+    /// sheets, a question's, or a popover that can take the keyboard (hover
+    /// cards and the quote bar cannot). The terminal waits behind them.
+    private var workspaceIsCovered: Bool {
+        if model.presentsSheet { return true }
+        guard let window = workspaceWindow() else { return false }
+        return window.attachedSheet != nil || (window.childWindows ?? []).contains { $0.isVisible && $0.canBecomeKey }
+    }
     private func command(_ menu: NSMenu, title: @escaping () -> String, key: String = "",
                          modifiers: NSEvent.ModifierFlags = .command, enabled: @escaping () -> Bool = { true },
                          action: @escaping () -> Void) {
@@ -135,7 +143,7 @@ import AppKit
             if model.showChanges()?.container?.isPane == true { self?.revealWorkspace() }
         }
         command(view, title: { [model] in model.terminalVisible ? "Hide Terminal" : "Show Terminal" }, key: "`", modifiers: .control,
-                enabled: { [model] in model.selectedID != nil }, action: model.toggleTerminal)
+                enabled: { [weak self, model] in model.selectedID != nil && self?.workspaceIsCovered == false }, action: model.toggleTerminal)
         view.addItem(.separator())
         command(view, "Next Chat", key: String(UnicodeScalar(NSDownArrowFunctionKey)!), modifiers: [.command, .option]) { [model] in model.selectAdjacentChat(1) }
         command(view, "Previous Chat", key: String(UnicodeScalar(NSUpArrowFunctionKey)!), modifiers: [.command, .option]) { [model] in model.selectAdjacentChat(-1) }
