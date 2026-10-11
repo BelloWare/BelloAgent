@@ -1454,7 +1454,8 @@ final class TranscriptNativeScrollView: NSScrollView {
             let rowsIn = min(extent.after - 1, max(0, Int((view.minY - last.frame.maxY) / height)))
             let top = last.frame.maxY + CGFloat(rowsIn) * height
             page?.readerReachedUnreadRows(position: extent.firstAfter + rowsIn, offset: top - view.minY)
-        } else if view.maxY > first.frame.minY, view.minY < last.frame.maxY {
+        } else {
+            // Back within the reach of the window's rows (and its edges' reads).
             page?.readerLeftUnreadRows()
         }
     }

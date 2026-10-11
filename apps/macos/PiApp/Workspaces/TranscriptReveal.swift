@@ -85,7 +85,14 @@ extension WorkspaceModel {
         // The timeline the window holds: a position counts rows of it, and a
         // page of another (the chat changed elsewhere) is not read in its
         // place; that change is the page's to report.
-        let lineage = view.presentation.identity?.lineage
+        let lineage = view.presentation.identity?.lineage, incarnation = view.presentation.identity?.incarnation
+        // The same source, or the other kind of it (the journal and the
+        // helper hand a chat over); a journal replaced under the window is
+        // not, and is reported as a change.
+        func sameSource(_ page: ConversationHistoryPage) -> Bool {
+            guard let lineage, let incarnation else { return true }
+            return page.lineage == lineage && (page.incarnation == incarnation || page.incarnation.hasPrefix("file:") != incarnation.hasPrefix("file:"))
+        }
         func current() -> Bool {
             !Task.isCancelled && displays[item.id] === view && view.presentationGeneration == generation && view.jumpRead == serial
                 && view.revealRead == nil && transcriptShows(item.id) && messageNavigationRevision == navigation
@@ -113,14 +120,15 @@ extension WorkspaceModel {
                 guard current(), let first = SessionDisplay.hidingBranchMarkers(page.messages).first?.id ?? page.messages.first?.id else { return }
                 // The chat changed elsewhere: said as a snapshot says it, with
                 // the way to read it again, rather than left as blank room.
-                guard lineage == nil || page.lineage == lineage else {
+                guard sameSource(page) else {
                     view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere); view.browsingHistory = true
                     return
                 }
                 page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
                 // The reader has gone on to another place: that one is read
                 // next, and this one is not landed on the way.
-                guard current(), view.jumpWanted == nil else { return }
+                guard current(), view.jumpWanted == nil, view.newerPage.error != Self.branchChangedElsewhere,
+                      view.presentation.identity?.lineage == lineage else { return }
                 view.jumpFailedAt = nil
                 // Where the reader is now within the row read for.
                 self.adoptInitialHistory(page, into: view, around: first, landing: view.jumpOffset ?? offset)
