@@ -51,8 +51,12 @@ public protocol ToolExecuting: Sendable {
     func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON
     func invoke(_ call: ToolCall, readOnly: Bool, onUpdate: @escaping @Sendable (JSON) async -> Void) async throws -> JSON
     func capabilityIDs(readOnly: Bool) async -> [String]
+    /// The results of these MCP invocations (by call ID) are in the chat's
+    /// journal, or could not be put there (`MCPManager.resultsRetained`).
+    func resultsRetained(_ callIDs: [String], retained: Bool) async
 }
 public extension ToolExecuting {
+    func resultsRetained(_ callIDs: [String], retained: Bool) async {}
     func invoke(_ call: ToolCall, readOnly: Bool, onUpdate: @escaping @Sendable (JSON) async -> Void) async throws -> JSON { try await invoke(call,readOnly:readOnly) }
     func capabilityIDs(readOnly: Bool) async -> [String] { await definitions(readOnly:readOnly).map(\.name) }
 }

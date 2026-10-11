@@ -767,6 +767,39 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
         if other.titleWasEdited == true || other.titleWasGenerated == true { title = other.title }
     }
 }
+/// Keys with a default (`toolMode`, `imported`) may be missing from a row
+/// another version wrote; the synthesized decoder required them, so such a
+/// chat was skipped and left out of the sidebar. Every other key reads as
+/// the synthesized decoder reads it: an absent optional is nil (the upgrades
+/// in `loadChats` fill `sidebarOrder` and `outputBudgetVersion` in), and a
+/// key with no default stays required. Encoding is the synthesized one.
+extension ChatRecord {
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); workspaceID = try c.decode(String.self, forKey: .workspaceID)
+        title = try c.decode(String.self, forKey: .title); path = try c.decodeIfPresent(String.self, forKey: .path)
+        profileID = try c.decode(String.self, forKey: .profileID)
+        toolMode = try c.decodeIfPresent(String.self, forKey: .toolMode) ?? ChatRecord.editingTools
+        imported = try c.decodeIfPresent(Bool.self, forKey: .imported) ?? false
+        connectionTest = try c.decodeIfPresent(Bool.self, forKey: .connectionTest)
+        model = try c.decodeIfPresent(String.self, forKey: .model); thinkingLevel = try c.decodeIfPresent(String.self, forKey: .thinkingLevel)
+        contextWindow = try c.decodeIfPresent(Int.self, forKey: .contextWindow); maxOutputTokens = try c.decodeIfPresent(Int.self, forKey: .maxOutputTokens)
+        modelOutputLimit = try c.decodeIfPresent(Int.self, forKey: .modelOutputLimit)
+        outputBudgetVersion = try c.decodeIfPresent(Int.self, forKey: .outputBudgetVersion)
+        sidebarOrder = try c.decodeIfPresent(Int64.self, forKey: .sidebarOrder); lastActivityAt = try c.decodeIfPresent(Int64.self, forKey: .lastActivityAt)
+        pinnedAt = try c.decodeIfPresent(Date.self, forKey: .pinnedAt); archivedAt = try c.decodeIfPresent(Date.self, forKey: .archivedAt)
+        titleWasEdited = try c.decodeIfPresent(Bool.self, forKey: .titleWasEdited); titleWasGenerated = try c.decodeIfPresent(Bool.self, forKey: .titleWasGenerated)
+        titleTaskSessionID = try c.decodeIfPresent(String.self, forKey: .titleTaskSessionID)
+        backgroundTask = try c.decodeIfPresent(String.self, forKey: .backgroundTask); sourceSessionID = try c.decodeIfPresent(String.self, forKey: .sourceSessionID)
+        backgroundTaskNotice = try c.decodeIfPresent(String.self, forKey: .backgroundTaskNotice)
+        backgroundTaskStartedAt = try c.decodeIfPresent(Date.self, forKey: .backgroundTaskStartedAt); backgroundTaskEndedAt = try c.decodeIfPresent(Date.self, forKey: .backgroundTaskEndedAt)
+        backgroundTaskOutcome = try c.decodeIfPresent(String.self, forKey: .backgroundTaskOutcome); backgroundTaskResult = try c.decodeIfPresent(String.self, forKey: .backgroundTaskResult)
+        organizationRevision = try c.decodeIfPresent(Int64.self, forKey: .organizationRevision); topicID = try c.decodeIfPresent(String.self, forKey: .topicID)
+        parentSessionID = try c.decodeIfPresent(String.self, forKey: .parentSessionID); costLimit = try c.decodeIfPresent(CostLimit.self, forKey: .costLimit)
+        webhookOff = try c.decodeIfPresent(Bool.self, forKey: .webhookOff); connectionRevision = try c.decodeIfPresent(Int64.self, forKey: .connectionRevision)
+        journalRebind = try c.decodeIfPresent(Bool.self, forKey: .journalRebind)
+    }
+}
 enum ChatOrganizationChange: Sendable { case title(String), pinned(Bool), archived(Bool) }
 struct ChatOrganizationBatch: Sendable {
     var records: [ChatRecord] = []

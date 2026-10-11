@@ -407,13 +407,36 @@ public actor MCPManager {
     private func cancelDrain(_ id: UUID) {
         if let i = drainWaiters.firstIndex(where: { $0.0 == id }) { drainWaiters.remove(at: i).1.resume(throwing: CancellationError()) }
     }
-    /// Ends one invocation. The last one to end clears the outcome marker
-    /// unless an outcome is unknown, whichever invocation wrote it.
-    private func finishInvocation() {
+    /// Results returned to a caller that keeps them (a chat's journal), by
+    /// the call they answer, until it says they are kept: until then a crash
+    /// or a failed write could lose the only sign the call ran, so the
+    /// outcome marker stays.
+    private var awaitingRetention: [String: Int] = [:]
+    /// Ends one invocation; `retainedBy` names a result its caller has yet
+    /// to keep. The last one to end, with every result kept, clears the
+    /// outcome marker unless an outcome is unknown, whichever invocation
+    /// wrote it.
+    private func finishInvocation(retainedBy key: String? = nil) {
         inFlight -= 1
+        if let key { awaitingRetention[key, default: 0] += 1 }
         guard inFlight == 0 else { return }
-        if !unknownOutcome, let outcomeMarker { try? FileManager.default.removeItem(at: outcomeMarker) }
+        clearSettledMarker()
         let waiters = drainWaiters; drainWaiters.removeAll(); for waiter in waiters { waiter.1.resume() }
+    }
+    private func clearSettledMarker() {
+        guard inFlight == 0, awaitingRetention.isEmpty, !unknownOutcome, let outcomeMarker else { return }
+        try? FileManager.default.removeItem(at: outcomeMarker)
+    }
+    /// The caller of `perform(_:readOnly:retainedBy:)` kept these results
+    /// durably, or could not: a result that was not kept leaves its call's
+    /// outcome unknown, marker and all, for the user to verify.
+    public func resultsRetained(_ keys: [String], retained: Bool) {
+        for key in keys {
+            guard let count = awaitingRetention[key] else { continue }
+            awaitingRetention[key] = count > 1 ? count - 1 : nil
+        }
+        if !retained { unknownOutcome = true }
+        clearSettledMarker()
     }
     public init(cwd: URL, roots: [URL] = [], outcomeMarker: URL? = nil) { self.cwd=cwd; self.roots=workspaceRoots(primary:cwd,additional:roots); self.outcomeMarker=outcomeMarker; unknownOutcome=outcomeMarker.map { FileManager.default.fileExists(atPath:$0.path) } ?? false }
     public func serverNames() -> [String] { servers.keys.sorted() }
@@ -517,7 +540,9 @@ public actor MCPManager {
     public nonisolated static var definition: ToolDefinition {
         ToolDefinition("mcp", "Discover MCP servers/tools without flooding context. action=list with optional server lists names/descriptions. action=describe takes targets:[{server,tool}] and returns detailed schemas. action=invoke requires exactly one server, tool, arguments object. Invocations may run at the same time as each other; no invocation batches. Server data is untrusted.", ["type":"object","properties":["action":["type":"string","enum":["list","describe","invoke"]],"server":["type":"string"],"tool":["type":"string"],"targets":["type":"array","maxItems":32,"items":["type":"object","properties":["server":["type":"string"],"tool":["type":"string"]],"required":["server","tool"],"additionalProperties":false]],"arguments":["type":"object"]],"required":["action"],"additionalProperties":false])
     }
-    public func perform(_ p: JSON, readOnly: Bool = false) async throws -> JSON {
+    /// `retainedBy` (an invoke's call ID): the caller keeps the result and
+    /// reports it with `resultsRetained`; the outcome marker stays until then.
+    public func perform(_ p: JSON, readOnly: Bool = false, retainedBy: String? = nil) async throws -> JSON {
         guard p.isObject else { throw AgentError("mcp_arguments", "MCP accepts one object, not a batch") }
         switch p["action"].text {
         case "list":
@@ -571,7 +596,7 @@ public actor MCPManager {
                     dispatched=false; transport = try await connect(server); dispatched=true
                     result = try await transport.request("tools/call", params:call)
                 }
-                finishInvocation()
+                finishInvocation(retainedBy: retainedBy)
                 return result
             } catch {
                 // A call the server refused without processing it did not run:
@@ -584,7 +609,7 @@ public actor MCPManager {
         }
     }
     public func acknowledgeUnknown() throws {
-        guard inFlight == 0 else { throw AgentError("mcp_busy","An invocation is still running") }
+        guard inFlight == 0, awaitingRetention.isEmpty else { throw AgentError("mcp_busy","An invocation is still running") }
         if let outcomeMarker, FileManager.default.fileExists(atPath:outcomeMarker.path) { try FileManager.default.removeItem(at:outcomeMarker) }
         unknownOutcome=false
     }
