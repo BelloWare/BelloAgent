@@ -552,7 +552,8 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
                 .flatMap { pid_t($0.trimmingCharacters(in: .whitespacesAndNewlines)) } ?? 0
             return session.process.running && child > 0
         }
-        return child
+        // Never 0 or less: kill(0, …) would signal the test runner's own group.
+        return try XCTUnwrap(child > 0 ? child : nil, "the fixture shell never started its child")
     }
 
     @MainActor func testQuitEndsAShellThatIgnoresHangUpBeforeTheAppGoes() async throws {
