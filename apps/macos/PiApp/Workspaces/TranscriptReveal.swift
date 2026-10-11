@@ -91,7 +91,9 @@ extension WorkspaceModel {
                 if view.jumpRead == serial {
                     view.jumpRead = nil
                     // Where the reader went while this page was read.
-                    if let wanted = view.jumpWanted, view.presentationGeneration == generation {
+                    // (Asked for where the reader is now, even if the chat was
+                    // opened again meanwhile.)
+                    if let wanted = view.jumpWanted {
                         view.jumpWanted = nil
                         self.jumpToHistoryPosition(item.id, position: wanted.position, offset: wanted.offset)
                     }
@@ -99,11 +101,13 @@ extension WorkspaceModel {
             }
             do {
                 var page = try await self.readConversationWindow(item, cursor: nil, position: position)
-                guard current(), let first = page.messages.first?.id else { return }
+                // The row landed on is one the transcript draws: an edit's
+                // marker the page starts with is not.
+                guard current(), let first = SessionDisplay.hidingBranchMarkers(page.messages).first?.id ?? page.messages.first?.id else { return }
                 // The chat changed elsewhere: said as a snapshot says it, with
                 // the way to read it again, rather than left as blank room.
                 guard lineage == nil || page.lineage == lineage else {
-                    view.newerPage.error = Self.branchChangedElsewhere; view.browsingHistory = true
+                    view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere); view.browsingHistory = true
                     return
                 }
                 page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
