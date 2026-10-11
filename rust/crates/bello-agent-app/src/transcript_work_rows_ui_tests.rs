@@ -135,3 +135,38 @@ fn a_command_opens_as_swifts_terminal_card(cx: &mut TestAppContext) {
     assert_eq!(output.left() - card.left(), px(1. + 16.));
     assert_eq!(command.top() - card.top(), px(1. + 10.));
 }
+
+#[gpui::test]
+fn a_running_call_sweeps_and_a_settled_one_does_not(cx: &mut TestAppContext) {
+    let (_directory, _window, root) = fixture(cx, messages(1), 0);
+    let mut changed = input(&root, cx);
+    let mut session = (*changed.session).clone();
+    // The admitted batch's calls, before any result: Swift's running rows.
+    session.messages = reply_with_calls(2).into_iter().take(1).collect();
+    session.state = RunState::Running;
+    session.active_reply = Some("work-reply".into());
+    changed.session = Arc::new(session);
+    changed.visible_messages = usize::MAX;
+    let (mut visual, child) = host(&root, changed, cx);
+    let selectors = cx.read(|cx| child.read(cx).tool_card_selectors());
+    for selector in &selectors {
+        let line = bounds(&mut visual, format!("{selector}-disclosure")).unwrap();
+        let band = bounds(&mut visual, format!("{selector}-disclosure-shimmer"))
+            .expect("a running row's sweep");
+        // The band's track starts a band's width before the line (4 points
+        // into its column) and ends with it; the row clips what is outside.
+        assert_eq!(band.right(), line.right());
+        assert_eq!(band.left(), line.left() + px(4.) - px(300.));
+        assert_eq!(band.size.height, line.size.height);
+    }
+    let (_directory, _window, root) = fixture(cx, messages(1), 0);
+    let mut changed = input(&root, cx);
+    let mut session = (*changed.session).clone();
+    session.messages = reply_with_calls(1);
+    changed.session = Arc::new(session);
+    changed.visible_messages = usize::MAX;
+    let (mut visual, child) = host(&root, changed, cx);
+    let selector = cx.read(|cx| child.read(cx).tool_card_selectors()[0].clone());
+    assert!(bounds(&mut visual, format!("{selector}-disclosure")).is_some());
+    assert!(bounds(&mut visual, format!("{selector}-disclosure-shimmer")).is_none());
+}

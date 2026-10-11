@@ -3400,6 +3400,7 @@ fn render_row(
                         open,
                         trailing: None,
                         follow: streaming,
+                        help: None,
                     };
                     let (toggle_child, message_id) = (child.clone(), message.id.clone());
                     // One view, as Swift's: the line, and what it opens 4
@@ -4409,6 +4410,7 @@ fn render_tool_card(
             open: row.expanded,
             trailing: model.trailing.clone().map(Into::into),
             follow: false,
+            help: Some(model.help.clone().into()),
         },
         // A result whose call is not on this page reads as its own line.
         None => work_line::WorkLine {
@@ -4429,6 +4431,7 @@ fn render_tool_card(
             open: row.expanded,
             trailing: tool_presentation::elapsed(session, projected).map(Into::into),
             follow: false,
+            help: None,
         },
     };
     // A sidebar hit on the tool's name: the line says what the call did, not
