@@ -45,7 +45,19 @@ The canonical Bello Agent feed is `https://belloware.com/assets/bello_agent.appc
 The legacy `pi_app.appcast.xml` feed remains byte-identical so existing Pi App
 installations receive the same update.
 
-**Bello Agent 0.1.122/build 126 is publicly released** at
+**Bello Agent 0.1.123/build 127 is publicly released** at
+[belloware.com](https://belloware.com/bello-agent.html), with source at
+[Git tag v0.1.123](https://github.com/BelloWare/BelloAgent/tree/v0.1.123) and website commit
+`2db2400`. The signed/notarized DMG is **12,886,203 bytes (12.29 MiB)**;
+SHA-256 `b88020c113b8d6875d97983d4f07b5c8a8e261009b37f8c36f953ea2616f25aa`. The public product page,
+identical update feeds and downloaded hash/Ed25519 verification passed at
+**2026-10-12 05:01:03 UTC**. It makes the scroll bar the whole chat in long chats, speeds up search inside chats,
+keeps a streaming reply through a helper crash, brings back chats that failed to decode, journals MCP results before
+their marker clears, fixes terminal Quit and held keys, and keeps folded sides folded when a new side starts. The full
+gate and an hour soak passed. See the
+[0.1.123 validation record](validation/Bello-Agent-0.1.123-2026-10-12.md).
+
+**Bello Agent 0.1.122/build 126 is a historical verified release** at
 [belloware.com](https://belloware.com/bello-agent.html), with source at
 [Git tag v0.1.122](https://github.com/BelloWare/BelloAgent/tree/v0.1.122) and website commit
 `c128c3b`. The signed/notarized DMG is **12,795,319 bytes (12.20 MiB)**;

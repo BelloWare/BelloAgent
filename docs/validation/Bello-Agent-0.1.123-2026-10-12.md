@@ -1,6 +1,6 @@
 # Bello Agent 0.1.123 — the whole chat in the scroll bar, faster find, replies kept through a crash
 
-Status: **packaged, publication pending.** Marketing version 0.1.123, build 127. Previous public release: 0.1.122/build 126.
+Status: **publicly released and verified** at [belloware.com](https://belloware.com/bello-agent.html), marketing version 0.1.123, build 127. Public verification completed at **2026-10-12 05:01:03 UTC**. Tagged source: **`67ff4635`**, `v0.1.123`. Website: **`2db2400`**. Previous public release: 0.1.122/build 126.
 
 ## Owner request
 
@@ -34,4 +34,11 @@ Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1, XcodeGen 2.44.1.
 
 ## Publication
 
-Pending.
+Packaged from **`67ff4635`** (`main` merged with `dev/next` at `3d54da72`, plus the version bump, notes and this record) with `scripts/release.sh`: Release build, stripped binaries with retained dSYMs, Developer ID signing, packaged-helper offline smoke, app and DMG notarization and stapling, Gatekeeper validation, signed appcast and Ed25519 verification. The owner explicitly approved running the build and publishing.
+
+- App notarization: **`7ccb3c42-4133-48c5-be9f-9f84f1757e36`**, Accepted.
+- DMG notarization: **`c674daa4-8242-4d0a-9034-980a63301b00`**, Accepted.
+- Installer: **12,886,203 bytes (12.29 MiB)**.
+- SHA-256: **`b88020c113b8d6875d97983d4f07b5c8a8e261009b37f8c36f953ea2616f25aa`**.
+
+Source pushed atomically to `main` and `dev/next` at `67ff4635`; `publish-release.sh 0.1.123` pushed website `2db2400`; `verify-published.py` passed at 2026-10-12 05:01:03 UTC: identical canonical and legacy feeds, public DMG SHA-256 match and Ed25519 signature.
