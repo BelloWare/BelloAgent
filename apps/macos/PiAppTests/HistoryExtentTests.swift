@@ -327,4 +327,157 @@ final class HistoryExtentTests: XCTestCase {
         }
         XCTAssertGreaterThan(chat.page?.snapshot?.extent?.before ?? 0, 0)
     }
+
+    /// A journal that can no longer be read the way the window was (cut
+    /// short, or gone) is a changed conversation, offered Reload, not a read
+    /// retried forever behind blank room.
+    func testAJournalThatCannotBeReadAsItWasIsASourceChange() {
+        // Unreadable as it was may be a journal appended to under the read:
+        // tried again (`unreadableReadsBeforeChange` times) before it counts.
+        XCTAssertFalse(WorkspaceModel.isSourceChange(StoreError.unreadableRecord))
+        XCTAssertGreaterThan(WorkspaceModel.unreadableReadsBeforeChange, 1)
+        XCTAssertTrue(WorkspaceModel.isSourceChange(StoreError.missingJournal("/gone.jsonl")))
+        XCTAssertFalse(WorkspaceModel.isSourceChange(CancellationError()))
+    }
+    @MainActor func testAPositionReadOfAJournalThatIsGoneOffersReload() async throws {
+        let chat = try await LongChatScroll(turns: 60)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        try FileManager.default.removeItem(atPath: try XCTUnwrap(chat.chat.path))
+        // The reader drags into room no edge read reaches: its page is read there.
+        let scroll = try XCTUnwrap(chat.scroll), document = try XCTUnwrap(chat.document), clip = scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: 0, y: document.frame.height * 0.3)); scroll.reflectScrolledClipView(clip)
+        do {
+            try await eventually("The reader was never told the chat changed", timeout: .seconds(10)) {
+                chat.draw(); return chat.view.newerPage.error == WorkspaceModel.branchChangedElsewhere
+            }
+        } catch {
+            XCTFail("older \(chat.view.olderPage.error ?? "-"), newer \(chat.view.newerPage.error ?? "-"), read \(String(describing: chat.view.jumpRead)), retry \(String(describing: chat.view.jumpRetry)), failed \(String(describing: chat.view.jumpFailedAt)), pinned \(chat.view.pinnedHistoryIDs)")
+            throw error
+        }
+        XCTAssertNil(chat.view.jumpRetry, "Nothing is retried")
+    }
+
+    /// Position reads that find the journal unreadable as it was (`StoreError.unreadableRecord`):
+    /// `failing` of them, then the journal's own pages.
+    @MainActor private func unreadableReads(_ chat: LongChatScroll, failing: Int) throws -> () -> Int {
+        final class Reads: @unchecked Sendable {
+            private let lock = NSLock(); private var count = 0
+            func next() -> Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
+            var total: Int { lock.lock(); defer { lock.unlock() }; return count }
+        }
+        let reads = Reads(), reader = HistoryReader(), path = try XCTUnwrap(chat.chat.path)
+        let marker = HistoryWindowEdge.position(0).dropLast()
+        chat.model.historyWindowLoader = { _, cursor, newer, around in
+            if let around, around.hasPrefix(marker), let row = Int(around.dropFirst(marker.count)) {
+                if reads.next() <= failing { throw StoreError.unreadableRecord }
+                return try ConversationHistoryPage(await reader.window(path: path, position: row))
+            }
+            if around == HistoryWindowEdge.start { return try ConversationHistoryPage(await reader.window(path: path, start: true)) }
+            return try ConversationHistoryPage(await reader.window(path: path, cursor: cursor, newer: newer, around: around))
+        }
+        return { reads.total }
+    }
+    @MainActor private func dragIntoRoom(_ chat: LongChatScroll) throws {
+        let scroll = try XCTUnwrap(chat.scroll), document = try XCTUnwrap(chat.document), clip = scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: 0, y: document.frame.height * 0.3)); scroll.reflectScrolledClipView(clip)
+        chat.draw()
+    }
+
+    /// A journal cut short or replaced reads as unreadable every time: after
+    /// `unreadableReadsBeforeChange` reads in a row the reader is offered Reload.
+    @MainActor func testAJournalUnreadableReadAfterReadOffersReload() async throws {
+        let chat = try await LongChatScroll(turns: 200)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        let reads = try unreadableReads(chat, failing: .max)
+        try dragIntoRoom(chat)
+        try await eventually("The reader was never offered Reload", timeout: .seconds(15)) {
+            chat.draw(); return chat.view.newerPage.error == WorkspaceModel.branchChangedElsewhere
+        }
+        XCTAssertEqual(reads(), 3, "Offered after three reads, not before")
+        try await Task.sleep(for: .seconds(1.5)); chat.draw()
+        XCTAssertEqual(reads(), 3, "and nothing more is read")
+    }
+
+    /// A journal that only grew under the read reads as unreadable once; the
+    /// next read is good and lands, with nothing reported.
+    @MainActor func testAJournalUnreadableOnceIsReadAgainAndLands() async throws {
+        let chat = try await LongChatScroll(turns: 200)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        let reads = try unreadableReads(chat, failing: 1)
+        try dragIntoRoom(chat)
+        try await eventually("The rows never came after one unreadable read", timeout: .seconds(10)) {
+            chat.draw(); return !chat.blankViewport && chat.document?.visibleContentPrepared == true
+        }
+        XCTAssertGreaterThanOrEqual(reads(), 2, "It was read again")
+        XCTAssertNil(chat.view.newerPage.error, "Nothing was reported")
+        XCTAssertEqual(chat.view.jumpUnreadable, 0)
+    }
+
+    /// Position reads held until `open`; `failFirst` makes the first throw
+    /// `unreadableRecord`; reads after `limit` never return.
+    private final class GatedReads: @unchecked Sendable {
+        private let lock = NSLock(); private var count = 0, isOpen = false
+        func next() -> Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
+        var started: Int { lock.lock(); defer { lock.unlock() }; return count }
+        var open: Bool { get { lock.lock(); defer { lock.unlock() }; return isOpen } set { lock.lock(); isOpen = newValue; lock.unlock() } }
+    }
+    @MainActor private func gatedReads(_ chat: LongChatScroll, failFirst: Bool, limit: Int) throws -> GatedReads {
+        let reads = GatedReads(), reader = HistoryReader(), path = try XCTUnwrap(chat.chat.path)
+        let marker = HistoryWindowEdge.position(0).dropLast()
+        chat.model.historyWindowLoader = { _, cursor, newer, around in
+            if let around, around.hasPrefix(marker), let row = Int(around.dropFirst(marker.count)) {
+                let index = reads.next()
+                if index > limit { try await Task.sleep(for: .seconds(60)); throw CancellationError() }
+                while !reads.open { try await Task.sleep(for: .milliseconds(5)) }
+                if failFirst, index == 1 { throw StoreError.unreadableRecord }
+                return try ConversationHistoryPage(await reader.window(path: path, position: row))
+            }
+            if around == HistoryWindowEdge.start { return try ConversationHistoryPage(await reader.window(path: path, start: true)) }
+            return try ConversationHistoryPage(await reader.window(path: path, cursor: cursor, newer: newer, around: around))
+        }
+        return reads
+    }
+
+    /// A read the reader has gone on from that then finds the journal
+    /// unreadable does not count against the reads after it.
+    @MainActor func testAnAbandonedUnreadableReadDoesNotCount() async throws {
+        let chat = try await LongChatScroll(turns: 200)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        let reads = try gatedReads(chat, failFirst: true, limit: 1)
+        try dragIntoRoom(chat)
+        try await eventually("No read was made") { chat.view.jumpRead != nil }
+        chat.view.abandonJump()
+        reads.open = true
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(chat.view.jumpUnreadable, 0, "The abandoned read counted")
+    }
+
+    /// A read that validates resets the count of unreadable reads, even when
+    /// the reader has gone on and it is not landed.
+    @MainActor func testAGoodReadNotLandedStillResetsTheUnreadableCount() async throws {
+        let chat = try await LongChatScroll(turns: 200)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        let reads = try gatedReads(chat, failFirst: false, limit: 1)
+        try dragIntoRoom(chat)
+        try await eventually("No read was made") { chat.view.jumpRead != nil }
+        chat.view.jumpUnreadable = 2
+        // The reader goes on to another place while the page is read: it is
+        // read next, and this one is not landed.
+        let scroll = try XCTUnwrap(chat.scroll), document = try XCTUnwrap(chat.document), clip = scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: 0, y: document.frame.height * 0.6)); scroll.reflectScrolledClipView(clip); chat.draw()
+        XCTAssertNotNil(chat.view.jumpWanted, "The other place waits for the read under way")
+        reads.open = true
+        try await eventually("The read for the other place never started") { reads.started >= 2 }
+        XCTAssertEqual(chat.view.jumpUnreadable, 0, "A good read leaves no unreadable reads counted")
+    }
 }

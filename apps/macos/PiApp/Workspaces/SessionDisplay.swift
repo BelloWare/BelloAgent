@@ -113,11 +113,13 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The reader went somewhere else (a reveal, Back to bottom, Latest, back
     /// into the rows the window holds): a page read for where they were
     /// does not land.
-    func abandonJump() { jumpRead = nil; jumpWanted = nil; jumpRetry = nil; jumpReading = nil; jumpOffset = nil; jumpFailedAt = nil }
+    func abandonJump() { jumpRead = nil; jumpWanted = nil; jumpRetry = nil; jumpReading = nil; jumpOffset = nil; jumpFailedAt = nil; jumpUnreadable = 0 }
     /// Where the reader is now within the row being read for.
     var jumpOffset: Double?
     /// The position the read under way is for.
     var jumpReading: Int?
+    /// Position reads in a row that found the journal unreadable as it was.
+    var jumpUnreadable = 0
     /// The timeline whose positions were last read for want of any
     /// (`WorkspaceModel.reacquireHistoryPositions`).
     var positionsReadFor: String?

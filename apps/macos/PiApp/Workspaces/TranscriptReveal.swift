@@ -151,12 +151,14 @@ extension WorkspaceModel {
                     view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere); view.browsingHistory = true
                     return
                 }
+                // Read and checked: the journal reads as it was, whether or not
+                // the page is landed (the reader may have gone on meanwhile).
+                view.jumpFailedAt = nil; view.jumpUnreadable = 0
                 page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
                 // The reader has gone on to another place: that one is read
                 // next, and this one is not landed on the way.
                 guard current(), view.jumpWanted == nil, view.newerPage.error != Self.branchChangedElsewhere,
                       view.presentation.identity?.lineage == lineage else { return }
-                view.jumpFailedAt = nil
                 // Where the reader is now within the row read for.
                 self.adoptInitialHistory(page, into: view, around: first, landing: view.jumpOffset ?? offset)
                 view.browsingHistory = page.newer != nil
@@ -169,7 +171,14 @@ extension WorkspaceModel {
                 // they are still in the room (`TranscriptPage.readerReachedUnreadRows`).
                 // The journal was replaced or edited under the window: said
                 // as a changed branch is, with Reload.
-                if Self.isSourceChange(error), current() {
+                // A journal that cannot be read as it was, read after read, was
+                // cut short or replaced, not merely appended to meanwhile.
+                // A read the reader has gone on from counts for nothing.
+                guard current() else { return }
+                let unreadable = (error as? StoreError) == .unreadableRecord
+                if unreadable { view.jumpUnreadable += 1 } else { view.jumpUnreadable = 0 }
+                if Self.isSourceChange(error) || (unreadable && view.jumpUnreadable >= Self.unreadableReadsBeforeChange), current() {
+                    view.jumpUnreadable = 0
                     view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere); view.browsingHistory = true
                 } else if !(error is CancellationError), current() {
                     // Tried again in a moment, where the reader is within the row
@@ -208,6 +217,10 @@ extension WorkspaceModel {
     /// Whether a read failed because the history is no longer the one the
     /// window was read from (replaced, edited, or a boundary gone).
     nonisolated static func isSourceChange(_ error: Error) -> Bool {
+        // A journal gone: reading it again cannot help. (One that could not
+        // be read as it was, `unreadableRecord`, may only have grown under
+        // the read: it is tried again a few times first, `jumpUnreadable`.)
+        if case .missingJournal? = error as? StoreError { return true }
         switch error as? HostError {
         case .failure(let message)?: return message.localizedCaseInsensitiveContains("history") || message.contains("changed")
         // The helper's own word for it (`session.history`).
@@ -215,6 +228,7 @@ extension WorkspaceModel {
         case nil: return false
         }
     }
+    nonisolated static let unreadableReadsBeforeChange = 3
     static let selectionHoldsWindow = "The selected text is at the display boundary. Clear the selection to load more history."
 
     /// Whether chat `id`'s transcript is what the reader has in front of them:
