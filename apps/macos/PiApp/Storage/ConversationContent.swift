@@ -21,6 +21,46 @@ enum ConversationContent {
         }
         return count
     }
+    /// The query, lowercased, when it is ASCII alone: what `excludes` can
+    /// decide about.
+    static func asciiNeedle(_ query: String) -> [UInt8]? {
+        var needle: [UInt8] = []
+        for byte in query.utf8 {
+            guard byte < 0x80 else { return nil }
+            needle.append(byte >= 0x41 && byte <= 0x5A ? byte | 0x20 : byte)
+        }
+        return needle.isEmpty ? nil : needle
+    }
+    /// Whether `text` certainly does not contain the ASCII `needle`, case
+    /// insensitively: true only for a text that is ASCII alone and does not
+    /// hold it. Swift's case-insensitive `range(of:)` walks a long text a
+    /// character at a time and was nearly all a search of a long chat cost;
+    /// over ASCII alone the two agree exactly, and any other text is left to
+    /// `range(of:)` (a non-ASCII character can fold to ASCII letters).
+    static func excludes(_ needle: [UInt8], from text: String) -> Bool {
+        var text = text
+        return text.withUTF8 { bytes in
+            let count = bytes.count, length = needle.count
+            for byte in bytes where byte >= 0x80 { return false }
+            guard count >= length else { return true }
+            let first = needle[0]
+            var at = 0
+            while at <= count - length {
+                let byte = bytes[at]
+                if (byte >= 0x41 && byte <= 0x5A ? byte | 0x20 : byte) == first {
+                    var matched = 1
+                    while matched < length {
+                        let next = bytes[at + matched]
+                        guard (next >= 0x41 && next <= 0x5A ? next | 0x20 : next) == needle[matched] else { break }
+                        matched += 1
+                    }
+                    if matched == length { return false }
+                }
+                at += 1
+            }
+            return true
+        }
+    }
     static func text(_ entry: [String: WireValue]) -> String {
         if entry["type"]?.string == "compaction" { return "## Compaction\n\n\(entry["summary"]?.string ?? "")\n\n" }
         let message = entry["message"]?.object ?? [:], content = message["content"]

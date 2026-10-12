@@ -126,7 +126,10 @@ class HistoryEdgeTestCase: XCTestCase {
         func readerScrollsToTop() throws {
             let page = try XCTUnwrap(page), scroll = try XCTUnwrap(scroll)
             page.readerWillNavigate(upward: true)
-            scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: 0))
+            // The top of the rows the page holds: above them is the room kept
+            // for the rows of the chat not read yet (`HistoryExtent`).
+            let top = (scroll.documentView as? TranscriptNativeDocument)?.leadingSpace ?? 0
+            scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: top))
             scroll.reflectScrolledClipView(scroll.contentView)
             NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
             NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
@@ -135,7 +138,7 @@ class HistoryEdgeTestCase: XCTestCase {
         func readerScrollsToBottom() throws {
             let page = try XCTUnwrap(page), scroll = try XCTUnwrap(scroll)
             page.readerWillNavigate(upward: false)
-            let height = scroll.documentView?.frame.height ?? 0
+            let height = (scroll.documentView?.frame.height ?? 0) - ((scroll.documentView as? TranscriptNativeDocument)?.trailingSpace ?? 0)
             scroll.contentView.setBoundsOrigin(NSPoint(x: 0, y: max(0, height - scroll.contentView.bounds.height)))
             scroll.reflectScrolledClipView(scroll.contentView)
             NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: scroll)
@@ -653,32 +656,25 @@ extension HistoryEdgeTests {
         XCTAssertFalse(Self.edges(chat.hosted).contains { $0.edge == "earlier" }, "The failure left with it: \(Self.describe(Self.edges(chat.hosted)))")
     }
 
-    /// A page too short to scroll, that has already filled itself as often as
-    /// it may, cannot ask for the rows before it on its own. Only then does
-    /// the top offer them, quietly, and pressing it reads them.
-    @MainActor func testAShortPageThatHasFilledItselfOffersEarlierRows() async throws {
+    /// A page too short to fill the screen reads the rows before it on its
+    /// own until they do: above its rows is the room kept for the rest of the
+    /// chat (`HistoryExtent`), which the reader is never left looking at, so
+    /// there is nothing to offer them to press.
+    @MainActor func testAShortPageFillsTheScreenWithEarlierRows() async throws {
         let chat = try await PagedChat(turns: 60, questionsOnly: true)
         registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
         defer { chat.close() }
         try await chat.ready()
+        await chat.settle(while: { chat.view.olderPage.loading })
         await chat.settle(30)
+        let scroll = try XCTUnwrap(chat.scroll), document = try XCTUnwrap(scroll.documentView as? TranscriptNativeDocument)
+        let first = try XCTUnwrap(document.retainedRows.first)
         XCTAssertNotNil(chat.view.olderPage.cursor, "Earlier rows remain")
-        XCTAssertLessThanOrEqual(chat.view.presentation.automaticFills, HistoryWindowPolicy.automaticFills)
-        let waiting = try XCTUnwrap(Self.edges(chat.hosted).first { $0.edge == "earlier" && $0.kind == "waiting" },
-                                    "The short page never offered its earlier rows: \(Self.describe(Self.edges(chat.hosted))); fills \(chat.view.presentation.automaticFills), rows \(chat.view.messages.count), waits \(chat.page?.earlierWaitsForReader == true), document \(chat.scroll?.documentView?.frame.height ?? -1) in \(chat.scroll?.contentView.bounds.height ?? -1), state \(chat.view.historyState), loading \(chat.view.olderPage.loading)")
-        XCTAssertEqual(waiting.text, "Load earlier messages")
-        let first = chat.view.messages.first?.id
-        waiting.action?()
-        await chat.settle(while: { chat.view.messages.first?.id == first || chat.view.olderPage.loading })
-        // Long enough for a control that goes to finish fading out.
-        await chat.settle(30)
-        XCTAssertNotEqual(chat.view.messages.first?.id, first, "Pressing it read the earlier rows")
-        // Still too short to scroll, the offer stays for the next page; tall
-        // enough, the reader's scrolling asks for it, and the offer goes.
-        let document = try XCTUnwrap(chat.scroll?.documentView?.frame.height), viewport = try XCTUnwrap(chat.scroll?.contentView.bounds.height)
-        let offered = Self.edges(chat.hosted).contains { $0.edge == "earlier" && $0.kind == "waiting" }
-        XCTAssertEqual(offered, document <= viewport + TranscriptPage.earlierThreshold,
-                       "A \(Int(document)) pt page in a \(Int(viewport)) pt viewport \(offered ? "still offers" : "no longer offers") the earlier rows")
+        XCTAssertGreaterThan(chat.view.messages.count, HistoryWindowPolicy.turns * (1 + HistoryWindowPolicy.automaticFills),
+                             "It read past the fills a short page without room may make")
+        XCTAssertLessThanOrEqual(first.frame.minY, scroll.contentView.bounds.minY + 0.5,
+                                 "Rows cover the top of the screen: the first starts at \(first.frame.minY), the screen at \(scroll.contentView.bounds.minY)")
+        XCTAssertFalse(Self.edges(chat.hosted).contains { $0.edge == "earlier" && $0.kind == "waiting" }, Self.describe(Self.edges(chat.hosted)))
     }
 
     /// An older window opened from a search is browsed on purpose. Its end

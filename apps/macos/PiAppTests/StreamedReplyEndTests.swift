@@ -338,16 +338,18 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         }
         let view = try XCTUnwrap(model.displays[chat.id])
         XCTAssertGreaterThanOrEqual(view.messages.count, 8, "The window is full")
-        // The reader clicks into the first reply's text, as they do to select
-        // and copy some of it: that row holds the cursor.
+        // The reader selects some of the first reply's text, to copy it: that
+        // row holds the selection. (The keyboard alone, a click with nothing
+        // selected, holds nothing: `TranscriptNativeDocument.responderHoldsRow`.)
         let first = try XCTUnwrap(view.messages.first(where: { $0.role == "assistant" }))
         launched.draw()
         let held = try XCTUnwrap(launched.views(NativeMarkdownContainer.self).first { $0.readingIdentity == first.id || $0.textView.string.contains(first.text.prefix(20)) },
                                  "The first reply is drawn")
         launched.window.makeFirstResponder(held.textView)
+        held.textView.setSelectedRange(NSRange(location: 0, length: min(5, (held.textView.string as NSString).length)))
         launched.draw()
         _ = await wait(2) { view.pinnedHistoryIDs.contains(first.id) }
-        XCTAssertTrue(view.pinnedHistoryIDs.contains(first.id), "The row holding the cursor is kept on the page")
+        XCTAssertTrue(view.pinnedHistoryIDs.contains(first.id), "The row holding the selection is kept on the page")
         // A long reply streams in: its turn's two rows need the window's room.
         launched.window.makeFirstResponder(held.textView)
         view.draft = "A large answer, please"
@@ -479,9 +481,10 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(firstRows.count, 6, "The window holds its six newest rows")
         XCTAssertNotNil(view.olderPage.cursor, "The rows that left have an earlier edge")
         XCTAssertFalse(view.browsingHistory, "The chat is on its live tail")
-        // The reader scrolls up to the top; the edge reads the rows back.
+        // The reader scrolls up to the top of the window's rows (above them is
+        // the room kept for the rows not read); the edge reads the rows back.
         launched.draw()
-        readerScrolls(launched, to: -(launched.scroll?.contentInsets.top ?? 0))
+        readerScrolls(launched, to: ((launched.scroll?.documentView as? TranscriptNativeDocument)?.leadingSpace ?? 0) - (launched.scroll?.contentInsets.top ?? 0))
         launched.draw()
         try await Task.sleep(for: .milliseconds(100)); launched.draw()
         let before = placesOnScreen(launched)
@@ -526,7 +529,9 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         // before it, and the reply makes room for them.
         launched.draw()
         for _ in 0..<6 where !view.browsingHistory {
-            readerScrolls(launched, to: -(launched.scroll?.contentInsets.top ?? 0))
+            // The top of the rows the window holds; above them is the room
+            // kept for the rows of the chat not read (`HistoryExtent`).
+            readerScrolls(launched, to: ((launched.scroll?.documentView as? TranscriptNativeDocument)?.leadingSpace ?? 0) - (launched.scroll?.contentInsets.top ?? 0))
             _ = await wait(5) { view.browsingHistory }
             launched.draw()
         }
@@ -540,7 +545,8 @@ final class StreamedReplyEndTests: XCTestCase, SerialTestLane {
         while (view.browsingHistory || !view.messages.contains(where: { $0.id == reply })) && returns < 12 {
             returns += 1
             let last = view.messages.last?.id
-            let bottom = max(0, (launched.scroll?.documentView?.frame.height ?? 0) - (launched.scroll?.contentView.bounds.height ?? 0))
+            let room = (launched.scroll?.documentView as? TranscriptNativeDocument)?.trailingSpace ?? 0
+            let bottom = max(0, (launched.scroll?.documentView?.frame.height ?? 0) - room - (launched.scroll?.contentView.bounds.height ?? 0))
             readerScrolls(launched, to: bottom)
             launched.draw()
             let before = placesOnScreen(launched)

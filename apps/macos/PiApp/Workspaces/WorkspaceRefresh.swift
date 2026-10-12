@@ -330,6 +330,11 @@ extension WorkspaceModel {
                 }
                 if view.before != view.olderPage.cursor?.entry { view.before = view.olderPage.cursor?.entry }
             }
+            // Live rows past the window's start with no page to say where
+            // they stand (a new side, an edit's new branch): where the window
+            // stands is read once, and only then — a chat whose window holds
+            // every row needs no room, and asks the helper for nothing more.
+            if view.historyPositions.total == nil, view.olderPage.cursor != nil { reacquireHistoryPositions(id) }
             if view.historyState == .dormant || view.historyState == .empty { view.historyState = messages.isEmpty ? .empty : .preparing }
         }
     }
@@ -416,10 +421,17 @@ extension WorkspaceModel {
         guard bounded.count < view.messages.count, let first = bounded.first,
               heldRows(view).isSubset(of: Set(bounded.map(\.id))) else { return }
         let accountingChanged = Self.accountingTargetsChanged(from: view.messages, to: bounded)
+        // The rows and their earlier boundary are published together: the
+        // transcript keeps room for the rows let go of only once it knows
+        // there are rows before the window (`HistoryExtent`).
+        view.beginTranscriptBatch(); defer { view.endTranscriptBatch() }
         view.messages = bounded
         let edge = ConversationCursor(incarnation: identity.incarnation, lineage: identity.lineage, entry: first.id)
         if !view.olderPage.loading { view.olderPage = .init(cursor: edge) } else { view.olderPage.cursor = edge }
         if view.before != edge.entry { view.before = edge.entry }
+        // The window now has rows before it: where it stands is read, if no
+        // page has said (a new side), so they keep their room.
+        if view.historyPositions.total == nil { reacquireHistoryPositions(view.id) }
         // A read of the figures for the rows before is not for these.
         if accountingChanged, let workspaceID = record(view.id)?.workspaceID { scheduleAccounting(view.id, workspaceID: workspaceID) }
     }

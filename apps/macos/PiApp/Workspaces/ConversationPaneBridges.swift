@@ -25,6 +25,7 @@ extension NativeTranscriptPane {
             return (model.focusedSessionID ?? model.selectedID) == id
         }
         onViewportReady = { [weak model] in model?.historyViewportReady($0, generation: $1) }
+        onJump = { [weak model] in model?.jumpToHistoryPosition($0, position: $1, offset: $2) }
         var environment = TranscriptRowEnvironment(view: self)
         environment.isEnabled = enabled; environment.forks = canFork; environment.opensFiles = true
         update(session: session, state: state, actions: TranscriptActions(inspect: { model.showMessageDetail(session.id, messageID: $0) },

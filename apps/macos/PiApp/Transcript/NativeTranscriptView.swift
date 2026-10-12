@@ -57,6 +57,8 @@ final class TranscriptSurfaceMarker: NSView {
     /// and the menu acts on a chat at all (the chats page, no sheet).
     var isFocusedConversation: () -> Bool = { false }
     var onViewportReady: (String, UUID) -> Void = { _, _ in }
+    /// The reader is in room kept for rows not read yet (`TranscriptPage.onJump`).
+    var onJump: (String, Int, Double) -> Void = { _, _, _ in }
     private(set) var environment = TranscriptRowEnvironment()
     private(set) var reduceMotion = false
 
@@ -215,7 +217,7 @@ final class TranscriptSurfaceMarker: NSView {
         if boundSession != ObjectIdentifier(session) || boundGeneration != session.presentationGeneration {
             boundSession = ObjectIdentifier(session); boundGeneration = session.presentationGeneration
             page.onAnchorChanged = onAnchorChanged; page.onReadReply = onReadReply; page.onLoadEarlier = onPrefetchEarlier; page.onLoadNewer = onPrefetchNewer
-            page.onViewportReady = onViewportReady
+            page.onViewportReady = onViewportReady; page.onJump = onJump
             page.state = session.state
             page.bind(session)
             // A new page (another chat, or this one read again for Latest)

@@ -103,6 +103,31 @@ struct TranscriptVersionView: Equatable, Sendable {
     }
     @Published var historyProgress: String?
     @Published var olderPage = ConversationPageBoundary()
+    /// Where the window stands in the whole chat, for the room the transcript
+    /// keeps for the rows it has not read (`HistoryExtent`).
+    let historyPositions = HistoryPositions()
+    /// The page read for where the reader dragged or scrolled to, in rows the
+    /// window does not hold (`WorkspaceModel.jumpToHistoryPosition`).
+    var jumpRead: Int?
+    var jumpWanted: (position: Int, offset: Double)?
+    /// The reader went somewhere else (a reveal, Back to bottom, Latest, back
+    /// into the rows the window holds): a page read for where they were
+    /// does not land.
+    func abandonJump() { jumpRead = nil; jumpWanted = nil; jumpRetry = nil; jumpReading = nil; jumpOffset = nil; jumpFailedAt = nil; jumpUnreadable = 0 }
+    /// Where the reader is now within the row being read for.
+    var jumpOffset: Double?
+    /// The position the read under way is for.
+    var jumpReading: Int?
+    /// Position reads in a row that found the journal unreadable as it was.
+    var jumpUnreadable = 0
+    /// The timeline whose positions were last read for want of any
+    /// (`WorkspaceModel.reacquireHistoryPositions`).
+    var positionsReadFor: String?
+    /// A read that failed, to be tried again where the reader still is.
+    var jumpRetry: (position: Int, offset: Double)?
+    /// When such a read last failed: the next waits a moment, then reads
+    /// where the reader is again.
+    var jumpFailedAt: TimeInterval?
     /// The place the transcript was last asked to show (`revealInTranscript`):
     /// the page lands on it and marks its range.
     @Published var reveal: TranscriptReveal?

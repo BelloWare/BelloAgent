@@ -2,13 +2,22 @@ import Foundation
 
 /// What the history-window test seam is handed as `around` for a read of
 /// the chat's first page (`readConversationWindow(start:)`).
-enum HistoryWindowEdge { static let start = "\u{0}start" }
+enum HistoryWindowEdge {
+    static let start = "\u{0}start"
+    /// A read of the page starting at a row of the timeline (`position`).
+    static func position(_ row: Int) -> String { "\u{0}position:\(row)" }
+}
 
 extension WorkspaceModel {
     /// `start`: the chat's first page (Home), read in place of `around`.
+    /// `position`: the page that starts at that row of the timeline shown,
+    /// read in place of `around` (a scroller dragged into rows not read yet).
+    /// `validating`: for a position read, a boundary of the window it lands
+    /// in, which a journal read checks the file against.
     func readConversationWindow(_ item: ChatRecord, cursor: ConversationCursor?, newer: Bool = false,
-                                around: String? = nil, start: Bool = false) async throws -> ConversationHistoryPage {
-        if let historyWindowLoader { return try await historyWindowLoader(item.id, cursor, newer, start ? HistoryWindowEdge.start : around) }
+                                around: String? = nil, start: Bool = false, position: Int? = nil,
+                                validating: ConversationCursor? = nil) async throws -> ConversationHistoryPage {
+        if let historyWindowLoader { return try await historyWindowLoader(item.id, cursor, newer, start ? HistoryWindowEdge.start : position.map(HistoryWindowEdge.position) ?? around) }
         try Task.checkCancellation()
         if opened.contains(item.id), let host = hosts[item.workspaceID] {
             var params: [String: WireValue] = ["version": .number(2), "direction": .string(newer ? "newer" : "older")]
@@ -21,6 +30,14 @@ extension WorkspaceModel {
             }
             if let around { params["around"] = .string(around) }
             if start { params["edge"] = .string("start") }
+            if let position, !start, around == nil {
+                params["position"] = .number(Double(position))
+                // A window read from the journal hands over by a stable entry,
+                // which the helper checks is still in its branch.
+                if cursor == nil, let validating, validating.incarnation.hasPrefix("file:") {
+                    params["entry"] = .string(validating.entry); params["lineage"] = .string(validating.lineage)
+                }
+            }
             let result = try await host.request("session.history", sessionID: item.id, params: params)
             try Task.checkCancellation()
             return try ConversationHistoryPage(result)
@@ -33,8 +50,16 @@ extension WorkspaceModel {
                 guard page.lineage == cursor.lineage else { throw HostError.failure("History branch changed during source handoff. Reload history.") }
                 return try ConversationHistoryPage(page)
             }
+            // A window the helper read hands over to the journal by a stable
+            // entry: still in the journal's branch, on the same lineage.
+            if cursor == nil, position != nil, let validating, !validating.incarnation.hasPrefix("file:") {
+                let held = try await history.read(path: path, around: validating.entry, targetTurns: 1)
+                guard held.lineage == validating.lineage else { throw HostError.failure("History branch changed during source handoff. Reload history.") }
+            }
             let display = displays[item.id], generation = display?.presentationGeneration
-            return try ConversationHistoryPage(await history.window(path: path, cursor: cursor, newer: newer, around: around, start: start, progress: { [weak display] records, bytes, total in
+            return try ConversationHistoryPage(await history.window(path: path, cursor: cursor, newer: newer, around: around, start: start,
+                                                                     position: around == nil && !start ? position : nil,
+                                                                     validating: validating.flatMap { $0.incarnation.hasPrefix("file:") ? $0 : nil }, progress: { [weak display] records, bytes, total in
                 Task { @MainActor [weak display] in
                     guard let display, display.presentationGeneration == generation, display.historyState == .loading else { return }
                     display.historyProgress = "Reading history · \(records.formatted()) records · \(Int(Double(bytes) / Double(max(1, total)) * 100))%"
@@ -56,6 +81,7 @@ extension WorkspaceModel {
         view.historyProgress = nil
         view.presentation.partialTurnInput = page.partialTurnInput
         view.olderPage = .init(cursor: page.older); view.newerPage = .init(cursor: page.newer)
+        view.historyPositions.reset(page)
         view.before = page.older?.entry; view.hostBefore = nil; view.historyRevision = page.revision
         if let around { view.scrollAnchor = .init(id: around, offset: landing, followsBottom: false) }
         else if let anchor = view.scrollAnchor, !anchor.followsBottom, !page.messages.contains(where: { $0.id == anchor.id }) { view.scrollAnchor = nil }
@@ -280,6 +306,7 @@ extension WorkspaceModel {
                     if var old = view.newerPage.cursor { old.incarnation = page.incarnation; old.committedBytes = sourceCursor?.committedBytes; old.fingerprint = sourceCursor?.fingerprint; view.newerPage.cursor = old }
                 }
                 for index in joined.indices { joined[index].accounting = view.messageAccounting[joined[index].id] }
+                view.historyPositions.record(page); view.historyPositions.prune(keeping: joined)
                 if newer {
                     view.newerPage = .init(cursor: page.newer)
                     if trimmedFar, let last = joined.last { var edge = page.newer ?? page.older ?? cursor; edge.entry = last.id; view.newerPage = .init(cursor: edge) }
@@ -322,9 +349,34 @@ extension WorkspaceModel {
         if newer { view.presentation.newerTask = task } else { view.presentation.olderTask = task }
         return await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
+    /// Reads where the window stands again when nothing says (`HistoryPositions.total`
+    /// is unknown: a new side, an edit's new branch), so the room and the
+    /// whole-chat scroller come back without waiting for a page read.
+    func reacquireHistoryPositions(_ id: String) {
+        guard let view = displays[id], let item = record(id), view.historyPositions.total == nil, !view.messages.isEmpty else { return }
+        // Once per timeline: a source that does not say stays unsaid.
+        let lineage = view.presentation.identity?.lineage
+        guard view.positionsReadFor != (lineage ?? "") else { return }
+        view.positionsReadFor = lineage ?? ""
+        Task { [weak self, weak view] in
+            guard let self, let view else { return }
+            guard let page = try? await self.readConversationWindow(item, cursor: nil) else {
+                // Not read (a helper busy, say): asked again by the next update.
+                if view.positionsReadFor == (lineage ?? "") { view.positionsReadFor = nil }
+                return
+            }
+            // The timeline the window shows now (a new side's first snapshot
+            // names it after this was asked).
+            let shown = view.presentation.identity?.lineage
+            guard shown == nil || page.lineage == shown, view.historyPositions.total == nil else { return }
+            view.historyPositions.record(page)
+            // The page works out the room again for the rows it shows.
+            view.presentationChanges.send(view.presentationChanges.value)
+        }
+    }
     func latest(sessionID: String? = nil) {
         if let id = sessionID ?? selectedID, let view = displays[id] {
-            view.abandonReveal()
+            view.abandonReveal(); view.abandonJump()
             view.scrollAnchor = .init(id: "", offset: 0, followsBottom: true)
             anchorChanged(view); reloadHistory(id)
         }
@@ -344,6 +396,7 @@ extension WorkspaceModel {
             // window they are about to follow. It is let go of, rather than
             // the whole conversation being read again behind the cover.
             if view.olderPage.loading { view.presentation.olderTask?.cancel() }
+            view.abandonJump()
             view.scrollAnchor = .init(id: view.messages.last?.id ?? "", offset: 0, followsBottom: true)
             view.viewportRequestOpens = false; view.viewportRequest += 1; anchorChanged(view)
             if refreshing { refresh(id) }
@@ -381,6 +434,8 @@ extension WorkspaceModel {
         // this one. The earlier boundary is re-pointed as the rows land.
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
         view.olderPage = .init(cursor: view.olderPage.cursor); view.newerPage = .init()
+        view.historyPositions.forget()
+        reacquireHistoryPositions(view.id)
         view.pinnedHistoryIDs = []
         // A window that reaches no row held replaces the rows: nothing
         // vouches for what would lie between, and the rows before it are

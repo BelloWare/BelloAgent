@@ -131,6 +131,9 @@ extension NSScrollView {
         // explains where they end up.
         ledger.forgetWrites()
     }
+    /// The reader is in room kept for rows not read: nothing on their screen
+    /// is a row to hold; the page keeps their place in the chat itself.
+    func letGo() { clear(reason: "reader in room") }
     private func clear(reason: String) {
         source = nil; surface = nil; row = nil; lastInvalidation = reason; anchorDocumentTop = nil; anchorSourceTop = nil
         // Explicitly: a row already let go of reads nil, and setting nil again
@@ -349,6 +352,18 @@ extension NSScrollView {
             clip.setBoundsOrigin(bounds.origin); scroll.reflectScrolledClipView(clip)
         }
         writing = false
+    }
+    /// Everything above the reader moved by `delta` (the room kept for rows
+    /// not read changed size): the clip moves with it, and the place the
+    /// anchor expects its line moves too, so a movement of the reader's
+    /// that lands before the next restore does not pay the same move again.
+    func moveWithDocument(by delta: CGFloat) {
+        guard let scroll else { return }
+        let clip = scroll.contentView, before = clip.bounds.minY
+        setOrigin(NSPoint(x: clip.bounds.minX, y: before + delta))
+        let moved = clip.bounds.minY - before
+        if let paid = anchorDocumentTop { anchorDocumentTop = paid + moved }
+        if let paid = anchorSourceTop { anchorSourceTop = paid + moved }
     }
     /// A scroll this pane is about to run as an animation. AppKit delivers
     /// every frame of it, so the whole corridor between the two ends belongs

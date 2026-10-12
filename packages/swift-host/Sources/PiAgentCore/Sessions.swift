@@ -106,6 +106,12 @@ public actor AgentSession {
     /// projection brings them up to date by reading only what was appended.
     var partialToolInputs: [String: String] = [:], partialToolInputSizes: [String: (utf8: Int, bytes: Int)] = [:]
     var partialTextSize = (utf8: 0, bytes: 0), partialThinkingSize = (utf8: 0, bytes: 0)
+    /// The streaming reply as written beside the journal, and the write
+    /// waiting to gather what arrives meanwhile (`PartialReplyLog`).
+    var partialReplyLog: PartialReplyLog?
+    var partialReplyFlush: Task<Void, Never>?
+    /// Set when a cut-off reply could not be journaled: its log is kept aside.
+    var partialReplyUnsaved = false
     /// Advanced whenever the partial is reset, so a reader's copy of one
     /// partial's text is never extended into the next one's.
     var partialGeneration: UInt64 = 0
@@ -310,6 +316,53 @@ public actor AgentSession {
         if replayed.resumed { checkpointLineage=opened.resumedFrom?.lineage; partialHistory=true }
         liveStateSource=replayed.stateSource
         let stateRecord=replayed.stateRecord
+        // A reply the previous runtime was streaming when it died is kept as
+        // the interrupted reply a stop leaves, from the log beside the
+        // journal (`PartialReplyLog`); nothing is sent again. The log goes
+        // once the journal holds the row, or when there is nothing to keep.
+        // Before the interrupted task is pieced together from the rows: the
+        // reply is its last.
+        let streamLog=PartialReplyLog.url(for: url)
+        var unrestored=false
+        if FileManager.default.fileExists(atPath: streamLog.path) {
+            var settled=true
+            // Read whatever the run was saved as: a reply the journal refused
+            // keeps its log here when it could not be set aside, after the run
+            // settled. One the journal holds is found there and left out.
+            // A reply whose turn the shown timeline no longer holds (an edit
+            // hid it) is set aside, never added to another branch.
+            // Whether the turn is on the shown branch is read from the whole
+            // timeline: a chat opened from its metadata file leaves older rows
+            // unloaded, and such a row is not one an edit hid.
+            let found=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size)
+            var onBranch=true
+            if let turn=found?.header.turn {
+                let loaded=visible
+                if !loaded.contains(where: { $0.id == turn }) {
+                    onBranch = replayed.resumed && (try? Self.replay(opened, url: url, id: id, binding: profile.binding, spendTracked: false, resume: false))?
+                        .visible.contains(where: { $0.id == turn }) == true
+                }
+            }
+            if found != nil, !onBranch {
+                settled=false
+            } else if let cut=found {
+                var reply=Self.interruptedReply(id:cut.header.reply,text:cut.text,thinking:cut.thinking,timeline:cut.timeline,
+                                                attemptIDs:cut.timeline.segments.first.map { [$0.part.attemptID] } ?? cut.header.attemptID.map { [$0] })
+                reply.timestamp=cut.at ?? Date().timeIntervalSince1970 * 1000
+                reply.turn=cut.header.turn; reply.taskRootID=cut.header.taskRootID; reply.taskExecutionID=cut.header.taskExecutionID
+                do {
+                    try opened.append(["type":"message","message":reply.pi],id:reply.id)
+                    history.append(reply); context.append(reply); visible.append(reply)
+                    if let span=opened.lastAppend { rowSpans[reply.id] = .init(id:reply.id,kind:.message,offset:span.offset,length:span.length) }
+                    for attempt in reply.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(reply.id) }
+                    assistantMessageCount += 1; latestAssistantMessageID=reply.id
+                    presentationOrdinal=max(presentationOrdinal, Self.maxOrdinal(reply))
+                } catch { settled=false }
+            }
+            if settled { _=unlink(streamLog.path) }
+            // Kept aside, and said: left in place, a later settle or open removes it.
+            else { _=PartialReplyLog.setAside(streamLog); unrestored=true }
+        }
         if let saved=stateRecord {
             if !saved["taskPresentation"].isNull,
                var task = try? JSONDecoder().decode(TaskPresentationRecord.self, from: saved["taskPresentation"].data()),
@@ -352,6 +405,7 @@ public actor AgentSession {
                 runStatus = .failed; errorMessage=saved["errorMessage"].text ?? "Run failed."; errorCode=saved["errorCode"].text
             }
         }
+        if unrestored { errorMessage=(errorMessage.map { $0 + " " } ?? "") + "The reply that was arriving could not be added back to the chat; it is kept beside the chat's file." }
         // Never repeat a tool after a crash. Pair unresolved calls with explicit
         // unknown outcomes so future requests remain protocol-valid.
         let recoveredTools=ToolHistoryIndex(context)

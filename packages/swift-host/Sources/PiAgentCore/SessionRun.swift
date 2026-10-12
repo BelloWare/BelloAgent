@@ -106,10 +106,7 @@ extension AgentSession {
     /// and shown, never sent to the model again. Nil when nothing arrived.
     func interruptedPartial(attemptIDs: [String]?) -> ChatMessage? {
         guard let partialID, !partialText.isEmpty || !partialThinking.isEmpty || !partialTimeline.segments.isEmpty else { return nil }
-        var partial=ChatMessage(role:"assistant",content:[textBlock(partialText),["type":"thinking","thinking":JSON(partialThinking)]])
-        partial.responseTimeline=partialTimeline; partial.responseTimeline?.finish("interrupted")
-        partial.id=partialID; partial.replayEligible=false; partial.stopReason="interrupted"; partial.requestAttemptIDs=attemptIDs
-        return partial
+        return Self.interruptedReply(id:partialID,text:partialText,thinking:partialThinking,timeline:partialTimeline,attemptIDs:attemptIDs)
     }
     func run(compactOnly: Bool) async {
         do {
@@ -231,7 +228,9 @@ extension AgentSession {
                     // The reply keeps its usage in pi's shape: the next count rests on it.
                     assistant.usage=PiContext.usage(reply.usage,api:turnProfile.api)
                     assistant.contextUsageBinding = try reply.message.contextUsageBinding ?? RequestContextCounter.usageBinding(prepared.body,profile:turnProfile)
-                    try append(assistant); cumulativeUsage.observe(reply.usage)
+                    // A reply the journal refuses keeps its log, set aside when the run settles.
+                    do { try append(assistant) } catch { partialReplyUnsaved=true; flushStreamed(as:assistant.id); throw error }
+                    cumulativeUsage.observe(reply.usage)
                     if !outputLimited { overflowRecoveryAttempted=false }
                     event("message_end")
                     await flushRequestLinks()
@@ -278,7 +277,7 @@ extension AgentSession {
                 // Publishing links can suspend below. Once the durable row
                 // exists, its former streaming placeholder must not duplicate
                 // the same row ID in snapshots taken during that suspension.
-                do { try append(partial); partialID=nil } catch { }
+                do { try append(partial); partialID=nil } catch { partialReplyUnsaved=true; flushStreamed() }
             }
             do { try finishPresentedTask(runStatus == .cancelled ? "cancelled" : "failed", detail:errorMessage, code:errorCode) }
             catch { activeTaskPresentation=nil; errorMessage="Task outcome could not be saved. Inspect the retained conversation and tool effects before retrying." }
@@ -289,7 +288,10 @@ extension AgentSession {
         modelActive=false; partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); end=nowMS(); runTask=nil
         retrySubmission = runStatus == .idle ? nil : activeSubmission; activeSubmission=nil
         if let pending=pendingConfiguration { apply(profile:pending.profile, apiKey:pending.apiKey) }
-        do { try persistState(active:false) } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; errorCode=nil; state = .error; runStatus = .failed; queuePaused=true }
+        // A reply the journal refused has its log set aside before the run
+        // is saved as settled: a reopen of a settled run removes the log.
+        if partialReplyUnsaved { removeStreamedLog() }
+        do { try persistState(active:false); removeStreamedLog() } catch { errorMessage="Could not durably save session state. Do not replay tool actions without inspecting their effects."; errorCode=nil; state = .error; runStatus = .failed; queuePaused=true }
         event("agent_settled")
         // submit() may accept another message while the last request links
         // are being flushed above. It sees a runTask and queues instead of

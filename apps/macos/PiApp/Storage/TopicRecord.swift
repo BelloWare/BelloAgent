@@ -34,3 +34,19 @@ struct TopicRecord: Codable, Sendable, Hashable, Identifiable {
         return lhs.id < rhs.id
     }
 }
+
+/// A key with a default may be missing from a row another version wrote:
+/// it reads as that default, as `ChatRecord`'s do. `createdAt` stays
+/// required: it is the topic's fixed identity in its project (`put` refuses
+/// a change), which a default of now would change on every read. Encoding
+/// is the synthesized one.
+extension TopicRecord {
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); workspaceID = try c.decode(String.self, forKey: .workspaceID)
+        title = try c.decode(String.self, forKey: .title)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        expanded = try c.decodeIfPresent(Bool.self, forKey: .expanded) ?? true
+        revision = try c.decodeIfPresent(Int64.self, forKey: .revision) ?? 0
+    }
+}

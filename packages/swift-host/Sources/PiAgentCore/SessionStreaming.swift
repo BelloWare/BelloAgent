@@ -7,7 +7,7 @@ extension AgentSession {
     /// Clears everything the streaming row is built from: its tool cards, the
     /// count of calls it has seen.
     func resetPartialRow() {
-        saveResponseLedger(persist:true,terminal:"interrupted")
+        saveResponseLedger(persist:true,terminal:"interrupted"); dropStreamed()
         partialTimeline = ResponseTimeline(); partialLedgerID = nil
         partialTools=[:]; partialToolOrder=[]; partialToolSeen=[]; partialToolInputs=[:]; partialToolInputSizes=[:]
         partialTextSize=(0,0); partialThinkingSize=(0,0); streamedSegments=[:]
@@ -19,6 +19,7 @@ extension AgentSession {
         switch value {
         case .part(var part):
             presentationOrdinal += 1; part.sessionOrdinal=presentationOrdinal
+            logStreamed(.part(part))
             let previous = partialTimeline.segments.last?.id
             changed = partialTimeline.consume(part)
             // The ledger is journaled when a part begins and, with its
@@ -30,9 +31,11 @@ extension AgentSession {
         case .text(let text):
             partialText += text
             changed = !text.isEmpty
+            if changed { logStreamed(.text(text)) }
         case .thinking(let text):
             partialThinking += text
             changed = !text.isEmpty
+            if changed { logStreamed(.thinking(text)) }
         case .tool(let id,let name,let arguments):
             // The card changes only when a call appears or is named; its
             // arguments grow in place beside it, so a delta costs its own
