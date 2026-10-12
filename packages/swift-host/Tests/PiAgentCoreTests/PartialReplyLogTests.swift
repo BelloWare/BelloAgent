@@ -218,6 +218,33 @@ final class PartialReplyLogTests: XCTestCase {
         await reopened.close()
     }
 
+    /// A reply whose turn the shown timeline no longer holds (an edit hid
+    /// it) is set aside, not added to the branch shown now.
+    func testAReplyOfATurnNoLongerShownIsSetAside() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let client = StallingClient(), session = try chat.session("chat", client: client)
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "a question"), steer: false)
+        try await stream(client)
+        let sessionPath = await session.path
+        try await Task.sleep(nanoseconds: 3 * PartialReplyLog.flushDelayNanoseconds)
+        let copy = try killedCopy(try XCTUnwrap(sessionPath)), directory = copy.deletingLastPathComponent()
+        await session.close()
+        let logURL = PartialReplyLog.url(for: copy)
+        var lines = try String(contentsOf: logURL, encoding: .utf8).components(separatedBy: "\n")
+        var header = try JSONDecoder().decode(PartialReplyLog.Header.self, from: Data(lines[0].utf8))
+        header.turn = "an-edited-away-turn"
+        lines[0] = String(decoding: try JSONEncoder().encode(header), as: UTF8.self)
+        try lines.joined(separator: "\n").write(to: logURL, atomically: true, encoding: .utf8)
+
+        let reopened = try chat.session("chat", client: StallingClient(), resume: copy.path, in: directory)
+        let kept = await replies(reopened)
+        XCTAssertEqual(kept.count, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: logURL.path))
+        let aside = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix(copy.lastPathComponent + ".stream-unrestored-") }
+        XCTAssertEqual(aside.count, 1)
+        await reopened.close()
+    }
+
     func testAReplyTheRunCannotJournalKeepsItsLogAside() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let client = StallingClient()

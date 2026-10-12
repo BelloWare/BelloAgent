@@ -329,7 +329,12 @@ public actor AgentSession {
             // Read whatever the run was saved as: a reply the journal refused
             // keeps its log here when it could not be set aside, after the run
             // settled. One the journal holds is found there and left out.
-            if let cut=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size) {
+            // A reply whose turn the shown timeline no longer holds (an edit
+            // hid it) is set aside, never added to another branch.
+            let found=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size)
+            if let cut=found, !(cut.header.turn.map { turn in visible.contains { $0.id == turn } } ?? true) {
+                settled=false
+            } else if let cut=found {
                 var reply=Self.interruptedReply(id:cut.header.reply,text:cut.text,thinking:cut.thinking,timeline:cut.timeline,
                                                 attemptIDs:cut.timeline.segments.first.map { [$0.part.attemptID] } ?? cut.header.attemptID.map { [$0] })
                 reply.timestamp=cut.at ?? Date().timeIntervalSince1970 * 1000
