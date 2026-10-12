@@ -331,8 +331,19 @@ public actor AgentSession {
             // settled. One the journal holds is found there and left out.
             // A reply whose turn the shown timeline no longer holds (an edit
             // hid it) is set aside, never added to another branch.
+            // Whether the turn is on the shown branch is read from the whole
+            // timeline: a chat opened from its metadata file leaves older rows
+            // unloaded, and such a row is not one an edit hid.
             let found=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size)
-            if let cut=found, !(cut.header.turn.map { turn in visible.contains { $0.id == turn } } ?? true) {
+            var onBranch=true
+            if let turn=found?.header.turn {
+                let loaded=visible
+                if !loaded.contains(where: { $0.id == turn }) {
+                    onBranch = replayed.resumed && (try? Self.replay(opened, url: url, id: id, binding: profile.binding, spendTracked: false, resume: false))?
+                        .visible.contains(where: { $0.id == turn }) == true
+                }
+            }
+            if found != nil, !onBranch {
                 settled=false
             } else if let cut=found {
                 var reply=Self.interruptedReply(id:cut.header.reply,text:cut.text,thinking:cut.thinking,timeline:cut.timeline,
