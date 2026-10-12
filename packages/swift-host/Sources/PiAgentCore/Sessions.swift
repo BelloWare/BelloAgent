@@ -326,7 +326,26 @@ public actor AgentSession {
         var unrestored=false
         if FileManager.default.fileExists(atPath: streamLog.path) {
             var settled=true
-            if stateRecord?["active"].flag == true, let cut=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size) {
+            // Read whatever the run was saved as: a reply the journal refused
+            // keeps its log here when it could not be set aside, after the run
+            // settled. One the journal holds is found there and left out.
+            // A reply whose turn the shown timeline no longer holds (an edit
+            // hid it) is set aside, never added to another branch.
+            // Whether the turn is on the shown branch is read from the whole
+            // timeline: a chat opened from its metadata file leaves older rows
+            // unloaded, and such a row is not one an edit hid.
+            let found=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size)
+            var onBranch=true
+            if let turn=found?.header.turn {
+                let loaded=visible
+                if !loaded.contains(where: { $0.id == turn }) {
+                    onBranch = replayed.resumed && (try? Self.replay(opened, url: url, id: id, binding: profile.binding, spendTracked: false, resume: false))?
+                        .visible.contains(where: { $0.id == turn }) == true
+                }
+            }
+            if found != nil, !onBranch {
+                settled=false
+            } else if let cut=found {
                 var reply=Self.interruptedReply(id:cut.header.reply,text:cut.text,thinking:cut.thinking,timeline:cut.timeline,
                                                 attemptIDs:cut.timeline.segments.first.map { [$0.part.attemptID] } ?? cut.header.attemptID.map { [$0] })
                 reply.timestamp=cut.at ?? Date().timeIntervalSince1970 * 1000

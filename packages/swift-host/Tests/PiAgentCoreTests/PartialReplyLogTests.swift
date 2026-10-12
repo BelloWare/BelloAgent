@@ -188,6 +188,98 @@ final class PartialReplyLogTests: XCTestCase {
 
     /// A cut-off reply the run cannot journal keeps its log, set aside,
     /// when the run settles.
+    /// When the log cannot be moved aside either (its folder will not take
+    /// a rename), it stays where it is, and the next open still restores it.
+    func testALogThatCannotBeSetAsideStaysForTheNextOpen() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let client = StallingClient()
+        let session = try chat.session("chat", client: client, beforeAppend: { record in
+            if record["message"]["role"].text == "assistant" { throw AgentError("session_record_limit", "fixture: the record will not write") }
+        })
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "a question"), steer: false)
+        try await stream(client)
+        let sessionPath = await session.path, streamingID = await session.partialID
+        let path = try XCTUnwrap(sessionPath), journal = URL(fileURLWithPath: path), directory = journal.deletingLastPathComponent()
+        let log = PartialReplyLog.url(for: journal)
+        try await eventually { FileManager.default.fileExists(atPath: log.path) }
+        // Files already open still write; nothing in the folder can be renamed.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
+        await session.stop()
+        try await eventually { !(await session.isRunning) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: log.path), "the only copy of the reply stays")
+        await session.close()
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+
+        let reopened = try chat.session("chat", client: StallingClient(), resume: path)
+        let kept = await replies(reopened)
+        XCTAssertEqual(kept.map(\.id), [try XCTUnwrap(streamingID)]); XCTAssertEqual(kept.first?.text, pieces.joined())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: log.path))
+        await reopened.close()
+    }
+
+    /// A reply whose turn the shown timeline no longer holds (an edit hid
+    /// it) is set aside, not added to the branch shown now.
+    func testAReplyOfATurnNoLongerShownIsSetAside() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let client = StallingClient(), session = try chat.session("chat", client: client)
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "a question"), steer: false)
+        try await stream(client)
+        let sessionPath = await session.path
+        try await Task.sleep(nanoseconds: 3 * PartialReplyLog.flushDelayNanoseconds)
+        let copy = try killedCopy(try XCTUnwrap(sessionPath)), directory = copy.deletingLastPathComponent()
+        await session.close()
+        let logURL = PartialReplyLog.url(for: copy)
+        var lines = try String(contentsOf: logURL, encoding: .utf8).components(separatedBy: "\n")
+        var header = try JSONDecoder().decode(PartialReplyLog.Header.self, from: Data(lines[0].utf8))
+        header.turn = "an-edited-away-turn"
+        lines[0] = String(decoding: try JSONEncoder().encode(header), as: UTF8.self)
+        try lines.joined(separator: "\n").write(to: logURL, atomically: true, encoding: .utf8)
+
+        let reopened = try chat.session("chat", client: StallingClient(), resume: copy.path, in: directory)
+        let kept = await replies(reopened)
+        XCTAssertEqual(kept.count, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: logURL.path))
+        let aside = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasPrefix(copy.lastPathComponent + ".stream-unrestored-") }
+        XCTAssertEqual(aside.count, 1)
+        await reopened.close()
+    }
+
+    /// A turn opened from the metadata file without its rows loaded is
+    /// still on the shown branch: its reply is restored, not set aside.
+    func testAReplyOfATurnNotLoadedIsRestored() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        var policy = CompactionPolicy(); policy.keepRecentTokens = 1
+        let first = try AgentSession(id: "chat", profile: chat.profile, apiKey: "fixture", cwd: chat.root, directory: chat.state, readOnly: false,
+                                     resources: Resources(cwd: chat.root, home: chat.root),
+                                     client: ScriptClient([answer(String(repeating: "one ", count: 400)), answer(String(repeating: "two ", count: 400)), answer("Summary.")]),
+                                     tools: RecordingTools(), traces: TraceStore(), autoCompaction: false, compactionPolicy: policy)
+        for turn in ["u1", "u2"] {
+            _ = try await first.submit(Submission(commandID: turn, turnID: turn, text: "question " + turn), steer: false)
+            try await eventually { !(await first.isRunning) }
+        }
+        try await first.compact(commandID: "compact")
+        try await eventually { !(await first.isRunning) }
+        let sessionPath = await first.path
+        let path = try XCTUnwrap(sessionPath), journal = URL(fileURLWithPath: path)
+        await first.close()
+        // A log over the journal as it is, for a reply of the first turn.
+        let data = try Data(contentsOf: journal)
+        let lineStart = (data.dropLast().lastIndex(of: 10) ?? -1) + 1, last = data[lineStart..<(data.count - 1)]
+        let anchorID = try XCTUnwrap(JSON.parse(Data(last))["id"].text)
+        let header = PartialReplyLog.Header(reply: "kept-reply", after: .init(offset: UInt64(lineStart), length: last.count, id: anchorID), turn: "u1")
+        var log = try JSONEncoder().encode(header); log.append(10)
+        log.append(try (["t": "the kept reply"] as JSON).data()); log.append(10)
+        try log.write(to: PartialReplyLog.url(for: journal))
+
+        let reopened = try chat.session("chat", client: StallingClient(), resume: path)
+        let partial = await reopened.partialHistory
+        XCTAssertTrue(partial, "opened from its metadata file")
+        let kept = await replies(reopened)
+        XCTAssertTrue(kept.contains { $0.id == "kept-reply" && $0.text == "the kept reply" }, "\(kept.map(\.id))")
+        await reopened.close()
+    }
+
     func testAReplyTheRunCannotJournalKeepsItsLogAside() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let client = StallingClient()
