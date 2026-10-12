@@ -241,6 +241,53 @@ final class SidesPanelTests: XCTestCase {
         XCTAssertTrue(model.collapsedSidebarSides.contains("P"), "and the sidebar's fold is still as the reader left it")
     }
 
+    /// The reader folded a chat's side list and started a new side from the
+    /// chat. The side list unfolded again (owner, 2026-10-12): a new side
+    /// opens beside its chat, and the fold stays as the reader left it, on
+    /// screen and on disk.
+    @MainActor func testANewSideLeavesItsChatsFoldedSideListFolded() async throws {
+        let fixture = try await fixture()
+        let model = fixture.model, projectID = "sides-panel-project"
+        let project = try XCTUnwrap(model.workspaces.first { $0.id == projectID })
+        func parentRow() throws -> SidebarGroupRow {
+            let contents = model.sidebarGroupContents(in: project, topicID: nil, archived: false, filter: "", showEmpty: true,
+                                                      sidebarWidth: WindowChrome.sidebarWidth, namesConnection: false)
+            XCTAssertFalse(contents.rows.contains { $0.chat.parentSessionID == "P" }, "No side of the chat is listed while its sides are folded")
+            XCTAssertFalse(contents.rows.contains { $0.state.selected || $0.side?.selected == true }, "and no row stands for the side away under the fold")
+            return try XCTUnwrap(contents.rows.first { $0.chat.id == "P" })
+        }
+        model.setSidebarSideFolded("P", folded: true)
+        try await draw(fixture)
+
+        model.openSide(parentID: "P")
+        let info = try XCTUnwrap(model.sides["P"]); XCTAssertTrue(info.pending)
+        XCTAssertEqual(model.focusedSessionID, info.id, "The new side opens beside its chat with the cursor")
+        try await draw(fixture)
+        XCTAssertTrue(model.collapsedSidebarSides.contains("P"), "Starting a side leaves its chat's side list folded")
+        var row = try parentRow()
+        XCTAssertTrue(row.state.hasSide && !row.state.expanded, "The chat's row keeps its folded chevron")
+        XCTAssertNil(row.side, "and the new side's row stays under the fold")
+
+        // Its first message keeps it: a saved child chat of the folded chat.
+        var kept = try XCTUnwrap(model.chats.first { $0.id == "S1" })
+        kept.id = info.id; kept.title = "New side"
+        model.chats.append(kept)
+        model.sides["P"]?.pending = false; model.sides["P"]?.kept = true
+        try await draw(fixture)
+        XCTAssertTrue(model.collapsedSidebarSides.contains("P"), "Kept, the new side leaves the fold as it was")
+        row = try parentRow()
+        XCTAssertTrue(row.state.hasSide && !row.state.expanded)
+        XCTAssertEqual(model.sidebarEntries(in: projectID, topicID: nil, archived: false, collapsed: []).filter { $0.chat.parentSessionID == "P" }.count, 3,
+                       "Unfolded, the chat lists its new side with the others")
+        XCTAssertEqual(model.projectSidebarStates[projectID]?.collapsedSides, ["P"], "The fold is saved like any other")
+
+        // Opened from anywhere else, such as the menu bar or a search
+        // result, a side still unfolds the list that hides it.
+        await model.selectSide("S1")
+        try await draw(fixture)
+        XCTAssertFalse(model.collapsedSidebarSides.contains("P"), "Opened from elsewhere, the side list unfolds")
+    }
+
     /// The handle carries what the sides other than the one on screen are
     /// doing: the ring of one working, the dot of a new reply or a failure.
     @MainActor func testTheHandleCarriesWhatTheOtherSidesAreDoing() async throws {

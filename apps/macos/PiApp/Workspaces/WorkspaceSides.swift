@@ -84,8 +84,10 @@ extension WorkspaceModel {
     }
     func openSide(parentID: String? = nil, question: String = "") {
         guard !installPreparing, let parentID = parentID ?? selectedID, let parent = record(parentID), !parent.imported else { error = "Continue an imported original as a separate chat before opening a side."; return }
-        // A new side is listed under its chat, which unfolds to show it.
-        quietSidebarReveal = []
+        // A new side opens beside its chat, which is on screen: the sidebar
+        // unfolds nothing for it. A side list the reader folded stays folded,
+        // the new side listed under the fold (owner, 2026-10-12).
+        quietSidebarReveal = sidebarLineage(of: parentID)
         if let refusal = orphanedSideRefusal(parentID) { error = refusal; return }
         guard canOpenSide(parentID) else { error = "Connection-test chats keep tools disabled and cannot open side chats."; return }
         guard side(parentID) == nil else { error = "Close this side panel before opening a side from its saved chat."; return }
@@ -94,15 +96,18 @@ extension WorkspaceModel {
         // that is still being published must finish first.
         if let existing = sides[parentID], existing.pending {
             // The empty side is already waiting for its first message.
+            quietSidebarReveal.insert(existing.id)
             focusedSessionID = existing.id; displays[existing.id]?.composerFocusRequest += 1
             if !question.isEmpty { displays[existing.id]?.draft = question; send(sessionID: existing.id) }
             return
         }
         if let existing = sides[parentID], !existing.kept || existing.keeping {
+            quietSidebarReveal.insert(existing.id)
             focusedSessionID = existing.id
             error = "Wait for the current side to finish opening before starting another."; return
         }
         let id = UUID().uuidString, view = SessionDisplay(id: id)
+        quietSidebarReveal.insert(id)
         view.historyState = .empty; view.selectionMetadataLoaded = true
         var info = SideRecord(id: id, parentID: parentID, workspaceID: parent.workspaceID, profileID: parent.profileID, title: parent.title + SideRecord.titleSuffix, model: parent.model, thinkingLevel: parent.thinkingLevel, contextWindow: parent.contextWindow, maxOutputTokens: parent.maxOutputTokens, modelOutputLimit: parent.modelOutputLimit, outputBudgetVersion: parent.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: parent)
