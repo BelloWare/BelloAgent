@@ -327,4 +327,32 @@ final class HistoryExtentTests: XCTestCase {
         }
         XCTAssertGreaterThan(chat.page?.snapshot?.extent?.before ?? 0, 0)
     }
+
+    /// A journal that can no longer be read the way the window was (cut
+    /// short, or gone) is a changed conversation, offered Reload, not a read
+    /// retried forever behind blank room.
+    func testAJournalThatCannotBeReadAsItWasIsASourceChange() {
+        XCTAssertTrue(WorkspaceModel.isSourceChange(StoreError.unreadableRecord))
+        XCTAssertTrue(WorkspaceModel.isSourceChange(StoreError.missingJournal("/gone.jsonl")))
+        XCTAssertFalse(WorkspaceModel.isSourceChange(CancellationError()))
+    }
+    @MainActor func testAPositionReadOfAJournalThatIsGoneOffersReload() async throws {
+        let chat = try await LongChatScroll(turns: 60)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        try FileManager.default.removeItem(atPath: try XCTUnwrap(chat.chat.path))
+        // The reader drags into room no edge read reaches: its page is read there.
+        let scroll = try XCTUnwrap(chat.scroll), document = try XCTUnwrap(chat.document), clip = scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: 0, y: document.frame.height * 0.3)); scroll.reflectScrolledClipView(clip)
+        do {
+            try await eventually("The reader was never told the chat changed", timeout: .seconds(10)) {
+                chat.draw(); return chat.view.newerPage.error == WorkspaceModel.branchChangedElsewhere
+            }
+        } catch {
+            XCTFail("older \(chat.view.olderPage.error ?? "-"), newer \(chat.view.newerPage.error ?? "-"), read \(String(describing: chat.view.jumpRead)), retry \(String(describing: chat.view.jumpRetry)), failed \(String(describing: chat.view.jumpFailedAt)), pinned \(chat.view.pinnedHistoryIDs)")
+            throw error
+        }
+        XCTAssertNil(chat.view.jumpRetry, "Nothing is retried")
+    }
 }

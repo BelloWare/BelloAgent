@@ -208,6 +208,12 @@ extension WorkspaceModel {
     /// Whether a read failed because the history is no longer the one the
     /// window was read from (replaced, edited, or a boundary gone).
     nonisolated static func isSourceChange(_ error: Error) -> Bool {
+        // A journal cut short since the window was read (its committed bytes
+        // no longer there to check) or gone: reading it again cannot help.
+        switch error as? StoreError {
+        case .unreadableRecord?, .missingJournal?: return true
+        default: break
+        }
         switch error as? HostError {
         case .failure(let message)?: return message.localizedCaseInsensitiveContains("history") || message.contains("changed")
         // The helper's own word for it (`session.history`).
