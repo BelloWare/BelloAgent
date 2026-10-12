@@ -188,6 +188,36 @@ final class PartialReplyLogTests: XCTestCase {
 
     /// A cut-off reply the run cannot journal keeps its log, set aside,
     /// when the run settles.
+    /// When the log cannot be moved aside either (its folder will not take
+    /// a rename), it stays where it is, and the next open still restores it.
+    func testALogThatCannotBeSetAsideStaysForTheNextOpen() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let client = StallingClient()
+        let session = try chat.session("chat", client: client, beforeAppend: { record in
+            if record["message"]["role"].text == "assistant" { throw AgentError("session_record_limit", "fixture: the record will not write") }
+        })
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "a question"), steer: false)
+        try await stream(client)
+        let sessionPath = await session.path, streamingID = await session.partialID
+        let path = try XCTUnwrap(sessionPath), journal = URL(fileURLWithPath: path), directory = journal.deletingLastPathComponent()
+        let log = PartialReplyLog.url(for: journal)
+        try await eventually { FileManager.default.fileExists(atPath: log.path) }
+        // Files already open still write; nothing in the folder can be renamed.
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
+        await session.stop()
+        try await eventually { !(await session.isRunning) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: log.path), "the only copy of the reply stays")
+        await session.close()
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+
+        let reopened = try chat.session("chat", client: StallingClient(), resume: path)
+        let kept = await replies(reopened)
+        XCTAssertEqual(kept.map(\.id), [try XCTUnwrap(streamingID)]); XCTAssertEqual(kept.first?.text, pieces.joined())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: log.path))
+        await reopened.close()
+    }
+
     func testAReplyTheRunCannotJournalKeepsItsLogAside() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let client = StallingClient()

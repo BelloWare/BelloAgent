@@ -326,7 +326,10 @@ public actor AgentSession {
         var unrestored=false
         if FileManager.default.fileExists(atPath: streamLog.path) {
             var settled=true
-            if stateRecord?["active"].flag == true, let cut=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size) {
+            // Read whatever the run was saved as: a reply the journal refused
+            // keeps its log here when it could not be set aside, after the run
+            // settled. One the journal holds is found there and left out.
+            if let cut=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size) {
                 var reply=Self.interruptedReply(id:cut.header.reply,text:cut.text,thinking:cut.thinking,timeline:cut.timeline,
                                                 attemptIDs:cut.timeline.segments.first.map { [$0.part.attemptID] } ?? cut.header.attemptID.map { [$0] })
                 reply.timestamp=cut.at ?? Date().timeIntervalSince1970 * 1000

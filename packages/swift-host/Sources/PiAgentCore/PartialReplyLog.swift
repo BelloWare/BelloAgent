@@ -112,11 +112,14 @@ final class PartialReplyLog {
         if writeAll(fd, data) { writes += 1 } else { stop() }
     }
     /// Closes the file and moves it aside (`setAside`): the journal did not
-    /// take a reply it holds.
-    func keepAside() {
+    /// take a reply it holds. False, with the file left where it is and
+    /// nothing more written to it, when it could not be moved.
+    @discardableResult func keepAside() -> Bool {
         if fd >= 0 { _ = close(fd); fd = -1 }
-        if let path { _ = Self.setAside(URL(fileURLWithPath: path)) }
-        path = nil; reply = nil; discardPending()
+        discardPending()
+        if let path, !Self.setAside(URL(fileURLWithPath: path)) { failed = true; return false }
+        path = nil; reply = nil
+        return true
     }
     /// Closes and removes the file: the run settled and its journal is on disk.
     func remove() {
@@ -256,7 +259,9 @@ extension AgentSession {
     /// Keeps a streamed delta for the reply's log, written a moment later
     /// with whatever else arrives meanwhile.
     func logStreamed(_ entry: PartialReplyLog.Entry) {
-        guard journal != nil, partialID != nil else { return }
+        // Not over a refused reply's log still waiting to be set aside: the
+        // next open reads its last reply.
+        guard journal != nil, partialID != nil, !partialReplyUnsaved else { return }
         let log = partialReplyLog ?? PartialReplyLog(); partialReplyLog = log
         if log.add(entry) { flushStreamed() }
         else if partialReplyFlush == nil {
@@ -290,7 +295,10 @@ extension AgentSession {
     /// needed, unless a reply it holds could not be written there.
     func removeStreamedLog() {
         dropStreamed()
-        if partialReplyUnsaved { partialReplyLog?.keepAside() } else { partialReplyLog?.remove() }
+        // A log that could not be moved aside stays, and so does the mark:
+        // the next open restores its reply, or sets it aside, whatever the
+        // run was saved as.
+        if partialReplyUnsaved { guard partialReplyLog?.keepAside() ?? true else { return } } else { partialReplyLog?.remove() }
         partialReplyLog = nil; partialReplyUnsaved = false
     }
 }
