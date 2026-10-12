@@ -151,12 +151,14 @@ extension WorkspaceModel {
                     view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere); view.browsingHistory = true
                     return
                 }
+                // Read and checked: the journal reads as it was, whether or not
+                // the page is landed (the reader may have gone on meanwhile).
+                view.jumpFailedAt = nil; view.jumpUnreadable = 0
                 page.messages = await self.withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
                 // The reader has gone on to another place: that one is read
                 // next, and this one is not landed on the way.
                 guard current(), view.jumpWanted == nil, view.newerPage.error != Self.branchChangedElsewhere,
                       view.presentation.identity?.lineage == lineage else { return }
-                view.jumpFailedAt = nil; view.jumpUnreadable = 0
                 // Where the reader is now within the row read for.
                 self.adoptInitialHistory(page, into: view, around: first, landing: view.jumpOffset ?? offset)
                 view.browsingHistory = page.newer != nil
@@ -171,6 +173,8 @@ extension WorkspaceModel {
                 // as a changed branch is, with Reload.
                 // A journal that cannot be read as it was, read after read, was
                 // cut short or replaced, not merely appended to meanwhile.
+                // A read the reader has gone on from counts for nothing.
+                guard current() else { return }
                 let unreadable = (error as? StoreError) == .unreadableRecord
                 if unreadable { view.jumpUnreadable += 1 } else { view.jumpUnreadable = 0 }
                 if Self.isSourceChange(error) || (unreadable && view.jumpUnreadable >= Self.unreadableReadsBeforeChange), current() {

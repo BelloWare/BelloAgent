@@ -418,4 +418,66 @@ final class HistoryExtentTests: XCTestCase {
         XCTAssertNil(chat.view.newerPage.error, "Nothing was reported")
         XCTAssertEqual(chat.view.jumpUnreadable, 0)
     }
+
+    /// Position reads held until `open`; `failFirst` makes the first throw
+    /// `unreadableRecord`; reads after `limit` never return.
+    private final class GatedReads: @unchecked Sendable {
+        private let lock = NSLock(); private var count = 0, isOpen = false
+        func next() -> Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
+        var started: Int { lock.lock(); defer { lock.unlock() }; return count }
+        var open: Bool { get { lock.lock(); defer { lock.unlock() }; return isOpen } set { lock.lock(); isOpen = newValue; lock.unlock() } }
+    }
+    @MainActor private func gatedReads(_ chat: LongChatScroll, failFirst: Bool, limit: Int) throws -> GatedReads {
+        let reads = GatedReads(), reader = HistoryReader(), path = try XCTUnwrap(chat.chat.path)
+        let marker = HistoryWindowEdge.position(0).dropLast()
+        chat.model.historyWindowLoader = { _, cursor, newer, around in
+            if let around, around.hasPrefix(marker), let row = Int(around.dropFirst(marker.count)) {
+                let index = reads.next()
+                if index > limit { try await Task.sleep(for: .seconds(60)); throw CancellationError() }
+                while !reads.open { try await Task.sleep(for: .milliseconds(5)) }
+                if failFirst, index == 1 { throw StoreError.unreadableRecord }
+                return try ConversationHistoryPage(await reader.window(path: path, position: row))
+            }
+            if around == HistoryWindowEdge.start { return try ConversationHistoryPage(await reader.window(path: path, start: true)) }
+            return try ConversationHistoryPage(await reader.window(path: path, cursor: cursor, newer: newer, around: around))
+        }
+        return reads
+    }
+
+    /// A read the reader has gone on from that then finds the journal
+    /// unreadable does not count against the reads after it.
+    @MainActor func testAnAbandonedUnreadableReadDoesNotCount() async throws {
+        let chat = try await LongChatScroll(turns: 200)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        let reads = try gatedReads(chat, failFirst: true, limit: 1)
+        try dragIntoRoom(chat)
+        try await eventually("No read was made") { chat.view.jumpRead != nil }
+        chat.view.abandonJump()
+        reads.open = true
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(chat.view.jumpUnreadable, 0, "The abandoned read counted")
+    }
+
+    /// A read that validates resets the count of unreadable reads, even when
+    /// the reader has gone on and it is not landed.
+    @MainActor func testAGoodReadNotLandedStillResetsTheUnreadableCount() async throws {
+        let chat = try await LongChatScroll(turns: 200)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        let reads = try gatedReads(chat, failFirst: false, limit: 1)
+        try dragIntoRoom(chat)
+        try await eventually("No read was made") { chat.view.jumpRead != nil }
+        chat.view.jumpUnreadable = 2
+        // The reader goes on to another place while the page is read: it is
+        // read next, and this one is not landed.
+        let scroll = try XCTUnwrap(chat.scroll), document = try XCTUnwrap(chat.document), clip = scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: 0, y: document.frame.height * 0.6)); scroll.reflectScrolledClipView(clip); chat.draw()
+        XCTAssertNotNil(chat.view.jumpWanted, "The other place waits for the read under way")
+        reads.open = true
+        try await eventually("The read for the other place never started") { reads.started >= 2 }
+        XCTAssertEqual(chat.view.jumpUnreadable, 0, "A good read leaves no unreadable reads counted")
+    }
 }
