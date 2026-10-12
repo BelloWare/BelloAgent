@@ -332,7 +332,10 @@ final class HistoryExtentTests: XCTestCase {
     /// short, or gone) is a changed conversation, offered Reload, not a read
     /// retried forever behind blank room.
     func testAJournalThatCannotBeReadAsItWasIsASourceChange() {
-        XCTAssertTrue(WorkspaceModel.isSourceChange(StoreError.unreadableRecord))
+        // Unreadable as it was may be a journal appended to under the read:
+        // tried again (`unreadableReadsBeforeChange` times) before it counts.
+        XCTAssertFalse(WorkspaceModel.isSourceChange(StoreError.unreadableRecord))
+        XCTAssertGreaterThan(WorkspaceModel.unreadableReadsBeforeChange, 1)
         XCTAssertTrue(WorkspaceModel.isSourceChange(StoreError.missingJournal("/gone.jsonl")))
         XCTAssertFalse(WorkspaceModel.isSourceChange(CancellationError()))
     }
