@@ -141,6 +141,25 @@ enum InspectorExpandBodies {
 final class InspectorExpandInPlaceTests: XCTestCase {
     static let result = InspectorExpandBodies.toolResult(lines: 400)
 
+    @MainActor func testDelayedExpansionKeepsTheItemTheReaderScrolledToAtItsOffset() async throws {
+        let fixture = try await InspectorExpandFixture(body: InspectorExpandBodies.request(items: 100, result: Self.result))
+        defer { fixture.close() }
+        let gate = DispatchSemaphore(value: 0)
+        defer { gate.signal() }
+        fixture.coordinator.wholeText = { _ in { _ = gate.wait(timeout: .now() + 20); return Self.result } }
+        fixture.coordinator.showWhole(.item(3))
+        await fixture.settle()
+        let target = try XCTUnwrap(fixture.node("item:40"))
+        fixture.scroll(to: fixture.outline.rect(ofRow: fixture.outline.row(forItem: target)).minY + 7)
+        let before = fixture.outline.rect(ofRow: fixture.outline.row(forItem: target)).minY - fixture.clip.bounds.minY
+        gate.signal()
+        try await fixture.wait("the delayed text was placed") { fixture.node("item:3:text") != nil }
+        await fixture.settle()
+        let after = fixture.outline.rect(ofRow: fixture.outline.row(forItem: target)).minY - fixture.clip.bounds.minY
+        print("SCROLL-04 delayed expansion displacement: \(after - before) pt")
+        XCTAssertEqual(after, before, accuracy: 1, "An expansion above the viewport keeps the visible item's position")
+    }
+
     @MainActor func testShowAllPutsTheWholeTextWhereThePreviewWasAndShowLessFoldsItBack() async throws {
         let fixture = try await InspectorExpandFixture(body: InspectorExpandBodies.request(result: Self.result))
         defer { fixture.close() }

@@ -83,11 +83,41 @@ final class InspectorRequestModelTests: XCTestCase {
         XCTAssertGreaterThan(request.responseBytes, firstBytes)
 
         finished = true
-        try await wait("the finished record") { request.growingBytes == nil }
+        try await wait("the finished record") { request.metadata["outcome"]?.string == "completed" }
         let settled = metadataReads
         try await Task.sleep(for: .milliseconds(250))
         XCTAssertEqual(metadataReads, settled, "A finished request's metadata is not polled")
         XCTAssertGreaterThan(bodyPages, 0)
+    }
+
+    @MainActor func testCompletedResponseStillOffersTheFinalBytesAfterAPartialRead() async throws {
+        let root = scratchRoot("inspector-final-response"); defer { try? FileManager.default.removeItem(at: root) }
+        let request = model(root)
+        var finished = false
+        request.metadataOverride = { _ in
+            ["outcome": .string(finished ? "completed" : "running"),
+             "response": .object(["state": .string(finished ? "complete" : "partial"),
+                                   "retainedBytes": .number(Double(Self.stream(finished ? 20 : 2, finished: finished).count))])]
+        }
+        request.sourceOverride = { _, kind in
+            kind == "response" ? Self.source({ Self.stream(finished ? 20 : 2, finished: finished) },
+                                             state: { finished ? "complete" : "partial" }) : nil
+        }
+        request.tab = .response
+        request.open(row("final", outcome: "running"), predecessor: nil, previousLabel: nil)
+        request.setActive(true); defer { request.setActive(false) }
+        try await wait("partial response") { request.response.value != nil }
+        XCTAssertEqual(request.response.value?.partial, true)
+        let partialBytes = request.responseBytes
+        finished = true
+        request.open(row("final"), predecessor: nil, previousLabel: nil)
+        try await wait("completed metadata") { request.metadata["outcome"]?.string == "completed" }
+        XCTAssertGreaterThan(request.growingBytes ?? 0, partialBytes, "The completed request must still offer Load latest")
+        XCTAssertEqual(request.responseBytes, partialBytes, "The reader chooses when to replace the response")
+        request.loadLatest()
+        try await wait("final response") { request.response.value?.partial == false }
+        XCTAssertEqual(request.responseBytes, Self.stream(20, finished: true).count)
+        XCTAssertLessThanOrEqual(request.growingBytes ?? 0, request.responseBytes)
     }
 
     /// A partial request parsed before capture finishes must not stay cached.
