@@ -39,7 +39,15 @@ extension AgentSession {
     /// Stop (or a failure) left messages waiting: a new one joins them, after
     /// them, and nothing is sent until Resume.
     var pausedWithPending: Bool { runTask == nil && queuePaused && (!queue.isEmpty || !steering.isEmpty) }
-    public func submit(_ input: Submission, steer: Bool) throws -> JSON {
+    func checkSubmissionStop(_ admittedAt: Int?) throws {
+        guard admittedAt == nil || admittedAt == stopCount else {
+            throw AgentError("submission_stopped", "The chat was stopped while preparing this message. Send it again when ready.")
+        }
+    }
+    public func submit(_ input: Submission, steer: Bool, admittedAt: Int? = nil) throws -> JSON {
+        // The comparison and admission share this actor turn: Stop cannot
+        // slip between the final preflight check and launching the run.
+        try checkSubmissionStop(admittedAt)
         try validate(input,steer:steer)
         let paused = pausedWithPending
         if steer { steering.append(input) } else { queue.append(input) }; commandState(input,"queued")

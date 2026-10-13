@@ -86,6 +86,27 @@ final class CostLimitTests: XCTestCase {
         XCTAssertEqual(state["cost"]["unreportedRequests"].int, unreported, "unreported attempts", file: file, line: line)
     }
 
+    func testClosingCountsTheAdmittedRequestsFinalChargeBeforeDetachingTheJournal() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = CancellationBillingClient()
+        let s = try await session(root, id: "closing", client: client, limit: 1)
+        try await send(s, "First")
+        _ = try await settled(s)
+        try await send(s, "Cancelled while closing")
+        try await eventually { await client.requests == 2 }
+        let path = await s.path
+        await s.close()
+        let reopened = try await session(root, id: "closing", client: ScriptClient([]), limit: 1, resume: path)
+        // Once a journal tracks costs, an archive seed cannot repair an omitted charge.
+        await reopened.adoptSpendSeed(SessionSpend(usd: 1.10, reported: 2))
+        let state = await reopened.snapshot()
+        assertSpend(state, usd: 1.10, reported: 2, unreported: 0)
+        XCTAssertEqual(state["cost"]["reached"].flag, true)
+        do { try await send(reopened, "Must not dispatch"); XCTFail("The closing request exhausted the limit") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "cost_limit") }
+        await reopened.close()
+    }
+
     /// Two tool rounds cost 6 cents against a 5-cent limit: the second
     /// request was sent below the limit and its tool ran, and the third —
     /// the answer — never goes. A follow-up queued behind the run stays queued.
@@ -335,5 +356,27 @@ final class CostLimitTests: XCTestCase {
         XCTAssertEqual(state["errorCode"].text, "cost_limit")
         XCTAssertEqual(state["preflightError"].text, "This chat reached its $2.68 cost limit ($2.68 spent). Raise the limit to continue.")
         await s.close()
+    }
+}
+
+/// The gateway finishes accounting only after the in-flight request is cancelled.
+private actor CancellationBillingClient: ModelClient {
+    private(set) var requests = 0
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        try await complete(profile: profile, apiKey: apiKey, messages: messages, instructions: instructions, tools: tools, sessionID: sessionID, turnID: turnID, purpose: purpose, onObservation: { _ in }, onDelta: onDelta)
+    }
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        requests += 1
+        let cancelling = requests == 2
+        if cancelling {
+            do { while true { try await Task.sleep(nanoseconds: 5_000_000) } }
+            catch { /* The final gateway accounting still arrives. */ }
+        }
+        var observation = RequestObservation(sessionID: sessionID, turnID: turnID, attemptID: UUID().uuidString, purpose: purpose, fingerprint: "fixture", profile: profile)
+        observation.phase = cancelling ? "interrupted" : "final"
+        observation.monitoring = ["outcome": cancelling ? "cancelled" : "completed", "gateway": ["cost": ["status": "reported", "usd": JSON(cancelling ? 0.70 : 0.40)]]]
+        await onObservation(observation)
+        if cancelling { throw CancellationError() }
+        return answer("First completed")
     }
 }

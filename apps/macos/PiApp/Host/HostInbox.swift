@@ -20,7 +20,10 @@ final class HostInbox: @unchecked Sendable {
     init(deliver: @escaping @MainActor @Sendable ([TransportEvent]) -> Void) { self.deliver = deliver }
     func enqueue(_ event: TransportEvent) {
         lock.lock()
-        if case .frame(let frame) = event, frame["type"]?.string == "session.changed", let id = frame["sessionId"]?.string, displays.count < 32 || displays[id] != nil { displays[id] = event }
+        // Loaded chats have no 32-session limit. Keep every chat's latest
+        // invalidation out of the command/reply budget, however many helper
+        // flushes arrive while the main actor is busy.
+        if case .frame(let frame) = event, frame["type"]?.string == "session.changed", let id = frame["sessionId"]?.string { displays[id] = event }
         else if pending.count >= Self.maximumControlFrames {
             pending = [.failed("The host control channel overflowed. Outcome uncertain; no command was replayed.")]; displays.removeAll()
         } else { pending.append(event) }

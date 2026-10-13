@@ -5,6 +5,10 @@ enum TransportEvent: Sendable { case frame([String: WireValue]), exited(Int32), 
 
 // Pipe I/O and parsing remain off the main thread; only Sendable values cross it.
 final class HostTransport: @unchecked Sendable {
+    /// Two 256 KiB submission texts escaped to six JSON bytes per source byte,
+    /// plus the envelope. Match HostProtocol.commandFrameBytes in the helper;
+    /// reply/event frames keep their separate 1 MiB paging bound.
+    static let maximumCommandBytes = 2 * 262_144 * 6 + 1_048_576
     private let queue = DispatchQueue(label: "com.belloware.PiApp.host", qos: .userInitiated)
     private var process: Process?
     private var input: HostPipeWriter?
@@ -55,7 +59,7 @@ final class HostTransport: @unchecked Sendable {
                     // Drain bytes already in the pipes before publishing exit. Reads,
                     // cancellation and descriptor closure share one serial owner.
                     self.output?.finish(); self.errorOutput?.finish()
-                    self.captureEnded(); self.closeHandles(); self.process = nil; self.receive(.exited(status))
+                    self.closeHandles(); self.process = nil; self.captureEnded(status: status)
                 }
             }
             do { try child.run(); process = child }
@@ -76,11 +80,11 @@ final class HostTransport: @unchecked Sendable {
         guard !counted || pendingCommands < 32 else { sendLock.unlock(); receive(.failed("The host command queue is full.")); return }
         if counted { pendingCommands += 1 }; sendLock.unlock()
         queue.async { [self] in
-            guard !stopping else { commandWritten(counted: counted); return }
+            guard !stopping || frame["kind"]?.string == "capture.ack" else { commandWritten(counted: counted); return }
             do {
                 guard let input else { throw WireError.invalid }
                 var bytes = try JSONEncoder().encode(frame)
-                guard bytes.count <= HostFrameDecoder.maximum else { throw WireError.oversized }
+                guard bytes.count <= Self.maximumCommandBytes else { throw WireError.oversized }
                 bytes.append(10)
                 input.append(bytes, counted: counted)
             } catch { commandWritten(counted: counted); receive(.failed("The host connection was interrupted. No command was replayed.")) }
@@ -92,7 +96,12 @@ final class HostTransport: @unchecked Sendable {
     func stop() {
         queue.async { [self] in
             guard !stopping else { return }; stopping = true
-            input?.close(); input = nil
+            if let hostEpoch, let input,
+               var bytes = try? JSONEncoder().encode(["v": WireValue.number(1), "kind": .string("shutdown"), "hostEpoch": .string(hostEpoch)]) {
+                // Stopping ends commands, but leaves stdin open for capture
+                // acknowledgments until the helper drains or its grace expires.
+                bytes.append(10); input.append(bytes, counted: false)
+            } else { input?.close(); input = nil }
             let child = process
             queue.asyncAfter(deadline: .now() + 3.5) { if child?.isRunning == true { child?.terminate() } }
             queue.asyncAfter(deadline: .now() + 5) { if let child, child.isRunning { Darwin.kill(child.processIdentifier, SIGKILL) } }
@@ -127,10 +136,21 @@ final class HostTransport: @unchecked Sendable {
     private func acknowledgeCapture(_ id: String, epoch: WireValue, accepted: Bool) {
         send(["v": .number(1), "kind": .string("capture.ack"), "hostEpoch": epoch, "transferId": .string(id), "accepted": .bool(accepted)])
     }
-    private func captureEnded() {
-        guard let capture, let epoch = hostEpoch else { return }
+    private func captureEnded(status: Int32) {
+        guard let capture, let epoch = hostEpoch else { receive(.exited(status)); return }
+        // Command admission ends now, even if archive work is stalled. The
+        // separate .exited below keeps ownership, clear and shutdown behind
+        // capture finalization; it must not keep a dead helper advertised ready.
+        receive(.failed(status == 0 ? "Runtime stopped" : "Runtime interrupted (\(status)). No request was replayed."))
         let pending = captureTask
-        Task { await pending?.value; try? await capture(["type": .string("interrupted"), "hostEpoch": .string(epoch)]) }
+        Task { [self] in
+            // A received page may still be committing. Settle it and mark any
+            // unfinished writer partial before Quit/update closes the archive.
+            await pending?.value
+            do { try await capture(["type": .string("interrupted"), "hostEpoch": .string(epoch)]) }
+            catch { receive(.failed("The interrupted request capture could not be finalized.")) }
+            receive(.exited(status))
+        }
     }
     private func closeHandles() {
         input?.close(); output?.close(); errorOutput?.close()
