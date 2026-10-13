@@ -29,7 +29,20 @@ extension AgentSession {
     /// ones included). The snapshot says so, and the app offers Resume.
     var canContinue: Bool {
         guard runTask == nil, !closed, queueEdit == nil, !titleTask, !isConnectionTest, let tail = continuationTail else { return false }
-        return tail.role == "user" || tail.role == "toolResult"
+        return Self.continues(from: tail)
+    }
+    /// A context ending in a user message, tool results, or a compaction
+    /// summary (a compaction that summarized the whole tail, before the
+    /// request it made room for) has a run to go on with.
+    static func continues(from tail: ChatMessage) -> Bool {
+        tail.role == "user" || tail.role == "toolResult" || (tail.role == "system" && tail.kind == "compaction")
+    }
+    /// The turn a continuation belongs to: the newest user message's, or —
+    /// when a compaction summarized it and kept its replies — the turn those
+    /// replies carry; else the newest shown user message's.
+    var continuedTurn: String? {
+        let newest = context.last { $0.role == "user" || ($0.role != "system" && $0.turn?.isEmpty == false) }
+        return newest.flatMap { $0.role == "user" ? $0.id : $0.turn } ?? visible.last { $0.role == "user" }?.id
     }
 
     /// `run.continue`. `overrides` are the chat's current choices (model,
@@ -63,7 +76,7 @@ extension AgentSession {
             do { try resumeQueue() } catch { commands.removeAll { $0["turnId"].text == receiptKey }; throw error }
             return ["accepted": true, "continued": false, "resumedQueue": true]
         }
-        guard tail.role == "user" || tail.role == "toolResult" else {
+        guard Self.continues(from: tail) else {
             throw AgentError(AgentErrorCode.nothingToContinue, "There is nothing to resume; send a new message instead")
         }
         var submission = Submission(commandID: commandID, turnID: receiptKey, text: "")
@@ -73,7 +86,7 @@ extension AgentSession {
         _ = try profile.overriding(submission)
         // The continuation's rows belong to the turn they continue.
         let previous = (turn: currentTurnID, paused: queuePaused, message: errorMessage, code: errorCode)
-        if let turn = context.last(where: { $0.role == "user" })?.id { currentTurnID = turn }
+        if let turn = continuedTurn { currentTurnID = turn }
         activeSubmission = submission; continuing = true; queuePaused = false; errorMessage = nil; errorCode = nil
         commandState(submission, "queued")
         // Saved as a run under way, with its receipt: a helper that dies

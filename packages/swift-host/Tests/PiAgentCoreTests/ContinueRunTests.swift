@@ -309,6 +309,40 @@ final class ContinueRunTests: XCTestCase {
         await session.close()
     }
 
+    /// A compaction that summarized the whole tail leaves only its summary
+    /// in the context, and one that split a turn keeps its replies without
+    /// their user message: Resume goes on from either, in the turn the kept
+    /// replies carry.
+    func testResumeGoesOnAfterACompactionThatSummarizedTheTail() async throws {
+        let chat = try chat()
+        var summary = ChatMessage(role: "system", content: [textBlock(CompactionCheckpoint.replayPrefix + "Earlier work, summarized.")]); summary.kind = "compaction"
+        let onlySummary = ContinueClient([.reply(answer("Picked up from the summary"))])
+        let compacted = try AgentSession(id: "seed-a", profile: chat.profile, apiKey: "fixture", cwd: chat.root, directory: chat.state, readOnly: false,
+                                         resources: Resources(cwd: chat.root, home: chat.root), client: onlySummary, tools: RecordingTools(), traces: TraceStore(),
+                                         seed: [summary], autoCompaction: false)
+        let first = await compacted.snapshot()
+        XCTAssertEqual(first["continuable"].flag, true)
+        _ = try await compacted.continueRun(commandID: "resume-a")
+        try await eventually { !(await compacted.isRunning) }
+        let answered = await onlySummary.count
+        XCTAssertEqual(answered, 1)
+        await compacted.close()
+
+        var call = toolReply(["first"]).message; call.turn = "t0"
+        var result = ChatMessage(role: "toolResult", content: [textBlock("Tool interrupted.")]); result.toolCallId = "call-0"; result.toolName = "first"; result.isError = true; result.turn = "t0"
+        let split = ContinueClient([.reply(answer("Done"))])
+        let session = try AgentSession(id: "seed-b", profile: chat.profile, apiKey: "fixture", cwd: chat.root, directory: chat.state, readOnly: false,
+                                       resources: Resources(cwd: chat.root, home: chat.root), client: split, tools: RecordingTools(), traces: TraceStore(),
+                                       seed: [summary, call, result], autoCompaction: false)
+        _ = try await session.continueRun(commandID: "resume-b")
+        try await eventually { !(await session.isRunning) }
+        let turns = await split.turns
+        XCTAssertEqual(turns, ["t0"], "the continuation keeps the turn its kept replies carry")
+        let reply = await session.history.last
+        XCTAssertEqual(reply?.turn, "t0")
+        await session.close()
+    }
+
     /// At the chat's cost limit, Resume stops at once with the cost-limit
     /// notice the app draws, before any model request.
     func testResumeAtTheCostLimitStopsWithTheCostLimitNotice() async throws {
