@@ -107,6 +107,44 @@ final class TranscriptNativeRowBehaviourTests: XCTestCase {
         XCTAssertTrue(refused.subviews.compactMap { $0 as? TranscriptPillButton }.isEmpty, "a refused send is retyped, not retried")
     }
 
+    /// A skill that changed since it was chosen is a notice, not an error: a
+    /// message back in the composer offers nothing (Send is the way on), and
+    /// a paused queued message offers the run's Resume, which sends it.
+    @MainActor func testAChangedSkillIsANoticeAndAQueuedOneOffersResume() throws {
+        var resumed = 0, retried = 0
+        var actions = TranscriptActions(); actions.resume = { resumed += 1 }; actions.retry = { retried += 1 }
+        func notice(_ id: String, code: String) -> TranscriptItem {
+            var message = TranscriptMessage(id: id, role: "system", text: "\u{201C}review\u{201D} changed since you chose it. Press Send to use the updated version.")
+            message.kind = "failure"; message.failureCode = code
+            return .message(message)
+        }
+        let (sent, sentWindow) = mounted(notice("failure:send:1", code: SessionDisplay.skillRefreshedCode), actions: actions)
+        defer { sentWindow.contentView = nil }
+        let composer = try XCTUnwrap(sent.subviews.first as? TranscriptNativeFailureRow)
+        XCTAssertTrue(composer.subviews.compactMap { $0 as? TranscriptPillButton }.isEmpty, "Send is the confirmation; the notice offers nothing")
+        XCTAssertEqual(composer.accessibilityIdentifier(), "skill-changed-notice")
+        XCTAssertEqual(composer.accessibilityLabel(), "Skill changed: \u{201C}review\u{201D} changed since you chose it. Press Send to use the updated version.")
+        XCTAssertTrue(composer.subviews.compactMap { $0 as? TranscriptPlainTextView }.contains { $0.string == "Skill changed since you chose it" })
+
+        let (run, runWindow) = mounted(notice("failure:run:2", code: SessionDisplay.skillUpdatedCode), actions: actions)
+        defer { runWindow.contentView = nil }
+        let queued = try XCTUnwrap(run.subviews.first as? TranscriptNativeFailureRow)
+        let pills = queued.subviews.compactMap { $0 as? TranscriptPillButton }
+        XCTAssertEqual(pills.map(\.title), ["Resume"], "a paused queued message is sent by Resume, not retried")
+        let resume = try XCTUnwrap(pills.first)
+        XCTAssertEqual(resume.accessibilityIdentifier(), "skill-changed-resume")
+        XCTAssertGreaterThan(resume.frame.width, 40, "the pill was laid out")
+        XCTAssertTrue(resume.accessibilityPerformPress())
+        XCTAssertEqual(resumed, 1); XCTAssertEqual(retried, 0)
+
+        // While that Resume is on its way, the notice stays, with no button.
+        let (held, heldWindow) = mounted(notice("failure:run:3", code: SessionDisplay.skillResumingCode), actions: actions)
+        defer { heldWindow.contentView = nil }
+        let waiting = try XCTUnwrap(held.subviews.first as? TranscriptNativeFailureRow)
+        XCTAssertEqual(waiting.accessibilityIdentifier(), "skill-changed-notice")
+        XCTAssertTrue(waiting.subviews.compactMap { $0 as? TranscriptPillButton }.isEmpty)
+    }
+
     /// A run stopped before it finished is the accent "Paused" card with
     /// Resume (0.1.125); a run a restart cut off keeps its red card and
     /// offers Resume instead of Retry. Both press the pane's resume.

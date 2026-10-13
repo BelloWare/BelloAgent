@@ -247,6 +247,16 @@ struct TranscriptVersionView: Equatable, Sendable {
             let paused = queuePaused && !queue.isEmpty
             var row = TranscriptMessage(id: "failure:run:" + id, role: "system", text: failureMessage, kind: "failure",
                                         detail: paused ? "Queued follow-ups are paused. Resume when you’re ready." : nil)
+            if failureCode == Self.skillUpdatedCode {
+                // The queued message's skill was pinned to its current
+                // version: the notice says so and offers the run's Resume,
+                // which sends it (going on first with a run it stopped). The
+                // helper (and a journal read) report this code only while
+                // that message waits, so it is not checked against the queue
+                // shown here, which can trail the snapshot by a moment. Its
+                // button goes while a Resume is on its way.
+                row.failureCode = resuming ? Self.skillResumingCode : Self.skillUpdatedCode; row.detail = nil
+            }
             if failureCode == Self.costLimitCode {
                 // The run stopped at the chat's cost limit: the notice offers to
                 // raise it, and once it is above the spend, to continue.
@@ -263,23 +273,26 @@ struct TranscriptVersionView: Equatable, Sendable {
                 row.failureCode = resuming ? Self.resumingCode : Self.interruptedCode; row.detail = Self.resumeDetail(paused)
             }
             rows.append(row)
-        } else {
-            if showsPausedRun {
-                // Stopped, or paused by a quit or an update: one row says so
-                // where the run stopped, with Resume.
-                var row = TranscriptMessage(id: "paused:run:" + id, role: "system", text: Self.pausedText, kind: "failure",
-                                            detail: Self.resumeDetail(queuePaused && !queue.isEmpty))
-                row.failureCode = resuming ? Self.pausedResumingCode : Self.pausedCode
-                rows.append(row)
+        } else if showsPausedRun {
+            // Stopped, or paused by a quit or an update: one row says so
+            // where the run stopped, with Resume.
+            var row = TranscriptMessage(id: "paused:run:" + id, role: "system", text: Self.pausedText, kind: "failure",
+                                        detail: Self.resumeDetail(queuePaused && !queue.isEmpty))
+            row.failureCode = resuming ? Self.pausedResumingCode : Self.pausedCode
+            rows.append(row)
+        }
+        // A skill refreshed after a refused send shows even below a run
+        // failure, so the Send that confirms it never goes unexplained.
+        if let sendFailure, failureMessage == nil || sendFailureCode == Self.skillRefreshedCode {
+            var row = TranscriptMessage(id: "failure:send:" + id, role: "system", text: sendFailure, kind: "failure")
+            if sendFailureCode == Self.costLimitCode {
+                row.failureCode = Self.costLimitCode
+                row.detail = "Your message is back in the composer. Raise the limit, then send it again."
             }
-            if let sendFailure {
-                var row = TranscriptMessage(id: "failure:send:" + id, role: "system", text: sendFailure, kind: "failure")
-                if sendFailureCode == Self.costLimitCode {
-                    row.failureCode = Self.costLimitCode
-                    row.detail = "Your message is back in the composer. Raise the limit, then send it again."
-                }
-                rows.append(row)
-            }
+            // A skill that changed since it was chosen: its chip holds the
+            // current version now, and the next Send uses it.
+            if sendFailureCode == Self.skillRefreshedCode { row.failureCode = Self.skillRefreshedCode }
+            rows.append(row)
         }
         return rows
     }
@@ -293,6 +306,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     nonisolated static let pausedResumingCode = "run_paused_resuming", resumingCode = "run_interrupted_resuming"
     nonisolated static let pausedText = "The run stopped before it finished. Resume picks up from here; a tool call that was cut off is not run again, and the model sees how it ended."
     nonisolated static func resumeDetail(_ queued: Bool) -> String? { queued ? "Queued follow-ups go on after it." : nil }
+    /// A refused message's skills, read again and re-pinned in the composer
+    /// (`refreshRefusedSkills`); and a paused queued message's, re-pinned by
+    /// the helper (`skill_updated`), which the run's Resume sends; and that notice while its Resume is on its way.
+    nonisolated static let skillRefreshedCode = "skill_refreshed", skillUpdatedCode = "skill_updated", skillResumingCode = "skill_updated_resuming"
     /// Whether the chat's reported spend is still at its limit, as the stop
     /// notice last read it: it offers Raise limit… until it is not.
     private(set) var costLimitHeld = true
@@ -358,6 +375,11 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var sendFailure: String? { didSet { if sendFailure == nil { sendFailureCode = nil }; if sendFailure != oldValue { publishTranscript() } } }
     /// The helper's code for the refusal shown; `cost_limit` draws the cost-limit notice.
     var sendFailureCode: String? { didSet { if sendFailureCode != oldValue { publishTranscript() } } }
+    /// The pins (`WorkspaceModel.skillPin`) this composer's chips were given
+    /// after a refused send, by skill id, so a chip refused again once
+    /// re-pinned reads as a skill that keeps changing. Cleared once the
+    /// helper takes a message.
+    var skillRepins: [String: String] = [:]
     func observeRetry(_ snapshot: [String: WireValue]) {
         let retry = snapshot["retry"]?.object
         retryAttempt = nil; retryLimit = nil
@@ -474,12 +496,16 @@ struct TranscriptVersionView: Equatable, Sendable {
         }
         messages = rows
     }
-    func observeRetainedFailure(_ message: String?) {
+    func observeRetainedFailure(_ message: String?, code: String? = nil) {
         guard !busy, !loading else { return }
         if let message {
+            // The code goes first, so the notice is drawn once, with its
+            // action. A source that names no code (a helper's page) leaves
+            // the code already known for the same failure.
+            if failureCode != code, code != nil || failureMessage != message { failureCode = code }
             runState = .error; runStatus = "failed"; failureMessage = message
         } else if runState == .error {
-            runState = .idle; runStatus = "idle"; failureMessage = nil
+            runState = .idle; runStatus = "idle"; failureMessage = nil; failureCode = nil
         }
     }
     /// What a running compaction is doing, for the run line under the

@@ -24,6 +24,8 @@ struct ConversationHistoryPage: Sendable {
     var assistantCount: Int?
     var latestAssistantID: String?
     var failure: String?
+    /// The failure's code, from a journal (`HistoryPage.failureCode`).
+    var failureCode: String?
     var taskRecords: [TaskPresentationRecord] = []
     /// Read from the journal, not from a helper that has the chat open: only
     /// then is the journal's retained run what the chat's state is.
@@ -72,7 +74,7 @@ struct ConversationHistoryPage: Sendable {
         messages = page.messages; older = page.older; newer = page.newer
         self.incarnation = incarnation; self.lineage = lineage; partialTurnInput = page.partialTurnInput
         notice = page.limitNotice; revision = page.revision; assistantCount = page.assistantMessageCount
-        latestAssistantID = page.latestAssistantMessageID; failure = page.failureMessage
+        latestAssistantID = page.latestAssistantMessageID; failure = page.failureMessage; failureCode = page.failureCode
         taskRecords = page.taskRecords
         fromJournal = true; retainedRun = page.retainedRun
         if let start = page.start, page.total >= start + messages.count { self.start = start; total = page.total }

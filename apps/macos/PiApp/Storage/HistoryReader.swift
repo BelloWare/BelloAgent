@@ -17,6 +17,9 @@ struct HistoryPage: Sendable {
     var assistantMessageCount: Int? = nil
     var latestAssistantMessageID: String? = nil
     var failureMessage: String? = nil
+    /// The helper's code for that failure (`cost_limit`, `skill_updated`),
+    /// so its notice keeps its action after a relaunch.
+    var failureCode: String? = nil
     var revision: HistoryRevision? = nil
     var incarnation: String? = nil
     var lineage: String? = nil
@@ -106,10 +109,25 @@ actor HistoryReader {
         struct PendingWork: Decodable {
             var active: Bool?; var queue: [PendingItem]?; var steering: [PendingItem]?
             var runStatus: String?; var errorMessage: String?; var queuePaused: Bool?
+            var errorCode: String?; var skillUpdatedTurnId: String?
+            /// The failure's code, as the helper reports it: a skill-update
+            /// stop's only while its re-pinned message waits.
+            var failureCode: String? {
+                guard failure != nil else { return nil }
+                return errorCode == SessionDisplay.skillUpdatedCode && !skillUpdateWaiting ? nil : errorCode
+            }
+            /// A skill-update stop whose re-pinned message still waits.
+            var skillUpdateWaiting: Bool {
+                errorCode == SessionDisplay.skillUpdatedCode && ((queue ?? []) + (steering ?? [])).contains { $0.turnID != nil && $0.turnID == skillUpdatedTurnId }
+            }
             var exists: Bool { active == true || !(queue ?? []).isEmpty || !(steering ?? []).isEmpty }
             var failure: String? {
                 guard active != true, runStatus == "failed" else { return nil }
                 let detail = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                // As the helper says it: once the re-pinned message is gone, the run's failure.
+                if errorCode == SessionDisplay.skillUpdatedCode, !skillUpdateWaiting {
+                    return "The run stopped for a queued message whose skill had changed, and that message is no longer waiting. Retry request finishes the stopped turn."
+                }
                 return detail.isEmpty ? "Run failed." : detail
             }
             /// Stopped by the reader (or a quit) with nothing queued: the run
@@ -201,12 +219,14 @@ actor HistoryReader {
         /// hidden by an edit, are not in it.
         var partial = false
         /// Edited messages' versions, numbered from the branch records as the helper numbers them.
-        var versions = MessageVersionLedger() }
+        var versions = MessageVersionLedger()
+        var failureCode: String? = nil }
     /// What indexing a journal found besides where each row is: what a page
     /// says about the chat, from the index kept between reads or built now.
     private struct JournalFacts {
         var branch: HistoryOffsetIndex
         var notice: String? = nil, assistantCount = 0, latestAssistantID: String? = nil, failureMessage: String? = nil
+        var failureCode: String? = nil
         var taskRecords: [TaskPresentationRecord] = [], retainedRun: RetainedRun? = nil, incompleteTail = false
         var versions = MessageVersionLedger(), olderRows = 0
     }
@@ -542,7 +562,7 @@ actor HistoryReader {
                                        targetTurns: targetTurns, progress: progress, whole: true)
         }
         let branch = journal.branch, notice = journal.notice, olderRows = journal.olderRows, versions = journal.versions
-        let assistantCount = journal.assistantCount, latestAssistantID = journal.latestAssistantID, failureMessage = journal.failureMessage
+        let assistantCount = journal.assistantCount, latestAssistantID = journal.latestAssistantID, failureMessage = journal.failureMessage, failureCode = journal.failureCode
         let taskRecords = journal.taskRecords, retainedRun = journal.retainedRun, incompleteTail = journal.incompleteTail
         recency.removeAll { $0 == path }; recency.append(path)
         while recency.count > Self.retainedIndexes { indexes.removeValue(forKey: recency.removeFirst()) }
@@ -578,7 +598,7 @@ actor HistoryReader {
                                                     branch: branch, versions: versions, retainedRun: retainedRun)
         return HistoryPage(messages: messages, before: start > 0 && start < branch.count ? try branch.at(start).id : nil, total: olderRows + branch.count, start: olderRows + start, notice: notice,
                            assistantMessageCount: notice == nil ? assistantCount : nil, latestAssistantMessageID: notice == nil ? latestAssistantID : nil,
-                           failureMessage: notice == nil ? failureMessage : nil,
+                           failureMessage: notice == nil ? failureMessage : nil, failureCode: notice == nil ? failureCode : nil,
                            revision: notice == nil ? HistoryRevision(path: path, stamp: revision(identity)) : nil,
                            incarnation: incarnation, lineage: lineage,
                            older: (start > 0 || olderRows > 0) && !messages.isEmpty ? pageCursor(try branch.at(start).id) : nil,
@@ -599,7 +619,7 @@ actor HistoryReader {
         if let cached = indexes[path], cached.stamp == identity {
             return JournalFacts(branch: cached.branch,
                                 notice: targetTurns != nil && cached.sessionID == nil ? "History has no valid session header. Its source was left untouched." : nil,
-                                assistantCount: cached.assistantCount, latestAssistantID: cached.latestAssistantID, failureMessage: cached.failureMessage,
+                                assistantCount: cached.assistantCount, latestAssistantID: cached.latestAssistantID, failureMessage: cached.failureMessage, failureCode: cached.failureCode,
                                 taskRecords: cached.taskRecords, retainedRun: cached.retainedRun, versions: cached.versions, olderRows: cached.olderRows)
         }
         return try buildIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
@@ -611,7 +631,7 @@ actor HistoryReader {
     private func buildIndex(path: String, file: FileHandle, identity: Stamp, size: UInt64, before: String?, around: String?, after: String?,
                             targetTurns: Int?, progress: Progress?, wholeJournal: Bool) throws -> JournalFacts {
         var branch = try HistoryOffsetIndex(directory: indexDirectory)
-        var notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?
+        var notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?, failureCode: String?
         var taskRecords: [TaskPresentationRecord] = [], retainedRun: RetainedRun?, incompleteTail = false
         var versions = MessageVersionLedger(), olderRows = 0
         indexes.removeValue(forKey: path)
@@ -622,7 +642,7 @@ actor HistoryReader {
         let resumable = wholeJournal ? nil : JournalCheckpoint.read(for: URL(fileURLWithPath: path))
         build: for resume in (resumable.map { [$0, nil] } ?? [nil]) as [JournalCheckpoint?] {
         if resume == nil, resumable != nil {
-            branch = try HistoryOffsetIndex(directory: indexDirectory); notice = nil; assistantCount = 0; latestAssistantID = nil; failureMessage = nil
+            branch = try HistoryOffsetIndex(directory: indexDirectory); notice = nil; assistantCount = 0; latestAssistantID = nil; failureMessage = nil; failureCode = nil
             taskRecords = []; retainedRun = nil; incompleteTail = false; versions = MessageVersionLedger(); olderRows = 0
         }
         var pending = Data(), offset: UInt64 = 0, leaf: String?
@@ -801,13 +821,15 @@ actor HistoryReader {
         let activeCalls = Set(contextIDs.flatMap { contextMessages[$0]?.calls ?? [] })
         let activeResults = Set(contextIDs.compactMap { contextMessages[$0]?.result })
         retainedRun = lastWork?.retained(unanswered: activeCalls.subtracting(activeResults))
+        failureCode = failureMessage == nil ? nil : lastWork?.failureCode
         if resume != nil, try Self.reachesPast(branch, before: before, around: around, after: after) { continue build }
         if notice == nil { indexes[path] = Index(stamp: identity, branch: branch, assistantCount: assistantCount, latestAssistantID: latestAssistantID,
-                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords, retainedRun: retainedRun, olderRows: olderRows, partial: resume != nil, versions: versions) }
+                                               sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords, retainedRun: retainedRun, olderRows: olderRows, partial: resume != nil, versions: versions,
+                                               failureCode: failureCode) }
         break build
         }
         return JournalFacts(branch: branch, notice: notice, assistantCount: assistantCount, latestAssistantID: latestAssistantID,
-                            failureMessage: failureMessage, taskRecords: taskRecords, retainedRun: retainedRun, incompleteTail: incompleteTail,
+                            failureMessage: failureMessage, failureCode: failureCode, taskRecords: taskRecords, retainedRun: retainedRun, incompleteTail: incompleteTail,
                             versions: versions, olderRows: olderRows)
     }
     /// A page's rows decoded from the journal in the order they are read,
