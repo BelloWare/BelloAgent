@@ -5,6 +5,97 @@ import XCTest
 @testable import GitView
 
 final class GitRepositorySwitchTests: GitPanelTestCase, SerialTestLane {
+    @MainActor func testADraftTypedDuringASwitchSurvivesAnotherFolderInThatRepository() async throws {
+        let first = try changedRepository("draft-first"), second = try changedRepository("draft-second")
+        let folder = second.appendingPathComponent("folder")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let controller = try await read(first, second)
+        controller.commitMessage = "old repository draft"
+        GitController.statusReadDelay = .milliseconds(500)
+        controller.root = second.path
+        try await eventually("resolve B while its status is held") { controller.repositoryIdentity?.root == second.path && controller.loading }
+        controller.commitMessage = "new repository draft"
+        controller.root = folder.path
+        try await eventually("publish B's other folder") { controller.repositoryRoot == second.path && !controller.loading }
+        XCTAssertEqual(controller.commitMessage, "new repository draft")
+        await controller.refresh()
+        XCTAssertEqual(controller.commitMessage, "new repository draft", "an ordinary refresh retains the draft")
+        controller.root = first.path
+        try await eventually("return to A") { controller.repositoryRoot == first.path && !controller.loading }
+        XCTAssertEqual(controller.commitMessage, "", "B's draft cannot become A's draft")
+    }
+
+    @MainActor func testRetypingTheSameMessageDuringASwitchIsStillANewDraft() async throws {
+        let first = try changedRepository("retyped-first"), second = try changedRepository("retyped-second")
+        let controller = try await read(first, second)
+        controller.commitMessage = "same words"
+        GitController.statusReadDelay = .milliseconds(500)
+        controller.root = second.path
+        try await eventually("resolve the new repository") { controller.repositoryIdentity?.root == second.path && controller.loading }
+        controller.commitMessage = ""; controller.commitMessage = "same words"
+        try await eventually("publish the new status") { controller.repositoryRoot == second.path && !controller.loading }
+        XCTAssertEqual(controller.commitMessage, "same words", "text equality does not identify the draft's owner")
+    }
+
+    @MainActor func testAmendDuringASwitchNeverPrefillsThePreviousRepository() async throws {
+        let first = try changedRepository("amend-first"), second = try changedRepository("amend-second")
+        try git(["commit", "--allow-empty", "-qm", "ONLY IN A"], in: first)
+        let controller = try await read(first, second)
+        var messages: [String] = []
+        let watch = controller.$commitMessage.sink { messages.append($0) }
+        defer { watch.cancel() }
+        GitController.statusReadDelay = .milliseconds(500)
+        controller.root = second.path
+        controller.amend = true
+        try await eventually("finish the switch") { controller.repositoryRoot == second.path && !controller.loading }
+        XCTAssertFalse(messages.contains { $0.contains("ONLY IN A") }, "even a transient prefill must belong to the selected folder")
+        XCTAssertEqual(controller.commitMessage, "")
+        controller.amend = true
+        try await eventually("prefill the resolved repository") { !controller.commitMessage.isEmpty }
+        XCTAssertEqual(controller.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines), "Initial")
+    }
+
+    @MainActor func testAnAmendPrefillAlreadyReadingCannotFollowASelectionOrAnEdit() async throws {
+        for switchFolder in [true, false] {
+            let first = try changedRepository("prefill-first"), second = try changedRepository("prefill-second")
+            let controller = try await read(first, second)
+            var held: CheckedContinuation<Void, Never>?
+            controller.headMessageDidRead = { await withCheckedContinuation { held = $0 } }
+            defer { held?.resume(); controller.headMessageDidRead = nil }
+            controller.amend = true
+            try await eventually("hold A's prefill") { held != nil }
+            if switchFolder {
+                GitController.statusReadDelay = .milliseconds(500)
+                controller.root = second.path
+            } else {
+                controller.commitMessage = "typed"; controller.commitMessage = ""
+            }
+            held?.resume(); held = nil
+            // The prefill resumes ahead of this delayed status read.
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(controller.commitMessage, "", "a completed read cannot outlive its folder selection or edit generation")
+        }
+    }
+
+    @MainActor func testADraftInAnUnresolvedFolderIsBoundBeforeTheNextFolderPublishes() async throws {
+        let first = try changedRepository("unresolved-first"), second = try changedRepository("unresolved-second")
+        let folder = second.appendingPathComponent("folder")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let controller = try await read(first, second)
+        controller.root = second.path
+        controller.commitMessage = "typed before even resolving B"
+        controller.root = folder.path
+        try await eventually("resolve the second folder") { controller.repositoryRoot == second.path && !controller.loading }
+        XCTAssertEqual(controller.commitMessage, "typed before even resolving B")
+        // Returning before B can publish must also retire B's new draft.
+        controller.root = first.path
+        controller.commitMessage = "belongs to A"
+        controller.root = second.path
+        let before = controller.refreshesFinished
+        try await eventually("resolve B again") { controller.refreshesFinished > before && !controller.loading }
+        XCTAssertEqual(controller.commitMessage, "")
+    }
+
     private func changedRepository(_ name: String) throws -> URL {
         let root = try repository(name)
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }

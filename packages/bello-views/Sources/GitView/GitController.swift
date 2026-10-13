@@ -85,7 +85,7 @@ import AppKit
     @Published public var root: String? {
         didSet {
             guard root != oldValue else { return }
-            messageBeforeSwitch = commitMessage
+            folderGeneration += 1
             rememberInterruptedCommitRead()
             identifiedFolder = nil
             repositoryGeneration += 1
@@ -143,8 +143,20 @@ import AppKit
     @Published public private(set) var detailDiff: [GitDiffFile] = []
     /// A big commit keeps its patch off screen until it is asked for.
     @Published public private(set) var detailDiffDeferred = false
-    @Published public var commitMessage = ""
-    private var messageBeforeSwitch = ""
+    @Published public var commitMessage = "" {
+        didSet {
+            guard commitMessage != oldValue else { return }
+            messageGeneration += 1
+            messageOwner = root == identifiedFolder ? .repository(repositoryIdentity?.root) : .folder(root)
+        }
+    }
+    /// Typing belongs to the selected folder, even while its status is on
+    /// the way. Resolve that folder before discarding a draft on a switch;
+    /// a second selection must not reclassify it as the previous draft.
+    private enum DraftOwner { case repository(String?), folder(String?) }
+    private var messageOwner: DraftOwner?
+    private var messageGeneration = 0
+    private var folderGeneration = 0
     @Published public private(set) var lastCommit: String?
     /// Files ticked for the next commit (IntelliJ's changelist checkboxes).
     /// Everything is ticked the first time a repository is read; after that the
@@ -159,7 +171,14 @@ import AppKit
     /// the reader and never switched by the checked set: unticking every file
     /// is not consent to commit the index.
     @Published public var commitScope: GitCommitScope = .checkedFiles
-    @Published public var amend = false { didSet { if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { Task { await prefillHeadMessage() } } } }
+    @Published public var amend = false {
+        didSet {
+            if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let folder = folderGeneration, edit = messageGeneration
+                Task { await prefillHeadMessage(folder: folder, edit: edit) }
+            }
+        }
+    }
     @Published public private(set) var branches: [String] = []
     @Published public private(set) var stashes: [GitStashEntry] = []
     @Published public var logFilter = GitLogFilter() { didSet { if logFilter != oldValue { startHistoryReload() } } }
@@ -468,6 +487,7 @@ import AppKit
     nonisolated(unsafe) static var statusReadDelay: Duration = .zero
     /// Holds a completed status snapshot in tests while the working tree changes.
     var statusDidRead: (@MainActor () async throws -> Void)?
+    var headMessageDidRead: (@MainActor () async -> Void)?
     /// The automatic refresh under way, and whether the tree changed during it.
     private var automaticRefresh: UUID?
     private var automaticChangePending = false
@@ -504,6 +524,7 @@ import AppKit
         identifyRepository(top, folder: root)
         guard current(generation), !closed, !suspended else { return }
         guard let top else {
+            guard await resolveDraftOwner(top: nil, folder: root, generation: generation) else { return }
             guard publishRepository(nil, status: GitRepositoryStatus(), generation: generation) else { return }
             updateWatch(on: nil)
             publish(\.diff, []); publish(\.commits, [])
@@ -522,6 +543,7 @@ import AppKit
             let status = try await service.status(in: top)
             try await statusDidRead?()
             guard current(generation) else { return }
+            guard await resolveDraftOwner(top: top, folder: root, generation: generation) else { return }
             let previousSelection = selection
             guard publishRepository(top, status: status, generation: generation) else { return }
             let paths = Set(status.entries.map(\.path))
@@ -567,9 +589,26 @@ import AppKit
     /// read, or failed to read because it was stopped, it keeps to itself.
     private func current(_ generation: Int) -> Bool { !Task.isCancelled && self.generation == generation }
 
+    private func resolveDraftOwner(top: String?, folder: String, generation: Int) async -> Bool {
+        while case .folder(let owner) = messageOwner {
+            let edit = messageGeneration
+            let resolved: String?
+            if owner == folder { resolved = top }
+            else if let owner { resolved = await service.repositoryRoot(of: owner) }
+            else { resolved = nil }
+            guard current(generation), !closed, !suspended else { return false }
+            // The reader may have typed while the earlier folder resolved.
+            guard edit == messageGeneration else { continue }
+            messageOwner = .repository(resolved)
+        }
+        return current(generation) && !closed && !suspended
+    }
+
     private func publishRepository(_ root: String?, status: GitRepositoryStatus, generation: Int) -> Bool {
         guard current(generation), !closed, !suspended else { return false }
         guard !repository.read || repositoryRoot != root || self.status != status || (root != nil && repository.context?.generation != repositoryGeneration) else { return true }
+        if repository.read, case .repository(let owner) = messageOwner, owner != root { commitMessage = "" }
+        guard current(generation), !closed, !suspended else { return false }
         if repositoryRoot != root {
             commitReadInterrupted = nil
             selection = nil; clearHistorySelection()
@@ -577,9 +616,6 @@ import AppKit
             commitCache = [:]; commitCacheOrder = []; historyExhausted = false
             checkedByReader = false; applyChecked([])
             if repository.read {
-                // The editor stays live while status loads. Refresh retries
-                // must not turn newer typing into the old repository's draft.
-                if current(generation), commitMessage == messageBeforeSwitch { commitMessage = "" }
                 amend = false; lastCommit = nil
             }
         }
@@ -637,10 +673,17 @@ import AppKit
         await task.value
     }
 
-    private func prefillHeadMessage() async {
-        guard let root = repositoryRoot, let message = try? await service.headMessage(in: root) else { return }
-        // Only into the same repository's still-empty field, still amending.
-        if amend, repositoryRoot == root, !closed, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { commitMessage = message }
+    private func prefillHeadMessage(folder: Int, edit: Int) async {
+        guard folder == folderGeneration, edit == messageGeneration,
+              root == identifiedFolder, sameRepository(repositoryContext),
+              let root = repositoryRoot, repositoryIdentity?.root == root,
+              let message = try? await service.headMessage(in: root) else { return }
+        await headMessageDidRead?()
+        // A return to the same path, or typing then erasing, still retires
+        // this prefill. An ordinary status refresh does not.
+        if amend, folder == folderGeneration, edit == messageGeneration,
+           repositoryRoot == root, !closed, !suspended,
+           commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { commitMessage = message }
     }
 
     /// Runs one write. A second write asked for while one runs is refused, not
