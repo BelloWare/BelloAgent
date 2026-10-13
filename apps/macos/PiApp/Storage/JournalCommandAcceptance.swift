@@ -12,6 +12,7 @@ extension HistoryReader {
         catch let error as CocoaError where missingIsEmpty && (error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile) { return [] }
         defer { try? file.close() }
         var accepted: Set<String> = [], pending = Data()
+        acceptanceScannedBytes = 0
         let commands = Set(intents.map(\.id)), turns = Dictionary(intents.map { ($0.turnID, $0.id) }, uniquingKeysWith: { first, _ in first })
         func read(_ line: Data) throws {
             let row = try JSONDecoder().decode(AcceptanceRecord.self, from: line)
@@ -25,13 +26,20 @@ extension HistoryReader {
             }
         }
         while let bytes = try file.read(upToCount: 65_536), !bytes.isEmpty {
-            pending.append(bytes)
-            while let newline = pending.firstIndex(of: 10) {
-                let line = Data(pending[..<newline]); pending.removeSubrange(...newline)
-                guard line.count <= 33_554_432 else { throw StoreError.unreadableRecord }
-                if !line.isEmpty { try read(line) }
+            try Task.checkCancellation()
+            // Search only the new chunk. An image-bearing row can span
+            // hundreds of reads; searching its accumulated prefix is quadratic.
+            var start = bytes.startIndex
+            while let newline = bytes[start...].firstIndex(of: 10) {
+                acceptanceScannedBytes += newline - start + 1
+                pending.append(bytes[start..<newline]); start = newline + 1
+                guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }
+                if !pending.isEmpty { try read(pending) }
+                pending.removeAll(keepingCapacity: true)
                 if accepted == commands { return accepted }
             }
+            acceptanceScannedBytes += bytes.endIndex - start
+            pending.append(bytes[start...])
             // The same read-safety limit as HistoryReader's page scanner.
             // Nothing is truncated or offered for recovery on a read failure.
             guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }

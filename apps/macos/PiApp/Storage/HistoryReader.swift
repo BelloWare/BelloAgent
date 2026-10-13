@@ -248,6 +248,7 @@ actor HistoryReader {
     /// one page used to cost a full decode of its record, and `message()` a
     /// full decode of every record in the file before it.
     private(set) var decodedRecords = 0
+    var acceptanceScannedBytes = 0
     private(set) var indexedRecordCount = 0
     private(set) var indexedBytes: UInt64 = 0
     /// Journals whose offset index is currently retained.

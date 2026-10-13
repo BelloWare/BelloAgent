@@ -258,6 +258,7 @@ extension WorkspaceModel {
         guard view.editingMessageID == nil, view.queueEditingID == nil else { return }
         // Set aside first: the draft saved for the chat stays the one typed.
         view.draftBeforeQueueEdit = view.savedDraft
+        view.submissionReviews = []
         view.draftBeforeQueueEdit?.queuedEdit = nil; view.unreconciledQueuedEdit = nil
         view.queueEditOriginal = original
         view.queueEditingID = turnID; view.queueEditID = editID; view.queueEditKeepsInput = keepsInput; view.queueEditResolving = false

@@ -167,6 +167,28 @@ final class RecoveredDraftTests: XCTestCase {
             XCTAssertEqual(draft?.text, "Current draft", evidence)
         }
     }
+    @MainActor func testAcceptanceDuringRecoveryCommitKeepsADurableReviewGate() async throws {
+        let (model, view, store, original) = try await fixture()
+        var intent = original; intent.draftReviewTracked = true
+        try await store.put(intent, kind: "pending:chat", id: intent.id); view.recovered = [intent]
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(model.root.appendingPathComponent("desktop.sqlite").path, &database), SQLITE_OK)
+        let db = try XCTUnwrap(database)
+        defer { sqlite3_exec(db, "ROLLBACK", nil, nil, nil); sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        model.recoverDraft(intent, insert: true)
+        try await eventually("recovery candidate frozen") { view.recoveringDraft }
+        view.acceptedCommands.insert(intent.id); view.recovered = []; view.uncertain = false
+        XCTAssertEqual(sqlite3_exec(db, "ROLLBACK", nil, nil, nil), SQLITE_OK)
+        await model.draftWrites.recoveries[view.id]?.value
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: view.id)
+        XCTAssertEqual(saved?.submissionReviews, [intent.id], "The gate commits before the intent is removed")
+        XCTAssertEqual(view.submissionReviews, [intent.id])
+        model.chats = [ChatRecord(id: view.id, workspaceID: "w", title: "Fixture", profileID: "p")]
+        var asked = 0; model.questions.answer = { _ in asked += 1; return false }
+        model.send(sessionID: view.id); XCTAssertEqual(asked, 1)
+        try await eventually("send settled") { !view.loading }
+    }
 
     static func sql(_ sql: String, root: URL) throws {
         var db: OpaquePointer?

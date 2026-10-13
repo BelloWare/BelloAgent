@@ -25,9 +25,47 @@ extension WorkspaceModel {
     func recoverableIntents(_ intents: [CommandIntent], for item: ChatRecord, view: SessionDisplay) async throws -> [CommandIntent] {
         let unchecked = intents.filter { $0.state == "intent" && !view.acceptedCommands.contains($0.id) }
         let path = item.path ?? root.appendingPathComponent("Workspaces/\(item.workspaceID)/Sessions/\(item.id).jsonl").path
-        let accepted = try await history.acceptedCommands(in: path, intents: unchecked, missingIsEmpty: item.path == nil)
+        let accepted: Set<String>
+        if let commandAcceptanceRead { accepted = try await commandAcceptanceRead(path, unchecked, item.path == nil) }
+        else { accepted = try await history.acceptedCommands(in: path, intents: unchecked, missingIsEmpty: item.path == nil) }
         view.acceptedCommands.formUnion(accepted)
+        try await protectReturnedDrafts(intents, view: view)
         return unchecked.filter { !view.acceptedCommands.contains($0.id) }
+    }
+    func protectReturnedDrafts(_ intents: [CommandIntent], view: SessionDisplay) async throws {
+        let commands = Set(intents.filter { $0.draftReviewTracked != true && !$0.turnID.hasPrefix("compaction:") &&
+            (view.acceptedCommands.contains($0.id) || $0.state == "acknowledged") && !view.reconciledSubmissionReviews.contains($0.id) }.map(\.id))
+        guard !commands.isEmpty else { return }
+        // Legacy records do not identify which characters came back after a
+        // lost reply. Preserve all typing, but require review before resending.
+        if view.hasSubmittableInput { view.submissionReviews.formUnion(commands) }
+        view.draftBeforeEdit?.requireSubmissionReview(commands)
+        view.draftBeforeQueueEdit?.requireSubmissionReview(commands)
+        // The marker-only write can overtake a typing revision reserved while
+        // we await the old debounce. Reissue the latest live draft afterward.
+        defer { if view.selectionMetadataLoaded, !isShutDown, displays[view.id] === view { draftChanged(view) } }
+        let previous = draftWrites.tasks[view.id]; previous?.cancel(); await previous?.value
+        if !isEphemeral(view.id) {
+            guard let store else { throw StoreError.unavailable }
+            try await store.preserveSubmissionReviews(sessionID: view.id, commands: commands)
+        }
+        // Only a successful marker write allows a terminal receipt to remove
+        // the last evidence that the returned draft may already have run.
+        view.reconciledSubmissionReviews.formUnion(commands)
+    }
+    func reviewReturnedSubmission(_ view: SessionDisplay, retry: @escaping @MainActor () -> Void) -> Bool {
+        guard !view.submissionReviews.isEmpty else { return false }
+        let saved = view.savedDraft
+        let question = ChatQuestion(title: "This draft may include a message already sent",
+                                    detail: "A previous submission was returned to the composer. Review this draft and the transcript before sending: a new command may repeat file or tool effects.",
+                                    action: "I Reviewed It — Send New Command")
+        if !questions.ask(question, about: view.id, answered: { [weak self, weak view] reviewed in
+            guard let self, let view, self.displays[view.id] === view, reviewed else { return }
+            guard view.savedDraft == saved else { view.notice = "The draft changed while review was open. Review it again before sending."; return }
+            view.submissionReviews.removeAll(); view.uncertain = false
+            self.draftChanged(view); retry()
+        }) { view.notice = PiQuestion.busyNotice }
+        return true
     }
     func draftChanged(_ view: SessionDisplay) {
         guard draftWrites.recoveries[view.id] == nil else { return }
@@ -118,7 +156,9 @@ extension WorkspaceModel {
         guard !view.loading, view.editingMessageID == nil, view.queueEditingID == nil, !view.editPreparing, view.queueEditBeginning == nil, view.unreconciledQueuedEdit == nil else {
             view.notice = "Finish sending, or save or cancel the message you are editing before recovering this submission."; return
         }
-        let recovered = DraftRecord(id: view.id, text: intent.text, attachments: intent.attachments, skills: intent.skills)
+        // Insert is not permission to repeat effects. Acceptance can arrive
+        // during or after this transaction, after its intent is already gone.
+        let recovered = DraftRecord(id: view.id, text: intent.text, attachments: intent.attachments, skills: intent.skills, submissionReviews: [intent.id])
         func mergedDraft() -> DraftRecord {
             var merged = view.savedDraft.merging(recovered)
             // Side-transfer merging trims separators; recovered prompts must
@@ -148,6 +188,7 @@ extension WorkspaceModel {
                 try await store.withdrawSubmission(sessionID: view.id, commandID: intent.id, draft: merged)
                 if let merged {
                     view.draft = merged.text; view.attachments = merged.attachments ?? []; view.skills = merged.skills ?? []; view.directCommand = false
+                    view.submissionReviews = merged.submissionReviews ?? []
                 }
                 pendingIntentsChanged(view.id)
                 view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false }

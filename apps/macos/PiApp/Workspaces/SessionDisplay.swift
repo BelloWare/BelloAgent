@@ -647,6 +647,8 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// an image makes a message; a draft of none of them is empty. Whether
     /// the model takes images is checked where the message goes out.
     var hasSubmittableInput: Bool { draft.contains { !$0.isWhitespace } || !skills.isEmpty || !attachments.isEmpty }
+    var submissionReviews: Set<String> = []
+    var reconciledSubmissionReviews: Set<String> = []
     var savedDraft: DraftRecord {
         if queueEditingID != nil, var saved = draftBeforeQueueEdit {
             if let editID = queueEditID, let turnID = queueEditingID {
@@ -657,19 +659,20 @@ struct TranscriptVersionView: Equatable, Sendable {
             return saved
         }
         if let unreconciledQueuedEdit {
-            var saved = DraftRecord(id: id, text: draft, attachments: attachments, skills: skills); saved.queuedEdit = unreconciledQueuedEdit
+            var saved = DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, submissionReviews: submissionReviews.isEmpty ? nil : submissionReviews); saved.queuedEdit = unreconciledQueuedEdit
             return saved
         }
-        let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired) }
-        return DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, edit: edit)
+        let edit = editingMessageID.map { MessageEditDraft(messageID: $0, originalText: draftBeforeEdit?.text ?? "", originalAttachments: draftBeforeEdit?.attachments, originalSkills: draftBeforeEdit?.skills, sourceTimeline: editSourceTimeline, sourceTextDigest: editSourceTextDigest, inputReviewRequired: editInputReviewRequired, originalSubmissionReviews: draftBeforeEdit?.submissionReviews) }
+        return DraftRecord(id: id, text: draft, attachments: attachments, skills: skills, edit: edit, submissionReviews: submissionReviews.isEmpty ? nil : submissionReviews)
     }
     func restoreDraft(_ saved: DraftRecord) {
         draft = saved.text; attachments = saved.attachments ?? []; skills = saved.skills ?? []; directCommand = false
+        submissionReviews = saved.submissionReviews ?? []
         editingMessageID = saved.edit?.messageID
         editSourceTimeline = saved.edit?.sourceTimeline; editSourceTextDigest = saved.edit?.sourceTextDigest
         editInputReviewRequired = saved.edit?.inputReviewRequired ?? false
         editGeneration = UUID(); editPreparing = false; editSubmitting = false; editNotice = ""; editMissingAttachments = []
-        draftBeforeEdit = saved.edit.map { DraftRecord(id: id, text: $0.originalText, attachments: $0.originalAttachments, skills: $0.originalSkills) }
+        draftBeforeEdit = saved.edit.map { DraftRecord(id: id, text: $0.originalText, attachments: $0.originalAttachments, skills: $0.originalSkills, submissionReviews: $0.originalSubmissionReviews) }
     }
     var displayObservedAt: Double?
     var projectionRevision: String?

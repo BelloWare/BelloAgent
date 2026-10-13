@@ -256,7 +256,7 @@ extension WorkspaceModel {
             guard let store else { throw StoreError.unavailable }
             let moving = Self.unsentDraft(of: side, to: info.parentID)
             // Each part goes back to its own place if the move fails.
-            let composerBefore = DraftRecord(id: side.id, text: side.draft, attachments: side.attachments, skills: side.skills)
+            let composerBefore = DraftRecord(id: side.id, text: side.draft, attachments: side.attachments, skills: side.skills, submissionReviews: side.submissionReviews.isEmpty ? nil : side.submissionReviews)
             let parkedBefore = side.queueEditingID != nil ? side.draftBeforeQueueEdit : nil
             Self.consumeUnsentDraft(of: side)
             let (done, finish) = AsyncStream<Never>.makeStream(), token = UUID()
@@ -276,8 +276,8 @@ extension WorkspaceModel {
                 if let parent = displays[info.parentID], parent.selectionMetadataLoaded, !Self.parked(in: parent).holds(merged.displaced) { absorb(moving, into: parent) }
             } catch {
                 // Back where each part was, with what was added meanwhile after it.
-                let composer = composerBefore.merging(DraftRecord(id: side.id, text: side.draft, attachments: side.attachments, skills: side.skills))
-                side.draft = composer.text; side.attachments = composer.attachments ?? []; side.skills = composer.skills ?? []
+                let composer = composerBefore.merging(DraftRecord(id: side.id, text: side.draft, attachments: side.attachments, skills: side.skills, submissionReviews: side.submissionReviews.isEmpty ? nil : side.submissionReviews))
+                side.draft = composer.text; side.attachments = composer.attachments ?? []; side.skills = composer.skills ?? []; side.submissionReviews = composer.submissionReviews ?? []
                 if let parkedBefore, side.queueEditingID != nil {
                     side.draftBeforeQueueEdit = parkedBefore.merging(side.draftBeforeQueueEdit ?? DraftRecord(id: side.id, text: ""))
                 }
@@ -289,7 +289,7 @@ extension WorkspaceModel {
     private static func parked(in parent: SessionDisplay) -> DraftRecord {
         if parent.queueEditingID != nil, let before = parent.draftBeforeQueueEdit { return before }
         if parent.editingMessageID != nil, let before = parent.draftBeforeEdit { return before }
-        return DraftRecord(id: parent.id, text: parent.draft, attachments: parent.attachments, skills: parent.skills)
+        return DraftRecord(id: parent.id, text: parent.draft, attachments: parent.attachments, skills: parent.skills, submissionReviews: parent.submissionReviews.isEmpty ? nil : parent.submissionReviews)
     }
     /// `moveSideDraft` without suspending: true when there is nothing (left)
     /// to move or the parent's loaded draft took it; false when only its
@@ -307,7 +307,7 @@ extension WorkspaceModel {
     /// Empties what `unsentDraft` took: the composer and, while a queued
     /// message was being rewritten, the draft set aside for it.
     static func consumeUnsentDraft(of side: SessionDisplay) {
-        side.draft = ""; side.attachments = []; side.skills = []
+        side.draft = ""; side.attachments = []; side.skills = []; side.submissionReviews = []
         if side.queueEditingID != nil, let before = side.draftBeforeQueueEdit { side.draftBeforeQueueEdit = DraftRecord(id: before.id, text: "") }
     }
     /// `moving` added to the draft `parent` saves: the one a queued or an
@@ -318,18 +318,18 @@ extension WorkspaceModel {
         else if parent.editingMessageID != nil, let before = parent.draftBeforeEdit { parent.draftBeforeEdit = before.merging(moving) }
         else {
             let merged = Self.parked(in: parent).merging(moving)
-            parent.draft = merged.text; parent.attachments = merged.attachments ?? []; parent.skills = merged.skills ?? []
+            parent.draft = merged.text; parent.attachments = merged.attachments ?? []; parent.skills = merged.skills ?? []; parent.submissionReviews = merged.submissionReviews ?? []
             parent.directCommand = false
         }
         draftChanged(parent)
     }
     static func unsentDraft(of side: SessionDisplay, to parentID: String) -> DraftRecord {
-        let composer = DraftRecord(id: parentID, text: side.draft.trimmingCharacters(in: .whitespacesAndNewlines), attachments: side.attachments, skills: side.skills)
+        let composer = DraftRecord(id: parentID, text: side.draft.trimmingCharacters(in: .whitespacesAndNewlines), attachments: side.attachments, skills: side.skills, submissionReviews: side.submissionReviews.isEmpty ? nil : side.submissionReviews)
         // Rewriting a queued message, the composer holds the rewrite and the
         // side's own draft is set aside: both go, the rewrite after the
         // draft unless it is the message unchanged.
         guard side.queueEditingID != nil, let before = side.draftBeforeQueueEdit else { return composer }
-        var parked = DraftRecord(id: parentID, text: before.text.trimmingCharacters(in: .whitespacesAndNewlines), attachments: before.attachments, skills: before.skills)
+        var parked = DraftRecord(id: parentID, text: before.text.trimmingCharacters(in: .whitespacesAndNewlines), attachments: before.attachments, skills: before.skills, submissionReviews: before.submissionReviews)
         let rewrite = composer.text
         if !rewrite.isEmpty, rewrite != side.queueEditOriginal.trimmingCharacters(in: .whitespacesAndNewlines) {
             parked = parked.merging(DraftRecord(id: parentID, text: rewrite))
@@ -361,7 +361,7 @@ extension WorkspaceModel {
         adoptContextReading(view, item: child)
         let cached = view.hasPresentedRows
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
-        view.historyState = .loading; view.refreshingCachedRows = cached; view.draftReady = view.selectionMetadataLoaded
+        view.historyState = .loading; view.refreshingCachedRows = cached; view.draftReady = false
         view.browsingHistory = true; view.publishTranscript()
         var info = SideRecord(id: child.id, parentID: parentID, workspaceID: child.workspaceID, profileID: child.profileID, title: child.title, kept: true, model: child.model, thinkingLevel: child.thinkingLevel, contextWindow: child.contextWindow, maxOutputTokens: child.maxOutputTokens, modelOutputLimit: child.modelOutputLimit, outputBudgetVersion: child.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: child)
@@ -617,7 +617,7 @@ extension WorkspaceModel {
                 let shown = SessionDisplay(id: draftSide.id)
                 shown.historyState = .empty; shown.selectionMetadataLoaded = true
                 let unsent = Self.unsentDraft(of: view, to: info.parentID)
-                shown.draft = unsent.text; shown.attachments = unsent.attachments ?? []; shown.skills = unsent.skills ?? []
+                shown.draft = unsent.text; shown.attachments = unsent.attachments ?? []; shown.skills = unsent.skills ?? []; shown.submissionReviews = unsent.submissionReviews ?? []
                 sides[info.parentID] = draftSide; displays[draftSide.id] = shown
             }
             guard let parent = displays[info.parentID] else { continue }

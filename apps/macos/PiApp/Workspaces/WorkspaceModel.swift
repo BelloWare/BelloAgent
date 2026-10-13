@@ -405,6 +405,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Test seam: each step of a send as it happens (`WorkspaceRun.swift`),
     /// so a fixture can time where Return's milliseconds go. Nil in the app.
     var sendSteps: ((String) -> Void)?
+    /// Test seam: hold or fail the acceptance read while a draft is restored.
+    var commandAcceptanceRead: (@MainActor (String, [CommandIntent], Bool) async throws -> Set<String>)?
     /// Owned by `WorkspaceHosts.swift`: chats whose helper `prewarm` is starting.
     var prewarming: Set<String> = []
     /// Test seam: whether typing starts a stopped helper (`prewarm`). Fixtures
@@ -417,6 +419,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var idleTasks: [String: Task<Void, Never>] = [:]
     /// The once-per-launch pass that slims journals written before 0.1.111 (`WorkspaceJournalSlimming.swift`).
     var journalSlimming: Task<Void, Never>?
+    var pastedImageCleanup: Task<Void, Never>?
+    var attachmentImports = 0
     /// Owned by `WorkspaceHosts.swift`: helpers stopped on purpose for being
     /// idle, whose exit therefore is not a lost host.
     var retiringHosts: Set<ObjectIdentifier> = []
@@ -447,6 +451,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let completionSound: CompletionSound
 
     let pastedImages: PastedImageStorage
+    /// Test seam: pause a journal read without slowing unrelated metadata.
+    var pastedImageRead: @Sendable (String) throws -> Set<String> = PastedImageStorage.names(inJournal:)
     init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false, modelCatalog: ModelCatalog? = nil) {
         self.launching = launching
         self.modelCatalog = modelCatalog ?? ModelCatalog()

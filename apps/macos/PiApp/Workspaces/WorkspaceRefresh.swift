@@ -370,6 +370,7 @@ extension WorkspaceModel {
         // The receipt is evidence even when saving it below fails. An old
         // recovery button must stop being actionable before any store await.
         view.acceptedCommands.formUnion(receipts.compactMap { $0["commandId"]?.string })
+        try await protectReturnedDrafts(view.recovered, view: view)
         if !view.recovered.isEmpty {
             view.recovered.removeAll { view.acceptedCommands.contains($0.id) }
             if view.recovered.isEmpty { view.uncertain = false }
@@ -389,6 +390,8 @@ extension WorkspaceModel {
             guard current() else { return false }
         }
         var settled: Set<String> = []
+        try await protectReturnedDrafts(intents, view: view)
+        guard current() else { return false }
         for var intent in intents {
             guard let receipt = receipts.last(where: { $0["commandId"]?.string == intent.id }), let state = receipt["state"]?.string,
                   state != "dispatched" else { continue }

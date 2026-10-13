@@ -86,7 +86,7 @@ extension WorkspaceModel {
         view.olderPage = .init(cursor: view.olderPage.cursor); view.newerPage = .init(cursor: view.newerPage.cursor)
         view.historyProgress = nil
         view.contextSelectionReady = false; view.browsingHistory = true
-        view.draftReady = view.selectionMetadataLoaded
+        view.draftReady = false
         view.used = Date(); displays[id] = view
         adoptContextReading(view, item: item)
         // Opened for a side beside it, which takes the cursor, the chat's
@@ -115,7 +115,7 @@ extension WorkspaceModel {
             let sideCached = sideView.hasPresentedRows
             sideView.presentation.begin(); sideView.presentationGeneration = sideView.presentation.generation
             sideView.historyProgress = nil; sideView.historyState = .loading; sideView.refreshingCachedRows = sideCached; sideView.browsingHistory = true
-            sideView.draftReady = sideView.selectionMetadataLoaded || info.pending
+            sideView.draftReady = info.pending
             sideView.publishTranscript()
             shownSide = (child, sideView)
         } else if reopensSide, sides[id] == nil, !installPreparing, let child = rememberedSide(of: id) {
@@ -169,10 +169,12 @@ extension WorkspaceModel {
                 if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
                 view.selectionMetadataLoaded = true
             }
-            view.draftReady = true
             let recovered = try await self.recoverableIntents(metadata?.recovered ?? [], for: item, view: view)
             guard current() else { return }
             view.recovered = recovered; view.uncertain = !recovered.isEmpty
+            // Restoring text alone does not authorize it: a slow acceptance
+            // read may still discover that the helper already ran this copy.
+            view.draftReady = true
             if focusesComposer { view.composerFocusRequest += 1 }
             // The chat's file can be named while its page is read: its
             // first message writes the journal, and the helper can report
@@ -220,7 +222,7 @@ extension WorkspaceModel {
         catch {
             guard current() else { return }
             view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false
-            view.notice = error.localizedDescription; view.draftReady = view.selectionMetadataLoaded
+            view.notice = error.localizedDescription
         }
     }
     /// The page a chat opens on: its newest turns, or, when the reader left it

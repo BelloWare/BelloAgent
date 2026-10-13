@@ -157,6 +157,18 @@ extension WorkspaceModel {
 
     func reloadHistory(_ id: String, around: String? = nil) {
         guard let view = displays[id], let item = record(id) else { return }
+        if !view.draftReady {
+            // Retry must also check pending input. A successful history page
+            // by itself cannot release a draft whose acceptance read failed.
+            if selectedID == id {
+                view.historyState = .dormant
+                Task { await select(id, revealInSidebar: false) }
+            } else if let parentID = item.parentSessionID, selectedID == parentID, sides[parentID]?.id == id {
+                let side = mountSide(item, beside: parentID)
+                Task { await loadSideDisplay(item, view: side) }
+            }
+            return
+        }
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
         let generation = view.presentationGeneration
         // The reads of the page being replaced end with it: neither boundary

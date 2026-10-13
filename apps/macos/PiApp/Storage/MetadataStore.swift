@@ -23,6 +23,7 @@ enum StoreError: Error, Equatable, LocalizedError {
 /// Owned only by MetadataStore. SQLite calls remain actor-isolated; the wrapper
 /// also releases the handle when initialization throws or the actor is dropped.
 private final class MetadataDatabase {
+    let identity = UUID()
     private(set) var handle: OpaquePointer?
     init(url: URL) throws {
         var opened: OpaquePointer?
@@ -494,9 +495,8 @@ actor MetadataStore {
     /// All rows, with no listing cap or forgiving decode: an unlisted draft
     /// or chat is still a reference. Raw bytes also cover displaced drafts
     /// and pending records from newer versions whose fields we do not know.
-    func cleanupPastedImages(_ storage: PastedImageStorage) throws {
-        let files = try storage.oldFiles(); guard !files.isEmpty else { return }
-        let database = try ready()
+    func pastedImageReferences(root: URL) throws -> PastedImageReferences {
+        let database = try ready(), token = try pastedImageReferenceToken()
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "SELECT kind,value FROM records", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
@@ -512,20 +512,26 @@ actor MetadataStore {
             else if name == "side-keep" { chat = try JSONDecoder().decode(SideKeepIntent.self, from: data).chat }
             else { chat = nil }
             if let chat {
-                let path = chat.path ?? storage.root.appendingPathComponent("Workspaces/\(chat.workspaceID)/Sessions/\(chat.id).jsonl").path
+                let path = chat.path ?? root.appendingPathComponent("Workspaces/\(chat.workspaceID)/Sessions/\(chat.id).jsonl").path
                 if chat.path != nil || FileManager.default.fileExists(atPath: path) { journals.insert(path) }
             }
             result = sqlite3_step(statement)
         }
         guard result == SQLITE_DONE else { throw StoreError.unavailable }
-        let candidates = Set(files.map(\.lastPathComponent))
-        if candidates.isSubset(of: referenced) { return }
-        for path in journals {
-            referenced.formUnion(try PastedImageStorage.names(inJournal: path))
-            if candidates.isSubset(of: referenced) { return }
-        }
-        // Delete only after every reference source was read successfully.
-        for file in files where !referenced.contains(file.lastPathComponent) { try FileManager.default.removeItem(at: file) }
+        guard try pastedImageReferenceToken() == token else { throw StoreError.staleRevision }
+        return PastedImageReferences(token: token, names: referenced, journals: journals)
+    }
+    func pastedImageReferencesUnchanged(_ token: PastedImageReferenceToken) throws -> Bool { try pastedImageReferenceToken() == token }
+    private func pastedImageReferenceToken() throws -> PastedImageReferenceToken {
+        let database = try ready()
+        guard let connection else { throw StoreError.unavailable }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA data_version", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw StoreError.unavailable }
+        // total_changes covers this writer, data_version covers another
+        // connection, and identity makes a closed connection invalidate work.
+        return .init(connection: connection.identity, changes: sqlite3_total_changes64(database), version: sqlite3_column_int64(statement, 0))
     }
     func removeAll(kind: String) throws { try prune(kind: kind, keeping: 0) }
     func prune(kind: String, keeping: Int) throws {
@@ -560,6 +566,13 @@ actor MetadataStore {
         let kind = "pending:\(sessionID)"
         guard var intent = try get(CommandIntent.self, kind: kind, id: commandID) else { return }
         intent.state = "acknowledged"; try put(intent, kind: kind, id: commandID)
+    }
+    func preserveSubmissionReviews(sessionID: String, commands: Set<String>) throws {
+        // Read inside the actor: a review marker must never overwrite newer
+        // typing with the draft a journal read started from.
+        guard var draft = try get(DraftRecord.self, kind: "draft", id: sessionID) else { return }
+        draft.requireSubmissionReview(commands)
+        try put(draft, kind: "draft", id: sessionID)
     }
     @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord) throws -> ChatRecord {
         let database = try ready()
@@ -845,7 +858,7 @@ struct ChatOrganizationBatch: Sendable {
     var rejected: Set<String> = []
     var transactionMilliseconds: Double = 0
 }
-struct DraftRecord: Codable, Sendable {
+struct DraftRecord: Codable, Sendable, Equatable {
     var id: String; var text: String; var attachments: [AttachmentRecord]?; var skills: [SkillChip]?
     /// An edit remains an edit after a restart, and its displaced draft remains recoverable.
     var edit: MessageEditDraft?
@@ -853,6 +866,9 @@ struct DraftRecord: Codable, Sendable {
     /// typed so far, which a reopen reconciles with the helper's hold. The
     /// record's own text, images and skills are the draft set aside for it.
     var queuedEdit: QueuedEditDraft?
+    /// Returned input may already have run. This gate belongs to the draft,
+    /// not the transient run state or the helper's bounded receipt list.
+    var submissionReviews: Set<String>?
     /// Unsent work the sidebar marks (a draft marker): text, an image or a
     /// skill in the composer, the draft an edit of an earlier message set
     /// aside, or a queued message being rewritten (not merely opened).
@@ -872,7 +888,7 @@ struct DraftRecord: Codable, Sendable {
     /// message's edit displaced, while it is edited, else this one.
     var displaced: DraftRecord {
         guard let edit else { return self }
-        return DraftRecord(id: id, text: edit.originalText, attachments: edit.originalAttachments, skills: edit.originalSkills)
+        return DraftRecord(id: id, text: edit.originalText, attachments: edit.originalAttachments, skills: edit.originalSkills, submissionReviews: edit.originalSubmissionReviews)
     }
     /// `other` added to the draft the reader left: into the one an edit
     /// displaced while there is an edit, which ending it brings back.
@@ -880,6 +896,7 @@ struct DraftRecord: Codable, Sendable {
         guard var edit else { return merging(other) }
         let merged = displaced.merging(other)
         edit.originalText = merged.text; edit.originalAttachments = merged.attachments; edit.originalSkills = merged.skills
+        edit.originalSubmissionReviews = merged.submissionReviews
         var record = self; record.edit = edit; return record
     }
     /// Whether this holds all of `other`: its text from the start, and every
@@ -887,6 +904,7 @@ struct DraftRecord: Codable, Sendable {
     func holds(_ other: DraftRecord) -> Bool {
         text.hasPrefix(other.text) && (other.attachments ?? []).allSatisfy { image in (attachments ?? []).contains { $0.id == image.id } }
             && (other.skills ?? []).allSatisfy { chip in (skills ?? []).contains { $0.id == chip.id } }
+            && (other.submissionReviews ?? []).isSubset(of: submissionReviews ?? [])
     }
     func merging(_ other: DraftRecord) -> DraftRecord {
         var merged = self
@@ -898,7 +916,13 @@ struct DraftRecord: Codable, Sendable {
         for chip in other.skills ?? [] where !chips.contains(where: { $0.id == chip.id }) { chips.append(chip) }
         merged.attachments = images.isEmpty && attachments == nil ? nil : images
         merged.skills = chips.isEmpty && skills == nil ? nil : chips
+        let reviews = (submissionReviews ?? []).union(other.submissionReviews ?? [])
+        merged.submissionReviews = reviews.isEmpty ? nil : reviews
         return merged
+    }
+    mutating func requireSubmissionReview(_ commands: Set<String>) {
+        if !isBlank { submissionReviews = (submissionReviews ?? []).union(commands) }
+        if var edit, !displaced.isBlank { edit.originalSubmissionReviews = (edit.originalSubmissionReviews ?? []).union(commands); self.edit = edit }
     }
 }
 struct QueuedEditDraft: Codable, Sendable, Equatable {
@@ -923,7 +947,7 @@ struct QueuedEditDraft: Codable, Sendable, Equatable {
     /// Whether `text` is the message as it was when the edit began.
     func isOriginal(_ text: String) -> Bool { Self.digest(text.trimmingCharacters(in: .whitespacesAndNewlines)) == originalDigest }
 }
-struct MessageEditDraft: Codable, Sendable {
+struct MessageEditDraft: Codable, Sendable, Equatable {
     var messageID: String
     var originalText: String
     var originalAttachments: [AttachmentRecord]?
@@ -931,8 +955,14 @@ struct MessageEditDraft: Codable, Sendable {
     var sourceTimeline: String? = nil
     var sourceTextDigest: String? = nil
     var inputReviewRequired: Bool? = nil
+    var originalSubmissionReviews: Set<String>? = nil
 }
-struct CommandIntent: Codable, Sendable, Equatable { var id: String; var sessionID: String; var turnID: String; var text: String; var state: String; var epoch: String?; var attachments: [AttachmentRecord]?; var skills: [SkillChip]? }
+struct CommandIntent: Codable, Sendable, Equatable {
+    var id: String; var sessionID: String; var turnID: String; var text: String; var state: String; var epoch: String?; var attachments: [AttachmentRecord]?; var skills: [SkillChip]?
+    /// New sends persist their own draft review gate before returning input.
+    /// Older records cannot distinguish returned input from newer typing.
+    var draftReviewTracked: Bool? = nil
+}
 struct ProfileRecord: Codable, Sendable, Identifiable, Hashable {
     var id: String = UUID().uuidString; var revision: String = UUID().uuidString
     var name: String = "LiteLLM connection"; var providerId: String = "litellm"
