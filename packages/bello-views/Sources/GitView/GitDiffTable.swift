@@ -344,6 +344,9 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
         private struct WrappedText: Sendable { let width: CGFloat; let lines: [Range<Int>] }
         private var breaks: [WrapKey: WrappedText] = [:]
         private var liveResize = false
+        /// A rebuild can record the current width while AppKit caches
+        /// placeholder heights. Those still need a final measurement.
+        private var hasProvisionalHeights = false
         private var wrapTask: Task<Void, Never>?
         private var wrapGeneration = 0
         var preparingWrapGeometry: Bool { wrapTask != nil }
@@ -434,7 +437,9 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
                         clip.scroll(to: .zero); table.enclosingScrollView?.reflectScrolledClipView(clip)
                     }
                 }
-            } else if !rewrap, wrap, width != heightWidth {
+            } else if !rewrap, wrap, width != heightWidth || hasProvisionalHeights {
+                // A pending state may have superseded final geometry even
+                // though a rebuild already recorded this same width.
                 resizeWrappedRows(width: width)
             } else if rewrap || width != heightWidth {
                 measureRows(width: width)
@@ -551,6 +556,7 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             cancelWrapGeometry()
             heightWidth = width; breaks = [:]
             wrapped = wrap ? Array(repeating: nil, count: rows.count) : []
+            hasProvisionalHeights = false
         }
 
         private func cancelWrapGeometry() {
@@ -559,7 +565,7 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
         func beginLiveResize() { liveResize = true; cancelWrapGeometry() }
         func endLiveResize() {
             liveResize = false
-            if let table, wrap, heightWidth != table.bounds.width { resizeWrappedRows(width: table.bounds.width) }
+            if let table, wrap, heightWidth != table.bounds.width || hasProvisionalHeights { resizeWrappedRows(width: table.bounds.width) }
         }
 
         private struct WrapGeometry: Sendable {
@@ -615,6 +621,7 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
                 let anchor = clip.map { table.row(at: NSPoint(x: 1, y: $0.bounds.minY)) } ?? -1
                 let offset = anchor >= 0 ? (clip?.bounds.minY ?? 0) - table.rect(ofRow: anchor).minY : 0
                 self.heightWidth = width; self.wrapped = geometry.heights; self.breaks = geometry.breaks
+                self.hasProvisionalHeights = false
                 table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<rows.count))
                 table.layoutSubtreeIfNeeded()
                 if let clip, anchor >= 0, anchor < rows.count {
@@ -698,7 +705,10 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             case .line, .split:
                 guard wrap else { return GitDiffMetrics.monoLine + 2 }
                 if row < wrapped.count, let known = wrapped[row] { return known }
-                if liveResize || preparingWrapGeometry { return GitDiffMetrics.monoLine + 2 }
+                if liveResize || preparingWrapGeometry {
+                    hasProvisionalHeights = true
+                    return GitDiffMetrics.monoLine + 2
+                }
                 let measured = height(of: row, card: cardWidth(heightWidth))
                 if row < wrapped.count { wrapped[row] = measured }
                 return measured

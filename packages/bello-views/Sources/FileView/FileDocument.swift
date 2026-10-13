@@ -213,7 +213,13 @@ private final class FilePageReadStop: @unchecked Sendable {
     private var inFlight: [FileReadCache.Key: Int] = [:]
     private var readTickets: [FileReadCache.Key: Int] = [:]
     private var nextReadTicket = 0
-    private var queuedReads: [FileReadCache.Key] = []
+    private struct QueuedRead {
+        let key: FileReadCache.Key
+        /// The first line's extent when the page was requested. If that
+        /// line becomes long, only this bounded prefix was promised.
+        var pageUnits: Int
+    }
+    private var queuedReads: [QueuedRead] = []
     private var explicitReads = Set<FileReadCache.Key>()
     private var viewportReads = Set<FileReadCache.Key>()
     private var screenKeys = Set<FileReadCache.Key>()
@@ -620,10 +626,19 @@ private final class FilePageReadStop: @unchecked Sendable {
 
     private func enqueueRead(_ key: FileReadCache.Key) {
         if !schedulingScreen, recording != nil || !viewportReads.contains(key) { explicitReads.insert(key) }
-        if inFlight[key] != nil { inFlight[key] = cache.tick(); return }
+        let pageUnits: Int
+        if case .page(let page) = key { pageUnits = utf16Length(ofLine: checkpoints[page].line) }
+        else { pageUnits = 0 }
+        if inFlight[key] != nil {
+            inFlight[key] = cache.tick()
+            if !complete, pageUnits > 0, let index = queuedReads.firstIndex(where: { $0.key == key }) {
+                queuedReads[index].pageUnits = max(queuedReads[index].pageUnits, pageUnits)
+            }
+            return
+        }
         inFlight[key] = cache.tick()
         nextReadTicket += 1; readTickets[key] = nextReadTicket
-        queuedReads.append(key)
+        queuedReads.append(QueuedRead(key: key, pageUnits: pageUnits))
         if !schedulingScreen { drainPageReads() }
     }
 
@@ -635,7 +650,7 @@ private final class FilePageReadStop: @unchecked Sendable {
                 worker.stop.cancel(); worker.task.cancel()
             }
         }
-        queuedReads.removeAll { inFlight[$0] == nil }
+        queuedReads.removeAll { inFlight[$0.key] == nil }
     }
 
     private func cancelPageReads() {
@@ -648,19 +663,45 @@ private final class FilePageReadStop: @unchecked Sendable {
 
     private func drainPageReads() {
         guard reading else { return }
-        let kept = cache.kept
+        var kept = cache.kept
         while activeReads.count < max(1, options.maximumPageReads), !queuedReads.isEmpty {
-            let next = queuedReads.firstIndex { screenKeys.contains($0) }
-                ?? queuedReads.firstIndex { kept.contains($0) || explicitReads.contains($0) } ?? 0
-            let key = queuedReads.remove(at: next)
+            let next = queuedReads.firstIndex { screenKeys.contains($0.key) }
+                ?? queuedReads.firstIndex { kept.contains($0.key) || explicitReads.contains($0.key) } ?? 0
+            let request = queuedReads.remove(at: next), key = request.key
             guard let ticket = readTickets[key] else { continue }
             switch key {
-            case .page(let page): startPage(page, ticket: ticket)
+            case .page(let page):
+                if let long = longLine(checkpoints[page].line) {
+                    replanQueuedPage(request, long: long)
+                    kept = cache.kept
+                } else { startPage(page, ticket: ticket) }
             case .window(let line, let mark):
                 if let long = longLine(line) { startWindow(mark, of: line, long: long, ticket: ticket) }
                 else { inFlight[key] = nil; readTickets[key] = nil; explicitReads.remove(key) }
             }
         }
+    }
+
+    /// A queued page is a plan made against an earlier index. A line that
+    /// was short then must not be read whole after the pass makes it long.
+    private func replanQueuedPage(_ request: QueuedRead, long: FileLongLine) {
+        let key = request.key
+        let lastColumn = max(0, min(request.pageUnits, utf16Length(ofLine: long.line)) - 1)
+        let windows = (0...Self.mark(before: lastColumn, in: long)).map { FileReadCache.Key.window(line: long.line, mark: $0) }
+        let replacements = Set(windows)
+        cache.replace(key, with: replacements)
+        let missing = windows.filter { !cache.contains($0) }
+        if explicitReads.remove(key) != nil { explicitReads.formUnion(missing) }
+        if viewportReads.remove(key) != nil { viewportReads.formUnion(replacements) }
+        if screenKeys.remove(key) != nil { screenKeys.formUnion(replacements) }
+        if recording?.remove(key) != nil { recording?.formUnion(replacements) }
+        inFlight[key] = nil; readTickets[key] = nil
+        // The outer drain selects the next worker. Preserve the old
+        // request's ownership instead of inferring new viewport demand.
+        let wasScheduling = schedulingScreen
+        schedulingScreen = true
+        defer { schedulingScreen = wasScheduling }
+        for window in missing { enqueueRead(window) }
     }
 
     private func readPage<Value: Sendable>(_ key: FileReadCache.Key, ticket: Int, version: Int,

@@ -142,6 +142,55 @@ final class GitDiffTableTests: GitPanelTestCase, SerialTestLane {
         XCTFail("wrap geometry did not settle at the hosted table's width")
     }
 
+    @MainActor func testRebuiltWrappedRowsFinalizeAfterLiveResizeAtTheSameWidth() async throws {
+        try await rebuiltRowsFinalize(pendingRefresh: false)
+    }
+
+    @MainActor func testPendingStateDoesNotDropWrappedRowFinalizationAtTheSameWidth() async throws {
+        try await rebuiltRowsFinalize(pendingRefresh: true)
+    }
+
+    @MainActor private func rebuiltRowsFinalize(pendingRefresh: Bool) async throws {
+        for split in [false, true] {
+            let diff = drawingTable("initial", split: split, wrap: true)
+            defer { diff.close() }
+            try await waitForWrapGeometry(diff)
+            let table = diff.table
+            table.viewWillStartLiveResize()
+            let text = String(repeating: "words to wrap ", count: 80)
+            let files = GitDiffParser.parse("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-" + text + "\n+" + text + "\n")
+            let heading = TestDiffHeading("Heading")
+            diff.update(files: files, split: split, wrap: true, showAll: true, identity: "rebuilt",
+                        top: heading, topHeightKey: 0, more: nil)
+            diff.layoutSubtreeIfNeeded(); table.layoutSubtreeIfNeeded()
+            let row = try XCTUnwrap(lineRows(table).first)
+            let provisional = table.rect(ofRow: row).height
+            XCTAssertEqual(provisional, GitDiffMetrics.monoLine + 2)
+            XCTAssertEqual(diff.coordinator.wrappingWidth, table.bounds.width, "a rebuild already recorded the final width")
+            // Detach only to control when the pending state is laid out;
+            // AppKit otherwise applies it automatically in the run loop.
+            if pendingRefresh { diff.window?.contentView = nil }
+            table.viewDidEndLiveResize()
+            if pendingRefresh {
+                diff.update(files: files, split: split, wrap: true, showAll: true, identity: "rebuilt",
+                            top: heading, topHeightKey: 1, more: nil)
+                let deadline = ContinuousClock.now + .seconds(20)
+                while diff.coordinator.preparingWrapGeometry, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+                XCTAssertFalse(diff.coordinator.preparingWrapGeometry)
+                XCTAssertEqual(diff.coordinator.wrappingWidth, table.bounds.width)
+            }
+            try await waitForWrapGeometry(diff)
+            let card = diff.coordinator.cardWidth(table.bounds.width)
+            let width = split ? GitDiffMetrics.textWidth(split: card) : GitDiffMetrics.textWidth(unified: card)
+            let expected = CGFloat(GitDiffText.lineCount(text, font: GitDiffMetrics.mono, width: width)) * GitDiffMetrics.monoLine + 2
+            print("GIT_DIFF rebuilt split=\(split) refresh=\(pendingRefresh) provisional=\(provisional) final=\(table.rect(ofRow: row).height) expected=\(expected)")
+            XCTAssertGreaterThan(expected, provisional)
+            for row in lineRows(table) {
+                XCTAssertEqual(table.rect(ofRow: row).height, expected, "AppKit's cached provisional height must be invalidated")
+            }
+        }
+    }
+
     @MainActor func testWrappedDiffDrawingVisitsOnlyTheDirtyFragments() async throws {
         for split in [false, true] {
             let diff = drawingTable(String(repeating: "wrap 😀 me ", count: 10_000), split: split, wrap: true)

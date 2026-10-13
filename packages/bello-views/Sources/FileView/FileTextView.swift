@@ -422,8 +422,9 @@ public struct FileTextStyle {
     public var syntax: ((Int, Range<Int>, String) -> [FileTextColorRun])? { didSet { layouts = [:]; needsDisplay = true } }
     public func invalidateSyntax(inLine line: Int) {
         layouts[line] = nil
-        let dirty = NSRect(x: visibleRect.minX, y: top(ofLine: line), width: visibleRect.width, height: lineHeight).intersection(visibleRect)
-        if !dirty.isEmpty { FileTextRenderCount.invalidatedSyntax(dirty); setNeedsDisplay(dirty) }
+        let drawn = visibleRect.union(preparedContentRect)
+        let dirty = NSRect(x: drawn.minX, y: top(ofLine: line), width: drawn.width, height: lineHeight).intersection(drawn)
+        if !dirty.isNull, !dirty.isEmpty { FileTextRenderCount.invalidatedSyntax(dirty); setNeedsDisplay(dirty) }
     }
     public private(set) var source: FileTextSource = FileTextLines("")
     /// What accessibility calls the text: "Contents of Main.swift".

@@ -20,6 +20,59 @@ final class FilePageReadTests: XCTestCase {
         XCTAssertTrue(condition(), "page-read fixture did not finish")
     }
 
+    @MainActor func testQueuedShortPageBecomingLongIsReplannedWithoutLosingItsHold() async throws {
+        for held in [false, true] {
+            let prefix = String(repeating: "head\n", count: 128)
+            let longBytes = 4 << 20, provisionalUnits = 40 << 10
+            let content = prefix + String(repeating: "x", count: longBytes) + "\n" + String(repeating: "tail\n", count: 256)
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("growing-page-\(UUID().uuidString).txt")
+            try content.write(to: url, atomically: true, encoding: .utf8)
+            defer { try? FileManager.default.removeItem(at: url) }
+            let chunks = Gate(), pages = Gate()
+            var options = FileDocument.Options()
+            options.firstPublishBytes = prefix.utf8.count + provisionalUnits
+            options.maximumPageReads = 1
+            options.cacheUnits = held ? 1 : 256 << 10
+            options.beforeChunk = { offset in if offset > 0 { await chunks.wait() } }
+            options.beforePage = { await pages.wait() }
+            let document = FileDocument(url: url, options: options)
+            defer { document.close(); Task { await chunks.release(); await pages.release() } }
+            try await ready { document.lineCount == 129 && document.utf16Length(ofLine: 128) == provisionalUnits }
+            XCTAssertEqual(document.status, .indexing)
+            // Occupy the only worker with an earlier, already closed page.
+            XCTAssertNil(document.text(ofLine: 0, range: 0..<4))
+            let columns = ((32 << 10) - 8)..<((32 << 10) + 8)
+            var hold: FileTextHold?
+            if held {
+                let result = document.holding { document.text(ofLine: 128, range: columns) }
+                XCTAssertNil(result.0); hold = try XCTUnwrap(result.1)
+            } else {
+                XCTAssertNil(document.text(ofLine: 128, range: columns))
+            }
+            defer { hold?.release() }
+            XCTAssertEqual(document.activePageReads, 1)
+            XCTAssertEqual(document.queuedPageReads, 1)
+            // The queued page's first line now grows past the long-line
+            // threshold, while no queued read can start.
+            await chunks.release()
+            try await ready { document.status == .ready }
+            XCTAssertEqual(document.utf16Length(ofLine: 128), longBytes)
+            document.showScreen(lines: 200...210, columns: 0..<4)
+            await pages.release()
+            try await ready { document.readsUnderWay == 0 }
+            print("FILE_READ replan held=\(held) bytes=\(document.bytesRead) windows=\(document.windowRequests) cache=\(document.cachedCost)")
+            XCTAssertLessThan(document.bytesRead, 128 << 10, "a queued short request must not read the completed 4 MiB line")
+            XCTAssertLessThan(document.cachedCost, 128 << 10)
+            XCTAssertGreaterThan(document.windowRequests, 0, "the stale page must become bounded windows")
+            XCTAssertLessThanOrEqual(document.windowRequests, 4)
+            XCTAssertEqual(document.text(ofLine: 128, range: columns), String(repeating: "x", count: columns.count),
+                           "the original request must be ready, including all held windows under cache pressure")
+            XCTAssertEqual(document.holdsKept, held ? 1 : 0)
+            hold?.release()
+            XCTAssertEqual(document.holdsKept, 0)
+        }
+    }
+
     @MainActor func testViewportReadsAreBoundedAndObsoletePagesAndWindowsDoNotRead() async throws {
         for longLine in [false, true] {
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("page-queue-\(UUID().uuidString).txt")
