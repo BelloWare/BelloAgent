@@ -262,7 +262,6 @@ import Combine
                 .sink { [weak self] _ in MainActor.assumeIsolated { self?.scheduleBody() } }
         } else { sourceWatch = nil }
         refreshBody()
-        row.setAccessibilityLabel(new.title)
         needsLayout = true
     }
     /// A live side's changes, coalesced to one redraw a turn (or the next layout).
@@ -288,7 +287,9 @@ import Combine
     }
     private func refreshBody() {
         let height = bounds.width > 0 ? entryHeight(width: bounds.width) : nil
-        body.update(Self.content(model: model, state: state))
+        let content = Self.content(model: model, state: state)
+        body.update(content)
+        row.setAccessibilityLabel(content.accessibilityLabel)
         // A rate line more or less: the list lays out again.
         if let height, entryHeight(width: bounds.width) != height { (superview as? SidebarListDocument)?.entryChangedHeight() }
     }

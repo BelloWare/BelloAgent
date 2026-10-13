@@ -663,7 +663,7 @@ struct SidesPanelActivity: Equatable {
     }
     /// What the side is doing, in the sidebar's words, then how long ago it last did anything.
     static func lead(stats: ChatRowStats, working: Bool, unread: Bool, failed: Bool, markedUnread: Bool = false) -> (text: String, color: NSColor)? {
-        if working { return (PiSessionState.label(stats.state, loading: stats.loading), .piWarning) }
+        if working { return stats.sidebarStateWord }
         if RunState(rawValue: stats.state).isStopped {
             return (PiSessionState.label(stats.state, costLimited: stats.costLimited),
                     RunState(rawValue: stats.state) == .paused ? .piInfo : stats.costLimited ? .piWarning : .piDanger)
