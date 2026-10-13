@@ -163,6 +163,15 @@ extension WorkspaceModel {
         }
         do {
             guard try await reconcileSubmissionDraft(item, view: view, current: current) else { return }
+            if let link = item.delegation {
+                view.isManagedSubagent = true; view.subagentStatus = subagentSummaries[id]?.status
+                if let issue = item.delegationIssue { view.notice = issue }
+                if let parent = record(link.budgetOwnerSessionID), parent.workspaceID == item.workspaceID, let path = parent.path,
+                   let plan = try? await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: parent.id, childID: item.id).first,
+                   plan.header.link == link {
+                    guard current() else { return }; view.delegatedTask = plan.task
+                }
+            }
             if focusesComposer { view.composerFocusRequest += 1 }
             // The chat's file can be named while its page is read: its
             // first message writes the journal, and the helper can report

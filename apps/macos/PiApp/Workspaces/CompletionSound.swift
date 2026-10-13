@@ -66,7 +66,7 @@ extension WorkspaceModel {
         // Always consume the receipt, including while muted, so turning sound
         // on or restoring a chat cannot replay a completion that already passed.
         guard completed, configuration.playsCompletionSound,
-              let item = record(sessionID), !item.isArchived, !item.isBackgroundTask,
+              let item = record(sessionID), !item.isSubagent, !item.isArchived, !item.isBackgroundTask,
               item.connectionTest != true, !item.imported else { return }
         completionSound.play()
     }

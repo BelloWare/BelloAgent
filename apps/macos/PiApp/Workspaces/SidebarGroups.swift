@@ -18,7 +18,7 @@ enum SidebarSessionPresentation {
         var kept: Set<Int> = [], ancestors: [Int] = []
         for (index, entry) in entries.enumerated() {
             while let last = ancestors.last, entries[last].depth >= entry.depth { ancestors.removeLast() }
-            if entry.chat.title.localizedCaseInsensitiveContains(query) || contentMatches.contains(entry.chat.id) { kept.formUnion(ancestors); kept.insert(index) }
+            if entry.chat.title.localizedCaseInsensitiveContains(query) || entry.chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || contentMatches.contains(entry.chat.id) { kept.formUnion(ancestors); kept.insert(index) }
             ancestors.append(index)
         }
         return entries.enumerated().compactMap { kept.contains($0.offset) ? $0.element : nil }
@@ -43,6 +43,7 @@ enum SidebarSessionPresentation {
 /// conversation's "…" menu, built when either opens.
 enum SessionOrganizationActions {
     @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, chat: ChatRecord) -> [PiMenuEntry] {
+        if !chat.isSubagent {
         if !chat.isBackgroundTask { PiMenuEntry.button("Rename…") { model.renameSession(chat.id) } }
         PiMenuEntry.button(chat.isPinned ? "Unpin Chat" : "Pin Chat", systemImage: chat.isPinned ? "pin.slash" : "pin") { model.toggleSessionPin(chat.id) }
         PiMenuEntry.button(chat.isArchived ? "Restore Chat" : "Archive Chat", systemImage: chat.isArchived ? "arrow.uturn.backward" : "archivebox") {
@@ -64,6 +65,7 @@ enum SessionOrganizationActions {
         if chat.isArchived {
             PiMenuEntry.divider
             PiMenuEntry.button("Delete Chat…", systemImage: "trash", destructive: true) { model.deleteChat(chat.id) }
+        }
         }
     }
     @MainActor private static func move(_ chat: ChatRecord, model: WorkspaceModel, to topicID: String?) {

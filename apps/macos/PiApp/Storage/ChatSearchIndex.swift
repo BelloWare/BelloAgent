@@ -20,6 +20,8 @@ struct ChatSearchSource: Sendable, Hashable {
     /// An imported journal can be edited in place, before its end: any
     /// change indexes it again from its start.
     var rebuildsOnChange = false
+    var delegation: SubagentLink?
+    var parentJournal: String?
 }
 
 /// Which part of a chat a match is in.
@@ -471,9 +473,17 @@ actor ChatSearchIndex {
     /// The whole chat again, in one transaction: a query sees the chat as it
     /// was until the new one is complete.
     private func rebuild(_ source: ChatSearchSource, latest: HistoryPage, db: OpaquePointer) async throws {
+        var delegatedTask: String?
+        if latest.total == 0, let link = source.delegation, let parent = source.parentJournal {
+            let plans = try await history.subagentPlans(path: URL(fileURLWithPath: parent), ownerID: link.budgetOwnerSessionID, childID: source.id)
+            if let plan = plans.first, plan.header.link == link { delegatedTask = plan.task }
+        }
         try ChatSearchDatabase.execute(db, "BEGIN IMMEDIATE")
         do {
             try run(db, "DELETE FROM content WHERE chat=?", [source.id])
+            if let delegatedTask {
+                try insert(Row(position: -1, message: TranscriptMessage(id: "subagent-task:" + source.id, role: "user", text: delegatedTask)), chat: source.id, db: db)
+            }
             var page = latest, end = latest.total
             while true {
                 try checkStillWanted(source.id)

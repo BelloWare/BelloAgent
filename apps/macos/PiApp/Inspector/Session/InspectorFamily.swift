@@ -39,6 +39,7 @@ enum CaptureSubagents {
     static func prepare(_ db: CaptureDatabase) throws {
         let existed = !(try db.rows("SELECT name FROM sqlite_master WHERE type='table' AND name='subagent_groups'")).isEmpty
         try db.execute("CREATE TABLE IF NOT EXISTS subagent_groups(workspace TEXT NOT NULL,owner TEXT NOT NULL,delegation TEXT NOT NULL,child TEXT NOT NULL,summary BLOB NOT NULL,updated REAL NOT NULL,PRIMARY KEY(workspace,owner,delegation),UNIQUE(workspace,child))")
+        try db.execute("CREATE TABLE IF NOT EXISTS subagent_deleted(workspace TEXT NOT NULL,session TEXT NOT NULL,PRIMARY KEY(workspace,session))")
         if !existed {
             var cursor = ""
             while true {
@@ -62,6 +63,7 @@ enum CaptureSubagents {
         let link = summary.link
         guard link.valid, PayloadArchive.inspectorScope(workspace, link.budgetOwnerSessionID, link.childSessionID),
               summary.description.utf8.count <= 4096, summary.model.utf8.count <= 512, summary.revision >= 0 else { throw CaptureFailure.sequence }
+        if !(try db.rows("SELECT session FROM subagent_deleted WHERE workspace=? AND session IN (?,?)", [.text(workspace), .text(link.budgetOwnerSessionID), .text(link.childSessionID)])).isEmpty { return }
         if let bytes = try db.rows("SELECT summary FROM subagent_groups WHERE workspace=? AND (child=? OR (owner=? AND delegation=?))", [.text(workspace),.text(link.childSessionID),.text(link.budgetOwnerSessionID),.text(link.delegationID)]).first?["summary"]?.data {
             let previous = try JSONDecoder().decode(SubagentSummary.self, from: bytes)
             guard previous.link == link else { throw CaptureFailure.sequence }
@@ -73,6 +75,13 @@ enum CaptureSubagents {
 }
 
 extension PayloadArchive {
+    func forgetSubagentRelationships(sessionID: String, workspaceID: String) throws {
+        let db = try dashboardDatabase()
+        try db.transaction {
+            try db.execute("INSERT OR IGNORE INTO subagent_deleted(workspace,session) VALUES(?,?)", [.text(workspaceID), .text(sessionID)])
+            try db.execute("DELETE FROM subagent_groups WHERE workspace=? AND (owner=? OR child=?)", [.text(workspaceID), .text(sessionID), .text(sessionID)])
+        }
+    }
     func recordSubagent(_ summary: SubagentSummary, workspaceID: String) throws {
         try CaptureSubagents.record(summary, workspace: workspaceID, db: dashboardDatabase())
     }

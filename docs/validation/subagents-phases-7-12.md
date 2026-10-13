@@ -185,3 +185,42 @@ policy, installed app, or real preferences/vault data were changed.
 - `git diff --check` passes. The sole rollout constant remains false. No owner
   decisions changed; sidebar/discovery/family organization and final gallery/
   release validation remain phases 11–12.
+
+## Phase 11 — sidebar, discovery and organization
+
+- Failing-first checks covered folded grouping, silent children, family archive,
+  shared run holds, unregistered child discovery/deletion, full-task search and
+  deletion restart. Logs: `phase11-organization-red.log`,
+  `phase11-discovery-red.log`, `phase11-deletion-red.log`,
+  `phase11-family-hold-red.log`, `phase11-task-search-red.log`.
+- Expanded-group persistence initially failed (five assertions); the sidebar
+  preference writer now compares the new disclosure field. A restart fixture
+  now explicitly closes its first capture archive before reopening it.
+- Later boundary checks failed first for a delegation accepted while the delete
+  sheet was open, a foreign terminal record and stale quarantine parentage
+  (`phase11-recovery-boundaries-red.log`). Existing launch-selection checks also
+  caught URL directory-hint equality rejecting deletion of an empty chat; the
+  containment guard now compares canonical paths.
+- Seventeen guard mutations caught: collapsed group, persisted expansion,
+  completion sound, draft mark, webhook, title job, unread observation, family
+  archive expansion, independent child organization, family run-hold counts,
+  independent child hold, terminal identity, reciprocal origin, full queued-task
+  search, metadata tombstone, capture tombstone and durable deletion intents.
+  Logs: `phase11-mutation-*.log`. An unused-variable compiler rejection in the
+  archive mutation was repaired before recording its behavioral failure.
+- Final parallel-lane bash-array run: **144 passed**, no skips
+  (`phase11-native-restored-final.log`). Classes: CompletionSoundTests,
+  SessionOrganizationTests, SessionReadStateTests, SidebarFlatTopicsTests,
+  SubagentDeletionTests, SubagentDiscoveryTests, SubagentMetadataTests,
+  SubagentOrganizationTests, TopicSessionDragTests, TopicStorageTests,
+  SidebarSearchIndexTests, RunHoldTests, LaunchSelectionTests,
+  SubagentTranscriptTests.
+- Serial classes each ran alone: TopicOrganizationTests **14 passed**,
+  SubagentNavigationTests **5 passed**, CaptureDrainTests **6 passed**
+  (`phase11-serial-<Class>.log`).
+- Helper: **51 passed** (`phase11-helper-restored.log`), covering coordinator,
+  recovery and all four lead-requested classes.
+- Fixtures include 520 managed children, a queued task beyond the metadata
+  preview, copied-parent provenance, a foreign symlink, archive restore,
+  unregistered children, interrupted deletion across a fresh model/archive,
+  late callbacks and workspace-scoped capture cleanup. Production remains off.

@@ -1,0 +1,113 @@
+import AppKit
+
+extension WorkspaceModel {
+    func subagentDirectory(_ workspaceID: String) throws -> URL {
+        guard !workspaceID.isEmpty, workspaceID != ".", workspaceID != "..", !workspaceID.contains("/"), !workspaceID.contains("\\") else { throw StoreError.invalidRecord }
+        let directory = root.resolvingSymlinksInPath().appendingPathComponent("Workspaces/\(workspaceID)/Sessions")
+        guard directory.standardizedFileURL == directory.resolvingSymlinksInPath() else { throw StoreError.invalidRecord }
+        return directory
+    }
+
+    func deleteSubagentFamily(_ parent: ChatRecord) async throws {
+        guard !parent.isSubagent, !parent.imported, let store, displays[parent.id]?.hasWork != true,
+              displays[parent.id]?.loading != true else { throw HostError.failure("Stop work before deleting this family.") }
+        let existing = try await store.list(SessionDeletionRecord.self, kind: SessionDeletionRecord.kind).filter { $0.ownerID == parent.id }
+        if !existing.isEmpty { try await finishFamilyDeletion(existing); return }
+        guard deletingFamilies.insert(parent.id).inserted else { throw HostError.failure("This family is already being deleted.") }
+        var durable = false
+        defer { if !durable { deletingFamilies.remove(parent.id) } }
+        let directory = try subagentDirectory(parent.workspaceID)
+        if let host = hosts[parent.workspaceID] {
+            // The helper knows queued/settling children which metadata may
+            // never have seen. It refuses to unload an unsettled owner.
+            if host.isReady { _ = try await host.request("session.forget", sessionID: parent.id) }
+            else { try await host.settleCaptureIfStopping() }
+        }
+        opened.remove(parent.id)
+        // Read after the runtime is detached: no last-millisecond delegation
+        // can escape the manifest. App opens are blocked during this operation.
+        var plans: [DiscoveredSubagent] = []
+        let parentPath = parent.path ?? directory.appendingPathComponent(parent.id + ".jsonl").path
+        if FileManager.default.fileExists(atPath: parentPath) {
+            let path = parentPath
+            guard URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path == directory.path else { throw StoreError.invalidRecord }
+            plans = try await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: parent.id)
+        }
+        var members = [SessionDeletionRecord(id: parent.id, ownerID: parent.id, workspaceID: parent.workspaceID, path: parentPath)]
+        var known: Set<String> = [parent.id]
+        for plan in plans where known.insert(plan.header.link.childSessionID).inserted {
+            let id = plan.header.link.childSessionID
+            if FileManager.default.fileExists(atPath: plan.path) { try await history.validateSubagentDeletion(path: URL(fileURLWithPath: plan.path), directory: directory, expected: SubagentTarget(plan.header.link)) }
+            members.append(SessionDeletionRecord(id: id, ownerID: parent.id, workspaceID: parent.workspaceID, path: plan.path))
+        }
+        for child in subagentChildren(of: parent.id) where child.workspaceID == parent.workspaceID && known.insert(child.id).inserted {
+            // Metadata cannot authorize deleting an unrelated file.
+            if let path = child.path, let link = child.delegation, FileManager.default.fileExists(atPath: path) {
+                try await history.validateSubagentDeletion(path: URL(fileURLWithPath: path), directory: directory, expected: SubagentTarget(link))
+            }
+            members.append(SessionDeletionRecord(id: child.id, ownerID: parent.id, workspaceID: parent.workspaceID, path: child.path))
+        }
+        for member in members where member.id != parent.id {
+            if let host = hosts[parent.workspaceID], host.isReady { _ = try await host.request("session.forget", sessionID: member.id) }
+            opened.remove(member.id)
+        }
+        try await store.beginFamilyDeletion(members); durable = true
+        try await finishFamilyDeletion(members)
+    }
+
+    func markPendingFamilyDeletions() async {
+        guard let store else { return }
+        let intents = (try? await store.list(SessionDeletionRecord.self, kind: SessionDeletionRecord.kind)) ?? []
+        deletingFamilies.formUnion(intents.map(\.ownerID))
+    }
+
+    func resumeFamilyDeletions() async {
+        guard let store else { return }
+        do {
+            let intents = try await store.list(SessionDeletionRecord.self, kind: SessionDeletionRecord.kind)
+            for members in Dictionary(grouping: intents, by: \.ownerID).values { try await finishFamilyDeletion(members) }
+        } catch { self.error = "Family deletion is incomplete and will be retried. " + error.localizedDescription }
+    }
+
+    private func finishFamilyDeletion(_ members: [SessionDeletionRecord]) async throws {
+        guard let store, let owner = members.first?.ownerID else { return }
+        deletingFamilies.insert(owner)
+        // Keep the parent until its children are gone, so a partial failure
+        // still has an obvious entry from which the user can retry deletion.
+        for member in members.sorted(by: { ($0.id == owner ? 1 : 0, $0.id) < ($1.id == owner ? 1 : 0, $1.id) }) {
+            guard member.ownerID == owner, try await store.get(String.self, kind: "session-deleted", id: member.id) == owner else { throw StoreError.invalidRecord }
+            let directory = try subagentDirectory(member.workspaceID)
+            try removeRetiredCaptureSpools(sessionID: member.id)
+            try await traces.clear(sessionID: member.id)
+            try await traces.forgetSubagentRelationships(sessionID: member.id, workspaceID: member.workspaceID)
+            if let path = member.path {
+                let journal = URL(fileURLWithPath: path)
+                guard journal.resolvingSymlinksInPath().deletingLastPathComponent().path == directory.path,
+                      journal.lastPathComponent == member.id + ".jsonl" else { throw StoreError.invalidRecord }
+                let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+                let files = names.filter { $0 == journal.lastPathComponent || $0 == journal.lastPathComponent + ".meta" || $0.hasPrefix(journal.lastPathComponent + ".stream") }
+                    .sorted().map { directory.appendingPathComponent($0) }
+                if !files.isEmpty {
+                    if let familyFileRecycler { try await familyFileRecycler(files) }
+                    else {
+                        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                            NSWorkspace.shared.recycle(files) { _, error in if let error { continuation.resume(throwing: error) } else { continuation.resume() } }
+                        }
+                    }
+                }
+            }
+            forgetReadState(member.id); forgetRunHold(member.id)
+            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: member.id) }
+            try await store.removeAll(kind: "receipt:\(member.id)")
+            try await store.removeAll(kind: "pending:\(member.id)")
+            contextReadings.removeValue(forKey: member.id); subagentSummaries.removeValue(forKey: member.id)
+            chats.removeAll { $0.id == member.id }; displays.removeValue(forKey: member.id); opened.remove(member.id)
+            forgetOpened(member.id)
+            if selectedID == member.id { selectedID = nil; selected = nil }
+            if focusedSessionID == member.id { focusedSessionID = nil }
+            try await removeDeletedCapturePreference(sessionID: member.id)
+            try await store.remove(kind: SessionDeletionRecord.kind, id: member.id)
+        }
+        deletingFamilies.remove(owner)
+    }
+}

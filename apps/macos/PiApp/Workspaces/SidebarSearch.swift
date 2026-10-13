@@ -216,7 +216,9 @@ import Combine
         return model.chats.compactMap { chat in
             guard let path = chat.path, !chat.isBackgroundTask, model.side(chat.id)?.kept != false,
                   !model.pendingChatIDs.contains(chat.id) else { return nil }
-            return ChatSearchSource(id: chat.id, path: path, rebuildsOnChange: chat.imported)
+            return ChatSearchSource(id: chat.id, path: path, rebuildsOnChange: chat.imported,
+                                    delegation: chat.delegationIssue == nil ? chat.delegation : nil,
+                                    parentJournal: chat.delegation.flatMap { model.record($0.budgetOwnerSessionID)?.path })
         }
     }
 
@@ -302,7 +304,7 @@ extension WorkspaceModel {
     }
     /// Whether a chat is listed by the filter: its title, or its messages.
     func sidebarMatches(_ chat: ChatRecord, query: String) -> Bool {
-        chat.title.localizedCaseInsensitiveContains(query) || sidebarSearchHit(chat.id) != nil
+        chat.title.localizedCaseInsensitiveContains(query) || chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || sidebarSearchHit(chat.id) != nil
     }
     /// After a chat the filter listed opened, its match is shown — unless
     /// the reader has opened something else meanwhile (`opening` is what
@@ -315,7 +317,13 @@ extension WorkspaceModel {
               (focusedSessionID ?? selectedID) == chatID, sidebarSearch.hit(for: chatID)?.messageID == hit.messageID else { return }
         // Cancelled by the next keystroke or open while it loads the page
         // around the match: the reveal stops at its next check.
-        let reveal = Task { await SidebarSearchReveal.reveal(self, chatID: chatID, messageID: hit.messageID, mark: .excerpt(hit.excerpt, highlight: hit.highlight)) }
+        let reveal = Task {
+            var messageID = hit.messageID
+            if messageID == "subagent-task:" + chatID, let path = record(chatID)?.path,
+               let first = try? await history.read(path: path, start: true).messages.first(where: { $0.role == "user" }) { messageID = first.id }
+            guard !Task.isCancelled else { return }
+            await SidebarSearchReveal.reveal(self, chatID: chatID, messageID: messageID, mark: .excerpt(hit.excerpt, highlight: hit.highlight))
+        }
         sidebarSearch.revealing = reveal
         await withTaskCancellationHandler { await reveal.value } onCancel: { reveal.cancel() }
     }

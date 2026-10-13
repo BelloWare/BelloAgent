@@ -162,6 +162,9 @@ extension WorkspaceModel {
         sessionClosings[id] = (token, task)
     }
     func open(_ item: ChatRecord, automaticContext: Bool = false) async throws -> HostSupervisor {
+        guard !deletingFamilies.contains(item.delegation?.budgetOwnerSessionID ?? item.id) else { throw HostError.failure("This chat is being deleted.") }
+        if try await store?.get(String.self, kind: "session-deleted", id: item.delegation?.budgetOwnerSessionID ?? item.id) != nil { throw HostError.failure("This chat is being deleted.") }
+        if let issue = item.delegationIssue { throw HostError.failure(issue) }
         displays[item.id]?.isManagedSubagent = item.isSubagent
         // A close sent when the chat's display was let go of lands first, so
         // this open is not answered by the session being unloaded; so does a

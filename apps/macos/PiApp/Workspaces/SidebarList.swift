@@ -17,6 +17,7 @@ enum SidebarEntry: Equatable {
     /// Under a chat the filter listed for its messages: the match (`SidebarSearch.swift`).
     case searchSnippet(SidebarSearchSnippetState)
     case side(SidebarSideRowState)
+    case subagentGroup(SubagentGroupState)
     case pagination(groupID: String, projectID: String, hiddenRoots: Int, shownRoots: Int, indent: CGFloat)
     case empty(groupID: String, text: String, indent: CGFloat)
     /// A group that shows nothing: no room, but the stack's spacing around it.
@@ -32,6 +33,7 @@ enum SidebarEntry: Equatable {
         case .chat(let chat, _, _): return "chat|" + chat.id
         case .searchSnippet(let state): return "snippet|" + state.chatID
         case .side(let state): return "side|" + state.id
+        case .subagentGroup(let state): return "subagents|" + state.parentID
         case .pagination(let group, _, _, _, _): return "pages|" + group
         case .empty(let group, _, _): return "empty|" + group
         case .nothing(let group): return "nothing|" + group
@@ -139,6 +141,7 @@ struct SidebarListContents: Equatable {
             if filtering, let hit = model.sidebarSearchHit(row.chat.id) {
                 add(.searchSnippet(SidebarSearchSnippetState(chat: row.chat, hit: hit, indent: row.state.indent)), topic)
             }
+            if let state = model.subagentGroupState(parent: row.chat, indent: row.state.indent + 14, filtering: filtering) { add(.subagentGroup(state), topic) }
             if let side = row.side { add(.side(side), topic) }
         }
         if group.paginates {

@@ -52,6 +52,7 @@ extension WorkspaceModel {
         let task = organizationScheduler.enqueue(ids: Set(targets)) { [self] in
             guard !installPreparing, !isShutDown else { throw HostError.failure("Wait for the app update to finish before changing a chat.") }
             guard !targets.isEmpty, targets.count <= Self.markedSessionLimit, let store else { throw StoreError.invalidRecord }
+            if case .archived = change { for id in targets where record(id)?.isSubagent == false { await reconcileSubagents(parentID: id) } }
             var existing: [String] = []
             for id in targets where record(id) != nil {
                 // Pending chats retain their existing materialization/draft contract.

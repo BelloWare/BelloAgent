@@ -124,6 +124,7 @@ extension WorkspaceModel {
     /// A row's second line while it has no figures to show: its state, and the
     /// connection it runs on when there is more than one to tell apart.
     func sidebarRowSubtitle(_ chat: ChatRecord, namesConnection: Bool) -> String {
+        if let owner = chat.delegation?.budgetOwnerSessionID { return "Sub-agent · " + (record(owner)?.title ?? "Parent unavailable") }
         let state = chat.isArchived ? "Archived" : chat.imported ? "Imported" : chat.toolMode == ChatRecord.readOnlyTools ? "Read-only" : "Ready"
         guard namesConnection, !chat.imported, let connection = profiles.first(where: { $0.id == chat.profileID }) else { return state }
         return state + " \u{b7} " + connection.name
@@ -171,6 +172,7 @@ extension WorkspaceModel {
         var rows: [SidebarGroupRow] = []
         rows.reserveCapacity(visible.count)
         for entry in visible {
+            if let owner = entry.chat.delegation?.budgetOwnerSessionID, entry.chat.delegationIssue == nil, record(owner) != nil, !filtering, !subagentGroupExpanded(owner) { continue }
             let chat = entry.chat, side = sides[chat.id]
             let selected = focusedSessionID == chat.id || selectedID == chat.id && focusedSessionID == nil
             var row = SidebarGroupRow(chat: chat, state: SidebarChatRowState(
@@ -180,14 +182,14 @@ extension WorkspaceModel {
                 unreadCount: unreadOutputCount(sessionID: chat.id),
                 unreadFailure: unreadFailure(sessionID: chat.id),
                 markedUnreadOnly: markedUnreadOnly(sessionID: chat.id),
-                heldRun: chat.isArchived || chat.isUtilityChat ? nil : runHolds[chat.id]?.presented,
+                heldRun: chat.isSubagent || chat.isArchived || chat.isUtilityChat ? nil : runHolds[chat.id]?.presented,
                 recency: recencyRank(chat.id),
                 hasDraft: showsDraftMark(chat.id),
                 topicTag: tag(entry),
                 liveIdentity: displays[chat.id].map(ObjectIdentifier.init),
                 hasSide: entry.hasChildren || side?.kept == false,
                 expanded: !folded.contains(chat.id),
-                draggable: projectDraggable && !chat.isUtilityChat,
+                draggable: projectDraggable && !chat.isUtilityChat && !chat.isSubagent,
                 subtitle: sidebarRowSubtitle(chat, namesConnection: namesConnection),
                 available: ChatRowMetrics.availableWidth(sidebar: sidebarWidth, indent: indent, depth: entry.depth),
                 indent: indent + CGFloat(min(entry.depth, 3) * 14)))

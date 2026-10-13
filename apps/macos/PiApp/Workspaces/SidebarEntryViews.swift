@@ -200,7 +200,7 @@ import Combine
                                        unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
                                        markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft, topicTag: state.topicTag, hasSide: state.hasSide,
                                        expanded: state.expanded, pinned: chat.isPinned, archived: chat.isArchived,
-                                       archivable: !chat.isUtilityChat, available: state.available)
+                                       archivable: !chat.isSubagent && !chat.isUtilityChat, available: state.available)
     }
     /// The live page a row in `state` reads its figures from, if any.
     static func liveDisplay(model: WorkspaceModel, chatID: String, state: SidebarChatRowState) -> SessionDisplay? {

@@ -18,6 +18,7 @@ import Foundation
 
 /// A chat whose run waits for Resume, or was under way when last seen.
 struct RunHoldRecord: Codable, Sendable, Equatable {
+    struct Family: Codable, Sendable, Equatable { var active: Int; var queued: Int }
     static let kind = "run-hold"
     /// Written once the first launch of this build has read every journal.
     static let bootstrapKind = "run-hold-bootstrap", bootstrapID = "v1"
@@ -25,6 +26,7 @@ struct RunHoldRecord: Codable, Sendable, Equatable {
     /// "paused", "interrupted", or "active": a run was under way when last
     /// seen, so the app quit (which stops runs) or stopped during it.
     var state: String
+    var family: Family?
     /// What the chat's row says until the chat's own state is known: an
     /// interrupted run is called so, anything else waiting is "paused".
     var presented: String { state == RunState.interrupted.rawValue ? state : RunState.paused.rawValue }
@@ -46,7 +48,7 @@ extension WorkspaceModel {
     /// The state a chat's row shows when its display does not know its own:
     /// "paused" or "interrupted", else nil.
     func heldRunState(_ sessionID: String) -> String? {
-        guard let record = record(sessionID), !record.isArchived, !record.isUtilityChat else { return nil }
+        guard let record = record(sessionID), !record.isSubagent, !record.isArchived, !record.isUtilityChat else { return nil }
         if let view = displays[sessionID], view.runStateKnown { return nil }
         return runHolds[sessionID]?.presented
     }
@@ -57,12 +59,19 @@ extension WorkspaceModel {
     /// finished) is activity for the sidebar's order; one read from a journal
     /// is not.
     func reconcileRunHold(_ sessionID: String, isActivity: Bool = true) {
-        guard let view = displays[sessionID], view.runStateKnown, let item = record(sessionID), !item.isUtilityChat,
+        guard let view = displays[sessionID], view.runStateKnown, let item = record(sessionID), !item.isSubagent, !item.isUtilityChat,
               !isEphemeral(sessionID), !pendingChatIDs.contains(sessionID) else { return }
         let hold = view.runHold
-        guard runHolds[sessionID]?.state != hold else { return }
+        let family = familyRunHold(sessionID)
+        guard runHolds[sessionID]?.state != hold || runHolds[sessionID]?.family != family else { return }
         setRunHold(sessionID, hold)
         if isActivity, !quietActivity.contains(sessionID) { noteChatActivity(sessionID) }
+    }
+
+    private func familyRunHold(_ owner: String) -> RunHoldRecord.Family? {
+        let states = subagentChildren(of: owner).compactMap { subagentSummaries[$0.id]?.status }
+        let active = states.filter { $0 == .running || $0 == .stopping }.count, queued = states.filter { $0 == .queued }.count
+        return active + queued == 0 ? nil : RunHoldRecord.Family(active: active, queued: queued)
     }
 
     func setRunHold(_ sessionID: String, _ state: String?) { setRunHolds([(sessionID, state)]) }
@@ -70,7 +79,7 @@ extension WorkspaceModel {
     func setRunHolds(_ changes: [(String, String?)]) {
         var next = runHolds, changed: [String] = []
         for (id, state) in changes {
-            let hold = state.map { RunHoldRecord(id: id, state: $0) }
+            let hold = state.map { RunHoldRecord(id: id, state: $0, family: familyRunHold(id)) }
             guard next[id] != hold else { continue }
             if let hold { next[id] = hold } else { next.removeValue(forKey: id) }
             changed.append(id)
@@ -120,7 +129,7 @@ extension WorkspaceModel {
     /// decide. A chat whose state is known by then keeps what it knows.
     func restoreRunHolds() async {
         guard let store else { return }
-        let known = Dictionary(chats.filter { !$0.isUtilityChat }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let known = Dictionary(chats.filter { !$0.isSubagent && !$0.isUtilityChat }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let saved = (try? await store.list(RunHoldRecord.self, kind: RunHoldRecord.kind)) ?? []
         var shown = runHolds
         for hold in saved where known[hold.id] != nil && shown[hold.id] == nil && displays[hold.id]?.runStateKnown != true { shown[hold.id] = hold }

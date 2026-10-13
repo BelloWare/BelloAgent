@@ -56,7 +56,7 @@ extension WorkspaceModel {
         if let readBadgeCache { return readBadgeCache }
         var counts = SidebarReadCounts()
         for state in unreadStates.values {
-            guard let chat = record(state.id), !chat.isArchived, chat.connectionTest != true else { continue }
+            guard let chat = record(state.id), !chat.isSubagent, !chat.isArchived, chat.connectionTest != true else { continue }
             if state.isUnread {
                 counts.unreadChats += 1
                 // A mark the reader made counts on its own: a run that fails
@@ -72,20 +72,20 @@ extension WorkspaceModel {
     /// Unread replies, or one for a chat the reader marked unread: everything
     /// that shows a dot, a bold title or a count reads this.
     func unreadOutputCount(sessionID: String) -> Int {
-        guard let item = record(sessionID), item.connectionTest != true, !item.isArchived, let state = unreadStates[sessionID] else { return 0 }
+        guard let item = record(sessionID), !item.isSubagent, item.connectionTest != true, !item.isArchived, let state = unreadStates[sessionID] else { return 0 }
         return max(state.unreadOutputs, state.markedUnread == true ? 1 : 0)
     }
     /// Unread only because the reader marked it so, with no reply behind the
     /// mark: its words say "Unread", not "New reply".
     func markedUnreadOnly(sessionID: String) -> Bool {
-        guard let item = record(sessionID), item.connectionTest != true, !item.isArchived, let state = unreadStates[sessionID] else { return false }
+        guard let item = record(sessionID), !item.isSubagent, item.connectionTest != true, !item.isArchived, let state = unreadStates[sessionID] else { return false }
         return state.markedUnread == true && state.unreadOutputs == 0
     }
     /// Whether Mark as Unread applies: a saved chat of the reader's own (not
     /// archived, not a connection test or background request, not a side that
     /// has not been kept, not a New chat never sent), with nothing unread.
     func canMarkSessionUnread(_ sessionID: String) -> Bool {
-        guard let item = record(sessionID), !item.isArchived, !item.isUtilityChat, !isEphemeral(sessionID),
+        guard let item = record(sessionID), !item.isSubagent, !item.isArchived, !item.isUtilityChat, !isEphemeral(sessionID),
               !pendingChatIDs.contains(sessionID), readStatesRestored else { return false }
         return !offersMarkSessionRead(sessionID)
     }
@@ -115,13 +115,13 @@ extension WorkspaceModel {
         sidebarReadCounts.projects.contains(projectID)
     }
     func unreadFailure(sessionID: String) -> Bool {
-        guard let item = record(sessionID), item.connectionTest != true, !item.isArchived else { return false }
+        guard let item = record(sessionID), !item.isSubagent, item.connectionTest != true, !item.isArchived else { return false }
         return unreadStates[sessionID]?.unreadFailure == true
     }
     /// A run ended in an error while the chat was not in front: mark it so the
     /// sidebar shows it, without bouncing the Dock or counting in its badge.
     func markRunFailed(sessionID: String) {
-        guard let item = record(sessionID), item.connectionTest != true, !item.isArchived else { return }
+        guard let item = record(sessionID), !item.isSubagent, item.connectionTest != true, !item.isArchived else { return }
         guard !(page == .chats && (sessionID == selectedID || sides[selectedID ?? ""]?.id == sessionID) && NSApp.isActive) else { return }
         var next = unreadStates[sessionID] ?? SessionReadState(id: sessionID, observedAssistantCount: 0, latestAssistantID: nil)
         guard next.unreadFailure != true else { return }
@@ -136,7 +136,7 @@ extension WorkspaceModel {
     }
 
     func restoreReadStates() async throws {
-        let known = Set(chats.filter { $0.connectionTest != true }.map(\.id))
+        let known = Set(chats.filter { !$0.isSubagent && $0.connectionTest != true }.map(\.id))
         let saved = try await store?.list(SessionReadState.self, kind: "session-read") ?? []
         unreadStates = Dictionary(saved.filter { known.contains($0.id) && (0...100_000).contains($0.observedAssistantCount) && (0...100_000).contains($0.unreadOutputs) && $0.revision >= 0 && $0.revision < Int64.max }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         readStatesRestored = true
@@ -187,7 +187,7 @@ extension WorkspaceModel {
     /// requested. A first observation baselines imported/existing history.
     /// session.open observes this before any turn can be submitted.
     func observeAssistantOutputs(sessionID: String, snapshot: [String: WireValue]) {
-        guard let item = record(sessionID), item.connectionTest != true,
+        guard let item = record(sessionID), !item.isSubagent, item.connectionTest != true,
               let rawCount = snapshot["assistantMessageCount"]?.number, rawCount.isFinite,
               rawCount.rounded() == rawCount, rawCount >= 0, rawCount <= 100_000 else { return }
         let latest = snapshot["latestAssistantMessageId"]?.string

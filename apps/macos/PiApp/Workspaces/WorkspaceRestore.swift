@@ -37,6 +37,8 @@ extension WorkspaceModel {
             adoptRememberedSelection(remembered)
             await settleBackgroundRequests()
             await nameUnnamedJournals()
+            await markPendingFamilyDeletions()
+            await reconcileSubagents()
             try await restoreTopics()
             try await restoreReadStates()
             await restoreRunHolds()
@@ -56,6 +58,12 @@ extension WorkspaceModel {
             // the billing of every listed chat waits until the chat is open.
             var archiveOpen = false
             if let loaded { archiveOpen = await openConfiguredArchive(loaded) }
+            if archiveOpen {
+                await resumeFamilyDeletions()
+                for summary in subagentSummaries.values where record(summary.link.childSessionID)?.delegationIssue == nil {
+                    if let workspace = record(summary.link.childSessionID)?.workspaceID { try await traces.recordSubagent(summary, workspaceID: workspace) }
+                }
+            }
             // Restore history without opening every runtime: one chat, the one
             // the reader had open. Only the focused, safe native chat may
             // prepare its context in the background.

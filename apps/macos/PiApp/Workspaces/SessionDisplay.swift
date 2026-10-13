@@ -83,6 +83,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     var subagentsRevision: String?
     var isManagedSubagent = false
     @Published var subagentStatus: SubagentStatus?
+    @Published var delegatedTask: String?
     /// Committed activity only: text, draft, selection and context rendering do not enter this stream.
     let activityChanges = PassthroughSubject<Void, Never>()
     let id: String
@@ -244,6 +245,9 @@ struct TranscriptVersionView: Equatable, Sendable {
             if let at = latest.firstIndex(where: { $0.id == version.latestID }) { return Array(latest[..<at]) + version.presented }
         }
         var rows = Self.hidingBranchMarkers(messages)
+        if isManagedSubagent, messages.isEmpty, let delegatedTask, !delegatedTask.isEmpty {
+            rows.append(TranscriptMessage(id: "subagent-task:" + id, role: "user", text: delegatedTask))
+        }
         for row in sendingRows where !messages.reversed().contains(where: { $0.id == row.id }) { rows.append(row) }
         if let retryNotice { rows.append(TranscriptMessage(id: "notice:retry:" + id, role: "system", text: retryNotice, kind: "notice")) }
         if let failureMessage {

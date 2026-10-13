@@ -6,24 +6,13 @@ extension WorkspaceModel {
     func openSubagent(_ target: SubagentTarget) async {
         let navigation = selectionRevision
         do {
-            guard let parent = record(target.ownerID), let store else { throw HostError.failure("The parent chat is unavailable. The saved child can still be opened from search.") }
-            let directory = root.appendingPathComponent("Workspaces/\(parent.workspaceID)/Sessions", isDirectory: true)
+            guard let parent = record(target.ownerID), store != nil else { throw HostError.failure("The parent chat is unavailable. The saved child can still be opened from search.") }
+            let directory = try subagentDirectory(parent.workspaceID)
             let path = directory.appendingPathComponent(target.sessionID + ".jsonl")
             let header = try await history.subagentHeader(path: path, directory: directory, expected: target)
             guard !isShutDown, !Task.isCancelled, selectionRevision == navigation, record(parent.id)?.workspaceID == parent.workspaceID else { return }
-            if let existing = record(target.sessionID) {
-                guard existing.workspaceID == parent.workspaceID, existing.delegation == header.link else { throw StoreError.invalidRecord }
-            } else {
-                let grant = header.model
-                let child = ChatRecord(id: target.sessionID, workspaceID: parent.workspaceID, title: header.description, path: path.path,
-                                       profileID: parent.profileID, toolMode: header.readOnly ? ChatRecord.readOnlyTools : ChatRecord.editingTools,
-                                       model: grant.model, thinkingLevel: grant.thinkingLevel, contextWindow: grant.contextWindow,
-                                       maxOutputTokens: grant.maxOutputTokens, modelOutputLimit: grant.modelOutputLimit,
-                                       archivedAt: parent.archivedAt, topicID: parent.topicID, parentSessionID: parent.id, delegation: header.link)
-                try await store.put(child, kind: "chat", id: child.id)
-                guard !isShutDown, record(parent.id) != nil else { return }
-                chats.append(child)
-            }
+            if record(target.sessionID) == nil { await reconcileSubagents(parentID: parent.id) }
+            guard let child = record(target.sessionID), child.workspaceID == parent.workspaceID, child.delegation == header.link else { throw StoreError.invalidRecord }
             guard selectionRevision == navigation else { return }
             await select(target.sessionID, revealInSidebar: false, reopensSide: false, focusesComposer: false)
             if let child = record(target.sessionID), hosts[parent.workspaceID]?.isReady == true, opened.contains(parent.id) {
@@ -102,6 +91,10 @@ extension WorkspaceModel {
     /// A changed family revision pages journal-backed summaries, including
     /// queued tasks with no capture. No extra read on ordinary token updates.
     func refreshSubagentGroups(parent: ChatRecord, host: HostSupervisor, connection: UUID) async throws {
+        let plans: [DiscoveredSubagent]
+        if let path = record(parent.id)?.path { plans = try await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: parent.id) }
+        else { plans = [] }
+        let tasks = Dictionary(plans.map { ($0.header.link.childSessionID, $0.task) }, uniquingKeysWith: { first, _ in first })
         var cursor = 0
         repeat {
             let page = try await host.request("subagent.list", sessionID: parent.id, params: ["cursor":.number(Double(cursor))]).object ?? [:]
@@ -110,10 +103,16 @@ extension WorkspaceModel {
             for value in page["children"]?.array ?? [] {
                 let summary = try JSONDecoder().decode(SubagentSummary.self, from: JSONEncoder().encode(value))
                 guard summary.link.budgetOwnerSessionID == parent.id else { throw StoreError.invalidRecord }
+                let directory = try subagentDirectory(parent.workspaceID)
+                let path = directory.appendingPathComponent(summary.link.childSessionID + ".jsonl")
+                let header = try await history.subagentHeader(path: path, directory: directory, expected: SubagentTarget(summary.link))
+                let found = DiscoveredSubagent(header: header, path: path.path, task: tasks[summary.link.childSessionID] ?? "", status: summary.status)
+                try await registerDiscoveredSubagent(found, workspaceID: parent.workspaceID, live: summary)
                 try await traces.recordSubagent(summary, workspaceID: parent.workspaceID)
             }
             guard let next = page["cursor"]?.nonnegativeInteger else { break }
             guard next > cursor else { throw StoreError.invalidRecord }; cursor = next
         } while true
+        reconcileRunHold(parent.id)
     }
 }

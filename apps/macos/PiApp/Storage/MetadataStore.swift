@@ -152,6 +152,7 @@ actor MetadataStore {
         } else { savedRevision = try revision ?? reserveRevision(kind: kind, id: id) }
         let data: Data
         if kind == "chat", var chat = value as? ChatRecord {
+            guard try get(String.self, kind: "session-deleted", id: id) == nil else { throw StoreError.invalidRecord }
             // A chat's record is written from many places at once; what an
             // older copy may not take back is in `ChatRecordMerge.swift`.
             if let previous = try get(ChatRecord.self, kind: kind, id: id) { chat = chat.merged(over: previous, releasingTitleClaim: releasingTitleClaim) }
@@ -247,11 +248,20 @@ actor MetadataStore {
         let started = ProcessInfo.processInfo.systemUptime
         let result = try transaction {
             var result = ChatOrganizationBatch(), seen: Set<String> = []
+            var family: Set<String> = []
+            if case .archived = change {
+                let owners = try ids.compactMap { try get(ChatRecord.self, kind: "chat", id: $0) }.filter { !$0.isSubagent }
+                let projects = Dictionary(owners.map { ($0.id, $0.workspaceID) }, uniquingKeysWith: { first, _ in first })
+                for row in try organizationRows() {
+                    if let link = row.delegation, link.valid, link.childSessionID == row.id,
+                       projects[link.budgetOwnerSessionID] == row.workspaceID { family.insert(row.id) }
+                }
+            }
             var patches: [ChatRecord] = []
-            for id in ids where seen.insert(id).inserted {
+            for id in ids + family.sorted() where seen.insert(id).inserted {
                 do {
                     guard let original = try get(ChatRecord.self, kind: "chat", id: id) else { result.missing.insert(id); continue }
-                    guard original.id == id else { result.rejected.insert(id); continue }
+                    guard original.id == id, !original.isSubagent || family.contains(id) else { result.rejected.insert(id); continue }
                     var chat = original
                     try changeOrganization(&chat, change: change, now: now)
                     if chat == original { result.unchanged.insert(id) }
@@ -345,7 +355,7 @@ actor MetadataStore {
             var selected: [String: ChatRecord] = [:]
             for id in ids.sorted() {
                 guard let chat = try get(ChatRecord.self, kind: "chat", id: id), chat.workspaceID == workspaceID,
-                      !chat.isUtilityChat else { throw StoreError.invalidRecord }
+                      !chat.isUtilityChat, !chat.isSubagent else { throw StoreError.invalidRecord }
                 selected[id] = chat
             }
             // A kept side can commit just before its UI row is published.
@@ -420,6 +430,7 @@ actor MetadataStore {
     /// database on every drop, which is most of what a drag costs.
     private struct OrganizationRow: Decodable {
         var id: String; var workspaceID: String; var topicID: String?; var parentSessionID: String?
+        var delegation: SubagentLink?
         var backgroundTask: String?; var connectionTest: Bool?
         var pinnedAt: Date?; var archivedAt: Date?
         var isBackgroundTask: Bool { backgroundTask != nil }
@@ -642,6 +653,47 @@ actor MetadataStore {
 
     /// Several chat records in one transaction, each written as `put` writes
     /// it: launch settling every background request a quit left, at once.
+    /// Rebase discovery on the owner's latest durable organization in one
+    /// actor turn. A delayed scan cannot restore a deleted or moved family.
+    func beginFamilyDeletion(_ members: [SessionDeletionRecord]) throws {
+        try transaction {
+            guard let owner = members.first?.ownerID, members.contains(where: { $0.id == owner }),
+                  Set(members.map(\.id)).count == members.count, Set(members.map(\.workspaceID)).count == 1,
+                  members.allSatisfy({ $0.ownerID == owner && ($0.id == owner || UUID(uuidString: $0.id) != nil) }) else { throw StoreError.invalidRecord }
+            for member in members {
+                try put(owner, kind: "session-deleted", id: member.id)
+                try put(member, kind: SessionDeletionRecord.kind, id: member.id)
+            }
+        }
+    }
+
+    func registerSubagent(_ found: DiscoveredSubagent, workspaceID: String) throws -> ChatRecord? {
+        let header = found.header, link = header.link
+        guard link.valid, try get(String.self, kind: "session-deleted", id: link.childSessionID) == nil,
+              try get(String.self, kind: "session-deleted", id: link.budgetOwnerSessionID) == nil else { return nil }
+        let parent = try get(ChatRecord.self, kind: "chat", id: link.budgetOwnerSessionID)
+        let validParent = parent.flatMap { $0.workspaceID == workspaceID && !$0.isSubagent && !$0.imported ? $0 : nil }
+        let issue = found.issue ?? (validParent == nil ? "The parent chat is unavailable. This saved sub-agent is view-only." : nil)
+        let old = try get(ChatRecord.self, kind: "chat", id: link.childSessionID)
+        if let old { guard old.workspaceID == workspaceID, old.delegation == link, old.path == found.path else { throw StoreError.invalidRecord } }
+        var child = old ?? ChatRecord(id: link.childSessionID, workspaceID: workspaceID, title: header.description, path: found.path,
+            profileID: validParent?.profileID ?? "", toolMode: header.readOnly ? ChatRecord.readOnlyTools : ChatRecord.editingTools,
+            model: header.model.model, thinkingLevel: header.model.thinkingLevel, contextWindow: header.model.contextWindow,
+            maxOutputTokens: header.model.maxOutputTokens, modelOutputLimit: header.model.modelOutputLimit,
+            parentSessionID: issue == nil ? link.budgetOwnerSessionID : nil, delegation: link)
+        // Small metadata preview; the complete task remains in the owner's
+        // journal and the ordinary child's user message once it starts.
+        if !found.task.isEmpty { child.delegationTask = String(found.task.prefix(4096)) }
+        child.delegationIssue = issue ?? old?.delegationIssue
+        if child.delegationIssue != nil { child.parentSessionID = nil }
+        if let parent = validParent, child.delegationIssue == nil {
+            child.archivedAt = parent.archivedAt; child.topicID = parent.topicID; child.pinnedAt = nil
+            child.parentSessionID = parent.id
+        }
+        if child != old { try put(child, kind: "chat", id: child.id) }
+        return child
+    }
+
     func putChats(_ records: [ChatRecord]) throws {
         let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
@@ -773,6 +825,8 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var parentSessionID: String?
     /// Managed task identity. Unlike a side, this chat has no independent input.
     var delegation: SubagentLink?
+    var delegationTask: String?
+    var delegationIssue: String?
     var isSubagent: Bool { delegation != nil }
     /// This chat's own cost limit; nil runs it under the Settings default.
     var costLimit: CostLimit?
@@ -867,6 +921,8 @@ extension ChatRecord {
         organizationRevision = try c.decodeIfPresent(Int64.self, forKey: .organizationRevision); topicID = try c.decodeIfPresent(String.self, forKey: .topicID)
         parentSessionID = try c.decodeIfPresent(String.self, forKey: .parentSessionID); costLimit = try c.decodeIfPresent(CostLimit.self, forKey: .costLimit)
         delegation = try c.decodeIfPresent(SubagentLink.self, forKey: .delegation)
+        delegationTask = try c.decodeIfPresent(String.self, forKey: .delegationTask)
+        delegationIssue = try c.decodeIfPresent(String.self, forKey: .delegationIssue)
         costLimitRevision = try c.decodeIfPresent(Int64.self, forKey: .costLimitRevision)
         webhookOff = try c.decodeIfPresent(Bool.self, forKey: .webhookOff); connectionRevision = try c.decodeIfPresent(Int64.self, forKey: .connectionRevision)
         journalRebind = try c.decodeIfPresent(Bool.self, forKey: .journalRebind)
