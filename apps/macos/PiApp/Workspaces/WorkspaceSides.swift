@@ -520,6 +520,9 @@ extension WorkspaceModel {
             updateHostActivity(workspaceID: info.workspaceID)
             if let host = hosts[info.workspaceID] { scheduleIdle(workspaceID: info.workspaceID, host: host) }
         }; do {
+            // Recovery removes its intent only with the merged draft saved.
+            // Wait before any capture so closing cannot overwrite that draft.
+            if let recovery = draftWrites.recoveries[id] { await recovery.value }
             guard let store else { throw StoreError.unavailable }
             if !info.kept {
                 guard let host = hosts[info.workspaceID], host.isReady else { throw HostError.failure("The side could not be saved. Reopen its project to recover its journal; the panel remains open.") }

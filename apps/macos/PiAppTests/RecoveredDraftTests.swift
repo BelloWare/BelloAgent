@@ -43,6 +43,40 @@ final class RecoveredDraftTests: XCTestCase {
         XCTAssertTrue(left.isEmpty)
     }
 
+    @MainActor func testClosingAKeptSideWaitsForRecoveryBeforeSavingItsDraft() async throws {
+        let (model, view, store, original) = try await fixture()
+        let parent = SessionDisplay(id: "parent"); model.displays[parent.id] = parent
+        model.sides[parent.id] = SideRecord(id: view.id, parentID: parent.id, workspaceID: "w", profileID: "p", title: "Side", kept: true)
+        model.selectedID = parent.id; model.selected = parent; model.focusedSessionID = view.id
+        view.attachments = [image(0)]; view.skills = [skill(0)]
+        var intent = original; intent.attachments = [image(1)]; intent.skills = [skill(1)]
+        try await store.recordSubmission(intent, draft: view.savedDraft); view.recovered = [intent]
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(model.root.appendingPathComponent("desktop.sqlite").path, &database), SQLITE_OK)
+        let db = try XCTUnwrap(database)
+        defer { sqlite3_exec(db, "ROLLBACK", nil, nil, nil); sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        model.recoverDraft(intent, insert: true)
+        let recovery = try XCTUnwrap(model.draftWrites.recoveries[view.id])
+        try await eventually("recovery is committing") { view.recoveringDraft }
+        model.closeSide(view.id)
+        // Let closure reach the blocked store while recovery still owns the
+        // draft. Its write must not capture the pre-recovery composer.
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertTrue(view.loading); XCTAssertEqual(model.sides[parent.id]?.id, view.id)
+        XCTAssertEqual(sqlite3_exec(db, "ROLLBACK", nil, nil, nil), SQLITE_OK)
+        await recovery.value
+        // A crash has no later debounce to repair a stale close write.
+        let debounce = model.draftWrites.tasks[view.id]; debounce?.cancel(); await debounce?.value
+        try await eventually("side closed") { model.sides[parent.id] == nil && !view.loading }
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: view.id)
+        let pending = try await store.get(CommandIntent.self, kind: "pending:chat", id: intent.id)
+        XCTAssertEqual(saved?.text, "Current draft\n\nInterrupted message")
+        XCTAssertEqual(saved?.attachments, [image(0), image(1)]); XCTAssertEqual(saved?.skills, [skill(0), skill(1)])
+        XCTAssertEqual(saved?.submissionReviews, [intent.id]); XCTAssertNil(pending)
+        XCTAssertTrue(view.recovered.isEmpty); XCTAssertEqual(model.focusedSessionID, parent.id)
+    }
+
     @MainActor func testFailedTransactionLeavesDraftIntentAndBannerForRetry() async throws {
         let (model, view, store, intent) = try await fixture()
         try Self.sql("CREATE TRIGGER refuse_recovery BEFORE DELETE ON records WHEN OLD.kind='pending:chat' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END", root: model.root)
