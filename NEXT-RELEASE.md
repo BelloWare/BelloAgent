@@ -6,6 +6,7 @@
 
 ## 0.1.126 decisions made while the owner was away (2026-10-13 night)
 
+- RL-04 (capture lost at graceful shutdown): fixed with a bounded drain. The helper keeps delivering, and the app keeps acknowledging, queued capture packets until the outbox is empty or the existing shutdown deadline arrives. A drain cut short is marked partial. A durable spool-and-replay design was built and dropped: two review rounds found data-boundary bugs in it, including cleared chats' bodies surviving on disk.
 - UI-05 (send during image paste): Send waits while an image is importing. The button is disabled and a notice says "Adding image…". This replaces a deferred auto-send, which kept producing races in review (navigation, eviction, draft reload, deletion).
 
 ## 0.1.125
