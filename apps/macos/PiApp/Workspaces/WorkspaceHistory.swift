@@ -17,8 +17,8 @@ extension WorkspaceModel {
     func readConversationWindow(_ item: ChatRecord, cursor: ConversationCursor?, newer: Bool = false,
                                 around: String? = nil, start: Bool = false, position: Int? = nil,
                                 validating: ConversationCursor? = nil) async throws -> ConversationHistoryPage {
-        if let historyWindowLoader { return try await historyWindowLoader(item.id, cursor, newer, start ? HistoryWindowEdge.start : position.map(HistoryWindowEdge.position) ?? around) }
         try Task.checkCancellation()
+        if let historyWindowLoader { return try await historyWindowLoader(item.id, cursor, newer, start ? HistoryWindowEdge.start : position.map(HistoryWindowEdge.position) ?? around) }
         if opened.contains(item.id), let host = hosts[item.workspaceID] {
             var params: [String: WireValue] = ["version": .number(2), "direction": .string(newer ? "newer" : "older")]
             // Source handoff uses a stable entry id. Numeric file positions are
@@ -32,11 +32,11 @@ extension WorkspaceModel {
             if start { params["edge"] = .string("start") }
             if let position, !start, around == nil {
                 params["position"] = .number(Double(position))
-                // A window read from the journal hands over by a stable entry,
-                // which the helper checks is still in its branch.
-                if cursor == nil, let validating, validating.incarnation.hasPrefix("file:") {
-                    params["entry"] = .string(validating.entry); params["lineage"] = .string(validating.lineage)
-                }
+            }
+            // Reveals, Home and position reads all validate the held window
+            // when handing its file boundary to the helper.
+            if cursor == nil, let validating, validating.incarnation.hasPrefix("file:") {
+                params["entry"] = .string(validating.entry); params["lineage"] = .string(validating.lineage)
             }
             let result = try await host.request("session.history", sessionID: item.id, params: params)
             try Task.checkCancellation()
@@ -52,7 +52,7 @@ extension WorkspaceModel {
             }
             // A window the helper read hands over to the journal by a stable
             // entry: still in the journal's branch, on the same lineage.
-            if cursor == nil, position != nil, let validating, !validating.incarnation.hasPrefix("file:") {
+            if cursor == nil, let validating, !validating.incarnation.hasPrefix("file:") {
                 let held = try await history.read(path: path, around: validating.entry, targetTurns: 1)
                 guard held.lineage == validating.lineage else { throw HostError.failure("History branch changed during source handoff. Reload history.") }
             }
@@ -366,26 +366,42 @@ extension WorkspaceModel {
     /// whole-chat scroller come back without waiting for a page read.
     func reacquireHistoryPositions(_ id: String) {
         guard let view = displays[id], let item = record(id), view.historyPositions.total == nil, !view.messages.isEmpty else { return }
-        // Once per timeline: a source that does not say stays unsaid.
+        // Once per generation and timeline: an old recovery cannot suppress
+        // the new window's, while a source that does not say stays unsaid.
         let lineage = view.presentation.identity?.lineage
-        guard view.positionsReadFor != (lineage ?? "") else { return }
-        view.positionsReadFor = lineage ?? ""
+        let generation = view.presentationGeneration
+        let requestKey = generation.uuidString + ":" + (lineage ?? "")
+        guard view.positionsReadFor != requestKey else { return }
+        view.positionsReadFor = requestKey
         Task { [weak self, weak view] in
             guard let self, let view else { return }
-            guard let page = try? await self.readConversationWindow(item, cursor: nil) else {
-                // Not read (a helper busy, say): asked again by the next update.
-                if view.positionsReadFor == (lineage ?? "") { view.positionsReadFor = nil }
-                return
+            @MainActor func current() -> Bool {
+                !Task.isCancelled && self.displays[id] === view && view.presentationGeneration == generation
+                    && view.presentation.identity?.lineage == lineage && view.positionsReadFor == requestKey
+                    && view.historyPositions.total == nil
             }
-            // The timeline the window shows now (a new side's first snapshot
-            // names it after this was asked).
-            let shown = view.presentation.identity?.lineage
-            guard shown == nil || page.lineage == shown, view.historyPositions.total == nil else { return }
-            view.historyPositions.record(page)
-            // The page works out the room again for the rows it shows.
-            view.presentationChanges.send(view.presentationChanges.value)
+            // An idle chat gets two retries without needing another model
+            // update. A newer display, branch or successful edge read ends it.
+            for attempt in 0..<3 {
+                if attempt > 0 {
+                    do { try await Task.sleep(for: .milliseconds(attempt == 1 ? 100 : 300)) }
+                    catch { return }
+                }
+                guard current() else { return }
+                do {
+                    let page = try await self.readConversationWindow(item, cursor: nil)
+                    guard current(), lineage == nil || page.lineage == lineage else { return }
+                    view.historyPositions.record(page)
+                    view.presentationChanges.send(view.presentationChanges.value)
+                    return
+                } catch is CancellationError { return }
+                catch { /* Transient failures retry within this generation. */ }
+            }
+            // A later real update may try again; idle retries remain bounded.
+            if current() { view.positionsReadFor = nil }
         }
     }
+
     func latest(sessionID: String? = nil) {
         if let id = sessionID ?? selectedID, let view = displays[id] {
             view.abandonReveal(); view.abandonJump()

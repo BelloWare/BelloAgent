@@ -14,6 +14,108 @@ final class HistoryExtentTests: XCTestCase {
         return file
     }
 
+    @MainActor func testAnIdleChatsExtentRecoversWithoutAnotherModelUpdate() async throws {
+        let chat = try await LongChatScroll(turns: 40)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        chat.view.presentation.olderTask?.cancel(); chat.view.presentation.newerTask?.cancel()
+        try await eventually("Edges stopped") { !chat.view.olderPage.loading && !chat.view.newerPage.loading }
+        let page = try await chat.model.readConversationWindow(chat.chat, cursor: nil)
+        let reads = GatedReads()
+        chat.model.historyWindowLoader = { _, _, _, _ in
+            if reads.next() == 1 { throw HostError.failure("Transient fixture read failure") }
+            return page
+        }
+        chat.view.historyPositions.forget(); chat.view.positionsReadFor = nil
+        chat.model.reacquireHistoryPositions(chat.chat.id)
+        // No redraw, edge read, stream or other model update drives recovery.
+        try await eventually("An idle chat never retried its failed extent read") { chat.view.historyPositions.total != nil }
+        print("SCROLL-06 recovery reads=\(reads.started) total=\(chat.view.historyPositions.total ?? -1)")
+        XCTAssertEqual(reads.started, 2)
+        XCTAssertEqual(chat.view.historyPositions.total, page.total)
+    }
+
+    @MainActor func testExtentRecoveryHasABoundedRetryCount() async throws {
+        let chat = try await LongChatScroll(turns: 10)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        chat.view.presentation.olderTask?.cancel(); chat.view.presentation.newerTask?.cancel()
+        try await eventually("Edges stopped") { !chat.view.olderPage.loading && !chat.view.newerPage.loading }
+        let reads = GatedReads()
+        chat.model.historyWindowLoader = { _, _, _, _ in _ = reads.next(); throw HostError.failure("Unavailable fixture") }
+        chat.view.historyPositions.forget(); chat.view.positionsReadFor = nil
+        chat.model.reacquireHistoryPositions(chat.chat.id)
+        try await eventually("The bounded retries did not finish") { reads.started == 3 && chat.view.positionsReadFor == nil }
+        XCTAssertNil(chat.view.historyPositions.total)
+    }
+
+    @MainActor func testANewerJournalDestinationCancelsTheObsoleteRead() async throws {
+        for destination in [80, 10] {
+            let file = try journal(turns: 40), reader = HistoryReader()
+            let root = scratchRoot("position-cancellation")
+            let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+            registerWorkspaceFixtureTeardown(model, root: root)
+            try await model.reloadConfiguration()
+            let item = ChatRecord(id: "position", workspaceID: "fixture", title: "Fixture", path: file.path, profileID: "fixture")
+            let view = SessionDisplay(id: item.id)
+            model.chats = [item]; model.displays[item.id] = view; model.selectedID = item.id; model.selected = view
+            model.adoptInitialHistory(try ConversationHistoryPage(await reader.window(path: file.path)), into: view)
+            let reads = GatedReads(), marker = HistoryWindowEdge.position(0).dropLast()
+            defer { reads.open = true; view.abandonJump() }
+            model.historyWindowLoader = { _, cursor, newer, around in
+                if let around, around.hasPrefix(marker), let position = Int(around.dropFirst(marker.count)) {
+                    if reads.next(position: position) == 1 {
+                        do { while !reads.open { try await Task.sleep(for: .milliseconds(5)) } }
+                        catch { reads.open = true; throw error }
+                    }
+                    return try ConversationHistoryPage(await reader.window(path: file.path, position: position))
+                }
+                return try ConversationHistoryPage(await reader.window(path: file.path, cursor: cursor, newer: newer, around: around))
+            }
+            model.jumpToHistoryPosition(item.id, position: 10, offset: 0)
+            try await eventually("First journal read started") { reads.started == 1 }
+            model.jumpToHistoryPosition(item.id, position: 80, offset: 0)
+            if destination == 10 { model.jumpToHistoryPosition(item.id, position: 10, offset: 0) }
+            try await eventually("The newest destination is still waiting on the obsolete read") { reads.started >= 2 }
+            XCTAssertTrue(reads.open, "The old read cooperatively observed cancellation")
+            XCTAssertEqual(reads.position, destination)
+            try await eventually("The newest page was not adopted") { view.messages.first?.id == "u\(destination / 5)" }
+            print("SCROLL-14 starts=\(reads.started) obsolete-cancelled=\(reads.open) destination=\(destination)")
+            XCTAssertEqual(reads.started, 2, "Only the newest queued destination is started")
+        }
+    }
+
+    @MainActor func testANewGenerationCanRecoverWhileThePreviousRecoveryIsPending() async throws {
+        let file = try journal(turns: 40), reader = HistoryReader()
+        let root = scratchRoot("extent-recovery-generation")
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.reloadConfiguration()
+        let item = ChatRecord(id: "generation", workspaceID: "fixture", title: "Fixture", path: file.path, profileID: "fixture")
+        let view = SessionDisplay(id: item.id)
+        model.chats = [item]; model.displays[item.id] = view
+        let page = try ConversationHistoryPage(await reader.window(path: file.path))
+        model.adoptInitialHistory(page, into: view)
+        let reads = GatedReads()
+        defer { reads.open = true }
+        model.historyWindowLoader = { _, _, _, _ in
+            if reads.next() == 1 {
+                while !reads.open { try await Task.sleep(for: .milliseconds(5)) }
+            }
+            return page
+        }
+        view.historyPositions.forget()
+        model.reacquireHistoryPositions(item.id)
+        try await eventually("The previous recovery started") { reads.started == 1 }
+        view.presentationGeneration = UUID()
+        model.reacquireHistoryPositions(item.id)
+        try await eventually("The previous generation suppressed the new generation's recovery") { reads.started == 2 }
+        try await eventually("The current generation did not recover its extent") { view.historyPositions.total == page.total }
+        print("SCROLL-06 generations=2 recovery-reads=\(reads.started) total=\(view.historyPositions.total ?? -1)")
+    }
+
     /// Each turn of the fixture is five rows: question, reply with two
     /// calls, their two results, and the closing reply.
     @MainActor func testAPageSaysWhereItStandsAndAnyRowCanBeRead() async throws {
@@ -423,7 +525,9 @@ final class HistoryExtentTests: XCTestCase {
     /// `unreadableRecord`; reads after `limit` never return.
     private final class GatedReads: @unchecked Sendable {
         private let lock = NSLock(); private var count = 0, isOpen = false
-        func next() -> Int { lock.lock(); defer { lock.unlock() }; count += 1; return count }
+        private var lastPosition: Int?
+        func next(position: Int? = nil) -> Int { lock.lock(); defer { lock.unlock() }; count += 1; lastPosition = position; return count }
+        var position: Int? { lock.lock(); defer { lock.unlock() }; return lastPosition }
         var started: Int { lock.lock(); defer { lock.unlock() }; return count }
         var open: Bool { get { lock.lock(); defer { lock.unlock() }; return isOpen } set { lock.lock(); isOpen = newValue; lock.unlock() } }
     }
@@ -453,10 +557,12 @@ final class HistoryExtentTests: XCTestCase {
         try await chat.ready()
         let reads = try gatedReads(chat, failFirst: true, limit: 1)
         try dragIntoRoom(chat)
-        try await eventually("No read was made") { chat.view.jumpRead != nil }
+        try await eventually("No read was made") { reads.started == 1 }
+        let pending = chat.view.jumpTask
+        chat.page?.onJump = { _, _, _ in }
         chat.view.abandonJump()
         reads.open = true
-        try await Task.sleep(for: .milliseconds(200))
+        await pending?.value
         XCTAssertEqual(chat.view.jumpUnreadable, 0, "The abandoned read counted")
     }
 
@@ -467,6 +573,10 @@ final class HistoryExtentTests: XCTestCase {
         registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
         addTeardownBlock { @MainActor in chat.close() }
         try await chat.ready()
+        // Dispatched helper reads still finish; journal reads now cancel.
+        // Keep this regression on the non-cancellable source path.
+        chat.model.opened.insert(chat.chat.id)
+        defer { chat.model.opened.remove(chat.chat.id) }
         let reads = try gatedReads(chat, failFirst: false, limit: 1)
         try dragIntoRoom(chat)
         try await eventually("No read was made") { chat.view.jumpRead != nil }

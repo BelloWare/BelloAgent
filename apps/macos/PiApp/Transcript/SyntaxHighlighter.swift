@@ -226,7 +226,32 @@ enum SyntaxHighlighter {
     static func tokens(_ code: String, language: Language) -> [Token] {
         scan(code, language: language).tokens
     }
-    struct Scan { var tokens: [Token]; var checkpoints: [Int] }
+    struct Scan {
+        var tokens: [Token]
+        var checkpoints: [Int]
+        /// JSON strings use one double quote as their delimiter. A partial
+        /// string can continue from its end, retaining only whether
+        /// the final backslash is waiting to escape the next scalar.
+        var jsonStringEscape: Bool? = nil
+    }
+    static func continueJSONString(_ code: String, escaped: Bool) -> Scan {
+        let scalars = Array(code.unicodeScalars)
+        var index = 0, escaping = escaped, ended = false
+        while index < scalars.count {
+            if escaping { escaping = false; index += 1; continue }
+            if scalars[index] == "\\" { escaping = true; index += 1; continue }
+            if scalars[index] == "\"" { index += 1; ended = true; break }
+            if scalars[index] == "\n" { ended = true; break }
+            index += 1
+        }
+        let prefix = index > 0 ? [Token(range: 0..<index, kind: .string)] : []
+        guard ended else { return Scan(tokens: prefix, checkpoints: [], jsonStringEscape: escaping) }
+        // Closing the string is a neutral JSON boundary, even without a
+        // newline. The ordinary scanner owns everything that follows it.
+        var rest = scan(code, language: .json, from: index)
+        rest.tokens = prefix + rest.tokens
+        return rest
+    }
     /// A checkpoint is outside a string/comment and has no pending declaration
     /// word. Re-entering here has the same lexical state as scanning the prefix.
     static func scan(_ code: String, language: Language, from start: Int = 0) -> Scan {
@@ -235,6 +260,7 @@ enum SyntaxHighlighter {
         let scalars = Array(code.unicodeScalars)
         var tokens: [Token] = []
         var index = start, checkpoints = [start]
+        var jsonStringEscape: Bool?
         func startsWith(_ prefix: String, at position: Int) -> Bool {
             let needle = Array(prefix.unicodeScalars)
             guard position + needle.count <= scalars.count else { return false }
@@ -260,14 +286,16 @@ enum SyntaxHighlighter {
             if grammar.quotes.contains(Character(scalar)) {
                 let triple = grammar.tripleQuotes && index + 2 < scalars.count && scalars[index + 1] == scalar && scalars[index + 2] == scalar
                 var end = index + (triple ? 3 : 1)
+                var closed = false, escapedAtEnd = false
                 while end < scalars.count {
-                    if scalars[end] == "\\" { end += 2; continue }
+                    if scalars[end] == "\\" { escapedAtEnd = end + 1 == scalars.count; end += 2; continue }
                     if triple { if end + 2 < scalars.count, scalars[end] == scalar, scalars[end + 1] == scalar, scalars[end + 2] == scalar { end += 3; break } }
-                    else if scalars[end] == scalar { end += 1; break }
+                    else if scalars[end] == scalar { closed = true; end += 1; break }
                     else if scalars[end] == "\n" && scalar != "`" { break }
                     end += 1
                 }
                 end = min(end, scalars.count)
+                if language == .json, !closed, end == scalars.count { jsonStringEscape = escapedAtEnd }
                 tokens.append(Token(range: index..<end, kind: .string)); index = end; previousWord = ""; continue
             }
             // Numbers: decimal, fractional, exponent and hex; not the middle of a word.
@@ -310,6 +338,6 @@ enum SyntaxHighlighter {
             // most code ends its lines in a word.
             if scalar == "\n", !grammar.declarations.contains(previousWord) { checkpoints.append(index) }
         }
-        return Scan(tokens: tokens, checkpoints: checkpoints)
+        return Scan(tokens: tokens, checkpoints: checkpoints, jsonStringEscape: jsonStringEscape)
     }
 }

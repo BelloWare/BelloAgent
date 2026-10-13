@@ -709,10 +709,12 @@ struct ContentGeometry: Equatable {
     /// The height one row of this chat's timeline takes on average, as the
     /// document measured it (`HistoryPositions.rowHeight`).
     var historyRowHeight: CGFloat? { presentationSession?.historyPositions.rowHeight }
+    var historyRowHeightFirstID: String? { presentationSession?.historyPositions.rowHeightFirstID }
     var historyRowHeightSample: Int { presentationSession?.historyPositions.rowHeightSample ?? 0 }
     var historyRowHeightWidth: CGFloat? { presentationSession?.historyPositions.rowHeightWidth }
     func measuredHistoryRowHeight(_ height: CGFloat, over rows: Int, width: CGFloat) {
         guard let positions = presentationSession?.historyPositions, height.isFinite, height > 0 else { return }
+        positions.rowHeightFirstID = snapshot?.messages.first?.id
         positions.rowHeight = height; positions.rowHeightSample = rows; positions.rowHeightWidth = width
     }
     /// The reader stands in room kept for rows the window does not hold, too
