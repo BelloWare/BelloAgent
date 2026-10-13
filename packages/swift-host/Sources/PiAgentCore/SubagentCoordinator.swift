@@ -67,8 +67,7 @@ actor SubagentCoordinator {
                 try await child.bindBudgetOwner(env.parent, generation: env.generation)
                 await child.useRetrySettings(env.retry)
                 // Capture policy is inherited unchanged; lineage changes no retention limit.
-                let mode = await env.traces.mode(env.ownerID)
-                _ = try await env.traces.command("debug.mode", session: link.childSessionID, params: ["mode":JSON(mode)])
+                try await env.traces.inheritCapturePolicy(child: link.childSessionID, owner: link.budgetOwnerSessionID)
                 try await child.setSubagentState(.queued)
                 let childGeneration = await child.stopCount
                 await child.installManagedCancellation(self, key: key)

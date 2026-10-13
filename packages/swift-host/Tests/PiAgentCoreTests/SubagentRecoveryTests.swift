@@ -83,6 +83,19 @@ final class SubagentRecoveryTests: XCTestCase {
         await host.shutdown()
     }
 
+    func testReopenedChildKeepsItsParentsCapturePolicy() async throws {
+        let fixture = try RecoveryFixture(); defer { fixture.remove() }
+        try fixture.write(childStatus: .queued)
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd":JSON(fixture.root.path),"directory":JSON(fixture.root.path)])
+        _ = try await host.command("session.open", sessionID: "parent", params: ["profile":fixture.profile.raw,"apiKey":"fixture","captureMode":"off","path":JSON(fixture.root.appendingPathComponent("parent.jsonl").path)])
+        let child = try await host.command("session.open", sessionID: "child", params: ["profile":fixture.profile.raw,"apiKey":"fixture","captureMode":"persist","path":JSON(fixture.root.appendingPathComponent("child.jsonl").path)])
+        XCTAssertEqual(child["captureMode"].text, "off")
+        do { _ = try await host.command("debug.mode", sessionID: "child", params: ["mode":"memory"]); XCTFail("Child policy changed") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "managed_subagent") }
+        await host.shutdown()
+    }
+
     func testTerminalRecordIsSynchronizedBeforeReturningTheResult() async throws {
         let fixture = try RecoveryFixture(); defer { fixture.remove() }
         try fixture.write(childStatus: .queued)

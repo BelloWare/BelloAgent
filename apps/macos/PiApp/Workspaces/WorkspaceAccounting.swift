@@ -66,6 +66,9 @@ extension WorkspaceModel {
         var outputs = Set(metadata["outputMessageIds"]?.array?.compactMap(\.string) ?? [])
         let metadataSession = metadata["sessionId"]?.string
         if let id = metadataSession, record(id)?.workspaceID == workspaceID { sessions.insert(id) }
+        if let scope = try? CaptureLineage.scope(metadata), record(scope.budgetOwnerSessionID)?.workspaceID == workspaceID {
+            sessions.insert(scope.budgetOwnerSessionID)
+        }
         let inheritedVisible = visible.filter { $0.key != metadataSession }
         // Metadata already names its owner. Only links need to resolve it;
         // other packets need a read only when another visible pane could show
@@ -73,6 +76,7 @@ extension WorkspaceModel {
         if let attempt = metadata["attemptId"]?.string, type == "links" || !inheritedVisible.isEmpty,
            let target = try? await traces.accountingTarget(attemptID: attempt, workspaceID: workspaceID, visibleMessageIDs: inheritedVisible.values.reduce(into: Set<String>()) { $0.formUnion($1) }) {
             if record(target.sessionID)?.workspaceID == workspaceID { sessions.insert(target.sessionID) }
+            if let owner = target.budgetOwnerSessionID, record(owner)?.workspaceID == workspaceID { sessions.insert(owner) }
             outputs.formUnion(target.outputMessageIDs)
         } else if type == "interrupted" {
             for id in displays.keys where record(id)?.workspaceID == workspaceID {

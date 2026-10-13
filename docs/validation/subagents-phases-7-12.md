@@ -87,3 +87,31 @@ policy, installed app, or real preferences/vault data were changed.
   and the three completed-result crash barriers passed again
   (`phase7-final-terminal-crashes.log`). The final restored recovery suite
   is recorded in `phase7-recovery-restored.log`.
+
+## Phase 8 — capture lineage
+
+- Failing-first: the three new archive regressions and hidden-parent update
+  produced 12 assertion failures (`phase8-red.log`); inherited policy produced
+  two helper failures (`phase8-helper-red.log`).
+- Restored native suite: **83 passed**: `SubagentCaptureTests`,
+  `LiveAccountingTests`, `GatewayAccountingTests`, `PayloadArchiveTests`,
+  `CaptureMacIntegrationTests`, `SessionReferenceTests`. All are parallel-lane
+  classes, run via a bash array and `scripts/test-macos.sh` (`phase8-restored.log`).
+- Restored helper suite: **54 passed**: `SubagentCoordinatorTests`,
+  `SubagentRecoveryTests`, `CaptureTraceTests`, `CaptureDrainTests`,
+  `CredentialCaptureTests`, `HostServiceTests` (`phase8-helper-restored.log`).
+- Eight guards mutated and caught: live inherited mode, independent child mode,
+  physical capture identity, immutable lineage, workspace isolation, hidden-parent
+  invalidation, parent aggregation, and all-session rollup. The six native
+  mutations ran in two batches; distinct assertions caught each guard. Logs:
+  `phase8-mutation-{inherited-mode,child-mode-guard,identity-routing,family-rollup}.log`.
+  An unused-variable compile rejection in the first mutation harness was repaired
+  before recording the behavioral failures.
+- Existing tests caught two implementation regressions: invalid capture modes
+  must be rejected before a session is opened, and an ordinary capture must not
+  incur an extra SQL projection for null lineage. Both are fixed; the original
+  guards and archive performance assertions pass unchanged.
+- Schema 6 retains raw metadata and physical session/body ownership, and adds
+  nullable indexed lineage. Parent totals roll up child attempts; global totals
+  remain physical. No capture quota, retention, byte or event limits changed.
+- The single production switch remains false.

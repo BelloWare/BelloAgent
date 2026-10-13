@@ -28,6 +28,24 @@ final class LiveAccountingTests: XCTestCase {
         XCTAssertTrue(model.accountingTasks.isEmpty, "Accounting invalidation must settle without a focus event")
     }
 
+    @MainActor func testChildBillingInvalidatesItsHiddenParentBeforeChildMetadataExists() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown() }
+        try await model.reloadConfiguration()
+        try await model.traces.configure(quota: nil, bodyRetention: 86400, metricRetention: 86400)
+        model.chats = [ChatRecord(id: "parent", workspaceID: "w", title: "Parent", path: nil, profileID: "p")]
+        var value = metadata(UUID().uuidString, session: "child", cost: 0.03)
+        value["requestScope"] = try subagentCaptureScope(source: "child")
+        try await model.traces.begin(value, workspace: "w"); try await model.traces.finish(value)
+        await model.captureDidPersist(["type":.string("finish"),"metadata":.object(value)], workspaceID: "w")
+        XCTAssertTrue(model.accountingTasks.keys.contains("parent"), "Child billing must invalidate a hidden parent")
+        await waitForAccounting(model)
+        XCTAssertEqual(model.chatStats["parent"]?.costUSD, 0.03)
+        XCTAssertNil(model.record("child"), "Accounting does not depend on sidebar discovery")
+        try await model.traces.close(); await model.store?.close()
+    }
+
     @MainActor func testStreamingSnapshotsOnlyRefreshAccountingWhenVisibleOwnershipChanges() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

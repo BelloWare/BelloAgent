@@ -223,6 +223,26 @@ final class SubagentCoordinatorTests: XCTestCase {
         await parent.close()
     }
 
+    func testChildrenFollowTheParentsFutureCaptureModeWithoutIndependentPolicy() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = DelegationClient(count: 1), registry = DelegationRegistry(), traces = TraceStore()
+        _ = try await traces.command("debug.mode", session: "parent", params: ["mode":"off"])
+        let coordinator = SubagentCoordinator(register: { child, _, _, _ in await registry.add(child) })
+        let parent = try await makeParent(root, client: client, coordinator: coordinator, traces: traces)
+        _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "task"), steer: false)
+        try await eventually { await client.active == 1 }
+        let children = await registry.children, child = try XCTUnwrap(children.first)
+        let initial = await traces.mode(child.id)
+        XCTAssertEqual(initial, "off")
+        _ = try await traces.command("debug.mode", session: "parent", params: ["mode":"persist"])
+        let inherited = await traces.mode(child.id)
+        XCTAssertEqual(inherited, "persist")
+        do { _ = try await traces.command("debug.mode", session: child.id, params: ["mode":"memory"]); XCTFail("A managed child changed capture policy independently") }
+        catch { XCTAssertEqual((error as? AgentError)?.code, "managed_subagent") }
+        await client.releaseAll(); try await eventually { !(await parent.isRunning) }
+        for child in children { await child.close() }; await parent.close()
+    }
+
     func testEnabledOrdinaryChatKeepsLegacyAccountingAndWriteFailureBehavior() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         for failWrite in [false, true] {
@@ -327,9 +347,9 @@ final class SubagentCoordinatorTests: XCTestCase {
         await side.close()
     }
 
-    private func makeParent(_ root: URL, id: String = "parent", client: any ModelClient, coordinator: SubagentCoordinator) async throws -> AgentSession {
+    private func makeParent(_ root: URL, id: String = "parent", client: any ModelClient, coordinator: SubagentCoordinator, traces: TraceStore = TraceStore()) async throws -> AgentSession {
         let parent = try AgentSession(id: id, profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root, readOnly: true,
-                                      resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore())
+                                      resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: traces)
         await parent.enableSubagents(coordinator)
         return parent
     }

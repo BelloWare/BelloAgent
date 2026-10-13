@@ -209,6 +209,9 @@ public actor NativeHostService {
             try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
         }.value
         await adoptRetrySettings(session)
+        if let origin = await session.subagents.origin {
+            try await traces.inheritCapturePolicy(child: id, owner: origin.link.budgetOwnerSessionID)
+        }
         if SubagentPolicy.enabled {
             if subagentCoordinator == nil {
                 subagentCoordinator = SubagentCoordinator(register: { [weak self] child, profile, key, parent in
@@ -371,11 +374,7 @@ public actor NativeHostService {
             // `debug.mode` round trip before its first turn. The reply names
             // the mode it applied; without one the app sends `debug.mode` itself.
             let captureMode=params["captureMode"].text
-            if let captureMode { _=try await traces.command("debug.mode",session:id,params:["mode":JSON(captureMode)]) }
-            func withMode(_ snapshot:JSON)->JSON {
-                guard let captureMode, case .object(var fields)=snapshot else { return snapshot }
-                fields["captureMode"]=JSON(captureMode); return .object(fields)
-            }
+            if let captureMode, !["off", "memory", "persist"].contains(captureMode) { throw AgentError("invalid_mode", "Choose off, memory or persist") }
             // A journal being slimmed is opened once its copy has taken its place, or not.
             if let slim=slimming[id] { _=await slim.result }
             // The snapshot is taken once the gate is free again.
@@ -407,7 +406,12 @@ public actor NativeHostService {
                 return session
             }
             if !params["subagentModels"].isNull { try await session.configureSubagentModels(JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data())) }
-            return withMode(await session.snapshot())
+            if let captureMode, !(await session.isSubagent) {
+                _ = try await traces.command("debug.mode", session:id, params:["mode":JSON(captureMode)])
+            }
+            var snapshot = await session.snapshot()
+            snapshot["captureMode"] = JSON(await traces.mode(id))
+            return snapshot
         case "session.rebind":
             // A saved chat moved to another connection: its journal is bound
             // to the new one before the app says the chat is there, so the

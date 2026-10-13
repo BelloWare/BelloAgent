@@ -7,8 +7,10 @@ extension WorkspaceModel {
     func capturePreference(sessionID: String) async throws -> CapturePreference {
         if isEphemeral(sessionID) { return CapturePreference(mode: displays[sessionID]?.captureMode ?? "memory", since: "") }
         try await ensureConfiguration()
-        return CapturePreference(mode: configuration.capture.sessionModes[sessionID] ?? configuration.capture.defaultMode,
-                                 since: configuration.capture.sessionSince[sessionID] ?? "")
+        let owner = record(sessionID)?.delegation?.budgetOwnerSessionID ?? sessionID
+        guard owner == sessionID || record(owner)?.workspaceID == record(sessionID)?.workspaceID else { throw StoreError.invalidRecord }
+        return CapturePreference(mode: configuration.capture.sessionModes[owner] ?? configuration.capture.defaultMode,
+                                 since: configuration.capture.sessionSince[owner] ?? "")
     }
     func removeDeletedCapturePreference(sessionID: String) async throws {
         // Do not reset a retained chat's explicit opt-out if another part of
@@ -22,6 +24,7 @@ extension WorkspaceModel {
         }
     }
     func setCaptureMode(_ mode: String, sessionID: String) async throws {
+        guard record(sessionID)?.delegation == nil else { throw HostError.failure("Sub-agent capture follows its parent.") }
         if isEphemeral(sessionID) {
             guard mode != "persist" else { throw HostError.failure("Keep the side as a separate chat before enabling persistent capture.") }
             _ = try await debugRequest("debug.mode", sessionID: sessionID, params: ["mode": .string(mode)]); displays[sessionID]?.captureMode = mode; return
@@ -38,7 +41,7 @@ extension WorkspaceModel {
             else { try await host.settleCaptureIfStopping() }
         }
         let previous = try await capturePreference(sessionID: sessionID)
-        if previous.mode == "persist" { try await setCaptureMode("persist", sessionID: sessionID) }
+        if previous.mode == "persist", record(sessionID)?.delegation == nil { try await setCaptureMode("persist", sessionID: sessionID) }
         try removeRetiredCaptureSpools(sessionID: sessionID)
         try await traces.clear(sessionID: sessionID)
     }
