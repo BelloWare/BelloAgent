@@ -50,6 +50,7 @@ public actor NativeHostService {
     public let epoch=UUID().uuidString
     private let output: @Sendable (HostOutput)->Void
     private var hello=false, closing=false, quiesced=false, opening=false
+    private var shutdownTask: Task<Void, Never>?
     private var displayTransfers = DisplayResultTransfers()
     private var allowsDisplayTransfers = false
     /// Set by a reader whose hello says it shows the `unknown` tool card state.
@@ -87,7 +88,6 @@ public actor NativeHostService {
     }
     private func emit(_ frame: JSON) { output(.frame(frame)) }
     public func receive(_ frame: JSON) {
-        guard !closing else { return }
         if frame["kind"].text == "capture.ack" {
             guard hello, frame["v"].int == 1, frame["hostEpoch"].text == epoch, let id = frame["transferId"].text, id.utf8.count <= 128 else { return }
             // Detached on purpose: `receive` is synchronous on this actor, and
@@ -96,6 +96,7 @@ public actor NativeHostService {
             // that is waiting on this packet until its own deadline.
             Task { await capture.acknowledge(id, accepted: frame["accepted"].flag == true) }; return
         }
+        guard !closing else { return }
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
             hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true; unknownToolOutcomes = frame["unknownToolOutcomes"].flag == true
@@ -284,10 +285,11 @@ public actor NativeHostService {
             let extra=Array(requestedRoots.dropFirst())
             let manager=MCPManager(cwd:requested,roots:extra,outcomeMarker:state.appendingPathComponent(".mcp-outcome-unknown.json"))
             try await manager.configure(params["mcp"].isNull ? ["servers":[:]] : params["mcp"])
-            if params["captureProtocol"].int == 1 {
-                await capture.enable()
-                try await traces.openCaptureSpool(in:state)
-            }
+            // Retire the unreleased spool experiment without reading or replaying
+            // its plaintext files, including begins for captures since cleared.
+            let retiredCapture = state.appendingPathComponent(".capture-outbox")
+            if FileManager.default.fileExists(atPath: retiredCapture.path) { try FileManager.default.removeItem(at: retiredCapture) }
+            if params["captureProtocol"].int == 1 { await capture.enable() }
             cwd=requested; roots=requestedRoots; directory=state; mcp=manager
             if let retry { retrySettings = retry }
             resources=Resources(cwd:requested,roots:extra,options:params["resources"].isNull ? [:] : params["resources"])
@@ -732,10 +734,29 @@ public actor NativeHostService {
         return ["path":JSON(file.path),"sessionId":header["id"],"nativeReplay":false,"damaged":false,"text":JSON(retained),"draft":JSON(retained),"truncated":JSON(retained.utf8.count<text.utf8.count || messages.count>40),"provenance":["sourcePath":JSON(file.path),"sourceSHA256":JSON(digest),"portable":true],"notice":"Portable text only, active branch and latest compaction. Opaque reasoning, executable state and permissions are not transferred. Original unchanged. Review before sending.","sha256":JSON(digest)]
     }
     public func shutdown() async {
-        // Capture packets are already spooled, including the one whose ACK
-        // is outstanding. Disconnect delivery at once; cancelling runs keep
-        // spooling their terminal observations without waiting on the owner.
-        closing=true; await traces.stopCaptureDelivery(); await capture.close(); flushTask?.cancel(); for t in tasks.values { t.cancel() }
-        for s in sessions.values { await s.stop() }; for s in sessions.values { await s.close() }; await mcp?.close(); sessions.removeAll(); profiles.removeAll(); flush()
+        if let shutdownTask { await shutdownTask.value; return }
+        closing = true
+        let task = Task { await self.drainAndClose() }
+        shutdownTask = task
+        await task.value
+    }
+    private func drainAndClose() async {
+        // Start with shutdown, not after producer cancellation. Leave room for
+        // normal exit before the app's unchanged 3.5 s SIGTERM / 5 s SIGKILL.
+        let deadline = Task { [traces, capture] in
+            do { try await Task.sleep(for: .milliseconds(3250)) } catch { return }
+            let pending = await traces.stopCaptureDelivery()
+            await capture.close()
+            if pending.packets > 0 {
+                try? FileHandle.standardError.write(contentsOf: Data("Capture shutdown deadline: \(pending.packets) undelivered packets, \(pending.bytes) bytes (raw bodies plus encoded metadata); retained captures are incomplete\n".utf8))
+            }
+        }
+        flushTask?.cancel(); for t in tasks.values { t.cancel() }
+        for s in sessions.values { await s.stop() }
+        for s in sessions.values { await s.close() }
+        await mcp?.close(); sessions.removeAll(); profiles.removeAll(); flush()
+        await traces.delivered()
+        deadline.cancel()
+        await capture.close()
     }
 }

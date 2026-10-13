@@ -192,8 +192,12 @@ extension WorkspaceModel {
     }
     private func performDelete(_ item: ChatRecord, store: MetadataStore) {
         Task { do {
-            if let host = hosts[item.workspaceID], host.isReady { _ = try await host.request("session.forget", sessionID: item.id) }
+            if let host = hosts[item.workspaceID] {
+                if host.isReady { _ = try await host.request("session.forget", sessionID: item.id) }
+                else { try await host.settleCaptureIfStopping() }
+            }
             opened.remove(item.id)
+            try removeRetiredCaptureSpools(sessionID: item.id)
             try await traces.clear(sessionID: item.id)
             if !item.imported, let path = item.path, FileManager.default.fileExists(atPath: path) {
                 // A reply the helper was streaming when it died waits beside

@@ -19,9 +19,9 @@ public actor CaptureDelivery {
         self.epoch = epoch; self.emit = emit
     }
     public func enable() { enabled = true }
-    /// The helper is shutting down: its reader stopped acknowledging, and a
-    /// stopped run still has a partial reply and its final state to write.
-    /// The packet in flight and every later one are refused at once.
+    /// Close after the graceful outbox drain, or at its shutdown deadline.
+    /// The deadline refuses an outstanding packet and releases its producer;
+    /// ordinary slow capture has no timeout.
     public func close() {
         closed = true
         let queued = waiters; waiters.removeAll()

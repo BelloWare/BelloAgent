@@ -126,7 +126,13 @@ final class ReaderState: @unchecked Sendable {
             while true {
                 let data=FileHandle.standardInput.availableData
                 if data.isEmpty { break }
-                for frame in try decoder.feed(data) { await service.receive(frame) }
+                for frame in try decoder.feed(data) {
+                    if frame["v"].int == 1, frame["kind"].text == "shutdown", frame["hostEpoch"].text == (await service.epoch) {
+                        // Keep reading ACKs while shutdown drains capture. The
+                        // service joins repeated shutdown requests/signals.
+                        shutdown()
+                    } else { await service.receive(frame) }
+                }
             }
             try decoder.finish()
         }

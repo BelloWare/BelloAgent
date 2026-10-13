@@ -211,6 +211,11 @@ final class HostSupervisor: ObservableObject {
         }
         PerformanceProbe.shared.observe("clockCalibrationUncertaintyMs", milliseconds: best / 2)
     }
+    /// Even after readiness ends, the stopping transport may own a begin or
+    /// body page. Clear/delete must wait for its archive barrier before purging.
+    func settleCaptureIfStopping() async throws {
+        if closing { try await shutdownAndWait() }
+    }
     func shutdownAndWait() async throws {
         stopsAwaited += 1; defer { stopsAwaited -= 1 }
         shutdown()

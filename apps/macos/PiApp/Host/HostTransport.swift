@@ -59,7 +59,7 @@ final class HostTransport: @unchecked Sendable {
                     // Drain bytes already in the pipes before publishing exit. Reads,
                     // cancellation and descriptor closure share one serial owner.
                     self.output?.finish(); self.errorOutput?.finish()
-                    self.captureEnded(); self.closeHandles(); self.process = nil; self.receive(.exited(status))
+                    self.closeHandles(); self.process = nil; self.captureEnded(status: status)
                 }
             }
             do { try child.run(); process = child }
@@ -80,7 +80,7 @@ final class HostTransport: @unchecked Sendable {
         guard !counted || pendingCommands < 32 else { sendLock.unlock(); receive(.failed("The host command queue is full.")); return }
         if counted { pendingCommands += 1 }; sendLock.unlock()
         queue.async { [self] in
-            guard !stopping else { commandWritten(counted: counted); return }
+            guard !stopping || frame["kind"]?.string == "capture.ack" else { commandWritten(counted: counted); return }
             do {
                 guard let input else { throw WireError.invalid }
                 var bytes = try JSONEncoder().encode(frame)
@@ -96,7 +96,12 @@ final class HostTransport: @unchecked Sendable {
     func stop() {
         queue.async { [self] in
             guard !stopping else { return }; stopping = true
-            input?.close(); input = nil
+            if let hostEpoch, let input,
+               var bytes = try? JSONEncoder().encode(["v": WireValue.number(1), "kind": .string("shutdown"), "hostEpoch": .string(hostEpoch)]) {
+                // Stopping ends commands, but leaves stdin open for capture
+                // acknowledgments until the helper drains or its grace expires.
+                bytes.append(10); input.append(bytes, counted: false)
+            } else { input?.close(); input = nil }
             let child = process
             queue.asyncAfter(deadline: .now() + 3.5) { if child?.isRunning == true { child?.terminate() } }
             queue.asyncAfter(deadline: .now() + 5) { if let child, child.isRunning { Darwin.kill(child.processIdentifier, SIGKILL) } }
@@ -118,7 +123,6 @@ final class HostTransport: @unchecked Sendable {
         let epoch = frame["hostEpoch"] ?? .null
         guard let capture, !capturePending else { acknowledgeCapture(id, epoch: epoch, accepted: false); return }
         if var metadata = packet["metadata"]?.object { metadata["hostEpoch"] = epoch; packet["metadata"] = .object(metadata) }
-        packet["hostEpoch"] = epoch
         let value = packet; capturePending = true
         captureTask = Task { [self] in
             let accepted: Bool
@@ -132,10 +136,17 @@ final class HostTransport: @unchecked Sendable {
     private func acknowledgeCapture(_ id: String, epoch: WireValue, accepted: Bool) {
         send(["v": .number(1), "kind": .string("capture.ack"), "hostEpoch": epoch, "transferId": .string(id), "accepted": .bool(accepted)])
     }
-    private func captureEnded() {
-        guard let capture, let epoch = hostEpoch else { return }
+    private func captureEnded(status: Int32) {
+        guard let capture, let epoch = hostEpoch else { receive(.exited(status)); return }
         let pending = captureTask
-        Task { await pending?.value; try? await capture(["type": .string("interrupted"), "hostEpoch": .string(epoch)]) }
+        Task { [self] in
+            // A received page may still be committing. Settle it and mark any
+            // unfinished writer partial before Quit/update closes the archive.
+            await pending?.value
+            do { try await capture(["type": .string("interrupted"), "hostEpoch": .string(epoch)]) }
+            catch { receive(.failed("The interrupted request capture could not be finalized.")) }
+            receive(.exited(status))
+        }
     }
     private func closeHandles() {
         input?.close(); output?.close(); errorOutput?.close()
