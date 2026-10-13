@@ -69,6 +69,13 @@ extension WorkspaceModel {
         }
     }
 
+    /// Whether the catalog's diagnostics say skill discovery itself stopped
+    /// early (a root not completely scanned, the 512-skill limit), as opposed
+    /// to other warnings (an instruction budget) that leave the list whole.
+    nonisolated static func skillListIncomplete(_ notice: String) -> Bool {
+        notice.split(separator: "\n").contains { $0.hasPrefix("Could not completely scan") || $0.hasPrefix("Discovery limited to") }
+    }
+
     /// The pin a chip holds: what `skillRepins` remembers of a chip it set.
     nonisolated static func skillPin(_ chip: SkillChip) -> String { chip.contentHash + "|" + chip.metadataHash }
 
@@ -99,7 +106,7 @@ extension WorkspaceModel {
         let current = Dictionary(view.skillCatalog.entries.map { ($0.skill.id, $0.skill) }, uniquingKeysWith: { first, _ in first })
         // A skill missing from a list that could not be read completely is
         // not known to be gone: nothing is changed, and the reader is told.
-        if view.skillCatalog.state == .partial,
+        if view.skillCatalog.state == .partial, Self.skillListIncomplete(view.skillCatalog.notice),
            sent.contains(where: { chip in current[chip.id] == nil && view.skills.contains(chip) }) {
             result.failure = view.skillCatalog.notice.isEmpty ? "the skill list is incomplete" : view.skillCatalog.notice
             return result
@@ -108,7 +115,6 @@ extension WorkspaceModel {
         for chip in sent {
             // A chip the reader took off, or chose again, since is theirs.
             guard let index = chips.firstIndex(where: { $0.id == chip.id }), chips[index] == chip else { continue }
-            if view.skillRepins[chip.id] == Self.skillPin(chip) { result.again.append(chip.name) }
             guard let skill = current[chip.id], canSelectSkill(skill, view: view) else {
                 chips.remove(at: index); view.skillRepins[chip.id] = nil
                 result.removed.append(chip.name)
@@ -118,6 +124,8 @@ extension WorkspaceModel {
                 continue
             }
             guard skill.contentHash != chip.contentHash || skill.metadataHash != chip.metadataHash else { continue }
+            // Pinned here once already, and changed since: it is changing.
+            if view.skillRepins[chip.id] == Self.skillPin(chip) { result.again.append(chip.name) }
             var pinned = skill.chip
             pinned.arguments = chip.arguments; pinned.intent = chip.intent
             chips[index] = pinned

@@ -178,6 +178,30 @@ final class SkillRefreshTests: XCTestCase {
         XCTAssertEqual(row?.detail, "The queued message is no longer waiting. Retry request finishes the stopped turn.")
     }
 
+    /// Only a skill that changed again is said to be changing: a re-pinned
+    /// chip that stayed put is not, when another skill changes.
+    @MainActor func testOnlyTheSkillThatChangedAgainIsCalledChanging() async throws {
+        let f = try await fixture("skill-refresh-other")
+        try await choose("review-notes", in: f.view, f.model); try await choose("style-guide", in: f.view, f.model)
+        f.view.draft = Self.text
+        try writeSkill(f.skills, "review-notes", description: "Review the notes", body: "SECOND_NOTES_BODY")
+        f.model.send(sessionID: f.chat.id)
+        await waitFor("The first refusal never came back") { refused(f.view) }
+        try writeSkill(f.skills, "style-guide", description: "Follow the style guide", body: "UPDATED_STYLE_BODY")
+        f.model.send(sessionID: f.chat.id)
+        await waitFor("The second refusal never came back") { refused(f.view) && f.view.sendFailure?.contains("style-guide") == true }
+        XCTAssertEqual(f.view.sendFailure, "\u{201C}style-guide\u{201D} changed since you chose it. Press Send to use the updated version.")
+    }
+
+    /// Only discovery that stopped early makes the list incomplete; an
+    /// instruction budget warning does not.
+    func testOnlyAStoppedScanMakesTheListIncomplete() {
+        XCTAssertTrue(WorkspaceModel.skillListIncomplete("Could not completely scan /p/.agents/skills: not UTF-8"))
+        XCTAssertTrue(WorkspaceModel.skillListIncomplete("Instruction budget reached\nDiscovery limited to 512 skills. Refine discovery settings to include other sources."))
+        XCTAssertFalse(WorkspaceModel.skillListIncomplete("Instruction budget reached at /p/AGENTS.md"))
+        XCTAssertFalse(WorkspaceModel.skillListIncomplete(""))
+    }
+
     /// The notice shows even below a run failure the chat still shows: the
     /// reader sees what changed before the Send that confirms it.
     @MainActor func testTheNoticeShowsBelowAnEarlierRunFailure() {
