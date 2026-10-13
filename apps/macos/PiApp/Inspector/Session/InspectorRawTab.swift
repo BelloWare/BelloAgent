@@ -150,7 +150,7 @@ import AppKit
             }.value
             try Task.checkCancellation()
             guard currentPage == key else { return }
-            pageText = text; pageTotal = Int(value["total"]?.number ?? 0)
+            pageText = text; pageTotal = CapturedNumber.integer(value["total"]?.number) ?? 0
         } catch is CancellationError {
         } catch { if currentPage == key { pageText = ""; notice = error.localizedDescription } }
     }
