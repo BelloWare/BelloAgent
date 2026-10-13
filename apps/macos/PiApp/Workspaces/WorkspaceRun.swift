@@ -43,7 +43,9 @@ extension WorkspaceModel {
         // submissions already accepted by an asynchronous side flow continue.
         guard sessionID != nil || page == .chats else { return }
         if redirectsToEdit(steer: steer, sessionID: sessionID) { return }
-        guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isBackgroundTask, let view = displays[id], view.hasSubmittableInput, !view.loading, !installPreparing, side(id)?.keeping != true else { return }
+        guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isBackgroundTask, let view = displays[id], !view.loading, !installPreparing, side(id)?.keeping != true else { return }
+        if deferSubmissionForImages(view, retry: { [weak self] in self?.send(steer: steer, sessionID: id) }) { return }
+        guard view.hasSubmittableInput else { return }
         // A message goes to the latest version, and the transcript returns to it.
         latestVersion(sessionID: id)
         guard !item.isArchived else { view.notice = Self.archivedNotice; return }
@@ -359,6 +361,7 @@ extension WorkspaceModel {
     /// false: they must not invent an interruption for a run they cannot see.
     func stop(sessionID: String? = nil, userInitiated: Bool = true) {
         guard let id = sessionID ?? selectedID, let item = record(id), let view = displays[id] else { return }
+        view.submissionAfterImages = nil
         // Nothing is running and nothing is queued: there is nothing to stop.
         // Asking anyway showed "Stopping" and left the chat "Paused".
         guard view.hasWork else { return }

@@ -23,6 +23,7 @@ import AppKit
     /// Image files dropped on or pasted into the composer.
     var attachFiles: ([URL]) -> Void = { _ in }
     var pastedImages: PastedImageStorage? = nil
+    var beginImageImport: () -> ComposerImageImport = { ComposerImageImport() }
     /// A changed token moves keyboard focus into the editor once the view is in a window.
     var focusToken = 0
     /// The token a new editor starts from. A new editor acts on a token
@@ -72,7 +73,7 @@ import AppKit
         editor.attachmentDestination = { [weak coordinator] in
             guard let parent = coordinator?.parent else { return nil }
             // Snapshot the callbacks for this session before conversion yields.
-            return ComposerTextView.AttachmentDestination(attach: parent.attachFiles, reject: parent.inputRejected, storage: parent.pastedImages)
+            return ComposerTextView.AttachmentDestination(attach: parent.attachFiles, reject: parent.inputRejected, storage: parent.pastedImages, beginImport: parent.beginImageImport)
         }
         editor.imageRejected = { [weak coordinator] in coordinator?.parent.inputRejected($0) }
         editor.registerForDraggedTypes([.fileURL, .png, .tiff])
@@ -413,10 +414,11 @@ struct ComposerEditMeasurement {
     override func layout() { super.layout(); layoutSkillTokens(); reportContentHeight() }
     override func becomeFirstResponder() -> Bool { let accepted = super.becomeFirstResponder(); if accepted { focused?() }; return accepted }
     var attachFiles: (([URL]) -> Void)?
-    struct AttachmentDestination {
+    @MainActor struct AttachmentDestination {
         var attach: ([URL]) -> Void
         var reject: ((String) -> Void)?
         var storage: PastedImageStorage? = nil
+        var beginImport: () -> ComposerImageImport = { ComposerImageImport() }
     }
     var attachmentDestination: (() -> AttachmentDestination?)?
     /// Reported when a pasted or dropped image cannot be read; wired to the
@@ -439,14 +441,19 @@ struct ComposerEditMeasurement {
         guard Self.imageIsWhatWasCopied(on: pasteboard), let pasted = Self.pastedImage(on: pasteboard) else { return false }
         let destination = attachmentDestination?() ?? AttachmentDestination(attach: attachFiles, reject: imageRejected)
         guard let storage = destination.storage else { destination.reject?("Desktop image storage is unavailable. Attach an image file instead."); return true }
+        let importing = destination.beginImport()
         // Decoding a screenshot, re-encoding it and writing it out takes long
         // enough to freeze the window: a 4000x3000 paste is hundreds of
         // milliseconds. Only the bytes are taken here; the rest happens off
         // the main thread and the chip appears when it lands.
         Task { @MainActor in
             let written = await Task.detached(priority: .userInitiated) { Self.writePastedImage(pasted, storage: storage) }.value
-            if let written { destination.attach([written]) }
-            else { destination.reject?("That image could not be read. Copy it again, or attach the file instead.") }
+            guard importing.isCurrent() else {
+                destination.reject?("The draft changed while its image was being prepared. Attach it again.")
+                importing.finish(false); return
+            }
+            if let written { destination.attach([written]); importing.finish(true) }
+            else { destination.reject?("That image could not be read. Copy it again, or attach the file instead."); importing.finish(false) }
         }
         return true
     }

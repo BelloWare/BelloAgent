@@ -198,6 +198,7 @@ import AppKit
                               inputRejected: { [weak session] in session?.notice = $0 },
                               attachFiles: { [id = session.id] in model.attachImageFiles($0, sessionID: id) },
                               pastedImages: model.pastedImages,
+                              beginImageImport: { [id = session.id] in model.beginImageImport(sessionID: id) },
                               focusToken: session.composerFocusRequest, settledFocusToken: session.composerFocusSettled,
                               skills: session.skills, skillDisplay: session,
                               skillsChanged: { [weak session] in if let session { model.draftChanged(session) } },
