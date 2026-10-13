@@ -777,7 +777,7 @@ struct SettingsConnectionForm: Equatable {
                     allowFallbacks: fields["compat"]?.object?["allowFallbacks"]?.bool == true)
     }
 
-    private func normalizedProfile() throws -> ProfileRecord {
+    func normalizedProfile() throws -> ProfileRecord {
         let allowed: Set<String> = ["reasoning", "thinkingLevel", "thinkingLevelMap", "input", "cost", "samplingParams", "compat"]
         guard advanced.utf8.count <= 32_768, let config = try? JSONDecoder().decode(WireValue.self, from: Data(advanced.utf8)), var fields = config.object, Set(fields.keys).isSubset(of: allowed) else {
             throw VaultError.invalid("Invalid model capabilities. Credentials and external configuration references do not belong in this field.")

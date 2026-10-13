@@ -47,6 +47,18 @@ import Combine
         /// Anything typed since the load, including a key or headers, which the vault never shows back.
         var edited: Bool { form != baseline || !key.isEmpty || !headers.isEmpty }
         var name: String { profile.name.isEmpty ? "Unnamed" : profile.name }
+        func rebased(onto saved: ProfileRecord) -> Draft {
+            var value = self
+            // Saving normalizes the raw JSON; the editable advanced/routing
+            // fields above retain the reader's changes independently of it.
+            value.profile.revision = saved.revision; value.profile.advancedJSON = saved.advancedJSON
+            value.baseline = SettingsConnectionForm.loaded(saved, isSaved: true)
+            // The fallback toggle also lives in advanced JSON. Adopt the saved
+            // spelling only when save's normalization proves it equivalent.
+            if let current = try? value.form.normalizedProfile(), let baseline = try? value.baseline.normalizedProfile(),
+               current.advancedJSON == baseline.advancedJSON { value.advanced = value.baseline.advanced }
+            return value
+        }
     }
 
     let model: WorkspaceModel
@@ -64,6 +76,8 @@ import Combine
     @Published var saving = false
     private var requiresReloadBeforeWrite = false
     private var lateRefresh: Task<Void, Never>?
+    private var lateSubmittedDraft: Draft?
+    private var lateSubmittedPreferences: VaultConfiguration?
     @Published var confirmingDelete = false
     /// The Test Connection button asked once; the footer explains the request until Send or Cancel.
     @Published var confirmingTest = false
@@ -80,7 +94,12 @@ import Combine
     var isSaved: Bool { model.profiles.contains { $0.id == draft.profile.id } }
     var supportedAPI: Bool { draft.profile.api == LiteLLMConfiguration.supportedAPI }
     /// Whether a tab holds unsaved edits: the current draft or a stashed one.
-    func isEdited(_ id: String) -> Bool { id == draft.profile.id ? draft.edited : drafts[id]?.edited == true }
+    func isEdited(_ id: String) -> Bool { id == draft.profile.id ? isEdited(draft) : drafts[id].map(isEdited) == true }
+    private func isEdited(_ candidate: Draft) -> Bool {
+        if candidate.edited { return true }
+        guard let submitted = lateSubmittedDraft, submitted.profile.id == candidate.profile.id else { return false }
+        return candidate.form != submitted.form || candidate.key != submitted.key || candidate.headers != submitted.headers
+    }
     /// Every saved connection, then every unsaved draft. A tab shows the name as
     /// typed on it and carries a dot while its edits are unsaved.
     var tabs: [(String, String)] {
@@ -132,8 +151,10 @@ import Combine
     /// The sections holding unsaved edits: Connections for any tab's, the
     /// others for the preferences they show.
     var editedSections: Set<SettingsSection> {
-        var sections = Set(Self.preferenceFields.filter { $0.differs(preferences, preferencesBaseline) }.map(\.section))
-        if draft.edited || drafts.values.contains(where: \.edited) { sections.insert(.connections) }
+        var sections = Set(Self.preferenceFields.filter { field in
+            field.differs(preferences, preferencesBaseline) || lateSubmittedPreferences.map { field.differs(preferences, $0) } == true
+        }.map(\.section))
+        if isEdited(draft) || drafts.values.contains(where: { isEdited($0) }) { sections.insert(.connections) }
         return sections
     }
     /// Anything typed in Settings that the vault doesn't hold yet.
@@ -146,6 +167,10 @@ import Combine
         if let saved = model.profiles.first(where: { $0.id == draft.profile.id }) { draft = Draft.loaded(saved, isSaved: true) }
         else { draft = model.profiles.first.map { Draft.loaded($0, isSaved: true) } ?? Draft.loaded(ProfileRecord(), isSaved: false) }
         preferences = preferencesBaseline
+        // Discard resets the comparison too: the late result should replace
+        // discarded values, while anything typed after this must survive it.
+        if lateSubmittedPreferences != nil { lateSubmittedPreferences = preferencesBaseline }
+        if let id = lateSubmittedDraft?.profile.id { resetLateDraft(id) }
         confirmingDelete = false; confirmingTest = false
         message = ""; messageTone = .neutral
     }
@@ -160,26 +185,38 @@ import Combine
         } catch { message = error.localizedDescription; messageTone = .danger }
     }
     private func adoptLoadedSettings(discardingDrafts: Bool) {
-        // A late Keychain result must not erase anything typed while it waited.
-        preferences = discardingDrafts ? model.configuration : Self.merging(preferences, from: preferencesBaseline, onto: model.configuration)
+        // Restoring the original value after submission is still an edit. Keep
+        // differences from both snapshots: a late completion can be a failed write.
+        let refreshed = lateSubmittedPreferences.map { Self.merging(preferences, from: $0, onto: model.configuration) } ?? model.configuration
+        preferences = discardingDrafts ? model.configuration : Self.merging(preferences, from: preferencesBaseline, onto: refreshed)
         preferencesBaseline = model.configuration
         revision = model.configuration.revision; loaded = true
         if discardingDrafts {
             drafts = [:]; confirmingDelete = false; confirmingTest = false
             requiresReloadBeforeWrite = false; lateRefresh?.cancel(); lateRefresh = nil
+            lateSubmittedDraft = nil; lateSubmittedPreferences = nil
         }
         let current = draft.profile.id
         if let saved = model.profiles.first(where: { $0.id == current }) {
-            if discardingDrafts || !draft.edited { draft = Draft.loaded(saved, isSaved: true) }
-        } else if discardingDrafts || !draft.edited {
+            if discardingDrafts || !isEdited(draft) { draft = Draft.loaded(saved, isSaved: true) }
+            else if lateSubmittedDraft?.profile.id == current { draft = draft.rebased(onto: saved) }
+        } else if discardingDrafts || (!isEdited(draft) && lateSubmittedDraft == nil) {
+            // A new tab opened while the save waited must stay selected; its
+            // previous tab may hold a stashed correction to the late save.
             draft = model.profiles.first.map { Draft.loaded($0, isSaved: true) } ?? Draft.loaded(ProfileRecord(), isSaved: false)
+        }
+        if let id = lateSubmittedDraft?.profile.id, let kept = drafts[id], let saved = model.profiles.first(where: { $0.id == id }) {
+            drafts[id] = kept.rebased(onto: saved)
         }
     }
     private static let uncertainWriteNotice = "The earlier change may have been saved. Reload Settings before saving or deleting again."
-    private func refreshWhenFinished(_ uncertain: VaultUpdateUncertain, report: String) {
+    private func refreshWhenFinished(_ uncertain: VaultUpdateUncertain, report: String, submitted: VaultConfiguration? = nil, submittedDraft: Draft? = nil) {
         // A route change may have saved under a new connection id. Keep edits
         // visible, but require Reload before retrying and forking a duplicate.
         requiresReloadBeforeWrite = true
+        // Stashing a correction back to the original value must not drop it
+        // merely because that value still matches the pre-submission baseline.
+        lateSubmittedDraft = submittedDraft; lateSubmittedPreferences = submitted
         lateRefresh?.cancel()
         lateRefresh = Task { @MainActor [weak self] in
             for await _ in uncertain.completion {}
@@ -190,6 +227,7 @@ import Combine
                 try await self.model.reloadConfiguration()
                 guard !Task.isCancelled else { return }
                 self.adoptLoadedSettings(discardingDrafts: false)
+                self.lateSubmittedDraft = nil; self.lateSubmittedPreferences = nil
                 self.message = "Keychain finished the earlier operation. Saved settings were refreshed and your edits were kept. Reload Settings before saving or deleting again."
                 self.messageTone = .neutral
                 if self.model.error == report { self.model.error = nil }
@@ -220,7 +258,7 @@ import Combine
         message = "Fill in the new connection and save it."; messageTone = .neutral
     }
     private func stash() {
-        if draft.edited { drafts[draft.profile.id] = draft } else { drafts[draft.profile.id] = nil }
+        if isEdited(draft) { drafts[draft.profile.id] = draft } else { drafts[draft.profile.id] = nil }
     }
     /// Drops the current unsaved tab, or the current tab's edits, and returns to what the vault holds.
     func discardCurrent() {
@@ -228,7 +266,12 @@ import Combine
         drafts[id] = nil
         if let saved = model.profiles.first(where: { $0.id == id }) { draft = Draft.loaded(saved, isSaved: true) }
         else { draft = model.profiles.first.map { Draft.loaded($0, isSaved: true) } ?? Draft.loaded(ProfileRecord(), isSaved: false) }
+        resetLateDraft(id)
         confirmingDelete = false
+    }
+    private func resetLateDraft(_ id: String) {
+        guard lateSubmittedDraft?.profile.id == id else { return }
+        lateSubmittedDraft = model.profiles.first(where: { $0.id == id }).map { Draft.loaded($0, isSaved: true) }
     }
 
     // MARK: Models
@@ -291,8 +334,9 @@ import Combine
         var preferencesSaved = false
         let preferencesWereEdited = preferencesEdited
         for item in queue {
+            var submitted = preferences
             do {
-                let savedID = try await saveOnce(item)
+                let savedID = try await saveOnce(item, submitted: &submitted)
                 drafts[item.profile.id] = nil
                 if item.edited { savedNames.append("“\(item.name)”") }
                 // Every connection's save writes the preferences too.
@@ -315,7 +359,7 @@ import Combine
                 // failed deletion is: a save that did not happen was silent, and
                 // Escape or Cancel closed the sheet over it.
                 model.error = report
-                if let uncertain { refreshWhenFinished(uncertain, report: report) }
+                if let uncertain { refreshWhenFinished(uncertain, report: report, submitted: submitted, submittedDraft: item) }
                 return .failed
             }
         }
@@ -407,18 +451,20 @@ import Combine
     }
 
     /// One connection's save against the vault's current revision; a conflict from another save reloads and tries once more.
-    private func saveOnce(_ item: Draft) async throws -> String {
+    private func saveOnce(_ item: Draft, submitted: inout VaultConfiguration) async throws -> String {
         // This editor's preference edits go onto what the app holds now, so a
         // save from the other Settings editor since this one loaded stays.
         preferences = Self.merging(preferences, from: preferencesBaseline, onto: model.configuration)
         preferencesBaseline = model.configuration
         do {
+            submitted = preferences
             return try await item.form.save(to: model, comparedTo: item.baseline, key: item.key, headers: item.headers,
                                             preferences: preferences, expectedRevision: model.configuration.revision)
         } catch VaultError.conflict {
             try await model.reloadConfiguration()
             preferences = Self.merging(preferences, from: preferencesBaseline, onto: model.configuration)
             preferencesBaseline = model.configuration
+            submitted = preferences
             return try await item.form.save(to: model, comparedTo: item.baseline, key: item.key, headers: item.headers,
                                             preferences: preferences, expectedRevision: model.configuration.revision)
         }
