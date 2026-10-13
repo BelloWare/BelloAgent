@@ -156,7 +156,7 @@ final class QueuedSkillRefreshTests: XCTestCase {
                                        resources: resources, client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
         _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: "first"), steer: false)
         try await eventually { await client.count == 1 }
-        _ = try await session.submit(Submission(commandID: "skill", turnID: "skill", text: "", skills: frozen), steer: false)
+        _ = try await session.submit(Submission(commandID: "skill", turnID: "skill", text: " \n ", skills: frozen), steer: false)
         try FileManager.default.removeItem(at: skill)
         await client.release(); try await eventually { !(await session.isRunning) }
         let state = await session.snapshot()

@@ -250,7 +250,7 @@ extension AgentSession {
             guard next.text.utf8.count <= 262144 else { return error }
             next.textRevision = (next.textRevision ?? 0) + 1
         }
-        if next.text.isEmpty && next.attachments.isEmpty && next.skills.isEmpty {
+        if next.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && next.attachments.isEmpty && next.skills.isEmpty {
             return AgentError("skill_revoked", "\(Resources.quoted(removed)) \(removed.count == 1 ? "is" : "are") no longer available, so this queued message has nothing left to send. Remove it from the queue.")
         }
         if let inQueue { queue[inQueue] = next } else if let inSteering { steering[inSteering] = next }
