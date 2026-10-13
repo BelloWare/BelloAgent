@@ -96,6 +96,33 @@ final class RetrySettingsTests: XCTestCase {
         await t.close()
     }
 
+    /// A setting changed while a request is being retried applies from the
+    /// next request: the one under way keeps its count and its back-off.
+    func testAChangeDuringARequestAppliesFromTheNextOne() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = TimedClient(turnFailures: 3), s = try session(root, client)
+        await s.useRetrySettings(.init(enabled: true, maxRetries: 3, baseDelayMs: 150))
+        _ = try await s.submit(Submission(commandID: "c", turnID: "t", text: "go"), steer: false)
+        try await eventually { await s.snapshot()["runStatus"].text == "retrying" }
+        await s.useRetrySettings(.init(enabled: true, maxRetries: 0, baseDelayMs: 60_000))
+        try await eventually(timeout: .seconds(10)) { !(await s.isRunning) }
+        let state = await s.snapshot(), gaps = await client.gaps("turn")
+        XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
+        assertDoubling(gaps, base: 150, count: 3)
+        await s.close()
+
+        let timed = TimedClient(summaryFailures: 3), t = try session(root.appendingPathComponent("summary"), timed, seed: evidence(), window: 6_000)
+        await t.useRetrySettings(.init(enabled: true, maxRetries: 3, baseDelayMs: 150))
+        try await t.compact()
+        try await eventually { await timed.count("compaction") == 1 }
+        await t.useRetrySettings(.init(enabled: true, maxRetries: 0, baseDelayMs: 60_000))
+        try await eventually(timeout: .seconds(10)) { !(await t.isRunning) }
+        let summary = await t.snapshot(), summaryGaps = await timed.gaps("compaction")
+        XCTAssertEqual(summary["state"].text, "idle", summary["preflightError"].encoded())
+        assertDoubling(summaryGaps, base: 150, count: 3)
+        await t.close()
+    }
+
     func testOffOrNoRetriesSendOneRequest() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         for settings in [PiProviderRules.RetrySettings(enabled: false, maxRetries: 3, baseDelayMs: 1), .init(enabled: true, maxRetries: 0, baseDelayMs: 1)] {

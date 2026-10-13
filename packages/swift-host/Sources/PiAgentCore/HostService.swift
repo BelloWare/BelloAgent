@@ -198,11 +198,16 @@ public actor NativeHostService {
         let session = try await Task.detached(priority:.userInitiated) {
             try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
         }.value
-        // A `retry.configure` that runs while this session is handed its
-        // setting does not see it yet: hand it again until it holds the latest.
+        await adoptRetrySettings(session)
+        return session
+    }
+    /// Hands a session the latest retry setting. Called once it is made and
+    /// again once it is in `sessions`: a `retry.configure` that ran in between
+    /// reached neither the session nor the list it goes through, and one that
+    /// runs while this hands the setting over is handed on again.
+    private func adoptRetrySettings(_ session: AgentSession) async {
         var applied: PiProviderRules.RetrySettings
         repeat { applied = retrySettings; await session.useRetrySettings(applied) } while applied != retrySettings
-        return session
     }
     /// Runs `body` holding the runtime gate, which serializes opens, forks
     /// and sides, and releases the gate however `body` ends.
@@ -357,7 +362,7 @@ public actor NativeHostService {
                 let sessionResources = titleTask ? Resources(cwd: cwd, titleTask: true, utility: utility) : resources
                 let tools: any ToolExecuting = titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools
                 let session=try await makeSession(id,profile:profile,apiKey:key,readOnly:titleTask || mode == "read-only",resources:sessionResources,tools:tools,resumePath:params["path"].text,titleTask:titleTask,utilityPurpose:utility)
-                sessions[id]=session; profiles[id]=(profile,key)
+                sessions[id]=session; profiles[id]=(profile,key); await adoptRetrySettings(session)
                 if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
                 if let costLimit { await session.setCostLimit(costLimit) }
                 if let costSeed { await session.adoptSpendSeed(costSeed) }
@@ -451,7 +456,7 @@ public actor NativeHostService {
                 // written, instead of reading it all again.
                 let (result,replay)=try await session.forked(to:forkID,at:point)
                 let fork=try await makeSession(forkID,profile:profile,apiKey:key,readOnly:session.readOnly,resources:resources,tools:session.isConnectionTest ? DisabledTools() : nativeTools,resumePath:result["path"].text,prepared:replay)
-                sessions[forkID]=fork; profiles[forkID]=(profile,key)
+                sessions[forkID]=fork; profiles[forkID]=(profile,key); await adoptRetrySettings(fork)
                 // Opened with only its latest rows, the fork loads the rest in the background.
                 if !quiesced, !closing { await fork.startHistoryFill() }
                 // A fork is a chat of its own, with its own limit.
@@ -469,7 +474,7 @@ public actor NativeHostService {
                 // A side is a session of its own: its own spend and limit.
                 if let costLimit { await side.setCostLimit(costLimit) }
                 let saved=try await side.preserveSide()
-                sessions[sideID]=side; profiles[sideID]=(profile,key)
+                sessions[sideID]=side; profiles[sideID]=(profile,key); await adoptRetrySettings(side)
                 _=try await traces.command("debug.mode",session:sideID,params:["mode":JSON(await traces.mode(id))])
                 return ["accepted":true,"sessionId":JSON(sideID),"side":seed.info,"ephemeral":false,"path":saved["path"]]
             }
