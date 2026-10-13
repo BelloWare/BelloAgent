@@ -4,6 +4,10 @@
 
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.
 
+## 0.1.126 decisions made while the owner was away (2026-10-13 night)
+
+- UI-05 (send during image paste): Send waits while an image is importing. The button is disabled and a notice says "Adding image…". This replaces a deferred auto-send, which kept producing races in review (navigation, eviction, draft reload, deletion).
+
 ## 0.1.125
 
 **0.1.125 (owner 2026-10-13):** Resume runs and update while running, a quieter sidebar, skill refresh.
