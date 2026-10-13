@@ -782,7 +782,9 @@ struct TranscriptVersionView: Equatable, Sendable {
         self.id = id
     }
     var busy: Bool { runState.isBusy }
-    var hasWork: Bool { busy || queueCount > 0 }
+    /// A Resume on its way counts from the press: the chat keeps its display
+    /// and helper session while its continuation starts.
+    var hasWork: Bool { busy || resuming || queueCount > 0 }
     /// Work that runs without the reader: a run, or follow-ups not held for Resume.
     /// A Resume on its way to the helper counts: an update must not stop
     /// the helper under it.

@@ -168,6 +168,7 @@ final class RunHoldTests: XCTestCase {
         XCTAssertTrue(view.hasActiveWork)
         view.runState = .paused; view.resuming = true
         XCTAssertTrue(view.hasActiveWork, "a Resume on its way holds the update's barrier")
+        XCTAssertTrue(view.hasWork, "and keeps its chat's display and helper session")
     }
 
     @MainActor private func model(root: URL) async throws -> WorkspaceModel {
