@@ -251,6 +251,9 @@ extension WorkspaceModel {
                         let preference = try await capturePreference(sessionID: item.id)
                         _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(preference.mode)])
                         opened.insert(item.id)
+                        // Settings or this chat's override may have changed
+                        // while its seed or opening acknowledgement was read.
+                        if params["costLimit"] != costLimit(for: item.id).wire { await sendCostLimit(item.id) }
                         displays[item.id]?.captureMode = preference.mode; displays[item.id]?.captureAvailable = true
                         displays[item.id]?.lastSequence = -1
                     }

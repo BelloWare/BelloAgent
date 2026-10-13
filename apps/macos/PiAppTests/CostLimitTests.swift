@@ -94,6 +94,34 @@ final class CostLimitTests: XCTestCase {
         XCTAssertNotNil(stored); XCTAssertNil(stored?.costLimit)
     }
 
+    @MainActor func testRetryingTheSameLimitAfterAFailedWriteMakesItDurable() async throws {
+        let root = scratchRoot("cost-retry")
+        let bench = try await model(root: root, chats: ["Retry"])
+        let model = bench.model, id = bench.chats[0].id
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try RecoveredDraftTests.sql("CREATE TRIGGER refuse_cost BEFORE UPDATE ON records WHEN OLD.kind='chat' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END", root: model.root)
+        do { try await model.setCostLimit(.usd(1), for: id); XCTFail("The first write must fail") } catch {}
+        XCTAssertNil(model.record(id)?.costLimit, "A failed save must not publish the choice as saved")
+        try RecoveredDraftTests.sql("DROP TRIGGER refuse_cost", root: model.root)
+        try await model.setCostLimit(.usd(1), for: id)
+        let reopened = MetadataStore(url: model.root.appendingPathComponent("desktop.sqlite"))
+        let saved = try await reopened.get(ChatRecord.self, kind: "chat", id: id)
+        XCTAssertEqual(saved?.costLimit, .usd(1), "An identical retry must write the choice")
+        await reopened.close()
+    }
+
+    @MainActor func testALateChatWriteCannotUndoASavedCostLimit() async throws {
+        let root = scratchRoot("cost-stale-write")
+        let bench = try await model(root: root, chats: ["Limit"])
+        let model = bench.model, old = bench.chats[0]
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.setCostLimit(.usd(1), for: old.id)
+        var delayed = old; delayed.path = root.appendingPathComponent("chat.jsonl").path
+        try await model.store?.put(delayed, kind: "chat", id: old.id)
+        let saved = try await model.store?.get(ChatRecord.self, kind: "chat", id: old.id)
+        XCTAssertEqual(saved?.costLimit, .usd(1)); XCTAssertEqual(saved?.path, delayed.path)
+    }
+
     /// "$spent of $limit" wherever the chat's cost shows, in warning ink from
     /// 80% of the limit on; the spend alone under no limit.
     func testSpentOfLimitReadsInWarningFromEightyPercent() {

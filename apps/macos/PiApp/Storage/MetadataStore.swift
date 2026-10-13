@@ -163,6 +163,15 @@ actor MetadataStore {
         if kind == "draft", let draft = value as? DraftRecord { noteDraftWrite(id, draft.holdsUnsentDraft) }
         if kind.hasPrefix("receipt:") { try prune(kind: kind, keeping: 128) }
     }
+    /// Update only the cost choice from the latest durable chat. The revision
+    /// also protects it from unrelated writes holding an older chat copy.
+    func updateChatCostLimit(id: String, limit: CostLimit?) throws -> ChatRecord {
+        guard var chat = try get(ChatRecord.self, kind: "chat", id: id), limit?.isValid != false else { throw StoreError.invalidRecord }
+        let revision = try reserveRevision(kind: "chat", id: id)
+        chat.costLimit = limit; chat.costLimitRevision = revision
+        try put(chat, kind: "chat", id: id, revision: revision)
+        return chat
+    }
     /// Freeze the previous sidebar order once when upgrading older records.
     /// Later metadata writes (renaming, opening or changing a model) cannot move
     /// a chat unexpectedly. This only migrates desktop metadata, never journals.
@@ -756,6 +765,7 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var parentSessionID: String?
     /// This chat's own cost limit; nil runs it under the Settings default.
     var costLimit: CostLimit?
+    var costLimitRevision: Int64?
     /// True when this chat sends no webhook when it finishes; nil follows Settings.
     var webhookOff: Bool?
     /// When the chat's connection last changed (`WorkspaceConnectionSwitch.swift`):
@@ -845,6 +855,7 @@ extension ChatRecord {
         backgroundTaskOutcome = try c.decodeIfPresent(String.self, forKey: .backgroundTaskOutcome); backgroundTaskResult = try c.decodeIfPresent(String.self, forKey: .backgroundTaskResult)
         organizationRevision = try c.decodeIfPresent(Int64.self, forKey: .organizationRevision); topicID = try c.decodeIfPresent(String.self, forKey: .topicID)
         parentSessionID = try c.decodeIfPresent(String.self, forKey: .parentSessionID); costLimit = try c.decodeIfPresent(CostLimit.self, forKey: .costLimit)
+        costLimitRevision = try c.decodeIfPresent(Int64.self, forKey: .costLimitRevision)
         webhookOff = try c.decodeIfPresent(Bool.self, forKey: .webhookOff); connectionRevision = try c.decodeIfPresent(Int64.self, forKey: .connectionRevision)
         journalRebind = try c.decodeIfPresent(Bool.self, forKey: .journalRebind)
     }

@@ -251,6 +251,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var resourceLoading = false
     @Published var resourceNotice = ""
     var editTargetRead: (@MainActor (String, String) async throws -> [String: WireValue])?
+    /// Suspends legacy cost accounting in opening-race fixtures.
+    var costSeedRead: (@MainActor (ChatRecord) async -> WireValue?)?
     var skillCatalogLoads: [String: (token: UUID, scope: String, task: Task<Void, Never>)] = [:]
     /// Retained gateway totals for chats without a loaded display, keyed by chat id.
     let chatAccounting = SessionAccountingCache()

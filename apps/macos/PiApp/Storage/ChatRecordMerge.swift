@@ -31,6 +31,9 @@ extension ChatRecord {
         var chat = self
         if (previous.organizationRevision ?? 0) > (chat.organizationRevision ?? 0) { chat.applyOrganization(from: previous) }
         if (previous.connectionRevision ?? 0) > (chat.connectionRevision ?? 0) { chat.applyConnection(from: previous) }
+        if (previous.costLimitRevision ?? 0) > (chat.costLimitRevision ?? 0) {
+            chat.costLimit = previous.costLimit; chat.costLimitRevision = previous.costLimitRevision
+        }
         if chat.sidebarOrder == nil { chat.sidebarOrder = previous.sidebarOrder }
         if chat.parentSessionID == nil { chat.parentSessionID = previous.parentSessionID }
         if let held = previous.lastActivityAt, held > (chat.lastActivityAt ?? .min) { chat.lastActivityAt = held }

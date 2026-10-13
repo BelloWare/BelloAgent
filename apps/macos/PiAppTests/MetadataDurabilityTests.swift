@@ -196,6 +196,7 @@ extension MetadataDurabilityTests {
         chat.sourceSessionID = "s"; chat.backgroundTaskNotice = "n"; chat.backgroundTaskStartedAt = date; chat.backgroundTaskEndedAt = date
         chat.backgroundTaskOutcome = "completed"; chat.backgroundTaskResult = "r"; chat.organizationRevision = 3; chat.topicID = "t"
         chat.parentSessionID = "pp"; chat.costLimit = .usd(5); chat.webhookOff = true; chat.connectionRevision = 4; chat.journalRebind = true
+        chat.costLimitRevision = 5
         for child in Mirror(reflecting: chat).children {
             let inner = Mirror(reflecting: child.value)
             if inner.displayStyle == .optional { XCTAssertFalse(inner.children.isEmpty, "fixture leaves \(child.label ?? "?") nil") }

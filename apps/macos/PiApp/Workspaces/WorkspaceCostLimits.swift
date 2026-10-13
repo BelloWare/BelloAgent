@@ -33,11 +33,18 @@ extension WorkspaceModel {
         if let limit, !limit.isValid { throw HostError.failure("Enter an amount in US dollars above $0.00, up to $1,000,000.00.") }
         if let index = chats.firstIndex(where: { $0.id == id }) {
             if chats[index].costLimit != limit {
-                chats[index].costLimit = limit
                 // A chat not yet sent has no record; its first message writes it, limit included.
-                if !pendingChatIDs.contains(id) {
+                if pendingChatIDs.contains(id) { chats[index].costLimit = limit }
+                else {
                     guard let store else { throw StoreError.unavailable }
-                    try await store.put(chats[index], kind: "chat", id: id)
+                    let saved = try await store.updateChatCostLimit(id: id, limit: limit)
+                    // Re-find after the await: chats can be reordered, renamed
+                    // or removed while the write is in flight.
+                    if let current = chats.firstIndex(where: { $0.id == id }),
+                       (chats[current].costLimitRevision ?? 0) < (saved.costLimitRevision ?? 0) {
+                        chats[current].costLimit = saved.costLimit
+                        chats[current].costLimitRevision = saved.costLimitRevision
+                    }
                 }
             }
         } else if let side = side(id) {
@@ -76,12 +83,14 @@ extension WorkspaceModel {
     /// journal predates cost records, what the request log holds of its spend
     /// so far. The helper takes that figure once and records costs itself from then on.
     func costLimitParams(for item: ChatRecord) async -> [String: WireValue] {
-        var params: [String: WireValue] = ["costLimit": costLimit(for: item).wire]
+        let limit = costLimit(for: item)
+        var params: [String: WireValue] = ["costLimit": limit.wire]
         if let seed = await costSeed(for: item) { params["costSeed"] = seed }
-        displays[item.id]?.costLimitSent = costLimit(for: item)
+        displays[item.id]?.costLimitSent = limit
         return params
     }
     private func costSeed(for item: ChatRecord) async -> WireValue? {
+        if let costSeedRead { return await costSeedRead(item) }
         // A chat whose journal the helper creates records every cost from its first request.
         guard item.path != nil else { return nil }
         var totals = displays[item.id]?.footer.gateway ?? chatStats[item.id]
