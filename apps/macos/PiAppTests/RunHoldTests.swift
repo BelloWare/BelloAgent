@@ -163,6 +163,15 @@ final class RunHoldTests: XCTestCase {
         do { try await model.pauseRunsForUpdate(settleTimeout: 0.05); XCTFail("a background open under way holds the pause") }
         catch { XCTAssertTrue(error.localizedDescription.contains("still being sent"), error.localizedDescription) }
         model.sessionOpenCallers["t"] = nil
+        // A title being generated ends with the pause, so nothing holds the install after it.
+        model.displays["t"] = nil
+        model.titleGenerationTasks["c"] = Task { [weak model] in
+            while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(5)) }
+            model?.titleGenerationTasks["c"] = nil
+        }
+        XCTAssertTrue(model.hasActiveWork)
+        try await model.pauseRunsForUpdate(settleTimeout: 0.05)
+        XCTAssertFalse(model.hasActiveWork, "the update's barrier can be taken right after the pause")
         await close(model)
     }
 

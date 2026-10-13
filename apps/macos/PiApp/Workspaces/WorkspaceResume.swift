@@ -137,6 +137,12 @@ extension WorkspaceModel {
         // Every exit has been seen by now; a helper that had no process to
         // stop must not have its next, real, loss read as a pause.
         pausingHosts.removeAll()
+        // Background requests (titles) lost their helpers with the rest; as
+        // at Quit they end here, and a title cut off is asked for again on
+        // the chat's next send. The pause is done once nothing is left.
+        for task in titleGenerationTasks.values { task.cancel() }
+        let settleBy = ProcessInfo.processInfo.systemUptime + 5
+        while hasActiveWork, ProcessInfo.processInfo.systemUptime < settleBy { try? await Task.sleep(for: .milliseconds(20)) }
         await flushRunHolds()
     }
 
