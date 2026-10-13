@@ -122,6 +122,23 @@ final class GitRepositoryStateTests: XCTestCase {
         }
     }
 
+    @MainActor func testASwitchClearsOnlyTheCommitMessageItStartedWith() async throws {
+        for edit in ["unchanged", "immediate", "during read", "restarted read"] {
+            let first = try repository(), second = try repository(), controller = try await read([first, second])
+            defer { controller.letGo(); GitController.statusReadDelay = .zero }
+            controller.commitMessage = "Draft from the first repository"
+            GitController.statusReadDelay = .milliseconds(300)
+            controller.root = second.path
+            if edit == "during read" || edit == "restarted read" { try await wait { controller.loading } }
+            if edit != "unchanged" { controller.commitMessage = "Draft typed for the second repository" }
+            // Replacing a slow read must not adopt the newer draft as the
+            // message the repository switch is allowed to clear.
+            if edit == "restarted read" { controller.startRefresh() }
+            try await wait { controller.repositoryRoot == second.path && !controller.loading }
+            XCTAssertEqual(controller.commitMessage, edit == "unchanged" ? "" : "Draft typed for the second repository", edit)
+        }
+    }
+
     @MainActor func testACommitReadResumesAfterSwitchingFoldersInTheSameRepository() async throws {
         let root = try repository(), folder = root.appendingPathComponent("folder")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)

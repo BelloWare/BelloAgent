@@ -85,6 +85,7 @@ import AppKit
     @Published public var root: String? {
         didSet {
             guard root != oldValue else { return }
+            messageBeforeSwitch = commitMessage
             rememberInterruptedCommitRead()
             identifiedFolder = nil
             repositoryGeneration += 1
@@ -143,6 +144,7 @@ import AppKit
     /// A big commit keeps its patch off screen until it is asked for.
     @Published public private(set) var detailDiffDeferred = false
     @Published public var commitMessage = ""
+    private var messageBeforeSwitch = ""
     @Published public private(set) var lastCommit: String?
     /// Files ticked for the next commit (IntelliJ's changelist checkboxes).
     /// Everything is ticked the first time a repository is read; after that the
@@ -574,7 +576,12 @@ import AppKit
             diff = []; commits = []; branches = []; stashes = []
             commitCache = [:]; commitCacheOrder = []; historyExhausted = false
             checkedByReader = false; applyChecked([])
-            if repository.read { commitMessage = ""; amend = false; lastCommit = nil }
+            if repository.read {
+                // The editor stays live while status loads. Refresh retries
+                // must not turn newer typing into the old repository's draft.
+                if current(generation), commitMessage == messageBeforeSwitch { commitMessage = "" }
+                amend = false; lastCommit = nil
+            }
         }
         // Published resets notify synchronously: an observer may select yet
         // another repository or hide the panel before this assignment.
