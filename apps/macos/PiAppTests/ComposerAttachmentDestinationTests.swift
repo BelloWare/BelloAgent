@@ -8,13 +8,16 @@ final class ComposerAttachmentDestinationTests: XCTestCase {
         let board = NSPasteboard(name: .init("attachment-destination-" + UUID().uuidString))
         defer { board.releaseGlobally() }
         board.setData(Data([1, 2, 3]), forType: .png)
+        let root = scratchRoot("attachment-destination")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = PastedImageStorage(root: root)
         let editor = ComposerTextView()
         var origin: [URL] = [], other: [URL] = []
-        let original = NativeComposer(text: "", send: { _ in }, sessionID: "first", attachFiles: { origin += $0 })
+        let original = NativeComposer(text: "", send: { _ in }, sessionID: "first", attachFiles: { origin += $0 }, pastedImages: storage)
         let coordinator = NativeComposer.Coordinator(original)
         editor.attachFiles = { coordinator.parent.attachFiles($0) }
         editor.attachmentDestination = {
-            .init(attach: coordinator.parent.attachFiles, reject: coordinator.parent.inputRejected)
+            .init(attach: coordinator.parent.attachFiles, reject: coordinator.parent.inputRejected, storage: coordinator.parent.pastedImages)
         }
         XCTAssertTrue(editor.pasteAttachments(from: board))
         coordinator.parent = NativeComposer(text: "", send: { _ in }, sessionID: "second", attachFiles: { other += $0 })

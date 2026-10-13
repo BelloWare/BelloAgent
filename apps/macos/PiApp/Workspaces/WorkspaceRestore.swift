@@ -12,6 +12,9 @@ extension WorkspaceModel {
         guard store != nil else { launching = false; return }
         restoring = true; launching = true
         guard await prepareStore(), let store else { restoring = false; launching = false; return }
+        // No previous-launch draft has been exposed yet. This launch's paste
+        // files are excluded; a failed reference read simply defers the sweep.
+        try? await store.cleanupPastedImages(pastedImages)
         // The rows are live from the moment the chats are listed. A chat the
         // reader opens from them, or from the menu bar, before this finishes
         // is the one they want: launch must not open another over it.

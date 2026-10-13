@@ -154,6 +154,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     }
     @Published var newerPage = ConversationPageBoundary()
     @Published var draftReady = true
+    @Published var recoveringDraft = false
     var completionTracker = SessionCompletionTracker()
     var webhookTracker = WebhookFinishTracker()
     var monitoringEpoch: String?
@@ -717,6 +718,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     var pendingIntentRevision = 0
     /// What the snapshot loop last read of them, and at which revision.
     var pendingIntents: (revision: Int, intents: [CommandIntent])?
+    /// A successful helper reply is enough to suppress draft recovery even
+    /// if its local acknowledgement could not be written.
+    var acceptedCommands: Set<String> = []
     // Test seams: what the snapshot loop did for this chat.
     /// Reads of this chat's pending submissions from the store.
     var intentReads = 0

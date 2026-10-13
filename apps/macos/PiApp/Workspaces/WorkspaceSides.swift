@@ -140,7 +140,10 @@ extension WorkspaceModel {
                 let replaced = sides[parentID].map { $0.id != id } ?? false
                 if !replaced { sides.removeValue(forKey: parentID) }
                 displays.removeValue(forKey: id)
-                if !replaced, let original = displays[parentID] { original.draft += (original.draft.isEmpty ? "" : "\n\n") + question; original.directCommand = false; draftChanged(original) }
+                if !replaced, let original = displays[parentID] {
+                    if let recovery = draftWrites.recoveries[parentID] { await recovery.value }
+                    original.draft += (original.draft.isEmpty ? "" : "\n\n") + question; original.directCommand = false; draftChanged(original)
+                }
                 self.error = error.localizedDescription; updateHostActivity(workspaceID: parent.workspaceID)
             }
         }
@@ -245,6 +248,7 @@ extension WorkspaceModel {
     func moveSideDraft(_ info: SideRecord, from shown: SessionDisplay? = nil) async throws {
         guard let side = shown ?? displays[info.id] else { return }
         while true {
+            if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
             // One move of a side's draft at a time: another waits, then sees
             // what that one left in the side (all of it, if it failed).
             while let running = sideDraftTransfers[info.id] { await running.task.value }
@@ -260,11 +264,13 @@ extension WorkspaceModel {
             defer { finish.finish(); if sideDraftTransfers[info.id]?.token == token { sideDraftTransfers.removeValue(forKey: info.id) } }
             do {
                 let saved = try await store.get(DraftRecord.self, kind: "draft", id: info.parentID) ?? DraftRecord(id: info.parentID, text: "")
+                if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
                 // The parent's draft may have loaded meanwhile: it takes the
                 // draft itself, and the saved one follows from it.
                 if let parent = displays[info.parentID], parent.selectionMetadataLoaded || pendingChatIDs.contains(parent.id) { absorb(moving, into: parent); continue }
                 let merged = saved.receiving(moving)
                 try await store.put(merged, kind: "draft", id: info.parentID)
+                if let recovery = draftWrites.recoveries[info.parentID] { await recovery.value }
                 // Or loaded the copy from before this write: given the draft
                 // too, unless what it loaded already holds all of it.
                 if let parent = displays[info.parentID], parent.selectionMetadataLoaded, !Self.parked(in: parent).holds(merged.displaced) { absorb(moving, into: parent) }
@@ -289,6 +295,7 @@ extension WorkspaceModel {
     /// to move or the parent's loaded draft took it; false when only its
     /// saved draft can.
     func moveSideDraftHere(_ info: SideRecord, from shown: SessionDisplay? = nil) -> Bool {
+        guard draftWrites.recoveries[info.parentID] == nil else { return false }
         guard let side = shown ?? displays[info.id] else { return true }
         let moving = Self.unsentDraft(of: side, to: info.parentID)
         guard !moving.isBlank else { return true }
@@ -379,7 +386,9 @@ extension WorkspaceModel {
                     if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
                     view.selectionMetadataLoaded = true
                 }
-                view.recovered = metadata?.recovered ?? []; view.uncertain = !view.recovered.isEmpty
+                let recovered = try await self.recoverableIntents(metadata?.recovered ?? [], for: child, view: view)
+                guard current() else { return }
+                view.recovered = recovered; view.uncertain = !recovered.isEmpty
                 view.draftReady = true
                 if self.focusedSessionID == id { view.composerFocusRequest += 1 }
                 var page = try await self.readInitialWindow(child, holding: view.scrollAnchor)
@@ -620,6 +629,7 @@ extension WorkspaceModel {
     }
     func bringBack(_ text: String, from id: String, replace: Bool) throws {
         guard !text.isEmpty, let info = side(id), let parent = displays[info.parentID] else { throw HostError.failure("The parent draft is unavailable") }
+        guard draftWrites.recoveries[parent.id] == nil else { throw HostError.failure("Wait for the interrupted submission to finish saving before bringing back the summary.") }
         let draft = replace || parent.draft.isEmpty ? text : parent.draft + "\n\n" + text
         guard draft.utf8.count <= SubmissionLimits.messageBytes else { throw HostError.failure("The combined draft exceeds 256 KiB. Shorten the summary first.") }
         parent.draft = draft; parent.directCommand = false; parent.completionVisible = false; draftChanged(parent)

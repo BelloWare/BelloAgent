@@ -491,6 +491,42 @@ actor MetadataStore {
         if kind == "draft" { noteDraftWrite(id, false) }
     }
     func close() { attempted = true; connection?.close(); connection = nil }
+    /// All rows, with no listing cap or forgiving decode: an unlisted draft
+    /// or chat is still a reference. Raw bytes also cover displaced drafts
+    /// and pending records from newer versions whose fields we do not know.
+    func cleanupPastedImages(_ storage: PastedImageStorage) throws {
+        let files = try storage.oldFiles(); guard !files.isEmpty else { return }
+        let database = try ready()
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "SELECT kind,value FROM records", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        var referenced: Set<String> = [], journals: Set<String> = []
+        var result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            guard let kind = sqlite3_column_text(statement, 0), let bytes = sqlite3_column_blob(statement, 1) else { throw StoreError.invalidRecord }
+            let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 1)))
+            referenced.formUnion(PastedImageStorage.names(in: data))
+            let name = String(cString: kind)
+            let chat: ChatRecord?
+            if name == "chat" { chat = try JSONDecoder().decode(ChatRecord.self, from: data) }
+            else if name == "side-keep" { chat = try JSONDecoder().decode(SideKeepIntent.self, from: data).chat }
+            else { chat = nil }
+            if let chat {
+                let path = chat.path ?? storage.root.appendingPathComponent("Workspaces/\(chat.workspaceID)/Sessions/\(chat.id).jsonl").path
+                if chat.path != nil || FileManager.default.fileExists(atPath: path) { journals.insert(path) }
+            }
+            result = sqlite3_step(statement)
+        }
+        guard result == SQLITE_DONE else { throw StoreError.unavailable }
+        let candidates = Set(files.map(\.lastPathComponent))
+        if candidates.isSubset(of: referenced) { return }
+        for path in journals {
+            referenced.formUnion(try PastedImageStorage.names(inJournal: path))
+            if candidates.isSubset(of: referenced) { return }
+        }
+        // Delete only after every reference source was read successfully.
+        for file in files where !referenced.contains(file.lastPathComponent) { try FileManager.default.removeItem(at: file) }
+    }
     func removeAll(kind: String) throws { try prune(kind: kind, keeping: 0) }
     func prune(kind: String, keeping: Int) throws {
         let database = try ready()

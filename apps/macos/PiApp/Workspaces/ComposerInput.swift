@@ -181,7 +181,7 @@ import AppKit
     /// The native field's value for `session` as things stand.
     private func composer(for session: SessionDisplay) -> NativeComposer {
         let model = self.model
-        return NativeComposer(text: session.composerDraft.text, textChanged: { [weak session] in session?.composerDraft.text = $0 },
+        return NativeComposer(text: session.composerDraft.text, textChanged: { [weak session] in if let session, !session.recoveringDraft { session.composerDraft.text = $0 } },
                               send: { [weak self] in self?.submit($0) }, sessionID: session.id, completion: { _ in },
                               locationChanged: { [weak session] location, editor in
                                   guard let session else { return }
@@ -197,6 +197,7 @@ import AppKit
                               accessibilityLabel: model.side(session.id) == nil ? "Main message composer" : "Side message composer",
                               inputRejected: { [weak session] in session?.notice = $0 },
                               attachFiles: { [id = session.id] in model.attachImageFiles($0, sessionID: id) },
+                              pastedImages: model.pastedImages,
                               focusToken: session.composerFocusRequest, settledFocusToken: session.composerFocusSettled,
                               skills: session.skills, skillDisplay: session,
                               skillsChanged: { [weak session] in if let session { model.draftChanged(session) } },
@@ -210,7 +211,7 @@ import AppKit
                                   SkillPopovers.shared.hoverComposer(inside, chip: chip, anchor: token, session: session)
                               },
                               describeSkill: { [weak session] chip in .composer(chip, catalog: session?.skillCatalog ?? SkillCatalog()) },
-                              maximumFieldHeight: maximumFieldHeight, editable: !session.queueEditResolving)
+                              maximumFieldHeight: maximumFieldHeight, editable: !session.queueEditResolving && !session.recoveringDraft)
     }
 
     private func submit(_ intent: ComposerSubmissionIntent) {
@@ -251,7 +252,7 @@ import AppKit
                         : nil,
                      canSend: canSend, queues: queues, busy: session.busy, loading: session.loading, draftReady: session.draftReady,
                      form: form, hint: hint, showsChanges: showsChanges, showsActions: chat != nil && !isSide,
-                     supportsImages: model.supportsImages(session.id), disabled: editing && session.loading || !inheritedEnabled,
+                     supportsImages: model.supportsImages(session.id), disabled: editing && session.loading || !inheritedEnabled || session.recoveringDraft,
                      completionVisible: session.completionVisible,
                      accessibilityLabel: isSide ? "Side message composer" : "Main message composer")
     }
@@ -317,7 +318,7 @@ import AppKit
                 let chip = PiKit.Chip(text: URL(fileURLWithPath: attachment.path).lastPathComponent, icon: "photo", help: attachment.path,
                                       action: { NSWorkspace.shared.open(URL(fileURLWithPath: attachment.path)) },
                                       remove: { [weak self] in
-                                          guard let self, let session = self.session else { return }
+                                          guard let self, let session = self.session, !session.recoveringDraft else { return }
                                           session.attachments.removeAll { $0.id == attachment.id }
                                           self.model.draftChanged(session)
                                       })

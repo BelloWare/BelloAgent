@@ -14,10 +14,23 @@ struct DraftWrites {
     /// A draft write has already failed, so the next failure does not repeat
     /// the same banner.
     var failed = false
+    /// Recovery owns the draft until its transaction finishes; typing waits
+    /// behind it so it cannot save over the recovered message mid-commit.
+    var recoveries: [String: Task<Void, Never>] = [:]
 }
 
 extension WorkspaceModel {
+    /// An acknowledgement may be missing locally after a full disk or crash.
+    /// Consult durable helper evidence before exposing any recovery action.
+    func recoverableIntents(_ intents: [CommandIntent], for item: ChatRecord, view: SessionDisplay) async throws -> [CommandIntent] {
+        let unchecked = intents.filter { $0.state == "intent" && !view.acceptedCommands.contains($0.id) }
+        let path = item.path ?? root.appendingPathComponent("Workspaces/\(item.workspaceID)/Sessions/\(item.id).jsonl").path
+        let accepted = try await history.acceptedCommands(in: path, intents: unchecked, missingIsEmpty: item.path == nil)
+        view.acceptedCommands.formUnion(accepted)
+        return unchecked.filter { !view.acceptedCommands.contains($0.id) }
+    }
     func draftChanged(_ view: SessionDisplay) {
+        guard draftWrites.recoveries[view.id] == nil else { return }
         // Writing a message is the moment to have its helper ready.
         prewarm(view.id)
         scheduleAutomaticContext(view.id, delay: WorkspaceModel.typingPreviewDelay)
@@ -51,6 +64,7 @@ extension WorkspaceModel {
     /// 150 ms debounce cannot lose the last thing typed; the update path does
     /// the same inside prepareForInstall.
     func flushDrafts() async throws {
+        for task in draftWrites.recoveries.values { await task.value }
         for task in draftWrites.tasks.values { task.cancel() }; draftWrites.tasks.removeAll(); draftWrites.tokens.removeAll()
         let retained = displays.values.filter { !isEphemeral($0.id) }
         guard !retained.isEmpty else { return }
@@ -97,9 +111,60 @@ extension WorkspaceModel {
     func recoverDraft(_ intent: CommandIntent, insert: Bool) {
         // The banner sits in the pane of the chat the submission belongs to,
         // a side's included: it acts on that chat, not on the selected one.
-        guard let view = displays[intent.sessionID] else { return }
-        if insert { view.attachments = Array((view.attachments + (intent.attachments ?? [])).prefix(4)); for chip in intent.skills ?? [] where !view.skills.contains(where: { $0.id == chip.id }) && view.skills.count < 8 { view.skills.append(chip) }; view.draft += (view.draft.isEmpty ? "" : "\n\n") + intent.text; view.directCommand = false; draftChanged(view) }
-        Task { do { try await store?.remove(kind: "pending:\(view.id)", id: intent.id); pendingIntentsChanged(view.id); view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false } }
-            catch { self.error = error.localizedDescription } }
+        guard let view = displays[intent.sessionID], view.recovered.contains(where: { $0.id == intent.id }), draftWrites.recoveries[view.id] == nil else { return }
+        guard intent.state == "intent", !view.acceptedCommands.contains(intent.id), !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else {
+            view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false }; return
+        }
+        guard !view.loading, view.editingMessageID == nil, view.queueEditingID == nil, !view.editPreparing, view.queueEditBeginning == nil, view.unreconciledQueuedEdit == nil else {
+            view.notice = "Finish sending, or save or cancel the message you are editing before recovering this submission."; return
+        }
+        let recovered = DraftRecord(id: view.id, text: intent.text, attachments: intent.attachments, skills: intent.skills)
+        func mergedDraft() -> DraftRecord {
+            var merged = view.savedDraft.merging(recovered)
+            // Side-transfer merging trims separators; recovered prompts must
+            // retain indentation and trailing newlines exactly as submitted.
+            merged.text = view.draft + (view.draft.isEmpty || intent.text.isEmpty ? "" : "\n\n") + intent.text
+            return merged
+        }
+        if insert, let reason = Self.recoveryLimit(mergedDraft()) { view.notice = reason; return }
+        let previous = draftWrites.tasks[view.id]; previous?.cancel()
+        draftWrites.recoveries[view.id] = Task {
+            defer { view.recoveringDraft = false; draftWrites.recoveries.removeValue(forKey: view.id); draftChanged(view) }
+            // A cancelled debounce may already be in the store. Let it finish
+            // before the transaction reserves the draft's newer revision.
+            await previous?.value
+            // A snapshot may have proved acceptance or retired this intent
+            // while the old write finished. Its old button no longer applies.
+            guard view.recovered.contains(where: { $0.id == intent.id }), !view.acceptedCommands.contains(intent.id),
+                  !view.receipts.contains(where: { $0["commandId"]?.string == intent.id }) else { return }
+            do {
+                guard let store else { throw StoreError.unavailable }
+                let merged = insert ? mergedDraft() : nil
+                if let merged, let reason = Self.recoveryLimit(merged) { view.notice = reason; return }
+                // Freeze the validated candidate only for this commit. Late
+                // image conversions wait behind it; typing before it began
+                // was included above. Quit awaits this task as well.
+                view.recoveringDraft = true
+                try await store.withdrawSubmission(sessionID: view.id, commandID: intent.id, draft: merged)
+                if let merged {
+                    view.draft = merged.text; view.attachments = merged.attachments ?? []; view.skills = merged.skills ?? []; view.directCommand = false
+                }
+                pendingIntentsChanged(view.id)
+                view.recovered.removeAll { $0.id == intent.id }; if view.recovered.isEmpty { view.uncertain = false }
+            } catch { self.error = "The interrupted submission could not be recovered. Its saved copy was kept. \(error.localizedDescription)" }
+        }
+    }
+    /// These are helper submission limits, not a reason to truncate a saved
+    /// message. Refuse the entire merge and keep its recoverable intent.
+    private static func recoveryLimit(_ draft: DraftRecord) -> String? {
+        let images = draft.attachments ?? [], skills = draft.skills ?? []
+        var limits: [String] = []
+        if draft.text.utf8.count > SubmissionLimits.messageBytes { limits.append("more than 256 KiB of text") }
+        if images.count > 4 { limits.append("\(images.count) images (maximum 4)") }
+        if images.contains(where: { $0.bytes <= 0 || $0.bytes > 8 * 1024 * 1024 }) { limits.append("an image outside the 1 byte–8 MiB limit") }
+        if images.reduce(0.0, { $0 + Double($1.bytes) }) > 16 * 1024 * 1024 { limits.append("more than 16 MiB of images") }
+        if skills.count > 8 { limits.append("\(skills.count) skills (maximum 8)") }
+        if skills.contains(where: { $0.arguments.utf8.count > 16_384 }) { limits.append("skill arguments over 16 KiB") }
+        return limits.isEmpty ? nil : "Nothing was inserted: the combined draft would contain " + limits.joined(separator: ", ") + ". Make room in the composer, then insert again. The interrupted submission is still saved."
     }
 }

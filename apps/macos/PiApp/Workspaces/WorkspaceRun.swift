@@ -35,6 +35,7 @@ extension WorkspaceModel {
     }
 
     func send(steer: Bool = false, sessionID: String? = nil) {
+        if let id = sessionID ?? focusedSessionID ?? selectedID, draftWrites.recoveries[id] != nil { return }
         // Global commands target the visible conversation. Explicit session
         // submissions already accepted by an asynchronous side flow continue.
         guard sessionID != nil || page == .chats else { return }
@@ -174,6 +175,9 @@ extension WorkspaceModel {
         sendSteps?("dispatched")
         let reply = try await host.request(steer ? "turn.steer" : "turn.submit", sessionID: item.id,
                                            params: turnOverrides(for: item, base: ["text": .string(text), "clientTurnId": .string(turnID), "attachments": .array(attachments.map(\.wire)), "skills": .array(skills.map(\.wire))]), commandID: commandID)
+        progress.helperAccepted = true
+        view.acceptedCommands.insert(commandID)
+        view.recovered.removeAll { $0.id == commandID }; if view.recovered.isEmpty { view.uncertain = false }
         sendSteps?("submitted")
         // A run this chat had not shown yet was going: the helper
         // queued the message behind it, and the queue panel shows it.
@@ -221,6 +225,14 @@ extension WorkspaceModel {
         let text = submission.text, attachments = submission.attachments, skills = submission.skills, directCommand = submission.directCommand
         let commandID = submission.commandID, turnID = submission.turnID, accepted = submission.accepted, named = submission.named
         let dispatched = progress.dispatched, recording = progress.recording, shown = progress.shown
+        if progress.helperAccepted {
+            // Only local bookkeeping failed. Returning the message to the
+            // composer here invites a duplicate of work the helper accepted.
+            self.error = "Message sent, but its local record or title could not be saved. \(error.localizedDescription)"
+            if !submission.drawsRow { followSubmittedTurn(item.id) }
+            refresh(item.id)
+            return
+        }
         @MainActor func undoShownState() { if let shown, view.runState == shown.state { view.runState = shown.replaced } }
         sendSteps?("failed")
         view.rejectContextSubmission(turnID)
@@ -371,6 +383,7 @@ private struct Submission {
 
 /// How far a send got, so that a failure undoes no more than it did.
 private struct SendProgress {
+    var helperAccepted = false
     /// The command is going to the helper: a failure from here, unless the
     /// helper refused it, leaves its outcome unknown.
     var dispatched = false

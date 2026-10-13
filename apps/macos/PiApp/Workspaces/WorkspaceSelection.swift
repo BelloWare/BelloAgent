@@ -170,7 +170,9 @@ extension WorkspaceModel {
                 view.selectionMetadataLoaded = true
             }
             view.draftReady = true
-            view.recovered = metadata?.recovered ?? []; view.uncertain = !view.recovered.isEmpty
+            let recovered = try await self.recoverableIntents(metadata?.recovered ?? [], for: item, view: view)
+            guard current() else { return }
+            view.recovered = recovered; view.uncertain = !recovered.isEmpty
             if focusesComposer { view.composerFocusRequest += 1 }
             // The chat's file can be named while its page is read: its
             // first message writes the journal, and the helper can report

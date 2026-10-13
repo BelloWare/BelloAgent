@@ -31,6 +31,7 @@ extension WorkspaceModel {
     /// Entering an edit is read-only; active work can finish while the user
     /// prepares a replacement. Sending additionally requires an empty queue.
     func editEntryBlocker(_ view: SessionDisplay) -> String? {
+        if draftWrites.recoveries[view.id] != nil { return "Wait for the interrupted submission to finish saving." }
         guard let item = record(view.id) else { return "This conversation is unavailable." }
         if item.imported { return "Imported originals are read-only. Continue as a separate chat before editing." }
         if item.isArchived { return WorkspaceModel.archivedNotice }

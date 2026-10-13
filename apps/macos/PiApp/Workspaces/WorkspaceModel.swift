@@ -446,6 +446,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
 
     let completionSound: CompletionSound
 
+    let pastedImages: PastedImageStorage
     init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false, modelCatalog: ModelCatalog? = nil) {
         self.launching = launching
         self.modelCatalog = modelCatalog ?? ModelCatalog()
@@ -453,6 +454,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         self.completionSound = completionSound ?? CompletionSound()
         let benchmarkRoot = PerformanceProbe.shared.enabled ? ProcessInfo.processInfo.environment["PI_APP_BENCHMARK_STATE_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) } : nil
         root = stateRoot ?? benchmarkRoot ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("com.belloware.PiApp", isDirectory: true)
+        pastedImages = PastedImageStorage(root: root)
         traces = PayloadArchive(root: root.appendingPathComponent("Requests-v1", isDirectory: true))
         liveExporter = TraceArchive(root: FileManager.default.temporaryDirectory.appendingPathComponent("BelloAgent-Export-" + UUID().uuidString))
         store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
