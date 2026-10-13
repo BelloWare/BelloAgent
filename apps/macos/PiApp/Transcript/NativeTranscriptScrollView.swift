@@ -594,6 +594,9 @@ final class TranscriptNativeScrollView: NSScrollView {
             row.layoutIndex = index
             return row
         }
+        // A clip notification can arrive before the queued layout. Its host
+        // list must no longer contain rows this snapshot has removed.
+        if !retained.isEmpty { visibilityRows.removeAll { retained[$0.itemID] === $0 } }
         for row in retained.values { unwire(row); row.removeFromSuperview(); page?.rowGone(row.itemID) }
         if let moving = motion, !moving.changes.allSatisfy({ change in rows.contains { $0.itemID == change.rowID } }) {
             for change in moving.changes { retained[change.rowID]?.endDisclosureMotion() }

@@ -3,6 +3,37 @@ import XCTest
 @testable import PiApp
 
 final class TranscriptVisibilityTests: XCTestCase {
+    @MainActor func testAHistoryReplacementCannotRemountRemovedRowsBeforeLayout() async throws {
+        let session = SessionDisplay(id: "visibility-replacement")
+        session.messages = (0..<8).map { TranscriptMessage(id: "old-\($0)", role: "user", text: String(repeating: "Previous history \($0). ", count: 20)) }
+        let stage = TranscriptStressTestCase.Stage(session)
+        defer { stage.close() }
+        await stage.settleUntilExact()
+        let document = stage.document, clip = stage.scroll.contentView
+        let obsolete = stage.rows
+        XCTAssertTrue(obsolete.contains { $0.superview === document })
+        var replacement = try XCTUnwrap(stage.page.snapshot)
+        replacement.messages = (0..<8).map { TranscriptMessage(id: "new-\($0)", role: "user", text: String(repeating: "Replacement history \($0). ", count: 20)) }
+        replacement.items = replacement.messages.map { .message($0) }
+        replacement.sequence += 1
+        // Same presentation generation, new row identities. AppKit can report
+        // clip movement between reconciliation and the queued layout pass.
+        document.update(snapshot: replacement, actions: stage.actions, environment: stage.environment)
+        XCTAssertTrue(obsolete.allSatisfy { $0.superview == nil }, "Reconciliation detaches the old history")
+        let layouts = document.layoutPassCount
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: clip.bounds.minY + 1))
+        XCTAssertEqual(document.layoutPassCount, layouts, "The scroll notification ran before queued layout")
+        let remounted = obsolete.filter { $0.superview === document }.count
+        XCTAssertEqual(remounted, 0, "The visibility cache must not resurrect an obsolete row")
+        document.layoutRows(width: stage.scroll.contentSize.width)
+        let stale = document.subviews.compactMap { $0 as? TranscriptRowContainer }.filter { mounted in
+            !document.retainedRows.contains { $0 === mounted }
+        }
+        XCTAssertTrue(stale.isEmpty, "Layout must not leave overlapping rows that no longer belong to the page")
+        XCTAssertTrue(document.retainedRows.contains { $0.superview === document }, "The replacement history is mounted")
+        print("VISIBILITY-REPLACEMENT remounted=\(remounted) stale-after-layout=\(stale.count)")
+    }
+
     @MainActor func testScrollingOnePaneNeverDetachesTheOtherPanesSelectedRow() async throws {
         func session(_ id: String) -> SessionDisplay {
             let view = SessionDisplay(id: id)
