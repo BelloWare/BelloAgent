@@ -62,6 +62,8 @@ public actor NativeHostService {
     /// The app's retry setting (pi's settings.retry), for every chat of every
     /// connection: sent with `workspace.open` and by `retry.configure`.
     private var retrySettings = PiProviderRules.RetrySettings()
+    /// Test seam for a Stop overtaking capability discovery or skill freezing.
+    var beforeSubmissionPreflight: (@Sendable () async -> Void)?
     public init(output: @escaping @Sendable (HostOutput)->Void) {
         self.output=output
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
@@ -499,12 +501,14 @@ public actor NativeHostService {
         let resources=workspace.resources, mcp=workspace.mcp, nativeTools=workspace.nativeTools
         switch method {
         case "turn.submit", "turn.steer", "turn.edit":
+            let admittedAt = await session.stopCount
+            await beforeSubmissionPreflight?()
             let text=params["text"].text ?? "", tools=await nativeTools.capabilityIDs(readOnly:session.readOnly)
             let selected=try await resources.freeze(params["skills"].list,text:text,tools:tools)
             let overrides=try Self.turnOverrides(params)
             let input=Submission(commandID:commandID,turnID:try identity(params["clientTurnId"]),text:text,attachments:params["attachments"].list,skills:selected,model:overrides.model,thinkingLevel:overrides.thinkingLevel,contextWindow:overrides.contextWindow,maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit,input:overrides.input)
-            if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(params["messageId"]),input:input,expectedTimeline:params["editSourceTimeline"].text,expectedTextDigest:params["editSourceTextDigest"].text) }
-            return try await session.submit(input,steer:method == "turn.steer")
+            if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(params["messageId"]),input:input,expectedTimeline:params["editSourceTimeline"].text,expectedTextDigest:params["editSourceTextDigest"].text,admittedAt:admittedAt) }
+            return try await session.submit(input,steer:method == "turn.steer",admittedAt:admittedAt)
         case "queue.remove": try await session.removeQueued(required(params["turnId"],"turn id")); return ["accepted":true]
         case "queue.reorder":
             let order=try params["turnIds"].list.map { try required($0,"turn id") }
