@@ -418,24 +418,23 @@ struct SidesPanelActivity: Equatable {
     private let header: ShellStack
     private let subtitle = PiKit.TextLine()
     private let scroll = NSScrollView()
-    private let document = FlippedDocument()
-    private let column = ShellStack(.vertical, spacing: 2, padding: NSEdgeInsets(top: 0, left: PiSpacing.sm, bottom: PiSpacing.md, right: PiSpacing.sm))
+    private lazy var document = SidesPanelListDocument(model: model, newSide: newSide, empty: emptyRow, glide: glide)
     private let glide = PiKit.SelectionGlide()
     let newSide: PiKit.SelectableRow
     private let empty = PiKit.TextLine(PiKit.Line("Open a chat to see its sides.", font: PiKit.Font.caption, color: .piInkTertiary))
     private lazy var emptyRow = ShellStack(.vertical, padding: NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10), [.view(empty, .flexible)])
-    private var rows: [String: SidesPanelRowView] = [:]
     private var observer: ShellObserver!
+    private var sourceObserver: ShellObserver!
     private var watched: [ObjectIdentifier] = []
-    private var shown: [SidesPanelRowView.Content]?
+    private var retained: [CachedSessionAccounting] = []
     private var shownParent: String??
     private var clipWatcher: ShellClipWatcher?
     /// Reduced motion as the window has it: the rows' rings stand still.
     var motionReduced = false {
-        didSet { guard oldValue != motionReduced else { return }; for row in rows.values { row.motionReduced = motionReduced } }
+        didSet { guard oldValue != motionReduced else { return }; document.motionReduced = motionReduced }
     }
     /// The window's disabled state: the pin, New side and the rows go quiet with it.
-    var inheritedEnabled = true { didSet { if oldValue != inheritedEnabled { shownParent = nil; refresh() } } }
+    var inheritedEnabled = true { didSet { if oldValue != inheritedEnabled { refresh() } } }
 
     init(model: WorkspaceModel, parentID: String?, pinned: Bool) {
         self.model = model; self.parentID = parentID; self.pinned = pinned
@@ -459,11 +458,16 @@ struct SidesPanelActivity: Equatable {
         scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.borderType = .noBorder
         scroll.documentView = document
         clipWatcher = ShellClipWatcher(scroll, owner: self)
-        document.addSubview(column)
+        scroll.contentView.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(document, selector: #selector(SidesPanelListDocument.viewportChanged),
+                                               name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        document.content = { [weak self] entry in self?.content(for: entry) }
+        document.visibleChanged = { [weak self] in self?.watchVisibleSources() }
         for view in [header, subtitle, scroll] as [NSView] { addSubview(view) }
         setAccessibilityElement(true); setAccessibilityRole(.group)
         setAccessibilityLabel("Sides"); setAccessibilityIdentifier("sidesPanel")
         observer = ShellObserver { [weak self] in self?.refresh() }
+        sourceObserver = ShellObserver { [weak self] in self?.document.refreshVisible() }
         observer.observe(model)
         observer.observe(publisher: SidebarMinute.shared.$tick.dropFirst())
         refresh()
@@ -484,60 +488,47 @@ struct SidesPanelActivity: Equatable {
         } else { subtitle.isHidden = true }
         newSide.isEnabled = inheritedEnabled && (parentID.map { model.canOpenSide($0) && !model.installPreparing } ?? false)
         pin.isEnabled = inheritedEnabled
-        // Each live side's page and figures are watched while it is listed.
+        let changedParent = shownParent != .some(parentID)
+        shownParent = .some(parentID)
+        document.update(entries.map { .init(entry: $0, unread: model.unreadOutputCount(sessionID: $0.id) > 0) }, hasParent: parentID != nil)
+        if changedParent { scroll.contentView.scroll(to: .zero) }
+        document.refreshVisible()
+        watchVisibleSources()
+        header.relayoutAll(); needsLayout = true
+    }
+
+    private func content(for entry: SidesPanelEntry) -> SidesPanelRowView.Content {
         let now = SidebarMinute.shared.now
-        var contents: [SidesPanelRowView.Content] = []
+        var stats: ChatRowStats
+        if let display = model.displays[entry.id] {
+            stats = SidebarChatRowView.liveStats(display, now: now)
+            if !display.runStateKnown, let held = model.heldRunState(entry.id) { stats.updateActivity(state: held, loading: false, activity: [:]) }
+        } else {
+            stats = ChatRowStats(totals: model.chatAccounting.row(for: entry.id).totals, now: now)
+            if let held = model.heldRunState(entry.id) { stats.updateActivity(state: held, loading: false, activity: [:]) }
+        }
+        return SidesPanelRowView.Content(entry: entry, stats: stats, unread: model.unreadOutputCount(sessionID: entry.id) > 0,
+                                         failed: model.unreadFailure(sessionID: entry.id), enabled: inheritedEnabled,
+                                         markedUnread: model.markedUnreadOnly(sessionID: entry.id))
+    }
+    private func watchVisibleSources() {
         var objects: [ObjectIdentifier] = []
         var watch: [() -> Void] = []
-        for entry in entries {
-            let unread = model.unreadOutputCount(sessionID: entry.id) > 0, failed = model.unreadFailure(sessionID: entry.id)
-            var stats: ChatRowStats
-            if let display = model.displays[entry.id] {
-                let footer = display.footer
-                stats = ChatRowStats(totals: footer.gateway, timing: footer.timing, now: now)
-                stats.updateActivity(state: display.state, loading: display.loading, activity: display.activity)
-                if !display.runStateKnown, let held = model.heldRunState(entry.id) { stats.updateActivity(state: held, loading: false, activity: [:]) }
-                if let at = display.messages.last(where: { $0.at != nil })?.at { stats.noteActivity(max(stats.lastActivity ?? 0, at / 1_000), now: now) }
-                objects += [ObjectIdentifier(display), ObjectIdentifier(footer)]
-                watch.append { [weak self] in self?.observer.observe(display); self?.observer.observe(footer) }
+        var retained: [CachedSessionAccounting] = []
+        for id in document.rows.keys.sorted() {
+            if let display = model.displays[id] {
+                objects += [ObjectIdentifier(display), ObjectIdentifier(display.footer)]
+                watch.append { [weak self] in self?.sourceObserver.observe(display); self?.sourceObserver.observe(display.footer) }
             } else {
-                let accounting = model.chatAccounting.row(for: entry.id)
-                stats = ChatRowStats(totals: accounting.totals, now: now)
-                if let held = model.heldRunState(entry.id) { stats.updateActivity(state: held, loading: false, activity: [:]) }
+                let accounting = model.chatAccounting.row(for: id)
+                retained.append(accounting)
                 objects.append(ObjectIdentifier(accounting))
-                watch.append { [weak self] in self?.observer.observe(accounting) }
+                watch.append { [weak self] in self?.sourceObserver.observe(accounting) }
             }
-            contents.append(SidesPanelRowView.Content(entry: entry, stats: stats, unread: unread, failed: failed, enabled: inheritedEnabled,
-                                                      markedUnread: model.markedUnreadOnly(sessionID: entry.id)))
         }
-        if objects != watched {
-            watched = objects
-            observer.reset()
-            observer.observe(model)
-            observer.observe(publisher: SidebarMinute.shared.$tick.dropFirst())
-            for start in watch { start() }
-        }
-        guard contents != shown || shownParent != .some(parentID) else { return }
-        shown = contents; shownParent = .some(parentID)
-        var items: [ShellItem] = []
-        if parentID != nil {
-            items.append(.view(newSide, .fill))
-            let ids = Set(contents.map(\.entry.id))
-            for id in rows.keys where !ids.contains(id) { rows[id] = nil }
-            for content in contents {
-                let row = rows[content.entry.id] ?? SidesPanelRowView(model: model, glide: glide)
-                rows[content.entry.id] = row
-                row.motionReduced = motionReduced
-                row.update(content)
-                items.append(.view(row, .fill))
-            }
-        } else {
-            rows.removeAll()
-            items.append(.view(emptyRow, .fill))
-        }
-        column.items = items
-        column.relayoutAll(); header.relayoutAll()
-        needsLayout = true
+        guard objects != watched else { return }
+        watched = objects; self.retained = retained; sourceObserver.reset()
+        for start in watch { start() }
     }
 
     override func layout() {
@@ -552,9 +543,107 @@ struct SidesPanelActivity: Equatable {
             y += 1 + size.height + PiSpacing.sm
         }
         scroll.frame = CGRect(x: 0, y: y, width: bounds.width, height: max(0, bounds.height - y))
-        scroll.shellFit(document) { column.height(forWidth: $0) }
-        column.frame = document.bounds
+        scroll.shellFit(document) { document.height(forWidth: $0) }
+        document.refreshVisible()
     }
+}
+
+/// The entire side list has geometry, but only nearby rows own controls or
+/// live observations. A single measuring row handles titles at a new width;
+/// state/recency changes keep that geometry and update visible rows only.
+@MainActor final class SidesPanelListDocument: NSView {
+    struct Item: Equatable { var entry: SidesPanelEntry; var unread: Bool }
+    private let model: WorkspaceModel
+    private let newSide: NSView, empty: NSView
+    private let glide: PiKit.SelectionGlide
+    private let measuring: SidesPanelRowView
+    private var items: [Item] = []
+    private var hasParent = false
+    private var frames: [CGRect] = []
+    private var measuredWidth: CGFloat?
+    private var heights: [String: (item: Item, width: CGFloat, height: CGFloat)] = [:]
+    private(set) var heightMeasurements = 0
+    private var total: CGFloat = 0
+    private var firstFrame = CGRect.zero
+    private(set) var rows: [String: SidesPanelRowView] = [:]
+    private var pool: [SidesPanelRowView] = []
+    var content: ((SidesPanelEntry) -> SidesPanelRowView.Content?)?
+    var visibleChanged: (() -> Void)?
+    var motionReduced = false { didSet { for row in rows.values { row.motionReduced = motionReduced } } }
+    init(model: WorkspaceModel, newSide: NSView, empty: NSView, glide: PiKit.SelectionGlide) {
+        self.model = model; self.newSide = newSide; self.empty = empty; self.glide = glide
+        measuring = SidesPanelRowView(model: model, glide: PiKit.SelectionGlide())
+        super.init(frame: .zero)
+        addSubview(newSide); addSubview(empty)
+    }
+    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    override var isFlipped: Bool { true }
+    func update(_ items: [Item], hasParent: Bool) {
+        guard self.items != items || self.hasParent != hasParent else { return }
+        self.items = items; self.hasParent = hasParent
+        let ids = Set(items.map(\.entry.id))
+        heights = heights.filter { ids.contains($0.key) }
+        measuredWidth = nil
+        newSide.isHidden = !hasParent; empty.isHidden = hasParent
+        needsLayout = true
+    }
+    func height(forWidth width: CGFloat) -> CGFloat {
+        guard measuredWidth != width else { return total }
+        measuredWidth = width
+        let inner = max(0, width - 2 * PiSpacing.sm)
+        let first = hasParent ? newSide : empty
+        firstFrame = CGRect(x: PiSpacing.sm, y: 0, width: inner, height: PiKit.height(of: first, width: inner))
+        var y = firstFrame.maxY
+        frames = []
+        if hasParent {
+            for item in items {
+                let height: CGFloat
+                if let known = heights[item.entry.id], known.item == item, known.width == inner { height = known.height }
+                else {
+                    measuring.update(.init(entry: item.entry, stats: ChatRowStats(totals: nil), unread: item.unread, failed: false, enabled: true))
+                    height = measuring.height(forWidth: inner); heightMeasurements += 1
+                    heights[item.entry.id] = (item, inner, height)
+                }
+                y += 2
+                frames.append(CGRect(x: PiSpacing.sm, y: y, width: inner, height: height))
+                y += height
+            }
+        }
+        total = y + PiSpacing.md
+        return total
+    }
+    @objc func viewportChanged() { refreshVisible() }
+    func refreshVisible() {
+        guard measuredWidth == bounds.width, frames.count == items.count || !hasParent else { return }
+        newSide.frame = firstFrame; empty.frame = firstFrame
+        let visible = visibleRect.insetBy(dx: 0, dy: -240)
+        var low = 0, high = frames.count
+        while low < high {
+            let mid = (low + high) / 2
+            if frames[mid].maxY < visible.minY { low = mid + 1 } else { high = mid }
+        }
+        let start = low
+        while low < frames.count, frames[low].minY <= visible.maxY { low += 1 }
+        let indices = start..<low
+        let wanted = Set(indices.map { items[$0].entry.id })
+        for (id, row) in rows where !wanted.contains(id) {
+            rows[id] = nil; row.removeFromSuperview()
+            row.row.cell?.isHighlighted = false
+            if pool.count < 40 { pool.append(row) }
+        }
+        for index in indices {
+            let entry = items[index].entry
+            guard let content = content?(entry) else { continue }
+            let row = rows[entry.id] ?? pool.popLast() ?? SidesPanelRowView(model: model, glide: glide)
+            row.motionReduced = motionReduced
+            row.update(content)
+            row.frame = frames[index]
+            if row.superview == nil { addSubview(row) }
+            rows[entry.id] = row
+        }
+        visibleChanged?()
+    }
+    override func layout() { super.layout(); refreshVisible() }
 }
 
 /// One side: its mark (a ring while it works, the orange dot of a new reply,

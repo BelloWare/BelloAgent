@@ -1,0 +1,52 @@
+import AppKit
+import XCTest
+@testable import PiApp
+
+@MainActor final class SidesPanelVirtualizationTests: XCTestCase {
+    func testALargeSideListMountsOnlyNearbyRowsAndKeepsEverySideReachable() async throws {
+        let root = scratchRoot("sides-panel-virtualization")
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        model.chats = [ChatRecord(id: "parent", workspaceID: "project", title: "Parent", path: nil, profileID: "fixture")]
+        model.chats += (0..<1_000).map { i in
+            var chat = ChatRecord(id: "side-\(i)", workspaceID: "project", title: "Side \(i)", path: nil, profileID: "fixture")
+            chat.parentSessionID = "parent"
+            return chat
+        }
+        let panel = SidesPanelView(model: model, parentID: "parent", pinned: false)
+        panel.frame = CGRect(x: 0, y: 0, width: 260, height: 450)
+        panel.layoutSubtreeIfNeeded()
+        let scroll = try XCTUnwrap(InspectorExpandFixture.descendants(NSScrollView.self, in: panel).first)
+        let document = try XCTUnwrap(scroll.documentView)
+        func rows() -> [SidesPanelRowView] { InspectorExpandFixture.descendants(SidesPanelRowView.self, in: panel) }
+        print("SCROLL-15 mounted side rows: \(rows().count) / 1000")
+        XCTAssertLessThan(rows().count, 40)
+        XCTAssertGreaterThan(document.frame.height, 40_000, "The scroller still spans all sides")
+        let entries = model.sidesPanelEntries(of: "parent")
+        XCTAssertTrue(rows().contains { $0.content?.entry.id == entries.first?.id })
+        scroll.contentView.scroll(to: CGPoint(x: 0, y: document.frame.height - scroll.contentView.bounds.height))
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        panel.layoutSubtreeIfNeeded()
+        XCTAssertLessThan(rows().count, 40)
+        XCTAssertTrue(rows().contains { $0.content?.entry.id == entries.last?.id })
+
+        // Newly visible rows read their current state, even if it changed offscreen.
+        let first = try XCTUnwrap(entries.first?.id)
+        let list = try XCTUnwrap(document as? SidesPanelListDocument)
+        let measured = list.heightMeasurements
+        model.unreadStates[first] = SessionReadState(id: first, observedAssistantCount: 1, latestAssistantID: "reply", unreadOutputs: 1)
+        panel.refresh()
+        panel.layoutSubtreeIfNeeded()
+        XCTAssertLessThanOrEqual(list.heightMeasurements - measured, 1, "Only the title whose weight changed needs measurement")
+        scroll.contentView.scroll(to: .zero)
+        NotificationCenter.default.post(name: NSView.boundsDidChangeNotification, object: scroll.contentView)
+        panel.layoutSubtreeIfNeeded()
+        XCTAssertEqual(rows().first { $0.content?.entry.id == first }?.content?.unread, true)
+        let display = SessionDisplay(id: first)
+        model.displays[first] = display
+        panel.refresh()
+        display.state = "paused"
+        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+        XCTAssertEqual(rows().first { $0.content?.entry.id == first }?.content?.lead, "Paused", "Visible rows keep live observations")
+    }
+}
