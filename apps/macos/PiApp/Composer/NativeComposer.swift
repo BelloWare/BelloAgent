@@ -22,6 +22,7 @@ import AppKit
     var inputRejected: (String) -> Void = { _ in }
     /// Image files dropped on or pasted into the composer.
     var attachFiles: ([URL]) -> Void = { _ in }
+    var pastedImages: PastedImageStorage? = nil
     /// A changed token moves keyboard focus into the editor once the view is in a window.
     var focusToken = 0
     /// The token a new editor starts from. A new editor acts on a token
@@ -71,7 +72,7 @@ import AppKit
         editor.attachmentDestination = { [weak coordinator] in
             guard let parent = coordinator?.parent else { return nil }
             // Snapshot the callbacks for this session before conversion yields.
-            return ComposerTextView.AttachmentDestination(attach: parent.attachFiles, reject: parent.inputRejected)
+            return ComposerTextView.AttachmentDestination(attach: parent.attachFiles, reject: parent.inputRejected, storage: parent.pastedImages)
         }
         editor.imageRejected = { [weak coordinator] in coordinator?.parent.inputRejected($0) }
         editor.registerForDraggedTypes([.fileURL, .png, .tiff])
@@ -415,6 +416,7 @@ struct ComposerEditMeasurement {
     struct AttachmentDestination {
         var attach: ([URL]) -> Void
         var reject: ((String) -> Void)?
+        var storage: PastedImageStorage? = nil
     }
     var attachmentDestination: (() -> AttachmentDestination?)?
     /// Reported when a pasted or dropped image cannot be read; wired to the
@@ -436,12 +438,13 @@ struct ComposerEditMeasurement {
         if let urls = Self.imageFiles(on: pasteboard) { attachFiles(urls); return true }
         guard Self.imageIsWhatWasCopied(on: pasteboard), let pasted = Self.pastedImage(on: pasteboard) else { return false }
         let destination = attachmentDestination?() ?? AttachmentDestination(attach: attachFiles, reject: imageRejected)
+        guard let storage = destination.storage else { destination.reject?("Desktop image storage is unavailable. Attach an image file instead."); return true }
         // Decoding a screenshot, re-encoding it and writing it out takes long
         // enough to freeze the window: a 4000x3000 paste is hundreds of
         // milliseconds. Only the bytes are taken here; the rest happens off
         // the main thread and the chip appears when it lands.
         Task { @MainActor in
-            let written = await Task.detached(priority: .userInitiated) { Self.writePastedImage(pasted) }.value
+            let written = await Task.detached(priority: .userInitiated) { Self.writePastedImage(pasted, storage: storage) }.value
             if let written { destination.attach([written]) }
             else { destination.reject?("That image could not be read. Copy it again, or attach the file instead.") }
         }
@@ -479,7 +482,7 @@ struct ComposerEditMeasurement {
     }
     /// Writes the pasted bytes to a private PNG. PNG goes through untouched;
     /// anything else is converted here, off the main thread.
-    nonisolated static func writePastedImage(_ image: PastedImage) -> URL? {
+    nonisolated static func writePastedImage(_ image: PastedImage, storage: PastedImageStorage) -> URL? {
         let bytes: Data
         if image.isPNG { bytes = image.data }
         else {
@@ -488,13 +491,7 @@ struct ComposerEditMeasurement {
             bytes = png
         }
         guard !bytes.isEmpty, bytes.count <= 8 * 1024 * 1024 else { return nil }
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("BelloAgent-Pasted", isDirectory: true)
-        let url = folder.appendingPathComponent("pasted-" + UUID().uuidString + ".png")
-        do {
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            try bytes.write(to: url, options: .atomic)
-        } catch { return nil }
-        return url
+        return try? storage.write(bytes)
     }
     /// Image files on the pasteboard, which need no conversion at all.
     private static func imageFiles(on pasteboard: NSPasteboard) -> [URL]? {

@@ -2,6 +2,16 @@ import XCTest
 import SwiftUI
 @testable import PiApp
 
+private final class ConnectionTestReadGate: @unchecked Sendable {
+    let entered: XCTestExpectation
+    let resume = DispatchSemaphore(value: 0)
+    init(_ entered: XCTestExpectation) { self.entered = entered }
+    func hold() { entered.fulfill(); resume.wait() }
+}
+private extension MetadataStore {
+    func holdConnectionTestReads(_ gate: ConnectionTestReadGate) { gate.hold() }
+}
+
 final class WorkspaceFollowupTests: XCTestCase {
     private func scratch() throws -> URL {
         let base = scratchBase()
@@ -125,6 +135,77 @@ final class WorkspaceFollowupTests: XCTestCase {
         let unrelated = try await model.store?.get(DraftRecord.self, kind: "draft", id: other.id)
         XCTAssertNil(unrelated)
         await model.store?.close()
+    }
+
+    @MainActor func testConfirmedConnectionTestSurvivesCancelledSelection() async throws { try await cancelledConnectionTest(fails: false) }
+    @MainActor func testConfirmedConnectionTestHydratesAfterSelectionMetadataWasCancelled() async throws { try await cancelledConnectionTest(fails: false, beforeMetadata: true) }
+    @MainActor func testConfirmedConnectionTestReportsReconciliationFailure() async throws { try await cancelledConnectionTest(fails: true) }
+    @MainActor private func cancelledConnectionTest(fails: Bool, beforeMetadata: Bool = false) async throws {
+        let root = try scratch(), vault = ConfigurationVault(storage: MemoryVaultStorage())
+        var profile = ProfileRecord(); profile.id = "p"; profile.baseUrl = "http://127.0.0.1:1"; profile.modelId = "fixture"
+        let savedProfile = profile
+        _ = try await vault.update(expectedRevision: 0) { $0.profiles = [.init(profile: savedProfile, apiKey: "fixture")] }
+        let model = WorkspaceModel(stateRoot: root, vault: vault)
+        registerWorkspaceFixtureTeardown(model, root: root); try await model.reloadConfiguration()
+        var frames: [[String: WireValue]] = []
+        let host = HostSupervisor(commandSender: { frames.append($0) })
+        try await host.connect(cwd: root, state: root.appendingPathComponent("host")); model.hosts[WorkspaceRecord.scratchID] = host
+        var release: CheckedContinuation<Void, Never>?, reads = 0
+        model.commandAcceptanceRead = { path, _, _ in
+            guard let chat = model.chats.first(where: { $0.connectionTest == true }), path.hasSuffix("/\(chat.id).jsonl") else { return [] }
+            reads += 1
+            if reads == 1 && !beforeMetadata { await withCheckedContinuation { release = $0 } }
+            if fails { throw StoreError.unreadableRecord }
+            return []
+        }
+        defer { release?.resume(); model.commandAcceptanceRead = nil }
+        var gate: ConnectionTestReadGate?, blocker: Task<Void, Never>?, creation: Task<Void, Never>?
+        defer { gate?.resume.signal() }
+        if beforeMetadata {
+            // The saved-chat handoff from createConnectionTestChat, held before
+            // selection can read any metadata, not merely before acceptance.
+            let chat = ChatRecord(id: "test", workspaceID: WorkspaceRecord.scratchID, title: "Connection test", profileID: profile.id, toolMode: ChatRecord.readOnlyTools, connectionTest: true)
+            let store = try XCTUnwrap(model.store)
+            try await store.put(chat, kind: "chat", id: chat.id); model.chats.append(chat)
+            let entered = expectation(description: "metadata held"), held = ConnectionTestReadGate(entered); gate = held
+            blocker = Task { await store.holdConnectionTestReads(held) }
+            await fulfillment(of: [entered], timeout: 2)
+            creation = Task { await model.select(chat.id); model.submitConnectionTestChat(chat.id) }
+            try await eventually("connection test selected") { model.selectedID == chat.id }
+        } else {
+            model.testConnection(profileID: profile.id, confirmed: true)
+            try await eventually("connection test reconciliation held") { release != nil }
+        }
+        let chat = try XCTUnwrap(model.chats.first(where: { $0.connectionTest == true })), view = try XCTUnwrap(model.displays[chat.id])
+        view.snapshotInFlight = true; model.opened.insert(chat.id)
+        XCTAssertFalse(view.draftReady)
+        if beforeMetadata { XCTAssertFalse(view.selectionMetadataLoaded) }
+        let other = ChatRecord(id: "other", workspaceID: "w", title: "Other", profileID: profile.id), otherView = SessionDisplay(id: "other")
+        otherView.draft = "Keep this unrelated draft"; model.chats.append(other); model.displays[other.id] = otherView
+        let navigation = Task { await model.select(other.id) }
+        try await eventually("reader switched chats") { model.selectedID == other.id }
+        gate?.resume.signal(); gate = nil; release?.resume(); release = nil
+        await blocker?.value; await navigation.value; await creation?.value
+        let prompt = "Reply with OK to confirm this API connection."
+        try await eventually("confirmed test submitted or reported its failure") {
+            frames.contains { $0["method"]?.string == "turn.submit" } || model.error != nil || (!view.loading && view.draft == prompt)
+        }
+        let submissions = frames.filter { $0["method"]?.string == "turn.submit" }
+        if fails {
+            XCTAssertTrue(submissions.isEmpty); XCTAssertNotNil(model.error, "A confirmed request must not disappear when reconciliation fails")
+            XCTAssertFalse(view.draftReady)
+        } else {
+            XCTAssertEqual(submissions.count, 1, "Switching chats must not drop or duplicate the confirmed request")
+            XCTAssertTrue(view.draftReady); XCTAssertTrue(view.selectionMetadataLoaded); XCTAssertGreaterThanOrEqual(reads, beforeMetadata ? 1 : 2)
+            if let frame = submissions.first {
+                XCTAssertEqual(frame["sessionId"]?.string, chat.id); XCTAssertEqual(frame["params"]?.object?["text"]?.string, prompt)
+                host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(try XCTUnwrap(host.epoch)),
+                                     "commandId": try XCTUnwrap(frame["commandId"]), "ok": .bool(true), "result": .object(["accepted": .bool(true)])]),
+                             connectionID: try XCTUnwrap(host.connectionID))
+                try await eventually("test submit settled") { !view.loading }
+            }
+        }
+        XCTAssertEqual(otherView.draft, "Keep this unrelated draft"); XCTAssertEqual(model.selectedID, other.id); XCTAssertEqual(model.focusedSessionID, other.id)
     }
 
     @MainActor func testMissingConnectionPreservesTheEditedMessageAndDisplacedDraft() async throws {

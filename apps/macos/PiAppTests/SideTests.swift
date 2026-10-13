@@ -412,11 +412,14 @@ final class SideTests: XCTestCase {
         parent.recovered = [parentIntent]; parent.uncertain = true
         side.recovered = [intent]; side.uncertain = true
         model.recoverDraft(intent, insert: true)
+        XCTAssertTrue(side.draft.isEmpty, "Recovery waits for its draft and intent transaction")
+        try await eventually("The side's recovery committed") { side.recovered.isEmpty }
         XCTAssertEqual(side.draft, "Interrupted side question", "The text goes into the side's composer")
         XCTAssertEqual(parent.draft, "Parent draft", "The parent's draft is untouched")
-        for _ in 0..<200 where !side.recovered.isEmpty { try await Task.sleep(for: .milliseconds(5)) }
         XCTAssertTrue(side.recovered.isEmpty); XCTAssertFalse(side.uncertain)
         XCTAssertEqual(parent.recovered.map(\.id), ["parent-command"], "The parent's own interrupted submission stays")
+        let saved = try await model.store?.get(DraftRecord.self, kind: "draft", id: side.id)
+        XCTAssertEqual(saved?.text, side.draft, "The side's recovered text is durable before its banner clears")
         let left = try await model.store?.list(CommandIntent.self, kind: "pending:side")
         XCTAssertEqual(left?.count, 0, "The side's record is the one removed")
         let parentLeft = try await model.store?.list(CommandIntent.self, kind: "pending:parent")

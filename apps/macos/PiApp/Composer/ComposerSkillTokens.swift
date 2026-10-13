@@ -202,7 +202,7 @@ extension ComposerTextView {
     /// Replaces the selected skills as one undoable step; the text is left
     /// exactly as it is.
     func applySkillChange(_ skills: [SkillChip], actionName: String) {
-        guard let display = skillStrip.display, display.id == sessionID, display.skills != skills else { return }
+        guard let display = skillStrip.display, !display.recoveringDraft, display.id == sessionID, display.skills != skills else { return }
         let previous = display.skills
         breakUndoCoalescing()
         display.skills = skills

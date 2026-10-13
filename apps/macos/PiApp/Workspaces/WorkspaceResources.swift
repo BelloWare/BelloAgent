@@ -250,6 +250,7 @@ extension WorkspaceModel {
         return false
     }
     func chooseCompletion(_ choice: CommandCompletion, view: SessionDisplay) {
+        guard !view.recoveringDraft else { return }
         guard let token = view.completionToken, let editor = view.composerEditor,
               editor.completionLocation == token.location, editor.selectedRange() == token.location.selectedRangeUTF16,
               !editor.hasMarkedText(), view.composerLocation == token.location,
@@ -269,6 +270,7 @@ extension WorkspaceModel {
         view.completionVisible = false; view.completionToken = nil; view.completionParse?.cancel()
     }
     func canSelectSkill(_ skill: SkillDescriptor, view: SessionDisplay) -> Bool {
+        guard !view.recoveringDraft else { return false }
         guard let workspaceID = record(view.id)?.workspaceID, skillEnabledInBelloAgent(skill.id), skill.canSelect,
               view.skillCatalog.authorizes, view.skillCatalog.scope == skillScope(sessionID: view.id, workspaceID: workspaceID) else { return false }
         return view.skillCatalog.entries.contains { $0.skill.id == skill.id && $0.skill.canSelect && $0.skill.contentHash == skill.contentHash && $0.skill.metadataHash == skill.metadataHash }
@@ -321,8 +323,9 @@ extension WorkspaceModel {
         send(steer: steer, sessionID: view.id); return true
     }
     func editSkillArguments(_ chip: SkillChip, view: SessionDisplay) {
+        guard !view.recoveringDraft else { return }
         if !questions.askText("Arguments for /\(chip.name)", value: chip.arguments, action: "Save Arguments", limit: 16384, about: view.id, entered: { [weak self] text in
-            guard let self, let index = view.skills.firstIndex(where: { $0.id == chip.id }) else { return }
+            guard let self, !view.recoveringDraft, let index = view.skills.firstIndex(where: { $0.id == chip.id }) else { return }
             view.skills[index].arguments = text
             self.draftChanged(view)
         }) { view.notice = PiQuestion.busyNotice }

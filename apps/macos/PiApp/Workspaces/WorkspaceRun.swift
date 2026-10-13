@@ -35,6 +35,10 @@ extension WorkspaceModel {
     }
 
     func send(steer: Bool = false, sessionID: String? = nil) {
+        if let id = sessionID ?? focusedSessionID ?? selectedID, draftWrites.recoveries[id] != nil || displays[id]?.draftReady == false {
+            if sessionID != nil { error = "The message was not sent. Wait for the draft to finish loading or recovering, then try again." }
+            return
+        }
         // Global commands target the visible conversation. Explicit session
         // submissions already accepted by an asynchronous side flow continue.
         guard sessionID != nil || page == .chats else { return }
@@ -44,6 +48,7 @@ extension WorkspaceModel {
         latestVersion(sessionID: id)
         guard !item.isArchived else { view.notice = Self.archivedNotice; return }
         guard let store else { error = "Desktop storage is unavailable. Resolve the storage error before sending."; return }
+        if reviewReturnedSubmission(view, retry: { [weak self] in self?.send(steer: steer, sessionID: id) }) { return }
         if resolveLeadingCommand(view, steer: steer) { return }
         guard view.draft.utf8.count <= SubmissionLimits.messageBytes else { error = "The draft exceeds the 256 KiB submission limit"; return }
         if view.uncertain {
@@ -155,7 +160,7 @@ extension WorkspaceModel {
             // holds it. It is written while the helper is reached, and
             // the command goes out only once it is on disk.
             let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent",
-                                       epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills)
+                                       epoch: hosts[item.workspaceID].flatMap { $0.isReady ? $0.epoch : nil }, attachments: attachments, skills: skills, draftReviewTracked: true)
             let draft = view.savedDraft
             progress.recording = Task { try await store.recordSubmission(intent, draft: draft) }
         }
@@ -174,6 +179,9 @@ extension WorkspaceModel {
         sendSteps?("dispatched")
         let reply = try await host.request(steer ? "turn.steer" : "turn.submit", sessionID: item.id,
                                            params: turnOverrides(for: item, base: ["text": .string(text), "clientTurnId": .string(turnID), "attachments": .array(attachments.map(\.wire)), "skills": .array(skills.map(\.wire))]), commandID: commandID)
+        progress.helperAccepted = true
+        view.acceptedCommands.insert(commandID)
+        view.recovered.removeAll { $0.id == commandID }; if view.recovered.isEmpty { view.uncertain = false }
         sendSteps?("submitted")
         // A run this chat had not shown yet was going: the helper
         // queued the message behind it, and the queue panel shows it.
@@ -221,6 +229,14 @@ extension WorkspaceModel {
         let text = submission.text, attachments = submission.attachments, skills = submission.skills, directCommand = submission.directCommand
         let commandID = submission.commandID, turnID = submission.turnID, accepted = submission.accepted, named = submission.named
         let dispatched = progress.dispatched, recording = progress.recording, shown = progress.shown
+        if progress.helperAccepted {
+            // Only local bookkeeping failed. Returning the message to the
+            // composer here invites a duplicate of work the helper accepted.
+            self.error = "Message sent, but its local record or title could not be saved. \(error.localizedDescription)"
+            if !submission.drawsRow { followSubmittedTurn(item.id) }
+            refresh(item.id)
+            return
+        }
         @MainActor func undoShownState() { if let shown, view.runState == shown.state { view.runState = shown.replaced } }
         sendSteps?("failed")
         view.rejectContextSubmission(turnID)
@@ -240,6 +256,9 @@ extension WorkspaceModel {
         if rejection == "not_running", steer {
             view.sendFailure = "The run finished. Press Return to send this as a new message."
         } else { view.sendFailure = error.localizedDescription }
+        // Mark before restoreUnsent schedules a write: every saved returned
+        // copy must retain its gate even if a snapshot clears `uncertain`.
+        if accepted, rejection == nil, dispatched { view.submissionReviews.insert(commandID) }
         if accepted { restoreUnsent(view, text: text, attachments: attachments, skills: skills, directCommand: directCommand) }
         let draft = accepted && !isEphemeral(item.id) ? view.savedDraft : nil
         if rejection != nil || !dispatched {
@@ -371,6 +390,7 @@ private struct Submission {
 
 /// How far a send got, so that a failure undoes no more than it did.
 private struct SendProgress {
+    var helperAccepted = false
     /// The command is going to the helper: a failure from here, unless the
     /// helper refused it, leaves its outcome unknown.
     var dispatched = false

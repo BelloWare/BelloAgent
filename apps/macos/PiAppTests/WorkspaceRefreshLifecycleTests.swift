@@ -835,7 +835,7 @@ extension WorkspaceRefreshLifecycleTests {
             return value
         }
         try await exchange(f, receipted(2, state: "dispatched"))
-        XCTAssertEqual(f.view.recovered.map(\.id), ["command"], "The submission is still pending while its run streams")
+        XCTAssertTrue(f.view.recovered.isEmpty, "An accepted submission is pending, but must never be offered as unsent input")
         let before = f.view.intentReads
         let started = ProcessInfo.processInfo.systemUptime
         for index in 0..<20 {
@@ -921,5 +921,49 @@ extension WorkspaceRefreshLifecycleTests {
         XCTAssertEqual(view.footer.contextState, state, "The context meter keeps its figures")
         XCTAssertEqual(view.footer.context["tokens"]?.number, 48_000)
         XCTAssertFalse(model.opened.contains(chat.id), "The chat reopens on its next use")
+    }
+}
+
+extension WorkspaceRefreshLifecycleTests {
+    @MainActor func testAcceptedReceiptHidesRecoveryEvenWhenItsLocalWriteFails() async throws {
+        let f = try await fixture()
+        f.view.historyState = .ready; f.view.presentation.identity = ("runtime", "root")
+        let intent = CommandIntent(id: "command", sessionID: f.chat.id, turnID: "turn", text: "Already received", state: "intent")
+        try await f.model.store?.put(intent, kind: "pending:\(f.chat.id)", id: intent.id)
+        f.view.recovered = [intent]; f.view.uncertain = true
+        try RecoveredDraftTests.sql("CREATE TRIGGER refuse_receipt BEFORE INSERT ON records WHEN NEW.kind='receipt:chat' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END", root: f.model.root)
+        var snapshot = streamed(sequence: 2, answer: "Answer")
+        snapshot["commands"] = .array([.object(["commandId": .string(intent.id), "turnId": .string(intent.turnID), "state": .string("completed")])])
+        try await exchange(f, snapshot)
+        XCTAssertTrue(f.view.recovered.isEmpty, "The helper's evidence takes effect before local bookkeeping")
+        f.model.recoverDraft(intent, insert: true)
+        await f.model.draftWrites.recoveries[f.chat.id]?.value
+        XCTAssertEqual(f.view.draft, "", "An old banner action cannot offer the command again")
+        let pending = try await f.model.store?.get(CommandIntent.self, kind: "pending:\(f.chat.id)", id: intent.id)
+        XCTAssertNotNil(pending, "The injected persistence failure actually left the intent on disk")
+        try await f.host.shutdownAndWait()
+    }
+    @MainActor func testSnapshotCannotRetireIntentUntilReturnedDraftReviewIsSaved() async throws {
+        let f = try await fixture(), store = try XCTUnwrap(f.model.store)
+        f.view.historyState = .ready; f.view.presentation.identity = ("runtime", "root"); f.view.selectionMetadataLoaded = true
+        let intent = CommandIntent(id: "command", sessionID: f.chat.id, turnID: "turn", text: "Returned", state: "intent")
+        f.view.draft = "Returned\n\nNew typing"; f.view.recovered = [intent]; f.view.uncertain = true
+        try await store.recordSubmission(intent, draft: f.view.savedDraft)
+        try RecoveredDraftTests.sql("CREATE TRIGGER refuse_review BEFORE UPDATE ON records WHEN OLD.kind='draft' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END", root: f.model.root)
+        var snapshot = streamed(sequence: 2, answer: "Answer")
+        snapshot["commands"] = .array([.object(["commandId": .string(intent.id), "turnId": .string(intent.turnID), "state": .string("completed")])])
+        try await exchange(f, snapshot)
+        let retained = try await store.get(CommandIntent.self, kind: "pending:chat", id: intent.id)
+        XCTAssertNotNil(retained); XCTAssertEqual(f.view.submissionReviews, [intent.id])
+        XCTAssertFalse(f.view.reconciledSubmissionReviews.contains(intent.id))
+        try RecoveredDraftTests.sql("DROP TRIGGER refuse_review", root: f.model.root)
+        snapshot["seq"] = .number(3); try await exchange(f, snapshot)
+        let removed = try await store.get(CommandIntent.self, kind: "pending:chat", id: intent.id)
+        let saved = try await store.get(DraftRecord.self, kind: "draft", id: f.chat.id)
+        XCTAssertNil(removed); XCTAssertEqual(saved?.submissionReviews, [intent.id]); XCTAssertEqual(saved?.text, "Returned\n\nNew typing")
+        XCTAssertTrue(f.view.recovered.isEmpty); XCTAssertFalse(f.view.uncertain)
+        var asked = 0; f.model.questions.answer = { _ in asked += 1; return false }
+        f.model.send(sessionID: f.chat.id); XCTAssertEqual(asked, 1)
+        try await f.host.shutdownAndWait()
     }
 }
