@@ -147,6 +147,7 @@ import AppKit
         didSet {
             guard commitMessage != oldValue else { return }
             messageGeneration += 1
+            pendingAmendPrefill = nil
             messageOwner = root == identifiedFolder ? .repository(repositoryIdentity?.root) : .folder(root)
         }
     }
@@ -171,11 +172,13 @@ import AppKit
     /// the reader and never switched by the checked set: unticking every file
     /// is not consent to commit the index.
     @Published public var commitScope: GitCommitScope = .checkedFiles
+    private var pendingAmendPrefill: (folder: Int, edit: Int)?
     @Published public var amend = false {
         didSet {
+            pendingAmendPrefill = nil
             if amend, commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let folder = folderGeneration, edit = messageGeneration
-                Task { await prefillHeadMessage(folder: folder, edit: edit) }
+                pendingAmendPrefill = (folderGeneration, messageGeneration)
+                resumeAmendPrefill()
             }
         }
     }
@@ -342,6 +345,7 @@ import AppKit
     /// nobody can see.
     public func stop() {
         generation += 1
+        pendingAmendPrefill = nil
         watcher?.stop(); watcher = nil
         refreshTask?.cancel(); refreshTask = nil; automaticRefresh = nil; automaticChangePending = false
         historyTask?.cancel(); historyTask = nil
@@ -627,7 +631,9 @@ import AppKit
         recountChecked()
         // The snapshot's observers can stop us too. Nothing may restart the
         // watcher or a diff read after that stop.
-        return current(generation) && !closed && !suspended
+        guard current(generation), !closed, !suspended else { return false }
+        resumeAmendPrefill()
+        return true
     }
 
     private func reloadHistory(generation: Int? = nil, automatic: Bool = false) async {
@@ -673,8 +679,23 @@ import AppKit
         await task.value
     }
 
+    private func resumeAmendPrefill() {
+        guard let request = pendingAmendPrefill else { return }
+        guard amend, request.folder == folderGeneration, request.edit == messageGeneration,
+              !closed, !suspended,
+              commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            pendingAmendPrefill = nil; return
+        }
+        // A folder switch invalidates the row context before its repository
+        // is known. Keep this request until publication: the same repository
+        // retains Amend, while publishing another repository resets it.
+        guard root == identifiedFolder, sameRepository(repositoryContext) else { return }
+        pendingAmendPrefill = nil
+        Task { await prefillHeadMessage(folder: request.folder, edit: request.edit) }
+    }
+
     private func prefillHeadMessage(folder: Int, edit: Int) async {
-        guard folder == folderGeneration, edit == messageGeneration,
+        guard amend, !closed, !suspended, folder == folderGeneration, edit == messageGeneration,
               root == identifiedFolder, sameRepository(repositoryContext),
               let root = repositoryRoot, repositoryIdentity?.root == root,
               let message = try? await service.headMessage(in: root) else { return }

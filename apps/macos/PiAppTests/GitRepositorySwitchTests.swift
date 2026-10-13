@@ -77,6 +77,72 @@ final class GitRepositorySwitchTests: GitPanelTestCase, SerialTestLane {
         }
     }
 
+    @MainActor func testAmendDuringASameRepositorySwitchPrefillsAfterPublication() async throws {
+        for beforeResolution in [true, false] {
+            let root = try changedRepository("amend-subfolder")
+            let folder = root.appendingPathComponent("folder")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let controller = try await read(root, folder)
+            var held: CheckedContinuation<Void, Never>?, prefills = 0
+            controller.statusDidRead = { await withCheckedContinuation { held = $0 } }
+            controller.headMessageDidRead = { prefills += 1 }
+            defer { controller.statusDidRead = nil; held?.resume(); controller.headMessageDidRead = nil }
+            controller.root = folder.path
+            if beforeResolution { controller.amend = true }
+            try await eventually("hold the subfolder's status") { held != nil }
+            if !beforeResolution { controller.amend = true }
+            // Let the queued prefill attempt enter while publication is held.
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertFalse(controller.accepts(controller.repositoryContext))
+            XCTAssertEqual(prefills, 0, "the invalidated context cannot start a HEAD read")
+            XCTAssertEqual(controller.commitMessage, "")
+            controller.statusDidRead = nil; held?.resume(); held = nil
+            try await eventually("prefill after the same repository publishes", timeout: 10) {
+                !controller.loading && !controller.commitMessage.isEmpty
+            }
+            print("GIT_DRAFT same repository beforeResolution=\(beforeResolution) prefills=\(prefills)")
+            XCTAssertTrue(controller.amend)
+            XCTAssertEqual(prefills, 1)
+            XCTAssertEqual(controller.commitMessage.trimmingCharacters(in: .whitespacesAndNewlines), "Initial")
+        }
+    }
+
+    @MainActor func testDeferredAmendPrefillIsRetiredByEditsCancellationAndFolderChanges() async throws {
+        for change in ["edit", "uncheck", "folder", "hide"] {
+            let root = try changedRepository("cancel-amend-" + change)
+            let folder = root.appendingPathComponent("folder")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let controller = try await read(root, folder)
+            var held: CheckedContinuation<Void, Never>?, prefills = 0
+            controller.statusDidRead = { await withCheckedContinuation { held = $0 } }
+            controller.headMessageDidRead = { prefills += 1 }
+            defer { controller.statusDidRead = nil; held?.resume(); controller.headMessageDidRead = nil }
+            controller.root = folder.path
+            try await eventually("hold the subfolder's status") { held != nil }
+            controller.amend = true
+            try await Task.sleep(for: .milliseconds(100))
+            let finished = controller.refreshesFinished
+            controller.statusDidRead = nil
+            switch change {
+            case "edit": controller.commitMessage = "typed"; controller.commitMessage = ""
+            case "uncheck": controller.amend = false
+            case "folder": controller.root = root.path
+            default: controller.setShown(false)
+            }
+            held?.resume(); held = nil
+            if change == "hide" {
+                controller.setShown(true)
+                // A reader refresh also proves that publishing a valid
+                // context cannot revive the request retired by hiding.
+                await controller.refresh()
+            }
+            try await eventually("finish reading after " + change) { controller.refreshesFinished > finished && !controller.loading }
+            try await Task.sleep(for: .milliseconds(100))
+            XCTAssertEqual(prefills, 0, "\(change) must retire the deferred request, including before its HEAD read")
+            XCTAssertEqual(controller.commitMessage, "")
+        }
+    }
+
     @MainActor func testADraftInAnUnresolvedFolderIsBoundBeforeTheNextFolderPublishes() async throws {
         let first = try changedRepository("unresolved-first"), second = try changedRepository("unresolved-second")
         let folder = second.appendingPathComponent("folder")

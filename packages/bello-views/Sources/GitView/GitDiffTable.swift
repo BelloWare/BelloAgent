@@ -1194,23 +1194,28 @@ final class GitDiffRowCell: NSView {
     weak var coordinator: GitDiffTable.Coordinator? { didSet { clearText() } }
     var row = 0 { didSet { clearText() } }
     private struct ShapeKey: Hashable {
-        let side: GitDiffSide; let range: Range<Int>; let width: CGFloat; let color: NSColor
+        let side: GitDiffSide; let range: Range<Int>; let color: NSColor
     }
-    private struct Shape { let full: CTLine; let drawn: CTLine }
+    private struct Shape { let full: CTLine; let drawn: CTLine; let width: CGFloat }
     private var shapes: [ShapeKey: Shape] = [:]
+    /// Scalar test seam: resizing must not retain a full line for every width.
+    var retainedTextShapes: Int { shapes.count }
     private var textStorage: [GitDiffSide: NSString] = [:]
     private func clearText() { shapes = [:]; textStorage = [:] }
     private func shape(_ text: String, range: Range<Int>, side: GitDiffSide, color: NSColor, width: CGFloat) -> Shape {
-        let key = ShapeKey(side: side, range: range, width: width, color: color.usingColorSpace(.sRGB) ?? color)
-        if let shape = shapes[key] { return shape }
+        let key = ShapeKey(side: side, range: range, color: color.usingColorSpace(.sRGB) ?? color)
+        let cached = shapes[key]
+        if let cached, cached.width == width { return cached }
         let source: NSString
         if let kept = textStorage[side] { source = kept }
         else { source = text as NSString; textStorage[side] = source }
         let part = source.substring(with: NSRange(location: range.lowerBound, length: range.count))
-        let full = GitDiffText.line(part, font: GitDiffMetrics.mono, color: color)
-        let result = Shape(full: full, drawn: GitDiffText.fitted(full, text: part, font: GitDiffMetrics.mono, color: color, width: width))
-        // Kept only by a mounted cell, with a bound even for a huge row.
-        if shapes.count >= 256 { shapes.removeAll(keepingCapacity: true) }
+        let full = cached?.full ?? GitDiffText.line(part, font: GitDiffMetrics.mono, color: color)
+        let result = Shape(full: full, drawn: GitDiffText.fitted(full, text: part, font: GitDiffMetrics.mono, color: color, width: width), width: width)
+        // Width only changes the fitted line. Retaining every width also
+        // retained a full, potentially enormous shape for each resize step.
+        // Wrapped fragments remain bounded to a mounted cell's recent tiles.
+        if shapes.count >= 256, cached == nil { shapes.removeAll(keepingCapacity: true) }
         shapes[key] = result
         return result
     }
@@ -1394,8 +1399,11 @@ final class GitDiffRowCell: NSView {
         }
         guard let coordinator else { return }
         let lines = coordinator.lines(of: row, width: width, side: side)
-        let first = max(0, Int(floor((dirtyRect.minY - 1) / GitDiffMetrics.monoLine)))
-        let last = min(lines.count, Int(ceil((dirtyRect.maxY - 1) / GitDiffMetrics.monoLine)))
+        // Combining marks and fallback glyphs can overhang the nominal line
+        // box. Include each neighboring fragment and let the dirty clip cut
+        // its ink; work stays bounded to this tile plus two fragments.
+        let first = max(0, Int(floor((dirtyRect.minY - 1) / GitDiffMetrics.monoLine)) - 1)
+        let last = min(lines.count, Int(ceil((dirtyRect.maxY - 1) / GitDiffMetrics.monoLine)) + 1)
         guard last > first else { return }
         for index in first..<last {
             let range = lines[index]

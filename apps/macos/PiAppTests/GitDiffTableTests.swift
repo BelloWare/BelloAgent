@@ -117,15 +117,18 @@ final class GitDiffTableTests: GitPanelTestCase, SerialTestLane {
     }
 
     /// Draw a small tile of an enormous row, as AppKit does while scrolling.
-    @MainActor private func drawTile(_ cell: GitDiffRowCell, rect: NSRect) throws {
+    @discardableResult
+    @MainActor private func drawTile(_ cell: GitDiffRowCell, rect: NSRect, drawing: NSRect? = nil) throws -> Data {
         let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 700, pixelsHigh: 240,
             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
         let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
         NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
         NSGraphicsContext.current = graphics
+        graphics.cgContext.clear(CGRect(x: 0, y: 0, width: bitmap.pixelsWide, height: bitmap.pixelsHigh))
         graphics.cgContext.translateBy(x: 0, y: -rect.minY)
         graphics.cgContext.clip(to: rect)
-        cell.draw(rect)
+        cell.draw(drawing ?? rect)
+        return Data(bytes: try XCTUnwrap(bitmap.bitmapData), count: bitmap.bytesPerRow * bitmap.pixelsHigh)
     }
 
     /// Hosting may change the table width after its first height pass. The
@@ -208,8 +211,8 @@ final class GitDiffTableTests: GitPanelTestCase, SerialTestLane {
             try drawTile(cell, rect: tile)
             let first = GitDiffRenderCount.textShapes
             print("GIT_DIFF wrapped split=\(split) fragments=\(GitDiffRenderCount.fragments) shapes=\(first) wrap passes=\(GitDiffRenderCount.wraps)")
-            XCTAssertEqual(GitDiffRenderCount.fragments, split ? 20 : 10)
-            XCTAssertLessThanOrEqual(first, split ? 20 : 10)
+            XCTAssertEqual(GitDiffRenderCount.fragments, split ? 24 : 12, "ten visible fragments and two neighbors per side")
+            XCTAssertLessThanOrEqual(first, split ? 24 : 12)
             XCTAssertEqual(GitDiffRenderCount.wraps, 0, "drawing reuses geometry already measured for the row")
             GitDiffRenderCount.reset()
             try drawTile(cell, rect: tile)
@@ -236,6 +239,56 @@ final class GitDiffTableTests: GitPanelTestCase, SerialTestLane {
         diff.coordinator.select(from: GitDiffTextPoint(row: row, index: 0), to: GitDiffTextPoint(row: row, index: 5), side: .whole)
         try drawTile(cell, rect: cell.bounds)
         XCTAssertEqual(GitDiffRenderCount.textShapes, 0, "selection uses the same cached shape")
+    }
+
+    @MainActor func testUnwrappedResizeRetainsOneFullShapePerSide() throws {
+        for split in [false, true] {
+            let diff = drawingTable(String(repeating: "abcdefghij ", count: 10_000), split: split, wrap: false)
+            defer { diff.close() }
+            let row = try XCTUnwrap(lineRows(diff.table).first)
+            let cell = GitDiffRowCell(); cell.coordinator = diff.coordinator; cell.row = row
+            let widths = (0..<32).map { CGFloat(600 + $0 * 3) }
+            let sides = split ? 2 : 1
+            GitDiffRenderCount.reset()
+            for width in widths {
+                cell.frame = NSRect(x: 0, y: 0, width: width, height: 17)
+                try drawTile(cell, rect: cell.bounds)
+            }
+            print("GIT_DIFF resize split=\(split) widths=\(widths.count) retained=\(cell.retainedTextShapes) shapes=\(GitDiffRenderCount.textShapes)")
+            XCTAssertEqual(cell.retainedTextShapes, sides, "only the latest fitted variant may retain each full line")
+            XCTAssertLessThanOrEqual(GitDiffRenderCount.textShapes, (widths.count + 1) * sides,
+                                    "one full shape per side, plus an ellipsis at each width")
+            GitDiffRenderCount.reset()
+            try drawTile(cell, rect: cell.bounds)
+            XCTAssertEqual(GitDiffRenderCount.textShapes, 0, "the latest width still reuses its fitted line")
+            cell.row = row
+            XCTAssertEqual(cell.retainedTextShapes, 0, "reusing the cell releases its previous text")
+        }
+    }
+
+    @MainActor func testWrappedPartialRedrawIncludesOverhangingGlyphs() async throws {
+        for split in [false, true] {
+            let diff = drawingTable(String(repeating: "g\u{0323}", count: 1_000), split: split, wrap: true)
+            defer { diff.close() }
+            try await waitForWrapGeometry(diff)
+            let row = try XCTUnwrap(lineRows(diff.table).first)
+            let cell = GitDiffRowCell(); cell.coordinator = diff.coordinator; cell.row = row
+            cell.frame = NSRect(x: 0, y: 0, width: diff.table.bounds.width,
+                                height: diff.coordinator.tableView(diff.table, heightOfRow: row))
+            // The dot below g extends past its nominal 15-point fragment.
+            // Both drawings use the same clip; the reference visits every
+            // fragment, independently of the partial redraw's culling.
+            for boundary in 1...3 {
+                let tile = NSRect(x: 0, y: 1 + CGFloat(boundary) * GitDiffMetrics.monoLine,
+                                  width: cell.bounds.width, height: 3)
+                XCTAssertGreaterThan(cell.bounds.height, tile.maxY)
+                let partial = try drawTile(cell, rect: tile)
+                let whole = try drawTile(cell, rect: tile, drawing: cell.bounds)
+                let differences = zip(partial, whole).reduce(0) { $0 + ($1.0 == $1.1 ? 0 : 1) }
+                print("GIT_DIFF ink split=\(split) boundary=\(boundary) differing bytes=\(differences)")
+                XCTAssertEqual(differences, 0, "a partial redraw must preserve the previous fragment's overhanging ink")
+            }
+        }
     }
 
     @MainActor func testLiveResizeKeepsProvisionalHeightsAndInstallsFinalGeometryAtTheReadingAnchor() async throws {
