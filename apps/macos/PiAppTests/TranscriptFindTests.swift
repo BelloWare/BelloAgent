@@ -37,10 +37,49 @@ final class TranscriptFindTests: XCTestCase {
         XCTAssertEqual(cache.ranges(query).count, 2)
         XCTAssertEqual(TranscriptHighlightSearch.scans, before)
         storage.replaceCharacters(in: NSRange(location: 0, length: 6), with: "------")
+        XCTAssertTrue(document.matchCache(for: storage) === cache, "Character edits keep the storage's revision cache")
         XCTAssertEqual(cache.ranges(query).map(\.location), [7])
         XCTAssertEqual(TranscriptHighlightSearch.scans, before + 1)
         storage.append(NSAttributedString(string: " parser"))
+        XCTAssertTrue(document.matchCache(for: storage) === cache, "Appending text must not create another observer")
         XCTAssertEqual(cache.ranges(query).map(\.location), [7, 14])
+        XCTAssertEqual(document.textMatches.count, 1)
+    }
+
+    @MainActor func testFindMarksFollowTextEditsWithoutCreatingMoreStorageCaches() async throws {
+        let session = SessionDisplay(id: "find-streaming-cache")
+        session.messages = [TranscriptMessage(id: "reply", role: "assistant", text: "parser starting", state: "streaming")]
+        let stage = TranscriptStressTestCase.Stage(session)
+        defer { stage.close() }
+        await stage.settle()
+        let document = stage.document, row = try XCTUnwrap(document.row(drawing: "reply"))
+        let text = try XCTUnwrap(TranscriptNativeDocument.textViews(in: row).first { $0.string == "parser starting" })
+        let storage = try XCTUnwrap(text.textStorage), manager = try XCTUnwrap(text.layoutManager)
+        document.highlights = TranscriptHighlights(query: "parser")
+        let cache = document.matchCache(for: storage), count = document.textMatches.count
+        func markedCharacters() -> [Int] {
+            (0..<storage.length).filter {
+                manager.temporaryAttributes(atCharacterIndex: $0, effectiveRange: nil)[.backgroundColor] as? NSColor == TranscriptHighlights.matchColor
+            }
+        }
+        XCTAssertEqual(markedCharacters(), Array(0..<6))
+        // The same native storage receives new reply text while Find's query
+        // and highlight generation stay unchanged, including equal-length edits.
+        let edits: [(String, [Int])] = [
+            ("plain then parser", Array(11..<17)),
+            ("parser plus parser", Array(0..<6) + Array(12..<18)),
+            ("------ plus parser", Array(12..<18)),
+            ("all gone", []),
+            ("returned parser", Array(9..<15))
+        ]
+        for (index, edit) in edits.enumerated() {
+            storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: edit.0)
+            document.markHighlights(in: row)
+            XCTAssertEqual(markedCharacters(), edit.1, "Find marks after edit \(index + 1)")
+            XCTAssertTrue(document.matchCache(for: storage) === cache, "The same storage keeps the same revision owner")
+            XCTAssertEqual(document.textMatches.count, count, "Each edit must reuse the existing cache and observer")
+        }
+        print("FIND-CACHE edits=\(edits.count) before=\(count) after=\(document.textMatches.count)")
     }
 
     @MainActor func testScrollingAResolvedFindDoesNotSearchUnchangedTextAgain() async throws {

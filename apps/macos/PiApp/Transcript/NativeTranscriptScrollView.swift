@@ -347,7 +347,9 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// The highlight generation each text view was last marked for, and its
     /// character revision then (including replacements of the same length).
     let markedText = NSMapTable<NSTextView, NSNumber>.weakToStrongObjects()
-    let textMatches = NSMapTable<NSTextStorage, TranscriptTextMatches>.weakToStrongObjects()
+    // NSTextStorage hashes its contents, which change while a reply streams.
+    // One storage must keep one revision cache through every character edit.
+    let textMatches = NSMapTable<NSTextStorage, TranscriptTextMatches>(keyOptions: [.weakMemory, .objectPointerPersonality], valueOptions: .strongMemory)
     let lineMatches = NSMapTable<TranscriptCardLines, TranscriptLineMatches>.weakToStrongObjects()
     let markedRevision = NSMapTable<NSTextView, NSNumber>.weakToStrongObjects()
     private var focusRevealScheduled = false
