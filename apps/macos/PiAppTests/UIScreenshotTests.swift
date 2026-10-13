@@ -1282,11 +1282,18 @@ final class UIScreenshotTests: XCTestCase {
         // chip is pinned to the new version, nothing is sent, and the
         // conversation says so above the composer that still holds the message.
         await model.loadSkillCatalog(refresh: true, sessionID: session.id)
-        let chosen = try XCTUnwrap(session.skillCatalog.entries.map(\.skill).first { $0.name == "release-checklist" })
+        // Only the fixture's own skill, found by where it was written: a skill
+        // of the same name elsewhere on the machine is never touched.
+        let project = try XCTUnwrap(model.workspaces.first { $0.id == model.record(session.id)?.workspaceID }?.path)
+        let fixtureFile = URL(fileURLWithPath: project).appendingPathComponent(".agents/skills/release-checklist/SKILL.md").resolvingSymlinksInPath().path
+        let chosen = try XCTUnwrap(session.skillCatalog.entries.map(\.skill).first {
+            $0.name == "release-checklist" && URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path == fixtureFile
+        }, "The fixture's skill was discovered")
         XCTAssertTrue(model.addSkill(chosen, view: session))
         session.draft = "Run the checklist for 0.1.125."
-        let file = URL(fileURLWithPath: chosen.path), original = try Data(contentsOf: file)
+        let file = URL(fileURLWithPath: fixtureFile), original = try Data(contentsOf: file)
         try (original + Data("Also confirm the release notes link.\n".utf8)).write(to: file)
+        defer { try? original.write(to: file) }
         let rows = session.messages.count
         model.send(sessionID: session.id)
         let refreshed = Date().addingTimeInterval(30)

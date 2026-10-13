@@ -41,12 +41,16 @@ final class SkillRefreshTests: XCTestCase {
     /// Chooses the skill as the slash list does: from a fresh catalog.
     @MainActor private func choose(_ name: String, in view: SessionDisplay, _ model: WorkspaceModel) async throws {
         await model.loadSkillCatalog(refresh: true, sessionID: view.id)
-        let skill = try XCTUnwrap(view.skillCatalog.entries.map(\.skill).first { $0.name == name }, view.skillCatalog.notice)
+        let skill = try XCTUnwrap(current(name, in: view), view.skillCatalog.notice)
         XCTAssertTrue(model.addSkill(skill, view: view))
     }
 
+    /// The fixture's own skill of that name, written into the test's project:
+    /// a skill of the same name elsewhere on the machine is never chosen.
     @MainActor private func current(_ name: String, in view: SessionDisplay) -> SkillDescriptor? {
-        view.skillCatalog.entries.map(\.skill).first { $0.name == name }
+        view.skillCatalog.entries.map(\.skill).first {
+            $0.name == name && $0.path.hasSuffix("/.agents/skills/\(name)/SKILL.md") && $0.path.contains("skill-refresh-")
+        }
     }
 
     @MainActor private func waitFor(_ what: String, seconds: Double = 60, file: StaticString = #filePath, line: UInt = #line, _ condition: () -> Bool) async {
