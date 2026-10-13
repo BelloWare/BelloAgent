@@ -62,11 +62,12 @@ extension AgentSession {
         }
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
         guard queueEdit == nil else { throw Self.editHeldError }
-        guard !titleTask, !isConnectionTest, let tail = continuationTail else {
+        guard !titleTask, !isConnectionTest else {
             throw AgentError(AgentErrorCode.nothingToContinue, "There is nothing to resume; send a new message instead")
         }
-        if tail.role == "assistant" {
-            // Pi: from an answered context, continue sends what waits instead.
+        guard let tail = continuationTail, Self.continues(from: tail) else {
+            // Pi: from an answered context (or none: a first message stopped
+            // before it was delivered), continue sends what waits instead.
             guard !queue.isEmpty || !steering.isEmpty else {
                 throw AgentError(AgentErrorCode.nothingToContinue, "There is nothing to resume; send a new message instead")
             }
@@ -75,9 +76,6 @@ extension AgentSession {
             commandState(Submission(commandID: commandID, turnID: receiptKey, text: ""), "completed")
             do { try resumeQueue() } catch { commands.removeAll { $0["turnId"].text == receiptKey }; throw error }
             return ["accepted": true, "continued": false, "resumedQueue": true]
-        }
-        guard Self.continues(from: tail) else {
-            throw AgentError(AgentErrorCode.nothingToContinue, "There is nothing to resume; send a new message instead")
         }
         var submission = Submission(commandID: commandID, turnID: receiptKey, text: "")
         submission.model = overrides["model"].text; submission.thinkingLevel = overrides["thinkingLevel"].text

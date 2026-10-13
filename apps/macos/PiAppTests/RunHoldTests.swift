@@ -129,6 +129,28 @@ final class RunHoldTests: XCTestCase {
         await close(model)
     }
 
+    /// An update's pause lets a send already under way finish first (its
+    /// run is then paused with the rest), holds new ones off meanwhile, and
+    /// says so if the send does not finish in time.
+    @MainActor func testTheUpdatePauseWaitsForASendUnderWay() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("run-hold-pause-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await model(root: root)
+        let view = SessionDisplay(id: "c"); view.loading = true; model.displays["c"] = view
+        let pause = Task { try await model.pauseRunsForUpdate() }
+        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(10)) }
+        // Still waiting: the pause holds the barrier until it ends.
+        XCTAssertTrue(model.installPreparing, "the send under way finishes first, and no new work starts meanwhile")
+        view.loading = false
+        try await pause.value
+        XCTAssertFalse(model.installPreparing, "the app takes work again after the pause")
+        view.loading = true
+        do { try await model.pauseRunsForUpdate(settleTimeout: 0.05); XCTFail("a send that never finishes holds the pause") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("still being sent"), error.localizedDescription) }
+        XCTAssertFalse(model.installPreparing)
+        await close(model)
+    }
+
     /// Work held for Resume does not hold a quit or an update; a run does,
     /// and so do follow-ups about to go.
     @MainActor func testOnlyWorkThatRunsWithoutTheReaderIsActive() {

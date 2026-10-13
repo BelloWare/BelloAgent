@@ -99,8 +99,21 @@ extension WorkspaceModel {
     /// off mid-stream stays as an interrupted row; the chats it paused are
     /// saved as paused. The app keeps running: each chat's helper starts again
     /// when the chat is next used, and a paused chat shows Resume.
-    func pauseRunsForUpdate() async throws {
+    func pauseRunsForUpdate(settleTimeout: TimeInterval = 15) async throws {
         guard !isShutDown else { throw CancellationError() }
+        // No new send, Resume or command starts meanwhile; one already under
+        // way (a send awaiting its helper or session) finishes first, so its
+        // run is paused with the rest instead of starting after the pause.
+        let wasPreparing = installPreparing
+        installPreparing = true
+        defer { installPreparing = wasPreparing }
+        let deadline = ProcessInfo.processInfo.systemUptime + settleTimeout
+        while displays.values.contains(where: { $0.loading || $0.resuming }) || !hostStarts.isEmpty || !sessionOpenings.isEmpty {
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw HostError.failure("A message is still being sent. Try the update again in a moment.")
+            }
+            try await Task.sleep(for: .milliseconds(20))
+        }
         try await moveUnsavedSideDraftsToParents()
         try await flushDrafts()
         // Their exit is the pause, not a crash: the chats read paused, not

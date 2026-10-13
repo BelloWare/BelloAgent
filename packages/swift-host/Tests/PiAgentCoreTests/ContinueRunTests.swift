@@ -343,6 +343,25 @@ final class ContinueRunTests: XCTestCase {
         await session.close()
     }
 
+    /// A first message stopped before it was delivered leaves an empty
+    /// context and the message paused: Resume sends it.
+    func testResumeWithAnEmptyContextSendsWhatWaits() async throws {
+        let chat = try chat()
+        var journal: SessionJournal? = try SessionJournal(url: URL(fileURLWithPath: chat.journal), id: "resume", cwd: chat.root, binding: chat.profile.binding, create: true)
+        let waiting = try JSON.parse(JSONEncoder().encode(Submission(commandID: "c1", turnID: "t1", text: "First")))
+        try journal?.append(["type": "custom", "customType": "pi-app.native.state.v1",
+                             "data": ["active": false, "queue": .array([waiting]), "steering": .array([]), "runStatus": "cancelled", "queuePaused": true]])
+        journal = nil
+        let client = ContinueClient([.reply(answer("Answered"))])
+        let session = try chat.session(client, resume: chat.journal)
+        let resumed = try await session.continueRun(commandID: "resume-1")
+        XCTAssertEqual(resumed["resumedQueue"].flag, true)
+        try await eventually { !(await session.isRunning) }
+        let requests = await client.requests
+        XCTAssertEqual(requests.first?.last?.text, "First")
+        await session.close()
+    }
+
     /// At the chat's cost limit, Resume stops at once with the cost-limit
     /// notice the app draws, before any model request.
     func testResumeAtTheCostLimitStopsWithTheCostLimitNotice() async throws {
