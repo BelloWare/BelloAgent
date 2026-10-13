@@ -17,8 +17,14 @@ import AppKit
 /// others, and that is only checkable by counting.
 @MainActor enum GitDiffRenderCount {
     private(set) static var rows = 0
-    static func reset() { rows = 0 }
+    private(set) static var textShapes = 0
+    private(set) static var wraps = 0
+    private(set) static var fragments = 0
+    static func reset() { rows = 0; textShapes = 0; wraps = 0; fragments = 0 }
     static func built() { rows &+= 1 }
+    static func shaped() { textShapes &+= 1 }
+    static func wrapped() { wraps &+= 1 }
+    static func drewFragment() { fragments &+= 1 }
 }
 
 /// SwiftUI's own measures for the diff as it drew it, so the table draws the
@@ -26,14 +32,16 @@ import AppKit
 /// 17, a hunk header 21, a file header 29, a note 21; cards are inset 16 and
 /// 12 apart, with a 12-point continuous corner and a hairline inside it.
 @MainActor public enum GitDiffMetrics {
-    public static let mono = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
-    public static let micro = NSFont.systemFont(ofSize: 10.5, weight: .medium)
+    public static let mono = makeMono()
+    public static let micro = makeMicro()
+    nonisolated static func makeMono() -> NSFont { .monospacedSystemFont(ofSize: 12, weight: .regular) }
+    nonisolated static func makeMicro() -> NSFont { .systemFont(ofSize: 10.5, weight: .medium) }
     public static let microDigits = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
-    public static let monoLine: CGFloat = 15
+    public nonisolated static let monoLine: CGFloat = 15
     public static let monoBaseline: CGFloat = 12
-    public static let microLine: CGFloat = 13
+    public nonisolated static let microLine: CGFloat = 13
     public static let microBaseline: CGFloat = 10.5
-    public static let cardInset: CGFloat = 16
+    public nonisolated static let cardInset: CGFloat = 16
     public static let cardGap: CGFloat = 12
     public static let cardRadius: CGFloat = 12
     public static let bottom: CGFloat = 16
@@ -42,10 +50,10 @@ import AppKit
     public static let note: CGFloat = 21
     /// A unified row: two 44-point line numbers, 8 points, a 12-point marker,
     /// inside 8 points of padding on either side.
-    public static let unifiedText: CGFloat = 8 + 44 + 44 + 8 + 12
+    public nonisolated static let unifiedText: CGFloat = 8 + 44 + 44 + 8 + 12
     /// Half of a side-by-side row: a 40-point number and 8 points, inside 8
     /// points of padding on either side.
-    public static let splitText: CGFloat = 8 + 40 + 8
+    public nonisolated static let splitText: CGFloat = 8 + 40 + 8
     /// Rows of one file drawn before "Show the whole diff" is pressed.
     public static let rowLimit = 1_500
 
@@ -103,9 +111,9 @@ import AppKit
         return path
     }
 
-    public static func textWidth(unified cardWidth: CGFloat) -> CGFloat { max(0, cardWidth - unifiedText - 8) }
-    public static func halfWidth(_ cardWidth: CGFloat) -> CGFloat { (cardWidth - 1) / 2 }
-    public static func textWidth(split cardWidth: CGFloat) -> CGFloat { max(0, halfWidth(cardWidth) - splitText - 8) }
+    public nonisolated static func textWidth(unified cardWidth: CGFloat) -> CGFloat { max(0, cardWidth - unifiedText - 8) }
+    public nonisolated static func halfWidth(_ cardWidth: CGFloat) -> CGFloat { (cardWidth - 1) / 2 }
+    public nonisolated static func textWidth(split cardWidth: CGFloat) -> CGFloat { max(0, halfWidth(cardWidth) - splitText - 8) }
 }
 
 /// The colours a diff is drawn in, by what they mark. `system` is AppKit's
@@ -173,7 +181,7 @@ public struct GitDiffFileLine: Equatable, Sendable {
 public typealias GitDiffMenuBuilder = @MainActor (GitDiffMenuRequest) -> NSMenu?
 
 /// One row of the table.
-struct GitDiffTableRow {
+struct GitDiffTableRow: Sendable {
     enum Kind: UInt8 { case top, gap, file, note, hunk, line, split, showAll, bottom }
     let kind: Kind
     /// The first and last rows of a file's card round its corners.
@@ -332,9 +340,17 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
         private(set) var focus: GitDiffTextPoint?
         private(set) var side: GitDiffSide = .whole
         /// Wrapped lines of a row's text, by row, at `heightWidth`.
-        private var breaks: [Int: [Range<Int>]] = [:]
+        private struct WrapKey: Hashable, Sendable { let row: Int; let side: GitDiffSide }
+        private struct WrappedText: Sendable { let width: CGFloat; let lines: [Range<Int>] }
+        private var breaks: [WrapKey: WrappedText] = [:]
+        private var liveResize = false
+        private var wrapTask: Task<Void, Never>?
+        private var wrapGeneration = 0
+        var preparingWrapGeometry: Bool { wrapTask != nil }
+        var wrappingWidth: CGFloat { heightWidth }
 
         override init() { super.init() }
+        deinit { wrapTask?.cancel() }
 
         func observe(_ scroll: NSScrollView) {
             scroll.contentView.postsBoundsChangedNotifications = true
@@ -342,6 +358,7 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         }
         func close() {
+            cancelWrapGeometry()
             NotificationCenter.default.removeObserver(self)
             topView = nil; moreView = nil
         }
@@ -417,6 +434,8 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
                         clip.scroll(to: .zero); table.enclosingScrollView?.reflectScrolledClipView(clip)
                     }
                 }
+            } else if !rewrap, wrap, width != heightWidth {
+                resizeWrappedRows(width: width)
             } else if rewrap || width != heightWidth {
                 measureRows(width: width)
                 table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<rows.count))
@@ -529,8 +548,83 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
         /// width, as the table asks for them. Rows that do not wrap have the
         /// height of their kind and are never measured.
         private func measureRows(width: CGFloat) {
+            cancelWrapGeometry()
             heightWidth = width; breaks = [:]
             wrapped = wrap ? Array(repeating: nil, count: rows.count) : []
+        }
+
+        private func cancelWrapGeometry() {
+            wrapGeneration += 1; wrapTask?.cancel(); wrapTask = nil
+        }
+        func beginLiveResize() { liveResize = true; cancelWrapGeometry() }
+        func endLiveResize() {
+            liveResize = false
+            if let table, wrap, heightWidth != table.bounds.width { resizeWrappedRows(width: table.bounds.width) }
+        }
+
+        private struct WrapGeometry: Sendable {
+            var heights: [CGFloat?]
+            var breaks: [WrapKey: WrappedText] = [:]
+        }
+        /// Immutable inputs and Core Text only; no table or view is read by
+        /// the worker. Cancellation retires an obsolete width between rows.
+        private nonisolated static func prepareWrapGeometry(rows: [GitDiffTableRow], files: [GitDiffFile], splits: [GitSplitRow],
+                                                              width: CGFloat) -> WrapGeometry? {
+            let mono = GitDiffMetrics.makeMono(), micro = GitDiffMetrics.makeMicro()
+            var result = WrapGeometry(heights: Array(repeating: nil, count: rows.count))
+            let card = max(0, width - 2 * GitDiffMetrics.cardInset)
+            for (index, row) in rows.enumerated() {
+                guard !Task.isCancelled else { return nil }
+                func lines(_ text: String, side: GitDiffSide, width: CGFloat) -> Int {
+                    let ranges = GitDiffText.measuredBreaks(text.isEmpty ? " " : text, font: mono, width: width)
+                    result.breaks[WrapKey(row: index, side: side)] = WrappedText(width: width, lines: ranges)
+                    return ranges.count
+                }
+                switch row.kind {
+                case .line:
+                    let text = files[Int(row.file)].hunks[Int(row.hunk)].lines[Int(row.item)].text
+                    result.heights[index] = CGFloat(lines(text, side: .whole, width: GitDiffMetrics.textWidth(unified: card))) * GitDiffMetrics.monoLine + 2
+                case .split:
+                    let pair = splits[Int(row.item)], textWidth = GitDiffMetrics.textWidth(split: card)
+                    let left = lines(pair.left?.text ?? "", side: .left, width: textWidth)
+                    let right = lines(pair.right?.text ?? "", side: .right, width: textWidth)
+                    result.heights[index] = CGFloat(max(left, right)) * GitDiffMetrics.monoLine + 2
+                case .note:
+                    result.heights[index] = CGFloat(GitDiffText.measuredBreaks(files[Int(row.file)].notes[Int(row.item)], font: micro, width: card - 24).count) * GitDiffMetrics.microLine + 8
+                default: break
+                }
+            }
+            return result
+        }
+
+        private func resizeWrappedRows(width: CGFloat) {
+            cancelWrapGeometry()
+            // Existing heights keep a continuous document throughout the
+            // drag. Only cells actually drawn wrap at the interim width.
+            guard !liveResize else { return }
+            let generation = wrapGeneration, rows = rows, files = files, splits = splits
+            let worker = Task.detached(priority: .userInitiated) {
+                Self.prepareWrapGeometry(rows: rows, files: files, splits: splits, width: width)
+            }
+            wrapTask = Task { [weak self] in
+                let geometry = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
+                guard let self, !Task.isCancelled, generation == self.wrapGeneration else { return }
+                self.wrapTask = nil
+                guard let geometry, self.pending == nil, let table = self.table, table.bounds.width == width else { return }
+                let clip = table.enclosingScrollView?.contentView
+                let anchor = clip.map { table.row(at: NSPoint(x: 1, y: $0.bounds.minY)) } ?? -1
+                let offset = anchor >= 0 ? (clip?.bounds.minY ?? 0) - table.rect(ofRow: anchor).minY : 0
+                self.heightWidth = width; self.wrapped = geometry.heights; self.breaks = geometry.breaks
+                table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<rows.count))
+                table.layoutSubtreeIfNeeded()
+                if let clip, anchor >= 0, anchor < rows.count {
+                    let rect = table.rect(ofRow: anchor)
+                    let y = max(0, min(table.bounds.height - clip.bounds.height, rect.minY + min(offset, max(0, rect.height - 1))))
+                    clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))
+                    table.enclosingScrollView?.reflectScrolledClipView(clip)
+                }
+                self.redrawVisible()
+            }
         }
         private func height(of index: Int, card: CGFloat) -> CGFloat {
             let row = rows[index]
@@ -549,9 +643,9 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
                 return CGFloat(lines(of: index, width: GitDiffMetrics.textWidth(unified: card)).count) * GitDiffMetrics.monoLine + 2
             case .split:
                 guard wrap else { return GitDiffMetrics.monoLine + 2 }
-                let pair = splits[Int(row.item)], width = GitDiffMetrics.textWidth(split: card)
-                let left = pair.left.map { GitDiffText.lineCount(Self.shown($0.text), font: GitDiffMetrics.mono, width: width) } ?? 1
-                let right = pair.right.map { GitDiffText.lineCount(Self.shown($0.text), font: GitDiffMetrics.mono, width: width) } ?? 1
+                let width = GitDiffMetrics.textWidth(split: card)
+                let left = lines(of: index, width: width, side: .left).count
+                let right = lines(of: index, width: width, side: .right).count
                 return CGFloat(max(left, right)) * GitDiffMetrics.monoLine + 2
             }
         }
@@ -560,13 +654,14 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
         /// A line's text as SwiftUI showed it: an empty line is a space.
         static func shown(_ text: String) -> String { text.isEmpty ? " " : text }
 
-        /// The wrapped lines of a unified row's text, cached per width.
-        func lines(of index: Int, width: CGFloat) -> [Range<Int>] {
-            if let cached = breaks[index] { return cached }
-            let row = rows[index]
-            let text = Self.shown(files[Int(row.file)].hunks[Int(row.hunk)].lines[Int(row.item)].text)
+        /// Geometry shared by row heights, drawing and hit testing, on
+        /// either side of a split diff as well as in a unified diff.
+        func lines(of index: Int, width: CGFloat, side: GitDiffSide = .whole) -> [Range<Int>] {
+            let key = WrapKey(row: index, side: side)
+            if let cached = breaks[key], cached.width == width { return cached.lines }
+            let text = Self.shown(selectable(index, side: side) ?? "")
             let found = GitDiffText.breaks(text, font: GitDiffMetrics.mono, width: width)
-            breaks[index] = found
+            breaks[key] = WrappedText(width: width, lines: found)
             return found
         }
 
@@ -575,7 +670,11 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             guard let table else { return }
             let width = table.bounds.width
             let heading = remeasure(width: width)
-            if wrap || rows.contains(where: { $0.kind == .note || $0.kind == .showAll }) {
+            if wrap {
+                resizeWrappedRows(width: width)
+                if heading { table.noteHeightOfRows(withIndexesChanged: IndexSet(integer: 0)) }
+                return
+            } else if rows.contains(where: { $0.kind == .note || $0.kind == .showAll }) {
                 measureRows(width: width)
                 table.noteHeightOfRows(withIndexesChanged: IndexSet(integersIn: 0..<rows.count))
             } else if heading {
@@ -599,10 +698,15 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             case .line, .split:
                 guard wrap else { return GitDiffMetrics.monoLine + 2 }
                 if row < wrapped.count, let known = wrapped[row] { return known }
+                if liveResize || preparingWrapGeometry { return GitDiffMetrics.monoLine + 2 }
                 let measured = height(of: row, card: cardWidth(heightWidth))
                 if row < wrapped.count { wrapped[row] = measured }
                 return measured
-            case .note: return height(of: row, card: cardWidth(heightWidth))
+            case .note:
+                if row < wrapped.count, let known = wrapped[row] { return known }
+                let measured = height(of: row, card: cardWidth(heightWidth))
+                if row < wrapped.count { wrapped[row] = measured }
+                return measured
             }
         }
         public func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
@@ -753,7 +857,7 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
     }
 }
 
-enum GitDiffSide { case whole, left, right }
+enum GitDiffSide: Hashable, Sendable { case whole, left, right }
 
 // MARK: - Text
 
@@ -765,7 +869,8 @@ enum GitDiffSide { case whole, left, right }
         NSAttributedString(string: text, attributes: [.font: font, NSAttributedString.Key(kCTForegroundColorAttributeName as String): color.cgColor])
     }
     public static func line(_ text: String, font: NSFont, color: NSColor = .black) -> CTLine {
-        CTLineCreateWithAttributedString(attributed(text, font: font, color: color))
+        GitDiffRenderCount.shaped()
+        return CTLineCreateWithAttributedString(attributed(text, font: font, color: color))
     }
     /// A short line that recurs: a line number, a marker, a chip's words.
     /// Made once and kept, in the colour of the context it is drawn into, so
@@ -808,12 +913,15 @@ enum GitDiffSide { case whole, left, right }
                      truncation: CTLineTruncationType = .end, in context: CGContext) -> CTLine {
         let full = line(text, font: font, color: color)
         let drawn = fitted(full, text: text, font: font, color: color, width: width, truncation: truncation)
+        draw(drawn, x: x, baseline: baseline, in: context)
+        return drawn
+    }
+    static func draw(_ line: CTLine, x: CGFloat, baseline: CGFloat, in context: CGContext) {
         context.saveGState()
         context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
         context.textPosition = CGPoint(x: x, y: baseline)
-        CTLineDraw(drawn, context)
+        CTLineDraw(line, context)
         context.restoreGState()
-        return drawn
     }
     public static func fitted(_ full: CTLine, text: String, font: NSFont, color: NSColor, width: CGFloat, truncation: CTLineTruncationType = .end) -> CTLine {
         guard width.isFinite, CGFloat(CTLineGetTypographicBounds(full, nil, nil, nil)) > width + 0.01,
@@ -824,7 +932,11 @@ enum GitDiffSide { case whole, left, right }
     /// Where a text breaks into lines `width` wide: at words, or inside a word
     /// longer than a line.
     public static func breaks(_ text: String, font: NSFont, width: CGFloat) -> [Range<Int>] {
-        let attributed = self.attributed(text, font: font, color: .black)
+        GitDiffRenderCount.wrapped()
+        return measuredBreaks(text, font: font, width: width)
+    }
+    nonisolated static func measuredBreaks(_ text: String, font: NSFont, width: CGFloat) -> [Range<Int>] {
+        let attributed = NSAttributedString(string: text, attributes: [.font: font])
         let length = attributed.length
         guard width > 1, length > 0 else { return [0..<length] }
         // A line that fits whole needs no typesetter.
@@ -846,6 +958,9 @@ enum GitDiffSide { case whole, left, right }
 /// the reader drags, extends and copies, and the keys that scroll it.
 final class GitDiffTableView: NSTableView {
     weak var coordinator: GitDiffTable.Coordinator?
+
+    override func viewWillStartLiveResize() { super.viewWillStartLiveResize(); coordinator?.beginLiveResize() }
+    override func viewDidEndLiveResize() { super.viewDidEndLiveResize(); coordinator?.endLiveResize() }
 
     override var acceptsFirstResponder: Bool { true }
     override func becomeFirstResponder() -> Bool { defer { coordinator?.redrawVisible() }; return super.becomeFirstResponder() }
@@ -938,7 +1053,7 @@ final class GitDiffTableView: NSTableView {
         let y = location.y - rect.minY
         let font = GitDiffMetrics.mono
         let wrapped = coordinator.wrap && coordinator.rows[row].kind != .file
-        let lines: [Range<Int>] = wrapped ? GitDiffText.breaks(GitDiffTable.Coordinator.shown(text), font: font, width: geometry.width) : [0..<text.utf16.count]
+        let lines: [Range<Int>] = wrapped ? coordinator.lines(of: row, width: geometry.width, side: side) : [0..<text.utf16.count]
         let index = max(0, min(lines.count - 1, Int((y - geometry.top) / GitDiffMetrics.monoLine)))
         let range = lines[index]
         let utf16 = Array(text.utf16)
@@ -1066,8 +1181,29 @@ final class GitDiffSpaceCell: NSView {
 /// or side by side, inside its card.
 final class GitDiffRowCell: NSView {
     static let identifier = NSUserInterfaceItemIdentifier("git-diff-row-cell")
-    weak var coordinator: GitDiffTable.Coordinator?
-    var row = 0
+    weak var coordinator: GitDiffTable.Coordinator? { didSet { clearText() } }
+    var row = 0 { didSet { clearText() } }
+    private struct ShapeKey: Hashable {
+        let side: GitDiffSide; let range: Range<Int>; let width: CGFloat; let color: NSColor
+    }
+    private struct Shape { let full: CTLine; let drawn: CTLine }
+    private var shapes: [ShapeKey: Shape] = [:]
+    private var textStorage: [GitDiffSide: NSString] = [:]
+    private func clearText() { shapes = [:]; textStorage = [:] }
+    private func shape(_ text: String, range: Range<Int>, side: GitDiffSide, color: NSColor, width: CGFloat) -> Shape {
+        let key = ShapeKey(side: side, range: range, width: width, color: color.usingColorSpace(.sRGB) ?? color)
+        if let shape = shapes[key] { return shape }
+        let source: NSString
+        if let kept = textStorage[side] { source = kept }
+        else { source = text as NSString; textStorage[side] = source }
+        let part = source.substring(with: NSRange(location: range.lowerBound, length: range.count))
+        let full = GitDiffText.line(part, font: GitDiffMetrics.mono, color: color)
+        let result = Shape(full: full, drawn: GitDiffText.fitted(full, text: part, font: GitDiffMetrics.mono, color: color, width: width))
+        // Kept only by a mounted cell, with a bound even for a huge row.
+        if shapes.count >= 256 { shapes.removeAll(keepingCapacity: true) }
+        shapes[key] = result
+        return result
+    }
 
     init() {
         super.init(frame: .zero)
@@ -1078,7 +1214,7 @@ final class GitDiffRowCell: NSView {
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
+    override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); clearText(); needsDisplay = true }
 
     /// Where a row's selectable text sits, in the row: its x, its width and
     /// the top of its first line.
@@ -1109,8 +1245,8 @@ final class GitDiffRowCell: NSView {
         case .file: drawFile(model, card: card, context: context, coordinator: coordinator)
         case .note: drawNote(model, card: card, context: context, coordinator: coordinator)
         case .hunk: drawHunk(model, card: card, context: context, coordinator: coordinator)
-        case .line: drawLine(model, card: card, context: context, coordinator: coordinator)
-        case .split: drawSplit(model, card: card, context: context, coordinator: coordinator)
+        case .line: drawLine(model, card: card, dirtyRect: dirtyRect, context: context, coordinator: coordinator)
+        case .split: drawSplit(model, card: card, dirtyRect: dirtyRect, context: context, coordinator: coordinator)
         default: break
         }
         context.addPath(shape)
@@ -1189,7 +1325,7 @@ final class GitDiffRowCell: NSView {
         switch kind { case .added: colors.added; case .removed: colors.removed; case .context, .note: nil }
     }
 
-    private func drawLine(_ model: GitDiffTableRow, card: CGFloat, context: CGContext, coordinator: GitDiffTable.Coordinator) {
+    private func drawLine(_ model: GitDiffTableRow, card: CGFloat, dirtyRect: NSRect, context: CGContext, coordinator: GitDiffTable.Coordinator) {
         let line = coordinator.line(model), left = GitDiffMetrics.cardInset
         let tint = Self.tint(line.kind, coordinator.colors)
         if let tint {
@@ -1209,10 +1345,10 @@ final class GitDiffRowCell: NSView {
         GitDiffText.drawKept(marker, font: GitDiffMetrics.mono, color: tint ?? coordinator.colors.tertiaryText, x: x0 + 96 + (12 - GitDiffText.keptWidth(marker, font: GitDiffMetrics.mono)) / 2, baseline: baseline, in: context)
         let geometry = Self.textFrame(.line, side: .whole, card: card, rowWidth: bounds.width)
         drawText(GitDiffTable.Coordinator.shown(line.text), selectable: line.text, color: line.kind == .note ? coordinator.colors.tertiaryText : coordinator.colors.text,
-                 x: geometry.x, width: geometry.width, selection: coordinator.selected(in: row, side: .whole), wrap: coordinator.wrap, context: context)
+                 x: geometry.x, width: geometry.width, selection: coordinator.selected(in: row, side: .whole), wrap: coordinator.wrap, side: .whole, dirtyRect: dirtyRect, context: context)
     }
 
-    private func drawSplit(_ model: GitDiffTableRow, card: CGFloat, context: CGContext, coordinator: GitDiffTable.Coordinator) {
+    private func drawSplit(_ model: GitDiffTableRow, card: CGFloat, dirtyRect: NSRect, context: CGContext, coordinator: GitDiffTable.Coordinator) {
         let pair = coordinator.pair(model), left = GitDiffMetrics.cardInset
         let half = GitDiffMetrics.halfWidth(card)
         for (side, line, number) in [(GitDiffSide.left, pair.left, pair.left?.oldNumber), (GitDiffSide.right, pair.right, pair.right?.newNumber)] {
@@ -1231,7 +1367,7 @@ final class GitDiffRowCell: NSView {
             }
             let geometry = Self.textFrame(.split, side: side, card: card, rowWidth: bounds.width)
             drawText(GitDiffTable.Coordinator.shown(line?.text ?? ""), selectable: line?.text ?? "", color: kind == .note ? coordinator.colors.tertiaryText : coordinator.colors.text,
-                     x: geometry.x, width: geometry.width, selection: coordinator.selected(in: row, side: side), wrap: coordinator.wrap, context: context)
+                     x: geometry.x, width: geometry.width, selection: coordinator.selected(in: row, side: side), wrap: coordinator.wrap, side: side, dirtyRect: dirtyRect, context: context)
         }
         context.setFillColor(GitDiffMetrics.fill(coordinator.colors.separator, opacity: 1))
         context.fill(CGRect(x: left + half, y: 1, width: 1, height: bounds.height - 2))
@@ -1239,27 +1375,33 @@ final class GitDiffRowCell: NSView {
 
     /// A row's text: one line cut with "…", or every line it wraps to.
     private func drawText(_ text: String, selectable: String, color: NSColor, x: CGFloat, width: CGFloat, selection: (range: Range<Int>, through: Bool)?,
-                          wrap: Bool, context: CGContext) {
+                          wrap: Bool, side: GitDiffSide, dirtyRect: NSRect, context: CGContext) {
         guard wrap else {
-            drawSelection(selection, text: selectable, line: GitDiffText.line(text, font: GitDiffMetrics.mono), x: x, top: 1, width: width, context: context)
-            GitDiffText.draw(text, font: GitDiffMetrics.mono, color: color, x: x, baseline: 1 + GitDiffMetrics.monoBaseline, width: width, in: context)
+            let shape = shape(text, range: 0..<text.utf16.count, side: side, color: color, width: width)
+            drawSelection(selection, text: selectable, line: shape.full, x: x, top: 1, width: width, context: context)
+            GitDiffText.draw(shape.drawn, x: x, baseline: 1 + GitDiffMetrics.monoBaseline, in: context)
             return
         }
-        let utf16 = Array(text.utf16)
-        let lines = GitDiffText.breaks(text, font: GitDiffMetrics.mono, width: width)
-        for (index, range) in lines.enumerated() {
-            let part = String(utf16CodeUnits: Array(utf16[range]), count: range.count)
+        guard let coordinator else { return }
+        let lines = coordinator.lines(of: row, width: width, side: side)
+        let first = max(0, Int(floor((dirtyRect.minY - 1) / GitDiffMetrics.monoLine)))
+        let last = min(lines.count, Int(ceil((dirtyRect.maxY - 1) / GitDiffMetrics.monoLine)))
+        guard last > first else { return }
+        for index in first..<last {
+            let range = lines[index]
+            let shape = shape(text, range: range, side: side, color: color, width: .greatestFiniteMagnitude)
             let top = 1 + CGFloat(index) * GitDiffMetrics.monoLine
+            GitDiffRenderCount.drewFragment()
             if let selection {
                 // What of the selection falls on this line, and whether it runs past it.
                 let start = max(selection.range.lowerBound, range.lowerBound), end = min(selection.range.upperBound, range.upperBound)
                 let runsOn = selection.through || selection.range.upperBound > range.upperBound
                 if start <= range.upperBound, end > start || runsOn, selection.range.lowerBound <= range.upperBound {
                     drawSelection(start: start - range.lowerBound, end: max(start, end) - range.lowerBound, runsOn: runsOn, length: range.count,
-                                  line: GitDiffText.line(part, font: GitDiffMetrics.mono), x: x, top: top, width: width, context: context)
+                                  line: shape.full, x: x, top: top, width: width, context: context)
                 }
             }
-            GitDiffText.draw(part, font: GitDiffMetrics.mono, color: color, x: x, baseline: top + GitDiffMetrics.monoBaseline, in: context)
+            GitDiffText.draw(shape.drawn, x: x, baseline: top + GitDiffMetrics.monoBaseline, in: context)
         }
     }
 }
