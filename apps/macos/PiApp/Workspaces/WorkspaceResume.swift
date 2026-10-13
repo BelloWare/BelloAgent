@@ -102,8 +102,9 @@ extension WorkspaceModel {
     func pauseRunsForUpdate(settleTimeout: TimeInterval = 15) async throws {
         guard !isShutDown else { throw CancellationError() }
         // No new send, Resume or command starts meanwhile; one already under
-        // way (a send awaiting its helper or session) finishes first, so its
-        // run is paused with the rest instead of starting after the pause.
+        // way (a send, a Retry or a compaction awaiting credentials, its
+        // helper or its session) gets there first, so its run is paused with
+        // the rest instead of starting after the pause.
         let wasPreparing = installPreparing
         installPreparing = true
         defer { installPreparing = wasPreparing }
@@ -113,7 +114,7 @@ extension WorkspaceModel {
         // its helper like any run.
         func preflight(_ id: String) -> Bool { record(id).map { !$0.isUtilityChat } ?? true }
         while displays.values.contains(where: { ($0.loading || $0.resuming) && preflight($0.id) }) || !hostStarts.isEmpty
-                || sessionOpenings.keys.contains(where: preflight) {
+                || sessionOpenings.keys.contains(where: preflight) || sessionOpenCallers.keys.contains(where: preflight) {
             guard ProcessInfo.processInfo.systemUptime < deadline else {
                 throw HostError.failure("A message is still being sent. Try the update again in a moment.")
             }

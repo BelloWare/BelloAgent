@@ -27,6 +27,11 @@ private actor ContinueClient: ModelClient {
     }
 }
 
+extension AgentSession {
+    /// A Resume and a Stop with nothing between them.
+    func continueThenStop(commandID: String) throws { _ = try continueRun(commandID: commandID); stop() }
+}
+
 /// The run-state records a session writes, in order.
 private final class RecordedStates: @unchecked Sendable {
     private let lock = NSLock()
@@ -123,7 +128,8 @@ final class ContinueRunTests: XCTestCase {
         try await eventually { !(await session.isRunning) }
         let requests = await client.requests
         XCTAssertEqual(requests.count, 2)
-        XCTAssertEqual(requests[1].map(\.role), ["user"], "the interrupted reply is not part of the request")
+        // The client is handed the context; the provider sends only what may be replayed.
+        XCTAssertEqual(requests[1].filter(\.replayEligible).map(\.role), ["user"], "the interrupted reply is not part of the request")
         let assistants = await session.history.filter { $0.role == "assistant" }
         XCTAssertEqual(assistants.map(\.text), ["Half an ans", "The whole answer"])
         XCTAssertEqual(assistants.first?.stopReason, "interrupted")
@@ -291,15 +297,16 @@ final class ContinueRunTests: XCTestCase {
     /// A Resume stopped before its run began leaves nothing behind: the next
     /// message is answered as itself, not after another continuation.
     func testAResumeStoppedAtOnceDoesNotLeakIntoTheNextRun() async throws {
-        let chat = try chat(), client = ContinueClient([.streamForever("Cut"), .streamForever("Cut again"), .reply(answer("New answer")), .reply(answer("Extra"))])
+        let chat = try chat(), client = ContinueClient([.streamForever("Cut"), .reply(answer("A")), .reply(answer("B")), .reply(answer("C"))])
         let session = try chat.session(client)
         _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "Question"), steer: false)
         try await eventually { await client.streamed == 1 }
         try await stopped(session)
-        _ = try await session.continueRun(commandID: "resume-1")
-        await session.stop()
+        // Stopped in the same turn of the actor: the run never begins.
+        try await session.continueThenStop(commandID: "resume-1")
         try await eventually { !(await session.isRunning) }
         let before = await client.count
+        XCTAssertEqual(before, 1, "the stopped Resume made no request")
         _ = try await session.submit(Submission(commandID: "c2", turnID: "t2", text: "New message"), steer: false)
         try await eventually { await client.count > before }
         try await eventually { !(await session.isRunning) }

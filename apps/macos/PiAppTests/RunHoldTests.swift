@@ -148,6 +148,11 @@ final class RunHoldTests: XCTestCase {
         do { try await model.pauseRunsForUpdate(settleTimeout: 0.05); XCTFail("a send that never finishes holds the pause") }
         catch { XCTAssertTrue(error.localizedDescription.contains("still being sent"), error.localizedDescription) }
         XCTAssertFalse(model.installPreparing)
+        // A command opening its chat's session (awaiting credentials) gets there first too.
+        model.sessionOpenCallers["c"] = 1
+        do { try await model.pauseRunsForUpdate(settleTimeout: 0.05); XCTFail("an open under way holds the pause") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("still being sent"), error.localizedDescription) }
+        model.sessionOpenCallers["c"] = nil
         // A background request loading for as long as its model answers does not hold the pause.
         var probe = ChatRecord(id: "t", workspaceID: "w", title: "T", path: nil, profileID: "p"); probe.connectionTest = true
         model.chats = [probe]; view.loading = false
