@@ -364,7 +364,7 @@ extension TranscriptNativeDocument {
             reportedFocus = focus.serial
             onFocusResolved?(focus.record ?? focus.messageID, focus.needle, resolution.rendered)
         }
-        for row in retainedRows where row.superview === self { markHighlights(in: row) }
+        for row in subviews.compactMap({ $0 as? TranscriptRowContainer }) { markHighlights(in: row) }
     }
 
     /// Brings the focused place into view if a request for it is pending: a

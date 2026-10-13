@@ -1010,6 +1010,26 @@ final class TranscriptNativeScrollView: NSScrollView {
         }
     }
 
+    private(set) var visibilityRowVisitCount = 0
+    private var visibilityRows: [TranscriptRowContainer] = []
+
+    /// Frames are in document order. Input looks up the intersecting band
+    /// without walking the resident window, including its estimated rows.
+    private func rows(overlapping rect: CGRect) -> ArraySlice<TranscriptRowContainer> {
+        var low = 0, high = rows.count
+        while low < high {
+            let middle = (low + high) / 2
+            if rows[middle].frame.maxY <= rect.minY { low = middle + 1 } else { high = middle }
+        }
+        let first = low
+        high = rows.count
+        while low < high {
+            let middle = (low + high) / 2
+            if rows[middle].frame.minY < rect.maxY { low = middle + 1 } else { high = middle }
+        }
+        return rows[first..<low]
+    }
+
     private func mountVisibleRows() {
         guard !layingOut, !isHiddenOrHasHiddenAncestor, let clip = enclosingScrollView?.contentView else { return }
         // Nothing of this chat is placed yet: rows taken back from being kept
@@ -1028,9 +1048,9 @@ final class TranscriptNativeScrollView: NSScrollView {
         // so this settles; the limit only bounds a page of wild estimates.
         var rounds = 0
         while rounds < Self.bufferCorrectionLimit,
-              rows.contains(where: { approximate.contains($0.itemID) && Self.overlaps($0.frame, buffered) }) {
+              rows(overlapping: buffered).contains(where: { approximate.contains($0.itemID) }) {
             rounds += 1; correctionRounds += 1
-            for row in rows where approximate.contains(row.itemID) && Self.overlaps(row.frame, buffered) {
+            for row in rows(overlapping: buffered) where approximate.contains(row.itemID) {
                 if row.superview == nil { addSubview(row) }
                 _ = row.measure(width: rowWidth)
                 estimated.remove(row.itemID); approximate.remove(row.itemID)
@@ -1040,14 +1060,22 @@ final class TranscriptNativeScrollView: NSScrollView {
             placingCorrection = false
             buffered = Self.buffered(clip.bounds)
         }
-        var cold = false
-        for row in rows {
+        let retention = buffered.insetBy(dx: 0, dy: -buffered.height * Self.hostReach)
+        var cold = rows(overlapping: retention).contains { !$0.isHosted }
+        // Previously hosted rows include those leaving the viewport, and
+        // selection/motion can keep one outside the normal retention band.
+        var candidates = visibilityRows
+        var included = Set(candidates.map(ObjectIdentifier.init))
+        for row in rows(overlapping: buffered) where included.insert(ObjectIdentifier(row)).inserted { candidates.append(row) }
+        if let selected, included.insert(ObjectIdentifier(selected)).inserted { candidates.append(selected) }
+        for row in candidates {
+            visibilityRowVisitCount += 1
             // A local disclosure can change height just before a scroll moves
             // it away: a row the reader has only just left finishes its
             // deferred native validation before detaching. A row the page
             // measured in a slice, pages away from the viewport, has nothing
             // on screen to finish and detaches at once.
-            let nearby = Self.overlaps(row.frame, buffered.insetBy(dx: 0, dy: -buffered.height * Self.hostReach))
+            let nearby = Self.overlaps(row.frame, retention)
             let needed = !approximate.contains(row.itemID) && (Self.overlaps(row.frame, buffered) || row === selected
                 || (row.superview != nil && row.needsMountedValidation && nearby))
             if needed, row.superview == nil {
@@ -1077,6 +1105,7 @@ final class TranscriptNativeScrollView: NSScrollView {
                 else if !row.isHosted { cold = true }
             }
         }
+        visibilityRows = candidates.filter { $0.isHosted || $0.superview != nil }
         // Input only mounts what is needed now. Speculative hosts wait for
         // the shared quiet deadline, retaining the last real travel direction.
         if let lastViewportTop, abs(clip.bounds.minY - lastViewportTop) > 0.5 {
@@ -1109,7 +1138,10 @@ final class TranscriptNativeScrollView: NSScrollView {
         if cold.count > limit {
             cold.sort { abs($0.frame.midY - edge) < abs($1.frame.midY - edge) }
         }
-        for row in cold.prefix(limit) { row.prepareForTheReader() }
+        for row in cold.prefix(limit) {
+            row.prepareForTheReader()
+            if !visibilityRows.contains(where: { $0 === row }) { visibilityRows.append(row) }
+        }
         return true
     }
 
@@ -1228,6 +1260,9 @@ final class TranscriptNativeScrollView: NSScrollView {
             resumeMotion(moving, presentedHeights: presentedHeights, retarget: retarget)
             preparingMotion = wasPreparingMotion
             layingOut = false
+            // A layout can build any row; one pass reconciles those hosts.
+            // Subsequent scroll notifications only revisit retained hosts.
+            visibilityRows = rows
             if !placingCorrection { mountVisibleRows() }
             enclosingScrollView?.transcriptReading.restore()
         }
@@ -1453,11 +1488,15 @@ final class TranscriptNativeScrollView: NSScrollView {
         // shown in its place (no extent) is not what the room stands for.
         guard let page, let snapshot, snapshot.extent != nil, !snapshot.messages.isEmpty, placedHeight > 0 else { return }
         let count = snapshot.messages.count
+        let height = max(24, placedHeight / CGFloat(count))
         if let known = page.historyRowHeight, known > 0 {
             // A wheel AppKit is still applying lands on the old geometry.
             let scrolling = (enclosingScrollView as? TranscriptNativeScrollView)?.readerIsScrolling ?? false
                 || (!page.followsBottom && ProcessInfo.processInfo.systemUptime - viewportMovedAt < Self.roomQuietPeriod)
             let wanted = Self.remeasuresHistoryRowHeight(count: count, sample: page.historyRowHeightSample, width: rowWidth, sampleWidth: page.historyRowHeightWidth)
+                || page.historyRowHeightFirstID != snapshot.messages.first?.id
+            // Equal-sized replacements and evictions can hold different
+            // rows. A token in the same window does not resample history. Reuse the quiet, anchored correction below.
             // Measured once the rows stand at their own heights: after a
             // resize settles, not on the old width's.
             guard wanted, !scrolling, !liveResizing, estimated.count * 4 < rows.count, approximate.count * 4 < rows.count else {
@@ -1465,7 +1504,6 @@ final class TranscriptNativeScrollView: NSScrollView {
                 return
             }
         }
-        let height = max(24, placedHeight / CGFloat(count))
         let before = page.historyRowHeight
         page.measuredHistoryRowHeight(height, over: count, width: rowWidth)
         if snapshot.extent != nil, before.map({ abs($0 - height) > 0.5 }) ?? true { dirty = true; scheduleLayout() }
