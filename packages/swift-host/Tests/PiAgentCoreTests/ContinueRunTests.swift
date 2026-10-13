@@ -388,6 +388,26 @@ final class ContinueRunTests: XCTestCase {
         await session.close()
     }
 
+    /// Removing the follow-up that waited behind a stop leaves the stopped
+    /// run paused, still offering Resume.
+    func testRemovingTheLastFollowUpKeepsAStoppedRunResumable() async throws {
+        let chat = try chat(), client = ContinueClient([.streamForever("Cut"), .reply(answer("Resumed"))])
+        let session = try chat.session(client)
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "First"), steer: false)
+        try await eventually { await client.streamed == 1 }
+        _ = try await session.submit(Submission(commandID: "c2", turnID: "t2", text: "Second"), steer: false)
+        try await stopped(session)
+        try await session.removeQueued("t2")
+        let state = await session.snapshot()
+        XCTAssertEqual(state["state"].text, "paused"); XCTAssertEqual(state["queuePaused"].flag, true)
+        XCTAssertEqual(state["continuable"].flag, true)
+        _ = try await session.continueRun(commandID: "resume-1")
+        try await eventually { !(await session.isRunning) }
+        let count = await client.count
+        XCTAssertEqual(count, 2)
+        await session.close()
+    }
+
     /// At the chat's cost limit, Resume stops at once with the cost-limit
     /// notice the app draws, before any model request.
     func testResumeAtTheCostLimitStopsWithTheCostLimitNotice() async throws {

@@ -140,10 +140,28 @@ extension WorkspaceModel {
         // Background requests (titles) lost their helpers with the rest; as
         // at Quit they end here, and a title cut off is asked for again on
         // the chat's next send. The pause is done once nothing is left.
+        let titled = Array(titleGenerationTasks.keys)
         for task in titleGenerationTasks.values { task.cancel() }
         let settleBy = ProcessInfo.processInfo.systemUptime + 5
         while hasActiveWork, ProcessInfo.processInfo.systemUptime < settleBy { try? await Task.sleep(for: .milliseconds(20)) }
+        await markTitlesInterrupted(titled)
         await flushRunHolds()
+    }
+
+    /// Title requests the pause cut off read as interrupted when the app
+    /// closed, whatever their task wrote on the way out: that is the one
+    /// state the chat's next send asks again from (`resumeInterruptedTitle`).
+    func markTitlesInterrupted(_ sources: [String]) async {
+        for sourceID in sources {
+            guard let source = record(sourceID), source.titleWasGenerated != true, source.titleWasEdited != true,
+                  let taskID = source.titleTaskSessionID, var task = chats.first(where: { $0.id == taskID }),
+                  task.backgroundTask == BackgroundRequestKind.title.raw, task.backgroundTaskOutcome != "completed" else { continue }
+            task.backgroundTaskNotice = BackgroundRequests.interruptedNotice; task.backgroundTaskOutcome = "interrupted"
+            try? await store?.put(task, kind: "chat", id: taskID)
+            if let index = chats.firstIndex(where: { $0.id == taskID }) {
+                chats[index].backgroundTaskNotice = task.backgroundTaskNotice; chats[index].backgroundTaskOutcome = task.backgroundTaskOutcome
+            }
+        }
     }
 
     /// A helper stopped by `pauseRunsForUpdate` has gone: each of its chats

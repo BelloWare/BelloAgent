@@ -172,6 +172,19 @@ final class RunHoldTests: XCTestCase {
         XCTAssertTrue(model.hasActiveWork)
         try await model.pauseRunsForUpdate(settleTimeout: 0.05)
         XCTAssertFalse(model.hasActiveWork, "the update's barrier can be taken right after the pause")
+        // A title the pause cut off is asked again on the chat's next send.
+        var source = ChatRecord(id: "s", workspaceID: "w", title: "S", path: nil, profileID: "p"); source.titleTaskSessionID = "tt"
+        var titleTask = ChatRecord(id: "tt", workspaceID: "w", title: "Title", path: nil, profileID: "p")
+        titleTask.backgroundTask = BackgroundRequestKind.title.raw; titleTask.backgroundTaskNotice = "Title generation interrupted. Nothing was retried."
+        titleTask.backgroundTaskOutcome = "failed"
+        model.chats = [source, titleTask]
+        model.titleGenerationTasks["s"] = Task { [weak model] in
+            while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(5)) }
+            model?.titleGenerationTasks["s"] = nil
+        }
+        try await model.pauseRunsForUpdate(settleTimeout: 0.05)
+        XCTAssertEqual(model.record("tt")?.backgroundTaskNotice, BackgroundRequests.interruptedNotice)
+        XCTAssertEqual(model.record("tt")?.backgroundTaskOutcome, "interrupted")
         await close(model)
     }
 

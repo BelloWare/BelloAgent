@@ -55,7 +55,8 @@ extension AgentSession {
         if let hold=queueEdit, hold.turnID == turnID { _ = try removeQueueEdit(editID:hold.editID); return }
         guard let item=(queue+steering).first(where:{$0.turnID == turnID}) else { throw AgentError("queue_missing", "Queued message is no longer pending") }
         let oldQ=queue, oldS=steering, oldState=state, oldPaused=queuePaused; queue.removeAll{$0.turnID == turnID}; steering.removeAll{$0.turnID == turnID}; commandState(item,"removed")
-        if runTask == nil && queue.isEmpty && steering.isEmpty { if state != .error { state = .idle }; queuePaused=false }
+        // A stopped run the model has not answered stays paused, with Resume.
+        if runTask == nil && queue.isEmpty && steering.isEmpty && !canContinue { if state != .error { state = .idle }; queuePaused=false }
         do { try persistState() } catch { queue=oldQ; steering=oldS; state=oldState; queuePaused=oldPaused; throw error }; event("queue.changed")
     }
     /// Reorders the pending follow-ups; every pending turn id must appear exactly once.
