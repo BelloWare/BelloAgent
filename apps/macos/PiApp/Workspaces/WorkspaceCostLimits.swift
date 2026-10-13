@@ -31,6 +31,23 @@ extension WorkspaceModel {
     /// the next model request is checked against it, in a run that is going too.
     func setCostLimit(_ limit: CostLimit?, for id: String) async throws {
         if let limit, !limit.isValid { throw HostError.failure("Enter an amount in US dollars above $0.00, up to $1,000,000.00.") }
+        // An editor can choose again before the previous write finishes.
+        // Compare with the saved value only after that choice settles, so
+        // choosing A → B → A does not mistake the last A for a no-op.
+        let previous = costLimitWrites[id]?.task, token = UUID()
+        let task = Task { [weak self] in
+            _ = await previous?.result
+            guard let self else { return }
+            try await self.persistCostLimit(limit, for: id)
+        }
+        costLimitWrites[id] = (token, task)
+        defer { if costLimitWrites[id]?.token == token { costLimitWrites[id] = nil } }
+        try await task.value
+        // Only persistence is serialized: a slow helper acknowledgement
+        // must not hold up the next choice's save or publication.
+        await sendCostLimit(id)
+    }
+    private func persistCostLimit(_ limit: CostLimit?, for id: String) async throws {
         if let index = chats.firstIndex(where: { $0.id == id }) {
             if chats[index].costLimit != limit {
                 // A chat not yet sent has no record; its first message writes it, limit included.
@@ -51,7 +68,6 @@ extension WorkspaceModel {
             sides[side.parentID]?.costLimit = limit
         } else { throw HostError.failure("This chat is no longer available.") }
         refreshCostReading(id); displays[id]?.costLimitChanged()
-        await sendCostLimit(id)
     }
     /// Saves the Settings default. Every chat that follows it is told.
     func setDefaultCostLimit(_ limit: CostLimit) async throws {
