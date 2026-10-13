@@ -846,6 +846,19 @@ final class FileTextViewTests: XCTestCase {
         XCTAssertEqual(text.pasteboard.string(forType: .string), "al", "the last Copy is what is copied")
     }
 
+    @MainActor func testADelayedCopyLeavesANewerPrivatePasteboardWriteAlone() throws {
+        let source = DelayedLines("alpha\nbeta"), fixture = fixture(source)
+        let text = fixture.text
+        text.select(from: at(0, 0), to: at(1, 4))
+        text.copy(nil)
+        text.pasteboard.clearContents()
+        XCTAssertTrue(text.pasteboard.setString("newer copy elsewhere", forType: .string))
+        let change = text.pasteboard.changeCount
+        source.release(0...1); source.finishFetches()
+        XCTAssertEqual(text.pasteboard.string(forType: .string), "newer copy elsewhere")
+        XCTAssertEqual(text.pasteboard.changeCount, change)
+    }
+
     /// Accessibility is handed only text that has come: nothing for text
     /// not come yet, which is then asked for, and the text once it has.
     @MainActor func testAccessibilityGetsTextOnceItHasCome() throws {
