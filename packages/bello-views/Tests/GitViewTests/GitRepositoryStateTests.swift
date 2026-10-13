@@ -52,6 +52,35 @@ final class GitRepositoryStateTests: XCTestCase {
         XCTAssertFalse(restarted, "no new diff read starts after the observer hid the panel")
     }
 
+    @MainActor func testChangesAfterTheStatusSnapshotAreCaughtOnOpenResumeAndSwitch() async throws {
+        for transition in ["open", "resume", "switch"] {
+            let first = try repository(), second = try repository()
+            let controller = GitController(roots: [first.path, second.path])
+            defer { controller.letGo() }
+            if transition != "open" {
+                await controller.refresh()
+                controller.setShown(false)
+            }
+            let destination = transition == "switch" ? second : first
+            if transition == "switch" { controller.root = second.path }
+            let before = controller.repository
+            var read = false, watched = false
+            controller.statusDidRead = {
+                controller.statusDidRead = nil; read = true; watched = controller.isWatching
+                XCTAssertTrue(watched, "\(transition): the stream must precede the snapshot")
+                XCTAssertEqual(controller.repository, before, "the completed snapshot is still unpublished")
+                try "late\n".write(to: destination.appendingPathComponent("late.txt"), atomically: true, encoding: .utf8)
+                // Deliver the save while the snapshot is held. The refresh
+                // must drain that event after publishing what Git read earlier.
+                try await Task.sleep(for: .milliseconds(1200))
+            }
+            controller.setShown(true)
+            try await wait { read && !controller.loading }
+            if watched { try await wait { controller.status.entries.contains { $0.path == "late.txt" } } }
+            XCTAssertTrue(controller.status.entries.contains { $0.path == "late.txt" }, transition)
+        }
+    }
+
     @MainActor func testSwitchingAgainDuringResetDoesNotRearmTheSupersededRepository() async throws {
         let first = try repository(), second = try repository(), third = try repository()
         let controller = try await read([first, second, third])
@@ -150,5 +179,65 @@ final class GitRepositoryStateTests: XCTestCase {
         try await wait { controller.refreshesFinished > finished }
         XCTAssertEqual(controller.selection, selection)
         XCTAssertEqual(controller.diff.first?.path, selection?.path)
+    }
+
+    @MainActor func testABlameRevealSurvivesTheSharedCommitsRepositoryReset() async throws {
+        let root = try repository(), other = root.appendingPathComponent("worktree")
+        try git(["worktree", "add", "-qb", "other", other.path], in: root)
+        let controller = try await read([root, other]), commit = try XCTUnwrap(controller.commits.first)
+        controller.selectedCommit = commit; controller.detailFile = "same.txt"
+        try await wait { !controller.commitLoading }
+        GitController.statusReadDelay = .milliseconds(300)
+        controller.root = other.path
+        let shown = await controller.revealHistory(GitHistoryTarget(commit: commit.hash, path: "same.txt", line: 1), in: other.path)
+        XCTAssertTrue(shown)
+        XCTAssertEqual(controller.repositoryRoot, other.path)
+        XCTAssertEqual(controller.selectedCommit?.hash, commit.hash)
+        XCTAssertEqual(controller.detailFile, "same.txt")
+        XCTAssertEqual(controller.revealTarget?.target.line, 1)
+    }
+
+    @MainActor func testAReadersChoiceAwayAndBackStillCancelsAPendingReveal() async throws {
+        for changeFile in [false, true] {
+            let root = try repository(), controller = try await read([root]), commit = try XCTUnwrap(controller.commits.first)
+            controller.selectedCommit = commit; controller.detailFile = "same.txt"
+            try await wait { !controller.commitLoading }
+            controller.setShown(false)
+            var entered = false
+            let ask = Task {
+                entered = true
+                return await controller.revealHistory(GitHistoryTarget(commit: commit.hash, path: "same.txt", line: 1), in: root.path)
+            }
+            try await wait { entered }
+            if changeFile { controller.detailFile = nil; controller.detailFile = "same.txt" }
+            else { controller.selectedCommit = nil; controller.selectedCommit = commit; controller.detailFile = "same.txt" }
+            controller.setShown(true)
+            let shown = await ask.value
+            XCTAssertFalse(shown, "even a choice back to the same value belongs to the reader")
+            XCTAssertNil(controller.revealTarget)
+        }
+    }
+
+    @MainActor func testAFileChoiceDuringTheRepositoryResetCancelsAPendingReveal() async throws {
+        let root = try repository(), other = root.appendingPathComponent("worktree")
+        try git(["worktree", "add", "-qb", "other", other.path], in: root)
+        let controller = try await read([root, other]), commit = try XCTUnwrap(controller.commits.first)
+        controller.selectedCommit = commit; controller.detailFile = "same.txt"
+        try await wait { !controller.commitLoading }
+        var chose = false
+        let watch = controller.$detailFile.dropFirst().sink { file in
+            guard file == nil, !chose else { return }
+            chose = true
+            // An observer can choose synchronously during the implicit clear.
+            // Coming back to the same file is still a new reader choice.
+            controller.detailFile = "reader.txt"; controller.detailFile = "same.txt"
+        }
+        defer { watch.cancel() }
+        GitController.statusReadDelay = .milliseconds(300)
+        controller.root = other.path
+        let shown = await controller.revealHistory(GitHistoryTarget(commit: commit.hash, path: "same.txt", line: 1), in: other.path)
+        XCTAssertTrue(chose)
+        XCTAssertFalse(shown)
+        XCTAssertNil(controller.revealTarget)
     }
 }

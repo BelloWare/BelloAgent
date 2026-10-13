@@ -29,6 +29,27 @@ import AppKit
         public let root: String
         fileprivate let generation: Int
     }
+    /// Repository-wide forms outlive status snapshots, but never a switch
+    /// away and back. Rows keep their stricter RepositoryContext instead.
+    public struct RepositoryIdentity: Equatable, Sendable {
+        public let root: String
+        fileprivate let lifetime = UUID()
+    }
+    @Published public private(set) var repositoryIdentity: RepositoryIdentity?
+    private var identifiedFolder: String?
+    private func identifyRepository(_ top: String?, folder: String?) {
+        identifiedFolder = folder
+        if repositoryIdentity?.root != top { repositoryIdentity = top.map { RepositoryIdentity(root: $0) } }
+    }
+    public func acceptsRepository(_ identity: RepositoryIdentity?) -> Bool { !suspended && sameRepositoryIdentity(identity) }
+    private func sameRepositoryIdentity(_ identity: RepositoryIdentity?) -> Bool {
+        guard let identity else { return false }
+        return !closed && root == identifiedFolder && identity == repositoryIdentity
+    }
+    private func formRoot(_ identity: RepositoryIdentity?) -> String? {
+        guard sameRepositoryIdentity(identity) else { notice = "The repository changed. Open the form again."; return nil }
+        return identity?.root
+    }
     public struct RepositorySnapshot: Equatable {
         public let context: RepositoryContext?
         public let status: GitRepositoryStatus
@@ -65,8 +86,10 @@ import AppKit
         didSet {
             guard root != oldValue else { return }
             rememberInterruptedCommitRead()
+            identifiedFolder = nil
             repositoryGeneration += 1
             stop()
+            if root == nil { identifyRepository(nil, folder: nil) }
             // Another folder, perhaps another repository: a commit held for a
             // reveal in the last one, and a reveal still on its way, go.
             pinnedCommit = nil; revealTarget = nil; revealTokens += 1
@@ -99,12 +122,17 @@ import AppKit
     @Published public var selectedCommit: GitCommit? {
         didSet {
             guard selectedCommit != oldValue else { return }
+            historyChoices += 1
             // Another commit chosen: the one a blame line asked for is no
             // longer held, and its line no longer the one to show.
             if selectedCommit?.hash != pinnedCommit { pinnedCommit = nil }
             if let reveal = revealTarget, selectedCommit?.hash != reveal.target.commit { revealTarget = nil }
             commitReadInterrupted = nil
+            let before = historyChoices, hadFile = detailFile != nil
             changingCommit = true; detailFile = nil; changingCommit = false
+            // The implicit file clear is part of choosing the commit. A
+            // nested observer's file choice must keep its own revision.
+            if hadFile, historyChoices == before + 1 { historyChoices = before }
             startCommitLoad()
         }
     }
@@ -136,7 +164,10 @@ import AppKit
     @Published public var detailFile: String? {
         didSet {
             if let reveal = revealTarget, !changingCommit, detailFile != reveal.target.path { revealTarget = nil }
-            if detailFile != oldValue && !changingCommit { commitReadInterrupted = nil; startCommitLoad() }
+            if detailFile != oldValue {
+                historyChoices += 1
+                if !changingCommit { commitReadInterrupted = nil; startCommitLoad() }
+            }
         }
     }
     /// The commit a blame line asked for, held as the selection while it is
@@ -209,6 +240,15 @@ import AppKit
     private let service: GitService
     private var generation = 0
     private var changingCommit = false
+    private var historyChoices = 0
+    private func clearHistorySelection() {
+        guard selectedCommit != nil else { return }
+        let before = historyChoices
+        selectedCommit = nil
+        // Credit only this reset, never a reader choice made by a synchronous
+        // observer of it. A pending blame reveal survives the former alone.
+        if historyChoices == before + 1 { historyChoices = before }
+    }
     /// One commit's reads, cancelled as soon as another commit is chosen.
     private var detailTask: Task<Void, Never>?
     /// The selected file's diff read, cancelled as soon as another file is chosen.
@@ -297,6 +337,7 @@ import AppKit
     /// was made: a panel that opens over it again reads everything afresh, as
     /// a first open does.
     public func letGo() {
+        identifyRepository(nil, folder: nil)
         selectedCommit = nil
         selection = nil
         repositoryGeneration += 1; repository = RepositorySnapshot()
@@ -423,6 +464,8 @@ import AppKit
     }
     /// A test seam: how long each status read takes on top of git's own time.
     nonisolated(unsafe) static var statusReadDelay: Duration = .zero
+    /// Holds a completed status snapshot in tests while the working tree changes.
+    var statusDidRead: (@MainActor () async throws -> Void)?
     /// The automatic refresh under way, and whether the tree changed during it.
     private var automaticRefresh: UUID?
     private var automaticChangePending = false
@@ -456,12 +499,18 @@ import AppKit
         // A stopped read of the top level reads as "no repository": only a
         // refresh still current may say so.
         guard current(generation) else { return }
+        identifyRepository(top, folder: root)
+        guard current(generation), !closed, !suspended else { return }
         guard let top else {
             guard publishRepository(nil, status: GitRepositoryStatus(), generation: generation) else { return }
             updateWatch(on: nil)
             publish(\.diff, []); publish(\.commits, [])
             publish(\.selection, nil); publish(\.selectedCommit, nil); publish(\.detail, nil); return
         }
+        // SinceNow cannot recover a save made before the stream starts. Arm
+        // it before Git reads; events during this refresh are drained after it.
+        guard current(generation), !closed, !suspended else { return }
+        updateWatch(on: top)
         do {
             // A refresh publishes only what changed: the watch refreshes on
             // every save, and reassigning the same status, history and diff
@@ -469,10 +518,10 @@ import AppKit
             // A test seam, zero in the app: a repository slow to read.
             if Self.statusReadDelay > .zero { try? await Task.sleep(for: Self.statusReadDelay); guard !Task.isCancelled else { return } }
             let status = try await service.status(in: top)
+            try await statusDidRead?()
             guard current(generation) else { return }
             let previousSelection = selection
             guard publishRepository(top, status: status, generation: generation) else { return }
-            updateWatch(on: top)
             let paths = Set(status.entries.map(\.path))
             // Files arrive ticked until the reader says otherwise; once they
             // have, a refresh never ticks anything back on. Unticking every
@@ -499,8 +548,11 @@ import AppKit
             var branches: [String] = [], stashes: [GitStashEntry] = []
             do { branches = try await branchList } catch is CancellationError { return } catch {}
             do { stashes = try await stashList } catch is CancellationError { return } catch {}
-            if let ignored = try? await ignoredList, let watcher { watcher.ignored.update(root: watcher.root, relative: ignored) }
+            let ignored = try? await ignoredList
             guard current(generation) else { return }
+            if let ignored, let watcher, watcher.root == URL(fileURLWithPath: top, isDirectory: true).resolvingSymlinksInPath().path {
+                watcher.ignored.update(root: watcher.root, relative: ignored)
+            }
             publish(\.branches, branches); publish(\.stashes, stashes)
             await reloadHistory(generation: generation, automatic: automatic)
             if current(generation) { refreshesFinished += 1; resumeInterruptedCommitRead() }
@@ -518,7 +570,7 @@ import AppKit
         guard !repository.read || repositoryRoot != root || self.status != status || (root != nil && repository.context?.generation != repositoryGeneration) else { return true }
         if repositoryRoot != root {
             commitReadInterrupted = nil
-            selection = nil; selectedCommit = nil
+            selection = nil; clearHistorySelection()
             diff = []; commits = []; branches = []; stashes = []
             commitCache = [:]; commitCacheOrder = []; historyExhausted = false
             checkedByReader = false; applyChecked([])
@@ -549,7 +601,7 @@ import AppKit
             publish(\.commits, commits); publish(\.historyExhausted, commits.count < limit)
             // A commit pushed off the first page by newer ones is still the
             // commit the reader is reading; only a filter change drops it.
-            if !automatic, let selectedCommit, selectedCommit.hash != pinnedCommit, !commits.contains(where: { $0.hash == selectedCommit.hash }) { self.selectedCommit = nil }
+            if !automatic, let selectedCommit, selectedCommit.hash != pinnedCommit, !commits.contains(where: { $0.hash == selectedCommit.hash }) { clearHistorySelection() }
         // A read replaced by a newer one is not something to tell the reader
         // about: typing in the filter cancels one on every keystroke.
         } catch is CancellationError {
@@ -605,8 +657,10 @@ import AppKit
     public func checkout(_ branch: String, context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("Switch") { try await service.checkout(branch, in: root) } }
     public func createBranch(_ name: String) async { await createBranch(name, context: repositoryContext) }
     public func createBranch(_ name: String, context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("New branch") { try await service.createBranch(name, in: root) } }
+    public func createBranch(_ name: String, repository: RepositoryIdentity?) async { guard let root = formRoot(repository) else { return }; await perform("New branch") { try await service.createBranch(name, in: root) } }
     public func stash(message: String) async { await stash(message: message, context: repositoryContext) }
     public func stash(message: String, context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("Stash") { try await service.stashPush(message: message, in: root) } }
+    public func stash(message: String, repository: RepositoryIdentity?) async { guard let root = formRoot(repository) else { return }; await perform("Stash") { try await service.stashPush(message: message, in: root) } }
     public func popStash(_ name: String? = nil) async { await popStash(name, context: repositoryContext) }
     public func popStash(_ name: String?, context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("Pop stash") { try await service.stashPop(name, in: root) } }
     public func fetch() async { await fetch(context: repositoryContext) }
@@ -801,14 +855,14 @@ import AppKit
         let token = revealTokens
         // The reader's choice as it was when asked: one made while this waits
         // wins over it.
-        let chosen = selectedCommit?.hash, chosenFile = detailFile
+        let choice = historyChoices
         // A tab brought forward says it is shown a turn later: waited for,
         // briefly, before a hidden panel counts as one the reader left.
         let until = ProcessInfo.processInfo.systemUptime + 3
         while suspended, !closed, token == revealTokens, !Task.isCancelled, ProcessInfo.processInfo.systemUptime < until {
             try? await Task.sleep(for: .milliseconds(20))
         }
-        func stillWanted() -> Bool { token == revealTokens && !closed && !suspended && !Task.isCancelled && valid() && selectedCommit?.hash == chosen && detailFile == chosenFile }
+        func stillWanted() -> Bool { token == revealTokens && !closed && !suspended && !Task.isCancelled && valid() && historyChoices == choice }
         // A panel just made, or just pointed at another folder, is still
         // reading which repository it shows: that read is waited for first.
         if repositoryRoot != repository, !closed { await refreshTask?.value }

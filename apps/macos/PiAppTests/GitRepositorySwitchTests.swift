@@ -155,4 +155,93 @@ final class GitRepositorySwitchTests: GitPanelTestCase, SerialTestLane {
     @MainActor private func descendants<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
         ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { descendants(type, in: $0) }
     }
+
+    @MainActor private func openForm(_ stash: Bool, in panel: GitPanelView) async throws -> GitNamePopover {
+        panel.refresh(); panel.layoutSubtreeIfNeeded()
+        let menu = try XCTUnwrap(descendants(PiKit.MenuButton.self, in: panel).first { $0.accessibilityIdentifier() == (stash ? "git-stash-menu" : "git-branch-menu") })
+        guard case .item(let item) = menu.entries().first else { throw NSError(domain: "Git form", code: 1) }
+        item.perform()
+        var form: GitNamePopover?
+        try await eventually("open the name form", timeout: 3) {
+            form = NSApp.windows.filter(\.isVisible).compactMap(\.contentView).flatMap { self.descendants(GitNamePopover.self, in: $0) }.first
+            return form != nil
+        }
+        return try XCTUnwrap(form)
+    }
+
+    @MainActor func testOpenFormsSurviveStatusChangesAndFoldersInTheSameRepository() async throws {
+        PiKit.Motion.reducedOverride = true; defer { PiKit.Motion.reducedOverride = nil }
+        for stash in [false, true] { for switchFolder in [false, true] {
+            let root = try changedRepository("forms"), folder = root.appendingPathComponent("folder")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            // Stash removes empty untracked directories; this project folder
+            // must remain present so its resulting status can still be read.
+            try "tracked\n".write(to: folder.appendingPathComponent("keep.txt"), atomically: true, encoding: .utf8)
+            try git(["add", "folder/keep.txt"], in: root); try git(["commit", "-qm", "Project folder"], in: root)
+            let controller = try await read(root, folder), panel = GitPanelView(controller: controller), window = host(panel)
+            defer { controller.letGo(); window.close() }
+            try await eventually("show the panel") { controller.isShown && !controller.loading }
+            let form = try await openForm(stash, in: panel), before = controller.repositoryContext
+            if switchFolder {
+                let finished = controller.refreshesFinished
+                controller.root = folder.path
+                try await eventually("read the other project folder") { controller.refreshesFinished > finished }
+            } else {
+                try "agent\n".write(to: root.appendingPathComponent("agent.txt"), atomically: true, encoding: .utf8)
+                try git(["add", "agent.txt"], in: root)
+                await controller.refresh(automatic: true)
+            }
+            try await eventually("publish the refreshed row context") { controller.repositoryContext != before && !controller.loading }
+            XCTAssertTrue(form.window?.isVisible == true, "a status snapshot does not dismiss the form")
+            form.submit?("from-form")
+            try await eventually("perform \(stash ? "Stash" : "New Branch") after \(switchFolder ? "switching folders" : "status refresh")", timeout: 6) {
+                !controller.busy && (stash ? !controller.stashes.isEmpty : controller.status.branch == "from-form")
+            }
+            if stash { XCTAssertTrue(try git(["stash", "list"], in: root).contains("from-form")) }
+            else { XCTAssertEqual(try git(["branch", "--show-current"], in: root), "from-form\n") }
+        } }
+    }
+
+    @MainActor func testOpenFormsCloseWithAnExplanationOnRealAndFailedRepositorySwitches() async throws {
+        PiKit.Motion.reducedOverride = true; defer { PiKit.Motion.reducedOverride = nil }
+        for stash in [false, true] { for failure in [false, true] {
+            let first = try changedRepository("form-first"), second = try changedRepository("form-second")
+            let controller = try await read(first, second), panel = GitPanelView(controller: controller), window = host(panel)
+            defer { controller.letGo(); window.close(); GitController.statusReadDelay = .zero }
+            try await eventually("show the panel") { controller.isShown && !controller.loading }
+            let form = try await openForm(stash, in: panel), submit = form.submit
+            if failure { try Data("broken index".utf8).write(to: second.appendingPathComponent(".git/index")) }
+            GitController.statusReadDelay = .milliseconds(300)
+            controller.root = second.path
+            try await eventually("start the switch") { controller.loading }
+            try await eventually("finish or fail the switch") { !controller.loading }
+            panel.refresh()
+            XCTAssertFalse(form.window?.isVisible == true)
+            XCTAssertTrue(descendants(PiKit.TextLine.self, in: panel).contains { $0.line.text.lowercased().contains("repository changed") })
+            try await refusesWrite(controller) { submit?("stale-form") }
+            controller.root = first.path
+            try await eventually("start the return") { controller.loading }
+            try await eventually("finish the return") { !controller.loading && controller.repositoryRoot == first.path }
+            try await refusesWrite(controller) { submit?("stale-form") }
+            XCTAssertEqual(try git(["branch", "--list", "stale-form"], in: first), "")
+            XCTAssertEqual(try git(["stash", "list"], in: first), "")
+            form.cancel?()
+        } }
+    }
+
+    @MainActor func testACancelledFormCannotSubmitAfterAnotherFormOpens() async throws {
+        PiKit.Motion.reducedOverride = true; defer { PiKit.Motion.reducedOverride = nil }
+        for stash in [false, true] {
+            let root = try changedRepository("cancelled-form"), controller = try await read(root, root)
+            let panel = GitPanelView(controller: controller), window = host(panel)
+            defer { controller.letGo(); window.close() }
+            try await eventually("show the panel") { controller.isShown && !controller.loading }
+            let old = try await openForm(stash, in: panel), submit = old.submit
+            old.cancel?()
+            let current = try await openForm(stash, in: panel)
+            try await refusesWrite(controller) { submit?("cancelled-form") }
+            XCTAssertTrue(current.window?.isVisible == true)
+            current.cancel?()
+        }
+    }
 }

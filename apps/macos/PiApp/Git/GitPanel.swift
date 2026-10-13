@@ -483,6 +483,10 @@ enum GitPanelSplit {
     private let notice = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piDanger))
     private var committed: PiKit.Badge?
     private let branchPopover = AnchoredPopover(), stashPopover = AnchoredPopover()
+    private struct RepositoryForm { let token = UUID(); let repository: GitController.RepositoryIdentity }
+    private var branchForm: RepositoryForm?, stashForm: RepositoryForm?
+    private var repositoryWatch: AnyCancellable?
+    private var formNotice = ""
 
     init(controller: GitController) {
         self.controller = controller
@@ -490,6 +494,7 @@ enum GitPanelSplit {
         panelTabs = PiKit.Tabs(selection: controller.panel, items: GitController.Panel.allCases.map { ($0, $0.title) }) { [controller] in controller.panel = $0 }
         super.init(frame: .zero)
         for view in [rootLabel, branchMenu, remote, stashMenu, panelTabs, notice] as [NSView] { addSubview(view) }
+        repositoryWatch = controller.$repositoryIdentity.sink { [weak self] in self?.repositoryChanged($0) }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
@@ -529,7 +534,7 @@ enum GitPanelSplit {
         stashMenu.label = next.stashes == 0 ? "Stash" : "Stash · \(next.stashes)"
         stashMenu.isEnabled = !next.busy
         panelTabs.selection = next.panel
-        notice.line.text = next.notice; notice.toolTip = next.notice; notice.isHidden = next.notice.isEmpty
+        showNotice(next.notice)
         if let last = next.lastCommit {
             if let committed { committed.text = "Committed \(last)" } else {
                 let badge = PiKit.Badge(text: "Committed \(last)", tone: .success, icon: "checkmark")
@@ -640,32 +645,65 @@ enum GitPanelSplit {
 
     // MARK: Popovers
 
+    private func showNotice(_ message: String) {
+        let text = [formNotice, message].filter { !$0.isEmpty }.joined(separator: " ")
+        notice.line.text = text; notice.toolTip = text; notice.isHidden = text.isEmpty
+    }
+    private func repositoryChanged(_ identity: GitController.RepositoryIdentity?) {
+        var closed: [String] = []
+        if let branchForm, branchForm.repository != identity {
+            self.branchForm = nil
+            if branchPopover.isShown { branchPopover.close(); closed.append("New Branch") }
+        }
+        if let stashForm, stashForm.repository != identity {
+            self.stashForm = nil
+            if stashPopover.isShown { stashPopover.close(); closed.append("Stash") }
+        }
+        guard !closed.isEmpty else { return }
+        // Keep the explanation even if the new repository's status read
+        // fails; that error does not explain why the reader's form closed.
+        formNotice = "Repository changed. \(closed.joined(separator: " and ")) closed."
+        showNotice(controller.notice); measures = nil; needsLayout = true; PiKit.sizeChanged(self)
+    }
+
     /// IntelliJ's branch popup: a new branch from HEAD, checked out.
     private func showNewBranch(context: GitController.RepositoryContext?) {
-        guard controller.accepts(context) else { return }
+        guard controller.accepts(context), let identity = controller.repositoryIdentity else { return }
+        let request = RepositoryForm(repository: identity)
         let form = GitNamePopover(title: "New branch", placeholder: "feature/name", icon: "arrow.triangle.branch", mono: true,
                                   note: "Created from the current HEAD and checked out; your changes come along.", action: "Create",
                                   requiresText: true, width: 320)
-        form.cancel = { [weak self] in self?.branchPopover.close() }
+        form.cancel = { [weak self] in
+            guard let self, self.branchForm?.token == request.token else { return }
+            self.branchForm = nil; self.branchPopover.close()
+        }
         form.submit = { [weak self, controller] name in
             let name = name.trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty, controller.accepts(context) else { return }
-            self?.branchPopover.close()
-            Task { await controller.createBranch(name, context: context) }
+            guard !name.isEmpty, let self, self.branchForm?.token == request.token, self.branchPopover.isShown,
+                  controller.acceptsRepository(identity) else { return }
+            self.branchForm = nil; self.branchPopover.close()
+            Task { await controller.createBranch(name, repository: identity) }
         }
+        branchForm = request; formNotice = ""; showNotice(controller.notice)
         branchPopover.show(form, width: 320, below: branchMenu, focus: form.field.field)
     }
     private func showStash(context: GitController.RepositoryContext?) {
-        guard controller.accepts(context) else { return }
+        guard controller.accepts(context), let identity = controller.repositoryIdentity else { return }
+        let request = RepositoryForm(repository: identity)
         let form = GitNamePopover(title: "Stash changes", placeholder: "Message (optional)", icon: "text.quote", mono: false,
                                   note: "Sets aside every change, untracked files included, and restores a clean working tree.", action: "Stash",
                                   requiresText: false, width: 340)
-        form.cancel = { [weak self] in self?.stashPopover.close() }
-        form.submit = { [weak self, controller] message in
-            guard controller.accepts(context) else { return }
-            self?.stashPopover.close()
-            Task { await controller.stash(message: message, context: context) }
+        form.cancel = { [weak self] in
+            guard let self, self.stashForm?.token == request.token else { return }
+            self.stashForm = nil; self.stashPopover.close()
         }
+        form.submit = { [weak self, controller] message in
+            guard let self, self.stashForm?.token == request.token, self.stashPopover.isShown,
+                  controller.acceptsRepository(identity) else { return }
+            self.stashForm = nil; self.stashPopover.close()
+            Task { await controller.stash(message: message, repository: identity) }
+        }
+        stashForm = request; formNotice = ""; showNotice(controller.notice)
         stashPopover.show(form, width: 340, below: stashMenu, focus: form.field.field)
     }
 }
