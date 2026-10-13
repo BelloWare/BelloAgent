@@ -1,6 +1,18 @@
-# Next release: 0.1.125
+# Next release: 0.1.126
 
-**Released 2026-10-13:** 0.1.124 (build 128, tag `v0.1.124`) is the latest release; record `docs/validation/Bello-Agent-0.1.124-2026-10-13.md`. In progress for 0.1.125: Resume of paused/interrupted runs and pausing running chats for an update (`dev/resume-runs`), no "Working" word in sidebar rows (`dev/sidebar-working`), a changed skill chip refreshed instead of failing every send (`dev/skill-refresh`).
+**Released 2026-10-13:** 0.1.125 (build 129, tag `v0.1.125`) is the latest release; record `docs/validation/Bello-Agent-0.1.125-2026-10-13.md`.
+
+## 0.1.125
+
+**0.1.125 (owner 2026-10-13):** Resume runs and update while running, a quieter sidebar, skill refresh.
+
+- [x] Resume a paused or interrupted run (`dev/resume-runs`): Paused card + Resume (also Conversation ▸ Resume, one `run.continue` action); a cut-off tool call is never re-run, the model is told how it ended; the queue's Resume continues the run, then sends follow-ups (owner: keep).
+- [x] Update while running: Check for Updates pauses nothing; Install asks to pause running chats, each shows Resume after (owner: "Check first, pause only to install"). Sparkle "up to date"/error alerts are sheets (`Application/UpdateUserDriver.swift`) so streaming is not frozen. Quit does not ask about follow-ups paused behind a stopped run (owner: keep).
+- [x] No "Working" word on a running chat's sidebar row (`dev/sidebar-working`).
+- [x] A changed skill chip is refreshed with a notice instead of failing every send; a removed one is taken out with a note (`dev/skill-refresh`).
+- [ ] Left: scratch-chat helper `HostService.shutdown` takes >5 s and is killed; `WorkspaceFollowupTests.testScratchChatRendersComposerAndPreparesToolFreeRequestWithoutProject` fails on it (pre-existing). In progress on `dev/helper-shutdown`.
+- [ ] Left: the side-chat panel (`SidesPanel.swift`) still shows "Working".
+- [ ] Left (from 0.1.124): Git draft during a repository switch.
 
 ## 0.1.124
 
