@@ -39,7 +39,7 @@ final class HostDispatchTests: XCTestCase {
         (4, ["turn.stop", "session.status", "session.edit.prepare", "session.snapshot", "context.info", "context.preview", "context.preview.read", "context.preview.clear",
              "session.history", "session.message.read", "session.tool.input", "session.content.search", "session.content.page", "session.event-page", "session.events",
              "session.versions", "session.version.page", "session.fork", "side.open", "side.keep", "side.close"]),
-        (5, ["turn.submit", "turn.steer", "turn.edit", "queue.remove", "queue.reorder", "queue.read", "queue.update", "queue.steer", "queue.resume", "turn.retry", "queue.edit.begin", "queue.edit.save", "queue.edit.cancel", "queue.edit.remove", "queue.edit.status",
+        (5, ["turn.submit", "turn.steer", "turn.edit", "queue.remove", "queue.reorder", "queue.read", "queue.update", "queue.steer", "queue.resume", "turn.retry", "run.continue", "queue.edit.begin", "queue.edit.save", "queue.edit.cancel", "queue.edit.remove", "queue.edit.status",
              "queue.configure", "context.compact", "mcp.invoke", "session.configure", "session.close"]),
     ]
     /// Commands that refuse a quiesced workspace themselves, at an earlier stage.

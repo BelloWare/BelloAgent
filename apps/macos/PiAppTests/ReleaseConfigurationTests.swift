@@ -30,13 +30,20 @@ final class ReleaseConfigurationTests: XCTestCase {
         }
     }
 
-    @MainActor func testUpdateCannotRelaunchDuringActiveWork() {
+    /// Active work no longer refuses the relaunch outright (0.1.125): the
+    /// relaunch goes through the postponement, which asks to pause it first
+    /// (`UpdatePauseTests`). Without active work it takes the barrier.
+    @MainActor func testUpdateRelaunchTakesTheBarrierOrAsksToPauseActiveWork() {
         let controller = UpdateController()
         let updater = SPUStandardUpdaterController(startingUpdater: false, updaterDelegate: nil,
                                                   userDriverDelegate: nil).updater
+        var barriers = 0
+        controller.acquireBarrier = { barriers += 1; return true }
         controller.hasActiveWork = { true }
-        XCTAssertFalse(controller.updaterShouldRelaunchApplication(updater))
+        XCTAssertTrue(controller.updaterShouldRelaunchApplication(updater))
+        XCTAssertEqual(barriers, 0, "no barrier over active work; the postponement asks first")
         controller.hasActiveWork = { false }
         XCTAssertTrue(controller.updaterShouldRelaunchApplication(updater))
+        XCTAssertEqual(barriers, 1)
     }
 }

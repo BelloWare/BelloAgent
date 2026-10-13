@@ -373,6 +373,7 @@ extension AgentSession {
         if !queueEditOutcomes.isEmpty { value["queueEditOutcomes"] = (try? JSON.parse(JSONEncoder().encode(queueEditOutcomes))) ?? .null }
         if queueEditRevision > 0 { value["queueEditSequence"]=JSON(queueEditSequence); value["queueEditRevision"]=JSON(queueEditRevision) }
         if queueEditForgottenRevision > 0 { value["queueEditForgottenRevision"]=JSON(queueEditForgottenRevision) }
+        if errorCode == Self.skillUpdatedCode, let skillUpdatedTurnID { value["skillUpdatedTurnId"]=JSON(skillUpdatedTurnID) }
         guard (try value.data()).count <= 8*1024*1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
         var saved = value
         if let activeTaskPresentation { saved["taskPresentation"] = try JSON.parse(JSONEncoder().encode(activeTaskPresentation)) }

@@ -412,6 +412,7 @@ extension WorkspaceModel {
         // even while the intent waits here for its terminal receipt.
         let recoverable = intents.filter { intent in
             intent.state == "intent" && !view.acceptedCommands.contains(intent.id) && !receipts.contains { $0["commandId"]?.string == intent.id }
+                && !intent.turnID.hasPrefix(Self.resumeIntentPrefix)
         }
         if recoverable != view.recovered { view.recovered = recoverable }
         if view.recovered.isEmpty { view.uncertain = false }

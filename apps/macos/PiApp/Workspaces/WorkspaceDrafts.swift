@@ -52,10 +52,18 @@ extension WorkspaceModel {
         else { accepted = try await history.acceptedCommands(in: path, intents: unchecked, missingIsEmpty: item.path == nil) }
         view.acceptedCommands.formUnion(accepted)
         try await protectReturnedDrafts(intents, view: view)
-        return unchecked.filter { !view.acceptedCommands.contains($0.id) }
+        let unaccepted = unchecked.filter { !view.acceptedCommands.contains($0.id) }
+        // A Resume the helper never took ran nothing and holds no text: its
+        // record goes, and the chat still offers Resume.
+        let resumes = unaccepted.filter { $0.turnID.hasPrefix(Self.resumeIntentPrefix) }
+        if !resumes.isEmpty, let store {
+            for intent in resumes { try await store.remove(kind: "pending:\(item.id)", id: intent.id) }
+            pendingIntentsChanged(item.id)
+        }
+        return unaccepted.filter { !$0.turnID.hasPrefix(Self.resumeIntentPrefix) }
     }
     func protectReturnedDrafts(_ intents: [CommandIntent], view: SessionDisplay) async throws {
-        let commands = Set(intents.filter { $0.draftReviewTracked != true && !$0.turnID.hasPrefix("compaction:") &&
+        let commands = Set(intents.filter { $0.draftReviewTracked != true && !$0.turnID.hasPrefix("compaction:") && !$0.turnID.hasPrefix(Self.resumeIntentPrefix) &&
             (view.acceptedCommands.contains($0.id) || $0.state == "acknowledged") && !view.reconciledSubmissionReviews.contains($0.id) }.map(\.id))
         guard !commands.isEmpty else { return }
         // Legacy records do not identify which characters came back after a

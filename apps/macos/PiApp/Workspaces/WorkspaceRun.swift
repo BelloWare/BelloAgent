@@ -180,6 +180,7 @@ extension WorkspaceModel {
         let reply = try await host.request(steer ? "turn.steer" : "turn.submit", sessionID: item.id,
                                            params: turnOverrides(for: item, base: ["text": .string(text), "clientTurnId": .string(turnID), "attachments": .array(attachments.map(\.wire)), "skills": .array(skills.map(\.wire))]), commandID: commandID)
         progress.helperAccepted = true
+        view.skillRepins = [:]
         view.acceptedCommands.insert(commandID)
         view.recovered.removeAll { $0.id == commandID }; if view.recovered.isEmpty { view.uncertain = false }
         sendSteps?("submitted")
@@ -253,9 +254,12 @@ extension WorkspaceModel {
         // the notice says so and offers to raise the limit. Its code
         // goes first, so the row is drawn once, as that notice.
         if rejection == SessionDisplay.costLimitCode { view.sendFailureCode = rejection }
+        // A skill that changed since it was chosen is read again below, and
+        // the notice then says what became of it instead of the refusal.
+        let skillRefusal = accepted && !skills.isEmpty && rejection.map(Self.skillRefusalCodes.contains) == true
         if rejection == "not_running", steer {
             view.sendFailure = "The run finished. Press Return to send this as a new message."
-        } else { view.sendFailure = error.localizedDescription }
+        } else if !skillRefusal { view.sendFailure = error.localizedDescription }
         // Mark before restoreUnsent schedules a write: every saved returned
         // copy must retain its gate even if a snapshot clears `uncertain`.
         if accepted, rejection == nil, dispatched { view.submissionReviews.insert(commandID) }
@@ -279,6 +283,14 @@ extension WorkspaceModel {
             if rejection == "connection_unavailable" { view.runState = .interrupted } else { undoShownState(); refresh(item.id) }
         } else if dispatched { view.uncertain = true; view.runState = .interrupted }
         else { undoShownState() }
+        if skillRefusal {
+            // The chips are back in the composer: each is pinned to its
+            // skill's current version, or taken off if the skill is gone.
+            // Nothing is sent again; the reader's next Send confirms it.
+            let refresh = await refreshRefusedSkills(view, sent: skills)
+            view.sendFailure = refresh.notice
+            if refresh.failure == nil { view.sendFailureCode = SessionDisplay.skillRefreshedCode }
+        }
     }
     /// A chat still called "New chat" is named after its first message as
     /// that message is sent, so its sidebar row says what it is at once.

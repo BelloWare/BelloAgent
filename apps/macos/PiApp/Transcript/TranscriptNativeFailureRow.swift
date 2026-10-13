@@ -4,7 +4,13 @@ import AppKit
 /// happened, the helper's own words, what it added, and the one thing to do
 /// next. A failure is red, with "Something went wrong" and, for a run, Retry
 /// request (`FailureRowView`); a cost limit is amber, with Raise limit… or,
-/// once the limit is above the spend, Continue (`CostLimitNoticeRow`).
+/// once the limit is above the spend, Continue (`CostLimitNoticeRow`). A run
+/// stopped before it finished (Stop, a quit, a restart or an update) is the
+/// accent card "Paused" with Resume; a run a restart cut off keeps its red
+/// card, and offers Resume instead of Retry. A skill that changed since it was
+/// chosen is in the accent too, saying what became of it: with Resume (the
+/// run's own) for a paused queued message, with nothing for one back in the
+/// composer, where Send is the way on.
 @MainActor final class TranscriptNativeFailureRow: TranscriptNativeMessageRow {
     /// The card's own room around it, and inside it.
     static let margin: CGFloat = 8
@@ -48,28 +54,44 @@ import AppKit
     /// What the card says and does.
     private enum Kind: Equatable {
         case failure(retry: Bool)
+        /// Stopped before it finished, with Resume.
+        case paused
         /// At the limit, or (`raised`) with the limit above the spend again;
         /// `run`: a stopped run rather than a refused message.
         case costLimit(raised: Bool, run: Bool)
+        /// A selected skill changed and was pinned to its current version (or
+        /// taken off); `queued`: a paused queued message, which Resume sends.
+        case skillChanged(queued: Bool)
     }
     private var kind: Kind {
         let message = message
         let run = message.id.hasPrefix("failure:run:")
+        if message.failureCode == SessionDisplay.pausedCode || message.failureCode == SessionDisplay.pausedResumingCode { return .paused }
+        if message.failureCode == SessionDisplay.skillRefreshedCode { return .skillChanged(queued: false) }
+        if message.failureCode == SessionDisplay.skillUpdatedCode || message.failureCode == SessionDisplay.skillResumingCode { return .skillChanged(queued: true) }
         guard message.failureCode?.hasPrefix(SessionDisplay.costLimitCode) == true else { return .failure(retry: run) }
         return .costLimit(raised: message.failureCode == SessionDisplay.costLimitRaised, run: run)
     }
     /// The pill the header offers, if any.
-    private enum Offer: Equatable { case retry, continueRun, raise }
+    private enum Offer: Equatable { case retry, continueRun, raise, resume }
     private var offer: Offer? {
         switch kind {
-        case .failure(let retry): return retry ? .retry : nil
+        case .failure(let retry):
+            // A restart's cut-off run offers Resume, and nothing while one is on its way.
+            if message.failureCode == SessionDisplay.resumingCode { return nil }
+            return retry ? (message.failureCode == SessionDisplay.interruptedCode ? .resume : .retry) : nil
+        case .paused: return message.failureCode == SessionDisplay.pausedCode ? .resume : nil
         case .costLimit(let raised, let run): return raised ? (run ? .continueRun : nil) : .raise
+        // Nothing while a Resume is on its way.
+        case .skillChanged(let queued): return queued && message.failureCode == SessionDisplay.skillUpdatedCode ? .resume : nil
         }
     }
     private var tint: NSColor {
         switch kind {
         case .failure: return TranscriptNSPalette.danger
+        case .paused: return TranscriptNSPalette.accent
         case .costLimit(let raised, _): return raised ? TranscriptNSPalette.accent : TranscriptNSPalette.warning
+        case .skillChanged: return TranscriptNSPalette.accent
         }
     }
 
@@ -84,6 +106,14 @@ import AppKit
             titleText = "Something went wrong"
             setAccessibilityLabel("Error: \(message.text)")
             setAccessibilityIdentifier(nil)
+        case .paused:
+            card.fill = TranscriptNSPalette.accentSoft
+            card.stroke = TranscriptNSPalette.accent.withAlphaComponent(0.35)
+            symbol.show("pause.circle.fill", size: 15, weight: .semibold)
+            symbol.contentTintColor = tint
+            titleText = "Paused"
+            setAccessibilityLabel("Paused: " + message.text)
+            setAccessibilityIdentifier("run-paused-notice")
         case .costLimit(let raised, let run):
             card.fill = raised ? TranscriptNSPalette.accentSoft : TranscriptNSPalette.warning.withAlphaComponent(0.09)
             card.stroke = (raised ? TranscriptNSPalette.accent : TranscriptNSPalette.warning).withAlphaComponent(0.35)
@@ -92,6 +122,14 @@ import AppKit
             titleText = raised ? "Cost limit raised" : run ? "Stopped at this chat's cost limit" : "This chat is at its cost limit"
             setAccessibilityLabel((raised ? "Cost limit raised: " : "Cost limit reached: ") + message.text)
             setAccessibilityIdentifier("cost-limit-notice")
+        case .skillChanged(let queued):
+            card.fill = TranscriptNSPalette.accentSoft
+            card.stroke = TranscriptNSPalette.accent.withAlphaComponent(0.35)
+            symbol.show("arrow.triangle.2.circlepath.circle.fill", size: 15, weight: .semibold)
+            symbol.contentTintColor = tint
+            titleText = queued ? "A queued message’s skill changed" : "Skill changed since you chose it"
+            setAccessibilityLabel("Skill changed: " + message.text)
+            setAccessibilityIdentifier("skill-changed-notice")
         }
         title.update(text: titleText, face: Self.titleFace, environment: environment, swiftUILines: true, color: tint)
         body.update(text: message.text, face: Self.bodyFace, environment: environment, swiftUILines: true)
@@ -123,6 +161,9 @@ import AppKit
                 button = TranscriptPillButton(title: Self.title(offer), accent: true, symbol: "play.fill", font: Self.pillFont, perform: {})
                 button.setAccessibilityIdentifier("cost-limit-continue")
                 button.toolTip = "Send the stopped request again from where the run stopped, with this chat's current model and effort; queued follow-ups go on after it"
+            case .resume:
+                button = TranscriptPillButton(title: Self.title(offer), accent: true, symbol: "play.fill", font: Self.pillFont, perform: {})
+                button.setAccessibilityIdentifier("resume-run")
             case .raise:
                 // Its own face, with an AppKit press target over it that the
                 // limit editor's popover is anchored to.
@@ -144,6 +185,17 @@ import AppKit
         switch offer {
         case .retry: button.perform = { actions.retry() }
         case .continueRun: button.perform = { actions.costLimit?(.continueRun, nil) }
+        case .resume:
+            button.perform = { actions.resume() }
+            // One Resume, the run's: on a queued message's skill notice it
+            // sends that message (and goes on with a run it stopped first).
+            if case .skillChanged = kind {
+                button.setAccessibilityIdentifier("skill-changed-resume")
+                button.toolTip = "Send the paused queued message with the updated skill; a run it stopped goes on first, and follow-ups after it go on"
+            } else {
+                button.setAccessibilityIdentifier("resume-run")
+                button.toolTip = "Go on with the run from where it stopped, with this chat's current model and effort. A tool call that was cut off is not run again; queued follow-ups go on after it"
+            }
         case .raise:
             button.perform = {}
             trigger?.onPress = { anchor in actions.costLimit?(.raise, anchor) }
@@ -157,6 +209,7 @@ import AppKit
         case .retry: return "Retry request"
         case .continueRun: return "Continue"
         case .raise: return "Raise limit…"
+        case .resume: return "Resume"
         }
     }
 

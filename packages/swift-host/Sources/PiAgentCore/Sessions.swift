@@ -74,6 +74,13 @@ public actor AgentSession {
     /// The code of the error that ended the last run, when it failed: the app
     /// draws a `cost_limit` stop as a notice with a way to raise the limit.
     var errorCode: String?
+    /// Queued messages whose skills were pinned again to their current files
+    /// after a change refused them (`refreshingQueuedSkills`), so a second
+    /// change before they go says the skill keeps changing.
+    var skillRefreshedTurns: Set<String> = []
+    /// The queued message the last `skill_updated` stop re-pinned. The stop
+    /// offers Resume only while that message still waits (`snapshot`).
+    var skillUpdatedTurnID: String?
     /// The chat's cost limit in US dollars, nil for none; what it has spent,
     /// as the gateway reported it; and the attempts already counted, so an
     /// attempt is never added twice. See SessionCost.swift.
@@ -403,6 +410,7 @@ public actor AgentSession {
             if saved["active"].flag == true { errorMessage="The previous run was interrupted. No model or tool request was replayed. Inspect tool effects before continuing." }
             else if saved["runStatus"].text == RunStatus.failed.rawValue {
                 runStatus = .failed; errorMessage=saved["errorMessage"].text ?? "Run failed."; errorCode=saved["errorCode"].text
+                skillUpdatedTurnID=saved["skillUpdatedTurnId"].text
             }
         }
         if unrestored { errorMessage=(errorMessage.map { $0 + " " } ?? "") + "The reply that was arriving could not be added back to the chat; it is kept beside the chat's file." }
@@ -441,6 +449,10 @@ public actor AgentSession {
     public var isRunning: Bool { runTask != nil }
     public var isEphemeral: Bool { ephemeral }
     public var isIdle: Bool { runTask == nil && queue.isEmpty && steering.isEmpty }
+    /// Nothing runs, and what waits is held for Resume: a Stop, a failure or
+    /// a restart paused it, and only a command sends it. An update may take
+    /// the chat as it is; the relaunch restores it paused.
+    public var isHeldForResume: Bool { runTask == nil && queuePaused && queueEdit == nil }
     /// Takes a saved connection's new profile and key. An idle session takes
     /// them now; one with a run going keeps what it started with and switches
     /// when the run ends, so a turn in flight never changes route or key midway.
@@ -475,6 +487,9 @@ public actor AgentSession {
     /// Set while a retry starts, so the run answers the failed turn before it
     /// looks at queued follow-ups.
     var retrying=false
+    /// Set while a Resume starts (`continueRun`): the run asks the model from
+    /// the context as it stands before it looks at queued follow-ups.
+    var continuing=false
     /// The submission of a turn that failed or was stopped, kept so a retry
     /// sends the same request: its model, reasoning effort and budgets.
     var retrySubmission: Submission?

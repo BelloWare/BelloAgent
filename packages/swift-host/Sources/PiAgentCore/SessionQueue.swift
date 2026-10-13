@@ -55,7 +55,8 @@ extension AgentSession {
         if let hold=queueEdit, hold.turnID == turnID { _ = try removeQueueEdit(editID:hold.editID); return }
         guard let item=(queue+steering).first(where:{$0.turnID == turnID}) else { throw AgentError("queue_missing", "Queued message is no longer pending") }
         let oldQ=queue, oldS=steering, oldState=state, oldPaused=queuePaused; queue.removeAll{$0.turnID == turnID}; steering.removeAll{$0.turnID == turnID}; commandState(item,"removed")
-        if runTask == nil && queue.isEmpty && steering.isEmpty { if state != .error { state = .idle }; queuePaused=false }
+        // A stopped run the model has not answered stays paused, with Resume.
+        if runTask == nil && queue.isEmpty && steering.isEmpty && !canContinue { if state != .error { state = .idle }; queuePaused=false }
         do { try persistState() } catch { queue=oldQ; steering=oldS; state=oldState; queuePaused=oldPaused; throw error }; event("queue.changed")
     }
     /// Reorders the pending follow-ups; every pending turn id must appear exactly once.
@@ -141,6 +142,9 @@ extension AgentSession {
     }
     func deliver(_ submission: Submission, lane: String = "follow-up", newTask: Bool = true) async throws {
         let turn = try profile.overriding(submission)
+        // Steering delivered at a Resume's start takes the run over: the
+        // continuation's command is done, its receipt says so.
+        if let resumed=activeSubmission, resumed.turnID.hasPrefix(Self.continuePrefix), resumed.turnID != submission.turnID { commandState(resumed,"completed") }
         // A new task is a new turn, also when a queued follow-up starts inside
         // a run that is already going: its clock and model/tool split start
         // now, not when the run's first task did.
@@ -186,11 +190,13 @@ extension AgentSession {
             // resume that found only steering pending), the first message
             // starts one, with its live indicator, turn clock and receipt.
             let starts = activeTaskPresentation == nil && !titleTask
-            do { try await deliver(next,lane:"steering",newTask:starts); delivered=true }
+            do { try await deliver(next,lane:"steering",newTask:starts); delivered=true; skillRefreshedTurns.remove(next.turnID) }
             catch {
                 delivering=nil
-                if !hasDelivered(next) { steering.insert(next,at:0) }
-                commandState(next,"failed"); throw error
+                let kept = !hasDelivered(next)
+                if kept { steering.insert(next,at:0) }
+                commandState(next,"failed")
+                throw kept ? await refreshingQueuedSkills(next, after: error) : error
             }
         }
         return delivered
@@ -204,15 +210,84 @@ extension AgentSession {
         for _ in 0..<count {
             guard queueEdit == nil, let index=queue.firstIndex(where: { selected.contains($0.turnID) }) else { break }
             let next=queue.remove(at:index); delivering=("follow-up", next)
-            do { try await deliver(next,newTask:!delivered); delivered=true }
+            do { try await deliver(next,newTask:!delivered); delivered=true; skillRefreshedTurns.remove(next.turnID) }
             catch {
                 delivering=nil
-                if !hasDelivered(next) { queue.insert(next,at:0) }
-                commandState(next,"failed"); throw error
+                let kept = !hasDelivered(next)
+                if kept { queue.insert(next,at:0) }
+                commandState(next,"failed")
+                throw kept ? await refreshingQueuedSkills(next, after: error) : error
             }
         }
         return delivered
     }
+    /// A queued message `deliver` refused because a skill it carries changed
+    /// or went away (`skill_revoked`), already back at the head of its lane:
+    /// each such skill is pinned to its current file, or taken off if it is
+    /// gone or no longer allowed (`Resources.repin`), and the run stops on a
+    /// notice naming them (`skill_updated`). Only an explicit selection
+    /// activates a skill: the queue stays paused, nothing is sent, and the
+    /// reader's Resume confirms the updated version. A second change before it
+    /// goes says the skill keeps changing rather than looping. Any other
+    /// failure, or one that cannot be refreshed, is returned as it was.
+    func refreshingQueuedSkills(_ submission: Submission, after error: Error) async -> Error {
+        guard (error as? AgentError)?.code == "skill_revoked", !submission.skills.isEmpty else { return error }
+        let tools = await tools.capabilityIDs(readOnly: readOnly)
+        guard let refreshed = try? await resources.repin(submission.skills, tools: tools), !refreshed.updated.isEmpty || !refreshed.removed.isEmpty else { return error }
+        // The message waited at the head of its lane while the files were
+        // read, and a queued rewrite may have been saved meanwhile: it is
+        // changed only where it still waits, not under an edit, and from what
+        // it holds now, its skills alone (text a rewrite saved is kept).
+        // A run cancelled meanwhile (a stop, a shutdown) leaves the message as
+        // it was: its notice would not be saved with a cancelled run.
+        guard queueEdit?.turnID != submission.turnID, !Task.isCancelled else { return error }
+        let inQueue = queue.firstIndex(where: { $0.turnID == submission.turnID }), inSteering = steering.firstIndex(where: { $0.turnID == submission.turnID })
+        guard let waiting = inQueue.map({ queue[$0] }) ?? inSteering.map({ steering[$0] }),
+              waiting.skills.map({ $0.id + "|" + $0.metadataHash + "|" + $0.contentHash }) == submission.skills.map({ $0.id + "|" + $0.metadataHash + "|" + $0.contentHash }) else { return error }
+        let removed = refreshed.removed.map(\.name)
+        // What the reader wrote for a skill that is gone (`/name request`)
+        // stays in the message, ahead of its text.
+        let written = refreshed.removed.map(\.arguments).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        var next = waiting; next.skills = refreshed.skills
+        if !written.isEmpty {
+            next.text = (written + (next.text.isEmpty ? [] : [next.text])).joined(separator: "\n\n")
+            guard next.text.utf8.count <= 262144 else { return error }
+            next.textRevision = (next.textRevision ?? 0) + 1
+        }
+        if next.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && next.attachments.isEmpty && next.skills.isEmpty {
+            return AgentError("skill_revoked", "\(Resources.quoted(removed)) \(removed.count == 1 ? "is" : "are") no longer available, so this queued message has nothing left to send. Remove it from the queue.")
+        }
+        if let inQueue { queue[inQueue] = next } else if let inSteering { steering[inSteering] = next }
+        // A larger skill body must still fit the saved queue, or the message stays as it was.
+        if (try? savedState()) == nil {
+            if let inQueue { queue[inQueue] = waiting } else if let inSteering { steering[inSteering] = waiting }
+            return error
+        }
+        let again = !skillRefreshedTurns.insert(submission.turnID).inserted
+        skillUpdatedTurnID = submission.turnID
+        var notice: [String] = []
+        if !refreshed.updated.isEmpty {
+            let names = Resources.quoted(refreshed.updated), one = refreshed.updated.count == 1
+            notice.append(again
+                ? "\(names) changed again after this queued message was updated, so \(one ? "it seems" : "they seem") to be changing right now. The message now uses the latest version; press Resume once \(one ? "the skill has" : "the skills have") stopped changing."
+                : "\(names) changed after this message was queued. The message now uses the updated version\(one ? "" : "s").")
+        }
+        if !removed.isEmpty {
+            let one = removed.count == 1
+            notice.append("\(Resources.quoted(removed)) \(one ? "is" : "are") no longer available, so \(one ? "it was" : "they were") taken off this queued message"
+                          + (written.isEmpty ? "." : "; what you wrote for \(one ? "it" : "them") is kept in the message."))
+        }
+        if !(again && !refreshed.updated.isEmpty) { notice.append("Press Resume to send it.") }
+        return AgentError(Self.skillUpdatedCode, notice.joined(separator: " "))
+    }
+    /// A paused queue whose head message had its skills pinned again to their
+    /// current files: the app draws the notice with Resume.
+    static let skillUpdatedCode = "skill_updated"
+    /// What a `skill_updated` stop says once its message no longer waits:
+    /// the run's own failure, which Retry request finishes.
+    static let skillUpdateWithdrawn = "The run stopped for a queued message whose skill had changed, and that message is no longer waiting. Retry request finishes the stopped turn."
+    /// Whether the message a `skill_updated` stop re-pinned still waits.
+    var skillUpdateWaiting: Bool { (queue + steering).contains { $0.turnID == skillUpdatedTurnID } }
     func hasDelivered(_ submission: Submission) -> Bool {
         history.contains { $0.role == "user" && $0.id == submission.turnID }
     }

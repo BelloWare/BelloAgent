@@ -14,6 +14,7 @@ import Foundation
 // every journal's end once, off the main thread.
 //
 // Nothing here resumes anything: the no-replay rule after a restart stays.
+// Only the reader's Resume goes on with a held run (`WorkspaceResume.swift`).
 
 /// A chat whose run waits for Resume, or was under way when last seen.
 struct RunHoldRecord: Codable, Sendable, Equatable {

@@ -244,6 +244,15 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only Resume and the update's pause question (30*).
+        if testEnvironment("PI_APP_UI_GALLERY_RESUME_ONLY") == "1" {
+            try await captureResumeScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                          workspaceID: workspace.id, profileID: connections[0].profile.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         // Only the sidebar's states (27*): a chat marked unread.
         if testEnvironment("PI_APP_UI_GALLERY_SIDEBAR_STATES_ONLY") == "1" {
             try await captureSidebarStateScenes(model: model, window: window, gallery: gallery, appearances: appearances, markedID: second.id)
@@ -489,6 +498,8 @@ final class UIScreenshotTests: XCTestCase {
         }
         onboarding.orderOut(nil); fresh.shutdown()
         XCTAssertNil(model.error, model.error ?? "")
+        try await captureResumeScenes(model: model, window: window, gallery: gallery, appearances: appearances,
+                                      workspaceID: workspace.id, profileID: connections[0].profile.id)
         // Last: it relaunches the workspace.
         try await capturePausedAfterRestartScenes(model: model, vault: vault, window: window, gallery: gallery, appearances: appearances,
                                                   workspaceID: workspace.id, profileID: connections[0].profile.id, otherID: main.id,
@@ -693,8 +704,89 @@ final class UIScreenshotTests: XCTestCase {
         }
         for id in [opened[3], markedID] { try await model.store?.put(DraftRecord(id: id, text: ""), kind: "draft", id: id) }
         model.runHolds[opened[0]] = nil
+        // 29a · Working chats (0.1.125): one whose model is generating and
+        // one running a tool show no state word, only the spinner in place of
+        // their icon, beside one waiting its turn ("Waiting") and one
+        // compacting ("Compacting"), whose words stay.
+        var live: [SessionDisplay] = []
+        let workingRows: [(String, String, [String: WireValue])] = [
+            ("Retry budget audit", "running", ["version": .number(2), "modelActive": .bool(true), "phase": .string("model")]),
+            ("Run the refund tests", "running", ["version": .number(2), "modelActive": .bool(false), "phase": .string("tool")]),
+            ("Queued follow-up", "queued", [:]),
+            ("Long ledger thread", "compacting", [:])]
+        for (offset, (title, state, activity)) in workingRows.enumerated() {
+            let chat = ChatRecord(id: UUID().uuidString, workspaceID: marked.workspaceID, title: title, path: nil, profileID: marked.profileID)
+            model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+            let display = SessionDisplay(id: chat.id)
+            var totals = GatewayTotals(requests: 4 + offset, costSamples: 4 + offset, costUSD: 0.0812 * Double(offset + 1))
+            totals.tokens = GatewayTokenTotals(total: Double(18_400 * (offset + 1)), samples: 4 + offset)
+            totals.lastActivity = Date().timeIntervalSince1970 - 30
+            display.footer.gateway = totals
+            display.activity = activity; display.state = state
+            model.displays[chat.id] = display; live.append(display)
+        }
+        model.sidebarPageSizes[marked.workspaceID] = 14
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("29a-sidebar-working-rows-\(name).png"))
+        }
+        for display in live { display.state = "idle"; display.activity = [:] }
         model.markSessionRead(opened[2]); model.sidebarPageSizes[marked.workspaceID] = pageSize
         window.setContentSize(size); window.center(); try await settle(0.8)
+    }
+
+    /// 30a, 30b · Resume (0.1.125), at 920×600. 30a: a chat stopped while
+    /// its reply streamed: the cut-off reply, then the Paused row with
+    /// Resume. 30b: Install and Relaunch while the chat runs (a check before
+    /// it asked nothing): the one question, answered Cancel, so nothing is
+    /// installed and the run goes on; it is stopped after, for 30a.
+    @MainActor private func captureResumeScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
+        let size = window.frame.size
+        window.setContentSize(NSSize(width: 920, height: 600)); window.center(); try await settle(1.0)
+        defer { window.setContentSize(size); window.center() }
+        let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: "Plan the ledger migration", path: nil, profileID: profileID)
+        model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+        await model.select(chat.id); try await settle(0.6)
+        let session = try XCTUnwrap(model.displays[chat.id])
+        session.draft = "slow: plan the ledger schema migration step by step"
+        model.send(sessionID: chat.id)
+        try await until("30 streams", seconds: 60) { session.busy && session.messages.contains { $0.role == "assistant" && $0.text.count > 40 } }
+        // 30b first, while the chat runs. A check asks nothing and pauses
+        // nothing; Install and Relaunch asks, and is answered Cancel.
+        let updates = UpdateController()
+        updates.hasActiveWork = { [weak model] in model?.hasActiveWork ?? false }
+        updates.runningChats = { [weak model] in model?.runningChatCount ?? 0 }
+        updates.acquireBarrier = { false }
+        var paused = false, checked = false, aborted = 0
+        updates.pauseActiveWork = { paused = true }
+        updates.startCheckForTesting = { checked = true }
+        updates.checkForUpdates()
+        try await settle(0.3)
+        XCTAssertTrue(checked, "the check goes at once"); XCTAssertNil(window.attachedSheet, "and asks nothing")
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            XCTAssertTrue(updates.shouldRelaunch())
+            _ = updates.postponeRelaunch { aborted += 1 }
+            try await until("30b asked") { window.attachedSheet != nil }
+            do {
+                defer { if let alert = window.attachedSheet { window.endSheet(alert, returnCode: .alertSecondButtonReturn) } }
+                try await settle(0.8)
+                try capture(window, to: gallery.appendingPathComponent("30b-update-pause-question-\(name).png"))
+            }
+            try await until("30b answered") { !updates.pausing }
+            XCTAssertFalse(updates.shouldRelaunch(), "Cancel aborts the install")
+        }
+        XCTAssertFalse(paused, "Cancel pauses nothing"); XCTAssertEqual(aborted, appearances.count)
+        XCTAssertTrue(session.busy, "the run goes on")
+        model.stop(sessionID: chat.id)
+        try await until("30a pauses", seconds: 30) { session.runState == .paused && !session.busy && session.continuable == true }
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("30a-paused-chat-resume-\(name).png"))
+        }
+        XCTAssertTrue(session.offersResume)
+        XCTAssertEqual(session.runState, .paused, "nothing resumed it")
     }
 
     /// 27a, 27b · Paused after a restart, at 920×600. A chat's run is stopped
@@ -1277,6 +1369,43 @@ final class UIScreenshotTests: XCTestCase {
         editor.insertText("", replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
         session.directCommand = false; try await settle(0.3)
         XCTAssertFalse(session.completionVisible, "Clearing the draft closed the slash list")
+
+        // 17f · A skill edited after it was chosen: Send finds it changed, its
+        // chip is pinned to the new version, nothing is sent, and the
+        // conversation says so above the composer that still holds the message.
+        await model.loadSkillCatalog(refresh: true, sessionID: session.id)
+        // Only the fixture's own skill, found by where it was written: a skill
+        // of the same name elsewhere on the machine is never touched.
+        let project = try XCTUnwrap(model.workspaces.first { $0.id == model.record(session.id)?.workspaceID }?.path)
+        let fixtureFile = URL(fileURLWithPath: project).appendingPathComponent(".agents/skills/release-checklist/SKILL.md").resolvingSymlinksInPath().path
+        let chosen = try XCTUnwrap(session.skillCatalog.entries.map(\.skill).first {
+            $0.name == "release-checklist" && URL(fileURLWithPath: $0.path).resolvingSymlinksInPath().path == fixtureFile
+        }, "The fixture's skill was discovered")
+        XCTAssertTrue(model.addSkill(chosen, view: session))
+        session.draft = "Run the checklist for 0.1.125."
+        let file = URL(fileURLWithPath: fixtureFile), original = try Data(contentsOf: file)
+        try (original + Data("Also confirm the release notes link.\n".utf8)).write(to: file)
+        defer { try? original.write(to: file) }
+        let rows = session.messages.count
+        model.send(sessionID: session.id)
+        let refreshed = Date().addingTimeInterval(30)
+        while Date() < refreshed, !(session.sendFailureCode == SessionDisplay.skillRefreshedCode && !session.loading) { try await settle(0.1) }
+        XCTAssertEqual(session.sendFailureCode, SessionDisplay.skillRefreshedCode, "The send came back with the notice: \(session.sendFailure ?? "")")
+        XCTAssertEqual(session.messages.count, rows, "Nothing was sent")
+        XCTAssertNotEqual(session.skills.first?.contentHash, chosen.contentHash, "The chip holds the edited version")
+        try await settle(0.6)
+        let scroll = try XCTUnwrap(descendants(TranscriptNativeScrollView.self, in: window.contentView ?? NSView()).first)
+        let notice = try XCTUnwrap(descendants(TranscriptRowContainer.self, in: scroll).first { $0.itemID == "failure:send:" + session.id }, "The notice is in the page")
+        let clip = scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: max(0, notice.frame.maxY + 16 - clip.bounds.height)))
+        scroll.reflectScrolledClipView(clip)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("17f-skills-changed-\(name).png"))
+        }
+        // Later scenes start from the skill as it was and an empty composer.
+        try original.write(to: file)
+        session.sendFailure = nil; session.skills = []; session.draft = ""; try await settle(0.3)
     }
 
     /// 19 · Versions and forks. A question edited once shows `‹ 1 / 2 ›` on
