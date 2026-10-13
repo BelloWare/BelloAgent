@@ -341,7 +341,9 @@ public actor AgentSession {
             // Whether the turn is on the shown branch is read from the whole
             // timeline: a chat opened from its metadata file leaves older rows
             // unloaded, and such a row is not one an edit hid.
-            let found=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size)
+            // An unreadable log fails this open and stays in place for a
+            // retry. No new run may overwrite a reply we could not inspect.
+            let found=try PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size)
             var onBranch=true
             if let turn=found?.header.turn {
                 let loaded=visible
