@@ -2,8 +2,9 @@ import Foundation
 
 public struct CompactionPolicy: Sendable {
     /// Ours: physical attempts a compaction's one summary request may use,
-    /// its transient retries included.
-    public var maximumAttempts = 8
+    /// its transient retries included: room for the most retries Settings
+    /// allows (`RetrySettings.retryRange`), so the setting governs.
+    public var maximumAttempts = 11
     /// Pi's compaction reserve and recent-context target (settings-manager.ts).
     public var reserveTokens = 16_384
     public var keepRecentTokens = 20_000

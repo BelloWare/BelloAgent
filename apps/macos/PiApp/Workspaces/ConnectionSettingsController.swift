@@ -118,6 +118,7 @@ import Combine
         .init(section: .chats, differs: { $0.transcriptView != $1.transcriptView }, take: { $0.transcriptView = $1.transcriptView }),
         .init(section: .chats, differs: { $0.completionSoundEnabled != $1.completionSoundEnabled }, take: { $0.completionSoundEnabled = $1.completionSoundEnabled }),
         .init(section: .chats, differs: { $0.webhook != $1.webhook }, take: { $0.webhook = $1.webhook }),
+        .init(section: .connections, differs: { $0.retrySettings != $1.retrySettings }, take: { $0.retry = $1.retry }),
         .init(section: .app, differs: { $0.runtime != $1.runtime }, take: { $0.runtime = $1.runtime }),
         .init(section: .app, differs: { $0.automaticUpdateChecks != $1.automaticUpdateChecks }, take: { $0.automaticUpdateChecks = $1.automaticUpdateChecks }),
     ]

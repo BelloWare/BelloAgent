@@ -124,6 +124,13 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
     /// The request sent when a chat finishes and waits; absent in older
     /// vaults, and off until it is set up.
     var webhook: WebhookSettings?
+    /// Pi's settings.retry for every connection; absent in older vaults,
+    /// which retry as pi does: three times, after 2, 4 and 8 seconds.
+    var retry: RetryPreferences?
+    var retrySettings: RetryPreferences {
+        get { retry ?? RetryPreferences() }
+        set { retry = newValue }
+    }
     // Existing keys remain for reading legacy encrypted captures only. New
     // vaults and new plaintext captures need no payload key. Helpers never
     // receive this object or a legacy key.
@@ -154,7 +161,7 @@ struct VaultConfiguration: Codable, Sendable, Equatable {
               [dashboard.purpose, dashboard.api, dashboard.requestedAlias, dashboard.effectiveModel].allSatisfy({ ($0?.utf8.count ?? 0) <= 256 }),
               dashboard.windowPreset.map({ DashboardWindowPreset(rawValue: $0) != nil }) ?? true,
               transcriptView.map({ TranscriptDisplayMode(rawValue: $0) != nil }) ?? true,
-              chatCostLimit?.isValid ?? true,
+              chatCostLimit?.isValid ?? true, retry?.isValid ?? true,
               DashboardWindowPreset.customBoundsValid(from: dashboard.customFrom, until: dashboard.customUntil, required: dashboard.windowPreset == DashboardWindowPreset.custom.rawValue) else {
             throw VaultError.invalid("Configuration limits or identifiers are invalid.")
         }

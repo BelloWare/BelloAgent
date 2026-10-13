@@ -59,6 +59,9 @@ public actor NativeHostService {
     private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:HostOutput]=[:], replyOrder:[String]=[]
     private var mutationLedger = MutationLedger()
     private var dirty:[String:Int]=[:], flushTask:Task<Void,Never>?
+    /// The app's retry setting (pi's settings.retry), for every chat of every
+    /// connection: sent with `workspace.open` and by `retry.configure`.
+    private var retrySettings = PiProviderRules.RetrySettings()
     public init(output: @escaping @Sendable (HostOutput)->Void) {
         self.output=output
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
@@ -192,9 +195,14 @@ public actor NativeHostService {
     private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, prepared: JournalReplayConsumer? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
         guard let cwd, let directory else { throw AgentError("workspace_required", "Open a workspace first") }
         let client=ProviderClient(traces:traces), traces=traces, outcomes=unknownToolOutcomes, changed=notification()
-        return try await Task.detached(priority:.userInitiated) {
+        let session = try await Task.detached(priority:.userInitiated) {
             try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
         }.value
+        // A `retry.configure` that runs while this session is handed its
+        // setting does not see it yet: hand it again until it holds the latest.
+        var applied: PiProviderRules.RetrySettings
+        repeat { applied = retrySettings; await session.useRetrySettings(applied) } while applied != retrySettings
+        return session
     }
     /// Runs `body` holding the runtime gate, which serializes opens, forks
     /// and sides, and releases the gate however `body` ends.
@@ -237,10 +245,16 @@ public actor NativeHostService {
     /// Commands a host that is not closing answers without a workspace.
     private func hostCommand(_ method:String, params:JSON) async throws -> JSON? {
         switch method {
-        case "runtime.info": return ["engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"bundledNode":false,"protocolMajor":1,"protocolMinor":1]
+        case "runtime.info": return ["engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"bundledNode":false,"protocolMajor":1,"protocolMinor":1,"retry":retrySettings.wire]
         case "clock.sync": return ["monotonic":JSON(nowMS()),"monotonicMs":JSON(nowMS()),"hostMonotonicMs":JSON(nowMS()),"wallTime":JSON(isoNow())]
+        case "retry.configure":
+            // Every open chat takes it for its next request; later ones start with it.
+            retrySettings = try PiProviderRules.RetrySettings(wire: params)
+            for session in sessions.values { await session.useRetrySettings(retrySettings) }
+            return ["applied":true,"retry":retrySettings.wire]
         case "workspace.open":
             guard !opening else { throw AgentError("workspace_busy", "Workspace initialization is already in progress") }
+            let retry = params["retry"].isNull ? nil : try PiProviderRules.RetrySettings(wire: params["retry"])
             opening=true; defer { opening=false }
             let requestedRoots=try Self.workspaceRoots(params)
             guard let requested=requestedRoots.first else { throw AgentError("invalid_params", "Workspace roots must list 1 to 16 directories") }
@@ -261,6 +275,7 @@ public actor NativeHostService {
             try await manager.configure(params["mcp"].isNull ? ["servers":[:]] : params["mcp"])
             if params["captureProtocol"].int == 1 { await capture.enable() }
             cwd=requested; roots=requestedRoots; directory=state; mcp=manager
+            if let retry { retrySettings = retry }
             resources=Resources(cwd:requested,roots:extra,options:params["resources"].isNull ? [:] : params["resources"])
             nativeTools=NativeTools(cwd:requested,roots:extra,outputs:state.appendingPathComponent("tool-output"),mcp:manager)
             return ["opened":true,"cwd":JSON(requested.path),"roots":.array(requestedRoots.map { JSON($0.path) }),"directory":JSON(state.path)]

@@ -294,13 +294,40 @@ import Combine
         let routing = SettingsCard(title: "Gateway routing", footer: "Off sends disable_fallbacks with every request, so a failing route returns its error and the report shows the requested model unanswered. On lets LiteLLM answer from its configured fallback models.", rows: [
             SettingsRow(label: "Allow fallback models", last: true, control: toggle(label: "Allow fallback models", get: { controller.draft.allowFallbacks }, set: { controller.draft.allowFallbacks = $0 })),
         ])
+        let retries = retriesCard()
         let editor = CodeEditorView()
         editor.text = controller.draft.advanced
         editor.onChange = { controller.draft.advanced = $0 }
         updaters.append { [weak editor] in editor?.text = controller.draft.advanced }
         let capabilities = SettingsCard(title: "Model capabilities", footer: "JSON: reasoning, thinkingLevel, thinkingLevelMap, input, cost, samplingParams and compat. Default thinking leaves effort unspecified. Configure conservative capacity for a router alias.",
                                         rows: [InsetView(editor, insets: NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm), contentHeight: 130)])
-        return [header, connection, reasoning, metadata, routing, capabilities]
+        return [header, connection, reasoning, metadata, routing, capabilities, retries]
+    }
+    /// Pi's settings.retry, one setting for every connection rather than the
+    /// tab shown, with the waits it makes spelled out underneath.
+    private func retriesCard() -> SettingsCard {
+        let controller = controller
+        func update(_ change: (inout RetryPreferences) -> Void) { var retry = controller.preferences.retrySettings; change(&retry); controller.preferences.retrySettings = retry }
+        let summary = RowText(controller.preferences.retrySettings.summary, font: PiKit.Font.caption, color: .piInkSecondary)
+        summary.setAccessibilityIdentifier("settings-retry-summary")
+        updaters.append { [weak summary, weak self] in
+            let text = controller.preferences.retrySettings.summary
+            guard let summary, summary.block.text != text else { return }
+            summary.block.text = text; summary.needsLayout = true; self?.needsLayout = true
+        }
+        let maximum = stepper(name: "Maximum retries", unit: "retries", range: Int64(RetryPreferences.retryRange.lowerBound)...Int64(RetryPreferences.retryRange.upperBound),
+                              get: { Int64(controller.preferences.retrySettings.maxRetries) }, set: { value in update { $0.maxRetries = Int(value) } })
+        maximum.setAccessibilityIdentifier("settings-retry-maximum")
+        let delay = stepper(name: "First retry delay", unit: "seconds", range: Int64(RetryPreferences.delayRange.lowerBound)...Int64(RetryPreferences.delayRange.upperBound),
+                            get: { Int64(controller.preferences.retrySettings.baseDelaySeconds) }, set: { value in update { $0.baseDelaySeconds = Int(value) } })
+        delay.setAccessibilityIdentifier("settings-retry-delay")
+        return SettingsCard(title: "Retries · all connections", footer: "Applies to every connection. A request that fails for a passing reason, such as an overloaded or rate-limited gateway or a dropped stream, is sent again after the first delay, doubled before each further retry. Chats use a change on their next request; Stop during a wait cancels the retry.", rows: [
+            SettingsRow(label: "Retry failed requests", control: toggle(label: "Retry failed requests", identifier: "settings-retry-enabled",
+                                                                       get: { controller.preferences.retrySettings.enabled }, set: { value in update { $0.enabled = value } })),
+            SettingsRow(label: "Maximum retries", control: maximum),
+            SettingsRow(label: "First retry delay", control: delay),
+            SettingsRow(label: "Back-off", last: true, control: summary),
+        ])
     }
 
     // MARK: Usage and capture
