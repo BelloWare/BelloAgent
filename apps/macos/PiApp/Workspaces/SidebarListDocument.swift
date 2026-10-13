@@ -82,7 +82,8 @@ import QuartzCore
     /// new ones come out from under the one above and gone ones go back.
     func update(_ new: SidebarListContents, width: CGFloat, animated: Bool) {
         let anchor = readingAnchor()
-        let oldFrames = Dictionary(zip(contents.entries.map(\.id), frames), uniquingKeysWith: { a, _ in a })
+        let oldClipY = enclosingScrollView?.contentView.bounds.minY ?? 0
+        var oldFrames = Dictionary(zip(contents.entries.map(\.id), frames), uniquingKeysWith: { a, _ in a })
         contents = new
         let ids = Set(new.entries.map(\.id))
         heights = heights.filter { ids.contains($0.key) }
@@ -91,6 +92,15 @@ import QuartzCore
         for entry in new.entries { if let view = views[entry.id] { update(view, with: entry) } }
         updatingViews = false
         layoutEntries(width: width, anchor: anchor)
+        let scrollCorrection = (enclosingScrollView?.contentView.bounds.minY ?? 0) - oldClipY
+        if scrollCorrection != 0 {
+            // Old positions must describe the same viewport locations after
+            // restoring the anchor, including rows still animating their exit.
+            for view in Array(views.values) + leaving {
+                view.setFrameOrigin(CGPoint(x: view.frame.minX, y: view.frame.minY + scrollCorrection))
+            }
+            oldFrames = oldFrames.mapValues { $0.offsetBy(dx: 0, dy: scrollCorrection) }
+        }
         // Entries whose views stay take the new values; views of entries
         // that went are let go of (with motion, when it moves).
         for (id, view) in views where !ids.contains(id) {

@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 import XCTest
 @testable import PiApp
 
@@ -38,6 +39,76 @@ import XCTest
         scroll.contentView.scroll(to: CGPoint(x: 0, y: frame.minY + offset))
         scroll.reflectScrolledClipView(scroll.contentView)
         document.materialize()
+    }
+    private func hostForMotion(_ view: NSView) {
+        let reduced = PiKit.Motion.reducedOverride
+        PiKit.Motion.reducedOverride = false
+        let window = NSWindow(contentRect: view.frame, styleMask: [], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = view
+        addTeardownBlock { @MainActor in
+            window.contentView = nil; window.close(); PiKit.Motion.reducedOverride = reduced
+        }
+    }
+    private func glideStart(of view: NSView, in scroll: NSScrollView) -> CGFloat {
+        let animation = view.layer?.animation(forKey: "glide") as? CABasicAnimation
+        let translation = (animation?.fromValue as? NSNumber)?.doubleValue ?? 0
+        return view.frame.minY + CGFloat(translation) - scroll.contentView.bounds.minY
+    }
+
+    func testAnimatedChangesAboveTheViewportKeepTheAnchorStillAndLocalMovesGlide() throws {
+        let (model, document, scroll) = fixture()
+        hostForMotion(scroll)
+        document.update(contents(0..<100, model: model), width: 360, animated: false)
+        try self.scroll(scroll, document, to: "chat|chat-50", offset: 9)
+        let anchor = try XCTUnwrap(document.views["chat|chat-50"])
+        let before = anchor.frame.minY - scroll.contentView.bounds.minY
+        // Showing and hiding earlier rows changes the clip origin while the
+        // reader's row stays put, including the very first animation frame.
+        for range in [-20..<100, 0..<100] {
+            let origin = scroll.contentView.bounds.minY
+            document.update(contents(range, model: model), width: 360, animated: true)
+            XCTAssertTrue(document.views["chat|chat-50"] === anchor)
+            XCTAssertEqual(anchor.frame.minY - scroll.contentView.bounds.minY, before, accuracy: 0.5)
+            let start = glideStart(of: anchor, in: scroll)
+            print("ANCHOR-MOTION clip correction: \(scroll.contentView.bounds.minY - origin) pt, starting displacement: \(start - before) pt")
+            XCTAssertEqual(start, before, accuracy: 0.5, "The anchor cannot jump away before gliding back")
+        }
+
+        // A reorder inside the viewport still gets the existing glide.
+        let moved = try XCTUnwrap(document.views["chat|chat-52"])
+        let movedBefore = moved.frame.minY - scroll.contentView.bounds.minY
+        var reordered = contents(0..<100, model: model)
+        reordered.entries.swapAt(52, 54)
+        document.update(reordered, width: 360, animated: true)
+        XCTAssertNotNil(moved.layer?.animation(forKey: "glide"))
+        XCTAssertNotEqual(moved.frame.minY - scroll.contentView.bounds.minY, movedBefore)
+        XCTAssertEqual(glideStart(of: moved, in: scroll), movedBefore, accuracy: 0.5)
+    }
+
+    func testAnchorScrollAlsoCompensatesNewlyMountedAndDepartingAnimationOrigins() throws {
+        let (model, document, scroll) = fixture()
+        hostForMotion(scroll)
+        document.update(contents(0..<100, model: model), width: 360, animated: false)
+        try self.scroll(scroll, document, to: "chat|chat-50", offset: 9)
+        XCTAssertNil(document.views["chat|chat-0"])
+        let incomingBefore = try XCTUnwrap(document.frame(of: "chat|chat-0")).minY - scroll.contentView.bounds.minY
+        let leaving = try XCTUnwrap(document.views["chat|chat-54"])
+        let leavingBefore = leaving.frame.minY - scroll.contentView.bounds.minY
+        var changed = contents(-20..<100, model: model)
+        changed.entries.removeAll { $0.id == "chat|chat-54" }
+        let incoming = changed.entries.remove(at: try XCTUnwrap(changed.entries.firstIndex { $0.id == "chat|chat-0" }))
+        changed.entries.insert(incoming, at: try XCTUnwrap(changed.entries.firstIndex { $0.id == "chat|chat-52" }))
+        changed.gaps.removeLast(); changed.owners.removeLast()
+        document.update(changed, width: 360, animated: true)
+        let mounted = try XCTUnwrap(document.views["chat|chat-0"])
+        XCTAssertNotNil(mounted.layer?.animation(forKey: "glide"))
+        XCTAssertEqual(glideStart(of: mounted, in: scroll), incomingBefore, accuracy: 0.5,
+                       "A remounted row's old document frame needs the same clip correction")
+        XCTAssertNil(document.views["chat|chat-54"])
+        XCTAssertNotNil(leaving.layer?.animation(forKey: "reveal"))
+        XCTAssertEqual(leaving.frame.minY - scroll.contentView.bounds.minY, leavingBefore, accuracy: 0.5,
+                       "A departing row must start its exit at its previous viewport position")
     }
 
     func testWidthChangesKeepTheVisibleChatAndItsOffset() throws {
