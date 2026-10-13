@@ -62,6 +62,8 @@ import Combine
     /// A write to the vault under way (a save or a delete). Loading is busy
     /// but not saving: there is nothing to wait for before closing.
     @Published var saving = false
+    private var requiresReloadBeforeWrite = false
+    private var lateRefresh: Task<Void, Never>?
     @Published var confirmingDelete = false
     /// The Test Connection button asked once; the footer explains the request until Send or Cancel.
     @Published var confirmingTest = false
@@ -73,6 +75,7 @@ import Combine
         draft = Draft.loaded(ProfileRecord(), isSaved: false)
         model.settingsEditors.add(self)
     }
+    deinit { lateRefresh?.cancel() }
 
     var isSaved: Bool { model.profiles.contains { $0.id == draft.profile.id } }
     var supportedAPI: Bool { draft.profile.api == LiteLLMConfiguration.supportedAPI }
@@ -152,20 +155,49 @@ import Combine
         busy = true; defer { busy = false }
         do {
             try await model.reloadConfiguration()
-            // A load that keeps drafts keeps edited preferences too, on top of
-            // whatever the vault holds now.
-            preferences = discardingDrafts ? model.configuration : Self.merging(preferences, from: preferencesBaseline, onto: model.configuration)
-            preferencesBaseline = model.configuration
-            revision = model.configuration.revision; loaded = true
-            if discardingDrafts { drafts = [:]; confirmingDelete = false; confirmingTest = false }
-            let current = draft.profile.id
-            if let saved = model.profiles.first(where: { $0.id == current }) {
-                if discardingDrafts || !draft.edited { draft = Draft.loaded(saved, isSaved: true) }
-            } else if discardingDrafts || !draft.edited {
-                draft = model.profiles.first.map { Draft.loaded($0, isSaved: true) } ?? Draft.loaded(ProfileRecord(), isSaved: false)
-            }
+            adoptLoadedSettings(discardingDrafts: discardingDrafts)
             message = "Settings loaded. Nothing has been sent to a gateway."; messageTone = .neutral
         } catch { message = error.localizedDescription; messageTone = .danger }
+    }
+    private func adoptLoadedSettings(discardingDrafts: Bool) {
+        // A late Keychain result must not erase anything typed while it waited.
+        preferences = discardingDrafts ? model.configuration : Self.merging(preferences, from: preferencesBaseline, onto: model.configuration)
+        preferencesBaseline = model.configuration
+        revision = model.configuration.revision; loaded = true
+        if discardingDrafts {
+            drafts = [:]; confirmingDelete = false; confirmingTest = false
+            requiresReloadBeforeWrite = false; lateRefresh?.cancel(); lateRefresh = nil
+        }
+        let current = draft.profile.id
+        if let saved = model.profiles.first(where: { $0.id == current }) {
+            if discardingDrafts || !draft.edited { draft = Draft.loaded(saved, isSaved: true) }
+        } else if discardingDrafts || !draft.edited {
+            draft = model.profiles.first.map { Draft.loaded($0, isSaved: true) } ?? Draft.loaded(ProfileRecord(), isSaved: false)
+        }
+    }
+    private static let uncertainWriteNotice = "The earlier change may have been saved. Reload Settings before saving or deleting again."
+    private func refreshWhenFinished(_ uncertain: VaultUpdateUncertain, report: String) {
+        // A route change may have saved under a new connection id. Keep edits
+        // visible, but require Reload before retrying and forking a duplicate.
+        requiresReloadBeforeWrite = true
+        lateRefresh?.cancel()
+        lateRefresh = Task { @MainActor [weak self] in
+            for await _ in uncertain.completion {}
+            while self?.busy == true, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(20)) }
+            guard !Task.isCancelled, let self, self.requiresReloadBeforeWrite, !self.model.installPreparing else { return }
+            self.busy = true; defer { self.busy = false }
+            do {
+                try await self.model.reloadConfiguration()
+                guard !Task.isCancelled else { return }
+                self.adoptLoadedSettings(discardingDrafts: false)
+                self.message = "Keychain finished the earlier operation. Saved settings were refreshed and your edits were kept. Reload Settings before saving or deleting again."
+                self.messageTone = .neutral
+                if self.model.error == report { self.model.error = nil }
+            } catch {
+                self.message = Self.uncertainWriteNotice + " Could not refresh Settings: " + error.localizedDescription
+                self.messageTone = .danger
+            }
+        }
     }
     /// Shows another tab. The current tab's edits are kept and come back with it.
     func select(id: String) {
@@ -244,6 +276,7 @@ import Combine
     func saveAll(thenTest: Bool = false) async -> SaveOutcome {
         guard loaded else { message = "Wait for Settings to finish loading before saving."; messageTone = .danger; return .failed }
         guard !busy else { return .failed }
+        guard !requiresReloadBeforeWrite else { message = Self.uncertainWriteNotice; messageTone = .danger; return .failed }
         // Quitting or updating: the last decision about Settings was made.
         guard !model.installPreparing else { message = Self.closingNotice; messageTone = .danger; return .failed }
         busy = true; saving = true; defer { busy = false; saving = false }
@@ -275,12 +308,14 @@ import Combine
                 drafts[item.profile.id] = nil
                 if preferencesSaved { savedNames.append("your preferences") }
                 let saved = savedNames.isEmpty ? "" : "Saved " + Self.list(savedNames) + ". "
-                let report = saved + "“\(item.name)” was not saved: " + error.localizedDescription
+                let uncertain = error as? VaultUpdateUncertain
+                let report = saved + "“\(item.name)” " + (uncertain == nil ? "was not saved: " : "may have been saved: ") + error.localizedDescription
                 message = forkNote.map { report + " " + $0 } ?? report; messageTone = .danger
                 // In the window's banner as well as the footer, exactly as a
                 // failed deletion is: a save that did not happen was silent, and
                 // Escape or Cancel closed the sheet over it.
                 model.error = report
+                if let uncertain { refreshWhenFinished(uncertain, report: report) }
                 return .failed
             }
         }
@@ -403,6 +438,7 @@ import Combine
     }
     func delete() async {
         guard !busy else { return }
+        guard !requiresReloadBeforeWrite else { message = Self.uncertainWriteNotice; messageTone = .danger; return }
         guard !model.installPreparing else { message = Self.closingNotice; messageTone = .danger; return }
         let id = draft.profile.id, name = draft.name
         confirmingDelete = false
@@ -416,10 +452,13 @@ import Combine
             message = model.profiles.isEmpty ? "“\(name)” was deleted. Add a new connection to send messages."
                 : "“\(name)” was deleted. \(model.profiles.count) connection\(model.profiles.count == 1 ? " remains" : "s remain")."
         } catch {
-            // In the footer and in the window's banner: a deletion that did not happen is never quiet.
+            // A timed-out update may still delete the connection after this returns.
             messageTone = .danger
-            message = "“\(name)” was not deleted: " + error.localizedDescription
-            model.error = "Connection “\(name)” was not deleted: " + error.localizedDescription
+            let uncertain = error as? VaultUpdateUncertain
+            message = "“\(name)” " + (uncertain == nil ? "was not deleted: " : "may have been deleted: ") + error.localizedDescription
+            let report = "Connection " + message
+            model.error = report
+            if let uncertain { refreshWhenFinished(uncertain, report: report) }
         }
     }
 }
