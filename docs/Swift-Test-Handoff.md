@@ -1368,6 +1368,13 @@ chats, each with the snippet of its newest matching message under its row)
 and `14e-sidebar-search-opened-*` (a snippet pressed: its chat open at that
 message). The full gallery renders them after the archive scene.
 
+`PI_APP_UI_GALLERY_FLAT_TOPICS_ONLY=1` (with `TEST_RUNNER_` beside it) renders
+only a project listed flat at the 920×600 window: `14f-sidebar-flat-topics-*`
+(no topic folders, every chat of the project newest first with its topic as a
+tag, one of them unread). The full gallery renders it after the archive scene,
+then groups the project again, archives the chats it added and removes the
+topic it added.
+
 `PI_APP_UI_GALLERY_COST_ONLY=1` (with `TEST_RUNNER_` beside it) renders only the
 cost-limit scenes after the first turn: `18-cost-limit-*` (the stop notice; the
 limited chat's Session Inspector Overview, with its spend against the limit and

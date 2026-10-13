@@ -81,9 +81,12 @@ struct SidebarListContents: Equatable {
                 contents.owners.append((record.id, topic)); gap = rowSpacing
             }
             let expanded = !query.isEmpty || model.projectIsExpanded(record.id)
+            let flat = model.projectListsFlat(record.id)
             let help: String = {
                 if record.isScratch { return "Chats outside any project, such as connection tests. Tools stay disabled here." }
                 guard project.available else { return "Project configuration unavailable. Retained chats are read-only. Project ID: " + record.id }
+                // A flat project has no folders to drop on; its rows' menus move chats.
+                if flat { return record.roots.joined(separator: "\n") + "\nChats listed newest first, each with its topic as a tag." }
                 return record.roots.joined(separator: "\n") + "\nDrop chats anywhere in this project to move them out of a topic."
             }()
             add(.projectHeader(ProjectHeaderState(
@@ -94,6 +97,17 @@ struct SidebarListContents: Equatable {
                 dropTargeted: dropTarget?.project == record.id && dropTarget?.topic == nil, help: help)))
             guard expanded else { continue }
             if !project.available { add(.projectUnavailable(projectID: record.id)) }
+            // Flat: one list for the whole project, newest first, each chat's
+            // topic as a tag; no folders, so every entry is the project's own.
+            if flat {
+                let archived = model.sidebarArchiveContents(in: record, topicID: nil, includesArchive: archive, filter: query, flat: true,
+                                                            sidebarWidth: sidebarWidth, namesConnection: names)
+                addGroup(model.sidebarGroupContents(in: record, topicID: nil, archived: false, filter: query, showEmpty: archived == nil, flat: true,
+                                                    sidebarWidth: sidebarWidth, namesConnection: names), projectID: record.id, topic: nil,
+                         model: model, filtering: !query.isEmpty, add: add)
+                if let archived { addGroup(archived, projectID: record.id, topic: nil, model: model, filtering: !query.isEmpty, add: add) }
+                continue
+            }
             let topics = visibleTopics(model: model, project: record, query: query, archive: archive)
             for topic in topics {
                 let group = model.topicGroupContents(in: record, topic: topic, includesArchive: archive, filter: query,

@@ -233,6 +233,17 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        // Only the flat view of a project's topics (14f).
+        if testEnvironment("PI_APP_UI_GALLERY_FLAT_TOPICS_ONLY") == "1" {
+            let topic = try await model.createTopic(in: workspace.id, title: "Payments")
+            try await model.moveSessions([second.id], in: workspace.id, toTopic: topic.id)
+            try await captureFlatTopicsScene(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspace.id,
+                                             profileID: connections[0].profile.id, topicID: topic.id)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         // Only the sidebar's states (27*): a chat marked unread.
         if testEnvironment("PI_APP_UI_GALLERY_SIDEBAR_STATES_ONLY") == "1" {
             try await captureSidebarStateScenes(model: model, window: window, gallery: gallery, appearances: appearances, markedID: second.id)
@@ -600,6 +611,8 @@ final class UIScreenshotTests: XCTestCase {
         try await settle(0.8)
         try await captureArchiveScene(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspaceID,
                                       profileID: try XCTUnwrap(model.record(mainID)?.profileID), topicID: topic?.id)
+        try await captureFlatTopicsScene(model: model, window: window, gallery: gallery, appearances: appearances, workspaceID: workspaceID,
+                                         profileID: try XCTUnwrap(model.record(mainID)?.profileID), topicID: topic?.id)
         try await captureSearchScene(model: model, window: window, gallery: gallery, appearances: appearances, minimumMatches: 1)
         await model.select(mainID); try await settle(0.8)
         try await captureSidebarStateScenes(model: model, window: window, gallery: gallery, appearances: appearances, markedID: secondID)
@@ -750,6 +763,41 @@ final class UIScreenshotTests: XCTestCase {
             try capture(window, to: gallery.appendingPathComponent("14c-sidebar-archive-\(name).png"))
         }
         model.setArchivedChatsShown(false); try await settle(0.8)
+    }
+
+    /// 14f · A project listed flat, at 920×600: no topic folders, every chat
+    /// of the project newest first, each with its topic as a tag (a second
+    /// topic and three more chats, interleaved by activity, one unread).
+    /// Afterwards the project is grouped again, the added chats archived and
+    /// the added topic removed, so the scenes after this one are as they were.
+    @MainActor private func captureFlatTopicsScene(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                   appearances: [(String, NSAppearance.Name)], workspaceID: String,
+                                                   profileID: String, topicID: String?) async throws {
+        let size = window.contentView?.frame.size ?? NSSize(width: 1440, height: 900)
+        window.setContentSize(NSSize(width: 920, height: 600)); window.center()
+        let research = try await model.createTopic(in: workspaceID, title: "Research")
+        let stamps = model.chats.filter { $0.workspaceID == workspaceID && !$0.isArchived }.map { model.sidebarActivity($0) }.sorted(by: >)
+        let newest = stamps.first ?? 0, oldest = stamps.last ?? 0
+        let between = stamps.count > 1 ? (stamps[0] + stamps[1]) / 2 : newest - 5
+        var added: [String] = []
+        for (title, topic, stamp) in [("Ledger rounding rules", topicID, newest + 10), ("Compare queue backends", Optional(research.id), between),
+                                      ("Cache warmup plan", nil, oldest - 10)] {
+            let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, sidebarOrder: stamp)
+            model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+            if let topic { try await model.moveSessions([chat.id], in: workspaceID, toTopic: topic) }
+            added.append(chat.id)
+        }
+        model.markSessionUnread(added[0])
+        model.setProjectListsFlat(workspaceID, flat: true)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("14f-sidebar-flat-topics-\(name).png"))
+        }
+        model.setProjectListsFlat(workspaceID, flat: false)
+        model.markSessionRead(added[0])
+        for id in added { try await model.setSessionArchived(id, archived: true) }
+        try await model.removeTopic(research.id)
+        window.setContentSize(size); window.center(); try await settle(0.8)
     }
 
     /// 14d · The sidebar's search inside chats, at the 920×600 window:

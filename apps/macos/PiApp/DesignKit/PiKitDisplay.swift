@@ -39,6 +39,13 @@ extension PiKit {
         var icon: String? { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
         var dot: Bool { didSet { invalidateIntrinsicContentSize(); needsDisplay = true } }
         var spinning: Bool { didSet { spinnerChanged() } }
+        /// Tighter insets, for a tag riding in a line of text: no taller than
+        /// the line it sits in (the sidebar's topic tags).
+        var compact = false { didSet { guard oldValue != compact else { return }; invalidateIntrinsicContentSize(); needsDisplay = true } }
+        /// The widest it asks to be; longer text is cut short with an ellipsis.
+        var maximumWidth: CGFloat = .greatestFiniteMagnitude {
+            didSet { guard oldValue != maximumWidth else { return }; invalidateIntrinsicContentSize(); needsDisplay = true }
+        }
         private var spinner: PiSpinnerView?
 
         init(text: String, tone: PiTone = .neutral, icon: String? = nil, dot: Bool = false, spinning: Bool = false) {
@@ -54,7 +61,9 @@ extension PiKit {
         private var ink: NSColor { tone == .neutral ? .piInkSecondary : tone.nsColor }
         private var line: Line { Line(text, font: PiKit.Font.micro, color: ink) }
         private var glyph: Symbol? { icon.map { Symbol($0, size: 10, weight: .semibold) } }
-        private var hPadding: CGFloat { text.isEmpty ? 6 : 8 }
+        private var hPadding: CGFloat { text.isEmpty || compact ? 6 : 8 }
+        /// Above and below the words.
+        var verticalInset: CGFloat { compact ? 1.5 : 3.5 }
         /// The parts left to right: (width, height).
         private var parts: [CGSize] {
             var parts: [CGSize] = []
@@ -63,10 +72,13 @@ extension PiKit {
             if !text.isEmpty { parts.append(line.size(scale: piScale)) }
             return parts
         }
-        override var intrinsicContentSize: NSSize {
+        /// Its width with every word shown, whatever `maximumWidth` allows.
+        var naturalWidth: CGFloat {
             let parts = parts
-            let width = parts.reduce(0) { $0 + $1.width } + 5 * CGFloat(max(0, parts.count - 1))
-            return NSSize(width: width + hPadding * 2, height: (parts.map(\.height).max() ?? 0) + 7)
+            return parts.reduce(0) { $0 + $1.width } + 5 * CGFloat(max(0, parts.count - 1)) + hPadding * 2
+        }
+        override var intrinsicContentSize: NSSize {
+            NSSize(width: min(naturalWidth, maximumWidth), height: (parts.map(\.height).max() ?? 0) + verticalInset * 2)
         }
         private func spinnerChanged() {
             if spinning, spinner == nil {
@@ -85,7 +97,7 @@ extension PiKit {
         override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsLayout = true; needsDisplay = true }
         override func draw(_ dirtyRect: NSRect) {
             var x = hPadding
-            let inner = CGRect(x: 0, y: 3.5, width: bounds.width, height: bounds.height - 7)
+            let inner = CGRect(x: 0, y: verticalInset, width: bounds.width, height: bounds.height - verticalInset * 2)
             if spinning { x += 9 + 5 } else if dot {
                 ink.setFill()
                 NSBezierPath(ovalIn: CGRect(x: x, y: inner.midY - 3, width: 6, height: 6)).fill()
@@ -98,7 +110,13 @@ extension PiKit {
             }
             if !text.isEmpty {
                 let size = line.size(scale: piScale)
-                line.draw(at: CGPoint(x: x, y: inner.minY + PiKit.round((inner.height - size.height) / 2, piScale)), scale: piScale)
+                let y = inner.minY + PiKit.round((inner.height - size.height) / 2, piScale)
+                // Cut short to the room it was given, rather than clipped.
+                if x + size.width > bounds.width - hPadding + 0.5 {
+                    line.draw(in: CGRect(x: x, y: y, width: max(0, bounds.width - hPadding - x), height: size.height), truncation: .end, scale: piScale)
+                } else {
+                    line.draw(at: CGPoint(x: x, y: y), scale: piScale)
+                }
             }
         }
     }

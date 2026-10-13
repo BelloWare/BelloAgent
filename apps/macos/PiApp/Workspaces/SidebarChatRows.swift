@@ -277,6 +277,8 @@ struct ChatRowStats: Equatable {
         var markedUnreadOnly = false
         /// The pencil: the chat's composer holds something unsent.
         var hasDraft = false
+        /// The chat's topic, as a tag, while its project lists flat.
+        var topicTag: String?
         var hasSide = false
         var expanded = true
         var pinned = false
@@ -287,6 +289,7 @@ struct ChatRowStats: Equatable {
         /// unread or failed.
         var accessibilityLabel: String {
             var words = [title]
+            if let topicTag { words.append("topic " + topicTag) }
             let run = RunState(rawValue: stats.state)
             if run.holdsQueue { words.append(run == .interrupted ? "paused, run interrupted" : "paused") }
             if unreadCount > 0 { words.append("unread") } else if unreadFailure { words.append("run failed") }
@@ -310,6 +313,12 @@ struct ChatRowStats: Equatable {
     /// Something unsent waits in the chat's composer.
     let draftMark = PiKit.SymbolView(PiKit.Symbol("pencil", size: 10, weight: .semibold), color: .piInkSecondary)
     private let dot = UnreadDotView()
+    /// The chat's topic in a flat project: a quiet capsule at the line's end,
+    /// before the unread dot, so the tags of a list line up. Hidden (and
+    /// taking no room) in the Topics view.
+    let topicTag = PiKit.Badge(text: "")
+    /// The most of the title line a tag takes: the title keeps the rest.
+    static let topicTagShare: CGFloat = 0.4
     private let archiveButton = PiKit.IconButton(symbol: "archivebox", label: "Archive chat", size: 18)
     private let confirm = PiKit.Button("Archive", style: .primary, compact: true)
     private let keep = PiKit.IconButton(symbol: "xmark", label: "Keep chat", size: 18)
@@ -324,12 +333,15 @@ struct ChatRowStats: Equatable {
 
     override init(frame: NSRect) {
         controls = ShellStack(.horizontal, spacing: 4, [.view(archiveButton), .view(confirm), .view(keep), .view(chevron)])
-        row1 = ShellStack(.horizontal, spacing: 4, [.view(title, .flexible), .view(draftMark), .view(pin), .spacer(4), .view(dot), .view(controls)])
+        row1 = ShellStack(.horizontal, spacing: 4, [.view(title, .flexible), .view(draftMark), .view(pin), .spacer(4), .view(topicTag), .view(dot), .view(controls)])
         super.init(frame: frame)
         title.truncation = .end; subtitle.truncation = .end
         pin.setAccessibilityElement(true); pin.setAccessibilityRole(.image); pin.setAccessibilityLabel("Pinned chat")
         draftMark.setAccessibilityElement(true); draftMark.setAccessibilityRole(.image); draftMark.setAccessibilityLabel("Has a draft")
         draftMark.toolTip = "Unsent draft"; draftMark.isHidden = true
+        topicTag.compact = true; topicTag.isHidden = true
+        // The row says its topic to VoiceOver; the capsule is only its picture.
+        topicTag.setAccessibilityElement(false)
         for view in [icon, row1, metrics, subtitle] as [NSView] { addSubview(view) }
         archiveButton.onPress = { [weak self] in
             guard let self, let content = self.content else { return }
@@ -375,6 +387,9 @@ struct ChatRowStats: Equatable {
         title.line = titleLine
         pin.isHidden = !new.pinned
         draftMark.isHidden = !new.hasDraft
+        topicTag.isHidden = new.topicTag == nil
+        topicTag.text = new.topicTag ?? ""
+        topicTag.toolTip = new.topicTag.map { "Topic: " + $0 }
         let showsDot = new.unreadCount > 0 || new.unreadFailure
         dot.failure = new.unreadFailure && new.unreadCount == 0
         dot.marked = new.markedUnreadOnly
@@ -454,7 +469,27 @@ struct ChatRowStats: Equatable {
     // MARK: Layout
 
     private var titleHeight: CGFloat { PiKit.Line("Ag", font: .systemFont(ofSize: 13), color: .black).lineHeight }
-    private func row1Height(width: CGFloat) -> CGFloat { row1.height(forWidth: width) }
+    private func row1Height(width: CGFloat) -> CGFloat { capTopicTag(width); return row1.height(forWidth: width) }
+    /// A long topic is cut short before it crowds the title out: to its
+    /// share of the line, and to what the line has left once the title's
+    /// minimum and the line's other pieces (the pencil, the pin, the dot, the
+    /// row's buttons, wider while Archive asks) are counted. Too little left,
+    /// and the tag steps aside for the row.
+    private func capTopicTag(_ textWidth: CGFloat) {
+        guard content?.topicTag != nil else { return }
+        let others = [draftMark, pin, dot, controls].filter { !$0.isHidden }
+        // Gaps between the title, the others, the spacer and the tag, and the spacer's own four.
+        let besides = others.reduce(0) { $0 + shellNaturalSize($1).width } + 4 * CGFloat(others.count + 2) + 4
+        let cap = min((textWidth * Self.topicTagShare).rounded(.down), (textWidth - besides - Self.titleMinimum).rounded(.down))
+        let fits = cap >= Self.topicTagMinimum
+        guard topicTag.isHidden == fits || fits && topicTag.maximumWidth != cap else { return }
+        topicTag.isHidden = !fits
+        if fits { topicTag.maximumWidth = cap }
+        row1.relayoutAll()
+    }
+    /// The least of the title a tag leaves, and the least of a tag worth drawing.
+    static let titleMinimum: CGFloat = 40
+    static let topicTagMinimum: CGFloat = 28
     private var secondHeight: CGFloat { metrics.isHidden ? subtitle.intrinsicContentSize.height : metrics.height(forWidth: 0) }
     func height(forWidth width: CGFloat) -> CGFloat {
         let text = row1Height(width: max(0, width - 24)) + 2 + secondHeight

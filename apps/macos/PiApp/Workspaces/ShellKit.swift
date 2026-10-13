@@ -232,9 +232,9 @@ extension NSView {
     if let symbol = view as? PiKit.SymbolView { return shellSymbolBaseline(symbol.symbol, height: height) }
     if let custom = view as? ShellBaselined { return custom.firstBaseline }
     if let badge = view as? PiKit.Badge, !badge.text.isEmpty {
-        // Its words in the middle of the room inside its 3.5-point insets.
-        let line = PiKit.Line(badge.text, font: PiKit.Font.micro, color: .black)
-        return 3.5 + (height - 7 - line.size(scale: view.piScale).height) / 2 + line.baseline(scale: view.piScale)
+        // Its words in the middle of the room inside its insets.
+        let line = PiKit.Line(badge.text, font: PiKit.Font.micro, color: .black), inset = badge.verticalInset
+        return inset + (height - inset * 2 - line.size(scale: view.piScale).height) / 2 + line.baseline(scale: view.piScale)
     }
     if let button = view as? PiKit.Button {
         // Its title in the middle of the button.
