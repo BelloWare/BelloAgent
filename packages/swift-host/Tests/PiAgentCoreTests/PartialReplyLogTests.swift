@@ -106,6 +106,36 @@ final class PartialReplyLogTests: XCTestCase {
         await again.close()
     }
 
+    /// A temporary I/O failure is not evidence that there is no reply to restore.
+    func testAnUnreadableReplyLogSurvivesUntilRecoveryCanReadIt() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let client = StallingClient(), session = try chat.session("chat", client: client)
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "a question"), steer: false)
+        try await stream(client)
+        try await Task.sleep(nanoseconds: 3 * PartialReplyLog.flushDelayNanoseconds)
+        let sessionPath = await session.path
+        let copy = try killedCopy(try XCTUnwrap(sessionPath)), log = PartialReplyLog.url(for: copy)
+        await session.close()
+        let bytes = try Data(contentsOf: log)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: log.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: log.path) }
+
+        do {
+            let opened = try chat.session("chat", client: StallingClient(), resume: copy.path, in: copy.deletingLastPathComponent())
+            await opened.close()
+            XCTFail("Recovery must report an unreadable reply instead of treating it as absent")
+        } catch { /* A later open can retry once the file is readable. */ }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: log.path), "the sole copy of the reply must survive")
+        guard FileManager.default.fileExists(atPath: log.path) else { return }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: log.path)
+        XCTAssertEqual(try Data(contentsOf: log), bytes)
+        let reopened = try chat.session("chat", client: StallingClient(), resume: copy.path, in: copy.deletingLastPathComponent())
+        let kept = await replies(reopened)
+        XCTAssertEqual(kept.map(\.text), [pieces.joined()])
+        XCTAssertEqual(kept.first?.stopReason, "interrupted")
+        await reopened.close()
+    }
+
     /// A line torn by the crash ends what is read; everything before it stands.
     func testATornLastLineIsLeftOut() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }

@@ -86,9 +86,10 @@ public actor TraceStore {
             // it, up to 32 KiB, when nothing else of the request was queued
             // after it: while the app is busy, a stream's small chunks go as
             // one page instead of one acknowledgment each.
-            if let index = openPages[id], index >= outboxHead, index < outbox.count, var waiting = outbox[index].page,
+            if let index = openPages[id], index >= outboxHead, index < outbox.count, var waiting = outbox[index]?.page,
                waiting.body == kind, waiting.offset + waiting.bytes.count == offset + start, waiting.bytes.count + page.count <= 32_768 {
-                waiting.bytes.append(page); outbox[index].page = waiting
+                waiting.bytes.append(page); outbox[index]?.page = waiting
+                outbox[index]?.byteCount += page.count; pendingBytes += page.count
             } else {
                 post(.null, attempt: id, stage: .bytes, page: Page(body: kind, offset: offset + start, bytes: page))
             }
@@ -229,7 +230,7 @@ public actor TraceStore {
 
     /// What a rejected packet means for its request's later packets.
     private enum Stage { case begin, update, links, bytes, masking, events, operation, finish }
-    private struct Outgoing { let packet: JSON; let attempt: String; let stage: Stage; var page: Page? }
+    private struct Outgoing { let packet: JSON; let attempt: String; let stage: Stage; var page: Page?; var byteCount: Int }
     /// A body page's bytes stay raw until sent, so a later page can join it.
     private struct Page { let body: String, offset: Int; var bytes: Data }
     private struct Delivery { var refused = false, bytesStopped = false, linksStopped = false, eventsStopped = false }
@@ -237,28 +238,49 @@ public actor TraceStore {
     /// them, each after the app confirmed the one before. Neither a model
     /// request nor its stream waits on this queue: a slow app delays its log,
     /// never the chat, and nothing is dropped for being slow.
-    private var outbox: [Outgoing] = [], outboxHead = 0, draining = false
+    private var outbox: [Outgoing?] = [], outboxHead = 0, draining = false
     /// Each request's last queued packet, when it is a body page: the page a
     /// following chunk of the same body may join.
     private var openPages: [String: Int] = [:]
     private var deliveries: [String: Delivery] = [:]
     private var idle: [CheckedContinuation<Void, Never>] = []
+    private var deliveryStopped = false
+    // Includes the packet in flight. Updated when pages coalesce and packets
+    // settle, so the shutdown deadline never scans a potentially large queue.
+    private var pendingPackets = 0, pendingBytes = 0
+    private var pendingAttempts: [String: Int] = [:]
+    private var clearWaiters: [(Set<String>, CheckedContinuation<Void, Never>)] = []
+    /// The grace period ended. The owner closes the transport immediately
+    /// after this; no queued terminal record may falsely complete a prefix.
+    func stopCaptureDelivery() -> (packets: Int, bytes: Int) {
+        deliveryStopped = true
+        return (pendingPackets, pendingBytes)
+    }
     private func post(_ packet: JSON, attempt: String, stage: Stage, page: Page? = nil) {
-        outbox.append(Outgoing(packet: packet, attempt: attempt, stage: stage, page: page))
+        guard !deliveryStopped else { return }
+        // Raw body bytes; encoded JSON bytes for metadata, links and events.
+        let bytes = page?.bytes.count ?? ((try? packet.data().count) ?? 0)
+        pendingPackets += 1; pendingBytes += bytes; pendingAttempts[attempt, default: 0] += 1
+        outbox.append(Outgoing(packet: packet, attempt: attempt, stage: stage, page: page, byteCount: bytes))
         if page != nil { openPages[attempt] = outbox.count - 1 } else { openPages.removeValue(forKey: attempt) }
         guard !draining else { return }
         draining = true
         Task { await self.drain() }
     }
     /// Returns once every packet queued so far has been answered. Nothing in
-    /// a chat waits on this; tests read the log after it.
+    /// a model request waits on this; shutdown drains after stopping producers.
     func delivered() async {
         guard draining else { return }
         await withCheckedContinuation { idle.append($0) }
     }
     private func drain() async {
         while outboxHead < outbox.count {
-            let item = outbox[outboxHead]; outboxHead += 1
+            guard !deliveryStopped else { break }
+            let item = outbox[outboxHead]!
+            // Release consumed slots immediately, including a cleared chat's
+            // bytes while another chat still has a large queue behind it.
+            outbox[outboxHead] = nil; outboxHead += 1
+            defer { settled(item) }
             if outboxHead >= 256, outboxHead * 2 >= outbox.count {
                 outbox.removeFirst(outboxHead)
                 openPages = openPages.compactMapValues { $0 >= outboxHead ? $0 - outboxHead : nil }; outboxHead = 0
@@ -273,8 +295,24 @@ public actor TraceStore {
             recorded(item.stage, accepted: accepted, attempt: item.attempt)
         }
         outbox.removeAll(); outboxHead = 0; draining = false; openPages.removeAll()
+        pendingPackets = 0; pendingBytes = 0; pendingAttempts.removeAll()
+        resumeClears()
         let waiting = idle; idle.removeAll()
         for waiter in waiting { waiter.resume() }
+    }
+    private func settled(_ item: Outgoing) {
+        pendingPackets -= 1; pendingBytes -= item.byteCount
+        if let count = pendingAttempts[item.attempt], count > 1 { pendingAttempts[item.attempt] = count - 1 }
+        else { pendingAttempts.removeValue(forKey: item.attempt) }
+        resumeClears()
+    }
+    private func resumeClears() {
+        var waiting: [(Set<String>, CheckedContinuation<Void, Never>)] = []
+        for (ids, continuation) in clearWaiters {
+            if ids.contains(where: { pendingAttempts[$0] != nil }) { waiting.append((ids, continuation)) }
+            else { continuation.resume() }
+        }
+        clearWaiters = waiting
     }
     private func recorded(_ stage: Stage, accepted: Bool, attempt id: String) {
         var delivery = deliveries[id] ?? Delivery()
@@ -389,7 +427,7 @@ public actor TraceStore {
         return value
     }
     public func latest(_ session:String)->JSON { guard let id=order.last(where:{traces[$0]?.session==session}),let t=traces[id] else { return .null }; return metadata(t, messageIDs:false) }
-    public func command(_ method:String, session:String, params p:JSON) throws -> JSON {
+    public func command(_ method:String, session:String, params p:JSON) async throws -> JSON {
         let boundary:JSON="Application HTTP boundary after serialization and HTTP decoding, not TLS packets. Gateway upstream traffic is unavailable. Authentication headers are masked; long request tokens retain only their last four characters, and short tokens, cookies and secret response headers are fully masked. Known credential literals in request bodies are labeled SHA-256 fingerprints; response credential echoes are replaced by same-length asterisks. Body transformations are explicit byte-exactness exceptions. Other captured bytes remain untransformed and sensitive."
         if method=="debug.mode" {
             guard let mode=p["mode"].text,["off","memory","persist"].contains(mode) else { throw AgentError("invalid_mode","Choose off, memory or persist") }
@@ -398,7 +436,13 @@ public actor TraceStore {
         }
         if method=="debug.clear" {
             guard !traces.values.contains(where:{$0.session==session && $0.outcome=="running"}) else { throw AgentError("capture_busy", "Stop the active request before clearing body captures") }
-            let ids=Set(order.filter{traces[$0]?.session==session}); ids.forEach { if let old = traces.removeValue(forKey: $0) { retainedBytes -= old.request.count + old.response.count }; deliveries.removeValue(forKey: $0) }; order.removeAll{ids.contains($0)}; return ["cleared":true]
+            let ids=Set(order.filter{traces[$0]?.session==session})
+            // A queued begin/body can still reach the app after the run ends.
+            // Settle this chat's packets before native clear removes its files.
+            if ids.contains(where: { pendingAttempts[$0] != nil }) {
+                await withCheckedContinuation { clearWaiters.append((ids, $0)) }
+            }
+            ids.forEach { if let old = traces.removeValue(forKey: $0) { retainedBytes -= old.request.count + old.response.count }; deliveries.removeValue(forKey: $0) }; order.removeAll{ids.contains($0)}; return ["cleared":true]
         }
         if method=="debug.list" {
             let all=order.reversed().compactMap{traces[$0]}.filter{$0.session==session}, offset=try boundedInt(p["offset"],maximum:Int.max)

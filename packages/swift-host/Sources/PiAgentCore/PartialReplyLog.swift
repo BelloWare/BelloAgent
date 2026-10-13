@@ -136,12 +136,13 @@ final class PartialReplyLog {
     /// The last reply the file at `url` holds, as streamed so far, when the
     /// journal at `journal` (`size` bytes) still has the record it was
     /// written after and holds no record of the reply after that: what a
-    /// helper that died mid-reply never wrote. Nil otherwise.
-    static func unfinished(_ url: URL, journal: URL, size: UInt64) -> (header: Header, text: String, thinking: String, timeline: ResponseTimeline, at: Double?)? {
-        guard let reader = try? JournalRecordReader(url, allowIncompleteTail: true) else { return nil }
+    /// helper that died mid-reply never wrote. Nil when there is nothing to
+    /// restore. A failed read throws: it must never authorize deleting the log.
+    static func unfinished(_ url: URL, journal: URL, size: UInt64) throws -> (header: Header, text: String, thinking: String, timeline: ResponseTimeline, at: Double?)? {
+        let reader = try JournalRecordReader(url, allowIncompleteTail: true)
         var header: Header?, text = "", thinking = "", timeline = ResponseTimeline(), at: Double?
         let decoder = JSONDecoder()
-        while let line = try? reader.nextLine() {
+        while let line = try reader.nextLine() {
             if line.isEmpty { continue }
             guard let value = try? JSON.parse(line) else { break }
             if !value["reply"].isNull {
@@ -162,7 +163,7 @@ final class PartialReplyLog {
         // the reply's own row among them) is not written. The whole journal
         // is read for it, as only a reopen after a crash does.
         guard let header, (try? identity(JSON(header.reply))) != nil, !text.isEmpty || !thinking.isEmpty || !timeline.segments.isEmpty,
-              journalHolds(header.after, in: journal, size: size), !journalNames(header.reply, in: journal) else { return nil }
+              try journalHolds(header.after, in: journal, size: size), try !journalNames(header.reply, in: journal) else { return nil }
         return (header, text, thinking, timeline, at)
     }
     /// A log the journal could not take its reply from (the record would not
@@ -207,11 +208,12 @@ final class PartialReplyLog {
         try file.close()
     }
     /// Whether the journal's record at `anchor` is still the one named.
-    private static func journalHolds(_ anchor: Anchor, in journal: URL, size: UInt64) -> Bool {
-        guard anchor.length > 0, anchor.length <= JournalRecordReader.maximumRecordBytes, anchor.offset < size, UInt64(anchor.length) < size - anchor.offset,
-              let file = try? FileHandle(forReadingFrom: journal) else { return false }
+    private static func journalHolds(_ anchor: Anchor, in journal: URL, size: UInt64) throws -> Bool {
+        guard anchor.length > 0, anchor.length <= JournalRecordReader.maximumRecordBytes, anchor.offset < size, UInt64(anchor.length) < size - anchor.offset else { return false }
+        let file = try FileHandle(forReadingFrom: journal)
         defer { try? file.close() }
-        guard (try? file.seek(toOffset: anchor.offset)) != nil, let bytes = try? file.read(upToCount: anchor.length + 1),
+        try file.seek(toOffset: anchor.offset)
+        guard let bytes = try file.read(upToCount: anchor.length + 1),
               bytes.count == anchor.length + 1, bytes.last == 10 else { return false }
         let line = Data(bytes.prefix(anchor.length))
         let id = JournalLineScan.fields(line)?.id ?? (try? JSON.parse(line))?["id"].text
@@ -219,12 +221,10 @@ final class PartialReplyLog {
     }
     /// Whether a record of the journal has the reply's id: the reply was
     /// journaled, or the id is taken.
-    private static func journalNames(_ reply: String, in journal: URL) -> Bool {
-        guard let reader = try? JournalRecordReader(journal) else { return true }
+    private static func journalNames(_ reply: String, in journal: URL) throws -> Bool {
+        let reader = try JournalRecordReader(journal)
         while true {
-            // A journal that cannot be read through counts as naming it.
-            let next: Data?
-            do { next = try reader.nextLine() } catch { return true }
+            let next = try reader.nextLine()
             guard let line = next else { return false }
             if line.isEmpty { continue }
             let id = JournalLineScan.fields(line)?.id ?? (try? JSON.parse(line))?["id"].text

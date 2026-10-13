@@ -178,6 +178,8 @@ public actor AgentSession {
     var begin: Double?, end: Double?, parentInfo: JSON = .null, ephemeral=false, keepRequested=false
     var steeringMode="one-at-a-time", followUpMode="one-at-a-time"
     var closed=false
+    /// Test seam for commands arriving during the final request-link flush.
+    var beforeFinalRequestLinks: (@Sendable () async -> Void)?
     var activeSubmission: Submission?
     /// The pending message taken from its lane for delivery, until its user
     /// record is in the journal: the saved state keeps it meanwhile, so a
@@ -341,7 +343,9 @@ public actor AgentSession {
             // Whether the turn is on the shown branch is read from the whole
             // timeline: a chat opened from its metadata file leaves older rows
             // unloaded, and such a row is not one an edit hid.
-            let found=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size)
+            // An unreadable log fails this open and stays in place for a
+            // retry. No new run may overwrite a reply we could not inspect.
+            let found=try PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size)
             var onBranch=true
             if let turn=found?.header.turn {
                 let loaded=visible
@@ -495,7 +499,15 @@ public actor AgentSession {
     var retrySubmission: Submission?
     /// Stops the run and pauses the queue. `stopCount` lets work that awaited
     /// a run winding down tell that the chat was stopped again meanwhile.
-    public func stop() { stopCount &+= 1; queuePaused=true; runTask?.cancel(); if runTask != nil { state = .stopping } else if state != .error { state = .paused }; event("state") }
+    public func stop() {
+        stopCount &+= 1; queuePaused=true; runTask?.cancel()
+        // The run may already have reached its terminal state while its
+        // final links are flushing. Nothing after that await enters the
+        // cancellation catch again, so do not turn it back into Stopping.
+        if runTask != nil, state == .running || state == .stopping { state = .stopping }
+        else if state != .error { state = .paused }
+        event("state")
+    }
     public func unloadIfIdle() -> Bool { guard isIdle, !ephemeral else { return false }; cancelHistoryLoads(); closed=true; journal=nil; return true }
     public func close() async { cancelHistoryLoads(); closed=true; stop(); await runTask?.value; journal=nil }
 }

@@ -6,6 +6,28 @@ class HostTransportTestCase: XCTestCase {
 }
 
 final class HostTransportTests: HostTransportTestCase {
+    @MainActor func testMaximalEscapedSubmissionsReachTheBundledHelper() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let host = HostSupervisor(); defer { host.shutdown() }
+        try await host.connect(cwd: root, state: root.appendingPathComponent("state"))
+        let text = String(repeating: "\u{001b}", count: 256 * 1024)
+        for method in ["turn.submit", "turn.edit"] {
+            var params: [String: WireValue] = ["text": .string(text), "clientTurnId": .string(UUID().uuidString)]
+            if method == "turn.edit" { params["draft"] = .object(["text": .string(text)]); params["messageId"] = .string("m") }
+            do {
+                _ = try await host.request(method, sessionID: "s", params: params)
+                XCTFail("This fixture deliberately opens no workspace or provider")
+            } catch HostError.rejected(let code, _) {
+                XCTAssertEqual(code, "workspace_required", "The complete submission reached command dispatch")
+            }
+            let info = try await host.request("runtime.info")
+            XCTAssertEqual(info.object?["engine"]?.string, "swift", "A supported submission cannot terminate the helper")
+        }
+        try await host.shutdownAndWait()
+    }
+
     func testCaptureAcknowledgmentDoesNotConsumeAnOrdinaryCommandSlot() async throws {
         let started = expectation(description: "Child started"), echoed = expectation(description: "Control plus 32 commands")
         echoed.expectedFulfillmentCount = 33

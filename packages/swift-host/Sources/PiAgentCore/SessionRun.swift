@@ -291,6 +291,7 @@ extension AgentSession {
             catch { activeTaskPresentation=nil; errorMessage="Task outcome could not be saved. Inspect the retained conversation and tool effects before retrying." }
             event("error",["message":JSON(errorMessage ?? "Interrupted")])
         }
+        await beforeFinalRequestLinks?()
         await flushRequestLinks()
         if partialID != nil { invalidateDisplay() }
         modelActive=false; partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); end=nowMS(); runTask=nil

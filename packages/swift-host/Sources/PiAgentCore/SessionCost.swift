@@ -124,7 +124,10 @@ extension AgentSession {
     /// here, whatever its purpose, before its request returns or throws.
     func countAttempt(_ observation: RequestObservation) {
         let outcome = observation.monitoring["outcome"].text
-        guard let outcome, outcome != "running", !closed, countedAttempts.insert(observation.attemptID) else { return }
+        // Closing refuses new work, but the admitted run can still receive
+        // its terminal charge while cancellation settles. close() keeps the
+        // journal attached until that run has returned.
+        guard let outcome, outcome != "running", !closed || runTask != nil, countedAttempts.insert(observation.attemptID) else { return }
         let cost = observation.monitoring["gateway"]["cost"]
         var data: JSON = ["attemptId": JSON(observation.attemptID), "purpose": JSON(observation.purpose), "outcome": JSON(outcome)]
         if cost["status"].text == "reported", let usd = cost["usd"].double, usd.isFinite, usd >= 0 {
