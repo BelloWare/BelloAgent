@@ -103,11 +103,10 @@ extension WorkspaceModel {
         })
     }
     /// Return while images are on their way means Send once they arrive.
-    /// Repeated presses coalesce; newer typing or another edit needs a fresh
-    /// Send, so an old keypress never submits a different draft.
+    /// Repeated presses coalesce to the latest explicitly submitted draft;
+    /// newer typing or another edit still needs a fresh Send.
     func deferSubmissionForImages(_ view: SessionDisplay, retry: @escaping () -> Void) -> Bool {
         guard view.imageImports > 0 else { return false }
-        guard view.submissionAfterImages == nil else { return true }
         let text = view.draft, skills = view.skills, edit = view.editingMessageID, queue = view.queueEditingID, generation = view.editGeneration
         view.notice = "Waiting for the images to finish importing…"
         view.submissionAfterImages = { [weak view] in

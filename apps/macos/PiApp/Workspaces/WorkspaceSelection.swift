@@ -140,7 +140,10 @@ extension WorkspaceModel {
         // A new chat that was never sent has nothing written anywhere (see
         // `materializeChat`): its display is the only place its draft lives,
         // so it is not let go of while it holds one.
+        // Imports and sends waiting on them belong to this exact composer;
+        // keep it until those callbacks have finished, even off screen.
         for other in displays.values.sorted(by: { $0.used < $1.used }) where displays.count > 8 && other.id != id && !other.hasWork && !other.loading
+            && other.imageImports == 0 && other.submissionAfterImages == nil
             && !(pendingChatIDs.contains(other.id) && !isPendingEmpty(other.id)) && !sides.values.contains(where: { $0.id == other.id || $0.parentID == other.id }) {
             other.presentation.cancel(); displays.removeValue(forKey: other.id)
             releaseHelperSession(other.id)
