@@ -96,7 +96,7 @@ extension WorkspaceModel {
         }
         // What the journal says happened before is not activity now.
         quietActivity.insert(view.id); defer { quietActivity.remove(view.id) }
-        view.observeRetainedFailure(page.failure, code: page.retainedRun?.failureCode); view.observeRetainedRun(page)
+        view.observeRetainedFailure(page.failure, code: page.failureCode); view.observeRetainedRun(page)
         // The journal said what was unfinished: the chat's hold follows it.
         // (Not while a run or an opening is under way: the journal is not read
         // over those, and the helper's next snapshot says.)

@@ -214,7 +214,7 @@ final class SkillRefreshTests: XCTestCase {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let notice = "\u{201C}review-notes\u{201D} changed after this message was queued. The message now uses the updated version. Press Resume to send it."
-        func journal(_ name: String, queued: String) throws -> String {
+        func journal(_ name: String, queued: String?, code: String = SessionDisplay.skillUpdatedCode, message: String? = nil) throws -> String {
             var data = Data(), parent: String?
             func append(_ id: String, _ fields: [String: WireValue]) throws {
                 var record = fields; record["id"] = .string(id); record["parentId"] = parent.map(WireValue.string) ?? .null
@@ -224,16 +224,18 @@ final class SkillRefreshTests: XCTestCase {
             try append("native", ["type": .string("custom"), "customType": .string("pi-app.native.v1")])
             try append("question", ["type": .string("message"), "message": .object(["role": .string("user"), "content": .string("Question")])])
             try append("answer", ["type": .string("message"), "message": .object(["role": .string("assistant"), "content": .array([.object(["type": .string("text"), "text": .string("Answer")])])])])
-            let item: WireValue = .object(["commandID": .string("c1"), "turnID": .string(queued), "text": .string("review this"), "attachments": .array([]), "skills": .array([])])
+            let items: [WireValue] = queued.map { [.object(["commandID": .string("c1"), "turnID": .string($0), "text": .string("review this"), "attachments": .array([]), "skills": .array([])])] } ?? []
             try append("state", ["type": .string("custom"), "customType": .string("pi-app.native.state.v1"), "data": .object([
-                "active": .bool(false), "queue": .array([item]), "steering": .array([]), "runStatus": .string("failed"), "queuePaused": .bool(true),
-                "errorMessage": .string(notice), "errorCode": .string(SessionDisplay.skillUpdatedCode), "skillUpdatedTurnId": .string("t-skill")])])
+                "active": .bool(false), "queue": .array(items), "steering": .array([]), "runStatus": .string("failed"), "queuePaused": .bool(!items.isEmpty),
+                "errorMessage": .string(message ?? notice), "errorCode": .string(code), "skillUpdatedTurnId": .string("t-skill")])])
             let path = root.appendingPathComponent(name + ".jsonl"); try data.write(to: path); return path.path
         }
         let waiting = try journal("waiting", queued: "t-skill"), other = try journal("other", queued: "t-other")
+        let limited = try journal("limited", queued: nil, code: SessionDisplay.costLimitCode, message: "This chat reached its $0.05 cost limit ($0.06 spent). Raise the limit to continue.")
         let model = WorkspaceModel(stateRoot: root.appendingPathComponent("app"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         model.chats = [ChatRecord(id: "waiting", workspaceID: "workspace", title: "Waiting", path: waiting, profileID: "profile"),
-                       ChatRecord(id: "other", workspaceID: "workspace", title: "Removed", path: other, profileID: "profile")]
+                       ChatRecord(id: "other", workspaceID: "workspace", title: "Removed", path: other, profileID: "profile"),
+                       ChatRecord(id: "limited", workspaceID: "workspace", title: "Limited", path: limited, profileID: "profile")]
         await model.select("waiting")
         let shown = try XCTUnwrap(model.displays["waiting"])
         XCTAssertEqual(shown.failureCode, SessionDisplay.skillUpdatedCode)
@@ -243,6 +245,10 @@ final class SkillRefreshTests: XCTestCase {
         let removed = try XCTUnwrap(model.displays["other"])
         XCTAssertNil(removed.failureCode)
         XCTAssertEqual(removed.failureMessage, "The run stopped for a queued message whose skill had changed, and that message is no longer waiting. Retry request finishes the stopped turn.")
+        // Any failure's code comes back from the journal, a cost limit's too,
+        // with nothing queued: its notice keeps Raise limit.
+        await model.select("limited")
+        XCTAssertEqual(try XCTUnwrap(model.displays["limited"]).failureCode, SessionDisplay.costLimitCode)
         model.shutdown(); await model.store?.close()
     }
 

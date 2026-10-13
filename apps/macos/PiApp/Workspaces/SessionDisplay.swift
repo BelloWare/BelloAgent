@@ -460,8 +460,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     func observeRetainedFailure(_ message: String?, code: String? = nil) {
         guard !busy, !loading else { return }
         if let message {
-            // The code goes first, so the notice is drawn once, with its action.
-            if failureCode != code { failureCode = code }
+            // The code goes first, so the notice is drawn once, with its
+            // action. A source that names no code (a helper's page) leaves
+            // the code already known for the same failure.
+            if failureCode != code, code != nil || failureMessage != message { failureCode = code }
             runState = .error; runStatus = "failed"; failureMessage = message
         } else if runState == .error {
             runState = .idle; runStatus = "idle"; failureMessage = nil; failureCode = nil
