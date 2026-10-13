@@ -27,6 +27,9 @@ extension WorkspaceModel {
         var failure: String?
         /// Whether anything is left to send.
         var sendable = true
+        /// What the reader wrote for a removed skill (`/name request`) was
+        /// put back in the draft's text.
+        var keptArguments = false
 
         var notice: String {
             if let failure {
@@ -46,7 +49,8 @@ extension WorkspaceModel {
             }
             if !removed.isEmpty {
                 let one = removed.count == 1
-                parts.append("\(Self.quoted(removed)) \(one ? "is" : "are") no longer available, so \(one ? "it was" : "they were") removed from your message.")
+                parts.append("\(Self.quoted(removed)) \(one ? "is" : "are") no longer available, so \(one ? "it was" : "they were") removed from your message"
+                             + (keptArguments ? "; what you wrote for \(one ? "it" : "them") is kept in the text." : "."))
             }
             if changing.isEmpty {
                 if !sendable { parts.append("Add a message or choose another skill to send.") }
@@ -93,14 +97,18 @@ extension WorkspaceModel {
             return result
         }
         let current = Dictionary(view.skillCatalog.entries.map { ($0.skill.id, $0.skill) }, uniquingKeysWith: { first, _ in first })
-        var chips = view.skills
+        var chips = view.skills, written: [String] = []
         for chip in sent {
             // A chip the reader took off, or chose again, since is theirs.
             guard let index = chips.firstIndex(where: { $0.id == chip.id }), chips[index] == chip else { continue }
             if view.skillRepins[chip.id] == Self.skillPin(chip) { result.again.append(chip.name) }
             guard let skill = current[chip.id], canSelectSkill(skill, view: view) else {
                 chips.remove(at: index); view.skillRepins[chip.id] = nil
-                result.removed.append(chip.name); continue
+                result.removed.append(chip.name)
+                // A `/name request` keeps the request only in its chip: it
+                // stays in the draft rather than going with the chip.
+                if !chip.arguments.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { written.append(chip.arguments) }
+                continue
             }
             guard skill.contentHash != chip.contentHash || skill.metadataHash != chip.metadataHash else { continue }
             var pinned = skill.chip
@@ -109,7 +117,11 @@ extension WorkspaceModel {
             view.skillRepins[chip.id] = Self.skillPin(pinned)
             result.updated.append(chip.name)
         }
-        if chips != view.skills { view.skills = chips; draftChanged(view) }
+        if !written.isEmpty {
+            view.draft = (written + (view.draft.isEmpty ? [] : [view.draft])).joined(separator: "\n\n")
+            view.directCommand = false; result.keptArguments = true
+        }
+        if chips != view.skills || !written.isEmpty { view.skills = chips; draftChanged(view) }
         result.sendable = !view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !view.attachments.isEmpty || !view.skills.isEmpty
         return result
     }

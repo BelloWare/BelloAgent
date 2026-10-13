@@ -122,6 +122,36 @@ final class SkillRefreshTests: XCTestCase {
         XCTAssertTrue(reply.contains("STYLE_GUIDE_BODY")); XCTAssertFalse(reply.contains("ORIGINAL_NOTES_BODY"))
     }
 
+    /// A skill typed as `/name request` keeps the request in its chip. When
+    /// the skill is gone the request comes back as the draft's text, not lost
+    /// with the chip.
+    @MainActor func testAGoneCommandsRequestComesBackAsText() async throws {
+        let f = try await fixture("skill-refresh-command")
+        await f.model.loadSkillCatalog(refresh: true, sessionID: f.view.id)
+        let skill = try XCTUnwrap(current("review-notes", in: f.view))
+        f.view.directCommand = true; f.view.draft = "/review-notes check the dates"
+        XCTAssertTrue(f.model.addSkill(skill, view: f.view, fromCommand: true))
+        XCTAssertEqual(f.view.draft, ""); XCTAssertEqual(f.view.skills.first?.arguments, "check the dates")
+        try FileManager.default.removeItem(at: f.skills.appendingPathComponent("review-notes"))
+        f.model.send(sessionID: f.chat.id)
+        await waitFor("The refused send never came back with a notice: \(f.view.sendFailure ?? "")") { refused(f.view) }
+        XCTAssertTrue(f.view.skills.isEmpty)
+        XCTAssertEqual(f.view.draft, "check the dates", "What was written for the skill is kept")
+        XCTAssertEqual(f.view.sendFailure, "\u{201C}review-notes\u{201D} is no longer available, so it was removed from your message; what you wrote for it is kept in the text. Press Send to send the rest of it.")
+    }
+
+    /// The notice shows even below a run failure the chat still shows: the
+    /// reader sees what changed before the Send that confirms it.
+    @MainActor func testTheNoticeShowsBelowAnEarlierRunFailure() {
+        let view = SessionDisplay(id: "notice")
+        view.observeRunState(["state": .string("error"), "runStatus": .string("failed"), "preflightError": .string("The gateway closed the connection.")])
+        view.sendFailure = "\u{201C}a\u{201D} changed since you chose it. Press Send to use the updated version."
+        view.sendFailureCode = SessionDisplay.skillRefreshedCode
+        let rows = view.presentedMessages.filter { $0.kind == "failure" }
+        XCTAssertEqual(rows.map(\.id), ["failure:run:notice", "failure:send:notice"])
+        XCTAssertEqual(rows.last?.failureCode, SessionDisplay.skillRefreshedCode)
+    }
+
     /// A skill that changes again after its chip was pinned again says it is
     /// changing; it is pinned once more and nothing is sent, and once it
     /// settles Send sends the latest version.

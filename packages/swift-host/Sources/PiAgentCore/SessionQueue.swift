@@ -231,15 +231,27 @@ extension AgentSession {
         let tools = await tools.capabilityIDs(readOnly: readOnly)
         guard let refreshed = try? await resources.repin(submission.skills, tools: tools), !refreshed.updated.isEmpty || !refreshed.removed.isEmpty else { return error }
         // The message waited at the head of its lane while the files were
-        // read; it is changed only where it still waits, and not under an edit.
+        // read, and a queued rewrite may have been saved meanwhile: it is
+        // changed only where it still waits, not under an edit, and from what
+        // it holds now, its skills alone (text a rewrite saved is kept).
         guard queueEdit?.turnID != submission.turnID else { return error }
-        if !submission.text.isEmpty || !submission.attachments.isEmpty || !refreshed.skills.isEmpty {} else {
-            return AgentError("skill_revoked", "\(Resources.quoted(refreshed.removed)) \(refreshed.removed.count == 1 ? "is" : "are") no longer available, so this queued message has nothing left to send. Remove it from the queue.")
+        let inQueue = queue.firstIndex(where: { $0.turnID == submission.turnID }), inSteering = steering.firstIndex(where: { $0.turnID == submission.turnID })
+        guard let waiting = inQueue.map({ queue[$0] }) ?? inSteering.map({ steering[$0] }),
+              waiting.skills.map({ $0.id + "|" + $0.metadataHash + "|" + $0.contentHash }) == submission.skills.map({ $0.id + "|" + $0.metadataHash + "|" + $0.contentHash }) else { return error }
+        let removed = refreshed.removed.map(\.name)
+        // What the reader wrote for a skill that is gone (`/name request`)
+        // stays in the message, ahead of its text.
+        let written = refreshed.removed.map(\.arguments).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        var next = waiting; next.skills = refreshed.skills
+        if !written.isEmpty {
+            next.text = (written + (next.text.isEmpty ? [] : [next.text])).joined(separator: "\n\n")
+            guard next.text.utf8.count <= 262144 else { return error }
+            next.textRevision = (next.textRevision ?? 0) + 1
         }
-        var next = submission; next.skills = refreshed.skills
-        if let index = queue.firstIndex(where: { $0.turnID == submission.turnID }) { queue[index] = next }
-        else if let index = steering.firstIndex(where: { $0.turnID == submission.turnID }) { steering[index] = next }
-        else { return error }
+        if next.text.isEmpty && next.attachments.isEmpty && next.skills.isEmpty {
+            return AgentError("skill_revoked", "\(Resources.quoted(removed)) \(removed.count == 1 ? "is" : "are") no longer available, so this queued message has nothing left to send. Remove it from the queue.")
+        }
+        if let inQueue { queue[inQueue] = next } else if let inSteering { steering[inSteering] = next }
         let again = !skillRefreshedTurns.insert(submission.turnID).inserted
         var notice: [String] = []
         if !refreshed.updated.isEmpty {
@@ -248,9 +260,10 @@ extension AgentSession {
                 ? "\(names) changed again after this queued message was updated, so \(one ? "it seems" : "they seem") to be changing right now. The message now uses the latest version; press Resume once \(one ? "the skill has" : "the skills have") stopped changing."
                 : "\(names) changed after this message was queued. The message now uses the updated version\(one ? "" : "s").")
         }
-        if !refreshed.removed.isEmpty {
-            let one = refreshed.removed.count == 1
-            notice.append("\(Resources.quoted(refreshed.removed)) \(one ? "is" : "are") no longer available, so \(one ? "it was" : "they were") taken off this queued message.")
+        if !removed.isEmpty {
+            let one = removed.count == 1
+            notice.append("\(Resources.quoted(removed)) \(one ? "is" : "are") no longer available, so \(one ? "it was" : "they were") taken off this queued message"
+                          + (written.isEmpty ? "." : "; what you wrote for \(one ? "it" : "them") is kept in the message."))
         }
         if !(again && !refreshed.updated.isEmpty) { notice.append("Press Resume to send it.") }
         return AgentError(Self.skillUpdatedCode, notice.joined(separator: " "))

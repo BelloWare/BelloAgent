@@ -262,7 +262,10 @@ struct TranscriptVersionView: Equatable, Sendable {
                         + " Continue picks up where the run stopped" + (paused ? "; queued follow-ups go on after it." : ".")
             }
             rows.append(row)
-        } else if let sendFailure {
+        }
+        // A skill refreshed after a refused send shows even below a run
+        // failure, so the Send that confirms it never goes unexplained.
+        if let sendFailure, failureMessage == nil || sendFailureCode == Self.skillRefreshedCode {
             var row = TranscriptMessage(id: "failure:send:" + id, role: "system", text: sendFailure, kind: "failure")
             if sendFailureCode == Self.costLimitCode {
                 row.failureCode = Self.costLimitCode

@@ -197,14 +197,14 @@ public actor Resources {
     /// file, under the same identity and with its arguments kept; one gone or
     /// no longer allowed is dropped. Nothing is sent: the caller keeps the
     /// queue paused, and the reader's Resume is the confirmation.
-    public func repin(_ skills: [FrozenSkill], tools: [String]) throws -> (skills: [FrozenSkill], updated: [String], removed: [String]) {
+    public func repin(_ skills: [FrozenSkill], tools: [String]) throws -> (skills: [FrozenSkill], updated: [String], removed: [FrozenSkill]) {
         let current = try resolve()
-        var kept: [FrozenSkill] = [], updated: [String] = [], removed: [String] = []
+        var kept: [FrozenSkill] = [], updated: [String] = [], removed: [FrozenSkill] = []
         for frozen in skills {
             guard let match = current.skills.first(where: { $0["id"].text == frozen.id }), ["implicitAllowed", "explicitOnly"].contains(match["policy"].text),
                   match["dependencies"].list.allSatisfy({ Self.dependencyAvailable($0, tools: tools) }),
                   let name = match["name"].text, let path = match["path"].text, let baseDir = match["baseDir"].text, let body = match["body"].text,
-                  let contentHash = match["contentHash"].text, let metadataHash = match["metadataHash"].text else { removed.append(frozen.name); continue }
+                  let contentHash = match["contentHash"].text, let metadataHash = match["metadataHash"].text else { removed.append(frozen); continue }
             if metadataHash == frozen.metadataHash { kept.append(frozen); continue }
             kept.append(FrozenSkill(id: frozen.id, name: name, path: path, baseDir: baseDir, body: body, contentHash: contentHash, metadataHash: metadataHash,
                                     arguments: frozen.arguments, description: match["description"].text, scope: match["scope"].text, policy: match["policy"].text))

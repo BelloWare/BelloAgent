@@ -18,7 +18,7 @@ final class QueuedSkillRefreshTests: XCTestCase {
 
     /// A chat running its first turn (held), with "skill" (the review skill,
     /// chosen explicitly) and "later" queued behind it.
-    private func fixture(replies: [ModelReply]) async throws -> Fixture {
+    private func fixture(replies: [ModelReply], arguments: String = "", text: String = "review this") async throws -> Fixture {
         let root = try temporaryDirectory()
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let skill = root.appendingPathComponent(".codex/skills/review"), agents = skill.appendingPathComponent("agents")
@@ -27,14 +27,14 @@ final class QueuedSkillRefreshTests: XCTestCase {
         try Data("policy:\n  allow_implicit_invocation: false\n".utf8).write(to: agents.appendingPathComponent("openai.yaml"))
         let resources = Resources(cwd: root, options: ["codexHome": JSON(root.appendingPathComponent(".codex").path)], home: root)
         let snapshot = try await resources.resolve(); var selection = try XCTUnwrap(snapshot.skills.first)
-        selection["intent"] = "picker"
+        selection["intent"] = "picker"; selection["arguments"] = JSON(arguments)
         let frozen = try await resources.freeze([selection], text: "", tools: [])
         let client = ScriptClient(replies, holdFirst: true)
         let session = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root.appendingPathComponent("state"), readOnly: true,
                                        resources: resources, client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
         _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: "first"), steer: false)
         try await eventually { await client.count == 1 }
-        _ = try await session.submit(Submission(commandID: "skill", turnID: "skill", text: "review this", skills: frozen), steer: false)
+        _ = try await session.submit(Submission(commandID: "skill", turnID: "skill", text: text, skills: frozen), steer: false)
         _ = try await session.submit(Submission(commandID: "later", turnID: "later", text: "still pending"), steer: false)
         return Fixture(root: root, skill: skill, resources: resources, session: session, client: client, frozen: frozen, selection: selection)
     }
@@ -86,6 +86,23 @@ final class QueuedSkillRefreshTests: XCTestCase {
         let request = await sent(f.client)
         XCTAssertTrue(request.contains("review this"), "The message's text went")
         XCTAssertFalse(request.contains("ORIGINAL_SKILL_BODY"), "Without the skill that is gone")
+        await f.session.close()
+    }
+
+    /// What the reader wrote for a skill that is gone is not lost with it:
+    /// its arguments join the message's text.
+    func testAGoneSkillsArgumentsStayInTheMessage() async throws {
+        let f = try await fixture(replies: [answer("initial"), answer("without skill"), answer("later done")], arguments: "check the dates", text: "")
+        try FileManager.default.removeItem(at: f.skill)
+        await f.client.release(); try await eventually { !(await f.session.isRunning) }
+        let state = await f.session.snapshot()
+        XCTAssertEqual(state["errorCode"].text, "skill_updated", state["preflightError"].text ?? "")
+        XCTAssertEqual(state["preflightError"].text, "\u{201C}review\u{201D} is no longer available, so it was taken off this queued message; what you wrote for it is kept in the message. Press Resume to send it.")
+        XCTAssertEqual(state["queue"].list.first?["text"].text, "check the dates")
+        try await f.session.resumeQueue()
+        try await eventually { let count = await f.client.count; let running = await f.session.isRunning; return count == 3 && !running }
+        let request = await sent(f.client)
+        XCTAssertTrue(request.contains("check the dates")); XCTAssertFalse(request.contains("ORIGINAL_SKILL_BODY"))
         await f.session.close()
     }
 
