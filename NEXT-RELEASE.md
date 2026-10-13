@@ -2,6 +2,8 @@
 
 **Released 2026-10-13:** 0.1.125 (build 129, tag `v0.1.125`) is the latest release; record `docs/validation/Bello-Agent-0.1.125-2026-10-13.md`.
 
+**0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.
+
 ## 0.1.125
 
 **0.1.125 (owner 2026-10-13):** Resume runs and update while running, a quieter sidebar, skill refresh.
@@ -10,7 +12,7 @@
 - [x] Update while running: Check for Updates pauses nothing; Install asks to pause running chats, each shows Resume after (owner: "Check first, pause only to install"). Sparkle "up to date"/error alerts are sheets (`Application/UpdateUserDriver.swift`) so streaming is not frozen. Quit does not ask about follow-ups paused behind a stopped run (owner: keep).
 - [x] No "Working" word on a running chat's sidebar row (`dev/sidebar-working`).
 - [x] A changed skill chip is refreshed with a notice instead of failing every send; a removed one is taken out with a note (`dev/skill-refresh`).
-- [ ] Left: scratch-chat helper `HostService.shutdown` takes >5 s and is killed; `WorkspaceFollowupTests.testScratchChatRendersComposerAndPreparesToolFreeRequestWithoutProject` fails on it (pre-existing). In progress on `dev/helper-shutdown`.
+- [x] Helper stop race (merged for 0.1.126, `dev/helper-shutdown` d5c6f84e): a prewarm/preview `connect` during `shutdownAndWait` started a replacement helper, so stops for update install, folder changes and the scratch-chat test failed after ~6 s and left a stray helper. `connect` now refuses while a stop is awaited. `HostSupervisorTests.testConnectionDuringShutdownAndWaitDoesNotReplaceTheStoppingHelper` (failing-first); Codex clean.
 - [ ] Left: the side-chat panel (`SidesPanel.swift`) still shows "Working".
 - [ ] Left (from 0.1.124): Git draft during a repository switch.
 
