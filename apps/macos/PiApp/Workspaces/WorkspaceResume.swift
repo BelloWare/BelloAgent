@@ -85,10 +85,11 @@ extension WorkspaceModel {
     func resumeOrSendQueued(_ view: SessionDisplay) {
         // A Resume on its way holds the chat: a second press sends nothing,
         // not even the follow-ups, which would overtake the continuation.
-        guard !view.resuming else { return }
+        // A send on its way too: what it does decides what Resume means.
+        guard !view.resuming, !view.loading, !view.busy else { return }
         // Unknown (`continuable` nil) goes to the helper too: from an answered
         // chat its continue sends what waits, as Resume Follow-ups does.
-        if view.offersResume { resumeRun(sessionID: view.id) }
+        if view.showsPausedRun { resumeRun(sessionID: view.id) }
         else { action("queue.resume", sessionID: view.id) }
     }
 
@@ -132,6 +133,9 @@ extension WorkspaceModel {
         try await flushDrafts()
         // Their exit is the pause, not a crash: the chats read paused, not
         // "outcome uncertain" (`WorkspaceHosts` onLoss).
+        // Title requests under way, named before their helpers stop: one
+        // that unwinds during the stop leaves the table before it ends.
+        let titled = Array(titleGenerationTasks.keys)
         for host in hosts.values { pausingHosts.insert(ObjectIdentifier(host)) }
         await stopHostsAndWait()
         // Every exit has been seen by now; a helper that had no process to
@@ -140,11 +144,11 @@ extension WorkspaceModel {
         // Background requests (titles) lost their helpers with the rest; as
         // at Quit they end here, and a title cut off is asked for again on
         // the chat's next send. The pause is done once nothing is left.
-        let titled = Array(titleGenerationTasks.keys)
+        let unwinding = Array(titleGenerationTasks.keys)
         for task in titleGenerationTasks.values { task.cancel() }
         let settleBy = ProcessInfo.processInfo.systemUptime + 5
         while hasActiveWork, ProcessInfo.processInfo.systemUptime < settleBy { try? await Task.sleep(for: .milliseconds(20)) }
-        await markTitlesInterrupted(titled)
+        await markTitlesInterrupted(Array(Set(titled + unwinding)))
         await flushRunHolds()
     }
 
