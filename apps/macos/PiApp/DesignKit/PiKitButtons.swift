@@ -40,6 +40,11 @@ extension PiKit {
         /// Called with the new hover state, for a face drawn elsewhere.
         var onHover: ((Bool) -> Void)?
         var onPress: (() -> Void)?
+        weak var actionBinding: ActionBinding?
+        private var pressBinding: ActionBinding.Token?
+        /// Unlike the cell's highlight, this stays true for the entire native
+        /// tracking loop, including time spent outside the button or detached.
+        private(set) var isTrackingMouse = false
         private var tracking: NSTrackingArea?
         private var shownPressed = false
 
@@ -85,7 +90,23 @@ extension PiKit {
             override func drawInterior(withFrame cellFrame: NSRect, in controlView: NSView) {}
         }
 
-        @objc private func pressed(_ sender: Any?) { onPress?() }
+        @objc private func pressed(_ sender: Any?) {
+            guard pressBinding?.isCurrent != false else { return }
+            onPress?()
+        }
+        override func mouseDown(with event: NSEvent) {
+            let previous = pressBinding, wasTracking = isTrackingMouse
+            pressBinding = pressBinding ?? actionBinding?.capture()
+            isTrackingMouse = true
+            defer { pressBinding = previous; isTrackingMouse = wasTracking }
+            super.mouseDown(with: event)
+        }
+        override func performClick(_ sender: Any?) {
+            let previous = pressBinding
+            pressBinding = pressBinding ?? actionBinding?.capture()
+            defer { pressBinding = previous }
+            super.performClick(sender)
+        }
         override func accessibilityPerformPress() -> Bool {
             guard isEffectivelyEnabled else { return false }
             performClick(nil)

@@ -11,6 +11,16 @@ import Combine
     func entryHeight(width: CGFloat) -> CGFloat
 }
 
+/// Removing a control or clearing its highlight does not end AppKit's mouse
+/// tracking. A held row stays out of every pool until that gesture is over.
+@MainActor enum SidebarRowReuse {
+    static func isTrackingMouse(in view: NSView) -> Bool {
+        if let button = view as? PiKit.ButtonBase, button.isTrackingMouse || button.isPressedDown { return true }
+        if let surface = view as? TopicSessionDragSurfaceView, surface.isTrackingMouse { return true }
+        return view.subviews.contains { isTrackingMouse(in: $0) }
+    }
+}
+
 /// A chat in the sidebar: its press surface, its highlight, its right-click
 /// menu and, in a project, its drag source.
 @MainActor final class SidebarChatRowView: NSView, SidebarEntryView {
@@ -20,6 +30,7 @@ import Combine
     private(set) var projectID: String
     let body = ChatRowBodyView()
     let row: PiKit.SelectableRow
+    private let actionBinding = PiKit.ActionBinding()
     private var surface: TopicSessionDragSurfaceView?
     private var sourceWatch: AnyCancellable?
     private var minuteWatch: AnyCancellable?
@@ -37,7 +48,6 @@ import Combine
         super.init(frame: .zero)
         wantsLayer = true
         addSubview(row)
-        row.onPress = { [weak self] in self?.click(NSEvent.modifierFlags) }
         // Archive's confirmation is wider than the button it replaces: the
         // surface's cut-outs follow it at once.
         body.controlsChanged = { [weak self] in
@@ -48,15 +58,6 @@ import Combine
             }
             self.needsLayout = true; self.layoutSubtreeIfNeeded()
         }
-        row.doubleClick = { [weak self] in self?.rename() }
-        body.toggle = { [weak self] in
-            guard let self else { return }
-            let folded = !self.model.collapsedSidebarSides.contains(self.chat.id)
-            // The list moves its rows for it, when it has one.
-            if let fold = (self.superview as? SidebarListDocument)?.setSideFolded { fold(self.chat.id, folded) }
-            else { self.model.setSidebarSideFolded(self.chat.id, folded: folded) }
-        }
-        body.archive = { [weak self] in guard let self else { return }; self.model.toggleSessionArchive(self.chat.id) }
         minuteWatch = SidebarMinute.shared.$tick.dropFirst().sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshBody() } }
         apply(chat: chat, state: state, projectID: projectID, force: true)
     }
@@ -70,8 +71,9 @@ import Combine
 
     /// Takes the chat and its state; changes only what differs.
     func apply(chat: ChatRecord, state: SidebarChatRowState, projectID: String, force: Bool = false) {
-        guard force || chat != self.chat || state != self.state || projectID != self.projectID else { return }
+        guard force || actionBinding.entryID != chat.id || chat != self.chat || state != self.state || projectID != self.projectID else { return }
         Self.builds &+= 1
+        if force || actionBinding.entryID != chat.id { actionBinding.rebind(to: chat.id) }
         self.chat = chat; self.state = state; self.projectID = projectID
         if minuteWatch == nil {
             minuteWatch = SidebarMinute.shared.$tick.dropFirst().sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshBody() } }
@@ -88,16 +90,56 @@ import Combine
             addSubview(view, positioned: .above, relativeTo: row)
             surface = view
         } else if !state.draggable, let surface { surface.removeFromSuperview(); self.surface = nil }
-        surface?.actions = TopicSessionRowActions(item: { [weak self] in self?.dragItem() }, image: { [weak self] in self?.dragImage() },
-                                                  click: { [weak self] in self?.click($0) }, doubleClick: { [weak self] in self?.rename() },
-                                                  dragging: dragHold.callback(model: model, list: { [weak self] in self?.superview as? SidebarListDocument }))
+        bindActions(chat: chat, projectID: projectID)
         needsLayout = true
+    }
+
+    private func bindActions(chat: ChatRecord, projectID: String) {
+        let token = actionBinding.capture(), id = chat.id, model = self.model
+        let click = token.guardAction { (flags: NSEvent.ModifierFlags) in
+            SidebarRowClick(modifiers: flags).apply(to: model, sessionID: id) {
+                Task { guard token.isCurrent else { return }; await model.openFromSidebar(id) }
+            }
+        }
+        let rename = token.guardAction { if !chat.isBackgroundTask { model.presentRename(id) } }
+        row.onPress = { click(NSEvent.modifierFlags) }
+        row.doubleClick = rename
+        body.toggle = token.guardAction { [weak self] in
+            guard let self else { return }
+            let folded = !model.collapsedSidebarSides.contains(id)
+            if let fold = (self.superview as? SidebarListDocument)?.setSideFolded { fold(id, folded) }
+            else { model.setSidebarSideFolded(id, folded: folded) }
+        }
+        body.archive = token.guardAction { model.toggleSessionArchive(id) }
+        body.bindActions(to: actionBinding)
+        actionBinding.install(in: self)
+        let hold = dragHold.callback(model: model, list: { [weak self] in self?.superview as? SidebarListDocument })
+        var dragStarted = false
+        surface?.actions = TopicSessionRowActions(
+            item: token.guardValue {
+                TopicSessionDrag(sessionIDs: model.dragSessionIDs(for: id, in: projectID), workspaceID: projectID).pasteboardItem()
+            },
+            image: token.guardValue { [weak self] in
+                guard let self else { return nil }
+                return TopicSessionDragPreview.image(count: model.dragSessionIDs(for: id, in: projectID).count,
+                                                      title: model.record(id)?.title ?? "Chat", appearance: self.effectiveAppearance)
+            }, click: click, doubleClick: rename, dragging: { held in
+                if held {
+                    guard token.isCurrent else { return }
+                    dragStarted = true; hold(true)
+                } else if dragStarted {
+                    // Ending an already accepted drag must release its order
+                    // hold even if its source row has since disappeared.
+                    dragStarted = false; hold(false)
+                }
+            }, isCurrent: { token.isCurrent })
     }
 
     /// Detached rows may serve another chat. In particular, never carry the
     /// previous chat's retained accounting subscription into that binding.
     override func prepareForReuse() {
         super.prepareForReuse()
+        actionBinding.invalidate()
         sourceWatch = nil; minuteWatch = nil; watchedDisplay = nil; retained = nil
         bodyScheduled = false
         body.prepareForReuse()
@@ -173,33 +215,16 @@ import Combine
         if let height, entryHeight(width: bounds.width) != height { (superview as? SidebarListDocument)?.entryChangedHeight() }
     }
 
-    private func click(_ flags: NSEvent.ModifierFlags) {
-        let model = self.model, id = chat.id
-        SidebarRowClick(modifiers: flags).apply(to: model, sessionID: id) {
-            Task { await model.openFromSidebar(id) }
-        }
-    }
-    private func rename() { if !chat.isBackgroundTask { model.presentRename(chat.id) } }
-
-    /// What this row would put on the drag pasteboard right now: read before
-    /// the press is applied, so a marked row still carries the marks it was dragged by.
-    private func dragItem() -> NSPasteboardItem? {
-        TopicSessionDrag(sessionIDs: model.dragSessionIDs(for: chat.id, in: projectID), workspaceID: projectID).pasteboardItem()
-    }
-    private func dragImage() -> NSImage? {
-        TopicSessionDragPreview.image(count: model.dragSessionIDs(for: chat.id, in: projectID).count, title: model.record(chat.id)?.title ?? "Chat",
-                                      appearance: effectiveAppearance)
-    }
-
     // MARK: Menu
 
     override func menu(for event: NSEvent) -> NSMenu? {
-        let menu: NSMenu
-        if state.anyMarked && state.marked { menu = PiMenus.menu(MarkedSessionActions.entries(model: model)) }
+        let entries: [PiMenuEntry]
+        if state.anyMarked && state.marked { entries = MarkedSessionActions.entries(model: model) }
         else {
             let model = self.model, chat = self.chat, state = self.state
-            menu = PiMenus.menu(Self.entries(model: model, chat: chat, state: state))
+            entries = Self.entries(model: model, chat: chat, state: state)
         }
+        let menu = PiMenus.menu(actionBinding.capture().guardMenu(entries))
         // The rows stay where they are while the menu is open.
         menuHold.hold(menu, model: model, list: superview as? SidebarListDocument)
         return menu
@@ -246,6 +271,7 @@ import Combine
     private(set) var state: SidebarSideRowState
     let body = ChatRowBodyView()
     let row: PiKit.SelectableRow
+    private let actionBinding = PiKit.ActionBinding()
     private var sourceWatch: AnyCancellable?
     private var minuteWatch: AnyCancellable?
 
@@ -254,11 +280,6 @@ import Combine
         row = PiKit.SelectableRow(content: body, selected: state.selected, glide: glide)
         super.init(frame: .zero)
         addSubview(row)
-        row.onPress = { [weak self] in
-            guard let self else { return }
-            let model = self.model, id = self.state.id
-            Task { await model.openFromSidebar(id) }
-        }
         minuteWatch = SidebarMinute.shared.$tick.dropFirst().sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshBody() } }
         apply(state, force: true)
     }
@@ -266,8 +287,15 @@ import Combine
     override var isFlipped: Bool { true }
 
     func apply(_ new: SidebarSideRowState, force: Bool = false) {
-        guard force || new != state else { return }
+        guard force || actionBinding.entryID != new.id || new != state else { return }
         SidebarChatRowView.builds &+= 1
+        if force || actionBinding.entryID != new.id { actionBinding.rebind(to: new.id) }
+        let token = actionBinding.capture(), id = new.id, model = self.model
+        row.onPress = token.guardAction {
+            Task { guard token.isCurrent else { return }; await model.openFromSidebar(id) }
+        }
+        body.bindActions(to: actionBinding)
+        actionBinding.install(in: self)
         state = new
         if minuteWatch == nil {
             minuteWatch = SidebarMinute.shared.$tick.dropFirst().sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshBody() } }
@@ -283,6 +311,7 @@ import Combine
     }
     override func prepareForReuse() {
         super.prepareForReuse()
+        actionBinding.invalidate()
         sourceWatch = nil; minuteWatch = nil; bodyScheduled = false
         body.prepareForReuse()
         row.prepareForReuse(); row.recencyTint = 0; row.cell?.isHighlighted = false
@@ -318,7 +347,7 @@ import Combine
     }
     override func menu(for event: NSEvent) -> NSMenu? {
         let model = self.model, state = self.state
-        let menu = PiMenus.menu(Self.entries(model: model, state: state))
+        let menu = PiMenus.menu(actionBinding.capture().guardMenu(Self.entries(model: model, state: state)))
         menuHold.hold(menu, model: model, list: superview as? SidebarListDocument)
         return menu
     }

@@ -628,9 +628,10 @@ struct SidesPanelActivity: Equatable {
         let indices = start..<low
         let wanted = Set(indices.map { items[$0].entry.id })
         for (id, row) in rows where !wanted.contains(id) {
+            let reusable = !SidebarRowReuse.isTrackingMouse(in: row)
             rows[id] = nil; row.removeFromSuperview()
             row.prepareForReuse()
-            if pool.count < 40 { pool.append(row) }
+            if reusable, pool.count < 40 { pool.append(row) }
         }
         for index in indices {
             let entry = items[index].entry
@@ -677,6 +678,7 @@ struct SidesPanelActivity: Equatable {
     }
     let model: WorkspaceModel
     let row: PiKit.SelectableRow
+    private let actionBinding = PiKit.ActionBinding()
     private let words = SidesPanelRowWords()
     private(set) var content: Content?
     var motionReduced: Bool { get { words.motionReduced } set { words.motionReduced = newValue } }
@@ -686,22 +688,24 @@ struct SidesPanelActivity: Equatable {
         super.init(frame: .zero)
         addSubview(row)
         row.setAccessibilityIdentifier("sidesPanelRow")
-        row.onPress = { [weak self] in
-            guard let self, let id = self.content?.entry.id else { return }
-            let model = self.model
-            Task { await model.openFromSidesPanel(id) }
-        }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
     override func prepareForReuse() {
         super.prepareForReuse()
+        actionBinding.invalidate()
         content = nil
         row.prepareForReuse()
         row.cell?.isHighlighted = false
     }
     func update(_ new: Content) {
         guard new != content else { return }
+        if actionBinding.entryID != new.entry.id { actionBinding.rebind(to: new.entry.id) }
+        let token = actionBinding.capture(), id = new.entry.id, model = self.model
+        row.onPress = token.guardAction {
+            Task { guard token.isCurrent else { return }; await model.openFromSidesPanel(id) }
+        }
+        actionBinding.install(in: self)
         content = new
         words.update(new)
         row.selected = new.entry.open

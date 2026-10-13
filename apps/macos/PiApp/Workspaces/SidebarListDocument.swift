@@ -279,7 +279,7 @@ import QuartzCore
         didSet {
             guard inheritedEnabled != oldValue else { return }
             // Views take their own enabled states again when built afresh.
-            for view in views.values { view.removeFromSuperview() }
+            for view in views.values { recycle(view) }
             views.removeAll()
             chatPool.removeAll(); sidePool.removeAll()
             materialize()
@@ -294,13 +294,17 @@ import QuartzCore
     // MARK: Entry views
 
     private func recycle(_ view: NSView) {
+        // Check before removal/prepare clears the cell highlight. Native
+        // tracking can keep running on a detached control until mouse-up.
+        let reusable = inheritedEnabled && !model.sidebarOrderHolds.contains(.menu)
+            && !model.sidebarOrderHolds.contains(.drag) && !SidebarRowReuse.isTrackingMouse(in: view)
         view.removeFromSuperview()
-        // A menu or drag still owns its original row actions until it ends.
-        guard inheritedEnabled, !model.sidebarOrderHolds.contains(.menu), !model.sidebarOrderHolds.contains(.drag) else { return }
-        if let chat = view as? SidebarChatRowView, chatPool.count < Self.reuseLimit {
-            chat.prepareForReuse(); chatPool.append(chat)
-        } else if let side = view as? SidebarSideRowView, sidePool.count < Self.reuseLimit {
-            side.prepareForReuse(); sidePool.append(side)
+        if let chat = view as? SidebarChatRowView {
+            chat.prepareForReuse()
+            if reusable, chatPool.count < Self.reuseLimit { chatPool.append(chat) }
+        } else if let side = view as? SidebarSideRowView {
+            side.prepareForReuse()
+            if reusable, sidePool.count < Self.reuseLimit { sidePool.append(side) }
         } else { return }
         func clear(_ layer: CALayer) { layer.removeAllAnimations(); for child in layer.sublayers ?? [] { clear(child) } }
         if let layer = view.layer { clear(layer) }

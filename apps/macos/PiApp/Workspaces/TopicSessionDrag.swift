@@ -103,9 +103,8 @@ enum SidebarRowClick: Equatable {
     }
 }
 
-/// What a press on a row can turn into. The row is rebuilt on every sidebar
-/// change, so the retained surface asks for these instead of holding a snapshot
-/// of what the row carried when it was installed.
+/// What a press on a row can turn into. Each gesture keeps the callbacks of
+/// the binding it began on, even if an update replaces the surface's actions.
 struct TopicSessionRowActions {
     var item: @MainActor () -> NSPasteboardItem? = { nil }
     var image: @MainActor () -> NSImage? = { nil }
@@ -113,6 +112,7 @@ struct TopicSessionRowActions {
     var doubleClick: @MainActor () -> Void = { }
     /// A drag of the row began (true) or ended (false).
     var dragging: @MainActor (Bool) -> Void = { _ in }
+    var isCurrent: @MainActor () -> Bool = { true }
 }
 
 /// The transparent surface over a draggable chat row. It takes the plain left
@@ -123,6 +123,8 @@ final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
     /// deliberate pull shows the drag image at once.
     static let dragThreshold: CGFloat = 4
     var actions = TopicSessionRowActions()
+    private var activeDragActions: TopicSessionRowActions?
+    private(set) var isTrackingMouse = false
     /// Detaching cancels a held press even if a pool reattaches this surface
     /// to the same window with another chat before the next event arrives.
     private var pressGeneration = 0
@@ -164,6 +166,10 @@ final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
     static let pressIdleLimit = 600
 
     override func mouseDown(with event: NSEvent) {
+        let actions = actions, wasTracking = isTrackingMouse
+        isTrackingMouse = true
+        defer { isTrackingMouse = wasTracking }
+        guard actions.isCurrent() else { return }
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         // The second press of a double-click renames; the first already selected.
         guard event.clickCount < 2 else { actions.doubleClick(); return }
@@ -184,28 +190,30 @@ final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
                 // The button is no longer down, the row left its window, or the
                 // press has been "held" without a single event for longer than
                 // anyone holds a row: none of those is a press to wait on.
-                guard NSEvent.pressedMouseButtons & 1 == 1, window === pressed, generation == pressGeneration, idle < Self.pressIdleLimit else { return }
+                guard NSEvent.pressedMouseButtons & 1 == 1, window === pressed, generation == pressGeneration,
+                      actions.isCurrent(), idle < Self.pressIdleLimit else { return }
                 continue
             }
             idle = 0
             // The row went away while it was held: a chat deleted from another
             // window, a filter flipping, a topic collapsing. Releasing must not
             // then open or mark whatever used to be here.
-            guard window === pressed, generation == pressGeneration else { return }
+            guard window === pressed, generation == pressGeneration, actions.isCurrent() else { return }
             guard next.type == .leftMouseDragged else { break }
             guard let item, pressed != nil, Self.startsDrag(from: origin, to: next.locationInWindow) else { continue }
-            beginDrag(item, with: next)
+            beginDrag(item, with: next, actions: actions)
             return
         }
         actions.click(modifiers)
     }
 
-    private func beginDrag(_ item: NSPasteboardItem, with event: NSEvent) {
+    private func beginDrag(_ item: NSPasteboardItem, with event: NSEvent, actions: TopicSessionRowActions) {
         let dragging = NSDraggingItem(pasteboardWriter: item)
         let image = actions.image(), point = convert(event.locationInWindow, from: nil)
         let size = image?.size ?? bounds.size
         dragging.setDraggingFrame(NSRect(x: point.x - size.width / 2, y: point.y - size.height / 2,
                                          width: size.width, height: size.height), contents: image)
+        activeDragActions = actions
         beginDraggingSession(with: [dragging], event: event, source: self)
     }
 
@@ -239,9 +247,10 @@ final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
     }
     /// AppKit shows its own cursor for the length of a drag, and sends no exit
     /// while it does: ours steps aside and returns if the row is still under it.
-    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) { popCursor(); actions.dragging(true) }
+    func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) { popCursor(); activeDragActions?.dragging(true) }
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
-        actions.dragging(false)
+        activeDragActions?.dragging(false)
+        activeDragActions = nil
         guard let window, bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) else { return }
         pushCursor()
     }

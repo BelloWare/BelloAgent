@@ -157,7 +157,7 @@ final class SidebarInteractionTests: XCTestCase {
         window.close()
     }
 
-    @MainActor func testAPressedRowRecycledInTheSameWindowCannotMarkItsNewChat() throws {
+    @MainActor func testAPressedRowIsRetiredWithoutRebindingOrMarkingAnotherChat() throws {
         drain()
         let root = scratchRoot("sidebar-pressed-row-reuse")
         let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -182,17 +182,19 @@ final class SidebarInteractionTests: XCTestCase {
         let row = try XCTUnwrap(document.views["chat|chat55"] as? SidebarChatRowView)
         let surface = try XCTUnwrap(surfaces(row).first)
         let release = Unchecked(try mouse(.leftMouseUp, window: window))
+        let heldRow = Unchecked((document, row))
         var movedDuringPress = false
         // A pin finishing while mouseDown tracks moves the pressed chat to
-        // the top. Its control is then reused for a different mounted chat.
+        // the top. Its control must stay out of the pool until mouse-up.
         RunLoop.main.perform(inModes: [.eventTracking]) {
             MainActor.assumeIsolated {
                 let pinned = entries.entries.remove(at: 55)
                 entries.entries.insert(pinned, at: 0)
+                let (document, row) = heldRow.value
                 document.update(entries, width: 280, animated: false)
                 movedDuringPress = true
-                XCTAssertNotEqual(row.chat.id, "chat55", "Exercise actual rebinding, not just removal")
-                XCTAssertTrue(surface.window === window, "The old window-identity check still passes")
+                XCTAssertEqual(row.chat.id, "chat55", "A held row cannot be rebound to another chat")
+                XCTAssertNil(surface.window)
                 NSApp.postEvent(release.value, atStart: false)
             }
         }
