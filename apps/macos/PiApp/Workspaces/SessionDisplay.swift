@@ -250,10 +250,10 @@ struct TranscriptVersionView: Equatable, Sendable {
             if failureCode == Self.skillUpdatedCode {
                 // The queued message's skill was pinned to its current
                 // version: the notice says so and offers Resume, which sends
-                // it. Once it no longer waits, the run's failure is what is
-                // left, and Retry request finishes the stopped turn.
-                if paused { row.failureCode = failureCode; row.detail = nil }
-                else { row.detail = "The queued message is no longer waiting. Retry request finishes the stopped turn." }
+                // it. The helper (and a journal read) report this code only
+                // while that message waits, so it is not checked against the
+                // queue shown here, which can trail the snapshot by a moment.
+                row.failureCode = failureCode; row.detail = nil
             }
             if failureCode == Self.costLimitCode {
                 // The run stopped at the chat's cost limit: the notice offers to

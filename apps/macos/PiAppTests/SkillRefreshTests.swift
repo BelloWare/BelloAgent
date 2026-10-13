@@ -163,8 +163,9 @@ final class SkillRefreshTests: XCTestCase {
         XCTAssertEqual(userRows(f.view), 0)
     }
 
-    /// Resume is offered only while the queued message waits. Once it is
-    /// removed, the run's own failure offers Retry request again.
+    /// Resume is offered while the helper says the queued message waits, also
+    /// before the panel shows it. Once it is removed, the run's own failure
+    /// offers Retry request again.
     @MainActor func testResumeIsOfferedOnlyWhileTheQueuedMessageWaits() {
         let view = SessionDisplay(id: "queued")
         let queued: [String: WireValue] = ["turnId": .string("t"), "text": .string("review this"), "kind": .string("steering")]
@@ -173,13 +174,14 @@ final class SkillRefreshTests: XCTestCase {
                               "preflightError": .string("\u{201C}a\u{201D} changed after this message was queued. The message now uses the updated version. Press Resume to send it."),
                               "errorCode": .string(SessionDisplay.skillUpdatedCode)])
         XCTAssertEqual(view.presentedMessages.last?.failureCode, SessionDisplay.skillUpdatedCode)
+        // A snapshot whose queue the panel does not show yet (a sending row
+        // hides it) still offers Resume: the helper's code says the message waits.
         view.queue = []
+        XCTAssertEqual(view.presentedMessages.last?.failureCode, SessionDisplay.skillUpdatedCode)
+        // Once the helper says the message is gone, the run's failure, with Retry request.
         view.observeRunState(["state": .string("error"), "runStatus": .string("failed"), "queuePaused": .bool(false),
-                              "preflightError": .string("\u{201C}a\u{201D} changed after this message was queued. The message now uses the updated version. Press Resume to send it."),
-                              "errorCode": .string(SessionDisplay.skillUpdatedCode)])
-        let row = view.presentedMessages.last
-        XCTAssertNil(row?.failureCode, "The run's failure, with Retry request")
-        XCTAssertEqual(row?.detail, "The queued message is no longer waiting. Retry request finishes the stopped turn.")
+                              "preflightError": .string("The run stopped for a queued message whose skill had changed, and that message is no longer waiting. Retry request finishes the stopped turn.")])
+        XCTAssertNil(view.presentedMessages.last?.failureCode)
     }
 
     /// Only a skill that changed again is said to be changing: a re-pinned
