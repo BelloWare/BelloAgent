@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import AppKit
+import ObjectiveC
 @testable import PiApp
 @testable import GitView
 
@@ -10,7 +11,27 @@ import AppKit
 /// still closes the sheet around it; every row says what it shows; and a
 /// commit's file chips narrow the diff, add the next step, name their file
 /// and offer its history.
-final class GitDiffTableTests: GitPanelTestCase {
+final class GitDiffTableTests: GitPanelTestCase, SerialTestLane {
+    @MainActor private var restorePasteboard: (() -> Void)?
+    @MainActor override func setUp() async throws {
+        // The app and the package's default menu both use +general. Keep
+        // these serial tests on one private board without touching the desktop.
+        let board = NSPasteboard(name: .init("git-diff-tests-" + UUID().uuidString))
+        let method = try XCTUnwrap(class_getClassMethod(NSPasteboard.self, #selector(getter: NSPasteboard.general)))
+        let replacement = imp_implementationWithBlock({ (_: AnyObject) -> NSPasteboard in board } as @convention(block) (AnyObject) -> NSPasteboard)
+        let original = method_setImplementation(method, replacement)
+        restorePasteboard = {
+            method_setImplementation(method, original); imp_removeBlock(replacement); board.releaseGlobally()
+        }
+        guard NSPasteboard.general.name == board.name else {
+            restorePasteboard?(); restorePasteboard = nil
+            throw NSError(domain: "GitDiffTableTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not isolate the copy destination."])
+        }
+    }
+    @MainActor override func tearDown() async throws {
+        restorePasteboard?(); restorePasteboard = nil
+    }
+
     static let patch = """
     diff --git a/Sources/Engine/Router.swift b/Sources/Engine/Router.swift
     --- a/Sources/Engine/Router.swift

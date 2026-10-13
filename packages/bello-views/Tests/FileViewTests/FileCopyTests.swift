@@ -46,6 +46,35 @@ final class FileCopyTests: XCTestCase {
         source.held.removeFirst()()
         XCTAssertEqual(pasteboard.string(forType: .string), "alpha")
     }
+    @MainActor func testALaterCopyFromAnotherViewerWinsInEitherCompletionOrder() {
+        for olderFirst in [true, false] {
+            let (first, firstSource, pasteboard) = viewer(), (second, secondSource, _) = viewer()
+            second.select(from: .start, to: FileTextPosition(line: 0, column: 5))
+            first.copy(to: pasteboard); second.copy(to: pasteboard)
+            let change = pasteboard.changeCount
+            if olderFirst {
+                firstSource.held.removeFirst()()
+                XCTAssertNil(pasteboard.string(forType: .string), "the superseded request must not claim the clipboard")
+                XCTAssertEqual(pasteboard.changeCount, change)
+            }
+            secondSource.held.removeFirst()()
+            let copied = pasteboard.changeCount
+            if !olderFirst { firstSource.held.removeFirst()() }
+            XCTAssertEqual(pasteboard.string(forType: .string), "alpha")
+            XCTAssertEqual(pasteboard.changeCount, copied)
+        }
+    }
+    @MainActor func testAnUnrelatedCopySupersedesPendingCopiesFromBothViewers() {
+        for olderFirst in [true, false] {
+            let (first, firstSource, pasteboard) = viewer(), (second, secondSource, _) = viewer()
+            first.copy(to: pasteboard); second.copy(to: pasteboard)
+            pasteboard.clearContents(); pasteboard.setString("elsewhere", forType: .string)
+            let change = pasteboard.changeCount
+            for source in olderFirst ? [firstSource, secondSource] : [secondSource, firstSource] { source.held.removeFirst()() }
+            XCTAssertEqual(pasteboard.string(forType: .string), "elsewhere")
+            XCTAssertEqual(pasteboard.changeCount, change)
+        }
+    }
     @MainActor private final class HeldSource: FileTextSource {
         let lines = FileTextLines("alpha beta")
         var held: [() -> Void] = []

@@ -905,15 +905,17 @@ public struct FileTextStyle {
         guard hasSelection else { return }
         let (start, end) = selectedRange
         copies += 1
-        let ticket = copies, change = pasteboard.changeCount
+        Self.copyGeneration &+= 1
+        let ticket = copies, generation = Self.copyGeneration, change = pasteboard.changeCount
         source.fetch(from: start, to: end) { [weak self] text in
-            // A copy elsewhere owns the clipboard now, even if this view's
-            // selection has not changed while its text was being read.
-            guard let self, ticket == self.copies, pasteboard.changeCount == change, let text, !text.isEmpty else { return }
+            // A newer request in any viewer owns Copy before its text arrives;
+            // an unrelated clipboard write owns the pasteboard immediately.
+            guard let self, ticket == self.copies, generation == Self.copyGeneration, pasteboard.changeCount == change, let text, !text.isEmpty else { return }
             _ = pasteboard.clearContents(); _ = pasteboard.setString(text, forType: .string)
         }
     }
     private var copies = 0
+    private static var copyGeneration: UInt64 = 0
     public override func selectAll(_ sender: Any?) { select(from: .start, to: end) }
 
     // MARK: Keys
