@@ -1212,7 +1212,11 @@ final class TranscriptNativeScrollView: NSScrollView {
         if let editor = view as? NSTextView, let field = editor.delegate as? NSView { view = field }
         var node: NSView? = view
         while let current = node {
-            if let row = current as? TranscriptRowContainer { return row }
+            if let row = current as? TranscriptRowContainer {
+                // Parent and side transcripts share a window, but only this
+                // document may retain or unmount the selected row.
+                return row.superview === self ? row : nil
+            }
             node = current.superview
         }
         return nil
