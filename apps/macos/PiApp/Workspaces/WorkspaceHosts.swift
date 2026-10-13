@@ -216,6 +216,7 @@ extension WorkspaceModel {
             var wire = profile.wire.object ?? [:]
             if let headers = credential["headers"] { wire["headers"] = headers }
             var params: [String: WireValue] = ["profile": .object(wire), "apiKey": .string(key), "toolMode": .string(item.toolMode)]
+            if let grants = subagentModels(for: item) { params["subagentModels"] = grants }
             if let handoff = try await store.get(WireValue.self, kind: "handoff", id: item.id) { params["handoff"] = handoff }
             // The chat's cost limit, which the helper checks before every model request.
             params.merge(await costLimitParams(for: item)) { _, limit in limit }

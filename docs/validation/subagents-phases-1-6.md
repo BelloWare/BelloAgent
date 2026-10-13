@@ -39,3 +39,20 @@ No UI was exposed. Later phases add execution and read-only child controls.
   writable v1 parent; interrupted result without a request or replay; v2 child
   refusal; unchanged child bytes; rejection keyed by marker type, not version data.
 - Logs: `$PI_BUILD_ROOT/logs/phase2-{helper-final,app,mutation-helper,downgrade}.log`.
+
+## Phase 3 — permissions and grants
+
+- Restricted definitions, capabilities and invocation; inherited read-only
+  policy, frozen MCP server ceiling and separate invocation retention identities.
+- Exact existing picker grants, saved with submissions; managed children reject
+  independent submit/configure, fork, Resume, queue, manual compaction and MCP
+  invocation commands. Viewing and Stop remain available.
+- Failing first: the managed child accepted both independent submit and configure.
+- Helper: `SubagentPermissionTests`, `ContinueRunTests`, `MCPResultRetentionTests`:
+  29 passed. Mutations removing either the read-only ceiling or managed-session
+  command guard failed the new behavioral tests; restored and all 29 passed.
+- App: `SubagentModelGrantTests`, `ModelSwitchTests`, bash array, parallel lane:
+  23 passed. The focused grant class passed again after aligning input kinds
+  with the picker's connection-plus-descriptor rule (`phase3-app-final.log`).
+- Logs: `$PI_BUILD_ROOT/logs/phase3-{red-helper,helper-final,app}.log` and
+  `phase3-mutation-*.log`. The feature remains hidden.

@@ -28,7 +28,7 @@ extension AgentSession {
     /// model has not answered — a user message, or tool results (cut-off
     /// ones included). The snapshot says so, and the app offers Resume.
     var canContinue: Bool {
-        guard runTask == nil, !closed, queueEdit == nil, !titleTask, !isConnectionTest, let tail = continuationTail else { return false }
+        guard !isSubagent, runTask == nil, !closed, queueEdit == nil, !titleTask, !isConnectionTest, let tail = continuationTail else { return false }
         return Self.continues(from: tail)
     }
     /// A context ending in a user message, tool results, or a compaction
@@ -54,6 +54,7 @@ extension AgentSession {
     /// to a helper that then restarted — finds it and runs nothing. A second
     /// Resume with a new identity while this one runs is refused as busy.
     public func continueRun(commandID: String, overrides: JSON = [:]) throws -> JSON {
+        try requireIndependentSession()
         guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
         let receiptKey = Self.continuePrefix + commandID
         if let receipt = commands.last(where: { $0["commandId"].text == commandID }) {

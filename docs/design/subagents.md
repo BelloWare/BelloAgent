@@ -1294,6 +1294,7 @@ Future implementation follows the repository’s commit/push workflow. This desi
 
 ## Implementation notes
 
+- Phase 3: the existing picker descriptors supply model grants; a submission retains the offered list so queued turns cannot inherit a later list. Restricted executors recheck live definitions and keep the original read-only ceiling. MCP result-retention keys are invocation UUIDs, mapped back from each child's model call IDs. No extra MCP host or catalog was added.
 - Phase 2: only child journals use `pi-app.native.v2`. The derived `.meta` checkpoint version advances to 2 so it cannot omit delegation state; journal bytes are not migrated. An actual `v0.1.125` helper accepts the v1 parent and refuses the v2 child without writing it. The generated Xcode project also picks up phase 1's shared source and tests.
 - Phase 1: the shared `SubagentPolicy.enabled` constant is the single production rollout switch. There is no preference or IPC override. Model grants and origin types are shared source between the helper and app. Parent metadata keeps managed origin immutable across stale updates. The scheduling table now reflects the owner decisions in §15.
 - Base: `dev/a126-helper` already includes closing-session accounting; preserve and extend that implementation instead of reverting to the older lifecycle described in §4.5.

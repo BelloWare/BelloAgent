@@ -45,6 +45,11 @@ extension AgentSession {
         }
     }
     public func submit(_ input: Submission, steer: Bool, admittedAt: Int? = nil) throws -> JSON {
+        try requireIndependentSession()
+        return try submitManaged(input, steer: steer, admittedAt: admittedAt)
+    }
+    /// Only the coordinator submits a managed child's initial task.
+    func submitManaged(_ input: Submission, steer: Bool, admittedAt: Int? = nil) throws -> JSON {
         // The comparison and admission share this actor turn: Stop cannot
         // slip between the final preflight check and launching the run.
         try checkSubmissionStop(admittedAt)
@@ -135,6 +140,7 @@ extension AgentSession {
     /// The partial reply of the failed attempt stays in the transcript as what
     /// arrived but is never replayed. Queued follow-ups go on after the turn.
     public func retryRun(overrides: JSON = [:]) throws {
+        try requireIndependentSession()
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
         guard state == .error || state == .paused, let last=history.last(where: { $0.replayEligible }), last.role != "assistant" else {
             throw AgentError(AgentErrorCode.nothingToRetry, "There is no failed request to retry; send a new message instead")
@@ -149,6 +155,7 @@ extension AgentSession {
         activeSubmission=submission; retrying=true; queuePaused=false; errorMessage=nil; errorCode=nil; try persistState(); launch()
     }
     func deliver(_ submission: Submission, lane: String = "follow-up", newTask: Bool = true) async throws {
+        turnSubagentModels = submission.subagentModels ?? subagentModelGrants
         let turn = try profile.overriding(submission)
         // Steering delivered at a Resume's start takes the run over: the
         // continuation's command is done, its receipt says so.

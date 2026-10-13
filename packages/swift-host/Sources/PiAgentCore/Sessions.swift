@@ -9,6 +9,7 @@ public struct Submission: Codable, Sendable {
     /// What the turn's model takes ("text", "image") when the app's model
     /// catalog says more than the connection does; nil keeps the connection's.
     public var input: [String]? = nil
+    var subagentModels: [SubagentModelGrant]? = nil
     /// Advances when a queued edit saves new text, so a reader can tell a
     /// rewrite past the preview from the text it had. Absent before one.
     public var textRevision: Int? = nil
@@ -87,6 +88,8 @@ public actor AgentSession {
     var costLimitUSD: Double?
     var spend = SessionSpend()
     var subagents = SubagentJournalState()
+    var subagentModelGrants: [SubagentModelGrant] = []
+    var turnSubagentModels: [SubagentModelGrant] = []
     var countedAttempts = BoundedIdentitySet(limit: 512)
     /// Whether this journal records every attempt's cost from its start: a
     /// new chat does, and so does one with a cost record. A chat written
@@ -468,6 +471,7 @@ public actor AgentSession {
     /// when the run ends, so a turn in flight never changes route or key midway.
     /// Returns whether the settings are in use already.
     public func configure(profile: Profile, apiKey: String) throws -> Bool {
+        try requireIndependentSession()
         guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
         guard profile.binding == self.profile.binding else { throw AgentError("session_conflict", "Changed API, endpoint or model requires a separately bound session") }
         guard runTask == nil else { pendingConfiguration = (profile, apiKey); event("state"); return false }

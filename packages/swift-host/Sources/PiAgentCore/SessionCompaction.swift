@@ -11,6 +11,7 @@ extension AgentSession {
     /// The running turn is stopped first, queued messages stay queued, and
     /// an optional focus is escaped data in the appended summary instruction.
     public func compact(commandID: String = UUID().uuidString, overrides: JSON = [:], focus: String? = nil) async throws {
+        try requireIndependentSession()
         let focus=focus?.trimmingCharacters(in:.whitespacesAndNewlines)
         guard (focus?.utf8.count ?? 0) <= 4096 else { throw AgentError("invalid_params", "A compaction focus is limited to 4 KB") }
         // Stopping the turn pauses the queue; that pause is compaction's own,

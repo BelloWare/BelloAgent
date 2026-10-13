@@ -25,6 +25,7 @@ extension AgentSession {
     /// and goes on from it, not reading the journal again. That open writes
     /// the metadata file, as a first open does.
     func forked(to newID: String, at messageID: String? = nil) throws -> (result: JSON, replay: JournalReplayConsumer) {
+        try requireIndependentSession()
         guard !closed, let journal, !ephemeral else { throw AgentError("session_unavailable", "Save this session before forking its context") }
         SessionJournal.removeForkLeftovers(in: directory)
         if let cloned = clonedFork(to: newID, journal: journal, at: messageID) { return cloned }

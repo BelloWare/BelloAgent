@@ -388,6 +388,7 @@ public actor NativeHostService {
                 if let costSeed { await session.adoptSpendSeed(costSeed) }
                 return session
             }
+            if !params["subagentModels"].isNull { try await session.configureSubagentModels(JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data())) }
             return withMode(await session.snapshot())
         case "session.rebind":
             // A saved chat moved to another connection: its journal is bound
@@ -443,6 +444,7 @@ public actor NativeHostService {
     /// refuse a quiesced workspace themselves.
     private func sessionCommand(_ method:String, id:String, session:AgentSession, params:JSON, in workspace:OpenWorkspace) async throws -> JSON? {
         let resources=workspace.resources, nativeTools=workspace.nativeTools
+        try await session.requireSubagentCommand(method)
         switch method {
         case "turn.stop": await session.stop(); return ["accepted":true]
         case "session.status":
@@ -517,7 +519,11 @@ public actor NativeHostService {
             let text=params["text"].text ?? "", tools=await nativeTools.capabilityIDs(readOnly:session.readOnly)
             let selected=try await resources.freeze(params["skills"].list,text:text,tools:tools)
             let overrides=try Self.turnOverrides(params)
-            let input=Submission(commandID:commandID,turnID:try identity(params["clientTurnId"]),text:text,attachments:params["attachments"].list,skills:selected,model:overrides.model,thinkingLevel:overrides.thinkingLevel,contextWindow:overrides.contextWindow,maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit,input:overrides.input)
+            var input=Submission(commandID:commandID,turnID:try identity(params["clientTurnId"]),text:text,attachments:params["attachments"].list,skills:selected,model:overrides.model,thinkingLevel:overrides.thinkingLevel,contextWindow:overrides.contextWindow,maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit,input:overrides.input)
+            if !params["subagentModels"].isNull {
+                input.subagentModels = try JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data())
+                try await session.configureSubagentModels(input.subagentModels ?? [])
+            }
             if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(params["messageId"]),input:input,expectedTimeline:params["editSourceTimeline"].text,expectedTextDigest:params["editSourceTextDigest"].text,admittedAt:admittedAt) }
             return try await session.submit(input,steer:method == "turn.steer",admittedAt:admittedAt)
         case "queue.remove": try await session.removeQueued(required(params["turnId"],"turn id")); return ["accepted":true]
@@ -543,6 +549,10 @@ public actor NativeHostService {
             // only after the complete result is saved and synced locally.
             return try await mcp.perform(args,readOnly:session.readOnly,retainedBy:"inspector:\(epoch):\(commandID)")
         case "session.configure":
+            if !params["subagentModels"].isNull {
+                try await session.configureSubagentModels(JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data()))
+                if params["profile"].isNull && params["costLimit"].isNull { return ["accepted":true,"applied":true] }
+            }
             // The chat's cost limit applies at once, also to a running session:
             // its next model request is checked against it. A configure that
             // carries only the limit leaves the connection as it is.
@@ -615,6 +625,7 @@ public actor NativeHostService {
     /// next open still resumes from it.
     private static func rebind(url: URL, id: String, directory: URL, to target: Profile, from previous: Profile?, check: Bool) throws -> JSON {
         let journal=try SessionJournal(url:url,id:id,cwd:directory,binding:nil,create:false,checkpoint:JournalCheckpoint.read(for:url))
+        guard journal.markerKind != JournalRecordKind.childMarker else { throw AgentError("managed_subagent", "A managed child cannot move connections") }
         let before=journal.binding ?? .null
         if check {
             var replies=0

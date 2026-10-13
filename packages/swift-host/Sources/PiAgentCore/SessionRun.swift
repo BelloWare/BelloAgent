@@ -5,6 +5,7 @@ import Foundation
 
 extension AgentSession {
     func launch(compactOnly: Bool = false) {
+        turnSubagentModels = activeSubmission?.subagentModels ?? subagentModelGrants
         presentationUtility = compactOnly || titleTask
         if retrying || continuing, let root = taskRootID {
             beginPresentedTask(root)
