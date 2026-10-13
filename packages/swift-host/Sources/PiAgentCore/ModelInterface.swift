@@ -10,6 +10,8 @@ public struct ToolDefinition: Sendable, Equatable {
 public struct ToolCall: Sendable {
     public let id: String, name: String
     public let arguments: JSON
+    /// Helper-owned MCP configuration ceiling; never parsed from model arguments.
+    var mcpPolicy: JSON?
     public init(id: String, name: String, arguments: JSON) { self.id=id; self.name=name; self.arguments=arguments }
 }
 public struct ModelTerminalOutcome: Sendable {
@@ -52,6 +54,7 @@ public extension ModelClient {
     }
 }
 public protocol ToolExecuting: Sendable {
+    func delegationMCPPolicy() async -> JSON?
     func definitions(readOnly: Bool) async -> [ToolDefinition]
     func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON
     func invoke(_ call: ToolCall, readOnly: Bool, onUpdate: @escaping @Sendable (JSON) async -> Void) async throws -> JSON
@@ -61,6 +64,7 @@ public protocol ToolExecuting: Sendable {
     func resultsRetained(_ callIDs: [String], retained: Bool) async
 }
 public extension ToolExecuting {
+    func delegationMCPPolicy() async -> JSON? { nil }
     func resultsRetained(_ callIDs: [String], retained: Bool) async {}
     func invoke(_ call: ToolCall, readOnly: Bool, onUpdate: @escaping @Sendable (JSON) async -> Void) async throws -> JSON { try await invoke(call,readOnly:readOnly) }
     func capabilityIDs(readOnly: Bool) async -> [String] { await definitions(readOnly:readOnly).map(\.name) }

@@ -7,11 +7,13 @@ actor RestrictedTools: ToolExecuting {
     let allowed: Set<String>
     let readOnly: Bool
     let servers: Set<String>
+    let mcpPolicy: JSON?
     private var retention: [String: String] = [:]
 
-    init(base: any ToolExecuting, allowed: Set<String>, readOnly: Bool, capabilities: [String]) {
+    init(base: any ToolExecuting, allowed: Set<String>, readOnly: Bool, capabilities: [String], mcpPolicy: JSON? = nil) {
         self.base = base; self.allowed = allowed.subtracting(["subagent"]); self.readOnly = readOnly
         servers = Set(capabilities.filter { $0.hasPrefix("mcp:") }.map { String($0.dropFirst(4)) })
+        self.mcpPolicy = mcpPolicy
     }
     func definitions(readOnly: Bool) async -> [ToolDefinition] {
         await base.definitions(readOnly: self.readOnly || readOnly).filter { allowed.contains($0.name) }
@@ -32,7 +34,8 @@ actor RestrictedTools: ToolExecuting {
             // Retention keys are physical invocations, never model call IDs
             // shared by parallel sessions. The model still sees its own ID.
             let token = UUID().uuidString; retention[call.id] = token
-            var result = try await base.invoke(ToolCall(id: token, name: call.name, arguments: call.arguments), readOnly: self.readOnly || readOnly, onUpdate: onUpdate)
+            var scoped = ToolCall(id: token, name: call.name, arguments: call.arguments); scoped.mcpPolicy = mcpPolicy
+            var result = try await base.invoke(scoped, readOnly: self.readOnly || readOnly, onUpdate: onUpdate)
             if call.arguments["action"].text == "list", call.arguments["server"].isNull {
                 result["servers"] = .array(result["servers"].list.filter { servers.contains($0["server"].text ?? "") })
             }

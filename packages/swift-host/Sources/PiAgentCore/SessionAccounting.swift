@@ -41,7 +41,10 @@ extension AgentSession {
     /// historical request-log totals. Callers must supply validated evidence.
     func correctAccounting(_ data: JSON) throws {
         guard let id = data["attemptId"].text, let entry = accounting.attempts[id], entry.admission != nil else { throw AttemptAccounting.damaged() }
-        _ = try appendAccounting(kind: JournalRecordKind.costUpdate, data: data)
+        do {
+            _ = try appendAccounting(kind: JournalRecordKind.costUpdate, data: data)
+            stopFamilyAtLimit()
+        } catch { failFamilyAccounting(error); throw error }
     }
 
     var familyUsage: JSON {

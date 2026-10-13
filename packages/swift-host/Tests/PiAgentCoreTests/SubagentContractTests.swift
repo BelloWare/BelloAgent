@@ -15,6 +15,11 @@ final class SubagentContractTests: XCTestCase {
         XCTAssertEqual(SubagentPolicy.maximumActiveChildren, 16)
     }
 
+    func testDiscoveryCanRefreshWhileStopKeepsItsCommandReceipt() {
+        XCTAssertTrue(NativeHostService.isReadOnly("subagent.list"))
+        XCTAssertFalse(NativeHostService.isReadOnly("subagent.stop"))
+    }
+
     func testChildCannotChangeItsBudgetOwnerOrNest() {
         var link = SubagentLink(delegationID: "d", childSessionID: "child", budgetOwnerSessionID: "parent",
                                 call: .init(parentSessionID: "parent", assistantMessageID: "reply", toolCallID: "call"),

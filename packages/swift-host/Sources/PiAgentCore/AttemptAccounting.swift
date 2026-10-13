@@ -72,13 +72,16 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
     private mutating func countUsage(_ entry: Entry, sign: Int) {
         guard entry.contribution != nil || entry.admission != nil && entry.admission?["state"].text != "not_dispatched" else { return }
         guard let data = entry.contribution, !data["usage"].map.isEmpty else { usageUnknownRequests += sign; return }
+        var observed = false
         for key in ["input", "output", "cacheRead", "cacheWrite", "reasoning", "total"] {
             if let value = data["usage"][key].double, value.isFinite, value >= 0 {
+                observed = true
                 usageTotals[key, default: 0] += Double(sign) * value
                 usageReported[key, default: 0] += sign
                 if usageReported[key] == 0 { usageTotals[key] = nil; usageReported[key] = nil }
             }
         }
+        if !observed { usageUnknownRequests += sign }
     }
 
     static func validatedCost(_ data: JSON) -> JSON {

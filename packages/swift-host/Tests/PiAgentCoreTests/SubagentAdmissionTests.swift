@@ -2,6 +2,25 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentAdmissionTests: XCTestCase {
+    func testLateCorrectionReachingTheLimitCancelsCurrentFamilyPermits() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let owner = try familyFixture(root: root), profile = try fixtureProfile()
+        await owner.enableFamilyBudget(); await owner.setCostLimit(0.5)
+        let value = try await owner.requestLifecycle(turnID: "turn", purpose: "turn"), hooks = try XCTUnwrap(value)
+        _ = try await hooks.admitAttempt("prior"); try await hooks.willDispatch("prior")
+        try await hooks.settleAttempt(AttemptSettlement(scope: hooks.scope, observation: billingObservation(profile: profile, session: "parent", attempt: "prior", cost: nil), dispatched: true))
+        let current = try await hooks.admitAttempt("current"); try await hooks.willDispatch("current")
+        let entry = await owner.accounting.attempts["prior"]?.contribution
+        var correction = try XCTUnwrap(entry)
+        correction["usd"] = 0.6; correction["reported"] = 1; correction["unreported"] = 0; correction["accountingRevision"] = 100
+        try await owner.correctAccounting(correction)
+        XCTAssertThrowsError(try current.check())
+        let reason = await owner.familyStopReason, spend = await owner.spend
+        XCTAssertEqual(reason?.code, "cost_limit"); XCTAssertEqual(spend.usd, 0.6)
+        XCTAssertEqual(spend.unreported, 1, "The still-running attempt is unknown, never free")
+        await owner.close()
+    }
+
     func testCancelledPermitRetainsScopeButRecordsNoDispatch() async throws {
         let traces = TraceStore(), client = ProviderClient(traces: traces)
         let scope = RequestScope(sourceSessionID: "child", budgetOwnerSessionID: "parent", turnID: "turn", executionID: "execution", purpose: "turn", ownerGeneration: 0, delegation: subagentFixtureOrigin().link)
@@ -113,6 +132,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
 (root/'ready.json').write_text(json.dumps({'port':server.server_port})); server.serve_forever()
 """#
+
 }
 
 private actor AdmissionEvidence {

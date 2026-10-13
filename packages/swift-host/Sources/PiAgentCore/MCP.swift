@@ -471,6 +471,7 @@ public actor MCPManager {
     }
     public init(cwd: URL, roots: [URL] = [], outcomeMarker: URL? = nil) { self.cwd=cwd; self.roots=workspaceRoots(primary:cwd,additional:roots); self.outcomeMarker=outcomeMarker; unknownOutcome=outcomeMarker.map { FileManager.default.fileExists(atPath:$0.path) } ?? false }
     public func serverNames() -> [String] { servers.keys.sorted() }
+    func delegationPolicy() -> JSON { .object(servers.mapValues { JSON(sha256((try? $0.config.data()) ?? Data())) }) }
     public func configure(_ config: JSON) async throws {
         guard config.isObject, Set(config.map.keys) == ["servers"], config["servers"].isObject, config["servers"].map.count <= 32,
               try config.data().count <= 262144 else { throw AgentError("mcp_config", "Expected {servers:{name:configuration}} with at most 32 servers within 256 KiB") }
@@ -577,8 +578,13 @@ public actor MCPManager {
     }
     /// `retainedBy` (an invoke's call ID): the caller keeps the result and
     /// reports it with `resultsRetained`; the outcome marker stays until then.
-    public func perform(_ p: JSON, readOnly: Bool = false, retainedBy: String? = nil) async throws -> JSON {
+    public func perform(_ p: JSON, readOnly: Bool = false, retainedBy: String? = nil, policy: JSON? = nil) async throws -> JSON {
         guard p.isObject else { throw AgentError("mcp_arguments", "MCP accepts one object, not a batch") }
+        if let policy {
+            let requested = p["targets"].list.compactMap { $0["server"].text } + [p["server"].text].compactMap { $0 }
+            let current = delegationPolicy()
+            guard requested.allSatisfy({ !policy[$0].isNull && policy[$0] == current[$0] }) else { throw AgentError("mcp_policy", "MCP configuration changed after this task was delegated") }
+        }
         switch p["action"].text {
         case "list":
             guard Set(p.map.keys).isSubset(of:["action","server"]) else { throw AgentError("mcp_arguments", "List accepts only an optional server") }
@@ -621,6 +627,9 @@ public actor MCPManager {
             var dispatched=false
             do {
                 guard !unknownOutcome else { throw AgentError("mcp_outcome_unknown","A previous invocation has an unknown outcome. The user must verify it and acknowledge before another invocation.") }
+                // Check again under the existing configuration gate. An
+                // invocation never holds an obsolete grant across an await.
+                if let policy, policy[server] != delegationPolicy()[server] || policy[server].isNull { throw AgentError("mcp_policy", "MCP configuration changed after this task was delegated") }
                 guard try await tools(server).contains(where:{$0["name"].text == name}) else { throw AgentError("mcp_tool", "Unknown or disallowed MCP tool") }
                 var transport = try await connect(server)
                 guard !closed else { throw AgentError("mcp_closed","MCP manager is closed") }

@@ -2,9 +2,21 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentJournalTests: XCTestCase {
+    func testFrozenMCPPolicyIsDurableAndCannotBeReplaced() throws {
+        var value = try subagentJSON(subagentFixtureOrigin())
+        value["mcpPolicy"] = ["server":"original-digest"]
+        let origin = try JSONDecoder().decode(SubagentOrigin.self, from: value.data())
+        XCTAssertEqual(try subagentJSON(origin)["mcpPolicy"], value["mcpPolicy"])
+        var state = SubagentJournalState()
+        try state.consume(["type":"custom", "customType":JSON(JournalRecordKind.subagentOrigin), "data":value], sessionID: "child")
+        value["mcpPolicy"] = ["server":"changed-digest"]
+        XCTAssertThrowsError(try state.consume(["type":"custom", "customType":JSON(JournalRecordKind.subagentOrigin), "data":value], sessionID: "child"))
+    }
+
     func testManagedOriginAndTerminalSurviveCheckpointAndFullReplay() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let profile = try fixtureProfile(), origin = subagentFixtureOrigin()
+        let profile = try fixtureProfile()
+        var origin = subagentFixtureOrigin(); origin.mcpPolicy = ["server":"original-digest"]
         let s = try AgentSession(id: "child", profile: profile, apiKey: "fixture", cwd: root, directory: root,
                                  readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]),
                                  tools: DisabledTools(), traces: TraceStore(), prepared: nil, subagentOrigin: origin)

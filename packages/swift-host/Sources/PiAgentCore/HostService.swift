@@ -58,6 +58,7 @@ public actor NativeHostService {
     private var cwd: URL?, roots: [URL]=[], directory: URL?, resources: Resources?, mcp: MCPManager?, nativeTools: NativeTools?
     private let traces: TraceStore, capture: CaptureDelivery
     private let runtimeGate=AsyncGate()
+    private var subagentCoordinator: SubagentCoordinator?
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
     /// Journals being slimmed (`JournalSlimming`), by session: an open of one waits for it.
     private var slimming:[String:Task<JournalSlimming.Outcome,Error>]=[:]
@@ -208,7 +209,24 @@ public actor NativeHostService {
             try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
         }.value
         await adoptRetrySettings(session)
+        if SubagentPolicy.enabled {
+            if subagentCoordinator == nil {
+                subagentCoordinator = SubagentCoordinator(register: { [weak self] child, profile, key, parent in
+                    guard let self else { throw AgentError("workspace_closed", "The helper is closing") }
+                    try await self.registerSubagent(child, profile: profile, apiKey: key, parent: parent)
+                })
+            }
+            if let subagentCoordinator { await session.enableSubagents(subagentCoordinator) }
+        }
         return session
+    }
+    private func registerSubagent(_ child: AgentSession, profile: Profile, apiKey: String, parent: AgentSession) async throws {
+        let childID = child.id, ownerID = parent.id, childDirectory = child.directory, childCwd = child.cwd
+        guard !closing, !quiesced, sessions[ownerID] === parent, directory == childDirectory, cwd == childCwd, sessions[childID] == nil else {
+            throw AgentError("subagent_scope", "The child no longer belongs to this open workspace and parent")
+        }
+        sessions[childID] = child; profiles[childID] = (profile, apiKey)
+        await adoptRetrySettings(child)
     }
     /// Hands a session the latest retry setting. Called once it is made and
     /// again once it is in `sessions`: a `retry.configure` that ran in between
@@ -228,7 +246,7 @@ public actor NativeHostService {
     /// The read-only commands: a repeat runs one again, where a command that
     /// changes something is answered from the reply it was first sent
     /// (`receive`). Every `session.content.` command reads too.
-    static let readOnlyMethods: Set<String> = ["display.result.read","clock.sync","runtime.info","resources.inspect","resources.skill.read","session.status","session.snapshot","session.history","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","queue.read","queue.edit.status","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"]
+    static let readOnlyMethods: Set<String> = ["display.result.read","clock.sync","runtime.info","resources.inspect","resources.skill.read","session.status","session.snapshot","session.history","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","subagent.list","queue.read","queue.edit.status","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"]
     static func isReadOnly(_ method: String) -> Bool { readOnlyMethods.contains(method) || method.hasPrefix("session.content.") }
     /// Runs one command. The host checks, in this order, that it is not
     /// closing, that a workspace is open, that the command names a session,
@@ -446,6 +464,13 @@ public actor NativeHostService {
         let resources=workspace.resources, nativeTools=workspace.nativeTools
         try await session.requireSubagentCommand(method)
         switch method {
+        case "subagent.list":
+            let cursor = try boundedInt(params["cursor"], maximum: Int.max), limit = try boundedInt(params["limit"], fallback: 100, maximum: 256)
+            guard let subagentCoordinator else { return ["revision":0,"active":0,"total":0,"cursor":.null,"children":[]] }
+            return await subagentCoordinator.list(owner: id, cursor: cursor, limit: limit)
+        case "subagent.stop":
+            guard let subagentCoordinator else { throw AgentError("subagent_scope", "No managed delegation belongs to this parent") }
+            try await subagentCoordinator.stop(owner: id, delegationID: required(params["delegationId"], "delegation id")); return ["accepted":true]
         case "turn.stop": await session.stop(); return ["accepted":true]
         case "session.status":
             var statusParams = params; statusParams["includeMessages"] = false

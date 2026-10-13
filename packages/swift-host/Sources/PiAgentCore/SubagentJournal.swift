@@ -7,6 +7,7 @@ struct SubagentOrigin: Codable, Sendable, Equatable {
     var tools: [String]
     var readOnly: Bool
     var resourceRevision: String
+    var mcpPolicy: JSON? = nil
 }
 
 struct SubagentPlan: Codable, Sendable, Equatable {

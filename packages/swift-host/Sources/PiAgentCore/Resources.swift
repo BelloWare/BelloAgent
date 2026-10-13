@@ -44,7 +44,14 @@ public actor Resources {
     public let roots: [URL]
     private var options: JSON
     private var latest: ResourceSnapshot?
+    private var frozen: ResourceSnapshot?
     public init(cwd: URL, roots: [URL] = [], options: JSON = [:], home: URL = URL(fileURLWithPath: NSHomeDirectory()), titleTask: Bool = false, utility: String = "title") { self.cwd = cwd; self.roots = workspaceRoots(primary: cwd, additional: roots); self.options = options; self.home = home; self.titleTask = titleTask; self.utility = utility }
+    /// A delegated run uses the parent's already-resolved instruction policy.
+    init(frozen snapshot: ResourceSnapshot) {
+        cwd = URL(fileURLWithPath: snapshot.cwd); roots = snapshot.roots.map { URL(fileURLWithPath: $0) }
+        home = URL(fileURLWithPath: snapshot.codexHome); options = [:]; titleTask = false; utility = "turn"
+        frozen = snapshot
+    }
     public func configure(_ value: JSON) throws { guard value.isObject else { throw AgentError("invalid_resources", "Resource options must be an object") }; options = value; latest = nil }
     private func stringFile(_ url: URL, limit: Int) throws -> String? {
         if !FileManager.default.fileExists(atPath: url.path) { return nil }
@@ -94,6 +101,7 @@ public actor Resources {
         finish(); return (limit, fallbacks, disabled)
     }
     public func resolve() throws -> ResourceSnapshot {
+        if let frozen { return frozen }
         if titleTask {
             let prompt: String
             switch utility {

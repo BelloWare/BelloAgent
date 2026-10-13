@@ -263,6 +263,7 @@ public actor NativeTools: ToolExecuting {
         result.append(MCPManager.definition); return result
     }
     public func resultsRetained(_ callIDs: [String], retained: Bool) async { await mcp.resultsRetained(callIDs,retained:retained) }
+    public func delegationMCPPolicy() async -> JSON? { await mcp.delegationPolicy() }
     public func capabilityIDs(readOnly: Bool) async -> [String] { definitions(readOnly:readOnly).map(\.name) + (await mcp.serverNames()).map { "mcp:"+$0 } }
     public func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON { try await invoke(call,readOnly:readOnly,onUpdate:{_ in}) }
     public func invoke(_ call: ToolCall, readOnly: Bool, onUpdate: @escaping @Sendable (JSON) async -> Void) async throws -> JSON {
@@ -280,7 +281,7 @@ public actor NativeTools: ToolExecuting {
         switch call.name {
         // The chat keeps an invocation's result: the outcome marker stays
         // until it says the result is in its journal.
-        case "mcp": return try await mcp.perform(p,readOnly:readOnly,retainedBy:call.id)
+        case "mcp": return try await mcp.perform(p,readOnly:readOnly,retainedBy:call.id,policy:call.mcpPolicy)
         case "bash":
             let command=try required(p["command"],"command",maximum:262144), timeout=try boundedInt(p["timeout"],fallback:120,maximum:600)
             guard timeout > 0 else { throw AgentError("tool_arguments", "Timeout must be positive") }

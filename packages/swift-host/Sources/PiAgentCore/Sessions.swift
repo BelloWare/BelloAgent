@@ -97,7 +97,8 @@ public actor AgentSession {
     var budgetOwnerGeneration = 0
     var requestPermits: [String: RequestPermit] = [:]
     var familyStopReason: AgentError?
-    var familyCancelled: (@Sendable () -> Void)?
+    var familyCancelled: (@Sendable (Int) -> Void)?
+    var subagentCoordinator: SubagentCoordinator?
     /// Whether this journal records every attempt's cost from its start: a
     /// new chat does, and so does one with a cost record. A chat written
     /// before cost records existed takes its earlier spend from the app once.
@@ -517,9 +518,10 @@ public actor AgentSession {
     /// Stops the run and pauses the queue. `stopCount` lets work that awaited
     /// a run winding down tell that the chat was stopped again meanwhile.
     public func stop() {
+        let cancelledGeneration = stopCount
         stopCount &+= 1; queuePaused=true; runTask?.cancel()
         for permit in requestPermits.values { permit.cancel() }
-        familyCancelled?()
+        familyCancelled?(cancelledGeneration)
         // The run may already have reached its terminal state while its
         // final links are flushing. Nothing after that await enters the
         // cancellation catch again, so do not turn it back into Stopping.

@@ -94,3 +94,57 @@ No UI was exposed. Later phases add execution and read-only child controls.
   environment-dependent WireContract test skipped (parallel lane, bash array).
 - Logs: `$PI_BUILD_ROOT/logs/phase5-{red-helper,helper-final,capture-helper,app}.log`
   and `phase5-mutation-*.log`.
+
+## Phase 6 — coordinator and synchronous tool, still hidden
+
+- Durable helper-created children, fresh frozen resources, inherited effective
+  tools and saved-connection model grants. No `side.open` or second provider loop.
+- Independent per-owner FIFO queues: 16 active children, including retry/tool/
+  summary time. Eighteen-call coverage proves queuing and original result order;
+  two owners run 32 children together. Discovery pages have stable call order.
+- Parent-owned settlement, family Stop at the limit, individual child Stop,
+  queued cancellation, depth one and no automatic delegation replay on live
+  parent Resume. Terminal persistence precedes synchronous result resolution.
+- UTF-8-safe 64 KiB result text stays inline after JSON escaping; local identities
+  and full-result references stay in `nativeSubagent`, outside model text.
+- Frozen MCP policy is persisted, immutable and checked at invocation; completed
+  jobs release the parent/connection/runtime graph. A closed child journal fails
+  closed rather than publishing an in-memory outcome as durable. Late corrections
+  reaching the budget cancel live permits; null token fields stay unknown.
+- Failing first: explicit fixture activation did not advertise the tool;
+  completed jobs retained the parent; a closed journal appeared to save a
+  terminal; null usage looked known; discovery was cached as a mutation; and
+  replay dropped the frozen MCP policy. Each regression was demonstrated before
+  its fix. Logs: `phase6-red-helper.log`, `phase6-lifetime-red.log`,
+  `phase6-closed-child-red.log`, `phase6-projection-red.log`,
+  `phase6-mcp-origin-red.log` under `$PI_BUILD_ROOT/logs`.
+- Helper: **143 passed**, zero failures (`phase6-helper-final.log`). Filter:
+  `Subagent|CostLimitTests|ContinueRunTests|ParallelToolCallTests|ToolRecordingFailureTests|ToolOutcomeTests|MCPResultRetentionTests|MCPConnectionTests|JournalCheckpointTests|JournalSlimmingTests|RetryTests|CaptureTraceTests|CredentialCaptureTests|CompactionRequestShapeTests|ResourceCatalogTests|HostDispatchTests`.
+- Eleven deliberate mutations fail behaviorally: active-slot limit, nesting,
+  result byte bound, inline result handling, MCP invocation policy, correction
+  cancellation, hidden rollout, unknown token usage, discovery refresh, terminal
+  durability and immutable origin policy. Every source was restored. The final
+  affected-class run passes **40 tests** (`phase6-restored.log`); individual
+  mutation evidence is `phase6-mutation-*.log`.
+- The actual `v0.1.125` helper again passes all five downgrade fixture checks
+  (`phase6-downgrade.log`): v1 parent open, interrupted call repaired without a
+  request, child refused for writable open, unchanged child bytes, marker-type
+  gate. No installed application, Keychain or provider account was used.
+- Native app: `SubagentMetadataTests`, `SubagentModelGrantTests`,
+  `WireContractTests`, passed as a bash array to `scripts/test-macos.sh`.
+  `scripts/test-lanes.py list` classifies all three parallel: **13 passed**, one
+  existing opt-in performance test skipped, zero failures (`phase6-app.log`).
+  The skipped WireContract case requires `PI_PERF_WIRE=1`; it is not counted as
+  passing. No serial-lane class was included.
+
+Implementation differences and the reasons are recorded in the design's
+**Implementation notes**: flush each parent plan before child creation; keep
+queued tasks in the durable parent plan until their slot starts; conservatively
+reject child MCP calls after any configuration change. These do not change the
+owner's tool, concurrency, depth or budget decisions.
+
+This is the requested phase 6 checkpoint. The production switch is still false.
+Real-helper crash/relaunch recovery and shutdown barriers, capture archive work,
+Inspector, AppKit navigation/sidebar/organization and final enablement remain
+phases 7–12. The checks above are focused implementation evidence, not the release
+gate, gallery review or final whole-change review. No new owner decision is needed.

@@ -38,7 +38,7 @@ extension AgentSession {
     /// may have left effects behind, so its outcome is unknown.
     static let rejectionCodes: Set<String> = ["tool_arguments", "invalid_params", "invalid_range", "invalid_identity", "tool_unavailable", "read_only",
         "edit_match", "file_unavailable", "not_regular_file", "file_too_large", "binary_file", "missing_path", "tool_output", "missing_executable", "tool_busy",
-        "mcp_arguments", "mcp_tool", "mcp_server", "mcp_config", "mcp_version", "mcp_schema", "mcp_cursor", "mcp_outcome_unknown", "mcp_rejected", "mcp_session_expired", "mcp_unavailable"]
+        "mcp_arguments", "mcp_policy", "mcp_tool", "mcp_server", "mcp_config", "mcp_version", "mcp_schema", "mcp_cursor", "mcp_outcome_unknown", "mcp_rejected", "mcp_session_expired", "mcp_unavailable"]
     static func isRejection(_ error: Error) -> Bool { (error as? AgentError).map { rejectionCodes.contains($0.code) } ?? false }
     /// The state a tool card shows for a recorded outcome: `unknown` when the
     /// call was interrupted or failed after it began (effects may exist),
@@ -61,8 +61,16 @@ extension AgentSession {
     }
     /// The tools a request offers: the session's own, as pi offers its tools,
     /// except that a read-only side offers its parent's (SessionSide.swift).
-    func sessionDefinitions() async -> [ToolDefinition] { await tools.definitions(readOnly:offersReadOnlyTools) }
+    func sessionDefinitions() async -> [ToolDefinition] {
+        var definitions = await tools.definitions(readOnly: offersReadOnlyTools)
+        if canDelegate { definitions.append(SubagentSpec.definition(models: turnSubagentModels)) }
+        return definitions
+    }
     func invokeTool(_ call: ToolCall) async throws -> JSON {
+        if call.name == "subagent" {
+            guard canDelegate, let coordinator = subagentCoordinator, let assistant = toolHistory.owners[call.id] else { throw AgentError("tool_unavailable", "Sub-agent delegation is unavailable here") }
+            return await coordinator.result(SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call.id)).wire
+        }
         let prepared=await piPrepared(call)
         let update: @Sendable (JSON) async -> Void = { [weak self] update in await self?.toolUpdate(call.id,update) }
         // Stopped while its arguments were prepared: it never began.
@@ -118,7 +126,7 @@ extension AgentSession {
         // theirs and name the file that holds the rest. Ours do the same, so
         // this cut is for a tool that returns more (an MCP server): the text
         // is saved whole, and pi's note names the file the model can read.
-        if text.utf8.count > 65536 {
+        if text.utf8.count > 65536 && !(call.name == "subagent" && canDelegate && !result["nativeSubagent"].isNull) {
             let folder=directory.appendingPathComponent("tool-output"); try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
             let file=folder.appendingPathComponent(UUID().uuidString+".txt"), bytes=Data(text.utf8)
             guard bytes.count <= 16*1024*1024 else { throw AgentError("tool_output_limit", "Tool result exceeds 16 MiB; remote effects may have completed") }
@@ -130,6 +138,10 @@ extension AgentSession {
         // The card names each image the model receives beside the text.
         let shown=images.isEmpty ? text : ([text]+images.map(describe)).filter { !$0.isEmpty }.joined(separator:"\n")
         if !images.isEmpty { message.displayText=shown }
+        if call.name == "subagent", canDelegate, !result["nativeSubagent"].isNull {
+            message.nativeSubagent = result["nativeSubagent"]
+            if let id = result["nativeResultMessageId"].text { message.id = id }
+        }
         message.requestAttemptIDs=currentAttemptIDs
         let durationMs=started.map { nowMS()-$0 }
         if countsTime, let durationMs { turnToolMs += durationMs; cumulativeToolMs = ObservedDuration.adding(cumulativeToolMs, durationMs) }
@@ -139,7 +151,7 @@ extension AgentSession {
         // says: kept only then.
         for key in ["line","lastLine"] where !stats[key].isNull { message.toolStats?[key]=stats[key] }
         let outcome = uncertain || (state == .cancelled && started != nil) ? "unknown" : started == nil ? "not_executed" : state.rawValue
-        message.toolStats?["outcome"]=JSON(outcome)
+        message.toolStats?["outcome"]=message.nativeSubagent?["effects"] ?? JSON(outcome)
         if appendNow { try append(message, observedAt: observedAt) }
         // A batch's card that retired while its call ran stays retired.
         guard appendNow || toolStates[call.id] != nil else { return (message, observedAt) }
@@ -147,6 +159,7 @@ extension AgentSession {
         let fields=toolInputFields(call.arguments), keptOutput=shown
         let inputTruncated=fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false
         var card:[String:JSON]=["id":JSON(call.id),"name":JSON(call.name),"state":JSON(reportsUnknownToolOutcomes ? Self.cardState(outcome:outcome,isError:message.isError) : state.rawValue),"output":JSON(keptOutput),"durationMs":durationMs.map { JSON($0) } ?? .null,"truncated":JSON(inputTruncated || keptOutput.utf8.count < text.utf8.count),"path":stats["path"],"added":stats["added"],"removed":stats["removed"]]
+        if let metadata = message.nativeSubagent { card["nativeSubagent"] = metadata }
         for key in ["line","lastLine"] where !stats[key].isNull { card[key]=stats[key] }
         setToolState(call.id,merging(.object(card),fields))
         recordDisplayChange(toolStateOwners[call.id], at: observedAt)
@@ -180,6 +193,14 @@ extension AgentSession {
             recordDisplayChange(toolStateOwners[call.id], at: displayClock())
             event("tool_execution_queued")
         }
+        if canDelegate, let coordinator = subagentCoordinator, calls.contains(where: { $0.name == "subagent" }) {
+            let environment = try await delegationEnvironment()
+            let planned = calls.filter { $0.name == "subagent" }.compactMap { call -> (SubagentCallKey, ToolCall)? in
+                guard let assistant = toolHistory.owners[call.id] else { return nil }
+                return (SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call.id), call)
+            }
+            await coordinator.prepare(planned, environment: environment)
+        }
         let began=nowMS()
         var outcomes=[ToolOutcome?](repeating: nil, count: calls.count)
         await withTaskGroup(of: ToolOutcome.self) { group in
@@ -193,7 +214,7 @@ extension AgentSession {
             for outcome in finished { try append(outcome.message, observedAt: outcome.observedAt) }
             // An MCP call may have changed something outside the project:
             // its result is on disk before its outcome marker goes.
-            if !invoked.isEmpty { try journal?.synchronize() }
+            if !invoked.isEmpty || finished.contains(where: { $0.message.nativeSubagent != nil }) { try journal?.synchronize() }
         } catch {
             if !invoked.isEmpty { await tools.resultsRetained(invoked.map { calls[$0.index].id }, retained:false) }
             throw error
@@ -231,7 +252,7 @@ extension AgentSession {
             }
             return ToolOutcome(index:index,message:message,observedAt:observedAt,cancelled:cancelled,mcpResult:mcpResult,recorded:false)
         }
-        if Task.isCancelled { return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:.cancelled, cancelled:true) }
+        if Task.isCancelled && !(call.name == "subagent" && canDelegate) { return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:.cancelled, cancelled:true) }
         do {
             let result=try await invokeTool(call)
             return outcome(result, started:start, state:result["isError"].flag == true ? .failed : .completed,

@@ -2,6 +2,16 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentAccountingTests: XCTestCase {
+    func testNullUsageFieldsRemainAnUnknownRequest() throws {
+        var ledger = AttemptAccounting(), spend = SessionSpend()
+        var unknown = costRecord("physical", usd: nil, revision: 1)
+        unknown["usage"] = ["input":.null,"output":.null]
+        unknown["usageStatus"] = ["input":"invalid","output":"unreported"]
+        try ledger.consume(kind: JournalRecordKind.cost, data: unknown, spend: &spend)
+        XCTAssertTrue(ledger.usageTotals.isEmpty); XCTAssertEqual(ledger.usageUnknownRequests, 1)
+        XCTAssertEqual(spend.unreported, 1)
+    }
+
     func testAdmissionIsUnknownUntilSettledOrProvenNotDispatched() throws {
         var ledger = AttemptAccounting(), spend = SessionSpend()
         var admission = admissionRecord("physical")
