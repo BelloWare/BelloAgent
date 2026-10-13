@@ -110,8 +110,8 @@ final class MetadataDurabilityTests: XCTestCase {
         let store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
         let chat = ChatRecord(id: "handoff", workspaceID: "w", title: "Handoff", path: nil, profileID: "p")
         let draft = DraftRecord(id: chat.id, text: "Source conversation, ready for review")
-        let tooLarge = String(repeating: "x", count: 524_289)
-        for (text, provenance) in [(tooLarge, WireValue.string("source")), (draft.text, .string(tooLarge))] {
+        let tooLarge = String(repeating: "x", count: MetadataStore.inputRecordByteLimit + 1)
+        for (text, provenance) in [(tooLarge, WireValue.string("source")), (draft.text, .string(String(repeating: "x", count: 524_289)))] {
             do {
                 try await store.commitPortableHandoff(chat, draft: DraftRecord(id: chat.id, text: text), provenance: provenance)
                 XCTFail("An oversized record must roll back the whole handoff")
@@ -150,8 +150,8 @@ extension MetadataDurabilityTests {
         var small = DraftRecord(id: "chat", text: "draft")
         small.queuedEdit = QueuedEditDraft(editID: "e", turnID: "q", rewrite: "first rewrite", original: "o")
         try await store.put(small, kind: "draft", id: "chat")
-        var large = DraftRecord(id: "chat", text: String(repeating: "d", count: 270_000))
-        large.queuedEdit = QueuedEditDraft(editID: "e", turnID: "q", rewrite: String(repeating: "r", count: 270_000), original: "o")
+        var large = DraftRecord(id: "chat", text: String(repeating: "d", count: MetadataStore.inputRecordByteLimit / 2))
+        large.queuedEdit = QueuedEditDraft(editID: "e", turnID: "q", rewrite: String(repeating: "r", count: MetadataStore.inputRecordByteLimit / 2), original: "o")
         do { try await store.put(large, kind: "draft", id: "chat"); XCTFail("too large to save together") }
         catch { XCTAssertEqual(error as? StoreError, .invalidRecord) }
         let saved = try await store.get(DraftRecord.self, kind: "draft", id: "chat")
