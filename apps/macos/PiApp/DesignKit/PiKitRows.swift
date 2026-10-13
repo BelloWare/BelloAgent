@@ -2,6 +2,49 @@ import AppKit
 import QuartzCore
 
 extension PiKit {
+    /// An action belongs to one entry and one lifetime of its reusable view.
+    /// Tokens are weak: keeping an old menu or gesture cannot keep a row alive.
+    @MainActor final class ActionBinding {
+        private(set) var entryID: String?
+        private var generation: UInt64 = 0
+        func rebind(to entryID: String) { generation &+= 1; self.entryID = entryID }
+        func invalidate() { generation &+= 1; entryID = nil }
+        func capture() -> Token { Token(owner: self, generation: generation, entryID: entryID) }
+        func install(in view: NSView) {
+            for case let button as ButtonBase in PiKit.controls(in: view) { button.actionBinding = self }
+        }
+        @MainActor struct Token {
+            fileprivate weak var owner: ActionBinding?
+            fileprivate let generation: UInt64
+            let entryID: String?
+            var isCurrent: Bool {
+                guard let owner, let entryID else { return false }
+                return owner.generation == generation && owner.entryID == entryID
+            }
+            func guardAction(_ action: @escaping @MainActor () -> Void) -> @MainActor () -> Void {
+                { guard isCurrent else { return }; action() }
+            }
+            func guardAction<Input>(_ action: @escaping @MainActor (Input) -> Void) -> @MainActor (Input) -> Void {
+                { input in guard isCurrent else { return }; action(input) }
+            }
+            func guardValue<Value>(_ value: @escaping @MainActor () -> Value?) -> @MainActor () -> Value? {
+                { guard isCurrent else { return nil }; return value() }
+            }
+            func guardMenu(_ entries: [PiMenuEntry]) -> [PiMenuEntry] {
+                entries.map { entry in
+                    switch entry {
+                    case .item(var item):
+                        item.perform = guardAction(item.perform)
+                        return .item(item)
+                    case .submenu(let title, let image, let identifier, let help, let children):
+                        return .submenu(title: title, systemImage: image, identifier: identifier, help: help, entries: guardMenu(children))
+                    case .separator, .note: return entry
+                    }
+                }
+            }
+        }
+    }
+
     // MARK: - Selectable rows
 
     /// Moves a list's selection highlight from row to row, as the SwiftUI
@@ -49,6 +92,14 @@ extension PiKit {
             setAccessibilityLabel(PiKit.spokenText(of: content))
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+        /// Recycling ends this binding's motion history. Ordinary deselection
+        /// keeps it until the next row can glide from the previous selection.
+        override func prepareForReuse() {
+            super.prepareForReuse()
+            if glide?.selectedRow === self { glide?.selectedRow = nil }
+            selected = false
+            fill.removeAnimation(forKey: "glide")
+        }
         override func isAccessibilitySelected() -> Bool { selected }
         override func cornerRadius(for size: CGSize) -> CGFloat { PiRadius.sm }
         /// Disabled, the row's content dims as a disabled plain button's label
@@ -109,6 +160,7 @@ extension PiKit {
             fill.add(spring, forKey: "glide")
         }
         override func mouseDown(with event: NSEvent) {
+            let doubleClick = doubleClick
             super.mouseDown(with: event)
             if event.clickCount == 2 { doubleClick?() }
         }

@@ -32,7 +32,8 @@ enum InspectorLoad<Value> {
     @Published private(set) var response: InspectorLoad<ResponseDocument> = .idle
     /// Bytes of the response the document on screen was built from.
     @Published private(set) var responseBytes = 0
-    /// Retained bytes the latest metadata poll reported for a response still being written.
+    /// Retained bytes last reported, including the final capture. Completion
+    /// stops polling, but must not hide Load latest from a partial document.
     @Published private(set) var growingBytes: Int?
     /// The metadata record as formatted JSON, for Raw; formatted off the main actor.
     @Published private(set) var metadataText = ""
@@ -150,7 +151,7 @@ enum InspectorLoad<Value> {
                     }
                     self.metadataLoaded = true; self.metadataFailure = nil
                     let running = ["running", "streaming"].contains(value["outcome"]?.string ?? "")
-                    let grown = running ? value["response"]?.object?["retainedBytes"]?.nonnegativeInteger : nil
+                    let grown = value["response"]?.object?["retainedBytes"]?.nonnegativeInteger
                     if grown != self.growingBytes { self.growingBytes = grown }
                     if self.bodyTask == nil { self.loadVisibleTab() }
                     // Only a request still running is read again, and only its metadata.

@@ -11,9 +11,15 @@ import QuartzCore
     private var frames: [CGRect] = []
     /// Heights measured for entries without views, with what they were measured for.
     private var heights: [String: (entry: SidebarEntry, width: CGFloat, height: CGFloat)] = [:]
+    var measuredEntryCount: Int { heights.count }
+    private(set) var visibilityVisits = 0
+    private(set) var rowConstructions = 0
     /// The entries that have views now, by entry id.
     private(set) var views: [String: NSView] = [:]
     private var leaving: [NSView] = []
+    private var chatPool: [SidebarChatRowView] = []
+    private var sidePool: [SidebarSideRowView] = []
+    private static let reuseLimit = 64
     /// The list's own padding: eight points at the sides, twelve under the last entry.
     static let padding = NSEdgeInsets(top: 0, left: PiSpacing.sm, bottom: PiSpacing.md, right: PiSpacing.sm)
     /// How far past the visible part entries keep their views.
@@ -75,16 +81,28 @@ import QuartzCore
     /// Takes new contents; `animated` lets rows glide to their new places,
     /// new ones come out from under the one above and gone ones go back.
     func update(_ new: SidebarListContents, width: CGFloat, animated: Bool) {
-        let oldFrames = Dictionary(zip(contents.entries.map(\.id), frames), uniquingKeysWith: { a, _ in a })
+        let anchor = readingAnchor()
+        let oldClipY = enclosingScrollView?.contentView.bounds.minY ?? 0
+        var oldFrames = Dictionary(zip(contents.entries.map(\.id), frames), uniquingKeysWith: { a, _ in a })
         contents = new
+        let ids = Set(new.entries.map(\.id))
+        heights = heights.filter { ids.contains($0.key) }
         // Views that stay take their new values first, so they are measured as they will be.
         updatingViews = true
         for entry in new.entries { if let view = views[entry.id] { update(view, with: entry) } }
         updatingViews = false
-        layoutEntries(width: width)
+        layoutEntries(width: width, anchor: anchor)
+        let scrollCorrection = (enclosingScrollView?.contentView.bounds.minY ?? 0) - oldClipY
+        if scrollCorrection != 0 {
+            // Old positions must describe the same viewport locations after
+            // restoring the anchor, including rows still animating their exit.
+            for view in Array(views.values) + leaving {
+                view.setFrameOrigin(CGPoint(x: view.frame.minX, y: view.frame.minY + scrollCorrection))
+            }
+            oldFrames = oldFrames.mapValues { $0.offsetBy(dx: 0, dy: scrollCorrection) }
+        }
         // Entries whose views stay take the new values; views of entries
         // that went are let go of (with motion, when it moves).
-        let ids = Set(new.entries.map(\.id))
         for (id, view) in views where !ids.contains(id) {
             views[id] = nil
             if animated, window != nil, !PiKit.Motion.reduced, let frame = oldFrames[id] {
@@ -92,7 +110,7 @@ import QuartzCore
                 Self.reveal(view, from: frame, arriving: false) { [weak self, weak view] in
                     view?.removeFromSuperview(); self?.leaving.removeAll { $0 === view }
                 }
-            } else { view.removeFromSuperview() }
+            } else { recycle(view) }
         }
         materialize(animated: animated, oldFrames: oldFrames)
     }
@@ -150,7 +168,19 @@ import QuartzCore
             return (makeView(entry) as? SidebarEntryView)?.entryHeight(width: width) ?? 0
         }
     }
-    private func layoutEntries(width: CGFloat) {
+    private struct ReadingAnchor {
+        var id: String
+        var offset: CGFloat
+    }
+    private func readingAnchor() -> ReadingAnchor? {
+        guard let clip = enclosingScrollView?.contentView,
+              let index = frames.firstIndex(where: { $0.maxY > clip.bounds.minY }) else { return nil }
+        return ReadingAnchor(id: contents.entries[index].id, offset: clip.bounds.minY - frames[index].minY)
+    }
+    private var positioning = false
+    private func layoutEntries(width: CGFloat) { layoutEntries(width: width, anchor: readingAnchor()) }
+    private func layoutEntries(width: CGFloat, anchor: ReadingAnchor?) {
+        positioning = true; defer { positioning = false }
         var y = Self.padding.top
         frames = []
         frames.reserveCapacity(contents.entries.count)
@@ -163,19 +193,53 @@ import QuartzCore
         }
         let total = y + Self.padding.bottom
         if frame.height != total || frame.width != width { setFrameSize(NSSize(width: width, height: total)) }
+        if let anchor, let index = contents.entries.firstIndex(where: { $0.id == anchor.id }), let scroll = enclosingScrollView {
+            let clip = scroll.contentView
+            let y = min(max(0, frames[index].minY + anchor.offset), max(0, total - clip.bounds.height))
+            if clip.bounds.minY != y {
+                clip.scroll(to: CGPoint(x: clip.bounds.minX, y: y))
+                scroll.reflectScrolledClipView(clip)
+            }
+        }
+    }
+
+    /// The frames are ordered and non-overlapping. Look up the overscan's
+    /// interval without walking chats that cannot enter or leave the view.
+    private func visibleIndices(in rect: CGRect) -> Range<Int> {
+        var low = 0, high = frames.count
+        while low < high {
+            visibilityVisits += 1
+            let mid = (low + high) / 2
+            if frames[mid].maxY < rect.minY { low = mid + 1 } else { high = mid }
+        }
+        let start = low
+        high = frames.count
+        while low < high {
+            visibilityVisits += 1
+            let mid = (low + high) / 2
+            if frames[mid].minY <= rect.maxY { low = mid + 1 } else { high = mid }
+        }
+        return start..<low
     }
 
     /// Gives every entry near the visible part a view, in its place.
     func materialize(animated: Bool = false, oldFrames: [String: CGRect] = [:]) {
+        guard !positioning else { return }
         let visible = visibleRect.insetBy(dx: 0, dy: -Self.overscan)
-        var wanted = Set<String>()
+        let indices = visibleIndices(in: visible).filter { index in
+            visibilityVisits += 1
+            return frames[index].intersects(visible) || frames[index].height == 0 && visible.contains(frames[index].origin)
+        }
+        let wanted = Set(indices.map { contents.entries[$0].id })
+        // Recycle departures first, so a jump can use those same controls.
+        for (id, view) in views where !wanted.contains(id) { views[id] = nil; recycle(view) }
         // A height measured while the entry had no view can be out of date by
         // the time it gets one (its figures moved off screen).
         var stale = false
         var corrected: [(id: String, entry: SidebarEntry, height: CGFloat)] = []
-        for (index, entry) in contents.entries.enumerated() where frames[index].intersects(visible) || frames[index].height == 0 && visible.contains(frames[index].origin) {
+        for index in indices {
+            let entry = contents.entries[index]
             let id = entry.id
-            wanted.insert(id)
             let frame = frames[index]
             if let view = views[id] {
                 if view.frame != frame {
@@ -184,7 +248,7 @@ import QuartzCore
                     if animated, window != nil, !PiKit.Motion.reduced, from.minY != frame.minY { Self.glide(view, from: from, to: frame) }
                 }
             } else {
-                let view = makeView(entry)
+                let view = materializedView(entry)
                 if !inheritedEnabled { Self.disable(view) }
                 view.frame = frame
                 addSubview(view)
@@ -198,8 +262,6 @@ import QuartzCore
                 }
             }
         }
-        // Far from the visible part: no view.
-        for (id, view) in views where !wanted.contains(id) { view.removeFromSuperview(); views[id] = nil }
         // Kept for when the view goes again; laid out until nothing moves
         // (a corrected entry can bring others into range), a few passes at most.
         for item in corrected { heights[item.id] = (item.entry, bounds.width - Self.padding.left - Self.padding.right, item.height) }
@@ -217,8 +279,9 @@ import QuartzCore
         didSet {
             guard inheritedEnabled != oldValue else { return }
             // Views take their own enabled states again when built afresh.
-            for view in views.values { view.removeFromSuperview() }
+            for view in views.values { recycle(view) }
             views.removeAll()
+            chatPool.removeAll(); sidePool.removeAll()
             materialize()
         }
     }
@@ -229,6 +292,37 @@ import QuartzCore
     override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize) }
 
     // MARK: Entry views
+
+    private func recycle(_ view: NSView) {
+        // Check before removal/prepare clears the cell highlight. Native
+        // tracking can keep running on a detached control until mouse-up.
+        let reusable = inheritedEnabled && !model.sidebarOrderHolds.contains(.menu)
+            && !model.sidebarOrderHolds.contains(.drag) && !SidebarRowReuse.isTrackingMouse(in: view)
+        view.removeFromSuperview()
+        if let chat = view as? SidebarChatRowView {
+            chat.prepareForReuse()
+            if reusable, chatPool.count < Self.reuseLimit { chatPool.append(chat) }
+        } else if let side = view as? SidebarSideRowView {
+            side.prepareForReuse()
+            if reusable, sidePool.count < Self.reuseLimit { sidePool.append(side) }
+        } else { return }
+        func clear(_ layer: CALayer) { layer.removeAllAnimations(); for child in layer.sublayers ?? [] { clear(child) } }
+        if let layer = view.layer { clear(layer) }
+    }
+    private func materializedView(_ entry: SidebarEntry) -> NSView {
+        switch entry {
+        case .chat(let chat, let state, let projectID):
+            if let view = chatPool.popLast() {
+                view.apply(chat: chat, state: state, projectID: projectID, force: true)
+                return view
+            }
+        case .side(let state):
+            if let view = sidePool.popLast() { view.apply(state, force: true); return view }
+        default: break
+        }
+        rowConstructions += 1
+        return makeView(entry)
+    }
 
     private func makeView(_ entry: SidebarEntry) -> NSView {
         switch entry {
