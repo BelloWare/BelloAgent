@@ -296,6 +296,11 @@ public actor NativeHostService {
             var args=params;args["action"]=JSON(method == "mcp.list" ? "list":"describe");var result=try await mcp.perform(args,readOnly:true)
             result["configurationSource"]="native vault via private IPC";return result
         case "mcp.acknowledgeUnknown": guard params["confirmed"].flag == true else { throw AgentError("confirmation_required","Confirm that the previous invocation outcome has been checked") }; try await mcp.acknowledgeUnknown(); return ["acknowledged":true]
+        case "mcp.resultRetained":
+            guard Set(params.map.keys) == ["commandId","retained"], let retained=params["retained"].flag else { throw AgentError("invalid_params","Expected an invocation commandId and a retained boolean") }
+            let command=try identity(params["commandId"])
+            await mcp.resultsRetained(["inspector:\(epoch):\(command)"],retained:retained)
+            return ["acknowledged":true]
         case "connection.test":
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
             let id = try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
@@ -494,7 +499,11 @@ public actor NativeHostService {
         case "turn.retry": try await session.retryRun(overrides: params); return ["accepted":true]
         case "queue.configure": try await session.configureQueue(params); return ["accepted":true]
         case "context.compact": try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true]
-        case "mcp.invoke": var args=params; args["action"]="invoke"; return try await mcp.perform(args,readOnly:session.readOnly)
+        case "mcp.invoke":
+            var args=params; args["action"]="invoke"
+            // Sending IPC is not retention. The app acknowledges this command
+            // only after the complete result is saved and synced locally.
+            return try await mcp.perform(args,readOnly:session.readOnly,retainedBy:"inspector:\(epoch):\(commandID)")
         case "session.configure":
             // The chat's cost limit applies at once, also to a running session:
             // its next model request is checked against it. A configure that

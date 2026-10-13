@@ -112,8 +112,31 @@ final class MCPResultRetentionTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "one of the two results is still not kept")
         await manager.resultsRetained(["a"], retained: true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
-        // A caller that keeps nothing (the inspector's one-shot call) clears it on return, as before.
+        // An explicitly unretained caller still clears it on return.
         _ = try await manager.perform(["action": "invoke", "server": "test", "tool": "echo", "arguments": [:]])
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testAClosedManagerCannotRemoveTheReopenedWorkspacesMarker() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("unknown.json"), old = MCPManager(cwd: root, outcomeMarker: marker)
+        await old.installForTesting(name: "test", transport: FakeMCP())
+        _ = try await old.perform(["action": "invoke", "server": "test", "tool": "echo", "arguments": [:]], retainedBy: "old-call")
+        await old.close()
+        let reopened = MCPManager(cwd: root, outcomeMarker: marker)
+        await reopened.installForTesting(name: "test", transport: FakeMCP())
+        // Reopening inherits the unresolved call; its old owner no longer
+        // has authority to remove the marker when a delayed write completes.
+        await old.resultsRetained(["old-call"], retained: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+        let recovered = try await MCPManager(cwd: root, outcomeMarker: marker).perform(["action": "list"])
+        XCTAssertEqual(recovered["outcomeUnknown"].flag, true)
+        try await reopened.acknowledgeUnknown()
+        _ = try await reopened.perform(["action": "invoke", "server": "test", "tool": "echo", "arguments": [:]], retainedBy: "new-call")
+        await old.resultsRetained(["old-call"], retained: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "The new manager owns this pending result")
+        await reopened.resultsRetained(["new-call"], retained: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        await reopened.close()
     }
 }
