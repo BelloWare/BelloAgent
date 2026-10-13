@@ -1,4 +1,5 @@
 import XCTest
+import SQLite3
 @testable import PiApp
 
 final class HistoricalEditBookkeepingTests: XCTestCase {
@@ -35,10 +36,21 @@ final class HistoricalEditBookkeepingTests: XCTestCase {
         let turnID = try XCTUnwrap(frame["params"]?.object?["clientTurnId"]?.string)
         if newerTyping { view.draft = "Newer replacement" }
         try RecoveredDraftTests.sql("CREATE TRIGGER refuse_edit_ack BEFORE UPDATE ON records WHEN OLD.kind='pending:chat' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END", root: root)
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(root.appendingPathComponent("desktop.sqlite").path, &database), SQLITE_OK)
+        let db = try XCTUnwrap(database)
+        defer { sqlite3_exec(db, "ROLLBACK", nil, nil, nil); sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
         host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(try XCTUnwrap(host.epoch)),
                              "commandId": .string(commandID), "ok": .bool(true), "result": .object(["accepted": .bool(true)])]),
                      connectionID: try XCTUnwrap(host.connectionID))
-        try await eventually("edit acknowledgement handled") { !view.editSubmitting }
+        try await eventually("helper acceptance published") { view.acceptedCommands.contains(commandID) }
+        // Draft restoration can finish while acknowledgement storage is blocked.
+        // The condition used below must still wait for that bookkeeping.
+        let acknowledgementFinished = { !view.loading }
+        XCTAssertFalse(acknowledgementFinished(), "Acknowledgement bookkeeping is still blocked")
+        XCTAssertEqual(sqlite3_exec(db, "ROLLBACK", nil, nil, nil), SQLITE_OK)
+        try await eventually("edit acknowledgement handled", acknowledgementFinished)
         XCTAssertFalse(view.uncertain, "Local persistence cannot make a known acceptance uncertain")
         XCTAssertNotEqual(view.runState, .interrupted)
         XCTAssertTrue(view.acceptedCommands.contains(commandID))
