@@ -1,8 +1,16 @@
-# Next release: 0.1.123
+# Next release: 0.1.124
 
-**Released 2026-10-12:** 0.1.123 (build 127, tag `v0.1.123`) is the latest release; record `docs/validation/Bello-Agent-0.1.123-2026-10-12.md`.
+**0.1.124 (owner 2026-10-13, "deliver ASAP"):** owner-approved fixes from a three-session Codex audit, plus the Flat topic view and the global retry setting. Codex (gpt-6-astra, max) implemented the audit fixes in four sessions; every branch was reviewed read-only by Codex until clean.
 
-## 0.1.123 (in progress, owner 2026-10-11)
+- [x] Flat topic view (`dev/flat-topics`): a project's "…" menu, Show Chats ▸ Topics / Flat (per project, `ProjectSidebarState.flatTopics`). Flat lists the project's chats by last update with the topic as a tag; sides stay under their parent; drag is off in Flat. Topics view pixel-identical. `SidebarFlatTopicsTests` (14).
+- [x] Retries for all connections (`dev/retry`): Settings ▸ Connections ▸ Retries · all connections (on/off, 0–10 retries, first delay 1–60 s; pi defaults on/3/2 s). Sent at `workspace.open` and by `retry.configure`; every provider retry (turns, utility requests, compaction summaries) waits base × 2^(n−1); each request keeps the policy it started with. `CompactionPolicy.maximumAttempts` 8 → 11.
+- [x] Audit fixes: Inspector checked number conversions; terminal folder failure reported (bounded, off-main handshake) and closing/restarted terminals ended at Quit; Keychain operations that timed out before starting never run, uncertain saves say so and reconcile; HTTP MCP deadline; Inspector MCP outcomes kept until saved (`dev/shell-inspector`, `dev/mcp`). Durable pasted images, no resend of an accepted message, full and atomic draft recovery (`dev/composer-send`). Git diff prefixes forced, Git actions bound to their repository snapshot, FIFO-safe file opens, newest copy wins across viewers (`dev/git-files`).
+- [ ] Left (Git, rare): during a repository switch, a commit message typed while the new repository loads can be cleared if a second folder in the same repository is chosen before it loads, and Amend can prefill the previous repository's HEAD message. A fix that disabled the editor during switches (`dev/git-files` 6609532d) regressed panel re-show and same-repository refreshes, so it was left out.
+- [ ] Left (tests): `WorkspaceFollowupTests.testScratchChatRendersComposerAndPreparesToolFreeRequestWithoutProject` times out in helper shutdown (6 s) under heavy machine load; passes in the gate.
+
+**Released 2026-10-12:** 0.1.123 (build 127, tag `v0.1.123`); record `docs/validation/Bello-Agent-0.1.123-2026-10-12.md`.
+
+## 0.1.123 (owner 2026-10-11)
 
 The Rust port is stopped (`rust` branch, `rust/docs/STATUS-2026-10-10.md`). Bring back into Swift what the port found (owner: "work on all of them"); no release without the owner's OK.
 
