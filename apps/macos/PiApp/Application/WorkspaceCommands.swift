@@ -32,7 +32,7 @@ extension WorkspaceModel {
     }
     /// The conversation the fold commands act on.
     var commandSession: SessionDisplay? {
-        guard page == .chats, let id = focusedSessionID ?? selectedID else { return nil }
+        guard page == .chats, !quickOpen.isOpen, let id = focusedSessionID ?? selectedID else { return nil }
         return displays[id]
     }
 

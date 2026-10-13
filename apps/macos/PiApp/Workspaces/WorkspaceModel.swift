@@ -228,7 +228,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     func openReport() { page = .report }
     func closeReport() { page = .chats }
     func toggleReport() { page = page == .report ? .chats : .report }
-    var conversationCommandsEnabled: Bool { page == .chats && !presentsSheet && (focusedSessionID ?? selectedID).flatMap(record) != nil }
+    var conversationCommandsEnabled: Bool { page == .chats && !presentsSheet && !quickOpen.isOpen && (focusedSessionID ?? selectedID).flatMap(record) != nil }
     /// First-run setup fills the window: the vault has answered, and there is
     /// no connection or no chat yet. Its steps end with the project, so
     /// nothing else offers one meanwhile.

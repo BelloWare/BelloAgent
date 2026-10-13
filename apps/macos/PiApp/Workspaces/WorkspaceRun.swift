@@ -30,7 +30,7 @@ extension WorkspaceModel {
     /// text's: the chat's draft is not sent from behind it, as it was not
     /// while Changes was a sheet.
     func submitFocusedComposer(intent: ComposerSubmissionIntent, in window: NSWindow? = NSApp.keyWindow) {
-        guard !Self.typingInATab(in: window), let id = focusedSessionID ?? selectedID else { return }
+        guard conversationCommandsEnabled, !Self.typingInATab(in: window), let id = focusedSessionID ?? selectedID else { return }
         submitComposer(intent: intent, sessionID: id)
     }
 
