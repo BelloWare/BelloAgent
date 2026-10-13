@@ -58,6 +58,7 @@ extension WorkspaceModel {
         if let reason = editEntryBlocker(view) { view.notice = reason; view.editNotice = reason; return }
         let generation = UUID(), draft = view.savedDraft
         let focusOrigin = focusedSessionID ?? selectedID
+        let focus = QueueEditFocus(self, view)
         view.editGeneration = generation; view.editPreparing = true; view.editNotice = "Loading the complete original input…"
         Task {
             defer { if view.editGeneration == generation { view.editPreparing = false } }
@@ -103,7 +104,7 @@ extension WorkspaceModel {
                 view.draft = text; view.attachments = attachments; view.skills = skills; view.editMissingAttachments = missing
                 view.editInputReviewRequired = result["legacyInputs"]?.bool ?? false
                 view.directCommand = false; view.completionVisible = false; view.editNotice = "Context inspection shows the current unedited branch until Send."
-                if (focusedSessionID ?? selectedID) == focusOrigin, focusOrigin == sessionID { focusedSessionID = sessionID; view.composerFocusRequest += 1 }
+                if (focusedSessionID ?? selectedID) == focusOrigin, focusOrigin == sessionID, focus.holds(self) { focusedSessionID = sessionID; view.composerFocusRequest += 1 }
                 draftChanged(view)
             } catch {
                 guard view.editGeneration == generation, view.savedDraft == draft else { return }
@@ -157,7 +158,7 @@ extension WorkspaceModel {
         view.loading = true; view.editSubmitting = true
         Task {
             defer { view.loading = false; view.editSubmitting = false }
-            var dispatched = false
+            var dispatched = false, helperAccepted = false
             // As in `send`: only this resend's own "queued" is ever undone, and
             // only while it is still what the chat shows.
             var shown: (state: RunState, replaced: RunState)?
@@ -178,8 +179,11 @@ extension WorkspaceModel {
                 // first carries it is adopted where they are (`adoptOwnBranch`).
                 view.pendingBranch = .init(from: view.presentation.identity?.lineage, messageID: messageID, turnID: turnID)
                 _ = try await host.request(Self.editTurnMethod, sessionID: item.id, params: params, commandID: commandID)
+                helperAccepted = true
+                view.acceptedCommands.insert(commandID)
+                view.submissionReviews.remove(commandID)
+                view.recovered.removeAll { $0.id == commandID }; if view.recovered.isEmpty { view.uncertain = false }
                 view.skillRepins = [:]
-                if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
                 if view.editGeneration == generation, view.editingMessageID == messageID {
                     if view.draft == text, view.attachments == attachments, view.skills == skills { finishEdit(view) }
                     else {
@@ -198,7 +202,15 @@ extension WorkspaceModel {
                 // followed the way a sent message is.
                 if view.pendingBranch?.turnID == turnID, !view.browsingHistory, !view.historyState.loading { refresh(item.id) }
                 else { followSubmittedTurn(item.id) }
+                if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
             } catch {
+                if helperAccepted {
+                    // The helper made the branch. Local bookkeeping cannot
+                    // turn that known acceptance into a retry of the old edit.
+                    self.error = "Edit accepted, but its local record could not be saved. \(error.localizedDescription)"
+                    refresh(item.id)
+                    return
+                }
                 let rejection: String? = { if case HostError.rejected(let code, _) = error { return code }; return nil }()
                 // A skill that changed since it was chosen: the edit is still
                 // in the composer, so its chips are put right as a send's are
