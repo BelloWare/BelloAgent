@@ -400,11 +400,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     let toolInputs = TranscriptToolInputs()
     var draft: String { get { composerDraft.text } set { if composerDraft.text != newValue { composerDraft.text = newValue } } }
     @Published var attachments: [AttachmentRecord] = []
-    /// Imports register before conversion or inspection yields. Sending this
-    /// draft waits until all of its images have either arrived or failed.
-    var imageImports = 0
-    var imageImportFailed = false
-    var submissionAfterImages: (() -> Void)?
+    /// Imports register before conversion or inspection yields. Send is
+    /// disabled until all finish; completing an import never submits.
+    @Published var imageImports = 0
     @Published var skills: [SkillChip] = []
     @Published var directCommand = false
     @Published var completionVisible = false

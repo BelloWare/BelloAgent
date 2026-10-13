@@ -51,7 +51,7 @@ struct PastedImageReferences: Sendable { let token: PastedImageReferenceToken; l
 
 @MainActor struct ComposerImageImport {
     var isCurrent: () -> Bool = { true }
-    var finish: (Bool) -> Void = { _ in }
+    var finish: () -> Void = {}
 }
 
 struct AttachmentRecord: Codable, Sendable, Identifiable, Hashable {
@@ -84,40 +84,18 @@ extension WorkspaceModel {
     func beginImageImport(sessionID: String) -> ComposerImageImport {
         guard let view = displays[sessionID] else { return ComposerImageImport(isCurrent: { false }) }
         let target = view.editingMessageID, generation = view.editGeneration
-        if view.imageImports == 0 { view.imageImportFailed = false }
         view.imageImports += 1; attachmentImports += 1
         var finished = false
         return ComposerImageImport(isCurrent: { [weak self, weak view] in
             guard let self, let view else { return false }
             return !self.isShutDown && self.displays[sessionID] === view && view.editingMessageID == target && (target == nil || view.editGeneration == generation)
-        }, finish: { [weak self, weak view] success in
+        }, finish: { [weak self, weak view] in
             guard !finished else { return }; finished = true
             guard let self else { return }
             self.attachmentImports -= 1
             guard let view else { return }
-            view.imageImports -= 1; view.imageImportFailed = view.imageImportFailed || !success
-            guard view.imageImports == 0 else { return }
-            let submission = view.submissionAfterImages; view.submissionAfterImages = nil
-            if view.notice == "Waiting for the images to finish importing…" { view.notice = "" }
-            if !view.imageImportFailed, !self.isShutDown, !self.installPreparing, self.displays[sessionID] === view { submission?() }
+            view.imageImports -= 1
         })
-    }
-    /// Return while images are on their way means Send once they arrive.
-    /// Repeated presses coalesce to the latest explicitly submitted draft;
-    /// newer typing or another edit still needs a fresh Send.
-    func deferSubmissionForImages(_ view: SessionDisplay, retry: @escaping () -> Void) -> Bool {
-        guard view.imageImports > 0 else { return false }
-        let text = view.draft, skills = view.skills, edit = view.editingMessageID, queue = view.queueEditingID, generation = view.editGeneration
-        view.notice = "Waiting for the images to finish importing…"
-        view.submissionAfterImages = { [weak view] in
-            guard let view else { return }
-            guard view.draft == text, view.skills == skills, view.editingMessageID == edit, view.queueEditingID == queue, view.editGeneration == generation else {
-                view.notice = "The images are ready. The draft changed while they loaded; press Send when ready."; return
-            }
-            if view.notice == "Waiting for the images to finish importing…" { view.notice = "" }
-            retry()
-        }
-        return true
     }
     static let imagesUnsupported = "This chat's model is not known to take images. List \"image\" in the model's catalog `input`, or add \"input\": [\"text\", \"image\"] to the connection's Model capabilities in Settings."
     /// What a chat's model takes: what its connection declares under Model
@@ -161,8 +139,9 @@ extension WorkspaceModel {
         if let recovery = draftWrites.recoveries[view.id] {
             let importing = beginImageImport(sessionID: view.id)
             Task {
+                defer { importing.finish() }
                 await recovery.value
-                importing.finish(importing.isCurrent() && receiveAttachments(items, into: view))
+                if importing.isCurrent() { receiveAttachments(items, into: view) }
             }
             return true
         }
@@ -187,14 +166,13 @@ extension WorkspaceModel {
     func attachImageFiles(_ urls: [URL], sessionID: String? = nil) {
         guard let id = sessionID ?? selectedID, let view = displays[id], !urls.isEmpty else { return }
         guard supportsImages(id) else {
-            view.imageImportFailed = true; view.submissionAfterImages = nil
             view.notice = Self.imagesUnsupported; error = Self.imagesUnsupported; return
         }
         let importing = beginImageImport(sessionID: id)
-        Task { var attached = false; defer { importing.finish(attached) }; do {
+        Task { defer { importing.finish() }; do {
             let items = try await Task.detached { try urls.map(AttachmentRecord.inspect) }.value
             guard importing.isCurrent() else { throw HostError.failure("The draft changed while its image was being prepared. Attach it again.") }
-            attached = receiveAttachments(items, into: view)
+            receiveAttachments(items, into: view)
         } catch { view.notice = error.localizedDescription; self.error = error.localizedDescription } }
     }
     func schedulePastedImageCleanup() {

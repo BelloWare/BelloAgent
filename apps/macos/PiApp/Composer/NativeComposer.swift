@@ -447,13 +447,14 @@ struct ComposerEditMeasurement {
         // milliseconds. Only the bytes are taken here; the rest happens off
         // the main thread and the chip appears when it lands.
         Task { @MainActor in
+            defer { importing.finish() }
             let written = await Task.detached(priority: .userInitiated) { Self.writePastedImage(pasted, storage: storage) }.value
             guard importing.isCurrent() else {
                 destination.reject?("The draft changed while its image was being prepared. Attach it again.")
-                importing.finish(false); return
+                return
             }
-            if let written { destination.attach([written]); importing.finish(true) }
-            else { destination.reject?("That image could not be read. Copy it again, or attach the file instead."); importing.finish(false) }
+            if let written { destination.attach([written]) }
+            else { destination.reject?("That image could not be read. Copy it again, or attach the file instead.") }
         }
         return true
     }

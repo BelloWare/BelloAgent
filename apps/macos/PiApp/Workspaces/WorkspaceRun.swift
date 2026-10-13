@@ -7,7 +7,7 @@ import AppKit
 extension WorkspaceModel {
     /// Snapshot the originating pane's intent synchronously, before any helper await.
     func submitComposer(intent: ComposerSubmissionIntent, sessionID: String) {
-        guard page == .chats, let view = displays[sessionID], view.draftReady, !view.loading, !installPreparing else { return }
+        guard page == .chats, let view = displays[sessionID], view.draftReady, view.imageImports == 0, !view.loading, !installPreparing else { return }
         if view.queueEditingID != nil { saveQueuedEdit(sessionID: sessionID); return }
         if view.editingMessageID != nil { sendEdit(sessionID: sessionID); return }
         // Bypassing the completion list with Command-Return is not a skill grant.
@@ -35,6 +35,7 @@ extension WorkspaceModel {
     }
 
     func send(steer: Bool = false, sessionID: String? = nil) {
+        if let id = sessionID ?? focusedSessionID ?? selectedID, (displays[id]?.imageImports ?? 0) > 0 { return }
         if let id = sessionID ?? focusedSessionID ?? selectedID, draftWrites.recoveries[id] != nil || displays[id]?.draftReady == false {
             if sessionID != nil { error = "The message was not sent. Wait for the draft to finish loading or recovering, then try again." }
             return
@@ -44,7 +45,6 @@ extension WorkspaceModel {
         guard sessionID != nil || page == .chats else { return }
         if redirectsToEdit(steer: steer, sessionID: sessionID) { return }
         guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isBackgroundTask, let view = displays[id], !view.loading, !installPreparing, side(id)?.keeping != true else { return }
-        if deferSubmissionForImages(view, retry: { [weak self] in self?.send(steer: steer, sessionID: id) }) { return }
         guard view.hasSubmittableInput else { return }
         // A message goes to the latest version, and the transcript returns to it.
         latestVersion(sessionID: id)
@@ -361,7 +361,6 @@ extension WorkspaceModel {
     /// false: they must not invent an interruption for a run they cannot see.
     func stop(sessionID: String? = nil, userInitiated: Bool = true) {
         guard let id = sessionID ?? selectedID, let item = record(id), let view = displays[id] else { return }
-        view.submissionAfterImages = nil
         // Nothing is running and nothing is queued: there is nothing to stop.
         // Asking anyway showed "Stopping" and left the chat "Paused".
         guard view.hasWork else { return }

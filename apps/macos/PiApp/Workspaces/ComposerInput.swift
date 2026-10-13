@@ -26,6 +26,7 @@ import AppKit
     private let card: PiKit.Box
     private let cardContent = Content()
     private let loadingLine = PiKit.TextLine(PiKit.Line("Loading the complete original input…", font: PiKit.Font.caption, color: .labelColor))
+    private let importNotice = PiKit.Note("Adding image… Send when it finishes", lineLimit: 2)
     private var editingBanner: ComposerEditBanner?
     private var queueBanner: ComposerEditBanner?
     private let chips = PiKit.FlowView()
@@ -68,6 +69,7 @@ import AppKit
         var attachments: [AttachmentRecord]
         var placeholder: String?
         var canSend: Bool
+        var importingImages: Bool
         var queues: Bool
         var busy: Bool
         var loading: Bool
@@ -110,7 +112,8 @@ import AppKit
         super.init(frame: .zero)
         card.content = cardContent
         addSubview(card)
-        for view in [loadingLine, chips, placeholder, bar] as [NSView] { cardContent.addSubview(view) }
+        for view in [loadingLine, chips, placeholder, importNotice, bar] as [NSView] { cardContent.addSubview(view) }
+        importNotice.setAccessibilityIdentifier("composer-image-import-notice")
         chips.spacing = 6; chips.rowSpacing = 6
         placeholder.setAccessibilityElement(false)
         completions.isHidden = true
@@ -230,7 +233,7 @@ import AppKit
         let draft = session.composerDraft.text
         let hasInput = draft.contains { !$0.isWhitespace } || !session.skills.isEmpty || !session.attachments.isEmpty || (queueEditing && session.queueEditKeepsInput)
         let blocker = editing ? model.editBlocker(session) : nil
-        let canSend = session.draftReady && !(!hasInput || session.loading || model.installPreparing || (editing && blocker != nil) || session.queueEditResolving)
+        let canSend = session.draftReady && session.imageImports == 0 && !(!hasInput || session.loading || model.installPreparing || (editing && blocker != nil) || session.queueEditResolving)
         let queues = !editing && !queueEditing && (session.busy || !session.queue.isEmpty || !session.sendingRows.isEmpty)
         let hint: String? = queueEditing ? "↩ Save" : queues ? (session.busy ? "↩ Queue · ⌘↩ Steer" : "↩ Queue")
             : editing ? (session.busy || !session.queue.isEmpty ? "Wait for idle to resend" : "Resend from here") : nil
@@ -251,7 +254,7 @@ import AppKit
                      placeholder: draft.isEmpty && session.skills.isEmpty
                         ? "Message… " + ComposerSubmissionIntent.hint(queues: queues, steers: session.busy, onBar: queues && !editing && form.runControls.showsHint)
                         : nil,
-                     canSend: canSend, queues: queues, busy: session.busy, loading: session.loading, draftReady: session.draftReady,
+                     canSend: canSend, importingImages: session.imageImports > 0, queues: queues, busy: session.busy, loading: session.loading, draftReady: session.draftReady,
                      form: form, hint: hint, showsChanges: showsChanges, showsActions: chat != nil && !isSide,
                      supportsImages: model.supportsImages(session.id), disabled: editing && session.loading || !inheritedEnabled || session.recoveringDraft,
                      completionVisible: session.completionVisible,
@@ -327,13 +330,14 @@ import AppKit
             }
         }
         chips.isHidden = state.attachments.isEmpty
+        importNotice.isHidden = !state.importingImages
         for control in PiKit.controls(in: chips) { control.isEnabled = !state.disabled }
         // The bar.
         attach.isEnabled = state.draftReady && !state.queueEditing && state.supportsImages && !state.disabled
         skills.isEnabled = !state.queueEditing && !state.disabled
         steer.isHidden = !(state.busy && !state.editing && !state.queueEditing)
         steer.title = state.form.runControls.steerIsCompact ? "" : "Steer run"
-        steer.isEnabled = !state.loading && !state.disabled
+        steer.isEnabled = !state.loading && !state.disabled && !state.importingImages
         hintLine.isHidden = !(state.form.runControls.showsHint && state.hint != nil)
         hintLine.line.text = state.hint ?? ""
         // The released empty HStack remains a bar child when idle. Its
@@ -414,6 +418,7 @@ import AppKit
         if let queueBanner { parts.append((queueBanner, queueBanner.height(forWidth: width), 0)) }
         if !chips.isHidden { parts.append((chips, chips.height(forWidth: width - PiSpacing.md * 2) + PiSpacing.md, PiSpacing.md)) }
         if let field { parts.append((field, field.fieldHeight, 0)) }
+        if !importNotice.isHidden { parts.append((importNotice, importNotice.height(forWidth: width - PiSpacing.md * 2) + PiSpacing.sm, PiSpacing.md)) }
         parts.append((bar, bar.height(forWidth: width), 0))
         return parts
     }
