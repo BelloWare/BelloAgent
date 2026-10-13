@@ -84,6 +84,40 @@ final class HostSupervisorTests: XCTestCase {
         try await neverStarted.shutdownAndWait()
     }
 
+    /// A connection asked for while `shutdownAndWait` stops the helper (the
+    /// automatic context preview of a chat whose composer just mounted, a
+    /// prewarm) waited for the exit and started the next helper at once: the
+    /// stop never saw its helper gone, failed after six seconds ("did not
+    /// exit"), and left a fresh helper running. Such a connection now fails,
+    /// the stop returns as soon as the helper exits, and a connection after
+    /// the stop starts a helper as before.
+    @MainActor func testConnectionDuringShutdownAndWaitDoesNotReplaceTheStoppingHelper() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let state = root.appendingPathComponent("state")
+        let host = HostSupervisor(); defer { host.shutdown() }
+        try await host.connect(cwd: root, state: state)
+        let stopping = try XCTUnwrap(host.helperProcessIdentifier)
+        let started = ContinuousClock.now
+        let stop = Task { try await host.shutdownAndWait() }
+        // The stop starts first; the connection then finds the helper
+        // closing while the stop waits for its exit.
+        await Task.yield()
+        let waiting = Task { try await host.connect(cwd: root, state: state) }
+        await Task.yield()
+        try await stop.value
+        let elapsed = ContinuousClock.now - started
+        XCTAssertLessThan(elapsed, .seconds(1), "an idle helper must exit at once when its input closes")
+        do { try await waiting.value; XCTFail("a connection asked for during the stop must not start a helper") }
+        catch { XCTAssertEqual(error.localizedDescription, "Project host is stopping") }
+        XCTAssertNil(host.helperProcessIdentifier, "no helper may be running after shutdownAndWait")
+        XCTAssertFalse(host.isReady)
+        XCTAssertNotEqual(kill(stopping, 0), 0, "the stopped helper has exited")
+        // The stop is over: the next message starts a helper as usual.
+        try await host.connect(cwd: root, state: state)
+        XCTAssertTrue(host.isReady)
+        try await host.shutdownAndWait()
+    }
+
     /// A helper killed mid-turn: the command fails with an explicit uncertain
     /// outcome, the loss is reported once, and repeated kill/restart rounds
     /// leave no descriptors and no orphaned helper processes behind.
