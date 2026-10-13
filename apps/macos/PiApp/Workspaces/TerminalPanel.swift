@@ -14,7 +14,7 @@ import Combine
     let generation: Int
     let emulator = TerminalEmulator(columns: 100, rows: 24)
     let view: TerminalView
-    let process = PseudoTerminal()
+    let process: PseudoTerminal
     /// The title the shell sets with escape sequences. A name the reader
     /// gave the terminal is kept apart, in `customName`, and wins.
     @Published var shellTitle = ""
@@ -25,8 +25,9 @@ import Combine
     let directory: String
     var displayName: String { customName ?? "Terminal \(number)" }
 
-    init(workspaceID: String, directory: String, id: UUID = UUID(), number: Int = 1, customName: String? = nil, generation: Int = 0) {
+    init(workspaceID: String, directory: String, id: UUID = UUID(), number: Int = 1, customName: String? = nil, generation: Int = 0, process: PseudoTerminal = PseudoTerminal()) {
         self.workspaceID = workspaceID; self.directory = directory
+        self.process = process
         self.id = id; self.number = number; self.customName = customName; self.generation = generation
         view = TerminalView(emulator: emulator)
         view.accessibilityName = displayName
