@@ -33,9 +33,20 @@ final class HostSupervisor: ObservableObject {
     }
     private var queuedRequests: [QueuedRequest] = []
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
-    /// Connections waiting for a stopping helper to exit.
-    private var exitWaiters: [CheckedContinuation<Void, Never>] = []
-    private func resumeExitWaiters() { let waiters = exitWaiters; exitWaiters.removeAll(); for waiter in waiters { waiter.resume() } }
+    /// Connections waiting for a stopping helper to exit. Each is told at the
+    /// exit whether it may start the next helper: not while `shutdownAndWait`
+    /// is waiting for that exit.
+    private var exitWaiters: [CheckedContinuation<Bool, Never>] = []
+    private func resumeExitWaiters() {
+        let waiters = exitWaiters, replace = stopsAwaited == 0
+        exitWaiters.removeAll(); for waiter in waiters { waiter.resume(returning: replace) }
+    }
+    /// Callers inside `shutdownAndWait`. While one waits, no connection starts
+    /// a helper: a context preview or prewarm that asked for this project in
+    /// that window used to wait for the exit and start a fresh helper at once,
+    /// so the stop never saw its helper gone and failed after six seconds,
+    /// leaving the new helper running through an update or a folder change.
+    private var stopsAwaited = 0
     private var handshakeWatchdog: Task<Void, Never>?
     private var closing = false
     private(set) var clockOffset = 0.0
@@ -55,6 +66,7 @@ final class HostSupervisor: ObservableObject {
 
     func connect(cwd: URL, state: URL, runtime: RuntimePreferences = RuntimePreferences(), capture: (@Sendable ([String: WireValue]) async throws -> Void)? = nil) async throws {
         if isReady { return }
+        guard stopsAwaited == 0 else { throw HostError.failure("Project host is stopping") }
         if closing {
             // The app stops idle helpers on its own. Sending the next message
             // inside that window must start a fresh helper, not report that the
@@ -66,10 +78,11 @@ final class HostSupervisor: ObservableObject {
             let backstop = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(8)); self?.resumeExitWaiters()
             }
-            await withCheckedContinuation { exitWaiters.append($0) }
+            let replace = await withCheckedContinuation { exitWaiters.append($0) }
             backstop.cancel()
             try Task.checkCancellation()
             if isReady { return }
+            guard replace, stopsAwaited == 0 else { throw HostError.failure("Project host is stopping") }
             guard !closing else { throw HostError.failure("The previous project host did not exit. Try again.") }
         }
         if transport == nil {
@@ -199,6 +212,7 @@ final class HostSupervisor: ObservableObject {
         PerformanceProbe.shared.observe("clockCalibrationUncertaintyMs", milliseconds: best / 2)
     }
     func shutdownAndWait() async throws {
+        stopsAwaited += 1; defer { stopsAwaited -= 1 }
         shutdown()
         for _ in 0..<300 { if transport == nil { return }; try await Task.sleep(for: .milliseconds(20)) }
         throw HostError.failure("The project host did not exit. Update installation was cancelled.")
