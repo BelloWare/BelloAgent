@@ -33,7 +33,7 @@ final class HostDispatchTests: XCTestCase {
         (0, ["display.result.read"]),
         (1, ["runtime.info", "clock.sync", "workspace.open"]),
         (2, ["workspace.quiesce", "workspace.resume", "resources.configure", "resources.inspect", "resources.skill.read", "mcp.configure", "mcp.list", "mcp.describe",
-             "mcp.acknowledgeUnknown", "connection.test", "session.open", "session.portable.preview", "session.import.inspect", "session.recover", "journal.slim",
+             "mcp.acknowledgeUnknown", "mcp.resultRetained", "connection.test", "session.open", "session.portable.preview", "session.import.inspect", "session.recover", "journal.slim",
              "session.import.continue", "session.import.recover"]),
         (3, ["debug.list", "debug.body", "debug.attempt", "debug.raw-events", "debug.mode", "debug.clear", "session.forget"]),
         (4, ["turn.stop", "session.status", "session.edit.prepare", "session.snapshot", "context.info", "context.preview", "context.preview.read", "context.preview.clear",
