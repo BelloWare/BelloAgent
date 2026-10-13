@@ -23,10 +23,45 @@ import AppKit
         public init(path: String, staged: Bool) { self.path = path; self.staged = staged }
     }
 
+    /// A row's repository and reading. Kept by actions and confirmations so
+    /// a same-named file in a later repository can never inherit the action.
+    public struct RepositoryContext: Equatable, Sendable {
+        public let root: String
+        fileprivate let generation: Int
+    }
+    public struct RepositorySnapshot: Equatable {
+        public let context: RepositoryContext?
+        public let status: GitRepositoryStatus
+        public let read: Bool
+        fileprivate let staged: [GitStatusEntry], unstaged: [GitStatusEntry]
+        fileprivate let stagedPaths: Set<String>, unstagedPaths: Set<String>, paths: Set<String>
+        fileprivate init(context: RepositoryContext? = nil, status: GitRepositoryStatus = GitRepositoryStatus(), read: Bool = false) {
+            self.context = context; self.status = status; self.read = read
+            staged = status.entries.filter(\.staged); unstaged = status.entries.filter(\.unstaged)
+            stagedPaths = Set(staged.map(\.path)); unstagedPaths = Set(unstaged.map(\.path)); paths = Set(status.entries.map(\.path))
+        }
+    }
+    @Published public private(set) var repository = RepositorySnapshot()
+    public var repositoryContext: RepositoryContext? { repository.context }
+    private var repositoryGeneration = 0
+
+    /// Synchronous even when a refresh has not started yet. Returning to a
+    /// folder does not revive a menu or question from its earlier reading.
+    public func accepts(_ context: RepositoryContext?) -> Bool {
+        guard let context else { return false }
+        return !closed && !suspended && context == repository.context && context.generation == repositoryGeneration
+    }
+    private func actionRoot(_ context: RepositoryContext?) -> String? {
+        guard accepts(context) else { notice = "The repository changed. Choose the action again."; return nil }
+        return context?.root
+    }
+
     @Published public var roots: [String] = []
     @Published public var root: String? {
         didSet {
             guard root != oldValue else { return }
+            repositoryGeneration += 1
+            stop()
             // Another folder, perhaps another repository: a commit held for a
             // reveal in the last one, and a reveal still on its way, go.
             pinnedCommit = nil; revealTarget = nil; revealTokens += 1
@@ -34,16 +69,16 @@ import AppKit
             startRefresh()
         }
     }
-    @Published public var repositoryRoot: String?
+    public var repositoryRoot: String? { repository.context?.root }
     /// Coming back to Changes brings up to date a diff that a refresh nobody
     /// asked for left unread while it was hidden.
     @Published public var panel = Panel.changes { didSet { if panel == .changes, oldValue != .changes, selectedDiffStale { startSelectedDiffLoad(silently: true) } } }
-    @Published public private(set) var status = GitRepositoryStatus() { didSet { splitStatus() } }
+    public var status: GitRepositoryStatus { repository.status }
     @Published public private(set) var loading = false
     /// A read has said whether the folder is a repository and, when it is,
     /// what changed in it. Until then the panel keeps its own layout, empty,
     /// and says neither "Not a git repository" nor "No changes".
-    @Published public private(set) var statusRead = false
+    public var statusRead: Bool { repository.read }
     @Published public private(set) var notice = ""
     @Published public var selection: Selection? { didSet { if selection != oldValue { startSelectedDiffLoad() } } }
     @Published public private(set) var diff: [GitDiffFile] = []
@@ -213,21 +248,13 @@ import AppKit
     public var displayRoot: String { (root as NSString?)?.lastPathComponent ?? "" }
     /// Split once when the status is read. A repository with thousands of
     /// changed files must not be filtered again for every pass over the body.
-    @Published public private(set) var staged: [GitStatusEntry] = []
-    @Published public private(set) var unstaged: [GitStatusEntry] = []
-    @Published public private(set) var stagedPaths: Set<String> = []
-    @Published public private(set) var unstagedPaths: Set<String> = []
+    public var staged: [GitStatusEntry] { repository.staged }
+    public var unstaged: [GitStatusEntry] { repository.unstaged }
+    public var stagedPaths: Set<String> { repository.stagedPaths }
+    public var unstagedPaths: Set<String> { repository.unstagedPaths }
     /// How many of the changed files are ticked, counted when either side changes.
     @Published public private(set) var checkedCount = 0
-    private var allPaths: Set<String> = []
-    private func splitStatus() {
-        staged = status.entries.filter(\.staged)
-        unstaged = status.entries.filter(\.unstaged)
-        stagedPaths = Set(staged.map(\.path))
-        unstagedPaths = Set(unstaged.map(\.path))
-        allPaths = Set(status.entries.map(\.path))
-        recountChecked()
-    }
+    private var allPaths: Set<String> { repository.paths }
     private func recountChecked() {
         var count = 0
         if checked.count <= allPaths.count { for path in checked where allPaths.contains(path) { count += 1 } }
@@ -267,7 +294,7 @@ import AppKit
     public func letGo() {
         selectedCommit = nil
         selection = nil
-        status = GitRepositoryStatus(); statusRead = false; repositoryRoot = nil
+        repositoryGeneration += 1; repository = RepositorySnapshot()
         diff = []; detail = nil; detailDiff = []; detailFileDiff = []; detailDiffDeferred = false
         commits = []; historyExhausted = false; branches = []; stashes = []
         commitCache = [:]; commitCacheOrder = []
@@ -421,10 +448,10 @@ import AppKit
         // A stopped read of the top level reads as "no repository": only a
         // refresh still current may say so.
         guard current(generation) else { return }
-        publish(\.repositoryRoot, top)
-        updateWatch(on: top)
         guard let top else {
-            publish(\.status, GitRepositoryStatus()); publish(\.statusRead, true); publish(\.diff, []); publish(\.commits, [])
+            guard publishRepository(nil, status: GitRepositoryStatus(), generation: generation) else { return }
+            updateWatch(on: nil)
+            publish(\.diff, []); publish(\.commits, [])
             publish(\.selection, nil); publish(\.selectedCommit, nil); publish(\.detail, nil); return
         }
         do {
@@ -435,7 +462,8 @@ import AppKit
             if Self.statusReadDelay > .zero { try? await Task.sleep(for: Self.statusReadDelay); guard !Task.isCancelled else { return } }
             let status = try await service.status(in: top)
             guard current(generation) else { return }
-            publish(\.status, status); publish(\.statusRead, true)
+            guard publishRepository(top, status: status, generation: generation) else { return }
+            updateWatch(on: top)
             let paths = Set(status.entries.map(\.path))
             // Files arrive ticked until the reader says otherwise; once they
             // have, a refresh never ticks anything back on. Unticking every
@@ -470,6 +498,27 @@ import AppKit
     /// panel wants: not replaced by a newer one and not cancelled. Whatever it
     /// read, or failed to read because it was stopped, it keeps to itself.
     private func current(_ generation: Int) -> Bool { !Task.isCancelled && self.generation == generation }
+
+    private func publishRepository(_ root: String?, status: GitRepositoryStatus, generation: Int) -> Bool {
+        guard current(generation), !closed, !suspended else { return false }
+        guard !repository.read || repositoryRoot != root || self.status != status || (root != nil && repository.context?.generation != repositoryGeneration) else { return true }
+        if repositoryRoot != root {
+            selection = nil; selectedCommit = nil
+            diff = []; commits = []; branches = []; stashes = []
+            commitCache = [:]; commitCacheOrder = []; historyExhausted = false
+            checkedByReader = false; applyChecked([])
+            if repository.read { commitMessage = ""; amend = false; lastCommit = nil }
+        }
+        // Published resets notify synchronously: an observer may select yet
+        // another repository or hide the panel before this assignment.
+        guard current(generation), !closed, !suspended else { return false }
+        repositoryGeneration += 1
+        repository = RepositorySnapshot(context: root.map { RepositoryContext(root: $0, generation: repositoryGeneration) }, status: status, read: true)
+        recountChecked()
+        // The snapshot's observers can stop us too. Nothing may restart the
+        // watcher or a diff read after that stop.
+        return current(generation) && !closed && !suspended
+    }
 
     private func reloadHistory(generation: Int? = nil, automatic: Bool = false) async {
         guard let repositoryRoot, !closed, !suspended else { return }
@@ -537,33 +586,44 @@ import AppKit
         await refresh()
         if let failure { notice = failure }
     }
-    public func checkout(_ branch: String) async { guard let root = repositoryRoot else { return }; await perform("Switch") { try await service.checkout(branch, in: root) } }
-    public func createBranch(_ name: String) async { guard let root = repositoryRoot else { return }; await perform("New branch") { try await service.createBranch(name, in: root) } }
-    public func stash(message: String) async { guard let root = repositoryRoot else { return }; await perform("Stash") { try await service.stashPush(message: message, in: root) } }
-    public func popStash(_ name: String? = nil) async { guard let root = repositoryRoot else { return }; await perform("Pop stash") { try await service.stashPop(name, in: root) } }
-    public func fetch() async { guard let root = repositoryRoot else { return }; await perform("Fetch") { try await service.fetch(in: root) } }
-    public func pull() async { guard let root = repositoryRoot else { return }; await perform("Pull") { try await service.pull(in: root) } }
-    public func push() async { guard let root = repositoryRoot else { return }; await perform("Push") { try await service.push(in: root) } }
+    public func checkout(_ branch: String) async { await checkout(branch, context: repositoryContext) }
+    public func checkout(_ branch: String, context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("Switch") { try await service.checkout(branch, in: root) } }
+    public func createBranch(_ name: String) async { await createBranch(name, context: repositoryContext) }
+    public func createBranch(_ name: String, context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("New branch") { try await service.createBranch(name, in: root) } }
+    public func stash(message: String) async { await stash(message: message, context: repositoryContext) }
+    public func stash(message: String, context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("Stash") { try await service.stashPush(message: message, in: root) } }
+    public func popStash(_ name: String? = nil) async { await popStash(name, context: repositoryContext) }
+    public func popStash(_ name: String?, context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("Pop stash") { try await service.stashPop(name, in: root) } }
+    public func fetch() async { await fetch(context: repositoryContext) }
+    public func fetch(context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("Fetch") { try await service.fetch(in: root) } }
+    public func pull() async { await pull(context: repositoryContext) }
+    public func pull(context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("Pull") { try await service.pull(in: root) } }
+    public func push() async { await push(context: repositoryContext) }
+    public func push(context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("Push") { try await service.push(in: root) } }
     /// Discards these rows. A rename goes back under its old name, unless a
     /// row left out of this discard is at that name now.
-    public func discard(_ entries: [GitStatusEntry]) async {
-        guard let root = repositoryRoot else { return }
+    public func discard(_ entries: [GitStatusEntry]) async { await discard(entries, context: repositoryContext) }
+    public func discard(_ entries: [GitStatusEntry], context: RepositoryContext?) async {
+        guard let root = actionRoot(context) else { return }
         let held = allPaths.subtracting(entries.map(\.path))
         await perform("Discard") { try await service.discard(entries, in: root, held: held) }
     }
     /// Commits in the chosen scope.
-    public func commitInScope() async {
+    public func commitInScope() async { await commitInScope(context: repositoryContext) }
+    public func commitInScope(context: RepositoryContext?) async {
+        guard actionRoot(context) != nil else { return }
         switch commitScope {
-        case .checkedFiles: await commitChecked()
-        case .stagedChanges: await commitStaged()
+        case .checkedFiles: await commitChecked(context: context)
+        case .stagedChanges: await commitStaged(context: context)
         }
     }
     /// Commits the checked files: their whole working-tree state, not only
     /// their staged hunks. Nothing checked commits nothing; the index is
     /// Commit Staged Changes' to commit. A ticked rename is committed as one,
     /// under both of its names.
-    public func commitChecked() async {
-        guard let root = repositoryRoot, !busy else { return }
+    public func commitChecked() async { await commitChecked(context: repositoryContext) }
+    public func commitChecked(context: RepositoryContext?) async {
+        guard actionRoot(context) != nil, !busy else { return }
         let rows = status.entries.filter { checked.contains($0.path) }
         let paths = GitService.paths(rows.map(\.path), renames: rows, for: .commit, held: allPaths.subtracting(checked))
         guard !paths.isEmpty else { notice = "Tick the files to commit."; return }
@@ -573,16 +633,17 @@ import AppKit
         // since was in neither the index nor HEAD any more, and naming it
         // failed the whole commit.
         let staging = rows.filter(\.untracked).map(\.path)
-        await commit(content: .files(paths: paths, staging: staging))
+        await commit(content: .files(paths: paths, staging: staging), context: context)
     }
     /// Commits the index as staged; unstaged edits stay where they are.
-    public func commitStaged() async {
-        guard repositoryRoot != nil, !busy else { return }
+    public func commitStaged() async { await commitStaged(context: repositoryContext) }
+    public func commitStaged(context: RepositoryContext?) async {
+        guard actionRoot(context) != nil, !busy else { return }
         guard !staged.isEmpty else { notice = "Nothing to commit: nothing is staged."; return }
-        await commit(content: .staged)
+        await commit(content: .staged, context: context)
     }
-    private func commit(content: GitCommitContent) async {
-        guard let root = repositoryRoot else { return }
+    private func commit(content: GitCommitContent, context: RepositoryContext?) async {
+        guard let root = actionRoot(context) else { return }
         let message = commitMessage, amending = amend
         await perform(amending ? "Amend" : "Commit") {
             lastCommit = try await service.commit(message: message, in: root, content: content, amend: amending)
@@ -592,8 +653,9 @@ import AppKit
     /// Changes the last commit's message only: its files stay as they are,
     /// and staged and unstaged work is left exactly as it was. Refused when
     /// HEAD is no longer the commit this panel last read.
-    public func rewordLastCommit() async {
-        guard let root = repositoryRoot, !busy else { return }
+    public func rewordLastCommit() async { await rewordLastCommit(context: repositoryContext) }
+    public func rewordLastCommit(context: RepositoryContext?) async {
+        guard let root = actionRoot(context), !busy else { return }
         guard let head = status.head else { notice = "There is no commit to reword yet."; return }
         let message = commitMessage
         await perform("Reword") {
@@ -775,14 +837,16 @@ import AppKit
     }
 
     /// Stages the rows at these paths; a rename is staged under both names.
-    public func stage(_ paths: [String]) async {
-        guard let root = repositoryRoot else { return }
+    public func stage(_ paths: [String]) async { await stage(paths, context: repositoryContext) }
+    public func stage(_ paths: [String], context: RepositoryContext?) async {
+        guard let root = actionRoot(context) else { return }
         let paths = GitService.paths(paths, renames: status.entries, for: .stage)
         await perform("Stage") { try await service.stage(paths, in: root) }
     }
     /// Unstages the rows at these paths; a rename is unstaged whole, not by half.
-    public func unstage(_ paths: [String]) async {
-        guard let root = repositoryRoot else { return }
+    public func unstage(_ paths: [String]) async { await unstage(paths, context: repositoryContext) }
+    public func unstage(_ paths: [String], context: RepositoryContext?) async {
+        guard let root = actionRoot(context) else { return }
         let paths = GitService.paths(paths, renames: status.entries, for: .unstage)
         await perform("Unstage") { try await service.unstage(paths, in: root) }
     }
