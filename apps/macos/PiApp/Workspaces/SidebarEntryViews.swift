@@ -73,6 +73,9 @@ import Combine
         guard force || chat != self.chat || state != self.state || projectID != self.projectID else { return }
         Self.builds &+= 1
         self.chat = chat; self.state = state; self.projectID = projectID
+        if minuteWatch == nil {
+            minuteWatch = SidebarMinute.shared.$tick.dropFirst().sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshBody() } }
+        }
         row.selected = state.selected
         row.marked = state.marked
         row.recencyTint = PiKit.SelectableRow.recencyTint(rank: state.recency)
@@ -89,6 +92,17 @@ import Combine
                                                   click: { [weak self] in self?.click($0) }, doubleClick: { [weak self] in self?.rename() },
                                                   dragging: dragHold.callback(model: model, list: { [weak self] in self?.superview as? SidebarListDocument }))
         needsLayout = true
+    }
+
+    /// Detached rows may serve another chat. In particular, never carry the
+    /// previous chat's retained accounting subscription into that binding.
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        sourceWatch = nil; minuteWatch = nil; watchedDisplay = nil; retained = nil
+        bodyScheduled = false
+        body.prepareForReuse()
+        row.selected = false; row.marked = false; row.recencyTint = 0
+        row.cell?.isHighlighted = false
     }
 
     /// The figures come from the chat's live page while it has one, and from
@@ -255,6 +269,9 @@ import Combine
         guard force || new != state else { return }
         SidebarChatRowView.builds &+= 1
         state = new
+        if minuteWatch == nil {
+            minuteWatch = SidebarMinute.shared.$tick.dropFirst().sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshBody() } }
+        }
         row.selected = new.selected
         row.recencyTint = PiKit.SelectableRow.recencyTint(rank: new.recency)
         if let display = new.liveIdentity == nil ? nil : model.displays[new.id] {
@@ -263,6 +280,12 @@ import Combine
         } else { sourceWatch = nil }
         refreshBody()
         needsLayout = true
+    }
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        sourceWatch = nil; minuteWatch = nil; bodyScheduled = false
+        body.prepareForReuse()
+        row.selected = false; row.recencyTint = 0; row.cell?.isHighlighted = false
     }
     /// A live side's changes, coalesced to one redraw a turn (or the next layout).
     private var bodyScheduled = false

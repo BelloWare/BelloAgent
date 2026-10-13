@@ -380,6 +380,15 @@ struct ChatRowStats: Equatable {
         return [controls.convert(controls.bounds, to: self)]
     }
 
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        hovering = false; confirming = false
+        // A different chat should not animate from the old title or keep its
+        // Archive confirmation, even if the pointer never exited the old row.
+        content = nil
+        spinner?.removeFromSuperview(); spinner = nil
+    }
+
     func update(_ new: Content) {
         let before = content
         guard new != before else { return }
