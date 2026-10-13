@@ -26,7 +26,7 @@ This document was prepared read-only. No files were changed and no builds or tes
 | Context | Fresh task context with the parent’s resolved project instructions |
 | Tools | Subset of the parent’s effective permissions; no child delegation |
 | Models | Inherit parent, or choose an override from its saved connection’s existing picker list |
-| Limits | Proposed: 4 active children per owner, 8 per project helper, 16 accepted calls per assistant response, depth 1 |
+| Limits | Owner: 16 active children per owning chat; no per-project/helper or per-response cap (extra calls wait); depth 1 |
 | Budget | Parent owns the limit and pays for all child attempts, retries, and summaries |
 | Recovery | Parent Resume uses `run.continue`; interrupted child calls never restart automatically |
 | Transcript | Live tool card in parent; full child transcript in the main conversation area |
@@ -1281,26 +1281,13 @@ Update pi-parity documentation to identify sub-agents as an owner-approved addit
 
 Future implementation follows the repository’s commit/push workflow. This design revision remains read-only.
 
-## 15. Remaining owner decisions
+## 15. Owner decisions (2026-10-13)
 
-Only two decisions remain open; all other reviewed v1 scope choices above are treated as settled.
+- **Default when `tools` is omitted:** inherit the parent's effective tools (option A). The model can narrow them and never widen them.
+- **Scheduling limits** (owner: "unlimited, maybe 16 at most for a given session, unlimited per project"):
+  - at most **16 active children per budget-owner chat**;
+  - **no per-project or per-helper limit**;
+  - **no per-response limit** on accepted calls: calls beyond 16 active wait for a slot in assistant-call order;
+  - delegation depth stays one.
 
-### 15.1 Default when `tools` is omitted
-
-| Option | Behavior |
-|---|---|
-| **A — Inherit effective parent tools — recommended** | Children can complete delegated work within the parent’s actual permissions; the caller can narrow the set |
-| B — Default to read-only | Editing-capable children require an explicit requested tool list |
-| C — Require `tools` on every call | Every delegation must enumerate its tool set |
-
-**Recommendation: A.** It follows the parent’s existing authority and avoids making ordinary delegated implementation tasks require extra prompting.
-
-### 15.2 Scheduling limits
-
-| Option | Behavior |
-|---|---|
-| **A — 4 per owner / 8 per helper / 16 accepted per response — recommended** | Useful parallel work with bounded execution and a folded sidebar group |
-| B — 2 per owner / 4 per helper / 8 accepted per response | Lower peak resource use, with more tasks waiting |
-| C — User-configurable limits | Adds settings, validation, persistence, and additional scheduling coverage |
-
-**Recommendation: A.** Start with fixed limits and measure actual load before adding configuration. Delegation depth remains one in v1.
+  This supersedes the 4/8/16 figures used elsewhere in this document.
