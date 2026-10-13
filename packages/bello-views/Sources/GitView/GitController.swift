@@ -47,12 +47,16 @@ import AppKit
 
     /// Synchronous even when a refresh has not started yet. Returning to a
     /// folder does not revive a menu or question from its earlier reading.
-    public func accepts(_ context: RepositoryContext?) -> Bool {
+    /// UI callbacks check before queuing a write; its entry checks again.
+    public func accepts(_ context: RepositoryContext?) -> Bool { !suspended && sameRepository(context) }
+    private func sameRepository(_ context: RepositoryContext?) -> Bool {
         guard let context else { return false }
-        return !closed && !suspended && context == repository.context && context.generation == repositoryGeneration
+        return !closed && context == repository.context && context.generation == repositoryGeneration
     }
     private func actionRoot(_ context: RepositoryContext?) -> String? {
-        guard accepts(context) else { notice = "The repository changed. Choose the action again."; return nil }
+        // A queued write may enter just after the panel hides. Hiding stops
+        // reads; the write still belongs to this repository and generation.
+        guard sameRepository(context) else { notice = "The repository changed. Choose the action again."; return nil }
         return context?.root
     }
 
@@ -60,6 +64,7 @@ import AppKit
     @Published public var root: String? {
         didSet {
             guard root != oldValue else { return }
+            rememberInterruptedCommitRead()
             repositoryGeneration += 1
             stop()
             // Another folder, perhaps another repository: a commit held for a
@@ -323,15 +328,18 @@ import AppKit
     /// The folder changed while the panel was hidden: shown again, it is read
     /// as a first open reads it.
     private var needsFullRead = false
-    /// Which of a commit's reads is running, and which one hiding the panel
-    /// stopped: finished once the panel shows, and kept until it has
+    /// Which of a commit's reads is running, and which one hiding or changing
+    /// folders stopped: finished after a refresh, and kept until it has
     /// restarted, whatever comes and goes in between.
     private enum CommitRead { case commit, wholePatch }
     private var commitRead: CommitRead?
-    /// The read hiding stopped, and for which commit and file: another
-    /// commit or file chosen since starts a read of its own, and this one is
-    /// dropped.
-    private var commitReadInterrupted: (read: CommitRead, commit: String, file: String?)?
+    /// Another folder can be in the same repository. Keep its interrupted
+    /// read by repository, commit and file, not by the invalidated row token.
+    private var commitReadInterrupted: (read: CommitRead, root: String, commit: String, file: String?)?
+    private func rememberInterruptedCommitRead() {
+        guard commitLoading, let commitRead, let repositoryRoot, let hash = selectedCommit?.hash else { return }
+        commitReadInterrupted = (commitRead, repositoryRoot, hash, detailFile)
+    }
     /// How many times the panel has come or gone, for tests.
     private(set) var shownChanges = 0
     /// Reads of the working tree that finished current, for tests.
@@ -358,7 +366,7 @@ import AppKit
             closed = false; suspended = false
             if !statusRead || needsFullRead || reopened { needsFullRead = false; startRefresh() } else { startQuietRefresh() }
         } else {
-            if commitLoading, let commitRead, let hash = selectedCommit?.hash { commitReadInterrupted = (commitRead, hash, detailFile) }
+            rememberInterruptedCommitRead()
             // Hidden after being shown: the reader left, and a reveal still on
             // its way is dropped rather than landing when they come back.
             revealTokens += 1
@@ -375,12 +383,12 @@ import AppKit
     }
     /// After a read of the working tree that finished while the panel shows,
     /// whichever read it was (the one showing started, or one the watch
-    /// started in its place): the commit read hiding stopped, if it is still
-    /// for the commit and file chosen.
+    /// started in its place): the interrupted read, if it is still for the
+    /// repository, commit and file chosen.
     private func resumeInterruptedCommitRead() {
         guard let interrupted = commitReadInterrupted, !suspended, !closed else { return }
         commitReadInterrupted = nil
-        guard selectedCommit?.hash == interrupted.commit, detailFile == interrupted.file else { return }
+        guard repositoryRoot == interrupted.root, selectedCommit?.hash == interrupted.commit, detailFile == interrupted.file else { return }
         switch interrupted.read {
         case .commit: startCommitLoad()
         case .wholePatch: loadDeferredCommitDiff()
@@ -509,6 +517,7 @@ import AppKit
         guard current(generation), !closed, !suspended else { return false }
         guard !repository.read || repositoryRoot != root || self.status != status || (root != nil && repository.context?.generation != repositoryGeneration) else { return true }
         if repositoryRoot != root {
+            commitReadInterrupted = nil
             selection = nil; selectedCommit = nil
             diff = []; commits = []; branches = []; stashes = []
             commitCache = [:]; commitCacheOrder = []; historyExhausted = false

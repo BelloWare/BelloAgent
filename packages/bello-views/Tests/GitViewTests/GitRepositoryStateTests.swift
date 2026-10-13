@@ -93,6 +93,43 @@ final class GitRepositoryStateTests: XCTestCase {
         }
     }
 
+    @MainActor func testACommitReadResumesAfterSwitchingFoldersInTheSameRepository() async throws {
+        let root = try repository(), folder = root.appendingPathComponent("folder")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let controller = try await read([root, folder])
+        controller.panel = .history
+        let commit = try XCTUnwrap(controller.commits.first), finished = controller.refreshesFinished
+        controller.selectedCommit = commit
+        XCTAssertTrue(controller.commitLoading)
+        // Switch before the read's task can run: the interrupted selection
+        // survives both folder changes, even though its action tokens do not.
+        controller.root = folder.path; controller.root = root.path; controller.root = folder.path
+        try await wait { controller.refreshesFinished > finished }
+        try await wait { !controller.commitLoading }
+        XCTAssertEqual(controller.selectedCommit, commit)
+        XCTAssertEqual(controller.detail?.commit, commit)
+        XCTAssertEqual(controller.detailDiff.map(\.path), ["same.txt"])
+    }
+
+    @MainActor func testAWholePatchReadResumesAfterSwitchingFoldersInTheSameRepository() async throws {
+        let root = try repository(), folder = root.appendingPathComponent("folder")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        for index in 0..<31 { try "file \(index)\n".write(to: root.appendingPathComponent("f\(index).txt"), atomically: true, encoding: .utf8) }
+        try git(["add", "."], in: root); try git(["commit", "-qm", "Large patch"], in: root)
+        let controller = try await read([root, folder]), commit = try XCTUnwrap(controller.commits.first)
+        controller.panel = .history; controller.selectedCommit = commit
+        try await wait { controller.detailDiffDeferred && !controller.commitLoading }
+        let finished = controller.refreshesFinished
+        controller.loadDeferredCommitDiff()
+        XCTAssertTrue(controller.commitLoading)
+        controller.root = folder.path
+        try await wait { controller.refreshesFinished > finished }
+        try await wait { !controller.commitLoading }
+        XCTAssertEqual(controller.selectedCommit, commit)
+        XCTAssertEqual(controller.detailDiff.count, 32)
+        XCTAssertFalse(controller.detailDiffDeferred)
+    }
+
     @MainActor func testSwitchingRepositoriesClearsAnInvalidSelectionWithoutChoosingTheFirstRow() async throws {
         let first = try repository(), second = try repository()
         try git(["mv", "same.txt", "other.txt"], in: second)

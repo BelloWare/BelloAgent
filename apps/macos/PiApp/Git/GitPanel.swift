@@ -59,7 +59,10 @@ import GitView
         let discard: @MainActor ([GitStatusEntry]) -> Void = { [questions, controller, place] entries in
             let context = controller.repositoryContext
             guard controller.accepts(context) else { return }
-            place.askToDiscard(entries, questions: questions) { entries in Task { await controller.discard(entries, context: context) } }
+            place.askToDiscard(entries, questions: questions) { entries in
+                guard controller.accepts(context) else { return }
+                Task { await controller.discard(entries, context: context) }
+            }
         }
         changesList = GitChangesList(controller: controller, discard: discard, observeFileRow: observeFileRow)
         commitBox = GitCommitBox(controller: controller, inputs: GitCommitBox.Inputs(controller), discard: discard)
@@ -462,7 +465,7 @@ enum GitPanelSplit {
         PiMenuEntry.button("New Branch from \(current.isEmpty ? "HEAD" : current)…") { self?.showNewBranch(context: context) }
         PiMenuEntry.divider
         for branch in controller.branches {
-            PiMenuEntry.button(branch, enabled: branch != current, checked: branch == current) { Task { await controller.checkout(branch, context: context) } }
+            PiMenuEntry.button(branch, enabled: branch != current, checked: branch == current) { guard controller.accepts(context) else { return }; Task { await controller.checkout(branch, context: context) } }
         }
     }
     private let remote: GitRemoteControls
@@ -472,7 +475,7 @@ enum GitPanelSplit {
         if !controller.stashes.isEmpty {
             PiMenuEntry.divider
             for stash in controller.stashes {
-                PiMenuEntry.button("Pop \(stash.name): \(stash.subject)") { Task { await controller.popStash(stash.name, context: context) } }
+                PiMenuEntry.button("Pop \(stash.name): \(stash.subject)") { guard controller.accepts(context) else { return }; Task { await controller.popStash(stash.name, context: context) } }
             }
         }
     }
@@ -646,7 +649,7 @@ enum GitPanelSplit {
         form.cancel = { [weak self] in self?.branchPopover.close() }
         form.submit = { [weak self, controller] name in
             let name = name.trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty else { return }
+            guard !name.isEmpty, controller.accepts(context) else { return }
             self?.branchPopover.close()
             Task { await controller.createBranch(name, context: context) }
         }
@@ -659,6 +662,7 @@ enum GitPanelSplit {
                                   requiresText: false, width: 340)
         form.cancel = { [weak self] in self?.stashPopover.close() }
         form.submit = { [weak self, controller] message in
+            guard controller.accepts(context) else { return }
             self?.stashPopover.close()
             Task { await controller.stash(message: message, context: context) }
         }
@@ -742,9 +746,9 @@ enum GitPanelSplit {
     func apply(behind: Int, ahead: Int, upstream: String?, busy: Bool, context: GitController.RepositoryContext? = nil) {
         self.behind = behind; self.ahead = ahead; self.upstream = upstream
         self.context = context
-        fetchButton.onPress = { [controller] in Task { await controller.fetch(context: context) } }
-        pullButton.onPress = { [controller] in Task { await controller.pull(context: context) } }
-        pushButton.onPress = { [controller] in Task { await controller.push(context: context) } }
+        fetchButton.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.fetch(context: context) } }
+        pullButton.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.pull(context: context) } }
+        pushButton.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.push(context: context) } }
         pullButton.title = behind > 0 ? "Pull \(behind)" : "Pull"
         pullButton.toolTip = behind > 0 ? "Pull \(behind) new commits (fast-forward only)" : "Pull (fast-forward only)"
         pullButton.setAccessibilityLabel(behind > 0 ? "Pull, \(behind) commits" : "Pull")
@@ -816,9 +820,9 @@ enum GitPanelSplit {
     override var isFlipped: Bool { true }
     func apply(behind: Int, ahead: Int, upstream: String?, busy: Bool, context: GitController.RepositoryContext? = nil) {
         RedrawCounter.note("GitRemoteIconButtons")
-        fetch.onPress = { [controller] in Task { await controller.fetch(context: context) } }
-        pull.onPress = { [controller] in Task { await controller.pull(context: context) } }
-        push.onPress = { [controller] in Task { await controller.push(context: context) } }
+        fetch.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.fetch(context: context) } }
+        pull.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.pull(context: context) } }
+        push.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.push(context: context) } }
         pull.toolTip = behind > 0 ? "Pull \(behind) new commits (fast-forward only)" : "Pull (fast-forward only)"
         push.toolTip = ahead > 0 ? "Push \(ahead) commits to \(upstream ?? "the upstream")" : "Push"
         pullCount.value = behind; pushCount.value = ahead
@@ -982,7 +986,7 @@ extension SymbolButton {
                       guard controller.accepts(context) else { return }
                       if all { controller.checked.subtract(paths) } else { controller.checked.formUnion(paths) }
                   },
-                  action: { Task { if staged { await controller.unstage(Array(paths), context: context) } else { await controller.stage(Array(paths), context: context) } } })
+                  action: { guard controller.accepts(context) else { return }; Task { if staged { await controller.unstage(Array(paths), context: context) } else { await controller.stage(Array(paths), context: context) } } })
     }
 }
 
@@ -1077,7 +1081,7 @@ extension SymbolButton {
         guard let entry else { return nil }
         let staged = staged, controller = controller, discard = discard, context = context
         var entries: [PiMenuEntry] = [
-            staged ? .button("Unstage") { Task { await controller.unstage([entry.path], context: context) } } : .button("Stage") { Task { await controller.stage([entry.path], context: context) } },
+            staged ? .button("Unstage") { guard controller.accepts(context) else { return }; Task { await controller.unstage([entry.path], context: context) } } : .button("Stage") { guard controller.accepts(context) else { return }; Task { await controller.stage([entry.path], context: context) } },
             .button(entry.untracked ? "Delete Untracked File…" : "Discard Changes…") { guard controller.accepts(context) else { return }; discard([entry]) },
             .divider,
         ]
@@ -1129,7 +1133,7 @@ extension SymbolButton {
         folder.line.text = Self.folder(of: entry)
         stageButton.symbol = staged ? "minus" : "plus"
         stageButton.label = staged ? "Unstage \(entry.path)" : "Stage \(entry.path)"
-        stageButton.onPress = { Task { if staged { await controller.unstage([entry.path], context: context) } else { await controller.stage([entry.path], context: context) } } }
+        stageButton.onPress = { guard controller.accepts(context) else { return }; Task { if staged { await controller.unstage([entry.path], context: context) } else { await controller.stage([entry.path], context: context) } } }
         needsLayout = true
     }
     override func layout() {
@@ -1253,9 +1257,9 @@ extension SymbolButton {
         let onlyMessage = inputs.map { previous in var same = next; same.message = previous.message; return same == previous } ?? false
         inputs = next
         RedrawCounter.note("GitCommitBox")
-        reword.onPress = { [controller] in Task { await controller.rewordLastCommit(context: next.context) } }
+        reword.onPress = { [controller] in guard controller.accepts(next.context) else { return }; Task { await controller.rewordLastCommit(context: next.context) } }
         discardAll.onPress = { [controller, discard] in guard controller.accepts(next.context) else { return }; discard(next.rows) }
-        commit.onPress = { [controller] in Task { await controller.commitInScope(context: next.context) } }
+        commit.onPress = { [controller] in guard controller.accepts(next.context) else { return }; Task { await controller.commitInScope(context: next.context) } }
         let shown = Self.presentation(next)
         message.placeholder = next.amend ? "Amended commit message" : "Commit message"
         message.text = next.message

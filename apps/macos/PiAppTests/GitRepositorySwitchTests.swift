@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import XCTest
 @testable import PiApp
 @testable import GitView
@@ -67,18 +68,37 @@ final class GitRepositorySwitchTests: GitPanelTestCase, SerialTestLane {
         let menu = try XCTUnwrap(row.menu(for: event))
         controller.root = second.path
         try await eventually("read the second repository") { controller.repositoryRoot == second.path && !controller.loading }
-        try await perform(menu, controller)
+        try await refusesWrite(controller) { menu.performActionForItem(at: 0) }
         XCTAssertEqual(try git(["diff", "--cached", "--name-only"], in: second), "")
         controller.root = first.path
         try await eventually("read the first repository again") { controller.repositoryRoot == first.path && !controller.loading }
-        try await perform(menu, controller)
+        try await refusesWrite(controller) { menu.performActionForItem(at: 0) }
         XCTAssertEqual(try git(["diff", "--cached", "--name-only"], in: first), "", "returning to the same path cannot revive the old generation")
     }
 
-    @MainActor private func perform(_ menu: NSMenu, _ controller: GitController) async throws {
-        let before = controller.refreshesFinished
-        menu.performActionForItem(at: 0)
-        try await eventually("finish or refuse the menu action") { controller.notice.contains("repository changed") || controller.refreshesFinished > before }
+    @MainActor private func refusesWrite(_ controller: GitController, action: () -> Void) async throws {
+        var started = false
+        let watch = controller.$busy.sink { if $0 { started = true } }
+        defer { watch.cancel() }
+        action()
+        // Give an incorrectly queued write a turn to enter, even when its
+        // eventual status read would be suppressed by the hidden panel.
+        try await Task.sleep(for: .milliseconds(300))
+        XCTAssertFalse(started, "the stale control must refuse before starting a write")
+    }
+
+    @MainActor func testARetainedRowCannotStartAWriteAfterThePanelHides() async throws {
+        for menuAction in [true, false] {
+            let root = try changedRepository("hidden-row"), controller = try await read(root, root)
+            let row = GitFileRowView(controller: controller, discard: { _ in }, glide: PiKit.SelectionGlide())
+            row.apply(entry: try XCTUnwrap(controller.status.entries.first), staged: false, selected: false, checked: true)
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: .rightMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                        windowNumber: 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            let menu = try XCTUnwrap(row.menu(for: event)), stage = try XCTUnwrap(descendants(PiKit.IconButton.self, in: row).first)
+            controller.setShown(false)
+            try await refusesWrite(controller) { if menuAction { menu.performActionForItem(at: 0) } else { stage.onPress?() } }
+            XCTAssertEqual(try git(["diff", "--cached", "--name-only"], in: root), "")
+        }
     }
 
     @MainActor func testIdenticalRowsReceiveTheNewRepositoryContext() async throws {
@@ -119,8 +139,7 @@ final class GitRepositorySwitchTests: GitPanelTestCase, SerialTestLane {
             if finishRead {
                 try await eventually("read the second repository") { controller.repositoryRoot == second.path && !controller.loading }
             }
-            confirm(.alertFirstButtonReturn)
-            try await eventually("refuse the old confirmation") { controller.notice.contains("repository changed") }
+            try await refusesWrite(controller) { confirm(.alertFirstButtonReturn) }
             XCTAssertEqual(try String(contentsOf: first.appendingPathComponent("same.txt"), encoding: .utf8), "first changed\n")
             XCTAssertEqual(try String(contentsOf: second.appendingPathComponent("same.txt"), encoding: .utf8), "second changed\n")
         }
