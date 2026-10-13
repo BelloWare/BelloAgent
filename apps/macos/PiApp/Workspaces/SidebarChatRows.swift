@@ -92,6 +92,23 @@ struct ChatRowStats: Equatable {
         if busy && phase == "tool" { self.state = "tool" }
     }
     var rateLabel: String? { timing.flatMap { SessionRatePresentation(history: $0).label } }
+    /// The word a sidebar row puts in front of its figures, and its colour.
+    /// A chat that is simply working, its model generating or a tool running,
+    /// shows none: it is always doing one or the other, and the spinner in
+    /// place of its icon already says it is busy (owner, 0.1.125). Opening,
+    /// waiting, stopping, compacting and the stopped states keep their words.
+    var sidebarStateWord: (text: String, color: NSColor)? {
+        if loading { return (PiSessionState.label(state, loading: true), .piWarning) }
+        if busy {
+            guard !generating, !Self.workingStates.contains(state) else { return nil }
+            return (PiSessionState.label(state), .piWarning)
+        }
+        let run = RunState(rawValue: state)
+        guard run.isStopped else { return nil }
+        return (PiSessionState.label(state, costLimited: costLimited), run == .paused ? .piInfo : costLimited ? .piWarning : .piDanger)
+    }
+    /// The states of a chat that is simply working: a turn, or its tool step.
+    static let workingStates: Set<String> = [RunState.running.rawValue, "tool"]
 }
 
 /// The minute the sidebar's "3m ago" stamps are worked out against: one
@@ -208,15 +225,9 @@ struct ChatRowStats: Equatable {
         let form = SidebarMetricsFigures(stats).form(fitting: available)
         guard stats != self.stats || form != self.form else { return }
         self.stats = stats; self.form = form
-        var state: (String, NSColor)?
-        if (stats.busy || stats.loading) && !stats.generating {
-            state = (PiSessionState.label(stats.state, loading: stats.loading), .piWarning)
-        } else if RunState(rawValue: stats.state).isStopped {
-            state = (PiSessionState.label(stats.state, costLimited: stats.costLimited),
-                     RunState(rawValue: stats.state) == .paused ? .piInfo : stats.costLimited ? .piWarning : .piDanger)
-        }
+        let state = stats.sidebarStateWord
         stateLine.isHidden = state == nil
-        if let state { stateLine.line = PiKit.Line(state.0, font: Self.stateFont, color: state.1) }
+        if let state { stateLine.line = PiKit.Line(state.text, font: Self.stateFont, color: state.color) }
         costLine.isHidden = stats.costLabel == nil
         costLine.line = PiKit.Line(stats.costLabel ?? "", font: Self.font, color: .piInkTertiary)
         rate.isHidden = stats.timing == nil
@@ -231,6 +242,10 @@ struct ChatRowStats: Equatable {
         recencyLine.setAccessibilityLabel("Last activity " + (stats.recencyLabel ?? "")); recencyLine.toolTip = "Last activity"
         invalidateIntrinsicContentSize(); needsLayout = true
     }
+    /// The state word the line shows, if any, for tests.
+    var shownState: String? { stateLine.isHidden ? nil : stateLine.line.text }
+    /// Where the cost starts, for tests that check the line does not move.
+    var costOrigin: CGFloat { costLine.frame.minX }
     private var lineHeight: CGFloat { PiKit.Line("Ag", font: Self.font, color: .black).lineHeight }
     func height(forWidth width: CGFloat) -> CGFloat {
         form == .stacked && !rate.isHidden ? lineHeight * 2 + 2 : lineHeight
@@ -308,6 +323,8 @@ struct ChatRowStats: Equatable {
 
     private let icon = PiKit.SymbolView(PiKit.Symbol("bubble.left", size: 12, weight: .medium), color: .piInkSecondary)
     private var spinner: PiSpinnerView?
+    /// The row's run is marked by its spinner, for tests.
+    var showsSpinner: Bool { spinner != nil }
     private let title = PiKit.TextLine()
     private let pin = PiKit.SymbolView(PiKit.Symbol("pin.fill", size: 9), color: .piInkTertiary)
     /// Something unsent waits in the chat's composer.

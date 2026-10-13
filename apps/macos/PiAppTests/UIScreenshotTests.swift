@@ -693,6 +693,33 @@ final class UIScreenshotTests: XCTestCase {
         }
         for id in [opened[3], markedID] { try await model.store?.put(DraftRecord(id: id, text: ""), kind: "draft", id: id) }
         model.runHolds[opened[0]] = nil
+        // 29a · Working chats (0.1.125): one whose model is generating and
+        // one running a tool show no state word, only the spinner in place of
+        // their icon, beside one waiting its turn ("Waiting") and one
+        // compacting ("Compacting"), whose words stay.
+        var live: [SessionDisplay] = []
+        let workingRows: [(String, String, [String: WireValue])] = [
+            ("Retry budget audit", "running", ["version": .number(2), "modelActive": .bool(true), "phase": .string("model")]),
+            ("Run the refund tests", "running", ["version": .number(2), "modelActive": .bool(false), "phase": .string("tool")]),
+            ("Queued follow-up", "queued", [:]),
+            ("Long ledger thread", "compacting", [:])]
+        for (offset, (title, state, activity)) in workingRows.enumerated() {
+            let chat = ChatRecord(id: UUID().uuidString, workspaceID: marked.workspaceID, title: title, path: nil, profileID: marked.profileID)
+            model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
+            let display = SessionDisplay(id: chat.id)
+            var totals = GatewayTotals(requests: 4 + offset, costSamples: 4 + offset, costUSD: 0.0812 * Double(offset + 1))
+            totals.tokens = GatewayTokenTotals(total: Double(18_400 * (offset + 1)), samples: 4 + offset)
+            totals.lastActivity = Date().timeIntervalSince1970 - 30
+            display.footer.gateway = totals
+            display.activity = activity; display.state = state
+            model.displays[chat.id] = display; live.append(display)
+        }
+        model.sidebarPageSizes[marked.workspaceID] = 14
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
+            try capture(window, to: gallery.appendingPathComponent("29a-sidebar-working-rows-\(name).png"))
+        }
+        for display in live { display.state = "idle"; display.activity = [:] }
         model.markSessionRead(opened[2]); model.sidebarPageSizes[marked.workspaceID] = pageSize
         window.setContentSize(size); window.center(); try await settle(0.8)
     }
