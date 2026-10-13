@@ -36,6 +36,7 @@ targets:
       - packages/swift-host/Sources/PiAgentCore/JournalCheckpoint.swift
       - packages/swift-host/Sources/PiAgentCore/TaskPresentation.swift
       - packages/swift-host/Sources/PiAgentCore/ResponseTimeline.swift
+      - packages/swift-host/Sources/PiAgentCore/SubagentTypes.swift
       - path: catalogs/bello-agent.models.json
         buildPhase: resources
     postBuildScripts:

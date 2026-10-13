@@ -39,7 +39,7 @@ This document was prepared read-only. No files were changed and no builds or tes
 
 Background delegation, nested delegation, child composers, child Resume, child forks, global capture-quota changes, and general Inspector pagination are deferred.
 
-The concurrency and omitted-tools defaults remain owner decisions in §15. This design uses the recommended defaults.
+The owner decisions in §15 are final and are applied below.
 
 ## 1. Existing machinery and architectural choice
 
@@ -183,14 +183,14 @@ Recommended limits:
 
 | Limit | Value |
 |---|---:|
-| Active child runs per budget owner | 4 |
-| Active child runs per project helper | 8 |
-| Accepted sub-agent calls per assistant response | 16 |
+| Active child runs per budget owner | 16 |
+| Active child runs per project/helper | No cap |
+| Accepted sub-agent calls per assistant response | No cap |
 | Delegation depth | 1 |
 
 A slot covers the whole child run, including its tools, retries, and compaction. It is not released between requests.
 
-Calls beyond the per-owner or helper active limit wait in the coordinator. Calls beyond the accepted-call limit return `not_executed`. Acceptance order follows the assistant’s tool-call order; scheduling across owners is fair.
+Calls beyond the per-owner active limit wait in assistant-call order. There is no per-project, helper, or response cap.
 
 The parent’s existing parallel tool batch remains intact:
 
@@ -1291,3 +1291,8 @@ Future implementation follows the repository’s commit/push workflow. This desi
   - delegation depth stays one.
 
   This supersedes the 4/8/16 figures used elsewhere in this document.
+
+## Implementation notes
+
+- Phase 1: the shared `SubagentPolicy.enabled` constant is the single production rollout switch. There is no preference or IPC override. Model grants and origin types are shared source between the helper and app. Parent metadata keeps managed origin immutable across stale updates. The scheduling table now reflects the owner decisions in §15.
+- Base: `dev/a126-helper` already includes closing-session accounting; preserve and extend that implementation instead of reverting to the older lifecycle described in §4.5.

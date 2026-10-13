@@ -771,6 +771,9 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     /// Saved side conversations keep their parent relationship across restarts.
     /// Independent forks and ordinary chats have no parent.
     var parentSessionID: String?
+    /// Managed task identity. Unlike a side, this chat has no independent input.
+    var delegation: SubagentLink?
+    var isSubagent: Bool { delegation != nil }
     /// This chat's own cost limit; nil runs it under the Settings default.
     var costLimit: CostLimit?
     var costLimitRevision: Int64?
@@ -863,6 +866,7 @@ extension ChatRecord {
         backgroundTaskOutcome = try c.decodeIfPresent(String.self, forKey: .backgroundTaskOutcome); backgroundTaskResult = try c.decodeIfPresent(String.self, forKey: .backgroundTaskResult)
         organizationRevision = try c.decodeIfPresent(Int64.self, forKey: .organizationRevision); topicID = try c.decodeIfPresent(String.self, forKey: .topicID)
         parentSessionID = try c.decodeIfPresent(String.self, forKey: .parentSessionID); costLimit = try c.decodeIfPresent(CostLimit.self, forKey: .costLimit)
+        delegation = try c.decodeIfPresent(SubagentLink.self, forKey: .delegation)
         costLimitRevision = try c.decodeIfPresent(Int64.self, forKey: .costLimitRevision)
         webhookOff = try c.decodeIfPresent(Bool.self, forKey: .webhookOff); connectionRevision = try c.decodeIfPresent(Int64.self, forKey: .connectionRevision)
         journalRebind = try c.decodeIfPresent(Bool.self, forKey: .journalRebind)
