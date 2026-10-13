@@ -35,6 +35,34 @@ import XCTest
         XCTAssertEqual(view.selectedText, text)
     }
 
+    func testExplicitRegionScrollBreaksTheOutgoingWrapEvenWhenTheRowIsArchived() {
+        for (count, expected) in [(1, "abcdefgh\n\nij"), (2, "abcdefgh\n\n\nij")] {
+            let emulator = TerminalEmulator(columns: 4, rows: 3)
+            let view = TerminalView(emulator: emulator)
+            emulator.feed("abcdefghij\u{1b}[1;2r\u{1b}[\(count)S")
+            XCTAssertEqual(emulator.scrollback.count, count)
+            view.selectAll(nil)
+            XCTAssertEqual(view.selectedText, expected, "the inserted blank rows separate the former continuation")
+        }
+    }
+
+    func testExplicitInnerRegionScrollBreaksBothSeparatedWrapConnections() {
+        let emulator = TerminalEmulator(columns: 4, rows: 4)
+        let view = TerminalView(emulator: emulator)
+        emulator.feed("abcdefghijklmn\u{1b}[2;3r\u{1b}[S")
+        view.selectAll(nil)
+        XCTAssertEqual(view.selectedText, "abcd\nijkl\n\nmn")
+    }
+
+    func testAutowrapAtTheScrollRegionBottomStillJoinsItsNewContinuation() {
+        let emulator = TerminalEmulator(columns: 4, rows: 3)
+        let view = TerminalView(emulator: emulator)
+        emulator.feed("abcdefgh\r\nTAIL\u{1b}[1;2r\u{1b}[2;1Hefghij")
+        XCTAssertEqual(emulator.scrollback.count, 1)
+        view.selectAll(nil)
+        XCTAssertEqual(view.selectedText, "abcdefghij\nTAIL", "autowrap creates a continuation in the inserted row")
+    }
+
     func testWrapBoundariesSurviveColumnGrowthAndHistoryRestoration() {
         let emulator = TerminalEmulator(columns: 8, rows: 2)
         let view = TerminalView(emulator: emulator)

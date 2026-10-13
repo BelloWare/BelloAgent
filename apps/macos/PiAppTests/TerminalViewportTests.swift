@@ -98,6 +98,53 @@ import XCTest
         XCTAssertEqual(invalidations, 0)
     }
 
+    func testChangedLiveRowsArchivedBeforeRefreshStillRepaint() throws {
+        let scenarios: [(regionRows: Int?, lines: Int)] = [(nil, 1), (nil, 50), (2, 1)]
+        var repainted = 0
+        for scenario in scenarios {
+            for fractional in [false, true] {
+                let view = fixture()
+                try scroll(view, notches: 1)
+                let height = CGFloat(view.emulator.cellPixelSize.height)
+                if fractional {
+                    let event = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                        wheel1: Int32(height / 2), wheel2: 0, wheel3: 0).flatMap(NSEvent.init(cgEvent:)))
+                    view.scrollWheel(with: event)
+                }
+                let offset = view.scrolledBackPoints
+                XCTAssertGreaterThan(offset, 0)
+                XCTAssertLessThan(offset, CGFloat(view.rows) * height, "the edited row starts inside the viewport")
+                let firstLive = view.emulator.scrollback.count
+                let bottom = bottomLine(view)
+                let editedCell = NSPoint(x: 8 + CGFloat(view.emulator.cellPixelSize.width) / 2,
+                                         y: 8 + offset + height / 2)
+                var redrawRects: [NSRect] = []
+                view.onDisplayInvalidation = { redrawRects.append($0) }
+                // Edit row zero, then archive it in the same PTY chunk. The
+                // partial region leaves a dirty-row set; a full scroll marks all.
+                let advance: String
+                if let rows = scenario.regionRows {
+                    advance = "\u{1b}[1;\(rows)r\u{1b}[\(scenario.lines)S"
+                } else {
+                    advance = "\u{1b}[\(view.rows);1H" + String(repeating: "\r\n", count: scenario.lines)
+                }
+                view.emulator.feed("\u{1b}[H\u{1b}[2KCHANGED" + advance)
+                view.refresh()
+                XCTAssertEqual(view.emulator.scrollback.count, firstLive + scenario.lines)
+                XCTAssertEqual(view.emulator.text(atLine: firstLive), "CHANGED")
+                XCTAssertEqual(view.scrolledBackPoints, offset + CGFloat(scenario.lines) * height, accuracy: 0.001)
+                XCTAssertEqual(bottomLine(view), bottom, "the reading position stays fixed")
+                let requested = redrawRects.contains { $0.contains(editedCell) }
+                if requested { repainted += 1 }
+                XCTAssertTrue(requested, "the edited cell must repaint even after it becomes history: \(scenario), fractional=\(fractional)")
+                redrawRects.removeAll()
+                view.refresh()
+                XCTAssertTrue(redrawRects.isEmpty, "an unchanged viewport needs no second repaint")
+            }
+        }
+        print("TERMINAL newly archived row repaints=\(repainted)/\(scenarios.count * 2)")
+    }
+
     func testAVisibleLiveRowAndEvictedHistoryStillInvalidate() throws {
         let view = fixture(limit: 200)
         try scroll(view, notches: 1)

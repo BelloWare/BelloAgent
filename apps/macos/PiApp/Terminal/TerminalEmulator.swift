@@ -547,7 +547,7 @@ final class TerminalEmulator {
     private func lineFeed(wrappedAt: Int? = nil) {
         screenWrapColumns[cursor.y] = wrappedAt
         wrapNext = false
-        if cursor.y == scrollBottom { scrollUp(1) }
+        if cursor.y == scrollBottom { scrollUp(1, preservingBottomWrap: wrappedAt != nil) }
         else if cursor.y < rows - 1 { cursor.y += 1; markDirty(cursor.y - 1); markDirty(cursor.y) }
     }
     private func reverseIndex() {
@@ -556,8 +556,11 @@ final class TerminalEmulator {
         else if cursor.y > 0 { cursor.y -= 1; markDirty(cursor.y + 1); markDirty(cursor.y) }
     }
     /// Lines leaving the top of the scroll region go to the scrollback when the region starts at the top of the main screen.
-    private func scrollUp(_ count: Int) {
+    private func scrollUp(_ count: Int, preservingBottomWrap: Bool = false) {
         let count = min(max(1, count), scrollBottom - scrollTop + 1)
+        // Only autowrap continues the old bottom row into the inserted row.
+        // Break the old join before moving it, even if it enters history.
+        if !preservingBottomWrap { screenWrapColumns[scrollBottom] = nil }
         for _ in 0..<count {
             let line = screen.remove(at: scrollTop)
             let wrappedAt = screenWrapColumns.remove(at: scrollTop)

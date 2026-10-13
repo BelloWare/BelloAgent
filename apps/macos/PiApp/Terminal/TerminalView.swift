@@ -262,6 +262,7 @@ import CoreText
         if isScrolledBack {
             let previousFirst = producedLines - scrollOffset - partialRow
             let previousFraction = scrollFraction
+            let previousScrollOffset = scrollOffset
             // A reader who has scrolled back stays on the lines they are
             // reading: output arriving underneath pushes the bottom further
             // away instead of dragging the text out from under them.
@@ -269,9 +270,12 @@ import CoreText
             if produced - scrollOffset - partialRow != previousFirst || scrollFraction != previousFraction {
                 needsDisplay = true
             } else {
-                // History cells never change. Only live rows intersecting this
-                // viewport can have changed; output below it needs no paint.
-                if let dirty = emulator.dirtyRows {
+                // Rows archived in this chunk could have changed while they
+                // were still live. Repaint their old visible area as well.
+                if produced > producedLines, previousScrollOffset < emulator.rows {
+                    let firstLive = rowRect(previousScrollOffset + partialRow)
+                    setNeedsDisplay(firstLive.union(rowRect(visibleRowCount - 1)).intersection(gridRect))
+                } else if let dirty = emulator.dirtyRows {
                     for row in dirty where row + scrollOffset + partialRow < visibleRowCount {
                         setNeedsDisplay(rowRect(row + scrollOffset + partialRow).intersection(gridRect))
                     }
