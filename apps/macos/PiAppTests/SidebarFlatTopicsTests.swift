@@ -355,6 +355,52 @@ final class SidebarFlatTopicsTests: XCTestCase {
 
     // MARK: Look
 
+    /// At the narrowest sidebar the tag gives way to the row's own buttons:
+    /// with Archive's question open, Archive and Keep stay inside the row and
+    /// the title keeps some room, the tag cut shorter or gone.
+    @MainActor func testTheTagGivesWayToTheArchiveQuestionInANarrowSidebar() throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = makeModel(root); defer { model.shutdown() }
+        if let index = model.topics.firstIndex(where: { $0.id == "billing" }) {
+            model.topics[index].title = "Billing and invoicing for the enterprise plan"
+        }
+        model.setProjectListsFlat("project", flat: true)
+        let width = WindowChrome.minimumSidebarWidth
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let sidebar = makeSidebar(model, width: width, height: 700)
+        window.contentView = sidebar
+        defer { window.contentView = nil; window.close() }
+        let row = try XCTUnwrap(sidebar.list.views["chat|a"] as? SidebarChatRowView)
+        func all(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap { all($0) } }
+        let archive = try XCTUnwrap(all(row.body).compactMap { $0 as? PiKit.ButtonBase }.first { $0.accessibilityIdentifier() == "archiveChat" })
+        archive.performClick(nil)
+        sidebar.layoutSubtreeIfNeeded(); row.layoutSubtreeIfNeeded()
+        let confirm = try XCTUnwrap(all(row.body).compactMap { $0 as? PiKit.ButtonBase }.first { $0.accessibilityIdentifier() == "confirmArchive" })
+        XCTAssertFalse(confirm.isHidden, "The question is open")
+        let shown = all(row.body).filter { view in
+            var node: NSView? = view
+            while let current = node, current !== row.body { if current.isHidden { return false }; node = current.superview }
+            return view is PiKit.ButtonBase || view === row.body.topicTag
+        }
+        for view in shown {
+            let frame = view.convert(view.bounds, to: row.body)
+            XCTAssertLessThanOrEqual(frame.maxX, row.body.bounds.width + 0.5, "\(type(of: view)) \(view.accessibilityIdentifier()) stays inside the row")
+        }
+        let title = try XCTUnwrap(all(row.body).compactMap { $0 as? PiKit.TextLine }.first { $0.line.text.hasPrefix("Chat a") })
+        // The question takes most of the line here; the tag steps aside
+        // rather than leave the title less than its minimum.
+        XCTAssertTrue(row.body.topicTag.isHidden || title.frame.width >= ChatRowBodyView.titleMinimum - 2,
+                      "The title keeps its room: \(title.frame.width)")
+        // The question put away, the tag is back beside the title.
+        let keep = try XCTUnwrap(all(row.body).compactMap { $0 as? PiKit.IconButton }.first { $0.label == "Keep chat" })
+        keep.performClick(nil)
+        row.layoutSubtreeIfNeeded()
+        XCTAssertFalse(row.body.topicTag.isHidden, "The tag comes back once there is room")
+        // A cut title takes the width of what it shows, a little under its room.
+        XCTAssertGreaterThanOrEqual(title.frame.width, ChatRowBodyView.titleMinimum - 2)
+    }
+
     /// The tag rides in the title line without making the row any taller,
     /// cuts itself short rather than the title in a narrow sidebar, and the
     /// Topics view draws exactly what it drew before the switch was used.

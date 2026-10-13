@@ -470,13 +470,26 @@ struct ChatRowStats: Equatable {
 
     private var titleHeight: CGFloat { PiKit.Line("Ag", font: .systemFont(ofSize: 13), color: .black).lineHeight }
     private func row1Height(width: CGFloat) -> CGFloat { capTopicTag(width); return row1.height(forWidth: width) }
-    /// A long topic is cut short before it crowds the title out.
+    /// A long topic is cut short before it crowds the title out: to its
+    /// share of the line, and to what the line has left once the title's
+    /// minimum and the line's other pieces (the pencil, the pin, the dot, the
+    /// row's buttons, wider while Archive asks) are counted. Too little left,
+    /// and the tag steps aside for the row.
     private func capTopicTag(_ textWidth: CGFloat) {
-        guard !topicTag.isHidden else { return }
-        let cap = max(28, (textWidth * Self.topicTagShare).rounded(.down))
-        guard topicTag.maximumWidth != cap else { return }
-        topicTag.maximumWidth = cap; row1.needsLayout = true
+        guard content?.topicTag != nil else { return }
+        let others = [draftMark, pin, dot, controls].filter { !$0.isHidden }
+        // Gaps between the title, the others, the spacer and the tag, and the spacer's own four.
+        let besides = others.reduce(0) { $0 + shellNaturalSize($1).width } + 4 * CGFloat(others.count + 2) + 4
+        let cap = min((textWidth * Self.topicTagShare).rounded(.down), (textWidth - besides - Self.titleMinimum).rounded(.down))
+        let fits = cap >= Self.topicTagMinimum
+        guard topicTag.isHidden == fits || fits && topicTag.maximumWidth != cap else { return }
+        topicTag.isHidden = !fits
+        if fits { topicTag.maximumWidth = cap }
+        row1.relayoutAll()
     }
+    /// The least of the title a tag leaves, and the least of a tag worth drawing.
+    static let titleMinimum: CGFloat = 40
+    static let topicTagMinimum: CGFloat = 28
     private var secondHeight: CGFloat { metrics.isHidden ? subtitle.intrinsicContentSize.height : metrics.height(forWidth: 0) }
     func height(forWidth width: CGFloat) -> CGFloat {
         let text = row1Height(width: max(0, width - 24)) + 2 + secondHeight
