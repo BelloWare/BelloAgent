@@ -61,7 +61,10 @@ final class QueuedSkillRefreshTests: XCTestCase {
         let saved = try String(contentsOf: f.root.appendingPathComponent("state"), encoding: .utf8, recursive: true)
         XCTAssertTrue(saved.contains("UPDATED_SKILL_BODY"), "The queued message holds the current version")
 
-        try await f.session.resumeQueue()
+        // The notice's Resume is the run's (`run.continue`): from an answered
+        // chat it sends what waits, the re-pinned message first.
+        let resumed = try await f.session.continueRun(commandID: "resume-1")
+        XCTAssertEqual(resumed["resumedQueue"].flag, true)
         try await eventually { let count = await f.client.count; let running = await f.session.isRunning; return count == 3 && !running }
         state = await f.session.snapshot()
         XCTAssertEqual(state["state"].text, "idle", state["preflightError"].text ?? "")

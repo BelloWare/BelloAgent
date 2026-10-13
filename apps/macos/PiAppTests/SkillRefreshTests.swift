@@ -322,7 +322,9 @@ final class SkillRefreshTests: XCTestCase {
         XCTAssertEqual(userRows(f.view), 1, "The follow-up was not sent")
         let notice = try XCTUnwrap(f.view.presentedMessages.last)
         XCTAssertEqual(notice.failureCode, SessionDisplay.skillUpdatedCode); XCTAssertNil(notice.detail)
-        f.model.action("queue.resume", sessionID: f.chat.id)
+        // The notice's Resume is the run's own (`resumeRun`, `run.continue`):
+        // from an answered chat it sends what waits.
+        f.model.resumeRun(sessionID: f.chat.id)
         await waitFor("Resume never sent the follow-up") { userRows(f.view) == 2 && quiet(f.view) }
         let reply = f.view.messages.last { $0.role == "assistant" }?.text ?? ""
         XCTAssertTrue(reply.contains("UPDATED_NOTES_BODY")); XCTAssertFalse(reply.contains("ORIGINAL_NOTES_BODY"))

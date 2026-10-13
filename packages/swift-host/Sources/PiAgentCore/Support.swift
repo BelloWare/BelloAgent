@@ -32,6 +32,8 @@ public enum AgentErrorCode {
     public static let sessionMissing = "session_missing"
     /// Retry found no failed request; the app offers a new message instead.
     public static let nothingToRetry = "nothing_to_retry"
+    /// Resume found nothing the model has not answered and nothing waiting.
+    public static let nothingToContinue = "nothing_to_continue"
     /// An edit may or may not have reached the journal; the app reloads it.
     public static let journalUncertain = "journal_uncertain"
 }

@@ -114,7 +114,8 @@ extension WorkspaceFailureTests {
         let paused = try XCTUnwrap(model.displays["stopped"])
         XCTAssertEqual(paused.state, "paused"); XCTAssertFalse(paused.uncertain)
         XCTAssertTrue(paused.canResumeQueue); XCTAssertEqual(paused.queue.count, 1)
-        XCTAssertFalse(paused.presentedMessages.contains { $0.kind == "failure" }, "A deliberate stop is no failure")
+        XCTAssertFalse(paused.presentedMessages.contains { $0.kind == "failure" && $0.failureCode != SessionDisplay.pausedCode }, "A deliberate stop is no failure")
+        XCTAssertEqual(paused.presentedMessages.last?.failureCode, SessionDisplay.pausedCode, "It is paused, with Resume (0.1.125)")
         XCTAssertEqual(paused.messages.first { $0.id == "call" }?.tools?.first?.state, "recorded", "Only a run cut off leaves its calls unknown")
         model.shutdown(); await model.store?.close()
     }

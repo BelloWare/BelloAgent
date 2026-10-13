@@ -1,4 +1,8 @@
-# Next release: 0.1.124
+# Next release: 0.1.125
+
+**Released 2026-10-13:** 0.1.124 (build 128, tag `v0.1.124`) is the latest release; record `docs/validation/Bello-Agent-0.1.124-2026-10-13.md`. In progress for 0.1.125: Resume of paused/interrupted runs and pausing running chats for an update (`dev/resume-runs`), no "Working" word in sidebar rows (`dev/sidebar-working`), a changed skill chip refreshed instead of failing every send (`dev/skill-refresh`).
+
+## 0.1.124
 
 **0.1.124 (owner 2026-10-13, "deliver ASAP"):** owner-approved fixes from a three-session Codex audit, plus the Flat topic view and the global retry setting. Codex (gpt-6-astra, max) implemented the audit fixes in four sessions; every branch was reviewed read-only by Codex until clean.
 
@@ -8,7 +12,7 @@
 - [ ] Left (Git, rare): during a repository switch, a commit message typed while the new repository loads can be cleared if a second folder in the same repository is chosen before it loads, and Amend can prefill the previous repository's HEAD message. A fix that disabled the editor during switches (`dev/git-files` 6609532d) regressed panel re-show and same-repository refreshes, so it was left out.
 - [ ] Left (tests): `WorkspaceFollowupTests.testScratchChatRendersComposerAndPreparesToolFreeRequestWithoutProject` times out in helper shutdown (6 s) under heavy machine load; passes in the gate.
 
-**Released 2026-10-12:** 0.1.123 (build 127, tag `v0.1.123`); record `docs/validation/Bello-Agent-0.1.123-2026-10-12.md`.
+0.1.123 (build 127, tag `v0.1.123`) released 2026-10-12; record `docs/validation/Bello-Agent-0.1.123-2026-10-12.md`.
 
 ## 0.1.123 (owner 2026-10-11)
 

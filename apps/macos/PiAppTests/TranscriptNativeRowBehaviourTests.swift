@@ -109,10 +109,10 @@ final class TranscriptNativeRowBehaviourTests: XCTestCase {
 
     /// A skill that changed since it was chosen is a notice, not an error: a
     /// message back in the composer offers nothing (Send is the way on), and
-    /// a paused queued message offers Resume, which resumes the queue.
+    /// a paused queued message offers the run's Resume, which sends it.
     @MainActor func testAChangedSkillIsANoticeAndAQueuedOneOffersResume() throws {
         var resumed = 0, retried = 0
-        var actions = TranscriptActions(); actions.resumeQueue = { resumed += 1 }; actions.retry = { retried += 1 }
+        var actions = TranscriptActions(); actions.resume = { resumed += 1 }; actions.retry = { retried += 1 }
         func notice(_ id: String, code: String) -> TranscriptItem {
             var message = TranscriptMessage(id: id, role: "system", text: "\u{201C}review\u{201D} changed since you chose it. Press Send to use the updated version.")
             message.kind = "failure"; message.failureCode = code
@@ -136,6 +136,53 @@ final class TranscriptNativeRowBehaviourTests: XCTestCase {
         XCTAssertGreaterThan(resume.frame.width, 40, "the pill was laid out")
         XCTAssertTrue(resume.accessibilityPerformPress())
         XCTAssertEqual(resumed, 1); XCTAssertEqual(retried, 0)
+
+        // While that Resume is on its way, the notice stays, with no button.
+        let (held, heldWindow) = mounted(notice("failure:run:3", code: SessionDisplay.skillResumingCode), actions: actions)
+        defer { heldWindow.contentView = nil }
+        let waiting = try XCTUnwrap(held.subviews.first as? TranscriptNativeFailureRow)
+        XCTAssertEqual(waiting.accessibilityIdentifier(), "skill-changed-notice")
+        XCTAssertTrue(waiting.subviews.compactMap { $0 as? TranscriptPillButton }.isEmpty)
+    }
+
+    /// A run stopped before it finished is the accent "Paused" card with
+    /// Resume (0.1.125); a run a restart cut off keeps its red card and
+    /// offers Resume instead of Retry. Both press the pane's resume.
+    @MainActor func testAPausedRunOffersResume() throws {
+        var resumed = 0, retried = 0
+        var actions = TranscriptActions(); actions.resume = { resumed += 1 }; actions.retry = { retried += 1 }
+        var paused = TranscriptMessage(id: "paused:run:1", role: "system", text: SessionDisplay.pausedText, kind: "failure")
+        paused.failureCode = SessionDisplay.pausedCode
+        let (row, window) = mounted(.message(paused), actions: actions)
+        defer { window.contentView = nil }
+        let content = try XCTUnwrap(row.subviews.first as? TranscriptNativeFailureRow)
+        XCTAssertEqual(content.accessibilityIdentifier(), "run-paused-notice")
+        XCTAssertEqual(content.accessibilityLabel(), "Paused: " + SessionDisplay.pausedText)
+        let pills = content.subviews.compactMap { $0 as? TranscriptPillButton }
+        XCTAssertEqual(pills.map(\.title), ["Resume"])
+        let resume = try XCTUnwrap(pills.first)
+        XCTAssertEqual(resume.accessibilityIdentifier(), "resume-run"); XCTAssertEqual(resume.accessibilityRole(), .button)
+        XCTAssertGreaterThan(resume.frame.width, 40, "the pill was laid out")
+        XCTAssertTrue(resume.accessibilityPerformPress())
+
+        var cut = TranscriptMessage(id: "failure:run:2", role: "system", text: "The previous run was interrupted before it finished.", kind: "failure")
+        cut.failureCode = SessionDisplay.interruptedCode
+        let (interrupted, interruptedWindow) = mounted(.message(cut), actions: actions)
+        defer { interruptedWindow.contentView = nil }
+        let card = try XCTUnwrap(interrupted.subviews.first as? TranscriptNativeFailureRow)
+        let offered = card.subviews.compactMap { $0 as? TranscriptPillButton }
+        XCTAssertEqual(offered.map(\.title), ["Resume"])
+        XCTAssertTrue(try XCTUnwrap(offered.first).accessibilityPerformPress())
+        XCTAssertEqual(resumed, 2); XCTAssertEqual(retried, 0)
+
+        // While a Resume is on its way both cards stay, with no button at all.
+        for (id, code) in [("paused:run:3", SessionDisplay.pausedResumingCode), ("failure:run:4", SessionDisplay.resumingCode)] {
+            var waiting = TranscriptMessage(id: id, role: "system", text: "Stopped.", kind: "failure"); waiting.failureCode = code
+            let (held, heldWindow) = mounted(.message(waiting), actions: actions)
+            defer { heldWindow.contentView = nil }
+            let content = try XCTUnwrap(held.subviews.first as? TranscriptNativeFailureRow)
+            XCTAssertTrue(content.subviews.compactMap { $0 as? TranscriptPillButton }.isEmpty, code)
+        }
     }
 
     /// A reply whose stream is interrupted keeps the surface it was drawn

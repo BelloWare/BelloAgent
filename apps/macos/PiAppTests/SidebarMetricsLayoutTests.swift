@@ -72,7 +72,9 @@ final class SidebarMetricsLayoutTests: XCTestCase {
             .lineLimit(1).fixedSize(horizontal: true, vertical: false)
         }
         @ViewBuilder private var stateAndCost: some View {
-            if (stats.busy || stats.loading) && !stats.generating {
+            // A chat that is simply working (running or in a tool) shows no
+            // word since 0.1.125; every other state still does.
+            if (stats.busy || stats.loading) && !stats.generating && !(!stats.loading && ["running", "tool"].contains(stats.state)) {
                 Text(PiSessionState.label(stats.state, loading: stats.loading)).foregroundStyle(Color.piWarning).fontWeight(.medium)
             } else if ["error", "interrupted", "paused"].contains(stats.state) {
                 Text(PiSessionState.label(stats.state)).foregroundStyle(stats.state == "paused" ? Color.piInfo : Color.piDanger).fontWeight(.medium)
@@ -137,12 +139,89 @@ final class SidebarMetricsLayoutTests: XCTestCase {
         XCTAssertFalse(before == after)
     }
 
+    /// The owner (0.1.125): a working chat needs no "Working" in the sidebar,
+    /// since it is always either running a command or waiting for the model,
+    /// and its spinner already says it is busy. Running and tool steps show
+    /// no word; every other state keeps its own.
+    @MainActor func testAWorkingChatShowsNoStateWordInItsSidebarRow() {
+        let steps: [(String, String, Bool, [String: WireValue], String?)] = [
+            ("generating", "running", false, ["version": .number(2), "modelActive": .bool(true), "phase": .string("model")], nil),
+            ("tool", "running", false, ["version": .number(2), "modelActive": .bool(false), "phase": .string("tool")], nil),
+            ("running", "running", false, [:], nil),
+            ("queued", "queued", false, [:], "Waiting"), ("stopping", "stopping", false, [:], "Stopping"),
+            ("compacting", "compacting", false, [:], "Compacting"), ("opening", "running", true, [:], "Opening"),
+            ("paused", "paused", false, [:], "Paused"), ("interrupted", "interrupted", false, [:], "Interrupted"),
+            ("error", "error", false, [:], "Failed"), ("idle", "idle", false, [:], nil)]
+        for (name, state, loading, activity, word) in steps {
+            var stats = Self.stats(cost: 12.34, tokens: 45_600, activity: 60, rate: true)
+            stats.updateActivity(state: state, loading: loading, activity: activity)
+            XCTAssertEqual(SidebarMetricsFigures(stats).state, word, "measured word for \(name)")
+            let line = ChatRowMetricsView()
+            line.update(stats: stats, available: 300)
+            XCTAssertEqual(line.shownState, word, "drawn word for \(name)")
+            if word == nil { XCTAssertFalse(line.shownState == "Working", name) }
+        }
+        var limited = Self.stats(cost: 12.34, tokens: 45_600, activity: 60, rate: true)
+        limited.updateActivity(state: "error", loading: false, activity: [:]); limited.costLimited = true
+        XCTAssertEqual(SidebarMetricsFigures(limited).state, "Stopped · cost limit")
+        // The run is still marked: the row's spinner takes its icon's place.
+        let working: [(String, [String: WireValue])] = [("running", [:]), ("running", ["version": .number(2), "modelActive": .bool(false), "phase": .string("tool")])]
+        for (state, activity) in working {
+            var stats = Self.stats(cost: 12.34, tokens: 45_600, activity: 60, rate: true)
+            stats.updateActivity(state: state, loading: false, activity: activity)
+            let row = ChatRowBodyView()
+            row.update(ChatRowBodyView.Content(stats: stats, title: "A", subtitle: "", symbol: "bubble.left", selected: false))
+            XCTAssertTrue(row.showsSpinner, "A working chat keeps its spinner")
+        }
+        let idle = ChatRowBodyView()
+        idle.update(ChatRowBodyView.Content(stats: Self.stats(cost: 1, tokens: 1, activity: 60, rate: false), title: "A", subtitle: "", symbol: "bubble.left", selected: false))
+        XCTAssertFalse(idle.showsSpinner)
+    }
+
+    /// The run no longer reserves room for a word it does not draw: a model
+    /// or tool step is measured exactly as the same chat at rest (whose token
+    /// total the run keeps room for), so starting, stepping and ending a run
+    /// never changes the row's form, and the drawn line keeps its height and
+    /// its figures' places through every model and tool switch.
+    @MainActor func testARunMeasuresOnlyWhatItDrawsAndHoldsItsLineSteady() {
+        let steps: [[String: WireValue]] = [
+            ["version": .number(2), "modelActive": .bool(true), "phase": .string("model")],
+            ["version": .number(2), "modelActive": .bool(false), "phase": .string("tool")],
+            [:]]
+        var mismatches: [String] = []
+        for cost in [0.0042, 12.34, 98_765.43] {
+            for tokens in [12_300.0, 9_876_543.0] {
+                let rest = Self.stats(cost: cost, tokens: tokens, activity: 900, rate: true)
+                let restFigures = SidebarMetricsFigures(rest)
+                for available in stride(from: CGFloat(60), through: 400, by: 1) {
+                    let restForm = restFigures.form(fitting: available)
+                    var heights: Set<CGFloat> = [], costX: Set<CGFloat> = []
+                    for activity in steps {
+                        var stats = rest; stats.updateActivity(state: "running", loading: false, activity: activity)
+                        let form = SidebarMetricsFigures(stats).form(fitting: available)
+                        if form != restForm { mismatches.append("$\(cost) \(Int(tokens)) at \(Int(available)): run \(form), rest \(restForm)") }
+                        let line = ChatRowMetricsView()
+                        line.update(stats: stats, available: available)
+                        line.frame = CGRect(x: 0, y: 0, width: available, height: line.height(forWidth: available))
+                        line.layout()
+                        heights.insert(line.height(forWidth: available)); costX.insert(line.costOrigin)
+                    }
+                    if heights.count > 1 || costX.count > 1 { mismatches.append("$\(cost) at \(Int(available)): heights \(heights), cost at \(costX)") }
+                }
+            }
+        }
+        XCTAssertTrue(mismatches.isEmpty, "A run's line changes form or moves:\n" + mismatches.prefix(8).joined(separator: "\n"))
+    }
+
     @MainActor func testRunStatesReachTheRowAsWordsAReaderKnows() {
         let expected: [(String, Bool, String)] = [
             ("queued", false, "Waiting"), ("running", false, "Working"), ("tool", false, "Working"),
             ("stopping", false, "Stopping"), ("compacting", false, "Compacting"), ("paused", false, "Paused"),
             ("interrupted", false, "Interrupted"), ("error", false, "Failed"), ("running", true, "Opening")
         ]
+        // The vocabulary itself: "Working" is still what a working run is
+        // called (the sides panel shows it); the sidebar row leaves it out
+        // (see testAWorkingChatShowsNoStateWordInItsSidebarRow).
         for (state, loading, label) in expected {
             XCTAssertEqual(PiSessionState.label(state, loading: loading), label)
         }
@@ -179,10 +258,11 @@ final class SidebarMetricsLayoutTests: XCTestCase {
         XCTAssertTrue(disagreements.isEmpty, "The measured form differs from what ViewThatFits chose:\n" + disagreements.prefix(12).joined(separator: "\n"))
     }
 
-    /// A run keeps one form through its model and tool steps: the model
-    /// generating (no word, no tokens) measures like a tool step ("Working"),
-    /// so no row changes height mid-run and moves every row below it. Every
-    /// step's form, compaction, stopping and opening included, still fits.
+    /// A run keeps one form through its model and tool steps: neither the
+    /// model generating nor a tool running puts a word in front of the
+    /// figures (0.1.125), so no row changes height mid-run and moves every row
+    /// below it. Every step's form, compaction, stopping and opening
+    /// included, still fits.
     @MainActor func testARunKeepsOneFormThroughEveryStep() throws {
         let steps: [(String, String, Bool, [String: WireValue])] = [
             ("generating", "running", false, ["version": .number(2), "modelActive": .bool(true), "phase": .string("model")]),

@@ -37,7 +37,7 @@ extension NativeTranscriptPane {
                                                         stop: { model.stop(sessionID: session.id) },
                                                         // The retry carries this chat's current model, effort and budgets, as a send would.
                                                         retry: { model.action("turn.retry", params: model.record(session.id).map { model.turnOverrides(for: $0) } ?? [:], sessionID: session.id) },
-                                                        resumeQueue: { model.action("queue.resume", sessionID: session.id) },
+                                                        resume: { model.resumeRun(sessionID: session.id) },
                                                         quoteReply: canQuote ? { quote in model.openQuotedSide(parentID: session.id, quote: quote) } : nil,
                                                         inspectTurn: { [weak model] turn in
                                                             model?.openInspector(session: session.id, focus: WorkspaceModel.inspectorFocus(for: turn))

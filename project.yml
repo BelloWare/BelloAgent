@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.123
-    CURRENT_PROJECT_VERSION: 127
+    MARKETING_VERSION: 0.1.124
+    CURRENT_PROJECT_VERSION: 128
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "The scroll bar is the whole chat, faster search inside chats, and a reply kept through a crash."
+    RELEASE_MESSAGE: "A flat view of a project's chats, retries you can set for every connection, and many fixes."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO

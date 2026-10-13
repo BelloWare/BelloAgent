@@ -405,6 +405,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Test seam: each step of a send as it happens (`WorkspaceRun.swift`),
     /// so a fixture can time where Return's milliseconds go. Nil in the app.
     var sendSteps: ((String) -> Void)?
+    /// Test seam: each step of a Resume (`WorkspaceResume.swift`). Nil in the app.
+    var resumeSteps: ((String) -> Void)?
     /// Test seam: hold or fail the acceptance read while a draft is restored.
     var commandAcceptanceRead: (@MainActor (String, [CommandIntent], Bool) async throws -> Set<String>)?
     /// Owned by `WorkspaceHosts.swift`: chats whose helper `prewarm` is starting.
@@ -424,6 +426,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `WorkspaceHosts.swift`: helpers stopped on purpose for being
     /// idle, whose exit therefore is not a lost host.
     var retiringHosts: Set<ObjectIdentifier> = []
+    /// Owned by `WorkspaceResume.swift`: helpers stopped to pause their chats
+    /// for an update, whose chats therefore read paused, not interrupted.
+    var pausingHosts: Set<ObjectIdentifier> = []
     /// Owned by `WorkspaceDrafts.swift`: the debounced draft writes under way.
     var draftWrites = DraftWrites()
     /// Test seam: draft writes still in flight or not yet cleaned up.
@@ -444,7 +449,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `WorkspaceChatLifecycle.swift`: onboarding creates exactly one
     /// first chat however many times its button is pressed.
     var creatingOnboardingChat = false
-    var hasActiveWork: Bool { !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
+    /// Work under way that a quit or an update must stop or wait for. Work
+    /// held for Resume (follow-ups paused behind a stop) is not: it is in the
+    /// chat's journal, and comes back paused after the relaunch.
+    var hasActiveWork: Bool { !workspaceChangesInFlight.isEmpty || !titleGenerationTasks.isEmpty || displays.values.contains { $0.hasActiveWork || $0.loading } || sides.values.contains { !$0.kept && !$0.pending } }
     var chat: ChatRecord? { selectedID.flatMap(chatRecord) }
     var requestProfiles: [ProfileRecord] { profiles.filter { $0.api == LiteLLMConfiguration.supportedAPI } }
 
