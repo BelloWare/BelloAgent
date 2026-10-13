@@ -429,13 +429,20 @@ public actor MCPManager {
     /// or a failed write could lose the only sign the call ran, so the
     /// outcome marker stays.
     private var awaitingRetention: [String: Int] = [:]
+    /// An IPC read can time out during setup or execution. Remember that
+    /// failure until the call returns; a call that never ran needs no recovery.
+    private var inFlightRetention: [String: Int] = [:]
+    private var failedRetention: Set<String> = []
     /// Ends one invocation; `retainedBy` names a result its caller has yet
     /// to keep. The last one to end, with every result kept, clears the
     /// outcome marker unless an outcome is unknown, whichever invocation
     /// wrote it.
     private func finishInvocation(retainedBy key: String? = nil) {
         inFlight -= 1
-        if let key { awaitingRetention[key, default: 0] += 1 }
+        if let key {
+            if failedRetention.contains(key) { unknownOutcome=true }
+            else { awaitingRetention[key, default: 0] += 1 }
+        }
         guard inFlight == 0 else { return }
         clearSettledMarker()
         let waiters = drainWaiters; drainWaiters.removeAll(); for waiter in waiters { waiter.1.resume() }
@@ -451,9 +458,13 @@ public actor MCPManager {
         guard !closed else { return }
         var matched=false
         for key in keys {
-            guard let count = awaitingRetention[key] else { continue }
-            matched=true
-            awaitingRetention[key] = count > 1 ? count - 1 : nil
+            if let count = awaitingRetention[key] {
+                matched=true
+                awaitingRetention[key] = count > 1 ? count - 1 : nil
+            }
+            // A success cannot retain a result that does not exist yet. A
+            // failure applies to every running use of the same identity.
+            if !retained, inFlightRetention[key] != nil { failedRetention.insert(key) }
         }
         if matched, !retained { unknownOutcome = true }
         clearSettledMarker()
@@ -596,6 +607,13 @@ public actor MCPManager {
             guard !readOnly else { throw AgentError("read_only", "MCP invocation is disabled in discussion-only sessions; annotations are not authorization") }
             guard Set(p.map.keys) == ["action","server","tool","arguments"], p["arguments"].isObject else { throw AgentError("mcp_arguments", "Invoke requires exactly one server, tool and arguments object; batches are not supported") }
             let server=try required(p["server"],"server"), name=try required(p["tool"],"tool")
+            if let retainedBy { inFlightRetention[retainedBy, default: 0] += 1 }
+            defer {
+                if let retainedBy, let count=inFlightRetention[retainedBy] {
+                    inFlightRetention[retainedBy] = count > 1 ? count - 1 : nil
+                    if count == 1 { failedRetention.remove(retainedBy) }
+                }
+            }
             // The gate is held only to start: a configuration change waits for
             // running invocations, and invocations do not wait for each other.
             try await gate.acquire(); inFlight += 1; await gate.release()
@@ -635,7 +653,7 @@ public actor MCPManager {
     }
     public func acknowledgeUnknown() throws {
         guard !closed else { throw AgentError("mcp_closed","MCP manager is closed") }
-        guard inFlight == 0, awaitingRetention.isEmpty else { throw AgentError("mcp_busy","An invocation is still running") }
+        guard inFlight == 0, inFlightRetention.isEmpty, awaitingRetention.isEmpty else { throw AgentError("mcp_busy","An invocation is still running") }
         if let outcomeMarker, FileManager.default.fileExists(atPath:outcomeMarker.path) { try FileManager.default.removeItem(at:outcomeMarker) }
         unknownOutcome=false
     }
