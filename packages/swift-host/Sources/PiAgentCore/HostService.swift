@@ -8,8 +8,12 @@ import Glibc
 /// What the helper says of itself in its ready frame, `runtime.info` and
 /// `--version`, and the protocol's frame limit, which both sides keep.
 public enum HostProtocol {
-    /// The largest frame either side writes, without its newline: 1 MiB.
+    /// The largest helper reply/event, without its newline: 1 MiB.
     public static let frameBytes = 1_048_576
+    /// Two supported 256 KiB texts, each expanding at most sixfold in JSON,
+    /// plus 1 MiB for the command envelope. This validates framing; submission
+    /// validation still owns the text limit. Keep HostTransport in sync.
+    public static let commandFrameBytes = 2 * 262_144 * 6 + 1_048_576
     public static let engineVersion = "1.0.0"
     /// The pi release whose behaviour the helper follows.
     public static let piBehaviorReference = "0.85.1"
@@ -30,12 +34,12 @@ public struct NDJSONDecoder {
     public mutating func feed(_ bytes: Data) throws -> [JSON] {
         buffer.append(bytes); var result:[JSON]=[]
         while let nl=buffer.firstIndex(of:10) {
-            guard nl > 0, nl <= HostProtocol.frameBytes else { throw AgentError("invalid_frame", "Protocol frame exceeds limit or is empty") }
+            guard nl > 0, nl <= HostProtocol.commandFrameBytes else { throw AgentError("invalid_frame", "Protocol frame exceeds limit or is empty") }
             let data=Data(buffer[..<nl]); buffer.removeSubrange(...nl)
             guard String(data:data,encoding:.utf8) != nil else { throw AgentError("invalid_frame", "Protocol frame is not UTF-8") }
             let value=try JSON.parse(data); guard value.isObject else { throw AgentError("invalid_frame", "Protocol frame must be an object") }; result.append(value)
         }
-        guard buffer.count <= HostProtocol.frameBytes else { throw AgentError("invalid_frame", "Protocol frame exceeds 1 MiB") }; return result
+        guard buffer.count <= HostProtocol.commandFrameBytes else { throw AgentError("invalid_frame", "Protocol command frame exceeds limit") }; return result
     }
     public func finish() throws { if !buffer.isEmpty { throw AgentError("invalid_frame", "Incomplete protocol frame at EOF") } }
 }
@@ -95,7 +99,7 @@ public actor NativeHostService {
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
             hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true; unknownToolOutcomes = frame["unknownToolOutcomes"].flag == true
-            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold","run-continue"]]); return
+            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes),"commandFrameBytes":JSON(HostProtocol.commandFrameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold","run-continue"]]); return
         }
         let id=frame["commandId"].text ?? ""
         guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }

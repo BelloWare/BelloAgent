@@ -5,6 +5,10 @@ enum TransportEvent: Sendable { case frame([String: WireValue]), exited(Int32), 
 
 // Pipe I/O and parsing remain off the main thread; only Sendable values cross it.
 final class HostTransport: @unchecked Sendable {
+    /// Two 256 KiB submission texts escaped to six JSON bytes per source byte,
+    /// plus the envelope. Match HostProtocol.commandFrameBytes in the helper;
+    /// reply/event frames keep their separate 1 MiB paging bound.
+    static let maximumCommandBytes = 2 * 262_144 * 6 + 1_048_576
     private let queue = DispatchQueue(label: "com.belloware.PiApp.host", qos: .userInitiated)
     private var process: Process?
     private var input: HostPipeWriter?
@@ -80,7 +84,7 @@ final class HostTransport: @unchecked Sendable {
             do {
                 guard let input else { throw WireError.invalid }
                 var bytes = try JSONEncoder().encode(frame)
-                guard bytes.count <= HostFrameDecoder.maximum else { throw WireError.oversized }
+                guard bytes.count <= Self.maximumCommandBytes else { throw WireError.oversized }
                 bytes.append(10)
                 input.append(bytes, counted: counted)
             } catch { commandWritten(counted: counted); receive(.failed("The host connection was interrupted. No command was replayed.")) }
