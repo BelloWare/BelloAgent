@@ -87,6 +87,35 @@ final class HistoryExtentTests: XCTestCase {
         }
     }
 
+    @MainActor func testANewGenerationCanRecoverWhileThePreviousRecoveryIsPending() async throws {
+        let file = try journal(turns: 40), reader = HistoryReader()
+        let root = scratchRoot("extent-recovery-generation")
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.reloadConfiguration()
+        let item = ChatRecord(id: "generation", workspaceID: "fixture", title: "Fixture", path: file.path, profileID: "fixture")
+        let view = SessionDisplay(id: item.id)
+        model.chats = [item]; model.displays[item.id] = view
+        let page = try ConversationHistoryPage(await reader.window(path: file.path))
+        model.adoptInitialHistory(page, into: view)
+        let reads = GatedReads()
+        defer { reads.open = true }
+        model.historyWindowLoader = { _, _, _, _ in
+            if reads.next() == 1 {
+                while !reads.open { try await Task.sleep(for: .milliseconds(5)) }
+            }
+            return page
+        }
+        view.historyPositions.forget()
+        model.reacquireHistoryPositions(item.id)
+        try await eventually("The previous recovery started") { reads.started == 1 }
+        view.presentationGeneration = UUID()
+        model.reacquireHistoryPositions(item.id)
+        try await eventually("The previous generation suppressed the new generation's recovery") { reads.started == 2 }
+        try await eventually("The current generation did not recover its extent") { view.historyPositions.total == page.total }
+        print("SCROLL-06 generations=2 recovery-reads=\(reads.started) total=\(view.historyPositions.total ?? -1)")
+    }
+
     /// Each turn of the fixture is five rows: question, reply with two
     /// calls, their two results, and the closing reply.
     @MainActor func testAPageSaysWhereItStandsAndAnyRowCanBeRead() async throws {

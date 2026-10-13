@@ -366,16 +366,18 @@ extension WorkspaceModel {
     /// whole-chat scroller come back without waiting for a page read.
     func reacquireHistoryPositions(_ id: String) {
         guard let view = displays[id], let item = record(id), view.historyPositions.total == nil, !view.messages.isEmpty else { return }
-        // Once per timeline: a source that does not say stays unsaid.
+        // Once per generation and timeline: an old recovery cannot suppress
+        // the new window's, while a source that does not say stays unsaid.
         let lineage = view.presentation.identity?.lineage
-        guard view.positionsReadFor != (lineage ?? "") else { return }
-        view.positionsReadFor = lineage ?? ""
         let generation = view.presentationGeneration
+        let requestKey = generation.uuidString + ":" + (lineage ?? "")
+        guard view.positionsReadFor != requestKey else { return }
+        view.positionsReadFor = requestKey
         Task { [weak self, weak view] in
             guard let self, let view else { return }
             @MainActor func current() -> Bool {
                 !Task.isCancelled && self.displays[id] === view && view.presentationGeneration == generation
-                    && view.presentation.identity?.lineage == lineage && view.positionsReadFor == (lineage ?? "")
+                    && view.presentation.identity?.lineage == lineage && view.positionsReadFor == requestKey
                     && view.historyPositions.total == nil
             }
             // An idle chat gets two retries without needing another model

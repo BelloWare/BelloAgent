@@ -121,7 +121,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     var jumpReading: Int?
     /// Position reads in a row that found the journal unreadable as it was.
     var jumpUnreadable = 0
-    /// The timeline whose positions were last read for want of any
+    /// The generation and timeline last asked for missing positions
     /// (`WorkspaceModel.reacquireHistoryPositions`).
     var positionsReadFor: String?
     /// A read that failed, to be tried again where the reader still is.
