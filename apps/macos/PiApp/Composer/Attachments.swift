@@ -49,6 +49,11 @@ struct PastedImageStorage: Sendable {
 struct PastedImageReferenceToken: Sendable, Equatable { let connection: UUID; let changes: Int64; let version: Int64 }
 struct PastedImageReferences: Sendable { let token: PastedImageReferenceToken; let names: Set<String>; let journals: Set<String> }
 
+@MainActor struct ComposerImageImport {
+    var isCurrent: () -> Bool = { true }
+    var finish: () -> Void = {}
+}
+
 struct AttachmentRecord: Codable, Sendable, Identifiable, Hashable {
     let id: String; let path: String; let sha256: String; let bytes: Int; let mimeType: String
     var wire: WireValue { .object(["id": .string(id), "path": .string(path), "sha256": .string(sha256), "bytes": .number(Double(bytes)), "mimeType": .string(mimeType)]) }
@@ -73,6 +78,25 @@ struct AttachmentRecord: Codable, Sendable, Identifiable, Hashable {
     }
 }
 extension WorkspaceModel {
+    /// Count from paste initiation, before conversion, through inspection and
+    /// recovery. An edit switch invalidates the destination; queue rewrites
+    /// keep the original draft parked and continue to receive its images.
+    func beginImageImport(sessionID: String) -> ComposerImageImport {
+        guard let view = displays[sessionID] else { return ComposerImageImport(isCurrent: { false }) }
+        let target = view.editingMessageID, generation = view.editGeneration
+        view.imageImports += 1; attachmentImports += 1
+        var finished = false
+        return ComposerImageImport(isCurrent: { [weak self, weak view] in
+            guard let self, let view else { return false }
+            return !self.isShutDown && self.displays[sessionID] === view && view.editingMessageID == target && (target == nil || view.editGeneration == generation)
+        }, finish: { [weak self, weak view] in
+            guard !finished else { return }; finished = true
+            guard let self else { return }
+            self.attachmentImports -= 1
+            guard let view else { return }
+            view.imageImports -= 1
+        })
+    }
     static let imagesUnsupported = "This chat's model is not known to take images. List \"image\" in the model's catalog `input`, or add \"input\": [\"text\", \"image\"] to the connection's Model capabilities in Settings."
     /// What a chat's model takes: what its connection declares under Model
     /// capabilities, and what the model catalog lists for the model the chat
@@ -111,34 +135,47 @@ extension WorkspaceModel {
     /// Images inspected for `view`'s draft. A queued message's rewrite takes
     /// no images: ones that arrive while it is in the composer join the draft
     /// set aside for it, which they were chosen for.
-    func receiveAttachments(_ items: [AttachmentRecord], into view: SessionDisplay) {
+    @discardableResult func receiveAttachments(_ items: [AttachmentRecord], into view: SessionDisplay) -> Bool {
         if let recovery = draftWrites.recoveries[view.id] {
-            attachmentImports += 1
+            let importing = beginImageImport(sessionID: view.id)
             Task {
-                defer { attachmentImports -= 1 }
+                defer { importing.finish() }
                 await recovery.value
-                guard view.attachments.count + items.count <= 4, (view.attachments + items).reduce(0, { $0 + $1.bytes }) <= 16 * 1024 * 1024 else {
-                    view.notice = "The images could not be attached after recovery: a submission supports four images and 16 MiB in total."; return
-                }
-                receiveAttachments(items, into: view)
+                if importing.isCurrent() { receiveAttachments(items, into: view) }
             }
-            return
+            return true
+        }
+        // Resolve the destination before checking, without suspending between
+        // validation and append. The visible queue rewrite has no images of
+        // its own; its parked draft still has the same submission limits.
+        let existing = view.queueEditingID != nil ? (view.draftBeforeQueueEdit?.attachments ?? []) : view.attachments
+        var room = 16 * 1024 * 1024
+        guard existing.count + items.count <= 4, (existing + items).allSatisfy({ image in
+            guard image.bytes >= 0, image.bytes <= room else { return false }; room -= image.bytes; return true
+        }) else {
+            view.notice = "The images could not be attached: a submission supports four images and 16 MiB in total."
+            // Streaming snapshots replace composer notices; the error strip stays until dismissed.
+            error = view.notice
+            return false
         }
         if view.queueEditingID != nil, var before = view.draftBeforeQueueEdit {
             before.attachments = (before.attachments ?? []) + items; view.draftBeforeQueueEdit = before
         } else { view.attachments.append(contentsOf: items) }
         draftChanged(view)
+        return true
     }
     /// Shared by the file panel, paste and drag-and-drop.
     func attachImageFiles(_ urls: [URL], sessionID: String? = nil) {
         guard let id = sessionID ?? selectedID, let view = displays[id], !urls.isEmpty else { return }
-        guard supportsImages(id) else { error = Self.imagesUnsupported; return }
-        attachmentImports += 1
-        Task { defer { attachmentImports -= 1 }; do {
+        guard supportsImages(id) else {
+            view.notice = Self.imagesUnsupported; error = Self.imagesUnsupported; return
+        }
+        let importing = beginImageImport(sessionID: id)
+        Task { defer { importing.finish() }; do {
             let items = try await Task.detached { try urls.map(AttachmentRecord.inspect) }.value
-            guard view.attachments.count + items.count <= 4, (view.attachments + items).reduce(0, { $0 + $1.bytes }) <= 16 * 1024 * 1024 else { throw HostError.failure("A submission supports four images and 16 MiB in total") }
+            guard importing.isCurrent() else { throw HostError.failure("The draft changed while its image was being prepared. Attach it again.") }
             receiveAttachments(items, into: view)
-        } catch { self.error = error.localizedDescription } }
+        } catch { view.notice = error.localizedDescription; self.error = error.localizedDescription } }
     }
     func schedulePastedImageCleanup() {
         guard pastedImageCleanup == nil else { return }

@@ -62,6 +62,14 @@ final class DraftWriteEvents: @unchecked Sendable {
 }
 
 actor MetadataStore {
+    /// Input records can hold an edited message, its displaced draft and a
+    /// queued rewrite. Each supported 256 KiB text can expand sixfold in JSON
+    /// (control characters), with room left for image and skill descriptors.
+    /// This is desktop input storage, independent of request capture.
+    static let inputRecordByteLimit = 8 * 1024 * 1024
+    private static func recordByteLimit(_ kind: String) -> Int {
+        kind == "draft" || kind.hasPrefix("pending:") ? inputRecordByteLimit : 524_288
+    }
     nonisolated let draftWrites = DraftWriteEvents()
     /// Draft writes so far, and those of a transaction not yet committed.
     private var draftSequence = 0
@@ -150,7 +158,7 @@ actor MetadataStore {
             if let topicID = chat.topicID { chat = chat.fitting(topic: try get(TopicRecord.self, kind: TopicRecord.recordKind, id: topicID)) }
             data = try JSONEncoder().encode(chat)
         } else { data = try JSONEncoder().encode(value) }
-        guard data.count <= 524_288 else { throw StoreError.invalidRecord }
+        guard data.count <= Self.recordByteLimit(kind) else { throw StoreError.invalidRecord }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET value=excluded.value,revision=excluded.revision WHERE excluded.revision>=records.revision", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
@@ -162,6 +170,15 @@ actor MetadataStore {
         guard sqlite3_changes(database) == 1 else { throw StoreError.staleRevision }
         if kind == "draft", let draft = value as? DraftRecord { noteDraftWrite(id, draft.holdsUnsentDraft) }
         if kind.hasPrefix("receipt:") { try prune(kind: kind, keeping: 128) }
+    }
+    /// Update only the cost choice from the latest durable chat. The revision
+    /// also protects it from unrelated writes holding an older chat copy.
+    func updateChatCostLimit(id: String, limit: CostLimit?) throws -> ChatRecord {
+        guard var chat = try get(ChatRecord.self, kind: "chat", id: id), limit?.isValid != false else { throw StoreError.invalidRecord }
+        let revision = try reserveRevision(kind: "chat", id: id)
+        chat.costLimit = limit; chat.costLimitRevision = revision
+        try put(chat, kind: "chat", id: id, revision: revision)
+        return chat
     }
     /// Freeze the previous sidebar order once when upgrading older records.
     /// Later metadata writes (renaming, opening or changing a model) cannot move
@@ -443,7 +460,7 @@ actor MetadataStore {
         var result = sqlite3_step(statement)
         while result == SQLITE_ROW {
             let size = Int(sqlite3_column_bytes(statement, 0))
-            guard size <= 524_288, let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
+            guard size <= Self.recordByteLimit(kind), let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
             if let value = try? JSONDecoder().decode(type, from: Data(bytes: bytes, count: size)) { values.append(value) }
             result = sqlite3_step(statement)
         }
@@ -461,7 +478,7 @@ actor MetadataStore {
         if result == SQLITE_DONE { return nil }
         guard result == SQLITE_ROW else { throw StoreError.unavailable }
         let size = Int(sqlite3_column_bytes(statement, 0))
-        guard size <= 524_288, let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
+        guard size <= Self.recordByteLimit(kind), let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
         if type == ChatRecord.self { decodedChats += 1 }
         return try JSONDecoder().decode(type, from: Data(bytes: bytes, count: size))
     }
@@ -756,6 +773,7 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var parentSessionID: String?
     /// This chat's own cost limit; nil runs it under the Settings default.
     var costLimit: CostLimit?
+    var costLimitRevision: Int64?
     /// True when this chat sends no webhook when it finishes; nil follows Settings.
     var webhookOff: Bool?
     /// When the chat's connection last changed (`WorkspaceConnectionSwitch.swift`):
@@ -845,6 +863,7 @@ extension ChatRecord {
         backgroundTaskOutcome = try c.decodeIfPresent(String.self, forKey: .backgroundTaskOutcome); backgroundTaskResult = try c.decodeIfPresent(String.self, forKey: .backgroundTaskResult)
         organizationRevision = try c.decodeIfPresent(Int64.self, forKey: .organizationRevision); topicID = try c.decodeIfPresent(String.self, forKey: .topicID)
         parentSessionID = try c.decodeIfPresent(String.self, forKey: .parentSessionID); costLimit = try c.decodeIfPresent(CostLimit.self, forKey: .costLimit)
+        costLimitRevision = try c.decodeIfPresent(Int64.self, forKey: .costLimitRevision)
         webhookOff = try c.decodeIfPresent(Bool.self, forKey: .webhookOff); connectionRevision = try c.decodeIfPresent(Int64.self, forKey: .connectionRevision)
         journalRebind = try c.decodeIfPresent(Bool.self, forKey: .journalRebind)
     }

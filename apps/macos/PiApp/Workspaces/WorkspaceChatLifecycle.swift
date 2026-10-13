@@ -87,8 +87,8 @@ extension WorkspaceModel {
         guard pendingChatIDs.contains(id) else { return false }
         guard let view = displays[id] else { return true }
         // A first message on its way has left the composer empty; the chat
-        // is anything but empty.
-        return !view.loading && view.sendingRows.isEmpty
+        // is anything but empty. An image being imported also owns this draft.
+        return !view.loading && view.sendingRows.isEmpty && view.imageImports == 0
             && view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && view.attachments.isEmpty && view.skills.isEmpty
     }
     func createOnboardingChat() async throws {

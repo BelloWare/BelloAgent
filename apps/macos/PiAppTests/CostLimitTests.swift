@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import SwiftUI
+import SQLite3
 @testable import PiApp
 
 /// A chat's cost limit as the owner meets it: the Settings default every chat
@@ -92,6 +93,87 @@ final class CostLimitTests: XCTestCase {
         try await relaunched.setCostLimit(nil, for: bench.chats[0].id)
         let stored = try await relaunched.store?.get(ChatRecord.self, kind: "chat", id: bench.chats[0].id)
         XCTAssertNotNil(stored); XCTAssertNil(stored?.costLimit)
+    }
+
+    @MainActor func testRetryingTheSameLimitAfterAFailedWriteMakesItDurable() async throws {
+        let root = scratchRoot("cost-retry")
+        let bench = try await model(root: root, chats: ["Retry"])
+        let model = bench.model, id = bench.chats[0].id
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try RecoveredDraftTests.sql("CREATE TRIGGER refuse_cost BEFORE UPDATE ON records WHEN OLD.kind='chat' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END", root: model.root)
+        do { try await model.setCostLimit(.usd(1), for: id); XCTFail("The first write must fail") } catch {}
+        XCTAssertNil(model.record(id)?.costLimit, "A failed save must not publish the choice as saved")
+        try RecoveredDraftTests.sql("DROP TRIGGER refuse_cost", root: model.root)
+        try await model.setCostLimit(.usd(1), for: id)
+        let reopened = MetadataStore(url: model.root.appendingPathComponent("desktop.sqlite"))
+        let saved = try await reopened.get(ChatRecord.self, kind: "chat", id: id)
+        XCTAssertEqual(saved?.costLimit, .usd(1), "An identical retry must write the choice")
+        await reopened.close()
+    }
+
+    @MainActor func testALateChatWriteCannotUndoASavedCostLimit() async throws {
+        let root = scratchRoot("cost-stale-write")
+        let bench = try await model(root: root, chats: ["Limit"])
+        let model = bench.model, old = bench.chats[0]
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.setCostLimit(.usd(1), for: old.id)
+        var delayed = old; delayed.path = root.appendingPathComponent("chat.jsonl").path
+        try await model.store?.put(delayed, kind: "chat", id: old.id)
+        let saved = try await model.store?.get(ChatRecord.self, kind: "chat", id: old.id)
+        XCTAssertEqual(saved?.costLimit, .usd(1)); XCTAssertEqual(saved?.path, delayed.path)
+    }
+
+    @MainActor func testReselectingTheSavedLimitDuringAWriteKeepsTheLatestChoice() async throws {
+        try await overlappingChoices(initial: .usd(3))
+    }
+
+    @MainActor func testReselectingTheDefaultDuringAWriteKeepsTheLatestChoice() async throws {
+        try await overlappingChoices(initial: nil)
+    }
+
+    @MainActor private func overlappingChoices(initial: CostLimit?) async throws {
+        let root = scratchRoot("cost-overlapping-choices")
+        let bench = try await model(root: root, chats: ["Limit"])
+        let model = bench.model, chat = bench.chats[0]
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.setCostLimit(initial, for: chat.id)
+        let view = SessionDisplay(id: chat.id); view.snapshotInFlight = true
+        model.displays[chat.id] = view
+        var frames: [[String: WireValue]] = []
+        let host = HostSupervisor(commandSender: { frames.append($0) })
+        try await host.connect(cwd: root, state: root.appendingPathComponent("host"))
+        model.hosts[chat.workspaceID] = host; model.opened.insert(chat.id)
+
+        // Hold the real metadata write, while leaving the main actor free
+        // to receive another choice from the editor.
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(model.root.appendingPathComponent("desktop.sqlite").path, &database), SQLITE_OK)
+        let db = try XCTUnwrap(database)
+        defer { sqlite3_exec(db, "ROLLBACK", nil, nil, nil); sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        var firstStarted = false, latestStarted = false
+        let first = Task { firstStarted = true; try await model.setCostLimit(.usd(1), for: chat.id) }
+        try await eventually("first choice entered") { firstStarted }
+        let latest = Task { latestStarted = true; try await model.setCostLimit(initial, for: chat.id) }
+        try await eventually("latest choice entered") { latestStarted }
+        XCTAssertEqual(model.record(chat.id)?.costLimit, initial, "An uncommitted choice must not be published")
+        XCTAssertFalse(frames.contains { $0["params"]?.object?["costLimit"] == CostLimit.usd(1).wire })
+        XCTAssertEqual(sqlite3_exec(db, "ROLLBACK", nil, nil, nil), SQLITE_OK)
+
+        // Neither save may wait for an earlier helper acknowledgement.
+        try await eventually("both choices reached the helper") { frames.filter { $0["method"]?.string == "session.configure" }.count == 2 }
+        let configurations = frames.filter { $0["method"]?.string == "session.configure" }
+        for frame in configurations {
+            host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(try XCTUnwrap(host.epoch)),
+                "commandId": try XCTUnwrap(frame["commandId"]), "ok": .bool(true), "result": .object([:])]), connectionID: try XCTUnwrap(host.connectionID))
+        }
+        try await first.value; try await latest.value
+        let saved = try await model.store?.get(ChatRecord.self, kind: "chat", id: chat.id)
+        XCTAssertEqual(saved?.costLimit, initial, "A → B → A must save the last A")
+        XCTAssertEqual(model.record(chat.id)?.costLimit, initial)
+        XCTAssertEqual(configurations.last?["params"]?.object?["costLimit"], (initial ?? model.defaultCostLimit).wire)
+        XCTAssertEqual(view.costLimitSent, initial ?? model.defaultCostLimit)
+        try await host.shutdownAndWait()
     }
 
     /// "$spent of $limit" wherever the chat's cost shows, in warning ink from

@@ -228,7 +228,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     func openReport() { page = .report }
     func closeReport() { page = .chats }
     func toggleReport() { page = page == .report ? .chats : .report }
-    var conversationCommandsEnabled: Bool { page == .chats && !presentsSheet && (focusedSessionID ?? selectedID).flatMap(record) != nil }
+    var conversationCommandsEnabled: Bool { page == .chats && !presentsSheet && !quickOpen.isOpen && (focusedSessionID ?? selectedID).flatMap(record) != nil }
     /// First-run setup fills the window: the vault has answered, and there is
     /// no connection or no chat yet. Its steps end with the project, so
     /// nothing else offers one meanwhile.
@@ -251,6 +251,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var resourceLoading = false
     @Published var resourceNotice = ""
     var editTargetRead: (@MainActor (String, String) async throws -> [String: WireValue])?
+    /// Suspends legacy cost accounting in opening-race fixtures.
+    var costSeedRead: (@MainActor (ChatRecord) async -> WireValue?)?
+    var costLimitWrites: [String: (token: UUID, task: Task<Void, Error>)] = [:]
     var skillCatalogLoads: [String: (token: UUID, scope: String, task: Task<Void, Never>)] = [:]
     /// Retained gateway totals for chats without a loaded display, keyed by chat id.
     let chatAccounting = SessionAccountingCache()

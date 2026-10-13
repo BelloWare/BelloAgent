@@ -7,7 +7,7 @@ import AppKit
 extension WorkspaceModel {
     /// Snapshot the originating pane's intent synchronously, before any helper await.
     func submitComposer(intent: ComposerSubmissionIntent, sessionID: String) {
-        guard page == .chats, let view = displays[sessionID], view.draftReady, !view.loading, !installPreparing else { return }
+        guard page == .chats, let view = displays[sessionID], view.draftReady, view.imageImports == 0, !view.loading, !installPreparing else { return }
         if view.queueEditingID != nil { saveQueuedEdit(sessionID: sessionID); return }
         if view.editingMessageID != nil { sendEdit(sessionID: sessionID); return }
         // Bypassing the completion list with Command-Return is not a skill grant.
@@ -30,11 +30,12 @@ extension WorkspaceModel {
     /// text's: the chat's draft is not sent from behind it, as it was not
     /// while Changes was a sheet.
     func submitFocusedComposer(intent: ComposerSubmissionIntent, in window: NSWindow? = NSApp.keyWindow) {
-        guard !Self.typingInATab(in: window), let id = focusedSessionID ?? selectedID else { return }
+        guard conversationCommandsEnabled, !Self.typingInATab(in: window), let id = focusedSessionID ?? selectedID else { return }
         submitComposer(intent: intent, sessionID: id)
     }
 
     func send(steer: Bool = false, sessionID: String? = nil) {
+        if let id = sessionID ?? focusedSessionID ?? selectedID, (displays[id]?.imageImports ?? 0) > 0 { return }
         if let id = sessionID ?? focusedSessionID ?? selectedID, draftWrites.recoveries[id] != nil || displays[id]?.draftReady == false {
             if sessionID != nil { error = "The message was not sent. Wait for the draft to finish loading or recovering, then try again." }
             return
@@ -43,7 +44,8 @@ extension WorkspaceModel {
         // submissions already accepted by an asynchronous side flow continue.
         guard sessionID != nil || page == .chats else { return }
         if redirectsToEdit(steer: steer, sessionID: sessionID) { return }
-        guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isBackgroundTask, let view = displays[id], view.hasSubmittableInput, !view.loading, !installPreparing, side(id)?.keeping != true else { return }
+        guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isBackgroundTask, let view = displays[id], !view.loading, !installPreparing, side(id)?.keeping != true else { return }
+        guard view.hasSubmittableInput else { return }
         // A message goes to the latest version, and the transcript returns to it.
         latestVersion(sessionID: id)
         guard !item.isArchived else { view.notice = Self.archivedNotice; return }
