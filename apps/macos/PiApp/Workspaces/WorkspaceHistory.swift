@@ -32,11 +32,11 @@ extension WorkspaceModel {
             if start { params["edge"] = .string("start") }
             if let position, !start, around == nil {
                 params["position"] = .number(Double(position))
-                // A window read from the journal hands over by a stable entry,
-                // which the helper checks is still in its branch.
-                if cursor == nil, let validating, validating.incarnation.hasPrefix("file:") {
-                    params["entry"] = .string(validating.entry); params["lineage"] = .string(validating.lineage)
-                }
+            }
+            // Reveals, Home and position reads all validate the held window
+            // when handing its file boundary to the helper.
+            if cursor == nil, let validating, validating.incarnation.hasPrefix("file:") {
+                params["entry"] = .string(validating.entry); params["lineage"] = .string(validating.lineage)
             }
             let result = try await host.request("session.history", sessionID: item.id, params: params)
             try Task.checkCancellation()
@@ -52,7 +52,7 @@ extension WorkspaceModel {
             }
             // A window the helper read hands over to the journal by a stable
             // entry: still in the journal's branch, on the same lineage.
-            if cursor == nil, position != nil, let validating, !validating.incarnation.hasPrefix("file:") {
+            if cursor == nil, let validating, !validating.incarnation.hasPrefix("file:") {
                 let held = try await history.read(path: path, around: validating.entry, targetTurns: 1)
                 guard held.lineage == validating.lineage else { throw HostError.failure("History branch changed during source handoff. Reload history.") }
             }

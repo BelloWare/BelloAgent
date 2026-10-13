@@ -32,6 +32,38 @@ final class TranscriptRevealTests: XCTestCase {
         return row.frame.minY - chat.clipY
     }
 
+    @MainActor func testRevealAndHomeOfferReloadWhenTheJournalWasReplaced() async throws {
+        for home in [false, true] {
+            let chat = try await chat()
+            chat.view.presentation.olderTask?.cancel(); chat.view.presentation.newerTask?.cancel()
+            try await eventually("Edge reads stopped") { !chat.view.olderPage.loading && !chat.view.newerPage.loading }
+            let before = chat.view.messages, source = chat.view.presentation.identity?.incarnation
+            XCTAssertFalse(before.contains { $0.id == "a1b" })
+            let path = try XCTUnwrap(chat.chat.path)
+            // All message IDs survive; the source file's identity does not.
+            try LongChatScroll.journal(turns: 120).write(to: URL(fileURLWithPath: path), options: .atomic)
+            let shown = home ? await chat.model.revealStartOfChat(sessionID: chat.chat.id)
+                : await chat.model.revealInTranscript(sessionID: chat.chat.id, messageID: "a1b")
+            XCTAssertFalse(shown, home ? "Home" : "Reveal")
+            XCTAssertEqual(chat.view.messages.map(\.id), before.map(\.id), "The held window stays readable until Reload")
+            XCTAssertEqual(chat.view.presentation.identity?.incarnation, source)
+            XCTAssertEqual(chat.view.newerPage.error, WorkspaceModel.branchChangedElsewhere)
+            chat.close()
+        }
+    }
+
+    @MainActor func testRevealAndHomeValidateTheHelperBoundaryDuringJournalHandoff() async throws {
+        let chat = try await chat(turns: 30)
+        let lineage = try XCTUnwrap(chat.view.presentation.identity?.lineage)
+        for start in [false, true] {
+            do {
+                _ = try await chat.model.readConversationWindow(chat.chat, cursor: nil, around: start ? nil : "a1b", start: start,
+                    validating: ConversationCursor(incarnation: "helper:fixture", lineage: lineage, entry: "missing"))
+                XCTFail("A missing handoff boundary must offer Reload")
+            } catch { XCTAssertTrue(WorkspaceModel.isSourceChange(error), "\(error)") }
+        }
+    }
+
     @MainActor func testRevealingAMessageOutsideTheWindowReadsItInAndLandsOnIt() async throws {
         let chat = try await chat()
         XCTAssertFalse(chat.view.messages.contains { $0.id == "a10b" }, "The message starts outside the window")

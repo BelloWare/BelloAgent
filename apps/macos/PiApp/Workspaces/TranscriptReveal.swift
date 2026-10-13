@@ -247,6 +247,8 @@ extension WorkspaceModel {
     /// nil) and adopts it in place of the window, landing on its first row.
     private func readWindow(_ item: ChatRecord, view: SessionDisplay, around: String?) async -> Bool {
         let generation = view.presentationGeneration
+        let source = view.presentation.identity
+        let boundary = view.olderPage.cursor ?? view.newerPage.cursor
         // The newest request wins: a find bar stepping through matches quickly
         // must not land on an earlier match whose read came back last.
         revealSerial += 1
@@ -260,9 +262,17 @@ extension WorkspaceModel {
         }
         // Reads at the old window's edges join rows that are about to go.
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
+        defer { if view.revealRead == serial { view.revealRead = nil } }
+        func changedSource() {
+            view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere)
+            view.browsingHistory = true; view.revealFailure = Self.branchChangedElsewhere
+        }
         do {
-            var page = try await readConversationWindow(item, cursor: nil, around: around, start: around == nil)
+            var page = try await readConversationWindow(item, cursor: nil, around: around, start: around == nil, validating: boundary)
             guard current() else { return false }
+            if let source, page.lineage != source.lineage || (page.incarnation != source.incarnation && page.incarnation.hasPrefix("file:") == source.incarnation.hasPrefix("file:")) {
+                changedSource(); return false
+            }
             page.messages = await withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
             guard current(), let first = around ?? page.messages.first?.id else { return false }
             // The chat's start lands at the very top, its inset above the first row.
@@ -273,7 +283,10 @@ extension WorkspaceModel {
         } catch {
             // Said to whoever asked (the find bar shows it), not at the
             // window's earlier edge, whose Retry reads a different page.
-            if !(error is CancellationError), current() { view.revealFailure = error.localizedDescription }
+            if !(error is CancellationError), current() {
+                if Self.isSourceChange(error) { changedSource() }
+                else { view.revealFailure = error.localizedDescription }
+            }
             return false
         }
     }
