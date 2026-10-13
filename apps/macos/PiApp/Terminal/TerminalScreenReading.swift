@@ -12,6 +12,10 @@ extension TerminalEmulator {
         let row = index - scrollback.count
         return row < rows ? screen[row] : []
     }
+    func wrappedAt(line index: Int) -> Int? {
+        guard index >= 0, index < lineCount else { return nil }
+        return index < scrollback.count ? scrollback[index].wrappedAt : screenWrapColumns[index - scrollback.count]
+    }
     /// The text of one line without building its cells, for readers that only
     /// want to know whether a line has anything on it.
     func text(atLine index: Int) -> String {
