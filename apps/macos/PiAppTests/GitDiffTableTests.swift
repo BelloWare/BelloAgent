@@ -105,6 +105,230 @@ final class GitDiffTableTests: GitPanelTestCase, SerialTestLane {
         table.coordinator!.rows.indices.filter { [.line, .split].contains(table.coordinator!.rows[$0].kind) }
     }
 
+    @MainActor private func drawingTable(_ text: String, split: Bool, wrap: Bool) -> GitDiffTable {
+        let diff = GitDiffTable()
+        diff.frame = NSRect(x: 0, y: 0, width: 700, height: 220)
+        let files = GitDiffParser.parse("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-" + text + "\n+" + text + "\n")
+        diff.update(files: files, split: split, wrap: wrap, showAll: true, identity: "drawing", top: TestDiffHeading("Heading"), topHeightKey: 0, more: nil)
+        let window = host(diff, width: 700, height: 220)
+        addTeardownBlock { @MainActor in window.contentView = nil; window.close() }
+        diff.layoutSubtreeIfNeeded(); diff.table.layoutSubtreeIfNeeded()
+        return diff
+    }
+
+    /// Draw a small tile of an enormous row, as AppKit does while scrolling.
+    @discardableResult
+    @MainActor private func drawTile(_ cell: GitDiffRowCell, rect: NSRect, drawing: NSRect? = nil) throws -> Data {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 700, pixelsHigh: 240,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
+        let graphics = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+        NSGraphicsContext.saveGraphicsState(); defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = graphics
+        graphics.cgContext.clear(CGRect(x: 0, y: 0, width: bitmap.pixelsWide, height: bitmap.pixelsHigh))
+        graphics.cgContext.translateBy(x: 0, y: -rect.minY)
+        graphics.cgContext.clip(to: rect)
+        cell.draw(drawing ?? rect)
+        return Data(bytes: try XCTUnwrap(bitmap.bitmapData), count: bitmap.bytesPerRow * bitmap.pixelsHigh)
+    }
+
+    /// Hosting may change the table width after its first height pass. The
+    /// final geometry is asynchronous; a synchronous layout alone cannot
+    /// establish that drawing and row heights are using the same width.
+    @MainActor private func waitForWrapGeometry(_ diff: GitDiffTable) async throws {
+        let deadline = ContinuousClock.now + .seconds(20)
+        repeat {
+            diff.layoutSubtreeIfNeeded(); diff.table.layoutSubtreeIfNeeded()
+            if !diff.coordinator.preparingWrapGeometry,
+               diff.coordinator.wrappingWidth == diff.table.bounds.width { return }
+            try await Task.sleep(for: .milliseconds(5))
+        } while ContinuousClock.now < deadline
+        XCTFail("wrap geometry did not settle at the hosted table's width")
+    }
+
+    @MainActor func testRebuiltWrappedRowsFinalizeAfterLiveResizeAtTheSameWidth() async throws {
+        try await rebuiltRowsFinalize(pendingRefresh: false)
+    }
+
+    @MainActor func testPendingStateDoesNotDropWrappedRowFinalizationAtTheSameWidth() async throws {
+        try await rebuiltRowsFinalize(pendingRefresh: true)
+    }
+
+    @MainActor private func rebuiltRowsFinalize(pendingRefresh: Bool) async throws {
+        for split in [false, true] {
+            let diff = drawingTable("initial", split: split, wrap: true)
+            defer { diff.close() }
+            try await waitForWrapGeometry(diff)
+            let table = diff.table
+            table.viewWillStartLiveResize()
+            let text = String(repeating: "words to wrap ", count: 80)
+            let files = GitDiffParser.parse("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-" + text + "\n+" + text + "\n")
+            let heading = TestDiffHeading("Heading")
+            diff.update(files: files, split: split, wrap: true, showAll: true, identity: "rebuilt",
+                        top: heading, topHeightKey: 0, more: nil)
+            diff.layoutSubtreeIfNeeded(); table.layoutSubtreeIfNeeded()
+            let row = try XCTUnwrap(lineRows(table).first)
+            let provisional = table.rect(ofRow: row).height
+            XCTAssertEqual(provisional, GitDiffMetrics.monoLine + 2)
+            XCTAssertEqual(diff.coordinator.wrappingWidth, table.bounds.width, "a rebuild already recorded the final width")
+            // Detach only to control when the pending state is laid out;
+            // AppKit otherwise applies it automatically in the run loop.
+            if pendingRefresh { diff.window?.contentView = nil }
+            table.viewDidEndLiveResize()
+            if pendingRefresh {
+                diff.update(files: files, split: split, wrap: true, showAll: true, identity: "rebuilt",
+                            top: heading, topHeightKey: 1, more: nil)
+                let deadline = ContinuousClock.now + .seconds(20)
+                while diff.coordinator.preparingWrapGeometry, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+                XCTAssertFalse(diff.coordinator.preparingWrapGeometry)
+                XCTAssertEqual(diff.coordinator.wrappingWidth, table.bounds.width)
+            }
+            try await waitForWrapGeometry(diff)
+            let card = diff.coordinator.cardWidth(table.bounds.width)
+            let width = split ? GitDiffMetrics.textWidth(split: card) : GitDiffMetrics.textWidth(unified: card)
+            let expected = CGFloat(GitDiffText.lineCount(text, font: GitDiffMetrics.mono, width: width)) * GitDiffMetrics.monoLine + 2
+            print("GIT_DIFF rebuilt split=\(split) refresh=\(pendingRefresh) provisional=\(provisional) final=\(table.rect(ofRow: row).height) expected=\(expected)")
+            XCTAssertGreaterThan(expected, provisional)
+            for row in lineRows(table) {
+                XCTAssertEqual(table.rect(ofRow: row).height, expected, "AppKit's cached provisional height must be invalidated")
+            }
+        }
+    }
+
+    @MainActor func testWrappedDiffDrawingVisitsOnlyTheDirtyFragments() async throws {
+        for split in [false, true] {
+            let diff = drawingTable(String(repeating: "wrap 😀 me ", count: 10_000), split: split, wrap: true)
+            defer { diff.close() }
+            try await waitForWrapGeometry(diff)
+            let row = try XCTUnwrap(lineRows(diff.table).first)
+            // Establish the height pass before resetting the counters. No
+            // drawing or direct call to lines(of:) may warm the tile below.
+            let height = diff.coordinator.tableView(diff.table, heightOfRow: row)
+            let cell = GitDiffRowCell(); cell.coordinator = diff.coordinator; cell.row = row
+            cell.frame = NSRect(x: 0, y: 0, width: diff.table.bounds.width, height: height)
+            let tile = NSRect(x: 0, y: 1 + 700 * GitDiffMetrics.monoLine, width: cell.bounds.width, height: 150)
+            XCTAssertGreaterThan(cell.bounds.height, tile.maxY)
+            GitDiffRenderCount.reset()
+            try drawTile(cell, rect: tile)
+            let first = GitDiffRenderCount.textShapes
+            print("GIT_DIFF wrapped split=\(split) fragments=\(GitDiffRenderCount.fragments) shapes=\(first) wrap passes=\(GitDiffRenderCount.wraps)")
+            XCTAssertEqual(GitDiffRenderCount.fragments, split ? 24 : 12, "ten visible fragments and two neighbors per side")
+            XCTAssertLessThanOrEqual(first, split ? 24 : 12)
+            XCTAssertEqual(GitDiffRenderCount.wraps, 0, "drawing reuses geometry already measured for the row")
+            GitDiffRenderCount.reset()
+            try drawTile(cell, rect: tile)
+            XCTAssertEqual(GitDiffRenderCount.textShapes, 0, "an unchanged tile reuses its shaped lines")
+            XCTAssertEqual(GitDiffRenderCount.wraps, 0)
+            let nextTile = tile.offsetBy(dx: 0, dy: 150)
+            try drawTile(cell, rect: nextTile)
+            XCTAssertLessThanOrEqual(GitDiffRenderCount.textShapes, split ? 20 : 10)
+        }
+    }
+
+    @MainActor func testUnselectedDiffTextIsShapedOnceAndReusedOnRedraw() throws {
+        let diff = drawingTable("a short line", split: false, wrap: false)
+        defer { diff.close() }
+        let row = try XCTUnwrap(lineRows(diff.table).first)
+        let cell = GitDiffRowCell(); cell.coordinator = diff.coordinator; cell.row = row
+        cell.frame = NSRect(x: 0, y: 0, width: diff.table.bounds.width, height: 17)
+        GitDiffRenderCount.reset()
+        try drawTile(cell, rect: cell.bounds)
+        XCTAssertEqual(GitDiffRenderCount.textShapes, 1, "selection and painting share one shaped line")
+        GitDiffRenderCount.reset()
+        try drawTile(cell, rect: cell.bounds)
+        XCTAssertEqual(GitDiffRenderCount.textShapes, 0)
+        diff.coordinator.select(from: GitDiffTextPoint(row: row, index: 0), to: GitDiffTextPoint(row: row, index: 5), side: .whole)
+        try drawTile(cell, rect: cell.bounds)
+        XCTAssertEqual(GitDiffRenderCount.textShapes, 0, "selection uses the same cached shape")
+    }
+
+    @MainActor func testUnwrappedResizeRetainsOneFullShapePerSide() throws {
+        for split in [false, true] {
+            let diff = drawingTable(String(repeating: "abcdefghij ", count: 10_000), split: split, wrap: false)
+            defer { diff.close() }
+            let row = try XCTUnwrap(lineRows(diff.table).first)
+            let cell = GitDiffRowCell(); cell.coordinator = diff.coordinator; cell.row = row
+            let widths = (0..<32).map { CGFloat(600 + $0 * 3) }
+            let sides = split ? 2 : 1
+            GitDiffRenderCount.reset()
+            for width in widths {
+                cell.frame = NSRect(x: 0, y: 0, width: width, height: 17)
+                try drawTile(cell, rect: cell.bounds)
+            }
+            print("GIT_DIFF resize split=\(split) widths=\(widths.count) retained=\(cell.retainedTextShapes) shapes=\(GitDiffRenderCount.textShapes)")
+            XCTAssertEqual(cell.retainedTextShapes, sides, "only the latest fitted variant may retain each full line")
+            XCTAssertLessThanOrEqual(GitDiffRenderCount.textShapes, (widths.count + 1) * sides,
+                                    "one full shape per side, plus an ellipsis at each width")
+            GitDiffRenderCount.reset()
+            try drawTile(cell, rect: cell.bounds)
+            XCTAssertEqual(GitDiffRenderCount.textShapes, 0, "the latest width still reuses its fitted line")
+            cell.row = row
+            XCTAssertEqual(cell.retainedTextShapes, 0, "reusing the cell releases its previous text")
+        }
+    }
+
+    @MainActor func testWrappedPartialRedrawIncludesOverhangingGlyphs() async throws {
+        for split in [false, true] {
+            let diff = drawingTable(String(repeating: "g\u{0323}", count: 1_000), split: split, wrap: true)
+            defer { diff.close() }
+            try await waitForWrapGeometry(diff)
+            let row = try XCTUnwrap(lineRows(diff.table).first)
+            let cell = GitDiffRowCell(); cell.coordinator = diff.coordinator; cell.row = row
+            cell.frame = NSRect(x: 0, y: 0, width: diff.table.bounds.width,
+                                height: diff.coordinator.tableView(diff.table, heightOfRow: row))
+            // The dot below g extends past its nominal 15-point fragment.
+            // Both drawings use the same clip; the reference visits every
+            // fragment, independently of the partial redraw's culling.
+            for boundary in 1...3 {
+                let tile = NSRect(x: 0, y: 1 + CGFloat(boundary) * GitDiffMetrics.monoLine,
+                                  width: cell.bounds.width, height: 3)
+                XCTAssertGreaterThan(cell.bounds.height, tile.maxY)
+                let partial = try drawTile(cell, rect: tile)
+                let whole = try drawTile(cell, rect: tile, drawing: cell.bounds)
+                let differences = zip(partial, whole).reduce(0) { $0 + ($1.0 == $1.1 ? 0 : 1) }
+                print("GIT_DIFF ink split=\(split) boundary=\(boundary) differing bytes=\(differences)")
+                XCTAssertEqual(differences, 0, "a partial redraw must preserve the previous fragment's overhanging ink")
+            }
+        }
+    }
+
+    @MainActor func testLiveResizeKeepsProvisionalHeightsAndInstallsFinalGeometryAtTheReadingAnchor() async throws {
+        let diff = GitDiffTable(), heading = TestDiffHeading("Heading")
+        diff.frame = NSRect(x: 0, y: 0, width: 700, height: 220)
+        let line = String(repeating: "words to wrap ", count: 30)
+        let files = GitDiffParser.parse("diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1,10000 +1,10000 @@\n" + String(repeating: " " + line + "\n", count: 10_000))
+        diff.update(files: files, split: false, wrap: true, showAll: true, identity: "resize", top: heading, topHeightKey: 0, more: nil)
+        let window = host(diff, width: 700, height: 220)
+        diff.layoutSubtreeIfNeeded(); diff.table.layoutSubtreeIfNeeded()
+        defer { diff.close(); window.contentView = nil; window.close() }
+        try await waitForWrapGeometry(diff)
+        let table = diff.table, row = 5_000
+        let originalHeight = table.rect(ofRow: row).height
+        diff.contentView.scroll(to: NSPoint(x: 0, y: table.rect(ofRow: row).minY + 3))
+        table.viewWillStartLiveResize()
+        GitDiffRenderCount.reset()
+        for width in stride(from: 680, through: 440, by: -30) {
+            window.setContentSize(NSSize(width: width, height: 220))
+            diff.layoutSubtreeIfNeeded(); table.layoutSubtreeIfNeeded()
+            // AppKit can ask for offscreen heights on every resize step.
+            for index in diff.coordinator.rows.indices { _ = diff.coordinator.tableView(table, heightOfRow: index) }
+            XCTAssertEqual(table.rect(ofRow: row).height, originalHeight, "live resize keeps provisional row geometry")
+        }
+        print("GIT_DIFF resize main-thread wrap passes=\(GitDiffRenderCount.wraps) for 10000 rows × 9 widths")
+        XCTAssertLessThanOrEqual(GitDiffRenderCount.wraps, 50, "work on a resize step must be limited to the visible area")
+        let anchor = table.row(at: NSPoint(x: 1, y: diff.contentView.bounds.minY))
+        let offset = diff.contentView.bounds.minY - table.rect(ofRow: anchor).minY
+        table.viewDidEndLiveResize()
+        let deadline = ContinuousClock.now + .seconds(20)
+        while diff.coordinator.preparingWrapGeometry, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertFalse(diff.coordinator.preparingWrapGeometry)
+        XCTAssertEqual(diff.coordinator.wrappingWidth, table.bounds.width)
+        let expected = CGFloat(GitDiffText.lineCount(line, font: GitDiffMetrics.mono,
+            width: GitDiffMetrics.textWidth(unified: diff.coordinator.cardWidth(table.bounds.width)))) * GitDiffMetrics.monoLine + 2
+        XCTAssertEqual(table.rect(ofRow: row).height, expected)
+        XCTAssertGreaterThan(expected, originalHeight)
+        XCTAssertEqual(diff.contentView.bounds.minY - table.rect(ofRow: anchor).minY, offset, accuracy: 1)
+    }
+
     @MainActor func testTextIsSelectedAndCopiedWithinALineAndAcrossLines() throws {
         let files = GitDiffParser.parse(Self.patch)
         let lines = files[0].hunks[0].lines.map(\.text)
