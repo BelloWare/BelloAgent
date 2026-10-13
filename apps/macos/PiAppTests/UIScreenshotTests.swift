@@ -761,9 +761,7 @@ final class UIScreenshotTests: XCTestCase {
         var paused = false, checked = false, aborted = 0
         updates.pauseActiveWork = { paused = true }
         updates.startCheckForTesting = { checked = true }
-        updates.startProbeForTesting = {}
         updates.checkForUpdates()
-        updates.probeResult(found: true); updates.probeFinished(error: nil)
         try await settle(0.3)
         XCTAssertTrue(checked, "the check goes at once"); XCTAssertNil(window.attachedSheet, "and asks nothing")
         for (name, appearance) in appearances {

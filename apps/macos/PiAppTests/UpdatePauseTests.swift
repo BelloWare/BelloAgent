@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import Sparkle
 @testable import PiApp
 
 /// Updating while chats run (0.1.125, owner: check first, pause only to
@@ -29,7 +30,6 @@ final class UpdatePauseTests: XCTestCase {
                 active = false
             }
             controller.startCheckForTesting = { [unowned self] in steps.append("check") }
-            controller.startProbeForTesting = { [unowned self] in steps.append("probe") }
             PiQuestion.shared.answerAlert = { [unowned self] alert in questions.append(alert); return answer }
         }
     }
@@ -40,36 +40,31 @@ final class UpdatePauseTests: XCTestCase {
         for _ in 0..<200 where !done() { try? await Task.sleep(for: .milliseconds(5)) }
     }
 
-    /// A check with chats running checks at once: no question, nothing
-    /// paused. It probes first, so Sparkle's modal "up to date" and error
-    /// alerts never stop the streaming chats: an update found is offered by
-    /// Sparkle's own check; none found is a sheet; a failure the banner.
+    /// A check with chats running checks at once: no question, nothing paused.
+    /// An update not found, or found and declined, changes nothing.
     @MainActor func testACheckWithChatsRunningChecksWithoutAskingOrPausing() async {
         let rig = Rig(answer: .alertFirstButtonReturn)
         rig.controller.checkForUpdates()
-        XCTAssertEqual(rig.steps, ["probe"]); XCTAssertTrue(rig.questions.isEmpty)
-        rig.controller.checkForUpdates()
-        XCTAssertEqual(rig.steps, ["probe"], "one probe at a time")
-        rig.controller.probeResult(found: true); rig.controller.probeFinished(error: nil)
-        await settled(rig) { rig.steps.count == 2 }
-        XCTAssertEqual(rig.steps, ["probe", "check"], "an update found is offered by Sparkle's check")
-        XCTAssertTrue(rig.active, "the chats keep running"); XCTAssertTrue(rig.questions.isEmpty)
-
-        rig.controller.checkForUpdates()
-        rig.controller.probeResult(found: false)
-        rig.controller.probeFinished(error: NSError(domain: "SUSparkleErrorDomain", code: 1001))
-        XCTAssertEqual(rig.questions.map(\.messageText), ["Bello Agent is up to date"], "none found: a sheet, nothing paused")
-        XCTAssertEqual(rig.steps, ["probe", "check", "probe"])
-
-        rig.controller.checkForUpdates()
-        rig.controller.probeFinished(error: NSError(domain: "SUSparkleErrorDomain", code: 2001, userInfo: [NSLocalizedDescriptionKey: "The feed could not be read."]))
-        XCTAssertEqual(rig.steps.last, "failure: Could not check for updates. The feed could not be read.")
-        XCTAssertFalse(rig.controller.probing)
-
+        XCTAssertEqual(rig.steps, ["check"]); XCTAssertTrue(rig.questions.isEmpty)
+        XCTAssertTrue(rig.active, "the chats keep running")
         rig.active = false
         rig.controller.checkForUpdates()
-        XCTAssertEqual(rig.steps.last, "check", "nothing running: Sparkle's own check, as always")
-        XCTAssertTrue(rig.active == false && !rig.steps.contains("pause"))
+        XCTAssertEqual(rig.steps, ["check", "check"]); XCTAssertTrue(rig.questions.isEmpty)
+    }
+
+    /// Sparkle's "up to date" and error alerts come as sheets: the standard
+    /// driver runs them modally inside a main-queue callback, which would stop
+    /// every chat streaming during a check. Both are acknowledged at once.
+    @MainActor func testSparklesResultAlertsAreSheetsNotModalLoops() {
+        var asked: [NSAlert] = []
+        PiQuestion.shared.answerAlert = { asked.append($0); return .alertFirstButtonReturn }
+        let driver = UpdateUserDriver(standard: SPUStandardUserDriver(hostBundle: .main, delegate: nil))
+        var acknowledged = 0
+        driver.showUpdateNotFoundWithError(NSError(domain: "SUSparkleErrorDomain", code: 1001)) { acknowledged += 1 }
+        driver.showUpdaterError(NSError(domain: "SUSparkleErrorDomain", code: 2001, userInfo: [NSLocalizedDescriptionKey: "The feed could not be read."])) { acknowledged += 1 }
+        XCTAssertEqual(acknowledged, 2)
+        XCTAssertEqual(asked.map(\.messageText), ["Bello Agent is up to date", "Update Error"])
+        XCTAssertEqual(asked.last?.informativeText, "The feed could not be read.")
     }
 
     /// The pause failing at install says so and installs nothing.

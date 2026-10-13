@@ -133,18 +133,13 @@ extension LifecycleHelperTests {
         updates.reportFailure = { [weak model] in model?.error = $0 }
         updates.pauseActiveWork = { [weak model] in try await model?.pauseRunsForUpdate() }
         updates.startCheckForTesting = { checks += 1 }
-        var probes = 0
-        updates.startProbeForTesting = { probes += 1 }
         var questions: [String] = []
         PiQuestion.shared.answerAlert = { questions.append($0.messageText); return .alertFirstButtonReturn }
         defer { PiQuestion.shared.answerAlert = nil }
 
         // The check: no question, nothing paused, the run goes on.
         updates.checkForUpdates()
-        XCTAssertEqual(probes, 1, "with a chat running the check probes first")
-        updates.probeResult(found: true); updates.probeFinished(error: nil)
-        try await Self.waitUntil("The update found was never offered", settle: settle) { checks == 1 }
-        XCTAssertTrue(questions.isEmpty)
+        XCTAssertEqual(checks, 1); XCTAssertTrue(questions.isEmpty)
         for _ in 0..<10 { await settle() }
         XCTAssertTrue(session.busy, "a check pauses nothing"); XCTAssertNil(model.runHolds[chat.id].flatMap { $0.state == "paused" ? $0 : nil })
 

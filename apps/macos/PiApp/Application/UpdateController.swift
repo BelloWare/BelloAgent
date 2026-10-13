@@ -14,7 +14,9 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
     var releaseBarrier: () -> Void = {}
     var reportFailure: (String) -> Void = { _ in }
     private var rejectNextInstall = false
-    private var controller: SPUStandardUpdaterController?
+    private var updater: SPUUpdater?
+    /// Sparkle's standard windows, with its result and error alerts as sheets.
+    private var userDriver: UpdateUserDriver?
     private var observation: AnyCancellable?
     private var started = false
 
@@ -25,21 +27,26 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
         guard configuration.error == nil,
               ProcessInfo.processInfo.environment["PI_APP_TESTING"] != "1",
               ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
-        let controller = SPUStandardUpdaterController(
-            startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
-        self.controller = controller
-        observation = controller.updater.publisher(for: \.canCheckForUpdates)
+        // What SPUStandardUpdaterController builds, with the standard user
+        // driver wrapped: its "up to date" and error alerts run a modal loop
+        // inside a main-queue callback, which stops every streaming chat
+        // until dismissed. Updates are checked with chats running (0.1.125).
+        let driver = UpdateUserDriver(standard: SPUStandardUserDriver(hostBundle: .main, delegate: nil))
+        let updater = SPUUpdater(hostBundle: .main, applicationBundle: .main, userDriver: driver, delegate: self)
+        userDriver = driver; self.updater = updater
+        observation = updater.publisher(for: \.canCheckForUpdates)
             .receive(on: RunLoop.main)
             .sink { [weak self] available in self?.canCheckForUpdates = available }
     }
 
     func configure(automaticChecks: Bool, configurationAvailable: Bool) {
-        guard let controller else { return }
+        guard let updater else { return }
         // The vault is the configuration authority. Sparkle's internal defaults
         // are overwritten before it starts; it never chooses this preference.
-        controller.updater.automaticallyChecksForUpdates = configurationAvailable && automaticChecks
+        updater.automaticallyChecksForUpdates = configurationAvailable && automaticChecks
         guard configurationAvailable, !started else { return }
-        controller.startUpdater(); started = true
+        started = true
+        do { try updater.start() } catch { started = false; reportFailure("The updater could not start. \(error.localizedDescription)") }
     }
 
     /// Pauses every running chat as Quit does, before an update installs.
@@ -55,56 +62,17 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
     /// The pause question is up, or the pause it led to is under way.
     private(set) var pausing = false
 
-    /// Test seam: what starts Sparkle's probing check. Nil in the app.
-    var startProbeForTesting: (() -> Void)?
-    /// A probing check under way, and what it found so far.
-    private(set) var probing = false
-    private var probeFound: Bool?
-
     /// Check for Updates: Sparkle checks at once, running chats or not
     /// (owner, 0.1.125: check first, pause only to install). Nothing is
     /// paused by a check; an update found and declined, or none found,
     /// changes nothing. Running chats are asked about only when an update is
-    /// installed (`postponeRelaunch`).
-    ///
-    /// With chats running the check is a probe first: Sparkle's own "up to
-    /// date" and error alerts run a modal loop inside a main-queue callback,
-    /// which would stop every streaming chat until dismissed. The probe shows
-    /// nothing; an update it finds is then offered by Sparkle's own check
-    /// (its update window is not modal), and "up to date" or a failure is
-    /// said on a sheet or in the app's error banner.
-    func checkForUpdates() {
-        guard hasActiveWork() else { startCheck(); return }
-        guard !probing else { return }
-        probing = true; probeFound = nil
-        if let startProbeForTesting { startProbeForTesting(); return }
-        controller?.updater.checkForUpdateInformation()
-    }
+    /// installed (`postponeRelaunch`). Sparkle's "up to date" and error
+    /// alerts come as sheets (`UpdateUserDriver`), so a check never stops
+    /// the chats streaming meanwhile.
+    func checkForUpdates() { startCheck() }
     private func startCheck() {
         if let startCheckForTesting { startCheckForTesting(); return }
-        controller?.checkForUpdates(nil)
-    }
-    func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) { probeResult(found: true) }
-    func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) { probeResult(found: false) }
-    /// What the probe found; acted on when its cycle ends.
-    func probeResult(found: Bool) { if probing { probeFound = found } }
-    /// The probe's cycle ended: an update found is offered by Sparkle's own
-    /// check, on the next turn of the run loop (a check during the probe's
-    /// session would be ignored); none found is said on a sheet; a failure
-    /// in the error banner.
-    func probeFinished(error: Error?) {
-        guard probing else { return }
-        probing = false
-        switch probeFound {
-        case true?: DispatchQueue.main.async { [weak self] in self?.startCheck() }
-        case false?:
-            let alert = NSAlert()
-            alert.messageText = "Bello Agent is up to date"
-            alert.informativeText = "There is no newer version to install."
-            alert.addButton(withTitle: "OK")
-            PiQuestion.shared.ask(alert, over: nil) { _ in }
-        case nil: reportFailure("Could not check for updates. " + (error?.localizedDescription ?? ""))
-        }
+        updater?.checkForUpdates()
     }
     /// The one question, asked when an update is about to install over
     /// running chats. True for Pause and Install. A sheet, never a modal
@@ -165,7 +133,6 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
     }
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) { releaseBarrier() }
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
-        if updateCheck == .updateInformation { probeFinished(error: error); return }
         if error != nil { releaseBarrier() }
     }
 }
