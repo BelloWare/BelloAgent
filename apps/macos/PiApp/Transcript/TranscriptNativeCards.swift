@@ -391,6 +391,7 @@ enum TranscriptCardFaces {
     }
     private var heights: [Geometry] = []
     private var placedGeometry: Geometry?
+    private var revealingLine: Int?
     /// A capped inner scroll draws exact visible lines, then settles its
     /// remaining geometry in small idle units. Ordinary inline lines retain
     /// their exact sizing contract.
@@ -481,7 +482,7 @@ enum TranscriptCardFaces {
 
     private func readingAnchor(_ geometry: Geometry) -> (index: Int, offset: CGFloat)? {
         guard defersOffscreenMeasurement, let scroll = enclosingScrollView, scroll.documentView === self else { return nil }
-        let y = scroll.contentView.bounds.minY, index = geometry.index(at: y)
+        let y = scroll.contentView.bounds.minY, index = revealingLine ?? geometry.index(at: y)
         guard index < lines.count else { return nil }
         return (index, y - geometry.tops[index])
     }
@@ -587,6 +588,16 @@ enum TranscriptCardFaces {
         let geometry = geometry(width: bounds.width)
         guard index < geometry.rows.count else { return nil }
         return CGRect(x: 0, y: geometry.tops[index], width: bounds.width, height: geometry.rows[index])
+    }
+    /// Find scrolls to a line whose position may still be estimated. Keep
+    /// that line, rather than the first visible line, at its viewport offset
+    /// while the scroll measures its neighbours, then return its new bounds.
+    func revealLine(at index: Int) -> CGRect? {
+        guard let rect = lineRect(at: index) else { return nil }
+        revealingLine = index
+        defer { revealingLine = nil }
+        scrollToVisible(rect)
+        return lineRect(at: index)
     }
     override func layout() {
         super.layout()

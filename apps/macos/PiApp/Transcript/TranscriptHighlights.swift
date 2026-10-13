@@ -389,12 +389,13 @@ extension TranscriptNativeDocument {
             bounds.origin.x += target.text.textContainerOrigin.x; bounds.origin.y += target.text.textContainerOrigin.y
             rect = target.text.convert(bounds, to: clip); row = target.row
             focusPending = false
-        } else if let (lines, index) = resolution.line, let lineRect = lines.lineRect(at: index) {
+        } else if let (lines, index) = resolution.line, var lineRect = lines.lineRect(at: index) {
             // The place is on a line of a card not built yet: go there, and
             // look again once it is. Lines capped in a scroll of their own are
             // scrolled there first.
             if let inner = lines.enclosingScrollView, inner !== scroll {
-                lines.scrollToVisible(lineRect)
+                guard let measured = lines.revealLine(at: index) else { return }
+                lineRect = measured
                 // The inner scroll builds the line without the transcript
                 // moving: look again once it has, a bounded number of times.
                 if focusRetries < 30 {
