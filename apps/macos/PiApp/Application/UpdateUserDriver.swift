@@ -11,7 +11,16 @@ import Sparkle
 @MainActor
 final class UpdateUserDriver: NSObject, @preconcurrency SPUUserDriver {
     let standard: SPUStandardUserDriver
-    init(standard: SPUStandardUserDriver) { self.standard = standard; super.init() }
+    /// Its own asker: a sheet another screen has up never refuses, and so
+    /// never drops, an update's result.
+    let questions: PiQuestion
+    /// Results waiting for a sheet: the one up now answered, or a window to
+    /// put one on. None is dropped, and none falls back to a modal loop.
+    private(set) var pending: [NSAlert] = []
+    private var windowObserver: NSObjectProtocol?
+    init(standard: SPUStandardUserDriver, questions: PiQuestion = PiQuestion()) {
+        self.standard = standard; self.questions = questions; super.init()
+    }
 
     func showUpdateNotFoundWithError(_ error: Error, acknowledgement: @escaping () -> Void) {
         let recovery = (error as NSError).localizedRecoverySuggestion
@@ -26,13 +35,38 @@ final class UpdateUserDriver: NSObject, @preconcurrency SPUUserDriver {
         acknowledgement()
     }
     /// Closes the standard driver's checking and progress windows, as its
-    /// own versions of the two methods above do first, then asks on a sheet.
+    /// own versions of the two methods above do first, then says it on a sheet.
     private func present(title: String, detail: String, button: String) {
         standard.dismissUpdateInstallation()
         let alert = NSAlert()
         alert.messageText = title; alert.informativeText = detail
         alert.addButton(withTitle: button)
-        PiQuestion.shared.ask(alert, over: nil) { _ in }
+        pending.append(alert); presentNext()
+    }
+    /// The next waiting result, on a sheet, when one can go up. With no
+    /// window to hold it (the workspace closed meanwhile), it waits for one.
+    func presentNext() {
+        guard let alert = pending.first, !questions.asking else { return }
+        guard questions.answerAlert != nil || PiQuestion.host() != nil else {
+            if windowObserver == nil {
+                windowObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        if let observer = self.windowObserver { NotificationCenter.default.removeObserver(observer) }
+                        self.windowObserver = nil; self.presentNext()
+                    }
+                }
+            }
+            return
+        }
+        pending.removeFirst()
+        questions.ask(alert, over: nil) { [weak self] _ in self?.presentNext() }
+    }
+    /// Sparkle calls this on its driver at launch (`SPUGentleUserDriverReminders`):
+    /// the standard driver's launch-time update notice depends on it.
+    @objc func resetTimeSinceOpportuneUpdateNotice() {
+        let selector = NSSelectorFromString("resetTimeSinceOpportuneUpdateNotice")
+        if standard.responds(to: selector) { _ = standard.perform(selector) }
     }
 
     // Everything else: the standard driver.

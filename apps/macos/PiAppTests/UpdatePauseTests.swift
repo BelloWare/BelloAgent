@@ -57,14 +57,40 @@ final class UpdatePauseTests: XCTestCase {
     /// every chat streaming during a check. Both are acknowledged at once.
     @MainActor func testSparklesResultAlertsAreSheetsNotModalLoops() {
         var asked: [NSAlert] = []
-        PiQuestion.shared.answerAlert = { asked.append($0); return .alertFirstButtonReturn }
-        let driver = UpdateUserDriver(standard: SPUStandardUserDriver(hostBundle: .main, delegate: nil))
+        let questions = PiQuestion()
+        questions.answerAlert = { asked.append($0); return .alertFirstButtonReturn }
+        let driver = UpdateUserDriver(standard: SPUStandardUserDriver(hostBundle: .main, delegate: nil), questions: questions)
         var acknowledged = 0
         driver.showUpdateNotFoundWithError(NSError(domain: "SUSparkleErrorDomain", code: 1001)) { acknowledged += 1 }
         driver.showUpdaterError(NSError(domain: "SUSparkleErrorDomain", code: 2001, userInfo: [NSLocalizedDescriptionKey: "The feed could not be read."])) { acknowledged += 1 }
         XCTAssertEqual(acknowledged, 2)
         XCTAssertEqual(asked.map(\.messageText), ["Bello Agent is up to date", "Update Error"])
         XCTAssertEqual(asked.last?.informativeText, "The feed could not be read.")
+        XCTAssertTrue(driver.responds(to: NSSelectorFromString("resetTimeSinceOpportuneUpdateNotice")), "Sparkle's launch reminder reaches the standard driver")
+    }
+
+    /// A result arriving while another sheet of the app is up, or with no
+    /// window to hold it, waits for one: never dropped, never a modal loop.
+    @MainActor func testAResultWaitsForAWindowAndIsNeverDropped() async throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 320), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.orderOut(nil) }
+        let questions = PiQuestion()
+        var shown: [NSWindow] = []
+        questions.present = { alert, host, _ in shown.append(host) }
+        let driver = UpdateUserDriver(standard: SPUStandardUserDriver(hostBundle: .main, delegate: nil), questions: questions)
+        let hidden = NSApp.windows.filter(\.isVisible)
+        for other in hidden { other.orderOut(nil) }
+        defer { for other in hidden { other.orderFront(nil) } }
+        driver.showUpdateNotFoundWithError(NSError(domain: "SUSparkleErrorDomain", code: 1001)) {}
+        XCTAssertEqual(driver.pending.count, 1, "no window: it waits")
+        XCTAssertTrue(shown.isEmpty)
+        window.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        XCTAssertEqual(driver.pending.count, 0); XCTAssertEqual(shown, [window], "shown on the window that came")
+        // A second result while the first is up waits behind it.
+        driver.showUpdaterError(NSError(domain: "x", code: 1)) {}
+        XCTAssertEqual(driver.pending.count, 1, "behind the sheet that is up")
     }
 
     /// The pause failing at install says so and installs nothing.
