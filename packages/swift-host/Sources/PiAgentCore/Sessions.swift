@@ -441,6 +441,10 @@ public actor AgentSession {
     public var isRunning: Bool { runTask != nil }
     public var isEphemeral: Bool { ephemeral }
     public var isIdle: Bool { runTask == nil && queue.isEmpty && steering.isEmpty }
+    /// Nothing runs, and what waits is held for Resume: a Stop, a failure or
+    /// a restart paused it, and only a command sends it. An update may take
+    /// the chat as it is; the relaunch restores it paused.
+    public var isHeldForResume: Bool { runTask == nil && queuePaused && queueEdit == nil }
     /// Takes a saved connection's new profile and key. An idle session takes
     /// them now; one with a run going keeps what it started with and switches
     /// when the run ends, so a turn in flight never changes route or key midway.
@@ -475,6 +479,9 @@ public actor AgentSession {
     /// Set while a retry starts, so the run answers the failed turn before it
     /// looks at queued follow-ups.
     var retrying=false
+    /// Set while a Resume starts (`continueRun`): the run asks the model from
+    /// the context as it stands before it looks at queued follow-ups.
+    var continuing=false
     /// The submission of a turn that failed or was stopped, kept so a retry
     /// sends the same request: its model, reasoning effort and budgets.
     var retrySubmission: Submission?

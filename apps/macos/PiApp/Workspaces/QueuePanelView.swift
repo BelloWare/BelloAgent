@@ -39,7 +39,9 @@ import Combine
         collapse.setAccessibilityIdentifier("queue-collapse")
         collapse.onPress = { [weak self] in self?.session.queueCollapsed.toggle() }
         status.setAccessibilityIdentifier("queue-status")
-        resume.onPress = { [weak self] in guard let self else { return }; self.model.action("queue.resume", sessionID: self.session.id) }
+        // With a stopped run to go on with, Resume continues it first and the
+        // follow-ups go after it; otherwise it sends the follow-ups.
+        resume.onPress = { [weak self] in guard let self else { return }; self.model.resumeOrSendQueued(self.session) }
         header = QueueHeaderView(collapse: collapse, status: status, hint: hint, resume: resume)
         addSubview(header)
         observer = ShellObserver { [weak self] in self?.refresh() }

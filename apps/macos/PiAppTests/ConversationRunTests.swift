@@ -517,6 +517,10 @@ extension ConversationPaneTests {
         XCTAssertNil(page.liveTurn, "The live bar must leave when the helper dies")
         XCTAssertFalse(session.notice.isEmpty, "The chat says the helper stopped")
         XCTAssertTrue(session.uncertain, "The outcome of the interrupted command is uncertain")
+        // While it ran the helper said there was nothing to continue; that
+        // no longer stands: the cut-off run offers Resume (0.1.125).
+        XCTAssertNil(session.continuable)
+        XCTAssertTrue(session.offersResume, "The interrupted run offers Resume")
         XCTAssertEqual(Self.views(ComposerTextView.self, in: hosted).first?.string, "and then summarize",
                        "Nothing typed into the composer is lost when the helper dies")
         // The composer is still usable.

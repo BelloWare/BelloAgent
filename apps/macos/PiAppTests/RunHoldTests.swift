@@ -80,6 +80,166 @@ final class RunHoldTests: XCTestCase {
         XCTAssertEqual(RunHoldRecord(id: "c", state: "active").presented, "paused", "a run under way when the app quit was stopped by the quit")
     }
 
+    /// Resume (0.1.125) is offered where the run stopped: a paused chat the
+    /// helper can continue (or whose helper has not said, as after a
+    /// restart) ends with the Paused row; one with nothing to continue, one
+    /// running, or one whose Resume is on its way does not. A run a restart
+    /// cut off, read from the journal, offers Resume on its failure row.
+    @MainActor func testAPausedChatOffersResumeWhereItStopped() {
+        let view = SessionDisplay(id: "c")
+        view.observeRunState(["state": .string("paused"), "runStatus": .string("cancelled"), "queuePaused": .bool(true), "continuable": .bool(true)])
+        XCTAssertTrue(view.offersResume)
+        XCTAssertEqual(view.presentedMessages.last?.id, "paused:run:c")
+        XCTAssertEqual(view.presentedMessages.last?.failureCode, SessionDisplay.pausedCode)
+        XCTAssertNil(view.presentedMessages.last?.detail)
+        view.queue = [["turnId": .string("t")]]
+        XCTAssertEqual(view.presentedMessages.last?.detail, "Queued follow-ups go on after it.")
+        view.resuming = true
+        XCTAssertFalse(view.offersResume, "one Resume at a time")
+        XCTAssertEqual(view.presentedMessages.last?.failureCode, SessionDisplay.pausedResumingCode, "the row stays, without its button")
+        view.resuming = false
+        view.observeRunState(["state": .string("paused"), "runStatus": .string("cancelled"), "queuePaused": .bool(true), "continuable": .bool(false)])
+        XCTAssertFalse(view.offersResume, "nothing the model has not answered: the queue's Resume is the one")
+        view.observeRunState(["state": .string("running"), "runStatus": .string("running"), "continuable": .bool(false)])
+        XCTAssertFalse(view.offersResume)
+        // An older helper says nothing: Resume stays offered for a paused chat.
+        view.observeRunState(["state": .string("paused"), "runStatus": .string("cancelled"), "queuePaused": .bool(true)])
+        XCTAssertNil(view.continuable); XCTAssertTrue(view.offersResume)
+
+        let cut = SessionDisplay(id: "d")
+        cut.runState = .interrupted; cut.failureMessage = "The previous run was interrupted before it finished."
+        XCTAssertEqual(cut.presentedMessages.last?.id, "failure:run:d")
+        XCTAssertEqual(cut.presentedMessages.last?.failureCode, SessionDisplay.interruptedCode)
+        cut.resuming = true
+        XCTAssertEqual(cut.presentedMessages.last?.failureCode, SessionDisplay.resumingCode, "no Retry in Resume's place while it is on its way")
+    }
+
+    /// A helper that died mid-run said "nothing to continue" while it ran:
+    /// that no longer stands, and the interrupted chat offers Resume.
+    @MainActor func testALostHelperForgetsWhetherTheChatCouldContinue() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("run-hold-lost-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await model(root: root)
+        let view = SessionDisplay(id: "c")
+        view.observeRunState(["state": .string("running"), "runStatus": .string("running"), "continuable": .bool(false)])
+        XCTAssertEqual(view.continuable, false)
+        model.settlePausedForUpdate(view)
+        XCTAssertNil(view.continuable); XCTAssertEqual(view.runState, .paused); XCTAssertTrue(view.offersResume)
+        XCTAssertFalse(view.uncertain, "a pause for an update is not a crash")
+        await close(model)
+    }
+
+    /// An update's pause lets a send already under way finish first (its
+    /// run is then paused with the rest), holds new ones off meanwhile, and
+    /// says so if the send does not finish in time.
+    @MainActor func testTheUpdatePauseWaitsForASendUnderWay() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("run-hold-pause-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await model(root: root)
+        let view = SessionDisplay(id: "c"); view.loading = true; model.displays["c"] = view
+        let pause = Task { try await model.pauseRunsForUpdate() }
+        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(10)) }
+        // Still waiting: the pause holds the barrier until it ends.
+        XCTAssertTrue(model.installPreparing, "the send under way finishes first, and no new work starts meanwhile")
+        view.loading = false
+        try await pause.value
+        XCTAssertFalse(model.installPreparing, "the app takes work again after the pause")
+        view.loading = true
+        do { try await model.pauseRunsForUpdate(settleTimeout: 0.05); XCTFail("a send that never finishes holds the pause") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("still being sent"), error.localizedDescription) }
+        XCTAssertFalse(model.installPreparing)
+        // A command opening its chat's session (awaiting credentials) gets there first too.
+        model.sessionOpenCallers["c"] = 1
+        do { try await model.pauseRunsForUpdate(settleTimeout: 0.05); XCTFail("an open under way holds the pause") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("still being sent"), error.localizedDescription) }
+        model.sessionOpenCallers["c"] = nil
+        // A background request loading for as long as its model answers does not hold the pause.
+        var probe = ChatRecord(id: "t", workspaceID: "w", title: "T", path: nil, profileID: "p"); probe.connectionTest = true
+        model.chats = [probe]; view.loading = false
+        let background = SessionDisplay(id: "t"); background.loading = true; model.displays["t"] = background
+        try await model.pauseRunsForUpdate(settleTimeout: 0.05)
+        // But its session being opened does: once open it would start a helper the pause did not stop.
+        model.sessionOpenCallers["t"] = 1
+        do { try await model.pauseRunsForUpdate(settleTimeout: 0.05); XCTFail("a background open under way holds the pause") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("still being sent"), error.localizedDescription) }
+        model.sessionOpenCallers["t"] = nil
+        // A title being generated ends with the pause, so nothing holds the install after it.
+        model.displays["t"] = nil
+        model.titleGenerationTasks["c"] = Task { [weak model] in
+            while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(5)) }
+            model?.titleGenerationTasks["c"] = nil
+        }
+        XCTAssertTrue(model.hasActiveWork)
+        try await model.pauseRunsForUpdate(settleTimeout: 0.05)
+        XCTAssertFalse(model.hasActiveWork, "the update's barrier can be taken right after the pause")
+        // A title the pause cut off is asked again on the chat's next send.
+        var source = ChatRecord(id: "s", workspaceID: "w", title: "S", path: nil, profileID: "p"); source.titleTaskSessionID = "tt"
+        var titleTask = ChatRecord(id: "tt", workspaceID: "w", title: "Title", path: nil, profileID: "p")
+        titleTask.backgroundTask = BackgroundRequestKind.title.raw; titleTask.backgroundTaskNotice = "Title generation interrupted. Nothing was retried."
+        titleTask.backgroundTaskOutcome = "failed"
+        model.chats = [source, titleTask]
+        model.titleGenerationTasks["s"] = Task { [weak model] in
+            while !Task.isCancelled { try? await Task.sleep(for: .milliseconds(5)) }
+            model?.titleGenerationTasks["s"] = nil
+        }
+        try await model.pauseRunsForUpdate(settleTimeout: 0.05)
+        XCTAssertEqual(model.record("tt")?.backgroundTaskNotice, BackgroundRequests.interruptedNotice)
+        XCTAssertEqual(model.record("tt")?.backgroundTaskOutcome, "interrupted")
+        await close(model)
+    }
+
+    /// Resume goes on in the latest version: a chat showing an earlier
+    /// version of an edited message returns to the latest, as a send does.
+    @MainActor func testResumeReturnsToTheLatestVersion() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("run-hold-version-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await model(root: root)
+        model.chats = [ChatRecord(id: "c", workspaceID: "w", title: "C", path: nil, profileID: "p")]
+        let view = SessionDisplay(id: "c"); model.displays["c"] = view
+        view.runState = .paused
+        view.versionView = TranscriptVersionView(latestID: "m", index: 1, count: 2, ids: ["m0", "m"], live: 2)
+        model.resumeRun(sessionID: "c")
+        XCTAssertNil(view.versionView, "the transcript shows the latest version the run goes on in")
+        XCTAssertTrue(view.resuming)
+        for _ in 0..<100 where view.resuming { try await Task.sleep(for: .milliseconds(10)) }
+        await close(model)
+    }
+
+    /// The queue's Resume while a send is on its way does nothing: what the
+    /// send does decides whether the stopped run is still there to go on with.
+    @MainActor func testTheQueuesResumeWaitsForASendOnItsWay() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("run-hold-queue-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await model(root: root)
+        model.chats = [ChatRecord(id: "c", workspaceID: "w", title: "C", path: nil, profileID: "p")]
+        let view = SessionDisplay(id: "c"); model.displays["c"] = view
+        view.runState = .paused; view.queuePaused = true; view.queue = [["turnId": .string("t")]]; view.loading = true
+        model.resumeOrSendQueued(view)
+        XCTAssertFalse(view.resuming)
+        for _ in 0..<10 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertNil(model.error, "nothing was sent: \(model.error ?? "")")
+        view.loading = false
+        model.resumeOrSendQueued(view)
+        XCTAssertTrue(view.resuming, "with the send settled, Resume goes on with the stopped run first")
+        for _ in 0..<100 where view.resuming { try await Task.sleep(for: .milliseconds(10)) }
+        await close(model)
+    }
+
+    /// Work held for Resume does not hold a quit or an update; a run does,
+    /// and so do follow-ups about to go.
+    @MainActor func testOnlyWorkThatRunsWithoutTheReaderIsActive() {
+        let view = SessionDisplay(id: "c")
+        view.queueCount = 1; view.queuePaused = true
+        XCTAssertTrue(view.hasWork); XCTAssertFalse(view.hasActiveWork, "paused follow-ups wait in the journal")
+        view.queuePaused = false
+        XCTAssertTrue(view.hasActiveWork, "follow-ups about to go")
+        view.queueCount = 0; view.runState = .running
+        XCTAssertTrue(view.hasActiveWork)
+        view.runState = .paused; view.resuming = true
+        XCTAssertTrue(view.hasActiveWork, "a Resume on its way holds the update's barrier")
+        XCTAssertTrue(view.hasWork, "and keeps its chat's display and helper session")
+    }
+
     @MainActor private func model(root: URL) async throws -> WorkspaceModel {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

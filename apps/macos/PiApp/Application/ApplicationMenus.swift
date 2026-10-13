@@ -157,6 +157,11 @@ import AppKit
         command(conversation, "Open Side", enabled: active, action: { [model] in model.openSide() })
         command(conversation, "Send / Steer Current Run", key: "\r", enabled: active) { [model] in model.submitFocusedComposer(intent: .steer) }
         command(conversation, "Stop", key: ".", enabled: active, action: { [model] in model.stopFocused() })
+        // Resume goes on with a run that stopped before it finished; Resume
+        // Follow-ups sends only what waits in the queue.
+        command(conversation, "Resume", enabled: { [weak self, model] in
+            (self?.conversationCommands ?? false) && (model.focusedSessionID.flatMap { model.displays[$0] }?.offersResume ?? false)
+        }) { [model] in model.resumeRun(sessionID: model.focusedSessionID) }
         command(conversation, "Resume Follow-ups", enabled: active) { [model] in model.action("queue.resume", sessionID: model.focusedSessionID) }
         command(conversation, "Compact Now", enabled: active) { [model] in model.action("context.compact", sessionID: model.focusedSessionID) }
         command(conversation, "Latest Messages", enabled: active) { [model] in model.latest(sessionID: model.focusedSessionID) }

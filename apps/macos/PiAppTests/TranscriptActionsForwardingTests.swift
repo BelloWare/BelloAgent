@@ -16,6 +16,7 @@ final class TranscriptActionsForwardingTests: XCTestCase {
             copyMessage: { calls.append("copyMessage \($0)") },
             stop: { calls.append("stop") },
             retry: { calls.append("retry") },
+            resume: { calls.append("resume") },
             quoteReply: { _ in calls.append("quoteReply") },
             inspectTurn: { _ in calls.append("inspectTurn") },
             skillPressed: { id, use, _ in calls.append("skillPressed \(id) \(use.name)") },
@@ -33,14 +34,14 @@ final class TranscriptActionsForwardingTests: XCTestCase {
         let anchor = NSView()
         let skill = TranscriptSkillUse(id: "id-review", name: "review", path: "/p/.agents/skills/review/SKILL.md",
                                        contentHash: "3f2a9c1e77", metadataHash: "", arguments: "")
-        row.inspect("m1"); row.edit("m2"); row.copyMessage("m3"); row.stop(); row.retry()
+        row.inspect("m1"); row.edit("m2"); row.copyMessage("m3"); row.stop(); row.retry(); row.resume()
         row.inspectTurn?(TaskTranscriptPlan.summary([], task: nil))
         row.skillPressed?("m4", skill, anchor); row.skillHovered?("m5", skill, anchor, true)
         row.costLimit?(.raise, anchor); row.fork?("m6"); row.switchVersion?("m7", -1); row.latestVersion?()
         row.openFile?("/p/a.swift", 3...5); row.openFile?("/p/b.swift", nil)
         let resolved = await row.resolveReplyFile?("a.swift:3")
         XCTAssertEqual(resolved, ReplyFileLocation(path: "/p/a.swift", line: 3))
-        XCTAssertEqual(calls, ["inspect m1", "edit m2", "copyMessage m3", "stop", "retry", "inspectTurn",
+        XCTAssertEqual(calls, ["inspect m1", "edit m2", "copyMessage m3", "stop", "retry", "resume", "inspectTurn",
                                "skillPressed m4 review", "skillHovered m5 review true", "costLimit raise",
                                "fork m6", "switchVersion m7 -1", "latestVersion", "openFile /p/a.swift 3-5", "openFile /p/b.swift top", "resolveReplyFile a.swift:3"])
         XCTAssertNil(row.quoteReply, "Rows never ask for a quote; the page's selection controller does")
@@ -66,7 +67,7 @@ final class TranscriptActionsForwardingTests: XCTestCase {
     /// Fails when `TranscriptActions` gains or loses an action, so the
     /// relays cannot fall behind it.
     @MainActor func testTheRelaysForwardEveryAction() {
-        XCTAssertEqual(Mirror(reflecting: TranscriptActions()).children.count, 15,
+        XCTAssertEqual(Mirror(reflecting: TranscriptActions()).children.count, 16,
                        "TranscriptActions changed. Forward the action in `TranscriptActions.forwarding`, list it in `offered` if it is optional, and call it in testEveryActionReachesThePaneThroughBothRelays.")
     }
 }
