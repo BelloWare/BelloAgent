@@ -14,7 +14,7 @@ import CryptoKit
 /// The helper, which owns the journal, writes it; the helper and the app's
 /// history reader read it. Plain JSON.
 struct JournalCheckpoint: Codable, Equatable, Sendable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     /// A record the checkpoint relies on, as it was written.
     struct Check: Codable, Equatable, Sendable {

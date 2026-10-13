@@ -10,6 +10,12 @@ import Foundation
 enum JournalRecordKind {
     /// The marker after the session header: a native journal, and its binding.
     static let marker = "pi-app.native.v1"
+    static let childMarker = "pi-app.native.v2"
+    static func isMarker(_ value: String?) -> Bool { value == marker || value == childMarker }
+    static let subagentCall = "pi-app.subagent-call.v1"
+    static let subagentOrigin = "pi-app.subagent-origin.v1"
+    static let subagentState = "pi-app.subagent-state.v1"
+    static let subagentTerminal = "pi-app.subagent-terminal.v1"
     /// Run state: the queue, steering and command receipts (`CommandReceipts`).
     static let state = "pi-app.native.state.v1"
     /// The model context, and the rows shown, a fork or a kept side starts from.

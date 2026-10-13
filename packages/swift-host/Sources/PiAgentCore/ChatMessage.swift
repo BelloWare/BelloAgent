@@ -46,6 +46,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
     public var timestamp: Double? = nil
     /// For tool results: durationMs plus, for file tools, path/added/removed.
     public var toolStats: JSON? = nil
+    public var nativeSubagent: JSON? = nil
     /// "length" when the model stopped at the output budget; nil otherwise.
     public var stopReason: String? = nil
     /// Assistant rows: the reply's usage in pi's shape (input, output,
@@ -81,6 +82,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         if let operationID { value["nativeOperationID"] = JSON(operationID) }
         if let responseTimeline { value["nativeResponseTimeline"] = (try? JSON.parse(JSONEncoder().encode(responseTimeline))) ?? .null }
         if let toolStats { value["nativeToolStats"] = toolStats }
+        if let nativeSubagent { value["nativeSubagent"] = nativeSubagent }
         if let turn { value["nativeTurn"] = JSON(turn) }
         if let modelMs { value["nativeModelMs"] = JSON(modelMs) }
         if let taskRootID { value["nativeTaskRoot"] = JSON(taskRootID) }
@@ -109,6 +111,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
     public init(id: String, pi: JSON) throws {
         guard let role = pi["role"].text, ["user","assistant","toolResult","system"].contains(role) else { throw AgentError("invalid_session", "Unsupported message role") }
         self.id=id; self.role=role
+        nativeSubagent = pi["nativeSubagent"].isNull ? nil : pi["nativeSubagent"]
         content = pi["content"].text.map { [textBlock($0)] } ?? pi["content"].list
         providerItems = pi["nativeProviderItems"].isNull ? nil : pi["nativeProviderItems"].list
         providerIdentity = pi["nativeProviderIdentity"].isNull ? nil : pi["nativeProviderIdentity"]

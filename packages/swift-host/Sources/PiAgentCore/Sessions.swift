@@ -86,6 +86,7 @@ public actor AgentSession {
     /// attempt is never added twice. See SessionCost.swift.
     var costLimitUSD: Double?
     var spend = SessionSpend()
+    var subagents = SubagentJournalState()
     var countedAttempts = BoundedIdentitySet(limit: 512)
     /// Whether this journal records every attempt's cost from its start: a
     /// new chat does, and so does one with a cost record. A chat written
@@ -296,7 +297,7 @@ public actor AgentSession {
     }
     /// `prepared`: the replay of the journal at `resumePath`, made as a fork
     /// wrote it (`forked`); used only while it is the whole journal as it is.
-    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, resumePath: String? = nil, prepared: JournalReplayConsumer?, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
+    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, resumePath: String? = nil, prepared: JournalReplayConsumer?, subagentOrigin: SubagentOrigin? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
         self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
             history=seed; context=seed; boundary=seed; visible=seed; toolHistory=ToolHistoryIndex(seed); parentInfo=parent; ephemeral=true
@@ -307,7 +308,11 @@ public actor AgentSession {
         let url=resumePath.map(canonical) ?? directory.appendingPathComponent(id + ".jsonl")
         guard within(url,canonical(directory.path)) else { throw AgentError("session_scope", "Writable sessions must be in the app-managed directory") }
         let stored = resumePath == nil ? nil : JournalCheckpoint.read(for: url)
-        let opened=try SessionJournal(url:url,id:id,cwd:cwd,binding:profile.binding,create:resumePath == nil,checkpoint:stored,beforeAppend:beforeJournalAppend,beforeSynchronize:beforeJournalSynchronize); journal=opened
+        let opened=try SessionJournal(url:url,id:id,cwd:cwd,binding:profile.binding,create:resumePath == nil,managedChild:subagentOrigin != nil,checkpoint:stored,beforeAppend:beforeJournalAppend,beforeSynchronize:beforeJournalSynchronize); journal=opened
+        if resumePath == nil, let subagentOrigin {
+            guard subagentOrigin.link.valid, subagentOrigin.link.childSessionID == id else { throw AgentError("subagent_identity", "Invalid child origin") }
+            try opened.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":try subagentJSON(subagentOrigin)])
+        }
         // A fork's journal comes with what it replays to, made as it was
         // written (`forked`): used when it is the whole of this journal as it
         // is now, and never a replay resumed from a checkpoint.
@@ -316,7 +321,8 @@ public actor AgentSession {
         else { consumer=try Self.replayConsumer(opened, url: url, id: id, binding: profile.binding, spendTracked: resumePath == nil, resume: true) }
         let replayed=try consumer.finished(); durable=consumer
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
-        spend=replayed.spend; spendTracked=replayed.spendTracked
+        spend=replayed.spend; spendTracked=replayed.spendTracked; subagents=replayed.subagents
+        guard (opened.markerKind == JournalRecordKind.childMarker) == (subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
