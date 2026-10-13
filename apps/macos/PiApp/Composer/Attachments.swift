@@ -154,6 +154,8 @@ extension WorkspaceModel {
             guard image.bytes >= 0, image.bytes <= room else { return false }; room -= image.bytes; return true
         }) else {
             view.notice = "The images could not be attached: a submission supports four images and 16 MiB in total."
+            // Streaming snapshots replace composer notices; the error strip stays until dismissed.
+            error = view.notice
             return false
         }
         if view.queueEditingID != nil, var before = view.draftBeforeQueueEdit {

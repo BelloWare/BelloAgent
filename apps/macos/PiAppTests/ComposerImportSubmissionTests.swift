@@ -19,6 +19,55 @@ final class ComposerImportSubmissionTests: XCTestCase {
     @MainActor func testHistoricalEditDuringImportNeedsAFreshSend() async throws {
         try await sendingDuringImport(paste: true, editing: true)
     }
+    @MainActor func testImageCountRejectionRemainsVisibleAfterAStreamingSnapshot() async throws {
+        try await rejectedImportWhileStreaming(limitedByCount: true)
+    }
+    @MainActor func testImageByteLimitRejectionRemainsVisibleAfterAStreamingSnapshot() async throws {
+        try await rejectedImportWhileStreaming(limitedByCount: false)
+    }
+
+    @MainActor private func rejectedImportWhileStreaming(limitedByCount: Bool) async throws {
+        let root = scratchRoot("composer-import-limit")
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        var profile = ProfileRecord(); profile.id = "p"; profile.advancedJSON = "{\"input\":[\"text\",\"image\"]}"
+        var chat = ChatRecord(id: "chat", workspaceID: "w", title: "Chat", profileID: profile.id)
+        chat.toolMode = ChatRecord.readOnlyTools
+        let view = SessionDisplay(id: chat.id); view.selectionMetadataLoaded = true; view.runState = .running
+        view.draft = "Keep this draft"
+        let images = (0..<(limitedByCount ? 4 : 2)).map {
+            AttachmentRecord(id: "i\($0)", path: "/fixture/\($0).png", sha256: "h", bytes: limitedByCount ? 10 : 8 * 1024 * 1024, mimeType: "image/png")
+        }
+        view.attachments = images
+        model.profiles = [profile]; model.chats = [chat]; model.displays[chat.id] = view; model.selectedID = chat.id; model.selected = view
+        var frames: [[String: WireValue]] = []
+        let host = HostSupervisor(commandSender: { frames.append($0) })
+        try await host.connect(cwd: root, state: root.appendingPathComponent("host"))
+        model.hosts[chat.workspaceID] = host; model.opened.insert(chat.id)
+        let file = root.appendingPathComponent("extra.png")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data([137, 80, 78, 71, 13, 10, 26, 10, 0]).write(to: file)
+        model.attachImageFiles([file], sessionID: chat.id)
+        try await eventually("over-limit image import settled") { view.imageImports == 0 }
+        let rejection = view.notice
+        XCTAssertTrue(rejection.contains("four images") && rejection.contains("16 MiB"))
+        XCTAssertEqual(view.attachments, images); XCTAssertEqual(view.draft, "Keep this draft")
+        XCTAssertFalse(view.uncertain); XCTAssertNil(view.failureMessage)
+
+        model.refresh(chat.id)
+        try await eventually("streaming snapshot requested") { frames.contains { $0["method"]?.string == "session.snapshot" } }
+        let frame = try XCTUnwrap(frames.first { $0["method"]?.string == "session.snapshot" })
+        host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(try XCTUnwrap(host.epoch)),
+            "commandId": try XCTUnwrap(frame["commandId"]), "ok": .bool(true),
+            "result": .object(["seq": .number(1), "state": .string("running"), "runStatus": .string("running"), "commands": .array([])])]),
+            connectionID: try XCTUnwrap(host.connectionID))
+        try await eventually("streaming snapshot applied") { view.lastSequence == 1 && !view.snapshotInFlight }
+        XCTAssertEqual(view.notice, "Read-only tools", "Streaming refresh replaces the transient composer notice")
+        XCTAssertEqual(model.error, rejection, "The attachment rejection must remain visible after the snapshot")
+        XCTAssertEqual(view.runState, .running)
+        XCTAssertEqual(view.attachments, images); XCTAssertEqual(view.draft, "Keep this draft")
+        try await host.shutdownAndWait()
+    }
 
     @MainActor func testSendAndInlineNoticeFollowAllPendingImportsWithoutChangingTheDraft() async throws {
         let root = scratchRoot("composer-import-lockout")
