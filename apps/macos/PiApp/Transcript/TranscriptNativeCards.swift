@@ -480,20 +480,33 @@ enum TranscriptCardFaces {
         return total
     }
 
-    private func readingAnchor(_ geometry: Geometry) -> (index: Int, offset: CGFloat)? {
-        guard defersOffscreenMeasurement, let scroll = enclosingScrollView, scroll.documentView === self else { return nil }
-        let y = scroll.contentView.bounds.minY, index = revealingLine ?? geometry.index(at: y)
-        guard index < lines.count else { return nil }
-        return (index, y - geometry.tops[index])
+    private enum ReadingAnchor {
+        case line(index: Int, offset: CGFloat)
+        case bottom
     }
-    private func install(_ geometry: Geometry, anchor: (index: Int, offset: CGFloat)?) {
+    private func readingAnchor(_ geometry: Geometry) -> ReadingAnchor? {
+        guard defersOffscreenMeasurement, let scroll = enclosingScrollView, scroll.documentView === self else { return nil }
+        let viewport = scroll.contentView.bounds
+        // Reaching the end is a destination: growth inside the viewport must
+        // keep the last lines visible too. An explicit Find target takes priority.
+        if revealingLine == nil, geometry.total > viewport.height, viewport.maxY >= geometry.total - 0.5 { return .bottom }
+        let y = viewport.minY, index = revealingLine ?? geometry.index(at: y)
+        guard index < lines.count else { return nil }
+        return .line(index: index, offset: y - geometry.tops[index])
+    }
+    private func install(_ geometry: Geometry, anchor: ReadingAnchor?) {
         guard defersOffscreenMeasurement, let scroll = enclosingScrollView, scroll.documentView === self else { return }
         if frame.height != geometry.total { frame.size.height = geometry.total }
-        if let anchor, geometry.rows.indices.contains(anchor.index) {
-            let y = min(max(0, geometry.tops[anchor.index] + anchor.offset), max(0, geometry.total - scroll.contentView.bounds.height))
-            scroll.contentView.setBoundsOrigin(NSPoint(x: scroll.contentView.bounds.minX, y: y))
-            scroll.reflectScrolledClipView(scroll.contentView)
+        guard let anchor else { return }
+        let bottom = max(0, geometry.total - scroll.contentView.bounds.height), y: CGFloat
+        switch anchor {
+        case .bottom: y = bottom
+        case let .line(index, offset):
+            guard geometry.rows.indices.contains(index) else { return }
+            y = min(max(0, geometry.tops[index] + offset), bottom)
         }
+        scroll.contentView.setBoundsOrigin(NSPoint(x: scroll.contentView.bounds.minX, y: y))
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
     /// A scroller appearing can change the content width during tile, before
     /// idle geometry settles. Carry the reading line from the geometry that
