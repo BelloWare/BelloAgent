@@ -184,7 +184,34 @@ public actor Resources {
         let offset = try boundedInt(params["offset"], maximum: 512), sourceOffset = try boundedInt(params["sourceOffset"], maximum: 4096)
         return ["revision": JSON(snapshot.revision), "appliedRevision": applied.map { JSON($0) } ?? .null, "stale": JSON(applied != nil && applied != snapshot.revision), "cwd": JSON(snapshot.cwd), "root": JSON(snapshot.root), "roots": .array(snapshot.roots.map { JSON($0) }), "codexHome": JSON(snapshot.codexHome), "diagnostics": .array(snapshot.diagnostics.map { JSON($0) }), "instructionLimit": JSON(snapshot.limit), "instructionBytes": JSON(snapshot.includedBytes), "sources": .array(Array(snapshot.sources.dropFirst(sourceOffset).prefix(32))), "sourceCount": JSON(snapshot.sources.count), "skills": .array(snapshot.skills.dropFirst(offset).prefix(32).map { skill in var v = skill.removing(["body"]); v["sourceCharacters"] = JSON((skill["body"].text ?? "").utf16.count); v["missingDependencies"] = .array(skill["dependencies"].list.filter { !Self.dependencyAvailable($0,tools:tools) }); return v }), "next": offset + 32 < snapshot.skills.count ? JSON(offset + 32) : .null, "total": JSON(snapshot.skills.count)]
     }
-    public func readSkill(_ id: String, offset: Int) throws -> JSON { let s = try latest ?? resolve(); guard let skill = s.skills.first(where: { $0["id"].text == id }) else { throw AgentError("skill_unavailable", "Refresh the skill catalog") }; return try textPage(skill["body"].text ?? "", offset: offset) }
+    public func readSkill(_ id: String, offset: Int) throws -> JSON { let s = try latest ?? resolve(); guard let skill = s.skills.first(where: { $0["id"].text == id }) else { throw AgentError("skill_unavailable", "This skill is no longer available. Refresh the skill list and choose it again.") }; return try textPage(skill["body"].text ?? "", offset: offset) }
+    /// Skill names as a refusal says them: “a”, “a” and “b”, “a”, “b” and “c”.
+    public static func quoted(_ names: [String]) -> String {
+        let quoted = names.map { "\u{201C}\($0)\u{201D}" }
+        guard quoted.count > 1 else { return quoted.first ?? "" }
+        return quoted.dropLast().joined(separator: ", ") + " and " + quoted[quoted.count - 1]
+    }
+    /// The skills of a queued message that `validate` refused, as they can go
+    /// now: one whose metadata still matches stays as it was frozen; one still
+    /// allowed (and its dependencies exposed) is frozen again from its current
+    /// file, under the same identity and with its arguments kept; one gone or
+    /// no longer allowed is dropped. Nothing is sent: the caller keeps the
+    /// queue paused, and the reader's Resume is the confirmation.
+    public func repin(_ skills: [FrozenSkill], tools: [String]) throws -> (skills: [FrozenSkill], updated: [String], removed: [String]) {
+        let current = try resolve()
+        var kept: [FrozenSkill] = [], updated: [String] = [], removed: [String] = []
+        for frozen in skills {
+            guard let match = current.skills.first(where: { $0["id"].text == frozen.id }), ["implicitAllowed", "explicitOnly"].contains(match["policy"].text),
+                  match["dependencies"].list.allSatisfy({ Self.dependencyAvailable($0, tools: tools) }),
+                  let name = match["name"].text, let path = match["path"].text, let baseDir = match["baseDir"].text, let body = match["body"].text,
+                  let contentHash = match["contentHash"].text, let metadataHash = match["metadataHash"].text else { removed.append(frozen.name); continue }
+            if metadataHash == frozen.metadataHash { kept.append(frozen); continue }
+            kept.append(FrozenSkill(id: frozen.id, name: name, path: path, baseDir: baseDir, body: body, contentHash: contentHash, metadataHash: metadataHash,
+                                    arguments: frozen.arguments, description: match["description"].text, scope: match["scope"].text, policy: match["policy"].text))
+            updated.append(frozen.name)
+        }
+        return (kept, updated, removed)
+    }
     public func freeze(_ selections: [JSON], text: String, tools: [String]) throws -> [FrozenSkill] {
         // Most submissions select no skill: there is nothing to freeze, so do
         // not read every instruction file and skill again to find that out.
@@ -194,12 +221,18 @@ public actor Resources {
         // Pasted slash text and model/repository content are not authorization.
         guard selected.count <= 8, Set(selected.compactMap { $0["id"].text }).count == selected.count else { throw AgentError("invalid_skills", "At most eight unique skills may be selected") }
         return try selected.map { selection in
-            guard ["picker", "leading-command"].contains(selection["intent"].text), let skill = snapshot.skills.first(where: { $0["id"] == selection["id"] }), ["implicitAllowed", "explicitOnly"].contains(skill["policy"].text), skill["contentHash"] == selection["contentHash"], skill["metadataHash"] == selection["metadataHash"] else { throw AgentError("skill_changed", "Selected skill is unavailable or changed. Refresh and select it explicitly.") }
+            guard ["picker", "leading-command"].contains(selection["intent"].text), let skill = snapshot.skills.first(where: { $0["id"] == selection["id"] }), ["implicitAllowed", "explicitOnly"].contains(skill["policy"].text), skill["contentHash"] == selection["contentHash"], skill["metadataHash"] == selection["metadataHash"] else {
+                // The app refreshes the skill and asks for Send again; any
+                // other reader is told how to choose the current version.
+                let named = snapshot.skills.first(where: { $0["id"] == selection["id"] })?["name"].text
+                throw AgentError("skill_changed", named.map { "\(Self.quoted([$0])) changed after you chose it. Choose it again to use the current version." }
+                                 ?? "A selected skill is no longer available. Remove it from the message, or choose another.")
+            }
             for dep in skill["dependencies"].list { guard Self.dependencyAvailable(dep,tools:tools) else { throw AgentError("skill_dependency", "This skill requires a dependency not exposed by this session") } }
             let arguments = selection["arguments"].text ?? ""; guard arguments.utf8.count <= 16384 else { throw AgentError("invalid_skills", "Skill arguments exceed the limit") }
             guard let id = skill["id"].text, let name = skill["name"].text, let path = skill["path"].text, let baseDir = skill["baseDir"].text,
                   let body = skill["body"].text, let contentHash = skill["contentHash"].text, let metadataHash = skill["metadataHash"].text else {
-                throw AgentError("skill_changed", "Selected skill is unavailable or changed. Refresh and select it explicitly.")
+                throw AgentError("skill_changed", "A selected skill could not be read. Remove it from the message and choose it again.")
             }
             return FrozenSkill(id: id, name: name, path: path, baseDir: baseDir, body: body, contentHash: contentHash, metadataHash: metadataHash, arguments: arguments,
                                description: skill["description"].text, scope: skill["scope"].text, policy: skill["policy"].text)
@@ -211,6 +244,6 @@ public actor Resources {
     }
     public func validate(_ skills: [FrozenSkill], tools: [String]? = nil) throws {
         if skills.isEmpty { return }; let current = try resolve()
-        for s in skills { guard let match = current.skills.first(where: { $0["id"].text == s.id }), match["metadataHash"].text == s.metadataHash, ["implicitAllowed","explicitOnly"].contains(match["policy"].text) else { throw AgentError("skill_revoked", "Queued skill authorization changed; refresh and resubmit") }; if let tools, !match["dependencies"].list.allSatisfy({ Self.dependencyAvailable($0,tools:tools) }) { throw AgentError("skill_dependency","Queued skill dependency is no longer available") } }
+        for s in skills { guard let match = current.skills.first(where: { $0["id"].text == s.id }), match["metadataHash"].text == s.metadataHash, ["implicitAllowed","explicitOnly"].contains(match["policy"].text) else { throw AgentError("skill_revoked", "\(Self.quoted([s.name])) changed or was removed after it was chosen. Choose it again to use the current version.") }; if let tools, !match["dependencies"].list.allSatisfy({ Self.dependencyAvailable($0,tools:tools) }) { throw AgentError("skill_dependency","Queued skill dependency is no longer available") } }
     }
 }

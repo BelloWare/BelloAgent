@@ -1277,6 +1277,36 @@ final class UIScreenshotTests: XCTestCase {
         editor.insertText("", replacementRange: NSRange(location: 0, length: (editor.string as NSString).length))
         session.directCommand = false; try await settle(0.3)
         XCTAssertFalse(session.completionVisible, "Clearing the draft closed the slash list")
+
+        // 17f · A skill edited after it was chosen: Send finds it changed, its
+        // chip is pinned to the new version, nothing is sent, and the
+        // conversation says so above the composer that still holds the message.
+        await model.loadSkillCatalog(refresh: true, sessionID: session.id)
+        let chosen = try XCTUnwrap(session.skillCatalog.entries.map(\.skill).first { $0.name == "release-checklist" })
+        XCTAssertTrue(model.addSkill(chosen, view: session))
+        session.draft = "Run the checklist for 0.1.125."
+        let file = URL(fileURLWithPath: chosen.path), original = try Data(contentsOf: file)
+        try (original + Data("Also confirm the release notes link.\n".utf8)).write(to: file)
+        let rows = session.messages.count
+        model.send(sessionID: session.id)
+        let refreshed = Date().addingTimeInterval(30)
+        while Date() < refreshed, !(session.sendFailureCode == SessionDisplay.skillRefreshedCode && !session.loading) { try await settle(0.1) }
+        XCTAssertEqual(session.sendFailureCode, SessionDisplay.skillRefreshedCode, "The send came back with the notice: \(session.sendFailure ?? "")")
+        XCTAssertEqual(session.messages.count, rows, "Nothing was sent")
+        XCTAssertNotEqual(session.skills.first?.contentHash, chosen.contentHash, "The chip holds the edited version")
+        try await settle(0.6)
+        let scroll = try XCTUnwrap(descendants(TranscriptNativeScrollView.self, in: window.contentView ?? NSView()).first)
+        let notice = try XCTUnwrap(descendants(TranscriptRowContainer.self, in: scroll).first { $0.itemID == "failure:send:" + session.id }, "The notice is in the page")
+        let clip = scroll.contentView
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: max(0, notice.frame.maxY + 16 - clip.bounds.height)))
+        scroll.reflectScrolledClipView(clip)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
+            try capture(window, to: gallery.appendingPathComponent("17f-skills-changed-\(name).png"))
+        }
+        // Later scenes start from the skill as it was and an empty composer.
+        try original.write(to: file)
+        session.sendFailure = nil; session.skills = []; session.draft = ""; try await settle(0.3)
     }
 
     /// 19 · Versions and forks. A question edited once shows `‹ 1 / 2 ›` on

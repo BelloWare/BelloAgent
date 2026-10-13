@@ -8,6 +8,8 @@ struct TranscriptActions {
     var stop: () -> Void = {}
     /// Runs the failed turn again from where it stopped.
     var retry: () -> Void = {}
+    /// Resumes the chat's paused queued messages.
+    var resumeQueue: () -> Void = {}
     /// Nil for panes that cannot create a child conversation. Rows never
     /// call it; the page's selection controller does (`forwarding`).
     var quoteReply: ((TranscriptQuote) -> Void)? = nil
@@ -64,6 +66,7 @@ extension TranscriptActions {
             copyMessage: { source()?.copyMessage($0) },
             stop: { source()?.stop() },
             retry: { source()?.retry() },
+            resumeQueue: { source()?.resumeQueue() },
             inspectTurn: { source()?.inspectTurn?($0) },
             skillPressed: { source()?.skillPressed?($0, $1, $2) },
             skillHovered: { source()?.skillHovered?($0, $1, $2, $3) },

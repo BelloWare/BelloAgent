@@ -74,6 +74,10 @@ public actor AgentSession {
     /// The code of the error that ended the last run, when it failed: the app
     /// draws a `cost_limit` stop as a notice with a way to raise the limit.
     var errorCode: String?
+    /// Queued messages whose skills were pinned again to their current files
+    /// after a change refused them (`refreshingQueuedSkills`), so a second
+    /// change before they go says the skill keeps changing.
+    var skillRefreshedTurns: Set<String> = []
     /// The chat's cost limit in US dollars, nil for none; what it has spent,
     /// as the gateway reported it; and the attempts already counted, so an
     /// attempt is never added twice. See SessionCost.swift.
