@@ -178,6 +178,7 @@ extension WorkspaceModel {
                 // first carries it is adopted where they are (`adoptOwnBranch`).
                 view.pendingBranch = .init(from: view.presentation.identity?.lineage, messageID: messageID, turnID: turnID)
                 _ = try await host.request(Self.editTurnMethod, sessionID: item.id, params: params, commandID: commandID)
+                view.skillRepins = [:]
                 if !isEphemeral(item.id) { try await store.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
                 if view.editGeneration == generation, view.editingMessageID == messageID {
                     if view.draft == text, view.attachments == attachments, view.skills == skills { finishEdit(view) }
@@ -198,6 +199,21 @@ extension WorkspaceModel {
                 if view.pendingBranch?.turnID == turnID, !view.browsingHistory, !view.historyState.loading { refresh(item.id) }
                 else { followSubmittedTurn(item.id) }
             } catch {
+                let rejection: String? = { if case HostError.rejected(let code, _) = error { return code }; return nil }()
+                // A skill that changed since it was chosen: the edit is still
+                // in the composer, so its chips are put right as a send's are
+                // (`refreshRefusedSkills`), and Send confirms the update.
+                if let rejection, Self.skillRefusalCodes.contains(rejection), !skills.isEmpty,
+                   view.editGeneration == generation, view.editingMessageID == messageID {
+                    view.submissionReviews.remove(commandID)
+                    if view.pendingBranch?.turnID == turnID { view.pendingBranch = nil }
+                    try? await store.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id)
+                    undoShownState()
+                    let refresh = await refreshRefusedSkills(view, sent: skills)
+                    if view.editGeneration == generation { view.editNotice = refresh.notice }
+                    draftChanged(view)
+                    return
+                }
                 view.notice = error.localizedDescription
                 if view.editGeneration == generation { view.editNotice = error.localizedDescription }
                 if case HostError.rejected(let code, _) = error, code == "journal_uncertain" { view.uncertain = true; view.runState = .interrupted }

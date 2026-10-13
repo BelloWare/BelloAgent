@@ -201,7 +201,12 @@ extension AgentSession {
         // since the revision the reader sends back; a reader that sends none
         // (any reader before 0.1.85) gets both every time, as before.
         // What a failed run failed with; `cost_limit` is a stop at the chat's cost limit.
-        if let errorCode, errorMessage != nil { value["errorCode"] = JSON(errorCode) }
+        if let errorCode, errorMessage != nil {
+            // A skill-update stop offers Resume only while its message waits;
+            // once that message is removed, the run's failure is what is left.
+            if errorCode == Self.skillUpdatedCode, !skillUpdateWaiting { value["preflightError"] = JSON(Self.skillUpdateWithdrawn) }
+            else { value["errorCode"] = JSON(errorCode) }
+        }
         let commandsRevision = "\(displayEpoch):\(commandsGeneration)"
         if params["commandsRevision"].text != commandsRevision { value["commands"] = .array(commands); value["commandsRevision"] = JSON(commandsRevision) }
         let tasks = taskPresentationSnapshot(), tasksRevision = taskPresentationRevision(tasks)
