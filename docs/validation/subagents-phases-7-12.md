@@ -115,3 +115,32 @@ policy, installed app, or real preferences/vault data were changed.
   nullable indexed lineage. Parent totals roll up child attempts; global totals
   remain physical. No capture quota, retention, byte or event limits changed.
 - The single production switch remains false.
+
+## Phase 9 — family Inspector
+
+- Failing-first: **six assertion failures** for family listings, cross-child
+  comparison, body routing and explicit out-of-window navigation
+  (`phase9-red.log`).
+- Restored native suite: **40 passed**: `SubagentInspectorTests`,
+  `InspectorIndexTests`, `InspectorRequestModelTests`,
+  `InspectorSummaryRequestTests`, `SubagentCaptureTests`,
+  `InspectorFollowTests`, `InspectorEntryPointTests`, all parallel-lane classes
+  via a bash array and `scripts/test-macos.sh` (`phase9-restored.log`).
+- Helper: **23 passed**, `SubagentCoordinatorTests|HostServiceTests`
+  (`phase9-helper-restored.log`). A dedicated revision changes for task status
+  while unrelated token events leave it unchanged.
+- Twelve guards mutated and caught: discovery revision; physical comparison
+  baseline and body route; direct-request family and workspace scope; immutable
+  group identity and terminal state; family listing and explicit older lookup;
+  predecessor validation, selected-child membership and group workspace scope.
+  Native guards ran in three batches, with distinct assertions for each. Logs:
+  `phase9-mutation-{discovery-revision,identity-routing,family-links,selection-guards}.log`.
+- A 5,001-request fixture opens an older linked request and then reads a child
+  omitted from the family window through its own filter. Caching request-kind
+  labels reduced the complete fixture/UI check from 10.5 s to 0.79 s locally.
+  This is fixture evidence, not a release-wide performance claim.
+- Queued/no-request groups survive archive reopen, foreign workspace and family
+  lookups are refused, and late updates cannot revive terminal groups. Existing
+  capture limits/settings and the Inspector's window size are unchanged.
+- Serial `InspectorFrameTests` ran alone: **2 passed** (`phase9-inspector-frame.log`), including 301 requests, a 5 MB request body and idle/scroll/navigation measurements.
+- Production remains hidden. Gallery coverage is completed in phase 12.

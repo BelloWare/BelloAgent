@@ -32,6 +32,9 @@ import AppKit
         notice?.removeFromSuperview(); notice = nil
         if let message = inspector.focusNotice ?? inspector.failure { notice = InspectorInset(InspectorBanner(symbol: "exclamationmark.circle", text: message, tone: .warning), insets: NSEdgeInsets(top: PiSpacing.md, left: PiSpacing.xl, bottom: 0, right: PiSpacing.xl)); addSubview(notice!) }
         switch inspector.page {
+        case .subagent(let id):
+            if let view = pageView as? InspectorSubagentPage { view.delegationID = id }
+            else { install(InspectorSubagentPage(inspector: inspector, delegationID: id)) }
         case .overview:
             if !(pageView is InspectorOverviewPage) { install(InspectorOverviewPage(inspector: inspector, compact: isCompact)) }
         case .nextRequest:
@@ -101,20 +104,21 @@ import AppKit
     private var lastPage: InspectorPage?
     enum Descriptor: Equatable {
         case overview(String, Bool), next(Bool), section(Bool), message(String)
+        case familyFilter(String), subagent(InspectorSubagentGroup, CGFloat, Bool, Bool)
         case turn(InspectorTurn, String?, Bool, Bool)
         case version(InspectorTurn, String?, Bool)
         case compaction(InspectorCompaction, CGFloat, Bool, Bool)
         case request(InspectorRequestRow, Int, String, CGFloat, Bool)
         var key: String {
-            switch self { case .overview: return "overview"; case .next: return "next"; case .section: return "section"; case .message(let text): return "message:" + text; case .turn(let turn, _, _, _), .version(let turn, _, _): return turn.id; case .compaction(let group, _, _, _): return group.id; case .request(let row, _, _, _, _): return row.id }
+            switch self { case .familyFilter: return "family-filter"; case .subagent(let group, _, _, _): return "subagent:" + group.id; case .overview: return "overview"; case .next: return "next"; case .section: return "section"; case .message(let text): return "message:" + text; case .turn(let turn, _, _, _), .version(let turn, _, _): return turn.id; case .compaction(let group, _, _, _): return group.id; case .request(let row, _, _, _, _): return row.id }
         }
-        var height: CGFloat { switch self { case .overview, .next: return 46; case .turn: return 44; case .version: return 36; case .section: return 31; case .message(let text): return text.contains("older requests") ? 29 : 30; default: return 30 } }
+        var height: CGFloat { switch self { case .overview, .next: return 46; case .turn, .subagent: return 44; case .familyFilter: return 34; case .version: return 36; case .section: return 31; case .message(let text): return text.contains("older requests") ? 29 : 30; default: return 30 } }
         var selected: Bool {
-            switch self { case .overview(_, let selected), .next(let selected), .turn(_, _, _, let selected), .version(_, _, let selected), .request(_, _, _, _, let selected): return selected; case .compaction(_, _, let expanded, let selected): return selected && !expanded; default: return false }
+            switch self { case .overview(_, let selected), .next(let selected), .turn(_, _, _, let selected), .version(_, _, let selected), .request(_, _, _, _, let selected): return selected; case .compaction(_, _, let expanded, let selected), .subagent(_, _, let expanded, let selected): return selected && !expanded; default: return false }
         }
         /// Selection and disclosure changes update the mounted controls.
         var contentIdentity: Descriptor {
-            switch self { case .overview(let text, _): return .overview(text, false); case .next: return .next(false); case .turn(let turn, let prompt, _, _): return .turn(turn, prompt, false, false); case .version(let turn, let prompt, _): return .version(turn, prompt, false); case .compaction(let group, let indent, _, _): return .compaction(group, indent, false, false); case .request(let row, let number, let kind, let indent, _): return .request(row, number, kind, indent, false); default: return self }
+            switch self { case .subagent(let group, let indent, let expanded, _): return .subagent(group, indent, expanded, false); case .overview(let text, _): return .overview(text, false); case .next: return .next(false); case .turn(let turn, let prompt, _, _): return .turn(turn, prompt, false, false); case .version(let turn, let prompt, _): return .version(turn, prompt, false); case .compaction(let group, let indent, _, _): return .compaction(group, indent, false, false); case .request(let row, let number, let kind, let indent, _): return .request(row, number, kind, indent, false); default: return self }
         }
         func canReuse(_ next: Descriptor) -> Bool {
             if case .turn(let turn, _, _, _) = self, case .turn(let following, _, _, _) = next { return turn.id == following.id }
@@ -131,11 +135,24 @@ import AppKit
         let requests = inspector.index.requests.filter { $0.source != .record }.count, turns = inspector.index.turns.filter { !$0.isOther }.count
         let subtitle = requests > 0 ? "\(turns) turn" + (turns == 1 ? "" : "s") + " · \(requests) request" + (requests == 1 ? "" : "s") : "Cost, tokens and time"
         var built: [Descriptor] = [.overview(subtitle, inspector.page == .overview), .next(inspector.page == .nextRequest), .section(inspector.indexLoaded && inspector.index.turns.contains(where: \.running))]
+        if !inspector.groups.isEmpty { built.insert(.familyFilter(inspector.filterLabel), at: 1) }
+        var grouped = Set<String>()
+        func group(_ group: InspectorSubagentGroup, indent: CGFloat) {
+            guard inspector.familyFilter == .family, grouped.insert(group.id).inserted else { return }
+            let expanded = inspector.expanded.contains(group.id)
+            let requests = inspector.index.requests.filter { $0.delegationID == group.id }.sorted { ($0.wall,$0.id) < ($1.wall,$1.id) }
+            built.append(.subagent(group, indent, expanded, inspector.page == .subagent(group.id) || requests.contains { inspector.page == .request($0.id) }))
+            if expanded {
+                for (offset, row) in requests.enumerated() { built.append(.request(row, offset + 1, inspector.index.kind(of: row.id), indent + 18, inspector.page == .request(row.id))) }
+            }
+        }
         if inspector.index.isEmpty { built.append(.message(inspector.indexLoaded ? "No requests yet" : "Reading requests…")) }
         func entries(_ entries: [InspectorTurn.Entry], indent: CGFloat) {
             for entry in entries {
                 switch entry {
-                case .request(let row, let number): built.append(.request(row, number, inspector.index.kind(of: row.id), indent, inspector.page == .request(row.id)))
+                case .request(let row, let number):
+                    built.append(.request(row, number, inspector.index.kind(of: row.id), indent, inspector.page == .request(row.id)))
+                    for child in inspector.groups where child.summary.link.parentAttemptID == row.id { group(child, indent: indent + 14) }
                 case .compaction(let group):
                     let expanded = inspector.expanded.contains(group.id)
                     built.append(.compaction(group, indent, expanded, group.requests.contains { inspector.page == .request($0.id) }))
@@ -144,6 +161,7 @@ import AppKit
             }
         }
         for turn in inspector.index.turns {
+            if inspector.familyFilter == .family, !turn.requests.isEmpty, turn.requests.allSatisfy({ $0.delegationID != nil }) { continue }
             let expanded = inspector.expanded.contains(turn.id)
             built.append(.turn(turn, inspector.prompts[turn.id], expanded, inspector.page == .turn(turn.id)))
             if expanded {
@@ -151,6 +169,7 @@ import AppKit
                 for version in turn.earlier { built.append(.version(version, inspector.prompts[version.id], inspector.page == .turn(version.id))); entries(version.entries, indent: 40) }
             }
         }
+        for child in inspector.groups where !grouped.contains(child.id) { group(child, indent: 8) }
         if inspector.index.olderRequests > 0 { built.append(.message("\(inspector.index.olderRequests) older requests are not listed")) }
         let previousKeys = rows.map(\.key); rows = built
         let source = LazyStackView.Source(count: built.count, key: { built[$0].key }, height: { index, _ in built[index].height }, view: { [weak self] index, existing in
@@ -165,12 +184,25 @@ import AppKit
         if lastPage != inspector.page {
             lastPage = inspector.page
             let target: String
-            switch inspector.page { case .overview: target = "overview"; case .nextRequest: target = "next"; case .turn(let id), .request(let id): target = id }
+            switch inspector.page { case .overview: target = "overview"; case .nextRequest: target = "next"; case .turn(let id), .request(let id): target = id; case .subagent(let id): target = "subagent:" + id }
             DispatchQueue.main.async { [weak self] in guard let self, let index = self.rows.firstIndex(where: { $0.key == target }) else { return }; self.list.scrollToRow(index) }
         }
     }
     private func make(_ descriptor: Descriptor) -> NSView {
         switch descriptor {
+        case .familyFilter(let label):
+            return PiKit.MenuButton(title: label, icon: "line.3.horizontal.decrease", identifier: "inspector-family-filter") { [weak inspector] in
+                guard let inspector else { return [] }
+                return [PiMenuEntry.button("This chat only", checked: inspector.familyFilter == .chat) { inspector.setFamilyFilter(.chat) },
+                        .button("This chat + sub-agents", checked: inspector.familyFilter == .family) { inspector.setFamilyFilter(.family) }]
+                    + inspector.groups.map { group in .button(group.title, checked: inspector.familyFilter == .child(group.summary.link.childSessionID)) { inspector.setFamilyFilter(.child(group.summary.link.childSessionID)) } }
+            }
+        case .subagent(let group, let indent, let expanded, let selected):
+            let labels = inspectorColumn([inspectorText(group.title, font: .systemFont(ofSize: 12, weight: .medium)), inspectorText(group.detail, font: PiKit.Font.micro, color: .piInkTertiary)], spacing: 1)
+            let pick = PiKit.SelectableRow(content: labels, selected: selected && !expanded, glide: glide) { [weak inspector] in inspector?.select(.subagent(group.id)) }
+            pick.setAccessibilityIdentifier("inspector-subagent-" + group.id); pick.setAccessibilityLabel(group.title + ", " + group.detail)
+            let disclosure = InspectorDisclosure(expanded: expanded, symbolSize: 9, width: 18, height: 40, label: "Sub-agent requests") { [weak inspector] in inspector?.toggle(group.id) }
+            return InspectorInset(inspectorRow([.view(disclosure, .fixed(18)), .view(pick, .fill)], spacing: 2), insets: NSEdgeInsets(top: 0, left: indent, bottom: 0, right: 0))
         case .overview(let subtitle, let selected): return navigation(symbol: "chart.bar.xaxis", title: "Overview", subtitle: subtitle, selected: selected) { [weak inspector] in inspector?.select(.overview) }
         case .next(let selected): return navigation(symbol: "square.stack.3d.up", title: "Next request", subtitle: "What the model receives next", selected: selected) { [weak inspector] in inspector?.select(.nextRequest) }
         case .section(let running):

@@ -149,6 +149,11 @@ extension WorkspaceModel {
                     chats[index].path = path; try await store?.put(chats[index], kind: "chat", id: id)
                     guard current() else { return }
                 }
+                if let revision = result["subagentsRevision"]?.string, revision != view.subagentsRevision {
+                    try await refreshSubagentGroups(parent: item, host: host, connection: connection)
+                    guard current() else { return }
+                    view.subagentsRevision = revision
+                }
                 guard try await settleSnapshotIntents(result, view: view, id: id, item: item, host: host, connection: connection, helperQueue: helperQueue) else { return }
                 updateHostActivity(workspaceID: item.workspaceID)
                 scheduleIdle(workspaceID: item.workspaceID, host: host)

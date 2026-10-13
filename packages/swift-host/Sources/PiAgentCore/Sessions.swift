@@ -89,6 +89,7 @@ public actor AgentSession {
     var countedAttempts = BoundedIdentitySet(limit: 512)
     var spend = SessionSpend()
     var subagents = SubagentJournalState()
+    var subagentChangeRevision = 0
     var subagentModelGrants: [SubagentModelGrant] = []
     var turnSubagentModels: [SubagentModelGrant] = []
     var accounting = AttemptAccounting()

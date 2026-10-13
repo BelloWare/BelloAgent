@@ -61,6 +61,7 @@ extension AgentSession {
         return plan
     }
     func subagentChanged(_ summary: SubagentSummary) {
+        subagentChangeRevision += 1
         if toolStateOwners[summary.link.call.toolCallID] == summary.link.call.assistantMessageID,
            var card = toolStates[summary.link.call.toolCallID] {
             card["subagent"] = (try? subagentJSON(summary)) ?? .null

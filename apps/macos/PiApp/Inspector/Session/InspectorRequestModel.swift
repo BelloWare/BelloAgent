@@ -45,7 +45,8 @@ enum InspectorLoad<Value> {
     enum RawPart: String, CaseIterable, Sendable { case request, response, headers, metadata, links, events }
 
     let archive: PayloadArchive
-    let sessionID: String
+    private let ownerSessionID: String
+    var sessionID: String { row?.sessionID ?? ownerSessionID }
     weak var workspace: WorkspaceModel?
     let cache: InspectorDocumentCache
     private(set) var predecessor: InspectorRequestRow?
@@ -62,13 +63,15 @@ enum InspectorLoad<Value> {
     var metadataOverride: ((InspectorRequestRow) async throws -> [String: WireValue])?
 
     init(archive: PayloadArchive, sessionID: String, workspace: WorkspaceModel?, cache: InspectorDocumentCache = .shared) {
-        self.archive = archive; self.sessionID = sessionID; self.workspace = workspace; self.cache = cache
+        self.archive = archive; self.ownerSessionID = sessionID; self.workspace = workspace; self.cache = cache
     }
     deinit { bodyTask?.cancel(); metadataTask?.cancel() }
 
     /// Shows a request. The same request keeps its documents and gets the
     /// newer row; another one starts over.
     func open(_ row: InspectorRequestRow, predecessor: InspectorRequestRow?, previousLabel: String?) {
+        let predecessor = predecessor.flatMap { $0.sessionID == row.sessionID ? $0 : nil }
+        let previousLabel = predecessor == nil ? nil : previousLabel
         if self.row?.id != row.id {
             cancel()
             self.row = row; self.predecessor = predecessor; self.previousLabel = previousLabel
@@ -339,7 +342,7 @@ enum InspectorLoad<Value> {
     static func sources(_ row: InspectorRequestRow, archive: PayloadArchive, workspace: WorkspaceModel?, sessionID: String) -> [CapturedBodySource] {
         var sources: [CapturedBodySource] = []
         if row.source != .live { sources.append(.archive(archive, attemptID: row.id, kind: "request")) }
-        if let workspace { sources.append(.live(workspace, sessionID: sessionID, attemptID: row.id, kind: "request")) }
+        if let workspace { sources.append(.live(workspace, sessionID: row.sessionID ?? sessionID, attemptID: row.id, kind: "request")) }
         return sources
     }
 

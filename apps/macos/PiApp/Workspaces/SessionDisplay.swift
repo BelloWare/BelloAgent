@@ -80,6 +80,7 @@ struct TranscriptVersionView: Equatable, Sendable {
 }
 
 @MainActor final class SessionDisplay: ObservableObject {
+    var subagentsRevision: String?
     /// Committed activity only: text, draft, selection and context rendering do not enter this stream.
     let activityChanges = PassthroughSubject<Void, Never>()
     let id: String

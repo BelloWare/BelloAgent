@@ -223,6 +223,32 @@ final class SubagentCoordinatorTests: XCTestCase {
         await parent.close()
     }
 
+    func testDiscoveryRevisionChangesForTasksButNotUnrelatedTokens() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = DelegationClient(count: 1), registry = DelegationRegistry()
+        let coordinator = SubagentCoordinator(register: { child, _, _, _ in await registry.add(child) })
+        let parent = try await makeParent(root, client: client, coordinator: coordinator)
+        let ordinary = await parent.snapshot()
+        XCTAssertTrue(ordinary["subagentsRevision"].isNull)
+        _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "task"), steer: false)
+        try await eventually { await client.active == 1 }
+        let running = await parent.snapshot()
+        XCTAssertNotNil(running["subagentsRevision"].text)
+        await parent.event("fixture.delta")
+        let delta = await parent.snapshot()
+        XCTAssertEqual(delta["subagentsRevision"], running["subagentsRevision"])
+        let page = await coordinator.list(parent: parent)
+        var changed = try JSONDecoder().decode(SubagentSummary.self, from: XCTUnwrap(page["children"].list.first).data())
+        changed.status = .stopping
+        await parent.subagentChanged(changed)
+        let statusOnly = await parent.snapshot()
+        XCTAssertNotEqual(statusOnly["subagentsRevision"], running["subagentsRevision"])
+        await client.releaseAll(); try await eventually { !(await parent.isRunning) }
+        let completed = await parent.snapshot()
+        XCTAssertNotEqual(completed["subagentsRevision"], running["subagentsRevision"])
+        for child in await registry.children { await child.close() }; await parent.close()
+    }
+
     func testChildrenFollowTheParentsFutureCaptureModeWithoutIndependentPolicy() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = DelegationClient(count: 1), registry = DelegationRegistry(), traces = TraceStore()

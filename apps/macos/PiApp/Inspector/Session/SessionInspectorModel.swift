@@ -16,6 +16,30 @@ import AppKit
     @Published var title: String
     @Published private(set) var index = InspectorIndex()
     @Published private(set) var indexLoaded = false
+    @Published private(set) var groups: [InspectorSubagentGroup] = []
+    @Published private(set) var familyFilter: InspectorFamilyFilter = .family
+    private var linkedRow: InspectorRequestRow?
+    private var lookedUpRequest: String?
+    var filterLabel: String {
+        switch familyFilter {
+        case .chat: "This chat only"
+        case .family: "This chat + sub-agents"
+        case .child(let id): groups.first { $0.summary.link.childSessionID == id }?.title ?? "Sub-agent"
+        }
+    }
+    func setFamilyFilter(_ filter: InspectorFamilyFilter) {
+        guard familyFilter != filter else { return }
+        if case .child(let id) = filter, !groups.contains(where: { $0.summary.link.childSessionID == id }) { return }
+        familyFilter = filter; linkedRow = nil; pendingFocus = nil
+        if case .child(let id) = filter, let group = groups.first(where: { $0.summary.link.childSessionID == id }) { show(.subagent(group.id)) }
+        else if filter == .chat { show(.overview) }
+        reading?.cancel(); reading = nil; readGeneration &+= 1
+        refresh()
+        Task { await rebuildIndex() }
+    }
+    var latestOwnRequest: InspectorRequestRow? {
+        index.requests.filter { $0.source != .record && ($0.sessionID == nil || $0.sessionID == scope.sessionID) }.max { ($0.wall, $0.id) < ($1.wall, $1.id) }
+    }
     @Published private(set) var page: InspectorPage = .overview
     /// Why the request log could not be read.
     @Published private(set) var failure: String?
@@ -106,11 +130,13 @@ import AppKit
     /// Opens a page now, or as soon as the index can say where it is.
     func focus(_ focus: InspectorFocus) {
         focusNotice = nil
+        lookups?.cancel(); lookups = nil; lookedUpRequest = nil
+        if case .subagent = focus, familyFilter == .chat { setFamilyFilter(.family) }
         // The Overview and the next request need no index; anything else
         // waits for one, or the latest request of a window just opened would
         // be the Overview an empty index falls back to.
         let standalone = focus == .overview || focus == .nextRequest
-        if let page = index.resolve(focus, message: hint(for: focus)), indexLoaded || standalone {
+        if let page = resolveFocus(focus), indexLoaded || standalone {
             pendingFocus = nil
             show(page)
             return
@@ -120,6 +146,10 @@ import AppKit
         if indexLoaded { signature = nil; refresh() }
     }
 
+    private func resolveFocus(_ focus: InspectorFocus) -> InspectorPage? {
+        if case .subagent(let id) = focus { return groups.contains { $0.id == id } ? .subagent(id) : nil }
+        return index.resolve(focus, message: hint(for: focus))
+    }
     /// What the navigator opens when the reader picks a row.
     func select(_ page: InspectorPage) {
         pendingFocus = nil; focusNotice = nil
@@ -137,7 +167,7 @@ import AppKit
             guard let first = index.turn(id)?.requests.first else { return }
             if delta > 0 { select(.request(first.id)) }
             else if let previous = index.adjacent(to: first.id, step: -1) { select(.request(previous)) }
-        case .overview, .nextRequest:
+        case .overview, .nextRequest, .subagent:
             select(.request(delta > 0 ? requests[0].id : requests[requests.count - 1].id))
         }
     }
@@ -153,6 +183,10 @@ import AppKit
             expanded.insert(turn.version?.latest ?? turn.id)
             if turn.version != nil { expanded.insert(turn.id) }
             if let group = index.compaction(containing: id) { expanded.insert(group.id) }
+        }
+        if case .subagent(let id) = page, let group = groups.first(where: { $0.id == id }) {
+            expanded.insert(id)
+            if let request = group.summary.link.parentAttemptID, let turn = index.turn(containing: request) { expanded.insert(turn.id) }
         }
         if self.page != page { self.page = page }
         syncPage()
@@ -182,11 +216,30 @@ import AppKit
         }
     }
 
+    private func lookUpRequest(_ id: String) {
+        guard lookups == nil, lookedUpRequest != id else { return }
+        lookedUpRequest = id
+        let archive = archive, scope = scope
+        lookups = Task { [weak self] in
+            let row = try? await archive.inspectorRequest(id, sessionID: scope.sessionID, workspaceID: scope.workspaceID)
+            guard !Task.isCancelled, let self else { return }
+            self.lookups = nil
+            guard self.pendingFocus == .request(id) else { return }
+            if let row {
+                self.linkedRow = row
+                if row.sessionID != scope.sessionID { self.familyFilter = .family }
+                await self.rebuildIndex()
+            } else { self.resolvePending() }
+        }
+    }
+
     private func resolvePending() {
         guard let pending = pendingFocus, indexLoaded else { return }
-        if let page = index.resolve(pending, message: hint(for: pending)) {
+        if let page = resolveFocus(pending) {
             pendingFocus = nil; show(page); return
         }
+        if case .request(let id) = pending, lookedUpRequest != id { lookUpRequest(id); return }
+        if case .request = pending, lookups != nil { return }
         // The log is still being asked which request produced the message.
         if case .message = pending, lookups != nil { return }
         // A turn that has just started may not have a request on record yet;
@@ -198,6 +251,7 @@ import AppKit
                 case .turn: return "That turn has no retained requests."
                 case .request: return "That request is not in this session's request log."
                 case .message: return "No retained request produced that message."
+                case .subagent: return "That sub-agent is not in this chat’s retained task records."
                 default: return nil
                 }
             }()
@@ -213,7 +267,7 @@ import AppKit
             request.setActive(visible)
             if visible, let group = index.compaction(containing: id) { readSummaryKinds(group) }
         } else { request.setActive(false) }
-        let latest = index.latestRequestID.flatMap(index.request)
+        let latest = latestOwnRequest
         next.setActive(visible && page == .nextRequest, previous: latest, previousLabel: latest.map { label(of: $0, from: nil) })
         if case .turn(let id) = page, visible { loadPrompt(id) }
     }
@@ -237,7 +291,7 @@ import AppKit
         self.visible = visible
         usage.setVisible(visible)
         if visible { startPolling(); refreshSummaries(); refreshVersions() }
-        else { poll?.cancel(); poll = nil; reading?.cancel(); reading = nil; summarizing?.cancel(); prompting?.cancel(); versionReads?.cancel() }
+        else { poll?.cancel(); poll = nil; reading?.cancel(); reading = nil; summarizing?.cancel(); prompting?.cancel(); versionReads?.cancel(); lookups?.cancel(); lookups = nil }
         syncPage()
     }
 
@@ -247,7 +301,7 @@ import AppKit
         guard visible else { return }
         read(force: true)
         usage.refresh()
-        if page == .nextRequest { let latest = index.latestRequestID.flatMap(index.request); next.refresh(previous: latest, previousLabel: latest.map { label(of: $0, from: nil) }) }
+        if page == .nextRequest { let latest = latestOwnRequest; next.refresh(previous: latest, previousLabel: latest.map { label(of: $0, from: nil) }) }
     }
 
     private func startPolling() {
@@ -264,7 +318,9 @@ import AppKit
 
     private func read(force: Bool) {
         guard visible, reading == nil else { return }
-        let archive = archive, scope = scope
+        let archive = archive, scope = scope, filter = familyFilter
+        let queryID: String
+        if case .child(let id) = filter { queryID = id } else { queryID = scope.sessionID }
         readGeneration &+= 1
         let generation = readGeneration
         reading = Task { [weak self] in
@@ -276,10 +332,13 @@ import AppKit
                 let live = await self.liveRows()
                 let key = signature + "|" + live.map { "\($0.id):\($0.outcome):\($0.output ?? -1)" }.joined(separator: ",")
                 if !force, self.indexLoaded, key == self.signature { self.resolvePending(); return }
-                let read = try await archive.inspectorRows(sessionID: scope.sessionID, workspaceID: scope.workspaceID)
+                let read = try await archive.inspectorRows(sessionID: queryID, workspaceID: scope.workspaceID, includeFamily: filter == .family)
                 guard !Task.isCancelled else { return }
                 self.indexReads += 1
                 self.signature = key
+                let groups = try await archive.inspectorSubagents(owner: scope.sessionID, workspaceID: scope.workspaceID)
+                guard !Task.isCancelled else { return }
+                self.groups = groups
                 self.lastRead = (read.rows, live, read.older)
                 await self.rebuildIndex()
             } catch is CancellationError {
@@ -304,7 +363,18 @@ import AppKit
     }
 
     private func rebuildIndex() async {
-        let read = lastRead, records = summaries.mapValues(\.accounting.recordLines), versions = versions
+        var read = lastRead
+        let filter = familyFilter, owner = scope.sessionID
+        if let linkedRow, !read.rows.contains(where: { $0.id == linkedRow.id }) { read.rows.append(linkedRow) }
+        func includes(_ row: InspectorRequestRow) -> Bool {
+            switch filter {
+            case .family: true
+            case .chat: row.sessionID == nil || row.sessionID == owner
+            case .child(let id): row.sessionID == id
+            }
+        }
+        read.rows = read.rows.filter { includes($0) }; read.live = read.live.filter { includes($0) }
+        let records = filter == .chat || filter == .family ? summaries.mapValues(\.accounting.recordLines) : [:], versions = versions
         let (built, ledger) = await Task.detached(priority: .userInitiated) { () -> (InspectorIndex, SessionRequestLedger) in
             let index = InspectorIndex(archived: read.rows, live: read.live, records: records, olderRequests: read.older, versions: versions)
             let samples = index.requests.filter { $0.source != .record }.sorted { ($0.wall, $0.id) < ($1.wall, $1.id) }.map(\.sample)
@@ -312,7 +382,7 @@ import AppKit
                                                ledgerSamples: samples, hasOlderLedgerRequests: read.older > 0)
             return (index, SessionRequestLedger(history: history))
         }.value
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, filter == familyFilter else { return }
         if built != index { index = built }
         if ledger != self.ledger { self.ledger = ledger }
         if !indexLoaded { indexLoaded = true }
@@ -475,12 +545,13 @@ import AppKit
         if !found.isEmpty { prompts.merge(found) { $1 } }
         guard !missing.isEmpty, prompting == nil else { return }
         let id = scope.sessionID
+        let sessions = Dictionary(uniqueKeysWithValues: index.turns.flatMap { [$0] + $0.earlier }.map { ($0.id, $0.requests.first?.sessionID ?? id) })
         prompting = Task { [weak self] in
             defer { self?.prompting = nil }
             var batch: [String: String] = [:]
             for turn in missing {
                 if Task.isCancelled { return }
-                let text = (try? await workspace.messagePage(id: turn, field: "text", offset: 0, sessionID: id).0) ?? ""
+                let text = (try? await workspace.messagePage(id: turn, field: "text", offset: 0, sessionID: sessions[turn] ?? id).0) ?? ""
                 batch[turn] = RequestDocument.prefix(text as NSString, limit: RequestDocument.previewLimit)
                 if batch.count >= 20 { self?.prompts.merge(batch) { $1 }; batch.removeAll() }
             }
@@ -511,7 +582,7 @@ import AppKit
             for row in missing {
                 guard !Task.isCancelled else { return }
                 let sources = override.map { find in find(row, "request").map { [$0] } ?? [] }
-                    ?? InspectorBodies.sources(row, archive: archive, workspace: workspace, sessionID: sessionID)
+                    ?? InspectorBodies.sources(row, archive: archive, workspace: workspace, sessionID: row.sessionID ?? sessionID)
                 guard let summary = try? await InspectorBodies.summary(row, sources: sources, cache: cache) else { continue }
                 guard !Task.isCancelled, let self else { return }
                 self.learn(summary.kind, for: row.id)
@@ -525,7 +596,9 @@ import AppKit
     /// reply this request produced, opened in the main window.
     func forkFromRequest(_ attemptID: String) {
         guard let workspace else { return }
-        let sessionID = scope.sessionID
+        guard let row = index.request(attemptID), row.delegationID == nil else { return }
+        let sessionID = row.sessionID ?? scope.sessionID
+        guard workspace.canForkFromReply(sessionID) else { return }
         Task { [weak self] in
             guard let reply = await workspace.replyID(forAttempt: attemptID, sessionID: sessionID) else {
                 self?.focusNotice = "This request left no reply in the chat to fork from."
@@ -543,14 +616,17 @@ import AppKit
         guard let workspace else { return }
         let sessionID = scope.sessionID
         switch page {
-        case .turn(let id): reveal(workspace, sessionID, id)
+        case .turn(let id): reveal(workspace, index.turn(id)?.requests.first?.sessionID ?? sessionID, id)
         case .request(let id):
+            let sessionID = index.request(id)?.sessionID ?? sessionID
             let archive = archive, fallback = index.request(id)?.turn
             Task { [weak self] in
                 let links = try? await archive.linkedMessages(attemptID: id)
                 guard self != nil else { return }
                 self?.reveal(workspace, sessionID, links?.output.first ?? fallback)
             }
+        case .subagent(let id):
+            if let group = groups.first(where: { $0.id == id }) { reveal(workspace, group.summary.link.childSessionID, nil) }
         case .overview, .nextRequest: reveal(workspace, sessionID, nil)
         }
     }

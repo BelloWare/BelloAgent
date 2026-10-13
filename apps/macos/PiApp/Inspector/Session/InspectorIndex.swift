@@ -3,6 +3,7 @@ import Foundation
 /// Where the Session Inspector is asked to open.
 enum InspectorFocus: Hashable, Sendable {
     case overview
+    case subagent(String)
     case nextRequest
     /// The session's most recent request.
     case latestRequest
@@ -17,6 +18,7 @@ enum InspectorFocus: Hashable, Sendable {
 /// The page the navigator has open, once a focus is resolved against the index.
 enum InspectorPage: Hashable, Sendable {
     case overview
+    case subagent(String)
     case nextRequest
     case turn(String)
     case request(String)
@@ -40,6 +42,12 @@ struct InspectorRequestRow: Sendable, Equatable, Identifiable {
     var id: String
     /// Dispatch time, seconds since 1970.
     var wall: Double
+    var sessionID: String? = nil
+    var delegationID: String? = nil
+    var parentSessionID: String? = nil
+    var parentAttemptID: String? = nil
+    var parentAssistantID: String? = nil
+    var parentToolCallID: String? = nil
     var turn: String?
     var purpose: String
     var api: String
@@ -94,7 +102,7 @@ struct InspectorRequestRow: Sendable, Equatable, Identifiable {
     }
 
     /// What the navigator selects from the log: typed columns only.
-    static let columns = "id,wall,turn,purpose,api,alias,model,response_model,reported_models,outcome,metrics_retained,dispatch,ttft_ms,stream_ms,request_ms,http_ms,input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,reasoning_tokens,cost_usd"
+    static let columns = "session,delegation,parent_session,parent_attempt,parent_assistant,parent_tool_call,id,wall,turn,purpose,api,alias,model,response_model,reported_models,outcome,metrics_retained,dispatch,ttft_ms,stream_ms,request_ms,http_ms,input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,reasoning_tokens,cost_usd"
 
     static func archived(_ row: [String: CaptureSQLValue]) throws -> InspectorRequestRow {
         guard let id = row["id"]?.string, !id.isEmpty, let wall = row["wall"]?.double, wall.isFinite, wall >= 0 else { throw CaptureFailure.corrupt }
@@ -112,6 +120,10 @@ struct InspectorRequestRow: Sendable, Equatable, Identifiable {
             input: figure("input_tokens"), cached: figure("cache_read_tokens"), cacheWrite: figure("cache_write_tokens"),
             output: figure("output_tokens"), reasoning: figure("reasoning_tokens"), cost: figure("cost_usd"),
             ttft: figure("ttft_ms"), decode: figure("stream_ms"), duration: figure("request_ms"), http: figure("http_ms"))
+        result.sessionID = row["session"]?.string
+        result.delegationID = row["delegation"]?.string; result.parentSessionID = row["parent_session"]?.string
+        result.parentAttemptID = row["parent_attempt"]?.string; result.parentAssistantID = row["parent_assistant"]?.string
+        result.parentToolCallID = row["parent_tool_call"]?.string
         result.routedVia = GatewayModelIdentity.routedVia(reported.compactMap(GatewayModelIdentity.modelName), answered: model)
         return result
     }
@@ -138,6 +150,11 @@ struct InspectorRequestRow: Sendable, Equatable, Identifiable {
             duration: dispatch.flatMap { start in complete.flatMap { $0 >= start ? $0 - start : nil } },
             http: valid(metrics["httpDurationMs"]?.number), source: .live)
         result.routedVia = GatewayModelIdentity.routedVia(PayloadArchive.reportedModels(metadata).compactMap(GatewayModelIdentity.modelName), answered: identity.displayName)
+        result.sessionID = metadata["sessionId"]?.string
+        if let scope = try? CaptureLineage.scope(metadata), let link = scope.delegation {
+            result.delegationID = link.delegationID; result.parentSessionID = link.call.parentSessionID
+            result.parentAttemptID = link.parentAttemptID; result.parentAssistantID = link.call.assistantMessageID; result.parentToolCallID = link.call.toolCallID
+        }
         result.operation = metadata["operation"]?.object?["operationId"]?.string
         return result
     }
@@ -261,6 +278,7 @@ struct InspectorCompaction: Sendable, Equatable, Identifiable {
 /// The session's requests, grouped into turns in the order they ran. An
 /// edited turn's earlier versions nest under it.
 struct InspectorIndex: Sendable, Equatable {
+    private var kinds: [String: String] = [:]
     private(set) var turns: [InspectorTurn] = []
     /// Every request in navigation order: turn by turn, each turn's earlier
     /// versions after it, then the others.
@@ -339,6 +357,18 @@ struct InspectorIndex: Sendable, Equatable {
                 turns[index].earlier[version].entries = InspectorCompaction.entries(of: turns[index].earlier[version].requests)
             }
         }
+        for turn in turns.flatMap({ [$0] + $0.earlier }) {
+            var previous: InspectorRequestRow?
+            for row in turn.requests {
+                switch row.purpose {
+                case "turn":
+                    kinds[row.id] = previous.map { $0.failed ? "retry" : "tool round" } ?? (turn.isOther ? "request" : "first request")
+                    previous = row
+                case "connection-test": kinds[row.id] = "connection test"
+                default: kinds[row.id] = row.purpose
+                }
+            }
+        }
         self.turns = turns
         flat = turns.flatMap { [$0] + $0.earlier }
         for turn in flat {
@@ -395,27 +425,17 @@ struct InspectorIndex: Sendable, Equatable {
         guard let location = positions[requestID] else { return nil }
         let row = flat[location.turn].requests[location.request]
         let conversation = row.purpose == "turn"
-        let earlier = requests[..<location.order].reversed().filter { $0.source != .record && $0.api == row.api }
+        let earlier = requests[..<location.order].reversed().filter { $0.source != .record && $0.api == row.api && $0.sessionID == row.sessionID }
         if conversation { return earlier.first { $0.purpose == "turn" } }
         return earlier.first { $0.purpose == row.purpose }
     }
     /// "first request", "tool round", "retry", "compaction"…
-    func kind(of requestID: String) -> String {
-        guard let location = positions[requestID] else { return "request" }
-        let turn = flat[location.turn], row = turn.requests[location.request]
-        switch row.purpose {
-        case "turn": break
-        case "connection-test": return "connection test"
-        default: return row.purpose
-        }
-        let before = turn.requests[..<location.request].filter { $0.purpose == "turn" }
-        guard let previous = before.last else { return turn.isOther ? "request" : "first request" }
-        return previous.failed ? "retry" : "tool round"
-    }
+    func kind(of requestID: String) -> String { kinds[requestID] ?? "request" }
     /// The page a focus opens, or nil while the index cannot say yet.
     func resolve(_ focus: InspectorFocus, message: InspectorMessageHint? = nil) -> InspectorPage? {
         switch focus {
         case .overview: return .overview
+        case .subagent: return nil
         case .nextRequest: return .nextRequest
         case .latestRequest: return latestRequestID.map(InspectorPage.request) ?? .overview
         case .turn(let id): return turnIndex[id] != nil ? .turn(id) : nil
