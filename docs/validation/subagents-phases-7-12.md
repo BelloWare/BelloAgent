@@ -144,3 +144,44 @@ policy, installed app, or real preferences/vault data were changed.
   capture limits/settings and the Inspector's window size are unchanged.
 - Serial `InspectorFrameTests` ran alone: **2 passed** (`phase9-inspector-frame.log`), including 301 requests, a 5 MB request body and idle/scroll/navigation measurements.
 - Production remains hidden. Gallery coverage is completed in phase 12.
+
+## Phase 10 — parent card and child transcript
+
+- Failing-first logs: `phase10-red.log` (projection/card/child actions),
+  `phase10-helper-red.log` (live progress and durable card),
+  `phase10-navigation-red.log` (child composer/continuation/breadcrumb),
+  `phase10-progress-discovery-red.log`, `phase10-child-status-red.log`,
+  `phase10-exact-card-red.log`, `phase10-child-cost-red.log`, and
+  `phase10-version-target-red.log`. Compile-only failures were repaired before
+  recording behavioral failures. The independent child cost test seeds durable
+  metadata so a missing store row cannot accidentally satisfy its refusal check.
+- Guard mutations caught offline and fast metadata loss, a dropped action relay,
+  copied-card Stop authority, child draft writes and independent cost changes,
+  foreign project/owner/ordinary-journal discovery, child fork, focus/window/
+  sheet/picker routing, reusing the wrong old-version page, progress coalescing,
+  discovery revision isolation, terminal viewer notification and targeted helper
+  version paging. Logs: `phase10-mutation-*.log`.
+- Exact-card scrolling was checked separately from keyboard mutations, with the
+  viewport first scrolled to the top. Omitting the card focus then fails the
+  visibility assertion (`phase10-mutation-exact-card-isolated.log`). Merely
+  changing the focus representation did not fail the earlier fixture; that is
+  not counted as a killed mutation.
+- The keyboard fixture uses actual AppKit responders in a generated test window:
+  file text, Git table, terminal emulator without a PTY, Inspector, sheet, picker,
+  conversation and a missing parent. No installed app or real user state.
+- The helper's existing version-page protocol gained an optional, version-scoped
+  `around` message identity. Back to Parent can open a card past the first
+  byte-bounded page without loading the whole earlier version. Ordinary version
+  paging, live context, drafts and other manual folds retain their behavior.
+- Final restored helper suite: **65 passed**, including the four lead-requested
+  classes (`phase10-helper-restored-final.log`).
+- Native final: `SubagentNavigationTests` **5 passed** and
+  `TranscriptWirePageTests` **4 passed**, each serial class alone. Parallel-lane
+  bash-array run **69 passed** across SubagentTranscriptTests,
+  TranscriptActionsForwardingTests, TranscriptRevealTests,
+  NativeWorkListViewportTests, SubagentInspectorTests,
+  MessageVersionTranscriptTests, TranscriptNativeWorkBehaviourTests and
+  CostLimitTests. Logs: `phase10-native-{navigation,wire,parallel}-final.log`.
+- `git diff --check` passes. The sole rollout constant remains false. No owner
+  decisions changed; sidebar/discovery/family organization and final gallery/
+  release validation remain phases 11–12.

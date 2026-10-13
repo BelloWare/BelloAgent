@@ -30,6 +30,8 @@ struct TranscriptHighlights: Equatable {
         /// drawn in its call's card: the occurrence is the result's own, not
         /// the reply's).
         var scopeCall: String? = nil
+        /// Navigation to the card itself, without searching or highlighting its text.
+        var cardOnly = false
         /// The record the place was asked for when its row is another
         /// message's (a tool's result): whose count a find reconciles.
         var record: String? = nil
@@ -186,6 +188,7 @@ extension TranscriptNativeDocument {
         var first: TranscriptRowContainer?
         /// The place is on this card line, which is not built yet.
         var line: (lines: TranscriptCardLines, index: Int)?
+        var card: (view: NSView, rect: CGRect, row: TranscriptRowContainer)? = nil
     }
     func resolveFocus() -> FocusResolution? {
         guard let focus = highlights.focus else { return nil }
@@ -193,6 +196,24 @@ extension TranscriptNativeDocument {
         guard !rows.isEmpty else { return nil }
         let request = "\(focus.serial):\(focus.fromFind)"
         if focusCountsSerial != request { focusCountsSerial = request; focusRowCounts = [:]; focusSearched = []; focusBest = (0, nil) }
+        if focus.cardOnly, let call = focus.scopeCall {
+            func find(_ view: NSView) -> (NSView, CGRect)? {
+                if let action = view as? TranscriptNativeActionRow, action.tool?.id == call {
+                    return (action, CGRect(x: 0, y: 0, width: action.bounds.width, height: TranscriptRowChrome.height))
+                }
+                if let list = view as? NativeWorkListContainer, let rect = list.rectForTool(call) { return (list, rect) }
+                for child in view.subviews { if let found = find(child) { return found } }
+                return nil
+            }
+            for row in rows where row.superview === self && row.isHosted {
+                if let (view, rect) = find(row) {
+                    return FocusResolution(rendered: 0, complete: true, first: rows.first, card: (view, rect, row))
+                }
+                focusSearched.insert(ObjectIdentifier(row))
+            }
+            let pending = rows.first { !focusSearched.contains(ObjectIdentifier($0)) }
+            return FocusResolution(rendered: 0, complete: pending == nil, pending: pending, first: rows.first)
+        }
         // In reading order, the occurrences each row holds: counted from its
         // text while it is on screen, remembered once counted. The place is
         // found only among rows counted in order, so a row not yet seen never
@@ -327,7 +348,9 @@ extension TranscriptNativeDocument {
         guard let resolution = resolveFocus() else { return }
         let clip = scroll.contentView, viewport = clip.bounds
         let rect: CGRect, row: TranscriptRowContainer
-        if let target = resolution.target, let manager = target.text.layoutManager, let container = target.text.textContainer {
+        if let card = resolution.card {
+            rect = card.view.convert(card.rect, to: clip); row = card.row; focusPending = false
+        } else if let target = resolution.target, let manager = target.text.layoutManager, let container = target.text.textContainer {
             manager.ensureLayout(forCharacterRange: target.range)
             // Output capped in a scroll of its own is scrolled to the place
             // first; the transcript then brings that into view.

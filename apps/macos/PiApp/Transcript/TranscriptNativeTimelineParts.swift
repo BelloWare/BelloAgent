@@ -86,7 +86,7 @@ import AppKit
                 return action
             }()
             action.update(tool: model.card!, open: model.cardOpen, fetched: model.fetched, environment: model.environment,
-                          toggle: model.toggleCard, openFile: model.actions.openFile)
+                          toggle: model.toggleCard, openFile: model.actions.openFile, actions: model.actions)
         case .work:
             configureWork(row, model)
         }

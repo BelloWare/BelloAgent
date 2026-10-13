@@ -35,14 +35,17 @@ import AppKit
         var views: [NSView] = [InspectorPageHeader("Overview", subtitle: subtitle, actions: [InspectorShowInChat { [weak inspector] in inspector?.showInChat() }]), figures()]
         if followedFooter !== inspector.display?.footer {
             footerObserver.reset(); followedFooter = inspector.display?.footer
-            if let footer = followedFooter, let workspace = inspector.workspace {
+            if let footer = followedFooter, let workspace = inspector.workspace, workspace.record(inspector.scope.sessionID)?.isSubagent != true {
                 footerObserver.observe(footer)
                 let id = inspector.scope.sessionID
                 limitCard = PiKit.card(CostLimitLiveEditor(footer: footer, choose: { [weak workspace] limit in try await workspace?.setCostLimit(limit, for: id) }), padding: PiSpacing.lg)
                 limitCard?.setAccessibilityIdentifier("inspector-cost-limit")
             } else { limitCard = nil }
         }
-        if let limitCard { views.append(limitCard) }
+        if let link = inspector.workspace?.record(inspector.scope.sessionID)?.delegation {
+            views.append(InspectorBanner(symbol: "person.2", text: "This sub-agent’s usage is included in its parent chat’s cost limit.", tone: .neutral))
+            views.append(PiKit.Button("Parent budget", style: .ghost) { [weak inspector] in inspector?.workspace?.openInspector(session: link.budgetOwnerSessionID, focus: .overview) })
+        } else if let limitCard { views.append(limitCard) }
         if shownTime != inspector.timeCharts || shownTokens != inspector.tokenCharts || shownChartCompact != compact || (!inspector.timeCharts.historyLoaded && (shownFailure != inspector.failure || shownIndexLoaded != inspector.indexLoaded)) {
             shownTime = inspector.timeCharts; shownTokens = inspector.tokenCharts; shownChartCompact = compact; shownFailure = inspector.failure; shownIndexLoaded = inspector.indexLoaded
             chartViews = charts()

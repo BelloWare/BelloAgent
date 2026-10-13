@@ -75,6 +75,7 @@ import AppKit
     /// The pill the header offers, if any.
     private enum Offer: Equatable { case retry, continueRun, raise, resume }
     private var offer: Offer? {
+        guard !inputs.environment.managedChild else { return nil }
         switch kind {
         case .failure(let retry):
             // A restart's cut-off run offers Resume, and nothing while one is on its way.
@@ -111,7 +112,7 @@ import AppKit
             card.stroke = TranscriptNSPalette.accent.withAlphaComponent(0.35)
             symbol.show("pause.circle.fill", size: 15, weight: .semibold)
             symbol.contentTintColor = tint
-            titleText = "Paused"
+            titleText = environment.managedChild ? "Interrupted" : "Paused"
             setAccessibilityLabel("Paused: " + message.text)
             setAccessibilityIdentifier("run-paused-notice")
         case .costLimit(let raised, let run):

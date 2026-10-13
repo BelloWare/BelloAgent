@@ -53,7 +53,7 @@ extension WorkspaceModel {
     /// Always resolve the retained occurrence, not the three-turn display or a
     /// truncated row. Entering edit mode has no conversation mutations.
     func editMessage(_ messageID: String, sessionID: String) {
-        guard let view = displays[sessionID], let item = record(sessionID) else { return }
+        guard let view = displays[sessionID], let item = record(sessionID), !item.isSubagent else { return }
         if let shown = view.messages.first(where: { $0.id == messageID }), shown.role != "user" || shown.kind != nil || shown.isStreaming { return }
         if let reason = editEntryBlocker(view) { view.notice = reason; view.editNotice = reason; return }
         let generation = UUID(), draft = view.savedDraft

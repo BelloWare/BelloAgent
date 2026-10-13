@@ -423,7 +423,7 @@ import CoreText
     func update(context: [String: WireValue]) {
         RedrawCounter.note("statsPills")
         self.context = context
-        let stats = SessionStatsPresentation(gateway: footer.gateway, work: WorkSplit(timing: footer.turnTiming), cost: footer.cost)
+        let stats = SessionStatsPresentation(gateway: footer.gateway, work: WorkSplit(timing: footer.turnTiming), cost: session.isManagedSubagent ? nil : footer.cost)
         let scope = AnyHashable(ObjectIdentifier(footer))
         gauge.isHidden = compact || stats.steps == 0
         if !gauge.isHidden {

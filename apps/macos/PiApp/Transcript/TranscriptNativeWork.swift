@@ -21,6 +21,7 @@ import AppKit
         var help: String? = nil
         /// Whether the summary is the file's path, and so the link.
         var linksSummary = true
+        var linkLabel = "Open File"
     }
     static let titleFont = NSFont.systemFont(ofSize: 13)
     static let summaryFont = NSFont.systemFont(ofSize: 12.5)
@@ -138,7 +139,7 @@ import AppKit
         let help = content.help ?? content.summary
         setAccessibilityHelp(help.isEmpty ? nil : help)
         if toolTip != (help.isEmpty ? nil : help) { toolTip = help.isEmpty ? nil : help }
-        setAccessibilityCustomActions(link == nil ? nil : [NSAccessibilityCustomAction(name: "Open File") { [weak self] in
+        setAccessibilityCustomActions(link == nil ? nil : [NSAccessibilityCustomAction(name: content.linkLabel) { [weak self] in
             guard let self, self.enabled, let link = self.link else { return false }
             link(); return true
         }])
@@ -404,16 +405,17 @@ import AppKit
 
     /// Takes the call as it is now. `openFile` opens a file at its lines.
     func update(tool: ToolView, open: Bool, fetched: ToolInputDocument?, environment: TranscriptRowEnvironment,
-                toggle: @escaping () -> Void, openFile: ((String, ClosedRange<Int>?) -> Void)?) {
+                toggle: @escaping () -> Void, openFile: ((String, ClosedRange<Int>?) -> Void)?, actions: TranscriptActions = .init()) {
         let model = TranscriptToolRow.model(of: tool)
         let link: (() -> Void)? = {
+            if tool.name == "subagent", let target = SubagentToolView(tool).target { return { actions.openSubagent?(target) } }
             guard environment.opensFiles, let openFile, let file = model.file else { return nil }
             return { openFile(file.path, file.lines) }
         }()
         TranscriptAppearance.apply(environment, to: self)
         let content = TranscriptNativeWorkLine.Content(icon: model.icon, title: model.title, summary: model.summary, suffix: model.suffix,
                                                        state: model.state, expandable: true, open: open, trailing: model.trailing,
-                                                       help: model.help, linksSummary: model.linksSummary)
+                                                       help: model.help, linksSummary: model.linksSummary, linkLabel: tool.name == "subagent" ? "Open sub-agent" : "Open File")
         line.update(content, link: link, toggle: toggle, environment: environment)
         self.tool = tool; self.open = open; self.fetched = fetched; self.environment = environment
         // What a closed row opens costs nothing: it is not built at all.
@@ -424,6 +426,7 @@ import AppKit
                 let made = TranscriptNativeCard.make(next)
                 addSubview(made); card = made
             }
+            (card as? TranscriptNativeSubagentCard)?.actions = actions
             card?.update(next, link: link, environment: environment)
             cardModel = next
         } else if let card {

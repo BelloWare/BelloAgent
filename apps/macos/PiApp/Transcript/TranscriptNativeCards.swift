@@ -53,6 +53,7 @@ enum TranscriptCardFaces {
 
     static func make(_ card: TranscriptToolRow.Card) -> TranscriptNativeCard {
         switch card {
+        case .subagent: return TranscriptNativeSubagentCard()
         case .diff: return TranscriptNativeDiffCard()
         case .terminal: return TranscriptNativeTerminalCard()
         case .read: return TranscriptNativeReadCard()
@@ -63,7 +64,7 @@ enum TranscriptCardFaces {
     /// reader did in it (a diff expanded, a section scrolled).
     static func sameKind(_ a: TranscriptToolRow.Card?, _ b: TranscriptToolRow.Card) -> Bool {
         switch (a, b) {
-        case (.diff?, .diff), (.terminal?, .terminal), (.read?, .read), (.io?, .io): return true
+        case (.subagent?, .subagent), (.diff?, .diff), (.terminal?, .terminal), (.read?, .read), (.io?, .io): return true
         default: return false
         }
     }

@@ -532,15 +532,17 @@ final class TranscriptSurfaceMarker: NSView {
             stoppedFocusFor = reveal.serial; document.focusPending = false
         }
         if let reveal = session.reveal, reveal.serial != handledReveal,
-           let message = session.messages.first(where: { $0.id == reveal.messageID }) {
+           let message = session.presentedMessages.first(where: { $0.id == reveal.messageID }) {
             let place = reveal.mark?.place(in: message)
-            if let drawing = page.revealContent(of: reveal.messageID, needle: place?.needle ?? find.query, call: place?.scopeCall) {
+            if let drawing = page.revealContent(of: reveal.messageID, needle: place?.needle ?? find.query, call: reveal.toolCallID ?? place?.scopeCall) {
                 handledReveal = reveal.serial
                 // Each reveal replaces the last one's place, marked or not: an
                 // earlier mark still being brought into view must not pull
                 // the reader back after this one lands.
                 if place == nil, !reveal.fromFind { document.highlights = TranscriptHighlights(query: find.query) }
-                if let place {
+                if let call = reveal.toolCallID {
+                    document.highlights = TranscriptHighlights(query: find.query, focus: .init(messageID: drawing, needle: "", occurrence: 0, serial: reveal.serial, scopeCall: call, cardOnly: true))
+                } else if let place {
                     document.highlights = TranscriptHighlights(query: find.query, focus: .init(messageID: drawing, needle: place.needle,
                                                                                               occurrence: place.occurrence, serial: reveal.serial,
                                                                                               scopeCall: place.scopeCall ?? (drawing == message.id ? nil : message.toolCallID),

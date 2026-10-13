@@ -80,6 +80,12 @@ enum TranscriptToolRow {
         let outcome = TranscriptActivity.outcome(of: tool)
         let description = TranscriptActivity.describe(parts, outcome: outcome)
         let summary = summary(of: tool, object: description.object)
+        if tool.name == "subagent" {
+            let child = SubagentToolView(tool)
+            return Model(icon: "person.2", title: "Sub-agent", summary: child.description, suffix: child.label,
+                         state: state(of: tool), trailing: child.summary?.progress.map { TranscriptActivity.formatDuration($0.elapsedMs) } ?? elapsed(of: tool),
+                         help: child.task, linksSummary: true, description: description, outcome: outcome, file: nil)
+        }
         return Model(icon: actionSymbol(description.kind), title: title(parts, outcome: outcome), summary: summary,
                      suffix: suffix(of: tool), state: state(of: tool), trailing: elapsed(of: tool),
                      help: description.path ?? description.object, linksSummary: summary == description.object,
@@ -88,6 +94,7 @@ enum TranscriptToolRow {
     /// What an open row's card is: a diff for a change, a numbered window for
     /// a read, a terminal for a command, the IN/OUT card for everything else.
     enum Card: Equatable {
+        case subagent(SubagentToolView)
         case diff(TranscriptActivity.EditRequest, path: String?, outcome: ActionOutcome, added: Int?, removed: Int?)
         case terminal(command: String, output: String, failed: Bool)
         case read(text: String, firstLine: Int, path: String?, failed: Bool)
@@ -99,6 +106,7 @@ enum TranscriptToolRow {
     /// card is never a fragment of JSON. `linked`: whether the row opens a file.
     nonisolated static func card(of tool: ToolView, fetched: ToolInputDocument?, model: Model, linked: Bool) -> Card {
         let shown = requested(tool, fetched: fetched)
+        if tool.name == "subagent" { return .subagent(SubagentToolView(shown)) }
         let description = model.description, outcome = model.outcome
         let notes = [truncationNote(shown), tool.truncated ? "Preview truncated. The full result is retained in context." : nil]
             .compactMap { $0 }.joined(separator: " · ")
@@ -152,9 +160,9 @@ enum TranscriptRowPills {
         var id: String { title }
     }
     /// The pills a hovered row shows, in order.
-    static func pills(_ message: TranscriptMessage, actions: TranscriptActions, forks: Bool, source: ReplySourceToggle?) -> [Pill] {
+    static func pills(_ message: TranscriptMessage, actions: TranscriptActions, forks: Bool, source: ReplySourceToggle?, allowsEditing: Bool = true) -> [Pill] {
         var pills: [Pill] = []
-        if TranscriptMessageRows.editable(message) { pills.append(Pill(title: "Edit", accent: true) { actions.edit(message.id) }) }
+        if allowsEditing && TranscriptMessageRows.editable(message) { pills.append(Pill(title: "Edit", accent: true) { actions.edit(message.id) }) }
         pills.append(Pill(title: "Copy") { actions.copyMessage(message.id) })
         if let source { pills.append(Pill(title: ReplySource.title(raw: source.raw), perform: source.toggle)) }
         pills.append(Pill(title: "Details") { actions.inspect(message.id) })

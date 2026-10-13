@@ -626,14 +626,25 @@ import AppKit
                 self?.reveal(workspace, sessionID, links?.output.first ?? fallback)
             }
         case .subagent(let id):
-            if let group = groups.first(where: { $0.id == id }) { reveal(workspace, group.summary.link.childSessionID, nil) }
+            if let group = groups.first(where: { $0.id == id }) { bringMainWindowForward(); Task { await workspace.openSubagent(SubagentTarget(group.summary.link)) } }
         case .overview, .nextRequest: reveal(workspace, sessionID, nil)
         }
     }
 
     private func reveal(_ workspace: WorkspaceModel, _ sessionID: String, _ message: String?) {
         bringMainWindowForward()
-        Task { _ = await workspace.revealMessage(sessionID: sessionID, messageID: message) }
+        let target = groups.first { $0.summary.link.childSessionID == sessionID }.map { SubagentTarget($0.summary.link) }
+        Task {
+            if let target, workspace.record(sessionID) == nil { await workspace.openSubagent(target) }
+            _ = await workspace.revealMessage(sessionID: sessionID, messageID: message)
+        }
+    }
+    func showSubagentParent(_ link: SubagentLink) {
+        guard let workspace else { return }
+        bringMainWindowForward()
+        Task {
+            await workspace.openSubagentParent(link)
+        }
     }
     /// The app's main window: the one that is not an Inspector and can be main.
     private func bringMainWindowForward() {

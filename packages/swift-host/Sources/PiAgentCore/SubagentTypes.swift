@@ -62,4 +62,18 @@ public struct SubagentSummary: Codable, Sendable, Equatable {
     public var model: String
     public var status: SubagentStatus
     public var revision: Int
+    public var tools: [String]? = nil
+    public var progress: SubagentProgress? = nil
+}
+
+/// Display-only progress, coalesced while running and saved once with the
+/// terminal result. No reasoning, capture bodies, or per-token journal rows.
+public struct SubagentProgress: Codable, Sendable, Equatable {
+    public var phase: String
+    public var elapsedMs: Double
+    public var requests: Int, tools: Int
+    public var preview: String
+    public var usd: Double
+    public var reported: Int, unreported: Int
+    public var inputTokens: Int?, outputTokens: Int?
 }

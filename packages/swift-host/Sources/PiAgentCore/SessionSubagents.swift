@@ -25,6 +25,25 @@ extension AgentSession {
     }
     func installManagedCancellation(_ coordinator: SubagentCoordinator, key: SubagentCallKey) {
         managedCancellation = { Task { await coordinator.cancel(key) } }
+        managedProgress = { [weak coordinator] in await coordinator?.progress(key) }
+    }
+    func scheduleSubagentProgress() {
+        guard let managedProgress, managedProgressTask == nil, subagents.terminal == nil else { return }
+        managedProgressTask = Task { [weak self] in
+            do { try await Task.sleep(for: .milliseconds(250)); try Task.checkCancellation() }
+            catch { return }
+            await managedProgress()
+            await self?.subagentProgressPublished()
+        }
+    }
+    func subagentProgressPublished() { managedProgressTask = nil }
+    func endSubagentProgress() { managedProgressTask?.cancel(); managedProgressTask = nil; managedProgress = nil }
+    func subagentProgress(elapsed: Double) -> SubagentProgress {
+        let latest = partialText.isEmpty ? visible.last(where: { $0.role == "assistant" })?.text ?? "" : partialText
+        return SubagentProgress(phase: retryInfo.isNull ? activityPhase : "retry", elapsedMs: max(0, elapsed),
+                                requests: spend.reported + spend.unreported, tools: toolHistory.resultCount,
+                                preview: String(latest.suffix(256)), usd: spend.usd, reported: spend.reported, unreported: spend.unreported,
+                                inputTokens: cumulativeUsage.input, outputTokens: cumulativeUsage.output)
     }
     var canDelegate: Bool { subagentCoordinator != nil && journal != nil && !ephemeral && !titleTask && !isSubagent && !isConnectionTest }
 
@@ -60,8 +79,8 @@ extension AgentSession {
         accounting = nextAccounting; spend = total; familyBudgetEnabled = true
         return plan
     }
-    func subagentChanged(_ summary: SubagentSummary) {
-        subagentChangeRevision += 1
+    func subagentChanged(_ summary: SubagentSummary, discovery: Bool = true) {
+        if discovery { subagentChangeRevision += 1 }
         if toolStateOwners[summary.link.call.toolCallID] == summary.link.call.assistantMessageID,
            var card = toolStates[summary.link.call.toolCallID] {
             card["subagent"] = (try? subagentJSON(summary)) ?? .null
@@ -85,6 +104,7 @@ extension AgentSession {
                             "data":["delegationID":JSON(origin.link.delegationID),"status":JSON(result.status.rawValue),"result":try subagentJSON(result)]]
         var next = subagents; try next.consume(record, sessionID: id)
         try journal.append(record, flush: true); subagents = next
+        event("subagent.terminal")
     }
     func waitForSubagent() async { await runTask?.value }
     func subagentResult(_ plan: SubagentPlan, cancelled: Bool) -> SubagentToolResult {

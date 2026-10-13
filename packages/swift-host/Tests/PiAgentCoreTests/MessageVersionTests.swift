@@ -195,6 +195,11 @@ final class MessageVersionTests: XCTestCase {
         }
         XCTAssertGreaterThan(pages, 1, "three long replies do not fit one page")
         XCTAssertEqual(seen, ["first", "one f", "secon", "two f", "third", "three"])
+        let targeted = try await session.versionPage(["messageId": "a", "around": "c"])
+        XCTAssertEqual(targeted["start"].int, 4)
+        XCTAssertEqual(targeted["messages"].list.first?["id"].text, "c", "a linked card beyond the first byte-bounded page is reachable")
+        do { _ = try await session.versionPage(["messageId": "a", "around": "a2"]); XCTFail("target belongs to another version") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "message_missing") }
         do { _ = try await session.versionPage(["messageId": "a", "offset": 7]); XCTFail("past the end") }
         catch let error as AgentError { XCTAssertEqual(error.code, "invalid_range") }
         do { _ = try await session.versionPage(["messageId": "b"]); XCTFail("b was never edited") }

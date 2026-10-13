@@ -34,12 +34,13 @@ extension WorkspaceModel {
 
     /// Shows version `index` of the message the chat holds as `latestID`,
     /// version `live`; that one returns the transcript to it.
-    func showVersion(sessionID: String, latestID: String, index: Int, count: Int, ids: [String], live: Int? = nil) {
+    func showVersion(sessionID: String, latestID: String, index: Int, count: Int, ids: [String], live: Int? = nil, around: String? = nil) {
         guard let view = displays[sessionID], ids.count == count, (1...count).contains(index) else { return }
         view.versionFocus = latestID
         let live = live ?? count
         guard index != live else { latestVersion(sessionID: sessionID); return }
-        if let shown = view.versionView, shown.latestID == latestID, shown.index == index { return }
+        if let shown = view.versionView, shown.latestID == latestID, shown.index == index,
+           around == nil || shown.rows.contains(where: { $0.id == around }) { return }
         view.versionLoad?.cancel()
         view.versionView = TranscriptVersionView(latestID: latestID, index: index, count: count, ids: ids, live: live)
         let messageID = ids[index - 1]
@@ -51,9 +52,9 @@ extension WorkspaceModel {
                 // the rest follow it, each decoded off the main actor.
                 var offset: Int? = 0, first = true
                 while let from = offset {
-                    let page = try await self.readVersionPage(sessionID: sessionID, messageID: messageID, offset: from)
+                    let page = try await self.readVersionPage(sessionID: sessionID, messageID: messageID, offset: from, around: first ? around : nil)
                     guard current() else { return }
-                    var rows = TranscriptVersionView.readOnly(page.rows, index: index, count: count, ids: ids, first: first)
+                    var rows = TranscriptVersionView.readOnly(page.rows, index: index, count: count, ids: ids, first: first && around == nil)
                     // Old replies keep their receipts: the request log's figures for them.
                     if let workspaceID = self.record(sessionID)?.workspaceID,
                        let accounting = try? await self.traces.gatewayAccounting(sessionID: sessionID, workspaceID: workspaceID, messages: rows, includeTiming: false) {
@@ -94,17 +95,22 @@ extension WorkspaceModel {
 
     /// One page of a version's rows from the helper, decoded off the main
     /// actor, and where the next page starts.
-    func readVersionPage(sessionID: String, messageID: String, offset: Int) async throws -> (rows: [TranscriptMessage], tasks: [TaskPresentationRecord], next: Int?) {
+    func readVersionPage(sessionID: String, messageID: String, offset: Int, around: String? = nil) async throws -> (rows: [TranscriptMessage], tasks: [TaskPresentationRecord], next: Int?) {
         if let versionPageLoader {
             let loaded = try await versionPageLoader(sessionID, messageID)
+            if let around {
+                guard let at = loaded.rows.firstIndex(where: { $0.id == around }) else { throw HostError.failure("That message is not in this version.") }
+                return (Array(loaded.rows[at...]), loaded.tasks, nil)
+            }
             return (loaded.rows, loaded.tasks, nil)
         }
         guard let item = record(sessionID) else { throw HostError.failure("This conversation is no longer available.") }
         // An earlier version is read from the chat's own helper, as an edit is.
         let host = try await open(item)
         try Task.checkCancellation()
-        let result = try await host.request("session.version.page", sessionID: sessionID,
-                                            params: ["messageId": .string(messageID), "offset": .number(Double(offset))]).object ?? [:]
+        var params: [String: WireValue] = ["messageId": .string(messageID), "offset": .number(Double(offset))]
+        if let around { params["around"] = .string(around) }
+        let result = try await host.request("session.version.page", sessionID: sessionID, params: params).object ?? [:]
         let page = try await Task.detached(priority: .userInitiated) { () throws -> ([TranscriptMessage], [TaskPresentationRecord]) in
             let decoded = try TranscriptMessage.page(result["messages"] ?? .array([]))
             let records = (try? JSONDecoder().decode([TaskPresentationRecord].self, from: JSONEncoder().encode(result["taskRecords"] ?? .array([])))) ?? []
@@ -130,7 +136,7 @@ extension WorkspaceModel {
     /// app's own, not an unkept side, an imported original or a background task.
     func canForkFromReply(_ sessionID: String) -> Bool {
         guard let item = record(sessionID) else { return false }
-        return !item.imported && !item.isUtilityChat && !isEphemeral(sessionID)
+        return !item.isSubagent && !item.imported && !item.isUtilityChat && !isEphemeral(sessionID)
     }
 
     /// "Fork from here" on a reply: a new chat, "‹title› · fork", nested
@@ -139,7 +145,7 @@ extension WorkspaceModel {
     func forkFromReply(sessionID: String, messageID: String) {
         // The Inspector offers this for a chat with no display this launch
         // (never shown, or let go): the fork needs only its saved record.
-        guard !installPreparing, record(sessionID) != nil else { return }
+        guard !installPreparing, canForkFromReply(sessionID) else { return }
         if forkingReplies.contains(sessionID) { return }
         forkingReplies.insert(sessionID)
         // The fork opens only if the reader is still where they asked for

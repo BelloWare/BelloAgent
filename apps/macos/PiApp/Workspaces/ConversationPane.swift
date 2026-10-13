@@ -26,6 +26,7 @@ struct SideActions {
     private(set) var side: SideRecord?
     private var sideActions: SideActions?
 
+    private let subagentHeader = SubagentHeaderView()
     private let sideHeader: SideHeaderView
     private let sideLine = CALayer()
     private let recovered = RecoveredBannerView()
@@ -107,12 +108,30 @@ struct SideActions {
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
 
+    override var acceptsFirstResponder: Bool { chat?.isSubagent == true }
+    var canBackToSubagentParent: Bool {
+        guard side == nil, let chat, let link = chat.delegation, model.selectedID == chat.id,
+              model.record(link.budgetOwnerSessionID) != nil, model.conversationCommandsEnabled,
+              let window, window.isKeyWindow, window.attachedSheet == nil,
+              !(window.childWindows ?? []).contains(where: { $0.isVisible && $0.canBecomeKey }),
+              let responder = window.firstResponder as? NSView else { return false }
+        return responder === self || responder.isDescendant(of: transcript) || responder.isDescendant(of: subagentHeader) || responder.isDescendant(of: footer)
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.charactersIgnoringModifiers == "[", event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.window === window, canBackToSubagentParent, let id = chat?.id {
+            Task { await model.backToSubagentParent(id) }; return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
     // MARK: The chat shown
 
     /// Shows `chat`, its page `session`, and for a side its record and its
     /// header's actions. The rows, the composer and the queue follow before
     /// the pane is next drawn.
     func show(session: SessionDisplay, chat: ChatRecord, side: SideRecord? = nil, sideActions: SideActions? = nil) {
+        session.isManagedSubagent = chat.isSubagent
         let switched = session !== self.session
         self.session = session; self.chat = chat; self.side = side; self.sideActions = sideActions
         sideHeader.actions = sideActions
@@ -182,12 +201,16 @@ struct SideActions {
         let side = self.side.flatMap { model.sides[$0.parentID]?.id == $0.id ? model.sides[$0.parentID] : $0 } ?? self.side
         let showsStarter = session.historyState == .empty && session.messages.isEmpty && session.sendingRows.isEmpty && !session.busy && !session.loading
             && session.failureMessage == nil && session.sendFailure == nil
-            && !current.imported && !current.isBackgroundTask && projectAvailable && (side == nil || side?.pending == true)
+            && !current.isSubagent && !current.imported && !current.isBackgroundTask && projectAvailable && (side == nil || side?.pending == true)
         var failure: String?
         if case .failed(let error) = session.historyState { failure = error }
         let terminalWorkspace = model.terminalVisible && side == nil ? model.workspace(for: current.workspaceID).flatMap { $0.isScratch ? nil : $0 } : nil
         let kind: PaneFooterView.Kind
-        if !projectAvailable { kind = .projectUnavailable(retry: !model.configurationLoaded) }
+        if current.isSubagent {
+            let parent = current.delegation.flatMap { model.record($0.budgetOwnerSessionID) }
+            kind = .subagent(status: session.subagentStatus?.label ?? (session.busy ? "Running" : "Saved sub-agent"),
+                             busy: session.subagentStatus.map { !$0.terminal } ?? session.busy, parent: parent?.title ?? "Parent unavailable")
+        } else if !projectAvailable { kind = .projectUnavailable(retry: !model.configurationLoaded) }
         else if current.isBackgroundTask {
             kind = .backgroundTask(busy: session.busy, source: current.sourceSessionID.flatMap { model.record($0) != nil ? $0 : nil })
         } else if current.isArchived { kind = .archived }
@@ -197,9 +220,9 @@ struct SideActions {
         return State(sessionID: session.id, chat: current, side: side, showsStarter: showsStarter,
                      starterKey: showsStarter ? StarterPanelView.key(model: model, chat: current, sessionID: session.id) : "",
                      covered: Self.coversTranscript(session), failure: failure, progress: session.historyProgress,
-                     showsRecovered: session.uncertain && !session.busy && !session.recovered.isEmpty,
+                     showsRecovered: !current.isSubagent && session.uncertain && !session.busy && !session.recovered.isEmpty,
                      recovered: session.recovered.map(\.id),
-                     showsQueue: !session.queue.isEmpty || session.queueDetailID != nil,
+                     showsQueue: !current.isSubagent && (!session.queue.isEmpty || session.queueDetailID != nil),
                      terminalWorkspace: terminalWorkspace, missingFolder: model.missingProjectFolders[current.workspaceID],
                      footer: kind, transcriptState: session.state, canFork: model.canForkFromReply(session.id),
                      canQuote: model.canQuoteReply(session.id),
@@ -236,6 +259,12 @@ struct SideActions {
         if let side = state.side {
             sideHeader.update(side: side, chat: chat, session: session, boundary: state.sideBoundary, detail: state.sideBoundaryDetail, loading: state.sideLoading)
         }
+        if let link = chat.delegation {
+            if subagentHeader.superview !== self { addSubview(subagentHeader) }
+            subagentHeader.update(chat: chat, parent: model.record(link.budgetOwnerSessionID), back: { [weak model] in
+                Task { await model?.backToSubagentParent(chat.id) }
+            })
+        } else { subagentHeader.removeFromSuperview() }
         recovered.isHidden = !state.showsRecovered
         if state.showsRecovered { recovered.update(session.recovered, model: model) }
         // Over it: the starter card and the loading cover.
@@ -431,6 +460,10 @@ struct SideActions {
             frames.append((sideHeader, CGRect(x: 0, y: 0, width: width, height: height)))
             top = height + Self.sideLineHeight
         }
+        if subagentHeader.superview === self {
+            let height = subagentHeader.height(forWidth: width)
+            frames.append((subagentHeader, CGRect(x: 0, y: top, width: width, height: height))); top += height
+        }
         if !recovered.isHidden {
             let height = recovered.height(forWidth: width)
             frames.append((recovered, CGRect(x: 0, y: top, width: width, height: height)))
@@ -579,7 +612,7 @@ struct SideActions {
 /// What the chat's actions menu offers, built when it opens.
 enum ConversationActionsMenu {
     @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, session: SessionDisplay, chat: ChatRecord) -> [PiMenuEntry] {
-        if !chat.isBackgroundTask {
+        if !chat.isSubagent && !chat.isBackgroundTask {
             PiMenuEntry.button("Rename Chat…") { model.renameSession(chat.id) }
             if !chat.imported, !chat.isArchived {
                 PiMenuEntry.button("Generate Title", enabled: model.titleSuggestionsAvailable(for: model.profiles.first { $0.id == chat.profileID } ?? ProfileRecord())) {
@@ -587,17 +620,17 @@ enum ConversationActionsMenu {
                 }
             }
         }
-        if !model.isEphemeral(session.id) {
+        if !chat.isSubagent && !model.isEphemeral(session.id) {
             SessionOrganizationActions.entries(model: model, chat: chat)
             PiMenuEntry.divider
         }
-        if model.activeWebhook != nil, model.webhookEligible(chat.id) {
+        if !chat.isSubagent, model.activeWebhook != nil, model.webhookEligible(chat.id) {
             PiMenuEntry.button("Send Webhook When Done", checked: chat.webhookOff != true, identifier: "chatWebhook",
                                help: "When this chat finishes and waits for you, send the webhook set up in Settings") { model.toggleWebhook(for: chat.id) }
             PiMenuEntry.button("Preview Webhook…", identifier: "previewWebhook") { model.previewWebhook(chat.id) }
             PiMenuEntry.divider
         }
-        if model.side(session.id) == nil && !chat.isBackgroundTask {
+        if model.side(session.id) == nil && !chat.isSubagent && !chat.isBackgroundTask {
             PiMenuEntry.button("Open Side", enabled: model.canOpenSide(session.id)) { model.openSide(parentID: session.id) }
             PiMenuEntry.button("Portable Context Handoff…") { model.portableHandoff() }
             if chat.toolMode == ChatRecord.readOnlyTools && chat.connectionTest != true && chat.workspaceID != WorkspaceRecord.scratchID {
@@ -613,7 +646,7 @@ enum ConversationActionsMenu {
         PiMenuEntry.divider
         PiMenuEntry.button("Search and Copy Conversation…") { model.inspectConversation(session.id) }
         PiMenuEntry.button("Session Inspector…", identifier: "sessionInspector") { model.inspect(session.id) }
-        if model.side(session.id) == nil {
+        if !chat.isSubagent && model.side(session.id) == nil {
             PiMenuEntry.divider
             PiMenuEntry.button("Delete Chat…") { model.deleteChat(chat.id) }
         }

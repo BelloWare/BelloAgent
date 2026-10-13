@@ -24,6 +24,13 @@ extension WorkspaceModel {
     /// this reconciliation without taking the reader back to its chat.
     func reconcileSubmissionDraft(_ item: ChatRecord, view: SessionDisplay, current: () -> Bool) async throws -> Bool {
         guard let store else { throw StoreError.unavailable }
+        if item.isSubagent {
+            let metadata = try await store.selectionMetadata(id: view.id, draft: false, anchor: view.scrollAnchor == nil)
+            guard current() else { return false }
+            if view.scrollAnchor == nil { view.scrollAnchor = metadata.anchor }
+            view.selectionMetadataLoaded = true; view.draftReady = false
+            return true
+        }
         let wantsMetadata = !view.selectionMetadataLoaded, draftAtStart = view.savedDraft
         let metadata = try await store.selectionMetadata(id: view.id, draft: wantsMetadata, anchor: wantsMetadata && view.scrollAnchor == nil)
         guard current() else { return false }
@@ -98,6 +105,7 @@ extension WorkspaceModel {
         return true
     }
     func draftChanged(_ view: SessionDisplay) {
+        guard record(view.id)?.isSubagent != true else { return }
         guard draftWrites.recoveries[view.id] == nil else { return }
         // Writing a message is the moment to have its helper ready.
         prewarm(view.id)
@@ -151,7 +159,7 @@ extension WorkspaceModel {
                 // writing it erased the draft that is on disk.
                 continue
             }
-            try await store.put(view.savedDraft, kind: "draft", id: view.id)
+            if record(view.id)?.isSubagent != true { try await store.put(view.savedDraft, kind: "draft", id: view.id) }
             if let anchor = view.scrollAnchor { try await store.put(anchor, kind: "anchor", id: view.id) }
         }
     }

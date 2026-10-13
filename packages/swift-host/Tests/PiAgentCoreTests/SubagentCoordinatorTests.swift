@@ -68,6 +68,38 @@ final class SubagentCoordinatorTests: XCTestCase {
         await restored.close()
     }
 
+    func testProgressIsCoalescedAndTerminalCardsRetainNavigationAfterReopen() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = DelegationClient(count: 1), registry = DelegationRegistry()
+        let coordinator = SubagentCoordinator(register: { child, _, _, _ in await registry.add(child) })
+        let parent = try await makeParent(root, client: client, coordinator: coordinator)
+        _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "task"), steer: false)
+        try await eventually { await client.active == 1 }
+        let children = await registry.children
+        let child = try XCTUnwrap(children.first)
+        let before = await parent.sequence, discovery = await parent.subagentChangeRevision
+        for _ in 0..<100 { await child.event("test-progress") }
+        try await Task.sleep(for: .milliseconds(400))
+        let after = await parent.sequence, card = await parent.toolStates["call-0"]
+        XCTAssertGreaterThan(after, before)
+        XCTAssertLessThanOrEqual(after - before, 2, "Progress publication is coalesced, not one parent event per child token")
+        let afterDiscovery = await parent.subagentChangeRevision
+        XCTAssertEqual(afterDiscovery, discovery, "Progress must not rescan discovery or reorder the sidebar")
+        XCTAssertNotNil(card?["subagent"]["progress"]["phase"].text)
+        await client.releaseAll()
+        try await eventually { !(await parent.isRunning) }
+        let history = await parent.history, path = await parent.path
+        let result = try XCTUnwrap(history.first { $0.toolName == "subagent" })
+        XCTAssertEqual(result.nativeSubagent?["summary"]["progress"]["reported"].int, 1)
+        await parent.close(); await child.close()
+        let restored = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+            readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: path)
+        let issuer = try XCTUnwrap(history.first { $0.content.contains { $0["name"].text == "subagent" } })
+        let row = await restored.displayMessage(issuer)
+        XCTAssertEqual(row["tools"].list.first?["nativeSubagent"], result.nativeSubagent)
+        await restored.close()
+    }
+
     func testTwoOwnersHaveIndependentLimitsWithoutAHelperWideCap() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = DelegationClient(count: 17), registry = DelegationRegistry()

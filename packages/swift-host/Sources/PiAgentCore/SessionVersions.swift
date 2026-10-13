@@ -105,7 +105,14 @@ extension AgentSession {
             throw AgentError("version_missing", "That message has no earlier versions.")
         }
         guard let rows = versionRows(id) else { throw AgentError("version_missing", "That version's rows are not retained.") }
-        let offset = try boundedInt(params["offset"], maximum: 1_000_000)
+        let offset: Int
+        if !params["around"].isNull {
+            let target = try identity(params["around"])
+            guard let found = rows.firstIndex(where: { $0.id == target }) else { throw AgentError("message_missing", "That message is not in this version.") }
+            // Start at the linked row so a preceding large reply cannot push
+            // it outside this byte-bounded page.
+            offset = found
+        } else { offset = try boundedInt(params["offset"], maximum: 1_000_000) }
         guard offset <= rows.count else { throw AgentError("invalid_range", "The version page starts past its last row.") }
         var page: [JSON] = [], bytes = HistoryWindowPolicy.metadataAllowance, end = offset
         for message in rows[offset...] {

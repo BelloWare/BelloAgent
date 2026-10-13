@@ -235,7 +235,7 @@ import AppKit
             accounting.removeFromSuperview(); self.accounting = nil
         }
         setAccessibilityLabel("\(message.role) message")
-        setAccessibilityCustomActions(TranscriptRowAction.all(message, inputs.actions, forks: inputs.environment.forks)
+        setAccessibilityCustomActions(TranscriptRowAction.all(message, inputs.actions, forks: inputs.environment.forks, allowsEditing: !inputs.environment.managedChild)
             .map { action in NSAccessibilityCustomAction(name: action.name) { [weak self] in
                 guard self?.inputs.environment.isEnabled == true else { return false }
                 action.perform(); return true
@@ -247,7 +247,7 @@ import AppKit
     }
     override func keepsPlace(_ view: NSView) -> Bool { view === capsule || view === words || (view === header && message.failedEnd == nil) }
     private func refreshBand() {
-        let wanted = hovering && !drawsNothing ? TranscriptRowPills.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: nil) : []
+        let wanted = hovering && !drawsNothing ? TranscriptRowPills.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: nil, allowsEditing: !inputs.environment.managedChild) : []
         let changed = band.pills.map(\.title) != wanted.map(\.title)
         band.show(wanted, enabled: inputs.environment.isEnabled)
         // The accounting shares the band with the pills.

@@ -27,6 +27,8 @@ actor SubagentCoordinator {
         var status: SubagentStatus = .queued
         var allocated = false, cancelled = false, finishing = false
         var task: Task<Void, Never>?
+        let startedAt = nowMS()
+        var progress: SubagentProgress?
     }
     private let register: Register
     private var jobs: [SubagentCallKey: Job] = [:]
@@ -122,6 +124,11 @@ actor SubagentCoordinator {
         guard var job = jobs[key], !job.status.terminal, !job.finishing, let runtime = job.runtime else { return }
         job.finishing = true; jobs[key] = job
         var result = result
+        await runtime.child.endSubagentProgress()
+        let progress = await runtime.child.subagentProgress(elapsed: nowMS() - job.startedAt)
+        result.metadata["summary"] = (try? subagentJSON(SubagentSummary(link: job.plan.origin.link, description: job.plan.origin.description,
+            model: job.plan.origin.model.model, status: result.status, revision: await runtime.environment.parent.sequence,
+            tools: job.plan.origin.tools, progress: progress))) ?? .null
         do { try await runtime.child.saveSubagentTerminal(result) }
         catch {
             let failure = AgentError("subagent_persistence", "The child outcome could not be saved. Inspect its journal and effects before continuing.")
@@ -152,17 +159,27 @@ actor SubagentCoordinator {
     }
     func cancel(_ key: SubagentCallKey) async {
         guard var job = jobs[key], !job.status.terminal, !job.cancelled, !job.finishing, let runtime = job.runtime else { return }
-        job.cancelled = true; job.task?.cancel(); jobs[key] = job
+        job.cancelled = true; job.task?.cancel()
+        if job.allocated { job.status = .stopping }
+        jobs[key] = job
+        await publish(key)
         await runtime.child.stop()
         if !job.allocated {
             await finish(key, result: SubagentToolResult(plan: job.plan, status: .notExecuted,
                                                        error: AgentError("parent_stopped", "Cancelled before execution. This task was not restarted.")))
         }
     }
-    private func publish(_ key: SubagentCallKey) async {
+    func progress(_ key: SubagentCallKey) async {
+        guard let job = jobs[key], !job.status.terminal, !job.finishing else { return }
+        await publish(key, discovery: false)
+    }
+    private func publish(_ key: SubagentCallKey, discovery: Bool = true) async {
         guard let job = jobs[key], let runtime = job.runtime else { return }
+        let progress = await runtime.child.subagentProgress(elapsed: nowMS() - job.startedAt)
+        guard jobs[key]?.status == job.status else { return }
+        jobs[key]?.progress = progress
         await runtime.environment.parent.subagentChanged(SubagentSummary(link: job.plan.origin.link, description: job.plan.origin.description,
-                                                                         model: job.plan.origin.model.model, status: job.status, revision: await runtime.environment.parent.sequence))
+                                                                         model: job.plan.origin.model.model, status: job.status, revision: await runtime.environment.parent.sequence, tools: job.plan.origin.tools, progress: progress), discovery: discovery)
     }
     /// Parent results and their order are journal-backed. The coordinator keeps
     /// only live jobs and terminal answers awaiting durable parent consumption.
@@ -173,7 +190,7 @@ actor SubagentCoordinator {
         return ["revision":JSON(revision), "active":JSON(active[owner, default: 0]), "total":JSON(ids.count),
                 "cursor":next < ids.count ? JSON(next) : .null, "children":.array(page.compactMap { state.plans[$0] }.compactMap { plan in
             let status = jobs[plan.origin.link.call]?.status ?? state.outcomes?[plan.origin.link.delegationID] ?? .interrupted
-            return try? subagentJSON(SubagentSummary(link: plan.origin.link, description: plan.origin.description, model: plan.origin.model.model, status: status, revision: revision))
+            return try? subagentJSON(SubagentSummary(link: plan.origin.link, description: plan.origin.description, model: plan.origin.model.model, status: status, revision: revision, tools: plan.origin.tools, progress: jobs[plan.origin.link.call]?.progress))
         })]
     }
     func consumed(_ keys: [SubagentCallKey]) {

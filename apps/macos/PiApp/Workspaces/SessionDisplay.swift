@@ -81,6 +81,8 @@ struct TranscriptVersionView: Equatable, Sendable {
 
 @MainActor final class SessionDisplay: ObservableObject {
     var subagentsRevision: String?
+    var isManagedSubagent = false
+    @Published var subagentStatus: SubagentStatus?
     /// Committed activity only: text, draft, selection and context rendering do not enter this stream.
     let activityChanges = PassthroughSubject<Void, Never>()
     let id: String
@@ -435,7 +437,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The chat's journal ends in a record cut off mid-write: its complete
     /// records are shown read-only and Recover Copy is offered instead of the composer.
     @Published var damagedTail = false
-    var canResumeQueue: Bool { !busy && (!queue.isEmpty || queuePaused || runState.holdsQueue) }
+    var canResumeQueue: Bool { !isManagedSubagent && !busy && (!queue.isEmpty || queuePaused || runState.holdsQueue) }
     /// Whether the helper would run the model on Resume (`run.continue`): the
     /// chat's context ends with something the model has not answered — a user
     /// message, or tool results a stop cut off. Nil until a snapshot says
@@ -447,7 +449,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var resuming = false { didSet { if resuming != oldValue { publishTranscript() } } }
     /// The chat's run stopped before it finished (Stop, a quit, a restart or
     /// an update paused it) and Resume would go on with it.
-    var offersResume: Bool { showsPausedRun && !resuming }
+    var offersResume: Bool { !isManagedSubagent && showsPausedRun && !resuming }
     /// The Paused row is drawn: while a Resume is on its way it stays, without its button.
     var showsPausedRun: Bool { !busy && !loading && runState.holdsQueue && continuable != false && queueEditHold == nil }
     func observeRunState(_ snapshot: [String: WireValue]) {

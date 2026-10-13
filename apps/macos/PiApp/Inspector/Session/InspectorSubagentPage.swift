@@ -21,8 +21,7 @@ import AppKit
             actions.append(PiKit.Button("Parent request", symbol: "arrow.turn.up.left", style: .ghost) { [weak inspector] in inspector?.focus(.request(parent)) })
         }
         actions.append(PiKit.Button("Originating tool", symbol: "arrow.up.left", style: .ghost) { [weak inspector] in
-            guard let workspace = inspector?.workspace else { return }
-            Task { _ = await workspace.revealMessage(sessionID: link.call.parentSessionID, messageID: link.call.assistantMessageID) }
+            inspector?.showSubagentParent(link)
         })
         var views: [NSView] = [InspectorPageHeader(group.title, subtitle: group.summary.model, badges: [PiKit.Badge(text: group.summary.status.label, tone: group.summary.status == .completed ? .success : .neutral)], actions: []),
                                inspectorText(group.detail, color: .piInkSecondary), inspectorRow(actions.map { .view($0) }, spacing: 8)]

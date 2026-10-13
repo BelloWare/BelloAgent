@@ -45,7 +45,7 @@ extension WorkspaceModel {
         hosts[workspaceID]?.isBusy = sides.values.contains { $0.workspaceID == workspaceID && !$0.kept && !$0.pending } || displays.values.contains { ($0.hasWork || $0.loading) && record($0.id)?.workspaceID == workspaceID }
     }
     func canOpenSide(_ id: String) -> Bool {
-        guard let parent = record(id), orphanedSideRefusal(id) == nil else { return false }
+        guard let parent = record(id), !parent.isSubagent, orphanedSideRefusal(id) == nil else { return false }
         return !parent.imported && parent.connectionTest != true && parent.workspaceID != WorkspaceRecord.scratchID
     }
     /// A saved side whose chat was deleted stays in the sidebar as a chat of
@@ -340,7 +340,7 @@ extension WorkspaceModel {
     /// side shown there. The replaced side keeps its display and any running
     /// work; only the pane changes.
     func showSide(_ id: String, revealInSidebar: Bool = true) async {
-        guard !installPreparing, let child = chats.first(where: { $0.id == id }), let parentID = child.parentSessionID, record(parentID) != nil, !child.imported else { return }
+        guard !installPreparing, let child = chats.first(where: { $0.id == id }), !child.isSubagent, let parentID = child.parentSessionID, record(parentID) != nil, !child.imported else { return }
         if let shown = sides[parentID], shown.id == id { await selectSide(id, revealInSidebar: revealInSidebar); return }
         if let shown = sides[parentID], shown.pending, !(await discardPendingSide(shown)) { return }
         if let shown = sides[parentID], !shown.kept || shown.keeping { error = "Wait for the current side to finish opening before switching."; return }

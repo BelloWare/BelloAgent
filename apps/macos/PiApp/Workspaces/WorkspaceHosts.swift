@@ -162,6 +162,7 @@ extension WorkspaceModel {
         sessionClosings[id] = (token, task)
     }
     func open(_ item: ChatRecord, automaticContext: Bool = false) async throws -> HostSupervisor {
+        displays[item.id]?.isManagedSubagent = item.isSubagent
         // A close sent when the chat's display was let go of lands first, so
         // this open is not answered by the session being unloaded; so does a
         // move to another connection, so it is not opened on the old one.
@@ -215,6 +216,7 @@ extension WorkspaceModel {
         } else if !opened.contains(item.id) {
             var wire = profile.wire.object ?? [:]
             if let headers = credential["headers"] { wire["headers"] = headers }
+            if item.isSubagent, let model = item.model { wire["modelId"] = .string(model) }
             var params: [String: WireValue] = ["profile": .object(wire), "apiKey": .string(key), "toolMode": .string(item.toolMode)]
             if let grants = subagentModels(for: item) { params["subagentModels"] = grants }
             if let handoff = try await store.get(WireValue.self, kind: "handoff", id: item.id) { params["handoff"] = handoff }

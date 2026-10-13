@@ -27,6 +27,8 @@ extension NativeTranscriptPane {
         onViewportReady = { [weak model] in model?.historyViewportReady($0, generation: $1) }
         onJump = { [weak model] in model?.jumpToHistoryPosition($0, position: $1, offset: $2) }
         var environment = TranscriptRowEnvironment(view: self)
+        environment.managedChild = model.record(session.id)?.isSubagent == true
+        environment.sessionID = session.id
         environment.isEnabled = enabled; environment.forks = canFork; environment.opensFiles = true
         update(session: session, state: state, actions: TranscriptActions(inspect: { model.showMessageDetail(session.id, messageID: $0) },
                                                         edit: { model.editMessage($0, sessionID: session.id) },
@@ -55,6 +57,9 @@ extension NativeTranscriptPane {
                                                         switchVersion: { [weak model] messageID, step in model?.showVersion(sessionID: session.id, messageID: messageID, step: step) },
                                                         latestVersion: { [weak model] in model?.latestVersion(sessionID: session.id) },
                                                         openFile: { [weak model] path, lines in model?.openFile(fromChat: session.id, path: path, lines: lines) },
-                                                        resolveReplyFile: { [weak model] text in await model?.resolveReplyFile(text, fromChat: session.id) }), environment: environment, reduceMotion: piReducesMotion)
+                                                        resolveReplyFile: { [weak model] text in await model?.resolveReplyFile(text, fromChat: session.id) },
+                                                        openSubagent: { [weak model] target in Task { await model?.openSubagent(target) } },
+                                                        inspectSubagent: { [weak model] target in model?.openInspector(session: target.ownerID, focus: .subagent(target.delegationID)) },
+                                                        stopSubagent: { [weak model] target in model?.stopSubagent(target, from: session.id) }), environment: environment, reduceMotion: piReducesMotion)
     }
 }

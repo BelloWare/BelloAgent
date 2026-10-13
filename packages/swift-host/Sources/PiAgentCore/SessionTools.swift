@@ -9,6 +9,7 @@ import Foundation
 struct ToolHistoryIndex {
     var owners: [String: String] = [:]
     var results: [String: [String: Int]] = [:]
+    private(set) var resultCount = 0
     init(_ messages: [ChatMessage] = []) {
         for (index, message) in messages.enumerated() { append(message, at: index) }
     }
@@ -18,6 +19,7 @@ struct ToolHistoryIndex {
                 if let id = call["id"].text { owners[id] = message.id }
             }
         } else if message.role == "toolResult", let id = message.toolCallId, let owner = owners[id] {
+            if results[owner]?[id] == nil { resultCount += 1 }
             results[owner, default: [:]][id] = index
         }
     }

@@ -102,6 +102,8 @@ public actor AgentSession {
     var familyCancelled: (@Sendable (Int) -> Void)?
     var subagentCoordinator: SubagentCoordinator?
     var managedCancellation: (@Sendable () -> Void)?
+    var managedProgress: (@Sendable () async -> Void)?
+    var managedProgressTask: Task<Void, Never>?
     /// Whether this journal records every attempt's cost from its start: a
     /// new chat does, and so does one with a cost record. A chat written
     /// before cost records existed takes its earlier spend from the app once.
@@ -520,6 +522,7 @@ public actor AgentSession {
         sequence += 1; events.append(["seq":JSON(sequence),"type":JSON(type),"payload":payload])
         if events.count > Self.retainedEvents+Self.retainedEventSlack { events.removeFirst(events.count-Self.retainedEvents) }
         changed(id,sequence)
+        scheduleSubagentProgress()
     }
     /// Set while a retry starts, so the run answers the failed turn before it
     /// looks at queued follow-ups.

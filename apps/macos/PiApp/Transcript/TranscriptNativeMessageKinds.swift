@@ -244,7 +244,7 @@ import AppKit
             accounting.update(totals, environment: environment) { actions.inspect(id) }
         }
         setAccessibilityLabel("Context compacted")
-        setAccessibilityCustomActions(TranscriptRowAction.all(message, actions)
+        setAccessibilityCustomActions(TranscriptRowAction.all(message, actions, allowsEditing: !inputs.environment.managedChild)
             .map { action in NSAccessibilityCustomAction(name: action.name) { [weak self] in
                 guard self?.inputs.environment.isEnabled == true else { return false }
                 action.perform(); return true
@@ -256,7 +256,7 @@ import AppKit
             || (view === accounting && !hasAccounting)
     }
     private func refreshBand() {
-        let wanted = hovering && !drawsNothing ? TranscriptRowPills.pills(message, actions: inputs.actions, forks: false, source: nil) : []
+        let wanted = hovering && !drawsNothing ? TranscriptRowPills.pills(message, actions: inputs.actions, forks: false, source: nil, allowsEditing: !inputs.environment.managedChild) : []
         // The pills share the header's line: in a narrow card they can make
         // the title wrap, and the row grow, as SwiftUI's did.
         let width = bounds.width > 0 ? bounds.width : inputs.width

@@ -72,7 +72,7 @@ import AppKit
     var builtRows: [TranscriptNativeActionRow] { rows }
     var workList: NativeWorkListContainer? { list }
     func update(tools: [ToolView], openTools: Set<String>, fetched: [String: ToolInputDocument], toggle: @escaping (String) -> Void,
-                openFile: ((String, ClosedRange<Int>?) -> Void)?, environment: TranscriptRowEnvironment) {
+                openFile: ((String, ClosedRange<Int>?) -> Void)?, environment: TranscriptRowEnvironment, actions: TranscriptActions = .init()) {
         rightToLeft = environment.layoutDirection == .rightToLeft
         if tools.count >= NativeWorkListContainer.minimumRowCount {
             for row in rows { row.removeFromSuperview() }
@@ -83,7 +83,7 @@ import AppKit
                 addSubview(list); self.list = list
                 return list
             }()
-            list.update(tools: tools, openTools: openTools, fetched: fetched, toggle: toggle, openFile: openFile, environment: environment)
+            list.update(tools: tools, openTools: openTools, fetched: fetched, toggle: toggle, openFile: openFile, environment: environment, actions: actions)
         } else {
             list?.removeFromSuperview(); list = nil
             while rows.count > tools.count { rows.removeLast().removeFromSuperview() }
@@ -94,7 +94,7 @@ import AppKit
             }
             for (row, tool) in zip(rows, tools) {
                 let id = tool.id
-                row.update(tool: tool, open: openTools.contains(id), fetched: fetched[id], environment: environment, toggle: { toggle(id) }, openFile: openFile)
+                row.update(tool: tool, open: openTools.contains(id), fetched: fetched[id], environment: environment, toggle: { toggle(id) }, openFile: openFile, actions: actions)
             }
         }
         needsLayout = true
@@ -346,7 +346,7 @@ import AppKit
             func key(_ tool: String) -> String { scoped ? ToolOccurrence.key(id, tool) : tool }
             activity.update(tools: tools, openTools: Set(tools.filter { disclosure.openTools.contains(key($0.id)) }.map(\.id)),
                             fetched: Dictionary(tools.compactMap { tool in disclosure.toolInputs[key(tool.id)].map { (tool.id, $0) } }, uniquingKeysWith: { _, last in last }),
-                            toggle: { toggle(.tool(key($0))) }, openFile: actions.openFile, environment: environment)
+                            toggle: { toggle(.tool(key($0))) }, openFile: actions.openFile, environment: environment, actions: actions)
         } else if let activity { activity.removeFromSuperview(); self.activity = nil }
         showsAccounting = (reply.accounting?.requests ?? 0) > 0
             && (!(reply.tools ?? []).isEmpty || !(reply.thinking ?? "").isEmpty || reply.id != block.message?.id)

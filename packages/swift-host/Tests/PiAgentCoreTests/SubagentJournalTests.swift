@@ -2,6 +2,21 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentJournalTests: XCTestCase {
+    func testDurableTerminalNotifiesTheOpenChildViewer() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let origin = subagentFixtureOrigin()
+        let child = try AgentSession(id: "child", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+                                     readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]),
+                                     tools: DisabledTools(), traces: TraceStore(), prepared: nil, subagentOrigin: origin)
+        let before = await child.sequence
+        let plan = SubagentPlan(origin: origin, task: "task", resultMessageID: "result")
+        try await child.saveSubagentTerminal(SubagentToolResult(plan: plan, status: .completed, text: "answer"))
+        let after = await child.sequence, snapshot = await child.snapshot()
+        XCTAssertGreaterThan(after, before, "The viewer must learn that coordinator settlement is complete")
+        XCTAssertEqual(snapshot["subagentStatus"].text, "completed")
+        await child.close()
+    }
+
     func testFrozenMCPPolicyIsDurableAndCannotBeReplaced() throws {
         var value = try subagentJSON(subagentFixtureOrigin())
         value["mcpPolicy"] = ["server":"original-digest"]
