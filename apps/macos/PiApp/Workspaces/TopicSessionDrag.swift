@@ -123,6 +123,9 @@ final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
     /// deliberate pull shows the drag image at once.
     static let dragThreshold: CGFloat = 4
     var actions = TopicSessionRowActions()
+    /// Detaching cancels a held press even if a pool reattaches this surface
+    /// to the same window with another chat before the next event arrives.
+    private var pressGeneration = 0
     /// The row's own buttons, in this view's coordinates: presses there are theirs.
     var controls: [CGRect] = []
     private var hoverTracking: NSTrackingArea?
@@ -164,7 +167,7 @@ final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         // The second press of a double-click renames; the first already selected.
         guard event.clickCount < 2 else { actions.doubleClick(); return }
-        let item = actions.item(), origin = event.locationInWindow, pressed = window
+        let item = actions.item(), origin = event.locationInWindow, pressed = window, generation = pressGeneration
         var idle = 0
         // Hold the press until it declares itself: a drag past the threshold, or
         // the click the row has always handled.
@@ -181,14 +184,14 @@ final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
                 // The button is no longer down, the row left its window, or the
                 // press has been "held" without a single event for longer than
                 // anyone holds a row: none of those is a press to wait on.
-                guard NSEvent.pressedMouseButtons & 1 == 1, window === pressed, idle < Self.pressIdleLimit else { return }
+                guard NSEvent.pressedMouseButtons & 1 == 1, window === pressed, generation == pressGeneration, idle < Self.pressIdleLimit else { return }
                 continue
             }
             idle = 0
             // The row went away while it was held: a chat deleted from another
             // window, a filter flipping, a topic collapsing. Releasing must not
             // then open or mark whatever used to be here.
-            guard window === pressed else { return }
+            guard window === pressed, generation == pressGeneration else { return }
             guard next.type == .leftMouseDragged else { break }
             guard let item, pressed != nil, Self.startsDrag(from: origin, to: next.locationInWindow) else { continue }
             beginDrag(item, with: next)
@@ -230,7 +233,10 @@ final class TopicSessionDragSurfaceView: NSView, NSDraggingSource {
     /// pushed, and it is popped again exactly the way `piPointer` does.
     override func mouseEntered(with event: NSEvent) { pushCursor() }
     override func mouseExited(with event: NSEvent) { popCursor() }
-    override func viewDidMoveToWindow() { if window == nil { popCursor() } }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { pressGeneration &+= 1; popCursor() }
+    }
     /// AppKit shows its own cursor for the length of a drag, and sends no exit
     /// while it does: ours steps aside and returns if the row is still under it.
     func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) { popCursor(); actions.dragging(true) }

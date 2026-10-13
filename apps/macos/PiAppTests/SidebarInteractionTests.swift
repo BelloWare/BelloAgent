@@ -157,6 +157,51 @@ final class SidebarInteractionTests: XCTestCase {
         window.close()
     }
 
+    @MainActor func testAPressedRowRecycledInTheSameWindowCannotMarkItsNewChat() throws {
+        drain()
+        let root = scratchRoot("sidebar-pressed-row-reuse")
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 280, height: 320))
+        let document = SidebarListDocument(model: model)
+        scroll.documentView = document
+        let window = NSWindow(contentRect: scroll.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = scroll
+        defer {
+            drain(); window.contentView = nil; window.close(); model.shutdown()
+            try? FileManager.default.removeItem(at: root)
+        }
+        model.chats = (0..<200).map { chat("chat\($0)", order: Int64($0)) }
+        var entries = SidebarListContents(entries: model.chats.map {
+            .chat(chat: $0, state: SidebarChatRowState(draggable: true, available: 220), projectID: "project")
+        }, gaps: Array(repeating: 3, count: 200), owners: Array(repeating: ("project", nil), count: 200))
+        document.update(entries, width: 280, animated: false)
+        scroll.contentView.scroll(to: CGPoint(x: 0, y: try XCTUnwrap(document.frame(of: "chat|chat50")).minY))
+        document.materialize()
+        document.layoutSubtreeIfNeeded()
+        let row = try XCTUnwrap(document.views["chat|chat55"] as? SidebarChatRowView)
+        let surface = try XCTUnwrap(surfaces(row).first)
+        let release = Unchecked(try mouse(.leftMouseUp, window: window))
+        var movedDuringPress = false
+        // A pin finishing while mouseDown tracks moves the pressed chat to
+        // the top. Its control is then reused for a different mounted chat.
+        RunLoop.main.perform(inModes: [.eventTracking]) {
+            MainActor.assumeIsolated {
+                let pinned = entries.entries.remove(at: 55)
+                entries.entries.insert(pinned, at: 0)
+                document.update(entries, width: 280, animated: false)
+                movedDuringPress = true
+                XCTAssertNotEqual(row.chat.id, "chat55", "Exercise actual rebinding, not just removal")
+                XCTAssertTrue(surface.window === window, "The old window-identity check still passes")
+                NSApp.postEvent(release.value, atStart: false)
+            }
+        }
+        surface.mouseDown(with: try mouse(.leftMouseDown, window: window, modifiers: .command))
+        XCTAssertTrue(movedDuringPress)
+        print("REUSE-PRESS wrongly marked chats: \(model.markedSessionIDs.count)")
+        XCTAssertTrue(model.markedSessionIDs.isEmpty, "A release cannot act on the row's new binding")
+    }
+
     // MARK: Cursor
 
     /// Every `NSCursor.push` needs exactly one `pop`. A window that closes under
