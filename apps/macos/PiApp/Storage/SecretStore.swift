@@ -1,21 +1,23 @@
 import Foundation
 
-/// Hands one continuation to whichever finishes first: the Security call on
-/// the keychain queue, or the timeout on another. The lock makes the handover
-/// exactly once, so the continuation is never resumed twice or dropped.
-private final class KeychainCompletion<T: Sendable>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var continuation: CheckedContinuation<T, Error>?
-    init(_ continuation: CheckedContinuation<T, Error>) { self.continuation = continuation }
-    func finish(_ result: Result<T, Error>) {
-        lock.lock(); let continuation = self.continuation; self.continuation = nil; lock.unlock()
-        continuation?.resume(with: result)
+struct KeychainTimeout: LocalizedError, Sendable {
+    let started: Bool
+    /// Finishes when the operation returns, even if that preceded the catch.
+    /// No credentials or result values leave the worker through this signal.
+    let completion: AsyncStream<Void>
+    var errorDescription: String? {
+        started
+            ? "Keychain did not respond after starting the operation; it may still complete. Review its access prompt or reopen the signed app. No provider request was sent."
+            : "Keychain did not respond before the operation could start. It was cancelled and will not run. Review its access prompt or reopen the signed app. No provider request was sent."
     }
 }
 /// Bookkeeping for one dispatched operation, guarded by the worker's lock.
-private final class KeychainSlot: @unchecked Sendable {
+private final class KeychainSlot<T: Sendable>: @unchecked Sendable {
+    var continuation: CheckedContinuation<T, Error>?
+    var started = false
     var completed = false
     var timedOut = false
+    init(_ continuation: CheckedContinuation<T, Error>) { self.continuation = continuation }
 }
 /// The one place a synchronous Security call is made from, on its own serial
 /// queue. Every mutable field below is read and written only under `lock`;
@@ -47,24 +49,35 @@ final class KeychainWorker: @unchecked Sendable {
                 return
             }
             inFlight += 1; lock.unlock()
-            let completion = KeychainCompletion(continuation), slot = KeychainSlot()
+            let slot = KeychainSlot(continuation)
+            let (resolution, resolved) = AsyncStream<Void>.makeStream()
             queue.async {
+                self.lock.lock()
+                guard !slot.timedOut else {
+                    slot.completed = true; self.inFlight -= 1; self.stalled -= 1
+                    self.lock.unlock(); resolved.finish(); return
+                }
+                // Start and timeout compete under the same lock. A caller
+                // whose queued operation timed out can trust it never ran.
+                slot.started = true; self.lock.unlock()
                 let result = Result { try operation() }
                 self.lock.lock()
                 slot.completed = true; self.inFlight -= 1
                 if slot.timedOut { self.stalled -= 1 }
+                let continuation = slot.continuation; slot.continuation = nil
                 self.lock.unlock()
-                completion.finish(result)
+                continuation?.resume(with: result)
+                resolved.finish()
             }
             // Release the UI's wait with a clear error, and let a bounded number
             // of later operations queue behind the one that never answered.
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) {
                 self.lock.lock()
-                let stalling = !slot.completed
-                if stalling { slot.timedOut = true; self.stalled += 1 }
+                guard !slot.completed else { self.lock.unlock(); return }
+                slot.timedOut = true; self.stalled += 1
+                let started = slot.started, continuation = slot.continuation; slot.continuation = nil
                 self.lock.unlock()
-                guard stalling else { return }
-                completion.finish(.failure(HostError.failure("Keychain did not respond. Review its access prompt or reopen the signed app. No provider request was sent.")))
+                continuation?.resume(throwing: KeychainTimeout(started: started, completion: resolution))
             }
         }
     }

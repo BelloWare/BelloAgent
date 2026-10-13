@@ -198,6 +198,11 @@ protocol VaultStorage: Sendable {
     func replace(expected: Data?, with replacement: Data) throws
 }
 
+struct VaultUpdateUncertain: LocalizedError, Sendable {
+    let completion: AsyncStream<Void>
+    var errorDescription: String? { "Keychain did not respond after the update started. Your changes may have been saved. Review its access prompt, then reload Settings before trying again." }
+}
+
 actor ConfigurationVault {
     static let maximumBytes = 2_097_152
     #if PI_LAUNCH_FIXTURE
@@ -206,10 +211,10 @@ actor ConfigurationVault {
     static let shared = ConfigurationVault(storage: KeychainVaultStorage())
     #endif
     private let storage: any VaultStorage
-    private let worker = KeychainWorker()
+    private let worker: KeychainWorker
     private var occupied = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
-    init(storage: any VaultStorage) { self.storage = storage }
+    init(storage: any VaultStorage, worker: KeychainWorker = KeychainWorker()) { self.storage = storage; self.worker = worker }
     private func acquire() async throws {
         if !occupied { occupied = true; return }
         guard waiters.count < 32 else { throw VaultError.busy }
@@ -236,7 +241,7 @@ actor ConfigurationVault {
     func update(expectedRevision: Int64, _ change: @escaping @Sendable (inout VaultConfiguration) throws -> Void) async throws -> VaultConfiguration {
         try await acquire(); defer { release() }
         let storage = storage
-        return try await worker.perform {
+        do { return try await worker.perform {
             let previous = try storage.read()
             var value = try Self.decode(previous)
             guard value.revision == expectedRevision, expectedRevision < Int64.max else { throw VaultError.conflict }
@@ -249,6 +254,8 @@ actor ConfigurationVault {
             guard encoded.count <= Self.maximumBytes else { throw VaultError.invalid("Configuration exceeds the 2 MiB vault limit.") }
             try storage.replace(expected: previous, with: encoded)
             return value
+        } } catch let timeout as KeychainTimeout where timeout.started {
+            throw VaultUpdateUncertain(completion: timeout.completion)
         }
     }
 }

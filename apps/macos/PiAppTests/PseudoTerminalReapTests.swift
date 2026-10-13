@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import PiApp
 
 /// A process source's exit event can fire before the kernel lets the child be
@@ -6,6 +7,57 @@ import XCTest
 /// never reported the exit: the shell, and any tool waiting on it, stayed
 /// running for ever.
 final class PseudoTerminalReapTests: XCTestCase {
+    @MainActor private func refusedDirectory(_ directory: URL) async throws {
+        let process = PseudoTerminal()
+        defer { PseudoTerminal.endForQuit([process]) }
+        var notices: [String] = [], exits: [Int32] = [], output = Data()
+        process.onNotice = { notices.append($0) }
+        process.onData = { output.append($0) }
+        process.onExit = { exits.append($0); XCTAssertEqual(notices.count, 1, "The launch failure must be classified before the early exit is reported") }
+        try process.start(executable: "/bin/sh", arguments: ["sh", "-c", "printf WRONG_FOLDER"],
+                          environment: ["PATH": "/usr/bin:/bin"], directory: directory.path, columns: 40, rows: 10)
+        let pid = process.processID
+        try await eventually("report the failed launch") { !exits.isEmpty }
+        XCTAssertEqual(notices.count, 1); XCTAssertEqual(exits.count, 1)
+        XCTAssertTrue(notices.first?.contains(directory.path) == true)
+        XCTAssertFalse(String(decoding: output, as: UTF8.self).contains("WRONG_FOLDER"))
+        XCTAssertFalse(process.running, "Failure to enter the requested folder is a launch failure")
+        var status: Int32 = 0
+        XCTAssertEqual(waitpid(pid, &status, WNOHANG), -1); XCTAssertEqual(errno, ECHILD)
+    }
+
+    @MainActor func testMissingWorkingDirectoryFailsLaunch() async throws {
+        try await refusedDirectory(URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("missing-terminal-" + UUID().uuidString))
+    }
+
+    @MainActor func testWorkingDirectoryWithoutSearchPermissionFailsLaunch() async throws {
+        guard geteuid() != 0 else { throw XCTSkip("Root can enter a mode-000 folder") }
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("denied-terminal-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { chmod(directory.path, 0o700); try? FileManager.default.removeItem(at: directory) }
+        XCTAssertEqual(chmod(directory.path, 0), 0)
+        try await refusedDirectory(directory)
+    }
+
+    @MainActor func testExecFailureAndAProgramExiting127RemainDistinct() async throws {
+        let process = PseudoTerminal(), missing = NSTemporaryDirectory() + "/no-executable-" + UUID().uuidString
+        defer { PseudoTerminal.endForQuit([process]) }
+        var notices: [String] = [], exit: Int32?
+        process.onNotice = { notices.append($0) }
+        process.onExit = { exit = $0 }
+        try process.start(executable: missing, arguments: [missing], environment: [:],
+                          directory: NSTemporaryDirectory(), columns: 40, rows: 10)
+        try await eventually("report exec failure") { exit != nil }
+        XCTAssertEqual(notices.count, 1)
+        XCTAssertFalse(process.running)
+        exit = nil; notices = []
+        try process.start(executable: "/bin/sh", arguments: ["sh", "-c", "exit 127"], environment: ["PATH": "/usr/bin:/bin"],
+                          directory: NSTemporaryDirectory(), columns: 40, rows: 10)
+        try await eventually("the executed program reports its own exit") { exit != nil }
+        XCTAssertEqual(exit, 127)
+        XCTAssertTrue(notices.isEmpty, "An executed program's exit 127 is not a launch failure")
+    }
+
     @MainActor private func run(notYet: Int) async throws -> (exits: [Int32], asked: Int, running: Bool) {
         let process = PseudoTerminal()
         var asked = 0, exits: [Int32] = []

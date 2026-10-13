@@ -35,8 +35,11 @@ enum CostLimitText {
 
     /// The share of the limit spent, past 100% too: a limit lowered below the spend reads as over it.
     nonisolated static func percent(_ fraction: Double) -> String {
+        guard fraction >= 0 else { return "n/a" }
         let value = fraction * 100
-        return value > 0 && value < 1 ? "<1%" : "\(Int(value.rounded()))%"
+        if value > 0 && value < 1 { return "<1%" }
+        guard let percent = CapturedNumber.integer(value.rounded()) else { return "n/a" }
+        return "\(percent)%"
     }
     private var headline: String {
         if let figure = reading.figure { return figure }

@@ -14,7 +14,7 @@ import Combine
     let generation: Int
     let emulator = TerminalEmulator(columns: 100, rows: 24)
     let view: TerminalView
-    let process = PseudoTerminal()
+    let process: PseudoTerminal
     /// The title the shell sets with escape sequences. A name the reader
     /// gave the terminal is kept apart, in `customName`, and wins.
     @Published var shellTitle = ""
@@ -25,8 +25,9 @@ import Combine
     let directory: String
     var displayName: String { customName ?? "Terminal \(number)" }
 
-    init(workspaceID: String, directory: String, id: UUID = UUID(), number: Int = 1, customName: String? = nil, generation: Int = 0) {
+    init(workspaceID: String, directory: String, id: UUID = UUID(), number: Int = 1, customName: String? = nil, generation: Int = 0, process: PseudoTerminal = PseudoTerminal()) {
         self.workspaceID = workspaceID; self.directory = directory
+        self.process = process
         self.id = id; self.number = number; self.customName = customName; self.generation = generation
         view = TerminalView(emulator: emulator)
         view.accessibilityName = displayName
@@ -96,6 +97,9 @@ import Combine
         var nextNumber = 1
     }
     @Published private(set) var projects: [String: Project] = [:]
+    /// Closing a tab releases its view, but Quit must still cover its shell
+    /// during the two-second grace. Object identity cannot alias a reused pid.
+    private(set) var terminating: [ObjectIdentifier: PseudoTerminal] = [:]
     /// Projects with at least one shell, for tests and for the panel's bookkeeping.
     var openWorkspaceIDs: Set<String> { Set(projects.filter { !$0.value.sessions.isEmpty }.keys) }
     func sessions(for workspaceID: String) -> [TerminalSession] { projects[workspaceID]?.sessions ?? [] }
@@ -175,12 +179,22 @@ import Combine
     /// Ends every shell, on the way out of the app.
     func shutdown() {
         let all = projects.values.flatMap(\.sessions)
+        for session in all { retainUntilReaped(session.process) }
         projects.removeAll()
         // Briefly and at once: the app does not live to run a delayed SIGKILL.
-        PseudoTerminal.endForQuit(all.map(\.process))
+        PseudoTerminal.endForQuit(Array(terminating.values))
         for session in all { session.view.removeFromSuperview() }
     }
-    private func end(_ session: TerminalSession) { session.process.terminate(); session.view.removeFromSuperview() }
+    private func retainUntilReaped(_ process: PseudoTerminal) {
+        guard process.running else { return }
+        let id = ObjectIdentifier(process)
+        terminating[id] = process
+        process.onReap = { [weak self] in self?.terminating[id] = nil }
+    }
+    private func end(_ session: TerminalSession) {
+        retainUntilReaped(session.process)
+        session.process.terminate(); session.view.removeFromSuperview()
+    }
 
     // MARK: Asking before ending a shell
 

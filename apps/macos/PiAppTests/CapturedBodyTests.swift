@@ -3,6 +3,17 @@ import AppKit
 @testable import PiApp
 
 final class CapturedBodyTests: XCTestCase {
+    func testMalformedCaptureLengthsCannotBecomeCountsOrCacheRevisions() throws {
+        for number in [1.5, -1, 1e20, Double(Int.max), Double(PayloadArchive.largestCount).nextUp, .infinity, .nan] {
+            let metadata = CapturedBodyMetadata(body: ["state": .string("complete"), "retainedBytes": .number(number)], hash: nil)
+            XCTAssertThrowsError(try metadata.count(), "Invalid length \(number)")
+            XCTAssertEqual(CapturedBodyReader.revision(metadata), "?:complete", "Invalid lengths never alias a valid revision")
+        }
+        let metadata = CapturedBodyMetadata(body: ["retainedBytes": .number(42)], hash: nil)
+        XCTAssertEqual(try metadata.count(), 42)
+        XCTAssertEqual(CapturedBodyReader.revision(metadata), "42:")
+    }
+
     @MainActor func testLargeStreamIndexesWithoutJSONAndFullCopyUsesBoundedCache() async throws {
         let source = (0..<20_000).map { "event: response.output_text.delta\ndata: {\"delta\":\"value \($0)\",\"nested\":{\"tokens\":\($0)}}\n\n" }.joined()
         let bytes = Data(source.utf8), descriptor = metadata(bytes)

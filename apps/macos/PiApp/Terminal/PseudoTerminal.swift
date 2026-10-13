@@ -7,9 +7,13 @@ import Darwin
 /// off the main thread and delivered on the main actor in the order it arrived.
 @MainActor final class PseudoTerminal {
     enum Failure: Error, LocalizedError {
-        case spawn(Int32)
+        case spawn(Int32), directory(String, Int32), directoryTimeout(String)
         var errorDescription: String? {
-            switch self { case .spawn(let code): return "Could not start the shell (\(String(cString: strerror(code))))" }
+            switch self {
+            case .spawn(let code): return "Could not start the shell (\(String(cString: strerror(code))))"
+            case .directory(let path, let code): return "Could not open terminal in “\(path)” (\(String(cString: strerror(code))))."
+            case .directoryTimeout(let path): return "Could not open terminal in “\(path)”: the folder did not respond in time."
+            }
         }
     }
 
@@ -22,10 +26,20 @@ import Darwin
     private var pending = PendingOutput()
     private var reader: TerminalReadControl?
     private var exitWatcher: DispatchSourceProcess?
+    private var launchPending = false, exitedDuringLaunch = false, launchCancelled = false
     private let queue = DispatchQueue(label: "com.belloware.PiApp.pty", qos: .userInteractive)
     private let writeQueue = DispatchQueue(label: "com.belloware.PiApp.pty.input", qos: .userInitiated)
+    private let launchQueue = DispatchQueue(label: "com.belloware.PiApp.pty.launch", qos: .userInitiated)
+    private let launchTimeout: TimeInterval
+    /// A C function pointer keeps the post-fork path async-signal-safe, including fixtures.
+    private let enterDirectory: @convention(c) (UnsafePointer<CChar>?) -> Int32
+    init(launchTimeout: TimeInterval = 5, enterDirectory: @escaping @convention(c) (UnsafePointer<CChar>?) -> Int32 = chdir) {
+        self.launchTimeout = launchTimeout; self.enterDirectory = enterDirectory
+    }
     var onData: ((Data) -> Void)?
     var onExit: ((Int32) -> Void)?
+    /// Process ownership ends at reap, before the last output reaches its view.
+    var onReap: (() -> Void)?
     var onNotice: ((String) -> Void)?
     /// Reaps the child if it can be reaped now: `waitpid` with `WNOHANG`,
     /// retried on `EINTR`. Zero means "not yet". A seam, so a test can make
@@ -44,6 +58,7 @@ import Darwin
 
     /// Starts `executable` with `arguments` (argv[0] included) in `directory`
     /// with exactly this environment, on a terminal of the given size.
+    /// Child-side launch failures arrive through onNotice, followed by onExit.
     func start(executable: String, arguments: [String], environment: [String: String], directory: String, columns: Int, rows: Int) throws {
         guard !running else { throw Failure.spawn(EBUSY) }
         var size = winsize(ws_row: UInt16(clamping: rows), ws_col: UInt16(clamping: columns), ws_xpixel: 0, ws_ypixel: 0)
@@ -53,6 +68,25 @@ import Darwin
         let path = strdup(executable)
         let cwd = strdup(directory)
         defer { argv.forEach { free($0) }; envp.forEach { free($0) }; free(path); free(cwd) }
+        guard let path, let cwd, argv.dropLast().allSatisfy({ $0 != nil }), envp.dropLast().allSatisfy({ $0 != nil }) else { throw Failure.spawn(ENOMEM) }
+        // EOF is exec's acknowledgement; a failure sends its stage and errno.
+        // This must come from the child: a parent-side directory check races a
+        // rename or permission change, and silently falling back runs elsewhere.
+        var launchPipe: [Int32] = [-1, -1]
+        guard pipe(&launchPipe) == 0 else { throw Failure.spawn(errno) }
+        defer { for fd in launchPipe where fd >= 0 { close(fd) } }
+        for index in launchPipe.indices {
+            if launchPipe[index] < 3 {
+                let fd = fcntl(launchPipe[index], F_DUPFD_CLOEXEC, 3)
+                guard fd >= 0 else { throw Failure.spawn(errno) }
+                close(launchPipe[index]); launchPipe[index] = fd
+            }
+            guard fcntl(launchPipe[index], F_SETFD, FD_CLOEXEC) == 0 else { throw Failure.spawn(errno) }
+        }
+        let launchRead = launchPipe[0], launchWrite = launchPipe[1]
+        guard fcntl(launchRead, F_SETFL, fcntl(launchRead, F_GETFL) | O_NONBLOCK) == 0 else { throw Failure.spawn(errno) }
+        let resetSignals = [SIGPIPE, SIGINT, SIGQUIT, SIGTERM, SIGCHLD, SIGHUP, SIGTSTP, SIGTTIN, SIGTTOU]
+        var failure: [Int32] = [0, 0]
         // A forked child keeps every descriptor the app has open that is not
         // marked close-on-exec, and Foundation's pipes are not: the shell and
         // everything started from it held the helper's stdin, so a helper
@@ -60,25 +94,42 @@ import Darwin
         // alone, closing every other number below this bound, which is read
         // before the fork like everything else the child uses.
         let descriptorLimit = getdtablesize()
+        let enterDirectory = self.enterDirectory
         var masterFD: Int32 = -1
-        let pid = forkpty(&masterFD, nil, nil, &size)
-        if pid == 0 {
-            // Child: nothing but the terminal, the shell's own signal dispositions, its directory, then the program.
-            var descriptor: Int32 = 3
-            while descriptor < descriptorLimit { _ = close(descriptor); descriptor += 1 }
-            var signals = sigset_t()
-            sigemptyset(&signals)
-            sigprocmask(SIG_SETMASK, &signals, nil)
-            for signal in [SIGPIPE, SIGINT, SIGQUIT, SIGTERM, SIGCHLD, SIGHUP, SIGTSTP, SIGTTIN, SIGTTOU] { Darwin.signal(signal, SIG_DFL) }
-            if let cwd { _ = chdir(cwd) }
-            execve(path, argv, envp)
-            _exit(127)
-        }
+        // Enter these buffer scopes before fork, so the child never bridges or
+        // mutates a Swift array while another thread may hold a runtime lock.
+        let pid = argv.withUnsafeBufferPointer { argv in envp.withUnsafeBufferPointer { envp in
+            resetSignals.withUnsafeBufferPointer { resetSignals in failure.withUnsafeMutableBytes { report in
+                let pid = forkpty(&masterFD, nil, nil, &size)
+                if pid == 0 {
+                    var descriptor: Int32 = 3
+                    while descriptor < descriptorLimit { if descriptor != launchWrite { _ = close(descriptor) }; descriptor += 1 }
+                    var signals = sigset_t()
+                    sigemptyset(&signals)
+                    sigprocmask(SIG_SETMASK, &signals, nil)
+                    for index in resetSignals.indices { Darwin.signal(resetSignals[index], SIG_DFL) }
+                    var stage: Int32 = 1
+                    if enterDirectory(cwd) == 0 { stage = 2; execve(path, argv.baseAddress!, envp.baseAddress!) }
+                    let code = errno
+                    report.storeBytes(of: stage, as: Int32.self)
+                    report.storeBytes(of: code, toByteOffset: MemoryLayout<Int32>.size, as: Int32.self)
+                    var sent = 0
+                    while sent < report.count {
+                        let count = Darwin.write(launchWrite, report.baseAddress! + sent, report.count - sent)
+                        if count > 0 { sent += count } else if count < 0 && errno == EINTR { continue } else { break }
+                    }
+                    _exit(127)
+                }
+                return pid
+            } }
+        } }
         guard pid > 0 else { throw Failure.spawn(errno) }
+        close(launchWrite); launchPipe[1] = -1
         let attempt = UUID(); generation = attempt; inputLifetime = TerminalInputLifetime()
         pending = PendingOutput()
         let pending = pending
         processID = pid; master = masterFD; running = true
+        launchPending = true; exitedDuringLaunch = false; launchCancelled = false
         _ = fcntl(masterFD, F_SETFL, fcntl(masterFD, F_GETFL) | O_NONBLOCK)
         _ = fcntl(masterFD, F_SETFD, FD_CLOEXEC)
         let reader = DispatchSource.makeReadSource(fileDescriptor: masterFD, queue: queue)
@@ -133,9 +184,54 @@ import Darwin
         }
         watcher.resume()
         exitWatcher = watcher
+        // A network mount can leave chdir waiting forever. Own the child now
+        // so Close and Quit work, and wait away from both MainActor and the
+        // output queue that schedules terminate's forced stop.
+        launchPipe[0] = -1
+        let deadline = ProcessInfo.processInfo.systemUptime + launchTimeout
+        launchQueue.async { @Sendable [self] in
+            let failure = Self.readLaunch(launchRead, directory: directory, deadline: deadline)
+            DispatchQueue.main.async { MainActor.assumeIsolated {
+                guard self.running, self.generation == attempt, self.processID == pid else { return }
+                self.launchPending = false
+                if let failure, !self.launchCancelled {
+                    self.inputLifetime.cancel()
+                    // Keep the pid owned until the normal watcher reaps it;
+                    // even a failed or timed-out launch cannot leave a zombie.
+                    kill(-pid, SIGKILL); kill(pid, SIGKILL)
+                    self.onNotice?(failure.localizedDescription)
+                }
+                if self.exitedDuringLaunch { self.finished(pid, attempt: attempt) }
+            } }
+        }
+    }
+    private nonisolated static func readLaunch(_ fd: Int32, directory: String, deadline: TimeInterval) -> Failure? {
+        // This queue alone closes the descriptor: a timeout must not race a
+        // pending read and accidentally read from a reused descriptor number.
+        defer { close(fd) }
+        var failure: [Int32] = [0, 0], received = 0
+        return failure.withUnsafeMutableBytes { report in
+            while received < report.count {
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                guard remaining > 0 else { return .directoryTimeout(directory) }
+                var descriptor = pollfd(fd: fd, events: Int16(POLLIN | POLLHUP), revents: 0)
+                let ready = poll(&descriptor, 1, Int32(min(ceil(remaining * 1_000), Double(Int32.max))))
+                if ready == 0 { continue }
+                if ready < 0 { if errno == EINTR { continue }; return .spawn(errno) }
+                let count = read(fd, report.baseAddress! + received, report.count - received)
+                if count > 0 { received += count }
+                else if count == 0 { return received == 0 ? nil : .spawn(EIO) }
+                else if errno != EINTR && errno != EAGAIN { return .spawn(errno) }
+            }
+            let stage = report.load(as: Int32.self), code = report.load(fromByteOffset: MemoryLayout<Int32>.size, as: Int32.self)
+            return stage == 1 ? .directory(directory, code) : .spawn(code)
+        }
     }
     private func finished(_ pid: pid_t, attempt: UUID, retry: Int = 0) {
         guard running, generation == attempt else { return }
+        // The exit event fires once and can beat the launch packet. Classify
+        // that packet before delivering onExit, then replay this observation.
+        guard !launchPending else { exitedDuringLaunch = true; return }
         var status: Int32 = 0
         let reaped = reap(pid, &status)
         guard reaped != 0 else {
@@ -163,6 +259,7 @@ import Darwin
         inputLifetime.cancel()
         exitWatcher?.setEventHandler(handler: nil); exitWatcher?.cancel(); exitWatcher = nil
         pendingKill?.cancel(); pendingKill = nil
+        let notify = onReap; onReap = nil; notify?()
         // Drain what the child wrote before it exited, then close.
         let oldReader = reader, oldMaster = reader == nil ? -1 : master
         reader = nil; master = -1
@@ -235,6 +332,7 @@ import Darwin
     /// Asks the process to stop, then kills it if it lingers.
     func terminate() {
         guard running, processID > 0 else { return }
+        launchCancelled = true
         inputLifetime.cancel()
         kill(processID, SIGHUP)
         let pid = processID, attempt = generation
@@ -261,6 +359,7 @@ import Darwin
     static func endForQuit(_ terminals: [PseudoTerminal], grace: TimeInterval = quitGrace) {
         let live = terminals.filter { $0.running && $0.processID > 0 }
         for terminal in live {
+            terminal.launchCancelled = true
             terminal.inputLifetime.cancel()
             terminal.pendingKill?.cancel(); terminal.pendingKill = nil
             // forkpty made the child a session and group leader: the group is

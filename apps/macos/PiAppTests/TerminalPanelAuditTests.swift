@@ -4,6 +4,18 @@ import SwiftUI
 import Darwin
 @testable import PiApp
 
+/// A generated FIFO stands in for a filesystem lookup that stops answering.
+/// This runs after fork, so even the fixture uses only async-signal-safe calls.
+private func blockedTerminalDirectory(_ path: UnsafePointer<CChar>?) -> Int32 {
+    guard let path else { errno = EINVAL; return -1 }
+    let fd = Darwin.open(path, O_RDONLY)
+    guard fd >= 0 else { return -1 }
+    var byte: UInt8 = 0
+    while Darwin.read(fd, &byte, 1) < 0 && errno == EINTR {}
+    close(fd)
+    return chdir(path)
+}
+
 /// The terminal driven as a reader drives it: a real shell on a real pty in a
 /// real window, streaming output, scrolled back, resized, pasted into, and
 /// closed. Plus what it costs per megabyte and per frame.
@@ -289,6 +301,86 @@ final class TerminalPanelAuditTests: TerminalPanelTestCase {
 /// which in ten parallel clones was not reported within ten seconds. They
 /// run in the serial lane (`scripts/test-lanes.py`).
 final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
+    @MainActor private func unresponsiveFolder() throws -> (path: String, restore: () -> Void) {
+        let root = scratchRoot("unresponsive-terminal")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let path = root.appendingPathComponent("folder").path, shell = root.appendingPathComponent("shell")
+        XCTAssertEqual(mkfifo(path, 0o600), 0)
+        try "#!/bin/sh\nprintf WRONG_FOLDER\n".write(to: shell, atomically: true, encoding: .utf8)
+        XCTAssertEqual(chmod(shell.path, 0o700), 0)
+        let previous = ProcessInfo.processInfo.environment["SHELL"]
+        setenv("SHELL", shell.path, 1)
+        let watchdog = Darwin.open(path, O_RDWR | O_NONBLOCK)
+        guard watchdog >= 0 else { throw PseudoTerminal.Failure.spawn(errno) }
+        // Release the old blocking implementation so a failing regression never
+        // hangs XCTest. With the fix the child is gone before this watchdog.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1) {
+            var byte: UInt8 = 0
+            _ = Darwin.write(watchdog, &byte, 1); close(watchdog)
+        }
+        return (path, {
+            if let previous { setenv("SHELL", previous, 1) } else { unsetenv("SHELL") }
+            try? FileManager.default.removeItem(at: root)
+        })
+    }
+
+    @MainActor func testAnUnresponsiveFolderTimesOutWithoutBlockingThePanel() async throws {
+        let (path, restore) = try unresponsiveFolder()
+        defer { restore() }
+        let process = PseudoTerminal(launchTimeout: 0.1, enterDirectory: blockedTerminalDirectory)
+        defer { PseudoTerminal.endForQuit([process]) }
+        let start = ProcessInfo.processInfo.systemUptime
+        let session = TerminalSession(workspaceID: UUID().uuidString, directory: path, process: process)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.25, "Opening a terminal must leave MainActor free while the folder is unresponsive")
+        let pid = process.processID
+        try await eventually("report the unresponsive folder", timeout: 5) { session.failure != nil && session.exited }
+        XCTAssertTrue(session.failure?.contains("folder did not respond") == true, session.failure ?? "No failure")
+        XCTAssertTrue(session.failure?.contains(path) == true, session.failure ?? "No folder named")
+        XCTAssertFalse(session.emulator.screenText.contains("WRONG_FOLDER"))
+        try await eventually("reap the timed-out child", timeout: 5) { !process.running }
+        guard pid > 0 else { return XCTFail("Startup must register its child before observing the handshake") }
+        var status: Int32 = 0
+        XCTAssertEqual(waitpid(pid, &status, WNOHANG), -1); XCTAssertEqual(errno, ECHILD, "The timed-out child must not remain a zombie")
+    }
+
+    @MainActor func testQuitCanReapATerminalWhileItsFolderIsStillUnresponsive() async throws {
+        let (path, restore) = try unresponsiveFolder()
+        defer { restore() }
+        let process = PseudoTerminal(launchTimeout: 5, enterDirectory: blockedTerminalDirectory)
+        defer { PseudoTerminal.endForQuit([process]) }
+        let start = ProcessInfo.processInfo.systemUptime
+        let session = TerminalSession(workspaceID: UUID().uuidString, directory: path, process: process)
+        XCTAssertLessThan(ProcessInfo.processInfo.systemUptime - start, 0.25)
+        let pid = process.processID
+        PseudoTerminal.endForQuit([process], grace: 0)
+        try await eventually("reap a terminal quit during startup", timeout: 5) { !process.running && session.exited }
+        XCTAssertNil(session.failure, "Cancelling startup must not leave a late folder failure")
+        guard pid > 0 else { return XCTFail("Quit must own the child even before exec") }
+        var status: Int32 = 0
+        XCTAssertEqual(waitpid(pid, &status, WNOHANG), -1); XCTAssertEqual(errno, ECHILD)
+    }
+
+    @MainActor func testTerminalSessionShowsTheFailedFolder() async throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("terminal-launch-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let shell = directory.appendingPathComponent("shell")
+        try "#!/bin/sh\nexit 0\n".write(to: shell, atomically: true, encoding: .utf8)
+        XCTAssertEqual(chmod(shell.path, 0o700), 0)
+        let previous = ProcessInfo.processInfo.environment["SHELL"]
+        setenv("SHELL", shell.path, 1)
+        defer {
+            if let previous { setenv("SHELL", previous, 1) } else { unsetenv("SHELL") }
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let missing = directory.appendingPathComponent("missing").path
+        let session = TerminalSession(workspaceID: UUID().uuidString, directory: missing)
+        defer { PseudoTerminal.endForQuit([session.process]) }
+        try await eventually("show the failed folder") { session.exited }
+        XCTAssertTrue(session.exited)
+        XCTAssertTrue(session.failure?.contains(missing) == true, session.failure ?? "No failure shown")
+        XCTAssertTrue(session.failure?.contains("Could not open terminal") == true, session.failure ?? "No failure shown")
+    }
+
     /// The panel in a window, switched from one project to another: the new
     /// project's shell has the keyboard, not nothing at all.
     @MainActor func testSwitchingProjectsMovesTheTerminalAndTheKeyboardWithIt() async throws {
@@ -578,6 +670,35 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
         if !Self.gone(child) { kill(child, SIGKILL) }
         try await eventually("reap the shell", timeout: 10) { !session.process.running }
     }
+
+    /// Removed tabs must remain covered by Quit until the kernel reaps them.
+    @MainActor private func quitImmediatelyAfterEnding(restart: Bool) async throws {
+        let registry = TerminalRegistry.shared
+        registry.shutdown()
+        let (directory, restore) = try hangUpIgnoringShell(restart ? "restart-quit" : "close-quit")
+        defer { registry.shutdown(); restore() }
+        let workspace = WorkspaceRecord(id: UUID().uuidString, path: directory.path, trusted: true)
+        let session = registry.session(for: workspace), shell = session.process.processID
+        let child = try await startedChild(in: directory, session: session)
+        defer {
+            PseudoTerminal.endForQuit([session.process])
+            if !Self.gone(child) { kill(child, SIGKILL) }
+        }
+        if restart { XCTAssertNotNil(registry.restart(session.id, in: workspace.id, generation: session.generation)) }
+        else { registry.close(session.id, in: workspace.id, generation: session.generation) }
+        registry.shutdown()
+        // Quit cannot service the old terminal's delayed SIGKILL or main-actor callbacks.
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while ProcessInfo.processInfo.systemUptime < deadline, !(Self.exited(shell) && Self.gone(child)) { usleep(2_000) }
+        XCTAssertTrue(Self.exited(shell), "Quit must include the terminal just removed from the project")
+        XCTAssertTrue(Self.gone(child), "Quit must also stop the removed terminal's process group")
+        PseudoTerminal.endForQuit([session.process])
+        try await eventually("reap the removed shell", timeout: 10) { !session.process.running }
+        XCTAssertNil(registry.terminating[ObjectIdentifier(session.process)], "Reaping releases the retired process immediately")
+    }
+
+    @MainActor func testCloseThenQuitImmediatelyEndsTheRemovedShell() async throws { try await quitImmediatelyAfterEnding(restart: false) }
+    @MainActor func testRestartThenQuitImmediatelyEndsTheReplacedShell() async throws { try await quitImmediatelyAfterEnding(restart: true) }
 
     /// Closing one terminal keeps the two-second grace before the forced stop.
     @MainActor func testClosingATerminalStillGivesItsShellTheGrace() async throws {

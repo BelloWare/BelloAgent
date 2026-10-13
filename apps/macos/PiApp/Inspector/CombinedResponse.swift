@@ -192,10 +192,8 @@ private struct ResponseCombination {
     }
 
     private static func index(_ value: Any?, maximum: Int = maximumIndex) -> Int? {
-        guard let value = value as? NSNumber, CFGetTypeID(value) != CFBooleanGetTypeID() else { return nil }
-        let number = value.doubleValue
-        guard number.isFinite, number >= 0, number.rounded() == number, number < Double(Int.max), number <= Double(maximum) else { return nil }
-        return Int(number)
+        guard let index = CapturedNumber.integer(RequestDocument.number(value)), index <= maximum else { return nil }
+        return index
     }
 
     private func validIndex(_ value: Any?) -> Int? { Self.index(value) }

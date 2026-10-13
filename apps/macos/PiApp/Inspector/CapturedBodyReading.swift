@@ -176,7 +176,7 @@ enum CapturedBodyReader {
 
     /// What a cache keys a body's document by: its retained length and digest.
     static func revision(_ metadata: CapturedBodyMetadata) -> String {
-        let length = metadata.body["retainedBytes"]?.number.map { String(Int($0)) } ?? "?"
+        let length = (try? metadata.count()).map(String.init) ?? "?"
         return length + ":" + (metadata.hash?.object?["sha256"]?.string ?? metadata.body["state"]?.string ?? "")
     }
 }
