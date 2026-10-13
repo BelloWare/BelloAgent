@@ -159,6 +159,25 @@ final class SkillRefreshTests: XCTestCase {
         XCTAssertEqual(userRows(f.view), 0)
     }
 
+    /// Resume is offered only while the queued message waits. Once it is
+    /// removed, the run's own failure offers Retry request again.
+    @MainActor func testResumeIsOfferedOnlyWhileTheQueuedMessageWaits() {
+        let view = SessionDisplay(id: "queued")
+        let queued: [String: WireValue] = ["turnId": .string("t"), "text": .string("review this"), "kind": .string("steering")]
+        view.queue = [queued]
+        view.observeRunState(["state": .string("error"), "runStatus": .string("failed"), "queuePaused": .bool(true),
+                              "preflightError": .string("\u{201C}a\u{201D} changed after this message was queued. The message now uses the updated version. Press Resume to send it."),
+                              "errorCode": .string(SessionDisplay.skillUpdatedCode)])
+        XCTAssertEqual(view.presentedMessages.last?.failureCode, SessionDisplay.skillUpdatedCode)
+        view.queue = []
+        view.observeRunState(["state": .string("error"), "runStatus": .string("failed"), "queuePaused": .bool(false),
+                              "preflightError": .string("\u{201C}a\u{201D} changed after this message was queued. The message now uses the updated version. Press Resume to send it."),
+                              "errorCode": .string(SessionDisplay.skillUpdatedCode)])
+        let row = view.presentedMessages.last
+        XCTAssertNil(row?.failureCode, "The run's failure, with Retry request")
+        XCTAssertEqual(row?.detail, "The queued message is no longer waiting. Retry request finishes the stopped turn.")
+    }
+
     /// The notice shows even below a run failure the chat still shows: the
     /// reader sees what changed before the Send that confirms it.
     @MainActor func testTheNoticeShowsBelowAnEarlierRunFailure() {

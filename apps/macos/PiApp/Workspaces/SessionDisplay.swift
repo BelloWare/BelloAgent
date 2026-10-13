@@ -249,8 +249,11 @@ struct TranscriptVersionView: Equatable, Sendable {
                                         detail: paused ? "Queued follow-ups are paused. Resume when you’re ready." : nil)
             if failureCode == Self.skillUpdatedCode {
                 // The queued message's skill was pinned to its current
-                // version: the notice says so and offers Resume, which sends it.
-                row.failureCode = failureCode; row.detail = nil
+                // version: the notice says so and offers Resume, which sends
+                // it. Once it no longer waits, the run's failure is what is
+                // left, and Retry request finishes the stopped turn.
+                if paused { row.failureCode = failureCode; row.detail = nil }
+                else { row.detail = "The queued message is no longer waiting. Retry request finishes the stopped turn." }
             }
             if failureCode == Self.costLimitCode {
                 // The run stopped at the chat's cost limit: the notice offers to
