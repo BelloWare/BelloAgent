@@ -97,6 +97,13 @@ extension WorkspaceModel {
             return result
         }
         let current = Dictionary(view.skillCatalog.entries.map { ($0.skill.id, $0.skill) }, uniquingKeysWith: { first, _ in first })
+        // A skill missing from a list that could not be read completely is
+        // not known to be gone: nothing is changed, and the reader is told.
+        if view.skillCatalog.state == .partial,
+           sent.contains(where: { chip in current[chip.id] == nil && view.skills.contains(chip) }) {
+            result.failure = view.skillCatalog.notice.isEmpty ? "the skill list is incomplete" : view.skillCatalog.notice
+            return result
+        }
         var chips = view.skills, written: [String] = []
         for chip in sent {
             // A chip the reader took off, or chose again, since is theirs.

@@ -199,6 +199,12 @@ public actor Resources {
     /// queue paused, and the reader's Resume is the confirmation.
     public func repin(_ skills: [FrozenSkill], tools: [String]) throws -> (skills: [FrozenSkill], updated: [String], removed: [FrozenSkill]) {
         let current = try resolve()
+        // A skill missing from a scan that stopped early (a broken sibling,
+        // a limit) is not known to be gone: nothing is re-pinned or dropped.
+        let incomplete = current.diagnostics.contains { $0.hasPrefix("Could not completely scan") }
+        if incomplete, skills.contains(where: { frozen in !current.skills.contains { $0["id"].text == frozen.id } }) {
+            throw AgentError("skill_revoked", "The skill list could not be read completely")
+        }
         var kept: [FrozenSkill] = [], updated: [String] = [], removed: [FrozenSkill] = []
         for frozen in skills {
             guard let match = current.skills.first(where: { $0["id"].text == frozen.id }), ["implicitAllowed", "explicitOnly"].contains(match["policy"].text),

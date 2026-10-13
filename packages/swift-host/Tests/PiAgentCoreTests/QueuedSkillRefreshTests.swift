@@ -106,6 +106,24 @@ final class QueuedSkillRefreshTests: XCTestCase {
         await f.session.close()
     }
 
+    /// A skill missing from a scan that could not finish (a broken sibling
+    /// stopped it) is not known to be gone: the queued message keeps it, and
+    /// the refusal stands, rather than the skill being stripped.
+    func testAnIncompleteScanNeverTakesASkillOff() async throws {
+        let f = try await fixture(replies: [answer("initial")])
+        let broken = f.skill.deletingLastPathComponent().appendingPathComponent("a-broken")
+        try FileManager.default.createDirectory(at: broken, withIntermediateDirectories: true)
+        try Data([0x2d, 0x2d, 0x2d, 0x0a, 0xff, 0xfe, 0x0a]).write(to: broken.appendingPathComponent("SKILL.md"))
+        try writeSkill(f.skill, description: "Fixture review, revised", body: "UPDATED_SKILL_BODY")
+        await f.client.release(); try await eventually { !(await f.session.isRunning) }
+        let state = await f.session.snapshot()
+        XCTAssertEqual(state["errorCode"].text, "skill_revoked", state["preflightError"].text ?? "")
+        let saved = try String(contentsOf: f.root.appendingPathComponent("state"), encoding: .utf8, recursive: true)
+        XCTAssertFalse(saved.contains("UPDATED_SKILL_BODY"), "Nothing was re-pinned from an incomplete scan")
+        XCTAssertEqual(state["queue"].list.compactMap { $0["turnId"].text }, ["skill", "later"])
+        await f.session.close()
+    }
+
     func testAMessageLeftWithNothingToSendStaysRefused() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let skill = root.appendingPathComponent(".codex/skills/review")

@@ -234,7 +234,9 @@ extension AgentSession {
         // read, and a queued rewrite may have been saved meanwhile: it is
         // changed only where it still waits, not under an edit, and from what
         // it holds now, its skills alone (text a rewrite saved is kept).
-        guard queueEdit?.turnID != submission.turnID else { return error }
+        // A run cancelled meanwhile (a stop, a shutdown) leaves the message as
+        // it was: its notice would not be saved with a cancelled run.
+        guard queueEdit?.turnID != submission.turnID, !Task.isCancelled else { return error }
         let inQueue = queue.firstIndex(where: { $0.turnID == submission.turnID }), inSteering = steering.firstIndex(where: { $0.turnID == submission.turnID })
         guard let waiting = inQueue.map({ queue[$0] }) ?? inSteering.map({ steering[$0] }),
               waiting.skills.map({ $0.id + "|" + $0.metadataHash + "|" + $0.contentHash }) == submission.skills.map({ $0.id + "|" + $0.metadataHash + "|" + $0.contentHash }) else { return error }
@@ -252,6 +254,11 @@ extension AgentSession {
             return AgentError("skill_revoked", "\(Resources.quoted(removed)) \(removed.count == 1 ? "is" : "are") no longer available, so this queued message has nothing left to send. Remove it from the queue.")
         }
         if let inQueue { queue[inQueue] = next } else if let inSteering { steering[inSteering] = next }
+        // A larger skill body must still fit the saved queue, or the message stays as it was.
+        if (try? savedState()) == nil {
+            if let inQueue { queue[inQueue] = waiting } else if let inSteering { steering[inSteering] = waiting }
+            return error
+        }
         let again = !skillRefreshedTurns.insert(submission.turnID).inserted
         var notice: [String] = []
         if !refreshed.updated.isEmpty {

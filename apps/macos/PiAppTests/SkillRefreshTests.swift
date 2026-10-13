@@ -140,6 +140,25 @@ final class SkillRefreshTests: XCTestCase {
         XCTAssertEqual(f.view.sendFailure, "\u{201C}review-notes\u{201D} is no longer available, so it was removed from your message; what you wrote for it is kept in the text. Press Send to send the rest of it.")
     }
 
+    /// A skill missing from a list that could not be read completely is not
+    /// taken off: nothing changes, and the notice says the list could not be read.
+    @MainActor func testAnIncompleteListTakesNothingOff() async throws {
+        let f = try await fixture("skill-refresh-incomplete")
+        try await choose("review-notes", in: f.view, f.model)
+        let chosen = f.view.skills
+        f.view.draft = Self.text
+        let broken = f.skills.appendingPathComponent("a-broken")
+        try FileManager.default.createDirectory(at: broken, withIntermediateDirectories: true)
+        try Data([0x2d, 0x2d, 0x2d, 0x0a, 0xff, 0xfe, 0x0a]).write(to: broken.appendingPathComponent("SKILL.md"))
+        try writeSkill(f.skills, "review-notes", description: "Review the notes", body: "UPDATED_NOTES_BODY")
+        f.model.send(sessionID: f.chat.id)
+        await waitFor("The refused send never came back with a notice") { !f.view.loading && f.view.sendFailure != nil }
+        XCTAssertEqual(f.view.skills, chosen, "The chip is kept as it was")
+        XCTAssertTrue(f.view.sendFailure?.hasPrefix("A selected skill changed, and the skill list could not be read again") == true, f.view.sendFailure ?? "")
+        XCTAssertNotEqual(f.view.sendFailureCode, SessionDisplay.skillRefreshedCode)
+        XCTAssertEqual(userRows(f.view), 0)
+    }
+
     /// The notice shows even below a run failure the chat still shows: the
     /// reader sees what changed before the Send that confirms it.
     @MainActor func testTheNoticeShowsBelowAnEarlierRunFailure() {
