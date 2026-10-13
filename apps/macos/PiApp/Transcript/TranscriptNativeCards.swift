@@ -397,6 +397,7 @@ enum TranscriptCardFaces {
     /// their exact sizing contract.
     var defersOffscreenMeasurement = false
     private var mounting = false
+    /// An owner job is queued, including while hidden; its timer may be asleep.
     private var measurementScheduled = false
     var unmeasuredLineCount: Int {
         guard let geometry = heights.first(where: { $0.width == bounds.width }) else { return lines.count }
@@ -623,14 +624,33 @@ enum TranscriptCardFaces {
         super.viewDidMoveToWindow()
         if window == nil { TranscriptIdleScheduler.shared.cancel(self); measurementScheduled = false }
         let clip = window == nil ? nil : enclosingScrollView?.contentView
-        guard clip !== observedClip else { return }
-        if let observedClip { NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: observedClip) }
-        observedClip = clip
-        if let clip {
-            clip.postsBoundsChangedNotifications = true
-            NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: clip)
+        if clip !== observedClip {
+            if let observedClip { NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: observedClip) }
+            observedClip = clip
+            if let clip {
+                clip.postsBoundsChangedNotifications = true
+                NotificationCenter.default.addObserver(self, selector: #selector(scrolled), name: NSView.boundsDidChangeNotification, object: clip)
+            }
         }
+        // Moving the whole card can change its window without changing its
+        // inner clip. A sleeping job must see the new visibility either way.
+        resumeMeasurement()
+    }
+    override func viewDidHide() {
+        super.viewDidHide()
+        if defersOffscreenMeasurement { TranscriptIdleScheduler.shared.visibilityChanged() }
+    }
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        resumeMeasurement()
+    }
+    private func resumeMeasurement() {
         needsLayout = true
+        guard defersOffscreenMeasurement else { return }
+        scheduleMeasurement()
+        // Requesting may be unnecessary because a hidden owner kept its job.
+        // Visibility still has to wake that job, without restarting its cursor.
+        TranscriptIdleScheduler.shared.visibilityChanged()
     }
     @objc private func scrolled() { mountVisibleRows() }
     /// Builds and places the rows that can be seen, and lets the others go.
