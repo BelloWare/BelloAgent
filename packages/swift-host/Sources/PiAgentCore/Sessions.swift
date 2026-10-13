@@ -100,6 +100,7 @@ public actor AgentSession {
     var familyStopReason: AgentError?
     var familyCancelled: (@Sendable (Int) -> Void)?
     var subagentCoordinator: SubagentCoordinator?
+    var managedCancellation: (@Sendable () -> Void)?
     /// Whether this journal records every attempt's cost from its start: a
     /// new chat does, and so does one with a cost record. A chat written
     /// before cost records existed takes its earlier spend from the app once.
@@ -439,17 +440,28 @@ public actor AgentSession {
         if unrestored { errorMessage=(errorMessage.map { $0 + " " } ?? "") + "The reply that was arriving could not be added back to the chat; it is kept beside the chat's file." }
         // Never repeat a tool after a crash. Pair unresolved calls with explicit
         // unknown outcomes so future requests remain protocol-valid.
+        let delegatedResults = try SubagentRecovery.recover(state: subagents, context: context, parent: opened, owner: id,
+                                                             directory: directory, accounting: &accounting, spend: &spend)
         let recoveredTools=ToolHistoryIndex(context)
         let unresolved=context.flatMap { message in
             message.content.filter { message.role == "assistant" && $0["type"].text == "toolCall" && recoveredTools.results[message.id]?[$0["id"].text ?? ""] == nil }
-                .map { (call: $0, attempts: message.requestAttemptIDs, turn: message.turn) }
+                .map { (call: $0, assistant: message.id, attempts: message.requestAttemptIDs, turn: message.turn) }
         }
         for pending in unresolved {
             let call=pending.call
             var result=ChatMessage(role:"toolResult",content:[textBlock("Interrupted before durable tool result. Outcome unknown; inspect effects. The application did not rerun this tool.")]); result.toolCallId=call["id"].text; result.toolName=call["name"].text; result.isError=true
             result.toolStats=["durationMs":.null,"outcome":"unknown"]
+            if call["name"].text == "subagent", let callID = call["id"].text {
+                let key = SubagentCallKey(parentSessionID: id, assistantMessageID: pending.assistant, toolCallID: callID)
+                let saved = delegatedResults[key] ?? SubagentToolResult(status: .notExecuted, error: AgentError("subagent_not_admitted", "The task was not admitted before interruption. It was not restarted."))
+                result.id = saved.messageID ?? result.id; result.content = [textBlock(saved.envelope.encoded())]
+                result.nativeSubagent = saved.metadata.isNull ? nil : saved.metadata; result.isError = saved.wire["isError"].flag == true
+                result.toolStats?["outcome"] = saved.metadata["effects"].isNull ? "not_executed" : saved.metadata["effects"]
+            }
             result.requestAttemptIDs=pending.attempts; result.turn=pending.turn
-            try opened.append(["type":"message","message":result.pi],id:result.id); history.append(result); context.append(result); visible.append(result); queuePaused=true
+            try opened.append(["type":"message","message":result.pi],id:result.id)
+            try subagents.consume(["type":"message","message":result.pi], sessionID: id)
+            history.append(result); context.append(result); visible.append(result); queuePaused=true
             if let span=opened.lastAppend { rowSpans[result.id] = .init(id:result.id,kind:.message,offset:span.offset,length:span.length) }
             for attempt in result.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(result.id) }
         }
@@ -524,6 +536,7 @@ public actor AgentSession {
         stopCount &+= 1; queuePaused=true; runTask?.cancel()
         for permit in requestPermits.values { permit.cancel() }
         familyCancelled?(cancelledGeneration)
+        managedCancellation?()
         // The run may already have reached its terminal state while its
         // final links are flushing. Nothing after that await enters the
         // cancellation catch again, so do not turn it back into Stopping.
@@ -532,7 +545,7 @@ public actor AgentSession {
         event("state")
     }
     public func unloadIfIdle() -> Bool {
-        guard isIdle, !ephemeral, !isSubagent || subagents.terminal != nil else { return false }
+        guard isIdle, !ephemeral, managedCancellation == nil || subagents.terminal != nil else { return false }
         cancelHistoryLoads(); closed=true; journal=nil
         if !isSubagent, let coordinator = subagentCoordinator {
             let owner = id, runtimeID = displayEpoch

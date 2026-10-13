@@ -71,6 +71,7 @@ actor SubagentCoordinator {
                 _ = try await env.traces.command("debug.mode", session: link.childSessionID, params: ["mode":JSON(mode)])
                 try await child.setSubagentState(.queued)
                 let childGeneration = await child.stopCount
+                await child.installManagedCancellation(self, key: key)
                 try await register(child, profile, env.apiKey, env.parent)
                 jobs[key] = Job(plan: plan, generation: env.generation, runtimeID: env.runtimeID, completion: SubagentCompletion(), runtime: Runtime(environment: env, child: child, childGeneration: childGeneration))
                 queues[plan.origin.link.budgetOwnerSessionID, default: []].append(key)
@@ -113,7 +114,7 @@ actor SubagentCoordinator {
             await finish(key, result: result)
         } catch {
             await runtime.child.stop(); await runtime.child.waitForSubagent()
-            let result = SubagentToolResult(plan: job.plan, status: error is CancellationError ? .notExecuted : .failed,
+            let result = SubagentToolResult(plan: job.plan, status: error is CancellationError || (error as? AgentError)?.code == "submission_stopped" ? .notExecuted : .failed,
                                            error: (error as? AgentError) ?? AgentError("subagent_not_started", "The delegated task did not start"))
             await finish(key, result: result)
         }
@@ -187,6 +188,13 @@ actor SubagentCoordinator {
             if active[owner] == 0 { active.removeValue(forKey: owner) }
             if !jobs.values.contains(where: { $0.runtimeID == job.runtimeID }) { cancelledThrough.removeValue(forKey: job.runtimeID) }
         }
+    }
+    /// Called before the host detaches any child journal. The parent also
+    /// awaits these completions through its synchronous tool batch.
+    func drain() async {
+        let pending = jobs.filter { !$0.value.status.terminal }.map { ($0.key, $0.value.completion) }
+        for (key, _) in pending { await cancel(key) }
+        for (_, completion) in pending { _ = await completion.wait() }
     }
     func release(owner: String, runtimeID: String) {
         consumed(jobs.filter { $0.value.plan.origin.link.budgetOwnerSessionID == owner && $0.value.runtimeID == runtimeID && $0.value.status.terminal }.map(\.key))

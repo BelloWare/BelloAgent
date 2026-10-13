@@ -23,6 +23,9 @@ extension AgentSession {
         let ownerID = id, runtimeID = displayEpoch
         familyCancelled = { generation in Task { await coordinator.cancel(owner: ownerID, runtimeID: runtimeID, through: generation) } }
     }
+    func installManagedCancellation(_ coordinator: SubagentCoordinator, key: SubagentCallKey) {
+        managedCancellation = { Task { await coordinator.cancel(key) } }
+    }
     var canDelegate: Bool { subagentCoordinator != nil && journal != nil && !ephemeral && !titleTask && !isSubagent && !isConnectionTest }
 
     func delegationEnvironment() async throws -> SubagentEnvironment {

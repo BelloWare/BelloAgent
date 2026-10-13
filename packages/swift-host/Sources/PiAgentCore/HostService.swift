@@ -466,8 +466,8 @@ public actor NativeHostService {
         switch method {
         case "subagent.list":
             let cursor = try boundedInt(params["cursor"], maximum: Int.max), limit = try boundedInt(params["limit"], fallback: 100, maximum: 256)
-            guard let subagentCoordinator else { return ["revision":0,"active":0,"total":0,"cursor":.null,"children":[]] }
-            return await subagentCoordinator.list(parent: session, cursor: cursor, limit: limit)
+            let coordinator = subagentCoordinator ?? SubagentCoordinator()
+            return await coordinator.list(parent: session, cursor: cursor, limit: limit)
         case "subagent.stop":
             guard let subagentCoordinator else { throw AgentError("subagent_scope", "No managed delegation belongs to this parent") }
             try await subagentCoordinator.stop(owner: id, delegationID: required(params["delegationId"], "delegation id")); return ["accepted":true]
@@ -791,6 +791,7 @@ public actor NativeHostService {
         }
         flushTask?.cancel(); for t in tasks.values { t.cancel() }
         for s in sessions.values { await s.stop() }
+        await subagentCoordinator?.drain()
         for s in sessions.values { await s.close() }
         await mcp?.close(); sessions.removeAll(); profiles.removeAll(); flush()
         await traces.delivered()

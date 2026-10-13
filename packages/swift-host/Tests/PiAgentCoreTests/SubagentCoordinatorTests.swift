@@ -276,6 +276,9 @@ final class SubagentCoordinatorTests: XCTestCase {
         XCTAssertFalse(unloaded, "A coordinator-owned queued child must keep its journal")
         if unloaded { await parent.stop() } else {
             await queued.stop()
+            try await eventually { await queued.subagents.terminal != nil }
+            let status = await queued.subagents.status
+            XCTAssertEqual(status, .notExecuted, "Queued Stop settles immediately, without waiting for a free slot")
             await client.releaseAll()
         }
         try await eventually { !(await parent.isRunning) }

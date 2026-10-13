@@ -161,6 +161,13 @@ final class SessionJournal {
         }
         return (branch.last, reader.size, headerCheck, markerCheck, bindings)
     }
+    /// Read-only validation before a parent consults a managed child's evidence.
+    /// This also works when an idle child viewer already holds its writer.
+    static func verifyManagedChild(url: URL, id: String) throws {
+        let checked = try chain(url: url, id: id, binding: nil, requireMarker: true)
+        guard checked.bindings.markerKind == JournalRecordKind.childMarker else { throw SubagentRecovery.damaged() }
+    }
+
     /// The chain from a checkpoint on, when the records the checkpoint relies
     /// on are still exactly as it recorded them and nothing after it rewrites
     /// the model context (an edit or a fork boundary, which only a full replay
