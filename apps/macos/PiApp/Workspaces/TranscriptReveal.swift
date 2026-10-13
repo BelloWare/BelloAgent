@@ -81,7 +81,15 @@ extension WorkspaceModel {
         // The place being read already is not asked for again (layout passes
         // report where the reader is as often as they run).
         if view.jumpRead != nil {
-            if view.jumpReading == position { view.jumpWanted = nil; view.jumpOffset = offset } else { view.jumpWanted = (position, offset) }
+            if view.jumpReading == position, view.jumpTask?.isCancelled != true {
+                view.jumpWanted = nil; view.jumpOffset = offset
+            } else {
+                view.jumpWanted = (position, offset)
+                // Journal reads check cancellation between read/decode units.
+                // A dispatched helper read has no cancellation command: keep
+                // its one-read-at-a-time bound until it answers.
+                if !opened.contains(id) { view.jumpTask?.cancel() }
+            }
             return
         }
         if let failed = view.jumpFailedAt, ProcessInfo.processInfo.systemUptime - failed < 1 { view.jumpRetry = (position, offset); return }
@@ -106,7 +114,7 @@ extension WorkspaceModel {
         }
         // Reads at the old window's edges join rows that are about to go.
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
-        Task { [weak self] in
+        view.jumpTask = Task { [weak self] in
             guard let self else { return }
             // A read that came to nothing pauses position reads for a second;
             // then the place the reader is at by then (`jumpRetry`) is read.
@@ -121,7 +129,7 @@ extension WorkspaceModel {
             }
             defer {
                 if view.jumpRead == serial {
-                    view.jumpRead = nil
+                    view.jumpRead = nil; view.jumpTask = nil
                     // Where the reader went while this page was read.
                     // (Asked for where the reader is now, even if the chat was
                     // opened again meanwhile.)
