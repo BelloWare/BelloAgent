@@ -258,15 +258,18 @@ struct TranscriptVersionView: Equatable, Sendable {
             }
             // A run cut off by a restart, read from the journal before its
             // helper has the chat: Resume goes on with it.
-            if runState == .interrupted && failureCode == nil && continuable != false && !resuming { row.failureCode = Self.interruptedCode; row.detail = Self.resumeDetail(paused) }
+            if runState == .interrupted && failureCode == nil && continuable != false {
+                // Its button goes while a Resume is on its way: no Retry in its place.
+                row.failureCode = resuming ? Self.resumingCode : Self.interruptedCode; row.detail = Self.resumeDetail(paused)
+            }
             rows.append(row)
         } else {
-            if offersResume {
+            if showsPausedRun {
                 // Stopped, or paused by a quit or an update: one row says so
                 // where the run stopped, with Resume.
                 var row = TranscriptMessage(id: "paused:run:" + id, role: "system", text: Self.pausedText, kind: "failure",
                                             detail: Self.resumeDetail(queuePaused && !queue.isEmpty))
-                row.failureCode = Self.pausedCode
+                row.failureCode = resuming ? Self.pausedResumingCode : Self.pausedCode
                 rows.append(row)
             }
             if let sendFailure {
@@ -286,6 +289,8 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The row of a run stopped before it finished, which offers Resume; and
     /// the failure row's code for a run a restart cut off, which offers it too.
     nonisolated static let pausedCode = "run_paused", interruptedCode = "run_interrupted"
+    /// The same two rows while their Resume is on its way: no button.
+    nonisolated static let pausedResumingCode = "run_paused_resuming", resumingCode = "run_interrupted_resuming"
     nonisolated static let pausedText = "The run stopped before it finished. Resume picks up from here; a tool call that was cut off is not run again, and the model sees how it ended."
     nonisolated static func resumeDetail(_ queued: Bool) -> String? { queued ? "Queued follow-ups go on after it." : nil }
     /// Whether the chat's reported spend is still at its limit, as the stop
@@ -416,9 +421,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var resuming = false { didSet { if resuming != oldValue { publishTranscript() } } }
     /// The chat's run stopped before it finished (Stop, a quit, a restart or
     /// an update paused it) and Resume would go on with it.
-    var offersResume: Bool {
-        !busy && !loading && !resuming && runState.holdsQueue && continuable != false && queueEditHold == nil
-    }
+    var offersResume: Bool { showsPausedRun && !resuming }
+    /// The Paused row is drawn: while a Resume is on its way it stays, without its button.
+    var showsPausedRun: Bool { !busy && !loading && runState.holdsQueue && continuable != false && queueEditHold == nil }
     func observeRunState(_ snapshot: [String: WireValue]) {
         let rawState = snapshot["state"]?.string ?? "idle", run = snapshot["runStatus"]?.string ?? rawState
         // Older helpers reported failed runs as paused. Keep the run's outcome

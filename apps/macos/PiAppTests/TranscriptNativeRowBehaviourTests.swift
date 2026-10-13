@@ -136,6 +136,15 @@ final class TranscriptNativeRowBehaviourTests: XCTestCase {
         XCTAssertEqual(offered.map(\.title), ["Resume"])
         XCTAssertTrue(try XCTUnwrap(offered.first).accessibilityPerformPress())
         XCTAssertEqual(resumed, 2); XCTAssertEqual(retried, 0)
+
+        // While a Resume is on its way both cards stay, with no button at all.
+        for (id, code) in [("paused:run:3", SessionDisplay.pausedResumingCode), ("failure:run:4", SessionDisplay.resumingCode)] {
+            var waiting = TranscriptMessage(id: id, role: "system", text: "Stopped.", kind: "failure"); waiting.failureCode = code
+            let (held, heldWindow) = mounted(.message(waiting), actions: actions)
+            defer { heldWindow.contentView = nil }
+            let content = try XCTUnwrap(held.subviews.first as? TranscriptNativeFailureRow)
+            XCTAssertTrue(content.subviews.compactMap { $0 as? TranscriptPillButton }.isEmpty, code)
+        }
     }
 
     /// A reply whose stream is interrupted keeps the surface it was drawn

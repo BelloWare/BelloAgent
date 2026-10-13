@@ -81,6 +81,9 @@ extension WorkspaceModel {
     /// What a Resume button does in `view`'s chat: goes on with the stopped
     /// run when there is one; otherwise sends the paused follow-ups.
     func resumeOrSendQueued(_ view: SessionDisplay) {
+        // A Resume on its way holds the chat: a second press sends nothing,
+        // not even the follow-ups, which would overtake the continuation.
+        guard !view.resuming else { return }
         // Unknown (`continuable` nil) goes to the helper too: from an answered
         // chat its continue sends what waits, as Resume Follow-ups does.
         if view.offersResume { resumeRun(sessionID: view.id) }

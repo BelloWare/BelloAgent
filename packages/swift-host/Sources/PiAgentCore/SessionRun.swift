@@ -294,6 +294,9 @@ extension AgentSession {
         await flushRequestLinks()
         if partialID != nil { invalidateDisplay() }
         modelActive=false; partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); end=nowMS(); runTask=nil
+        // A run stopped before it began never read these: the next run is a
+        // plain one, not a retry or a Resume of this one.
+        retrying=false; continuing=false
         // A Retry after a failed Resume answers the turn it continued, never
         // the continuation's own receipt.
         retrySubmission = runStatus == .idle || activeSubmission?.turnID.hasPrefix(Self.continuePrefix) == true ? nil : activeSubmission; activeSubmission=nil

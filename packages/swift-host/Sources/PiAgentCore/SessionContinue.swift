@@ -57,7 +57,10 @@ extension AgentSession {
             guard !queue.isEmpty || !steering.isEmpty else {
                 throw AgentError(AgentErrorCode.nothingToContinue, "There is nothing to resume; send a new message instead")
             }
-            try resumeQueue()
+            // Its receipt goes with the queue's release, in the same record:
+            // the same command sent again releases nothing twice.
+            commandState(Submission(commandID: commandID, turnID: receiptKey, text: ""), "completed")
+            do { try resumeQueue() } catch { commands.removeAll { $0["turnId"].text == receiptKey }; throw error }
             return ["accepted": true, "continued": false, "resumedQueue": true]
         }
         guard tail.role == "user" || tail.role == "toolResult" else {
@@ -73,7 +76,10 @@ extension AgentSession {
         if let turn = context.last(where: { $0.role == "user" })?.id { currentTurnID = turn }
         activeSubmission = submission; continuing = true; queuePaused = false; errorMessage = nil; errorCode = nil
         commandState(submission, "queued")
-        do { try persistState() } catch {
+        // Saved as a run under way, with its receipt: a helper that dies
+        // before the run's own first record leaves the chat interrupted, so
+        // it offers Resume again after the restart, never idle.
+        do { try persistState(active: true) } catch {
             commands.removeAll { $0["turnId"].text == receiptKey }
             activeSubmission = nil; continuing = false
             currentTurnID = previous.turn; queuePaused = previous.paused; errorMessage = previous.message; errorCode = previous.code

@@ -63,7 +63,7 @@ extension WorkspaceModel {
                 // send still waiting for its answer settles that itself.
                 if !retired, let view = self.displays[chat.id], !view.loading { view.dropAllSending() }
                 if paused, let view = self.displays[chat.id] { self.settlePausedForUpdate(view); continue }
-                if let view = self.displays[chat.id], view.hasWork, view.runState != .error { view.runState = .interrupted; view.runStatus = "interrupted"; view.queueCount = 0; view.uncertain = true; view.notice = "Host interrupted. Outcome uncertain. No command was replayed."; view.settleInterruptedRows() }
+                if let view = self.displays[chat.id], view.hasWork, view.runState != .error { view.runState = .interrupted; view.runStatus = "interrupted"; view.queueCount = 0; view.uncertain = true; view.continuable = nil; view.notice = "Host interrupted. Outcome uncertain. No command was replayed."; view.settleInterruptedRows() }
             }
         }
         let state = root.appendingPathComponent("Workspaces/\(workspace.id)", isDirectory: true)

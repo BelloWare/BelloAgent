@@ -27,6 +27,18 @@ private actor ContinueClient: ModelClient {
     }
 }
 
+/// The run-state records a session writes, in order.
+private final class RecordedStates: @unchecked Sendable {
+    private let lock = NSLock()
+    private var records: [JSON] = []
+    func add(_ record: JSON) { lock.lock(); records.append(record); lock.unlock() }
+    var count: Int { lock.lock(); defer { lock.unlock() }; return records.count }
+    func states(from index: Int) -> [JSON] {
+        lock.lock(); defer { lock.unlock() }
+        return records[index...].filter { $0["customType"].text == "pi-app.native.state.v1" }.map { $0["data"] }
+    }
+}
+
 /// Tools that run until they are stopped: a call cut off mid-run.
 private actor EndlessTools: ToolExecuting {
     private(set) var started: [String] = []
@@ -245,9 +257,56 @@ final class ContinueRunTests: XCTestCase {
         let resumed = try await reopened.continueRun(commandID: "resume-2")
         XCTAssertEqual(resumed["resumedQueue"].flag, true)
         try await eventually { !(await reopened.isRunning) }
+        // Its receipt settles the app's record, and the same command again releases nothing.
+        let receipt = await reopened.snapshot()["commands"].list.first { $0["commandId"].text == "resume-2" }
+        XCTAssertEqual(receipt?["turnId"].text, "continue:resume-2")
+        let again = try await reopened.continueRun(commandID: "resume-2")
+        XCTAssertEqual(again["duplicate"].flag, true)
         let requests = await later.requests
         XCTAssertEqual(requests.count, 1); XCTAssertEqual(requests.first?.last?.text, "Second")
         await reopened.close()
+    }
+
+    /// The Resume is saved as a run under way, receipt included, before its
+    /// run starts: a helper that dies before the run's own first record
+    /// leaves the chat interrupted (Resume offered again), never idle.
+    func testAnAcceptedResumeIsSavedAsARunUnderWay() async throws {
+        let chat = try chat(), client = ContinueClient([.streamForever("Cut"), .reply(answer("Resumed"))])
+        let records = RecordedStates()
+        let session = try AgentSession(id: "resume", profile: chat.profile, apiKey: "fixture", cwd: chat.root, directory: chat.state, readOnly: false,
+                                       resources: Resources(cwd: chat.root, home: chat.root), client: client, tools: RecordingTools(), traces: TraceStore(),
+                                       autoCompaction: false, beforeJournalAppend: { records.add($0) })
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "Question"), steer: false)
+        try await eventually { await client.streamed == 1 }
+        try await stopped(session)
+        let before = records.count
+        _ = try await session.continueRun(commandID: "resume-1")
+        let first = try XCTUnwrap(records.states(from: before).first, "the Resume wrote a run state")
+        XCTAssertEqual(first["active"].flag, true)
+        XCTAssertTrue(first["commands"].list.contains { $0["commandId"].text == "resume-1" })
+        try await eventually { !(await session.isRunning) }
+        await session.close()
+    }
+
+    /// A Resume stopped before its run began leaves nothing behind: the next
+    /// message is answered as itself, not after another continuation.
+    func testAResumeStoppedAtOnceDoesNotLeakIntoTheNextRun() async throws {
+        let chat = try chat(), client = ContinueClient([.streamForever("Cut"), .streamForever("Cut again"), .reply(answer("New answer")), .reply(answer("Extra"))])
+        let session = try chat.session(client)
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "Question"), steer: false)
+        try await eventually { await client.streamed == 1 }
+        try await stopped(session)
+        _ = try await session.continueRun(commandID: "resume-1")
+        await session.stop()
+        try await eventually { !(await session.isRunning) }
+        let before = await client.count
+        _ = try await session.submit(Submission(commandID: "c2", turnID: "t2", text: "New message"), steer: false)
+        try await eventually { await client.count > before }
+        try await eventually { !(await session.isRunning) }
+        let requests = await client.requests
+        XCTAssertEqual(requests.count, before + 1, "one request for the new message")
+        XCTAssertEqual(requests.last?.last?.text, "New message")
+        await session.close()
     }
 
     /// At the chat's cost limit, Resume stops at once with the cost-limit

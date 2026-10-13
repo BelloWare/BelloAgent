@@ -95,7 +95,8 @@ final class RunHoldTests: XCTestCase {
         view.queue = [["turnId": .string("t")]]
         XCTAssertEqual(view.presentedMessages.last?.detail, "Queued follow-ups go on after it.")
         view.resuming = true
-        XCTAssertFalse(view.offersResume); XCTAssertNil(view.presentedMessages.last { $0.id == "paused:run:c" }, "one Resume at a time")
+        XCTAssertFalse(view.offersResume, "one Resume at a time")
+        XCTAssertEqual(view.presentedMessages.last?.failureCode, SessionDisplay.pausedResumingCode, "the row stays, without its button")
         view.resuming = false
         view.observeRunState(["state": .string("paused"), "runStatus": .string("cancelled"), "queuePaused": .bool(true), "continuable": .bool(false)])
         XCTAssertFalse(view.offersResume, "nothing the model has not answered: the queue's Resume is the one")
@@ -109,6 +110,23 @@ final class RunHoldTests: XCTestCase {
         cut.runState = .interrupted; cut.failureMessage = "The previous run was interrupted before it finished."
         XCTAssertEqual(cut.presentedMessages.last?.id, "failure:run:d")
         XCTAssertEqual(cut.presentedMessages.last?.failureCode, SessionDisplay.interruptedCode)
+        cut.resuming = true
+        XCTAssertEqual(cut.presentedMessages.last?.failureCode, SessionDisplay.resumingCode, "no Retry in Resume's place while it is on its way")
+    }
+
+    /// A helper that died mid-run said "nothing to continue" while it ran:
+    /// that no longer stands, and the interrupted chat offers Resume.
+    @MainActor func testALostHelperForgetsWhetherTheChatCouldContinue() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("run-hold-lost-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await model(root: root)
+        let view = SessionDisplay(id: "c")
+        view.observeRunState(["state": .string("running"), "runStatus": .string("running"), "continuable": .bool(false)])
+        XCTAssertEqual(view.continuable, false)
+        model.settlePausedForUpdate(view)
+        XCTAssertNil(view.continuable); XCTAssertEqual(view.runState, .paused); XCTAssertTrue(view.offersResume)
+        XCTAssertFalse(view.uncertain, "a pause for an update is not a crash")
+        await close(model)
     }
 
     /// Work held for Resume does not hold a quit or an update; a run does,

@@ -60,7 +60,7 @@ import AppKit
     private var kind: Kind {
         let message = message
         let run = message.id.hasPrefix("failure:run:")
-        if message.failureCode == SessionDisplay.pausedCode { return .paused }
+        if message.failureCode == SessionDisplay.pausedCode || message.failureCode == SessionDisplay.pausedResumingCode { return .paused }
         guard message.failureCode?.hasPrefix(SessionDisplay.costLimitCode) == true else { return .failure(retry: run) }
         return .costLimit(raised: message.failureCode == SessionDisplay.costLimitRaised, run: run)
     }
@@ -68,8 +68,11 @@ import AppKit
     private enum Offer: Equatable { case retry, continueRun, raise, resume }
     private var offer: Offer? {
         switch kind {
-        case .failure(let retry): return retry ? (message.failureCode == SessionDisplay.interruptedCode ? .resume : .retry) : nil
-        case .paused: return .resume
+        case .failure(let retry):
+            // A restart's cut-off run offers Resume, and nothing while one is on its way.
+            if message.failureCode == SessionDisplay.resumingCode { return nil }
+            return retry ? (message.failureCode == SessionDisplay.interruptedCode ? .resume : .retry) : nil
+        case .paused: return message.failureCode == SessionDisplay.pausedCode ? .resume : nil
         case .costLimit(let raised, let run): return raised ? (run ? .continueRun : nil) : .raise
         }
     }
