@@ -9,10 +9,10 @@ import Foundation
 // decides. Queued follow-ups go on after the resumed run. Nothing here
 // resumes on its own; only the reader's Resume does.
 //
-// An update with chats running asks once, then pauses them as Quit does
-// (their helpers stop the way Stop does and are waited for, and their holds
-// are saved) before Sparkle checks. Whether or not an update follows, the
-// paused chats offer Resume.
+// Checking for updates pauses nothing. Installing one over running chats
+// asks once, then pauses them as Quit does (their helpers stop the way Stop
+// does and are waited for, and their holds are saved) before the install;
+// after the relaunch the paused chats offer Resume (`UpdateController`).
 
 extension WorkspaceModel {
     /// The pending-intent key of a Resume, matching the helper's receipt.
@@ -96,7 +96,7 @@ extension WorkspaceModel {
     /// Running chats, for the update's question: those with a run under way.
     var runningChatCount: Int { displays.values.filter { $0.busy }.count }
 
-    /// Pauses every chat's work before an update, as Quit does: what was
+    /// Pauses every chat's work before an update installs, as Quit does: what was
     /// typed into unkept sides moves to their chats and drafts are saved;
     /// every helper stops the way Stop does and is waited for, so a reply cut
     /// off mid-stream stays as an interrupted row; the chats it paused are

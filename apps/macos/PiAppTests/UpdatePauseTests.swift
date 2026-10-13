@@ -1,12 +1,15 @@
 import XCTest
 import AppKit
+import Sparkle
 @testable import PiApp
 
-/// Check for Updates while chats run (0.1.125): instead of refusing, it asks
-/// once whether to pause them; on Pause they pause as Quit pauses them, and
-/// only then does Sparkle check. Cancel changes nothing. An install Sparkle
-/// offered on its own asks the same before it relaunches. Sparkle itself is
-/// never reached: its check and its relaunch are the controller's seams.
+/// Updating while chats run (0.1.125, owner: check first, pause only to
+/// install): Check for Updates checks at once and pauses nothing. Only when
+/// an update is installed (Install and Relaunch, from a check or Sparkle's
+/// own offer) is the reader asked, once, whether to pause the running chats;
+/// on Pause they pause as Quit pauses them and the install goes ahead.
+/// Cancel aborts the install and changes nothing. Sparkle itself is never
+/// reached: its check and its relaunch are the controller's seams.
 final class UpdatePauseTests: XCTestCase {
     /// The controller with every seam recorded, and the question answered `answer`.
     @MainActor private final class Rig {
@@ -37,60 +40,93 @@ final class UpdatePauseTests: XCTestCase {
         for _ in 0..<200 where !done() { try? await Task.sleep(for: .milliseconds(5)) }
     }
 
-    @MainActor func testWithNothingRunningTheCheckStartsWithoutAQuestion() async {
-        let rig = Rig(answer: .alertFirstButtonReturn); rig.active = false
-        rig.controller.checkForUpdates()
-        XCTAssertEqual(rig.steps, ["check"]); XCTAssertTrue(rig.questions.isEmpty)
-    }
-
-    @MainActor func testPauseAndCheckPausesTheRunsThenChecks() async {
+    /// A check with chats running checks at once: no question, nothing paused.
+    /// An update not found, or found and declined, changes nothing.
+    @MainActor func testACheckWithChatsRunningChecksWithoutAskingOrPausing() async {
         let rig = Rig(answer: .alertFirstButtonReturn)
         rig.controller.checkForUpdates()
-        await settled(rig) { rig.steps.contains("check") }
-        XCTAssertEqual(rig.steps, ["pause", "check"], "the runs pause before Sparkle checks")
-        let question = try? XCTUnwrap(rig.questions.first)
-        XCTAssertEqual(rig.questions.count, 1, "asked once")
-        XCTAssertEqual(question?.messageText, "Pause 2 running chats and update?")
-        XCTAssertEqual(question?.buttons.map(\.title), ["Pause and Check", "Cancel"])
-        XCTAssertFalse(rig.controller.pausing)
-    }
-
-    @MainActor func testCancelLeavesTheRunsAloneAndChecksNothing() async {
-        let rig = Rig(answer: .alertSecondButtonReturn)
+        XCTAssertEqual(rig.steps, ["check"]); XCTAssertTrue(rig.questions.isEmpty)
+        XCTAssertTrue(rig.active, "the chats keep running")
+        rig.active = false
         rig.controller.checkForUpdates()
-        await settled(rig) { !rig.controller.pausing }
-        XCTAssertEqual(rig.steps, [], "nothing paused, nothing checked")
-        XCTAssertTrue(rig.active)
+        XCTAssertEqual(rig.steps, ["check", "check"]); XCTAssertTrue(rig.questions.isEmpty)
     }
 
-    @MainActor func testAPauseThatFailsSaysSoAndDoesNotCheck() async {
+    /// Sparkle's "up to date" and error alerts come as sheets: the standard
+    /// driver runs them modally inside a main-queue callback, which would stop
+    /// every chat streaming during a check. Both are acknowledged at once.
+    @MainActor func testSparklesResultAlertsAreSheetsNotModalLoops() {
+        var asked: [NSAlert] = []
+        let questions = PiQuestion()
+        questions.answerAlert = { asked.append($0); return .alertFirstButtonReturn }
+        let driver = UpdateUserDriver(standard: SPUStandardUserDriver(hostBundle: .main, delegate: nil), questions: questions)
+        var acknowledged = 0
+        driver.showUpdateNotFoundWithError(NSError(domain: "SUSparkleErrorDomain", code: 1001)) { acknowledged += 1 }
+        driver.showUpdaterError(NSError(domain: "SUSparkleErrorDomain", code: 2001, userInfo: [NSLocalizedDescriptionKey: "The feed could not be read."])) { acknowledged += 1 }
+        XCTAssertEqual(acknowledged, 2)
+        XCTAssertEqual(asked.map(\.messageText), ["Bello Agent is up to date", "Update Error"])
+        XCTAssertEqual(asked.last?.informativeText, "The feed could not be read.")
+        XCTAssertTrue(driver.responds(to: NSSelectorFromString("resetTimeSinceOpportuneUpdateNotice")), "Sparkle's launch reminder reaches the standard driver")
+    }
+
+    /// A result arriving while another sheet of the app is up, or with no
+    /// window to hold it, waits for one: never dropped, never a modal loop.
+    @MainActor func testAResultWaitsForAWindowAndIsNeverDropped() async throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 320), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.orderOut(nil) }
+        let questions = PiQuestion()
+        var shown: [NSWindow] = []
+        questions.present = { alert, host, _ in shown.append(host) }
+        let driver = UpdateUserDriver(standard: SPUStandardUserDriver(hostBundle: .main, delegate: nil), questions: questions)
+        let hidden = NSApp.windows.filter(\.isVisible)
+        for other in hidden { other.orderOut(nil) }
+        defer { for other in hidden { other.orderFront(nil) } }
+        driver.showUpdateNotFoundWithError(NSError(domain: "SUSparkleErrorDomain", code: 1001)) {}
+        XCTAssertEqual(driver.pending.count, 1, "no window: it waits")
+        XCTAssertTrue(shown.isEmpty)
+        window.makeKeyAndOrderFront(nil)
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)
+        XCTAssertEqual(driver.pending.count, 0); XCTAssertEqual(shown, [window], "shown on the window that came")
+        // A second result while the first is up waits behind it.
+        driver.showUpdaterError(NSError(domain: "x", code: 1)) {}
+        XCTAssertEqual(driver.pending.count, 1, "behind the sheet that is up")
+    }
+
+    /// The pause failing at install says so and installs nothing.
+    @MainActor func testAPauseThatFailsAbortsTheInstall() async {
         let rig = Rig(answer: .alertFirstButtonReturn, pauseFails: true)
-        rig.controller.checkForUpdates()
-        await settled(rig) { !rig.controller.pausing && rig.steps.count >= 2 }
+        XCTAssertTrue(rig.controller.shouldRelaunch())
+        var handled = 0
+        _ = rig.controller.postponeRelaunch { handled += 1 }
+        await settled(rig) { handled == 1 }
         XCTAssertEqual(rig.steps.first, "pause")
-        XCTAssertTrue(rig.steps.last?.hasPrefix("failure: Chats could not be paused") == true, "\(rig.steps)")
-        XCTAssertFalse(rig.steps.contains("check"))
+        XCTAssertFalse(rig.steps.contains("prepare"))
+        XCTAssertTrue(rig.steps.contains { $0.hasPrefix("failure: Chats could not be paused for the update") }, "\(rig.steps)")
+        XCTAssertFalse(rig.controller.shouldRelaunch(), "the install is aborted")
     }
 
-    /// Sparkle offered an update on its own and the reader chose Install and
-    /// Relaunch while chats ran: asked once, paused, then the install is
-    /// prepared and the relaunch goes ahead.
-    @MainActor func testSparklesOwnInstallAsksPausesThenRelaunches() async {
+    /// Install and Relaunch while chats run (after a check, or from Sparkle's
+    /// own offer): asked once, paused, then the install is prepared and the
+    /// relaunch goes ahead.
+    @MainActor func testInstallingOverRunningChatsAsksPausesThenRelaunches() async {
         let rig = Rig(answer: .alertFirstButtonReturn)
         XCTAssertTrue(rig.controller.shouldRelaunch())
         var handled = 0
         XCTAssertTrue(rig.controller.postponeRelaunch { handled += 1 })
         await settled(rig) { handled == 1 }
         XCTAssertEqual(rig.steps, ["pause", "barrier", "prepare"])
-        XCTAssertEqual(rig.questions.first?.buttons.first?.title, "Pause and Install")
+        XCTAssertEqual(rig.questions.count, 1, "asked once")
+        XCTAssertEqual(rig.questions.first?.messageText, "Pause 2 running chats and install?")
+        XCTAssertEqual(rig.questions.first?.buttons.map(\.title), ["Pause and Install", "Cancel"])
         XCTAssertEqual(handled, 1)
         // Sparkle asks again from the install handler: the barrier is held.
         XCTAssertTrue(rig.controller.shouldRelaunch())
     }
 
-    /// Cancel at that question: nothing is paused, and the install aborts
-    /// through Sparkle's relaunch decision, quietly.
-    @MainActor func testDecliningSparklesInstallAbortsItAndPausesNothing() async {
+    /// Cancel at that question: nothing is paused, the chats keep running,
+    /// and the install aborts through Sparkle's relaunch decision, quietly.
+    @MainActor func testCancelAtTheInstallQuestionAbortsItAndPausesNothing() async {
         let rig = Rig(answer: .alertSecondButtonReturn)
         XCTAssertTrue(rig.controller.shouldRelaunch())
         var handled = 0

@@ -200,6 +200,7 @@
 		42018C94F6BBF40B340DDBD1 /* TranscriptCardsReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EFE056E0F99166A066343C2 /* TranscriptCardsReference.swift */; };
 		426D174C0053C4E46858DF37 /* HostTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF183F853B2BDC8059D5039E /* HostTransport.swift */; };
 		426F31A4E97B22C2D4BC1523 /* WorkspaceManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0240051F720E8E5A77D8B2B3 /* WorkspaceManagerView.swift */; };
+		42DA16E14030C6D7EBD2CF24 /* UpdateUserDriver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A92AE5E44612FB49F959C28 /* UpdateUserDriver.swift */; };
 		42E1FFB7B2E1C79C42CCCE5C /* MetricFormats.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E71125DF0016D1E8C6D5A78 /* MetricFormats.swift */; };
 		42F498138CFA935836E6F1CA /* SidebarGroups.swift in Sources */ = {isa = PBXBuildFile; fileRef = CCCC5CF597441A108EE1D6B3 /* SidebarGroups.swift */; };
 		438BD67EEC8D22D8FC39AF1F /* WorkspaceRecency.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F8D14536C9BBEAA176F2795 /* WorkspaceRecency.swift */; };
@@ -1084,6 +1085,7 @@
 		59B61DE3AB7355B758741E54 /* NativeWorkListSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeWorkListSurface.swift; sourceTree = "<group>"; };
 		5A026EBBEC62563503F032CE /* WorkspaceTabs.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceTabs.swift; sourceTree = "<group>"; };
 		5A0B7B4B642E1E3B09279328 /* RedrawCostProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RedrawCostProbeTests.swift; sourceTree = "<group>"; };
+		5A92AE5E44612FB49F959C28 /* UpdateUserDriver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateUserDriver.swift; sourceTree = "<group>"; };
 		5B159165948CC7AC82554886 /* TranscriptNativeRowBehaviourTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptNativeRowBehaviourTests.swift; sourceTree = "<group>"; };
 		5B9E9CFB20EEF26A9900B790 /* PagedTextReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PagedTextReference.swift; sourceTree = "<group>"; };
 		5BF5FAEAA32A90350F131B30 /* LiveMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMonitorTests.swift; sourceTree = "<group>"; };
@@ -1752,6 +1754,7 @@
 				CBAF8A420019C37F3517A71D /* SettingsWindowContent.swift */,
 				9D11A4B240152897624206B1 /* StackLayout.swift */,
 				D5D8748BDD60677C6F9DB836 /* UpdateController.swift */,
+				5A92AE5E44612FB49F959C28 /* UpdateUserDriver.swift */,
 				FB0E8E2269778E5D17B8F40F /* WindowActivityGuard.swift */,
 				398FAFEA26555454F4446A4C /* WindowPresentation.swift */,
 				6219CF22C9D7F631F780C718 /* WindowVisibility.swift */,
@@ -3058,6 +3061,7 @@
 				254FE2D625AF7834E2CF124C /* TurnTokenBar.swift in Sources */,
 				C8BF1F9EEBB4A9B3E9B8690C /* UnicodePage.swift in Sources */,
 				3F23051F38EA906DB2A9E8D2 /* UpdateController.swift in Sources */,
+				42DA16E14030C6D7EBD2CF24 /* UpdateUserDriver.swift in Sources */,
 				6E8C22E387D10E8D1B5F0C30 /* WebhookPreviewSheet.swift in Sources */,
 				AE9FD5C4E3BE320B0D5A9FF4 /* WebhookSettings.swift in Sources */,
 				B8BC5F35A64F88E717B1D9FD /* WebhookSettingsGroup.swift in Sources */,

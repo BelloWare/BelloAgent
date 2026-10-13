@@ -110,30 +110,64 @@ extension LifecycleHelperTests {
         await bench.close()
     }
 
-    /// Check for Updates while a chat runs, confirmed, and no update found:
-    /// the chat is paused as a quit pauses it (its helper stopped, its hold
-    /// saved, not "outcome uncertain"), offers Resume, and Resume starts its
-    /// helper again and goes on once.
-    @MainActor func testAChatPausedForAnUpdateOffersResumeAndResumes() async throws {
+    /// Updating while a chat runs (owner: check first, pause only to
+    /// install). Check for Updates checks and pauses nothing; the chat keeps
+    /// running, and with no update found nothing changes. Install and
+    /// Relaunch then asks once; on Pause and Install the chat is paused as a
+    /// quit pauses it (not "outcome uncertain", its hold saved), the install
+    /// is prepared, and after the relaunch the chat offers Resume, which goes
+    /// on once. Sparkle is the controller's seams; the relaunch is the bench's.
+    @MainActor func testAChatPausedToInstallAnUpdateOffersResumeAfterTheRelaunch() async throws {
         let bench = try await Bench("resume-update"); defer { bench.tearDown() }
-        let model = bench.model
+        var model = bench.model
         let chat = try await bench.newChat("Update pause")
         func settle() async { await Task.yield(); try? await Task.sleep(for: .milliseconds(25)) }
         let session = try await streaming(bench, model, chat, settle: settle)
-        XCTAssertTrue(model.hasActiveWork)
-        try await model.pauseRunsForUpdate()
+        let updates = UpdateController()
+        var checks = 0, installed = 0
+        updates.hasActiveWork = { [weak model] in model?.hasActiveWork ?? false }
+        updates.runningChats = { [weak model] in model?.runningChatCount ?? 0 }
+        updates.acquireBarrier = { [weak model] in model?.acquireUpdateBarrier() ?? false }
+        updates.prepareForInstall = { [weak model] in try await model?.prepareForInstall() }
+        updates.releaseBarrier = { [weak model] in model?.releaseUpdateBarrier() }
+        updates.reportFailure = { [weak model] in model?.error = $0 }
+        updates.pauseActiveWork = { [weak model] in try await model?.pauseRunsForUpdate() }
+        updates.startCheckForTesting = { checks += 1 }
+        var questions: [String] = []
+        PiQuestion.shared.answerAlert = { questions.append($0.messageText); return .alertFirstButtonReturn }
+        defer { PiQuestion.shared.answerAlert = nil }
+
+        // The check: no question, nothing paused, the run goes on.
+        updates.checkForUpdates()
+        XCTAssertEqual(checks, 1); XCTAssertTrue(questions.isEmpty)
+        for _ in 0..<10 { await settle() }
+        XCTAssertTrue(session.busy, "a check pauses nothing"); XCTAssertNil(model.runHolds[chat.id].flatMap { $0.state == "paused" ? $0 : nil })
+
+        // Install and Relaunch: asked once, paused, prepared.
+        XCTAssertTrue(updates.shouldRelaunch())
+        _ = updates.postponeRelaunch { installed += 1 }
+        try await Self.waitUntil("The install never went ahead", seconds: 60, settle: settle) { installed == 1 }
+        XCTAssertEqual(questions, ["Pause the running chat and install?"])
         XCTAssertEqual(session.runState, .paused); XCTAssertFalse(session.uncertain, "a pause is not a crash")
-        XCTAssertFalse(model.hasActiveWork, "nothing holds the update any more")
-        XCTAssertTrue(session.offersResume)
         XCTAssertEqual(model.runHolds[chat.id]?.state, "paused")
-        XCTAssertFalse(model.opened.contains(chat.id))
+        XCTAssertTrue(updates.shouldRelaunch(), "Sparkle's second ask finds the barrier held")
+        XCTAssertNil(model.error, model.error ?? "")
         let sent = try await Self.modelRequests(bench.fixture.base)
+
+        // The relaunch: the chat is paused and offers Resume; nothing resumes by itself.
+        model = try await bench.relaunch()
+        await model.runHoldVerification?.value
+        // It was the open chat at the update, so the relaunch reopens it.
+        await model.select(chat.id)
+        let reopened = try XCTUnwrap(model.displays[chat.id])
+        try await Self.waitUntil("The chat never read its state", settle: settle) { reopened.runStateKnown && reopened.runState == .paused }
+        XCTAssertTrue(reopened.offersResume)
         for _ in 0..<20 { await settle() }
         let quiet = try await Self.modelRequests(bench.fixture.base)
-        XCTAssertEqual(quiet, sent, "no update was found: nothing resumes by itself")
+        XCTAssertEqual(quiet, sent, "nothing resumes by itself")
         model.resumeRun(sessionID: chat.id)
         try await Self.waitUntil("The resumed run never finished", seconds: 90, settle: settle) {
-            model.opened.contains(chat.id) && !session.busy && session.runState == .idle && !session.resuming
+            !reopened.busy && reopened.runState == .idle && !reopened.resuming && reopened.messages.filter { $0.role == "assistant" }.count >= 2
         }
         let afterResume = try await Self.modelRequests(bench.fixture.base)
         XCTAssertEqual(afterResume, sent + 1)

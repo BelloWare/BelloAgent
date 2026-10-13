@@ -14,7 +14,9 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
     var releaseBarrier: () -> Void = {}
     var reportFailure: (String) -> Void = { _ in }
     private var rejectNextInstall = false
-    private var controller: SPUStandardUpdaterController?
+    private var updater: SPUUpdater?
+    /// Sparkle's standard windows, with its result and error alerts as sheets.
+    private var userDriver: UpdateUserDriver?
     private var observation: AnyCancellable?
     private var started = false
 
@@ -25,25 +27,30 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
         guard configuration.error == nil,
               ProcessInfo.processInfo.environment["PI_APP_TESTING"] != "1",
               ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
-        let controller = SPUStandardUpdaterController(
-            startingUpdater: false, updaterDelegate: self, userDriverDelegate: nil)
-        self.controller = controller
-        observation = controller.updater.publisher(for: \.canCheckForUpdates)
+        // What SPUStandardUpdaterController builds, with the standard user
+        // driver wrapped: its "up to date" and error alerts run a modal loop
+        // inside a main-queue callback, which stops every streaming chat
+        // until dismissed. Updates are checked with chats running (0.1.125).
+        let driver = UpdateUserDriver(standard: SPUStandardUserDriver(hostBundle: .main, delegate: nil))
+        let updater = SPUUpdater(hostBundle: .main, applicationBundle: .main, userDriver: driver, delegate: self)
+        userDriver = driver; self.updater = updater
+        observation = updater.publisher(for: \.canCheckForUpdates)
             .receive(on: RunLoop.main)
             .sink { [weak self] available in self?.canCheckForUpdates = available }
     }
 
     func configure(automaticChecks: Bool, configurationAvailable: Bool) {
-        guard let controller else { return }
+        guard let updater else { return }
         // The vault is the configuration authority. Sparkle's internal defaults
         // are overwritten before it starts; it never chooses this preference.
-        controller.updater.automaticallyChecksForUpdates = configurationAvailable && automaticChecks
+        updater.automaticallyChecksForUpdates = configurationAvailable && automaticChecks
         guard configurationAvailable, !started else { return }
-        controller.startUpdater(); started = true
+        started = true
+        do { try updater.start() } catch { started = false; reportFailure("The updater could not start. \(error.localizedDescription)") }
     }
 
-    /// Pauses every running chat as Quit does, before an update. Set by the
-    /// workspace model (`pauseRunsForUpdate`).
+    /// Pauses every running chat as Quit does, before an update installs.
+    /// Set by the workspace model (`pauseRunsForUpdate`).
     var pauseActiveWork: () async throws -> Void = {}
     /// How many chats are running, for the question's words.
     var runningChats: () -> Int = { 0 }
@@ -52,42 +59,30 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
     /// Set when Sparkle is about to relaunch while work is active: the
     /// postponement asks whether to pause it first.
     private var pauseBeforeRelaunch = false
-    /// The question is up, or the pause it led to is under way: a second
-    /// Check for Updates does nothing meanwhile.
+    /// The pause question is up, or the pause it led to is under way.
     private(set) var pausing = false
 
-    /// Check for Updates. With chats running, asks once whether to pause them
-    /// (a sheet, never a modal loop: an update check must not stop the runs
-    /// it is asking about); on Pause and Check they pause as Quit pauses them,
-    /// then Sparkle checks. Whatever Sparkle finds — an update installed, one
-    /// declined, or none — the paused chats wait for Resume. Cancel changes nothing.
-    func checkForUpdates() {
-        guard !pausing else { return }
-        guard hasActiveWork() else { startCheck(); return }
-        pausing = true
-        askToPause(installing: false) { [weak self] confirmed in
-            guard let self else { return }
-            guard confirmed else { self.pausing = false; return }
-            Task { @MainActor in
-                defer { self.pausing = false }
-                do { try await self.pauseActiveWork() }
-                catch { self.reportFailure("Chats could not be paused for the update. \(error.localizedDescription)"); return }
-                self.startCheck()
-            }
-        }
-    }
+    /// Check for Updates: Sparkle checks at once, running chats or not
+    /// (owner, 0.1.125: check first, pause only to install). Nothing is
+    /// paused by a check; an update found and declined, or none found,
+    /// changes nothing. Running chats are asked about only when an update is
+    /// installed (`postponeRelaunch`). Sparkle's "up to date" and error
+    /// alerts come as sheets (`UpdateUserDriver`), so a check never stops
+    /// the chats streaming meanwhile.
+    func checkForUpdates() { startCheck() }
     private func startCheck() {
         if let startCheckForTesting { startCheckForTesting(); return }
-        controller?.checkForUpdates(nil)
+        updater?.checkForUpdates()
     }
-    /// The one question, for Check for Updates and for an install Sparkle
-    /// offered on its own. True for Pause.
-    private func askToPause(installing: Bool, answered: @escaping (Bool) -> Void) {
+    /// The one question, asked when an update is about to install over
+    /// running chats. True for Pause and Install. A sheet, never a modal
+    /// loop: the question must not stop the runs it is asking about.
+    private func askToPause(answered: @escaping (Bool) -> Void) {
         let count = max(1, runningChats())
         let alert = NSAlert()
-        alert.messageText = count == 1 ? "Pause the running chat and update?" : "Pause \(count) running chats and update?"
-        alert.informativeText = "They pause as they do when you quit: a reply that was arriving is kept as it is, and a tool call that was cut off is not run again. Each paused chat shows Resume, after the update or if you don’t install one. Side chats that were not kept close; what you typed in them moves to their chats."
-        alert.addButton(withTitle: installing ? "Pause and Install" : "Pause and Check")
+        alert.messageText = count == 1 ? "Pause the running chat and install?" : "Pause \(count) running chats and install?"
+        alert.informativeText = "They pause as they do when you quit: a reply that was arriving is kept as it is, and a tool call that was cut off is not run again. After the update, each paused chat shows Resume. Side chats that were not kept close; what you typed in them moves to their chats. Cancel installs nothing and leaves the chats running."
+        alert.addButton(withTitle: "Pause and Install")
         alert.addButton(withTitle: "Cancel")
         if !PiQuestion.shared.ask(alert, over: nil, answered: { answered($0 == .alertFirstButtonReturn) }) {
             // Another question is up: this one was never asked.
@@ -107,19 +102,22 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem, untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
         postponeRelaunch(installHandler)
     }
-    /// Holds Sparkle's relaunch while the install is prepared: running chats
-    /// are paused first when the reader agrees (Install and Relaunch chosen
-    /// from Sparkle's own offer), then the barrier, drafts and helpers are
-    /// settled as before. A refusal or failure aborts the install.
+    /// Holds Sparkle's relaunch while the install is prepared: with chats
+    /// running, the reader is asked once whether to pause them (Install and
+    /// Relaunch chosen from a check or from Sparkle's own offer); on Pause
+    /// they pause as Quit pauses them, then the barrier, drafts and helpers
+    /// are settled as before. Cancel, or a failure, aborts the install and
+    /// leaves the chats as they were.
     func postponeRelaunch(_ installHandler: @escaping () -> Void) -> Bool {
         let pauseFirst = pauseBeforeRelaunch; pauseBeforeRelaunch = false
         Task { @MainActor in
             do {
                 if pauseFirst {
                     pausing = true; defer { pausing = false }
-                    let confirmed = await withCheckedContinuation { continuation in askToPause(installing: true) { continuation.resume(returning: $0) } }
+                    let confirmed = await withCheckedContinuation { continuation in askToPause { continuation.resume(returning: $0) } }
                     guard confirmed else { throw UpdateDeclined() }
-                    try await pauseActiveWork()
+                    do { try await pauseActiveWork() }
+                    catch { throw HostError.failure("Chats could not be paused for the update, so it was not installed. \(error.localizedDescription)") }
                     guard !hasActiveWork(), acquireBarrier() else { throw HostError.failure("Work started again before the update could install. Pause it and try again.") }
                 }
                 try await prepareForInstall(); installHandler()

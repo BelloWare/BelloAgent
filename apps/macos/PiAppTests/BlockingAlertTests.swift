@@ -170,7 +170,7 @@ final class BlockingAlertTests: XCTestCase {
         let converted = [
             "Workspaces/WorkspaceFolders.swift",
             "Inspector/Session/InspectorRawTab.swift", "Inspector/ResourceInspector.swift",
-            "Inspector/ConversationContentView.swift", "Application/UpdateController.swift",
+            "Inspector/ConversationContentView.swift", "Application/UpdateController.swift", "Application/UpdateUserDriver.swift",
             "Application/WindowActivityGuard.swift", "Git/GitPanel.swift",
         ]
         for path in converted + ["Workspaces/WorkspaceManagerView.swift"] {

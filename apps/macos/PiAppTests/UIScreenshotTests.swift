@@ -737,8 +737,9 @@ final class UIScreenshotTests: XCTestCase {
 
     /// 30a, 30b · Resume (0.1.125), at 920×600. 30a: a chat stopped while
     /// its reply streamed: the cut-off reply, then the Paused row with
-    /// Resume. 30b: Check for Updates while another chat runs: the one
-    /// question, answered Cancel, so the run goes on and is stopped after.
+    /// Resume. 30b: Install and Relaunch while the chat runs (a check before
+    /// it asked nothing): the one question, answered Cancel, so nothing is
+    /// installed and the run goes on; it is stopped after, for 30a.
     @MainActor private func captureResumeScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                 appearances: [(String, NSAppearance.Name)], workspaceID: String, profileID: String) async throws {
         let size = window.frame.size
@@ -751,16 +752,22 @@ final class UIScreenshotTests: XCTestCase {
         session.draft = "slow: plan the ledger schema migration step by step"
         model.send(sessionID: chat.id)
         try await until("30 streams", seconds: 60) { session.busy && session.messages.contains { $0.role == "assistant" && $0.text.count > 40 } }
-        // 30b first, while the chat runs.
+        // 30b first, while the chat runs. A check asks nothing and pauses
+        // nothing; Install and Relaunch asks, and is answered Cancel.
         let updates = UpdateController()
         updates.hasActiveWork = { [weak model] in model?.hasActiveWork ?? false }
         updates.runningChats = { [weak model] in model?.runningChatCount ?? 0 }
-        var paused = false, checked = false
+        updates.acquireBarrier = { false }
+        var paused = false, checked = false, aborted = 0
         updates.pauseActiveWork = { paused = true }
         updates.startCheckForTesting = { checked = true }
+        updates.checkForUpdates()
+        try await settle(0.3)
+        XCTAssertTrue(checked, "the check goes at once"); XCTAssertNil(window.attachedSheet, "and asks nothing")
         for (name, appearance) in appearances {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(0.8)
-            updates.checkForUpdates()
+            XCTAssertTrue(updates.shouldRelaunch())
+            _ = updates.postponeRelaunch { aborted += 1 }
             try await until("30b asked") { window.attachedSheet != nil }
             do {
                 defer { if let alert = window.attachedSheet { window.endSheet(alert, returnCode: .alertSecondButtonReturn) } }
@@ -768,8 +775,9 @@ final class UIScreenshotTests: XCTestCase {
                 try capture(window, to: gallery.appendingPathComponent("30b-update-pause-question-\(name).png"))
             }
             try await until("30b answered") { !updates.pausing }
+            XCTAssertFalse(updates.shouldRelaunch(), "Cancel aborts the install")
         }
-        XCTAssertFalse(paused, "Cancel pauses nothing"); XCTAssertFalse(checked, "and checks nothing")
+        XCTAssertFalse(paused, "Cancel pauses nothing"); XCTAssertEqual(aborted, appearances.count)
         XCTAssertTrue(session.busy, "the run goes on")
         model.stop(sessionID: chat.id)
         try await until("30a pauses", seconds: 30) { session.runState == .paused && !session.busy && session.continuable == true }
