@@ -364,7 +364,43 @@ enum TranscriptCardFaces {
     private(set) var lines: [Line] = []
     private(set) var textRevision = 0
     private var environment = TranscriptRowEnvironment()
-    private var heights: [(width: CGFloat, rows: [CGFloat])] = []
+    private final class Geometry {
+        let width: CGFloat
+        var rows: [CGFloat]
+        var exact: IndexSet
+        var tops: [CGFloat] = []
+        var next = 0
+        init(width: CGFloat, rows: [CGFloat], exact: Bool) {
+            self.width = width; self.rows = rows
+            self.exact = exact ? IndexSet(integersIn: rows.indices) : IndexSet()
+            rebuild()
+        }
+        func rebuild() {
+            tops = [0]
+            for height in rows { tops.append(tops.last! + height) }
+        }
+        var total: CGFloat { tops.last ?? 0 }
+        func index(at y: CGFloat) -> Int {
+            var low = 0, high = rows.count
+            while low < high {
+                let mid = (low + high) / 2
+                if tops[mid + 1] <= y { low = mid + 1 } else { high = mid }
+            }
+            return low
+        }
+    }
+    private var heights: [Geometry] = []
+    private var placedGeometry: Geometry?
+    /// A capped inner scroll draws exact visible lines, then settles its
+    /// remaining geometry in small idle units. Ordinary inline lines retain
+    /// their exact sizing contract.
+    var defersOffscreenMeasurement = false
+    private var mounting = false
+    private var measurementScheduled = false
+    var unmeasuredLineCount: Int {
+        guard let geometry = heights.first(where: { $0.width == bounds.width }) else { return lines.count }
+        return lines.count - geometry.exact.count
+    }
     @MainActor private final class Row {
         let background: TranscriptPanel?
         /// The sign or the number: selectable text, as SwiftUI's `Text` in a
@@ -416,23 +452,112 @@ enum TranscriptCardFaces {
     }
     /// Measures a row's text without building it.
     private static let measurer: TranscriptPlainTextView = { let view = TranscriptPlainTextView(); view.isSelectable = false; return view }()
-    private func rowHeights(width: CGFloat) -> [CGFloat] {
-        if let known = heights.first(where: { $0.width == width }) { return known.rows }
-        let rows = lines.map { rowHeight($0, width: width) }
+    private func geometry(width: CGFloat) -> Geometry {
+        if let known = heights.first(where: { $0.width == width }) { return known }
+        let rows = defersOffscreenMeasurement
+            ? Array(repeating: TranscriptLabel.lineHeight(TranscriptCardFaces.codeFont), count: lines.count)
+            : lines.map { rowHeight($0, width: width) }
+        let made = Geometry(width: width, rows: rows, exact: !defersOffscreenMeasurement)
         if heights.count == 4 { heights.removeFirst() }
-        heights.append((width, rows))
-        return rows
+        heights.append(made)
+        return made
     }
-    /// The lines' height at `width`, or `limit` once they reach it: what a
-    /// capped scroll needs, without measuring the rows past its cap.
+    /// The card needs only its cap. Remember these measurements so the first
+    /// visible pass uses them too, including at a new width.
     func height(width: CGFloat, upTo limit: CGFloat) -> CGFloat {
-        if let known = heights.first(where: { $0.width == width }) { return min(limit, known.rows.reduce(0, +)) }
-        var total: CGFloat = 0
-        for line in lines {
-            total += rowHeight(line, width: width)
+        let geometry = geometry(width: width)
+        var total: CGFloat = 0, changed = false
+        defer { if changed { geometry.rebuild() } }
+        for index in lines.indices {
+            if !geometry.exact.contains(index) {
+                geometry.rows[index] = rowHeight(lines[index], width: width)
+                geometry.exact.insert(index); changed = true
+            }
+            total += geometry.rows[index]
             if total >= limit { return limit }
         }
         return total
+    }
+
+    private func readingAnchor(_ geometry: Geometry) -> (index: Int, offset: CGFloat)? {
+        guard defersOffscreenMeasurement, let scroll = enclosingScrollView, scroll.documentView === self else { return nil }
+        let y = scroll.contentView.bounds.minY, index = geometry.index(at: y)
+        guard index < lines.count else { return nil }
+        return (index, y - geometry.tops[index])
+    }
+    private func install(_ geometry: Geometry, anchor: (index: Int, offset: CGFloat)?) {
+        guard defersOffscreenMeasurement, let scroll = enclosingScrollView, scroll.documentView === self else { return }
+        if frame.height != geometry.total { frame.size.height = geometry.total }
+        if let anchor, geometry.rows.indices.contains(anchor.index) {
+            let y = min(max(0, geometry.tops[anchor.index] + anchor.offset), max(0, geometry.total - scroll.contentView.bounds.height))
+            scroll.contentView.setBoundsOrigin(NSPoint(x: scroll.contentView.bounds.minX, y: y))
+            scroll.reflectScrolledClipView(scroll.contentView)
+        }
+    }
+    /// A scroller appearing can change the content width during tile, before
+    /// idle geometry settles. Carry the reading line from the geometry that
+    /// actually placed the document, rather than looking it up in new estimates.
+    func place(width: CGFloat) {
+        guard !mounting else { return }
+        let anchor = placedGeometry.flatMap { readingAnchor($0) }
+        let geometry = geometry(width: width)
+        mounting = true
+        defer { mounting = false }
+        placedGeometry = geometry
+        let next = CGRect(x: 0, y: 0, width: width, height: geometry.total)
+        if frame != next { frame = next }
+        install(geometry, anchor: anchor)
+    }
+    private func visibleLinesRect() -> CGRect {
+        let seen = visibleRect
+        let viewport = seen.isEmpty ? (observedClip.map { convert($0.bounds, from: $0) } ?? .null) : seen
+        return buildsAll || (window != nil && observedClip == nil) ? bounds
+            : window == nil || viewport.isNull ? .null : TranscriptNativeDocument.buffered(viewport)
+    }
+    private func prepareVisible(_ geometry: Geometry) {
+        guard defersOffscreenMeasurement else { return }
+        let anchor = readingAnchor(geometry)
+        // Measuring a line can expose another one. Stop only once every line
+        // that will actually be painted has its own exact height.
+        while true {
+            let visible = visibleLinesRect()
+            guard !visible.isNull else { break }
+            let first = geometry.index(at: visible.minY)
+            var index = first, changed = false
+            while index < lines.count, geometry.tops[index] < visible.maxY {
+                if !geometry.exact.contains(index) {
+                    geometry.rows[index] = rowHeight(lines[index], width: geometry.width)
+                    geometry.exact.insert(index); changed = true
+                }
+                index += 1
+            }
+            guard changed else { break }
+            geometry.rebuild(); install(geometry, anchor: anchor)
+        }
+    }
+    private func scheduleMeasurement() {
+        guard defersOffscreenMeasurement, window != nil, unmeasuredLineCount > 0, !measurementScheduled else { return }
+        measurementScheduled = true
+        TranscriptIdleScheduler.shared.request(self, after: ProcessInfo.processInfo.systemUptime + TranscriptNativeDocument.sliceQuietPeriod) { [weak self] in
+            guard let self else { return false }
+            guard self.bounds.width > 0 else { self.measurementScheduled = false; return false }
+            let geometry = self.geometry(width: self.bounds.width)
+            let anchor = self.readingAnchor(geometry)
+            self.mounting = true
+            var measured = 0
+            while geometry.next < self.lines.count, measured < 8 {
+                let index = geometry.next; geometry.next += 1
+                if geometry.exact.contains(index) { continue }
+                geometry.rows[index] = self.rowHeight(self.lines[index], width: geometry.width)
+                geometry.exact.insert(index); measured += 1
+            }
+            geometry.rebuild(); self.install(geometry, anchor: anchor)
+            self.mounting = false
+            self.mountVisibleRows()
+            let more = geometry.exact.count < self.lines.count
+            if !more { self.measurementScheduled = false }
+            return more
+        }
     }
     /// How many rows have been measured, as evidence for the checks.
     nonisolated(unsafe) static var rowsMeasured = 0
@@ -452,16 +577,16 @@ enum TranscriptCardFaces {
             return max(mark, measurer.exactHeight(width: textWidth))
         }()
     }
-    func height(width: CGFloat) -> CGFloat { rowHeights(width: width).reduce(0, +) }
+    func height(width: CGFloat) -> CGFloat { geometry(width: width).total }
     /// The text view drawing line `index`, while it is built.
     func builtText(at index: Int) -> NSTextView? { built[index]?.text }
     /// Where line `index` stands among these lines, whether or not it is
     /// built: a find goes there, and the line is built as it comes into view.
     func lineRect(at index: Int) -> CGRect? {
         guard bounds.width > 0, lines.indices.contains(index) else { return nil }
-        let rows = rowHeights(width: bounds.width)
-        guard index < rows.count else { return nil }
-        return CGRect(x: 0, y: rows[..<index].reduce(0, +), width: bounds.width, height: rows[index])
+        let geometry = geometry(width: bounds.width)
+        guard index < geometry.rows.count else { return nil }
+        return CGRect(x: 0, y: geometry.tops[index], width: bounds.width, height: geometry.rows[index])
     }
     override func layout() {
         super.layout()
@@ -472,6 +597,7 @@ enum TranscriptCardFaces {
     private weak var observedClip: NSClipView?
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        if window == nil { TranscriptIdleScheduler.shared.cancel(self); measurementScheduled = false }
         let clip = window == nil ? nil : enclosingScrollView?.contentView
         guard clip !== observedClip else { return }
         if let observedClip { NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: observedClip) }
@@ -485,16 +611,13 @@ enum TranscriptCardFaces {
     @objc private func scrolled() { mountVisibleRows() }
     /// Builds and places the rows that can be seen, and lets the others go.
     func mountVisibleRows() {
-        guard bounds.width > 0 else { return }
-        let rows = rowHeights(width: bounds.width)
-        // The scroll view's viewport around the lines, buffered as the
-        // document buffers it; an empty visible rect is the lines out of it.
-        let seen = visibleRect
-        let viewport = seen.isEmpty ? (observedClip.map { convert($0.bounds, from: $0) } ?? .null) : seen
-        // Read through no scroll view, every row is in view; out of any
-        // window, none is.
-        let visible = buildsAll || (window != nil && observedClip == nil) ? bounds
-            : window == nil || viewport.isNull ? CGRect.null : TranscriptNativeDocument.buffered(viewport)
+        guard bounds.width > 0, !mounting else { return }
+        mounting = true
+        defer { mounting = false }
+        let geometry = geometry(width: bounds.width)
+        prepareVisible(geometry)
+        let rows = geometry.rows, visible = visibleLinesRect()
+        scheduleMeasurement()
         let rtl = environment.layoutDirection == .rightToLeft
         let textWidth = max(1, bounds.width - 32 - markWidth - gap)
         var y: CGFloat = 0
@@ -533,6 +656,7 @@ enum TranscriptCardFaces {
     let cap: CGFloat
     init(style: TranscriptCardLines.Style, cap: CGFloat) {
         lines = TranscriptCardLines(style: style)
+        lines.defersOffscreenMeasurement = true
         self.cap = cap
         super.init(frame: .zero)
         drawsBackground = false; contentView.drawsBackground = false
@@ -551,8 +675,7 @@ enum TranscriptCardFaces {
         guard window != nil else { return }
         let width = contentView.bounds.width
         guard width > 0 else { return }
-        let frame = CGRect(x: 0, y: 0, width: width, height: lines.height(width: width))
-        if lines.frame != frame { lines.frame = frame }
+        lines.place(width: width)
         lines.mountVisibleRows()
     }
 }
