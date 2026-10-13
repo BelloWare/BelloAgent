@@ -1,6 +1,6 @@
 # Bello Agent 0.1.125 — Resume a paused chat, update without stopping work, a quieter sidebar
 
-Status: **packaged; publication pending** — marketing version 0.1.125, build 129. Previous public release: 0.1.124/build 128.
+Status: **publicly released and verified** at [belloware.com](https://belloware.com/bello-agent.html), marketing version 0.1.125, build 129. Public verification completed at **2026-10-13 14:59:01 UTC**. Tagged source: **`fb09bc70`**, `v0.1.125`. Website: **`ac35390`**. Previous public release: 0.1.124/build 128.
 
 ## Owner request
 
@@ -51,7 +51,34 @@ Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1, XcodeGen 2.44.1.
   - Footprint 99 → 745 MB, 3.65 MB per launch (0.1.124: 3.61).
   - The 60 s draw soak passed.
 - **Known:**
-  - Scratch-chat helper shutdown takes more than 5 s and is then force-ended. The user-visible effect is limited to a slower close of a scratch chat's helper; the test above times out on it.
+  - Helper stop race (pre-existing, also in 0.1.124). A warm-up `connect` that lands while `shutdownAndWait` is stopping a helper starts a replacement. The stop then fails after ~6 s with "The project host did not exit", and an extra helper is left running.
+    - It can hit update install (including pause-then-install), folder changes, and the scratch-chat test above. Nothing is lost, and retrying works.
+    - The helper itself exits in 2–6 ms.
+    - Fixed on `dev/helper-shutdown` (`d5c6f84e`), with a failing-first `HostSupervisorTests` case and a clean Codex review. The owner chose to ship it in 0.1.126 rather than re-gate 0.1.125.
   - Git (rare, carried from 0.1.124): during a repository switch, a commit message typed while the new repository loads can be cleared, and Amend can prefill the previous repository's HEAD message.
   - The side-chat panel still labels running sides "Working" (only the sidebar was in scope).
 - **Not done:** VoiceOver and real-gateway checks; install/update rehearsals skipped under standing policy.
+
+## Publication
+
+Packaged from **`fb09bc70`** with `scripts/release.sh`. That commit is `main` merged with `dev/next` at `ba901762`, plus the version bump, the release notes and this record's first draft. The script:
+- made a Release build, stripped the binaries and kept the dSYMs;
+- signed with Developer ID and ran the packaged-helper offline smoke test;
+- notarized and stapled the app and the DMG, then checked them with Gatekeeper;
+- signed the appcast and verified its Ed25519 signature.
+
+`validate-release.py` against build 128 passed. The owner approved packaging and publishing in this session, and chose to ship without the helper stop-race fix.
+
+- App notarization: **`de715f2f-981c-4c1e-9625-8716cd16ef10`**, Accepted.
+- DMG notarization: **`fe61d1b8-7f9f-4cc2-9744-e4ff22943e93`**, Accepted.
+- Installer: **13,142,937 bytes (12.53 MiB)**.
+- SHA-256: **`49753497da8d8d49a1756e8089ef248eabc52e45c58355bd3aaf10b8f04a7c7f`**.
+
+Source was pushed atomically to `main` and `dev/next` at `fb09bc70`, with tag `v0.1.125`. `publish-release.sh 0.1.125` pushed website `ac35390`.
+
+`verify-published.py` passed at 2026-10-13 14:59:01 UTC:
+- the canonical and legacy feeds are identical;
+- the public DMG's SHA-256 matches;
+- the Ed25519 signature verifies.
+
+Install and update rehearsals were skipped by standing owner instruction.
