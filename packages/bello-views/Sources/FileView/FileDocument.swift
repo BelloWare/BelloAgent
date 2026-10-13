@@ -47,10 +47,24 @@ final class FileBytes: @unchecked Sendable {
     // Immutable after init; pread is safe from any thread.
     let descriptor: Int32
     let path: String
-    init?(path: String, noFollow: Bool = false) {
-        let descriptor = open(path, O_RDONLY | O_CLOEXEC | (noFollow ? O_NOFOLLOW : 0))
-        guard descriptor >= 0 else { return nil }
+    struct OpenFailure: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+    init(path: String, noFollow: Bool = false) throws {
+        // Check the opened inode, not its path: a FIFO may replace a file
+        // between selection and open, and must never wait for a writer.
+        let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | (noFollow ? O_NOFOLLOW : 0))
+        guard descriptor >= 0 else { throw OpenFailure(message: "The file can't be opened.") }
+        var adopted = false
+        defer { if !adopted { close(descriptor) } }
+        var value = stat()
+        guard fstat(descriptor, &value) == 0 else { throw OpenFailure(message: "The file can't be opened.") }
+        guard value.st_mode & S_IFMT == S_IFREG else { throw OpenFailure(message: "Only regular files can be opened.") }
+        let flags = fcntl(descriptor, F_GETFL)
+        guard flags >= 0, fcntl(descriptor, F_SETFL, flags & ~O_NONBLOCK) == 0 else { throw OpenFailure(message: "The file can't be opened.") }
         self.descriptor = descriptor; self.path = path
+        adopted = true
     }
     deinit { close(descriptor) }
 
@@ -263,7 +277,10 @@ struct FileLengths: Sendable {
                 await self?.failed("The file's path changed. Open it again to check its location.", version: version)
                 return
             }
-            guard let bytes = FileBytes(path: path, noFollow: requiresResolvedPath), let identity = FileIdentity.of(descriptor: bytes.descriptor) else {
+            let bytes: FileBytes
+            do { bytes = try FileBytes(path: path, noFollow: requiresResolvedPath) }
+            catch { await self?.failed(error.localizedDescription, version: version); return }
+            guard let identity = FileIdentity.of(descriptor: bytes.descriptor) else {
                 await self?.failed("The file can't be opened.", version: version)
                 return
             }
