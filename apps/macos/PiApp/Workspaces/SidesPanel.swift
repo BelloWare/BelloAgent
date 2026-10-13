@@ -629,7 +629,7 @@ struct SidesPanelActivity: Equatable {
         let wanted = Set(indices.map { items[$0].entry.id })
         for (id, row) in rows where !wanted.contains(id) {
             rows[id] = nil; row.removeFromSuperview()
-            row.row.cell?.isHighlighted = false
+            row.prepareForReuse()
             if pool.count < 40 { pool.append(row) }
         }
         for index in indices {
@@ -694,6 +694,12 @@ struct SidesPanelActivity: Equatable {
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        content = nil
+        row.prepareForReuse()
+        row.cell?.isHighlighted = false
+    }
     func update(_ new: Content) {
         guard new != content else { return }
         content = new

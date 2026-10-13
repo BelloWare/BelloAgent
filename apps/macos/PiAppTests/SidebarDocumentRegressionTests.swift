@@ -127,6 +127,56 @@ import XCTest
         XCTAssertEqual(reused.body.content?.stats.state, "paused", "The new display stays observed")
     }
 
+    func testReusedChatRowsCannotStartASelectionGlide() throws {
+        try assertSelectionGlideDropsReusedRows(sideRows: false)
+    }
+
+    func testReusedSideRowsCannotStartASelectionGlide() throws {
+        try assertSelectionGlideDropsReusedRows(sideRows: true)
+    }
+
+    private func assertSelectionGlideDropsReusedRows(sideRows: Bool) throws {
+        let (model, document, scroll) = fixture()
+        let reduced = PiKit.Motion.reducedOverride
+        PiKit.Motion.reducedOverride = false
+        let window = NSWindow(contentRect: scroll.frame, styleMask: [], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = scroll
+        defer { window.contentView = nil; window.close(); PiKit.Motion.reducedOverride = reduced }
+        var entries = contents(0..<200, model: model)
+        if sideRows {
+            entries.entries = (0..<200).map { .side(SidebarSideRowState(id: "side-\($0)", title: "Side \($0)", selected: $0 == 0)) }
+        } else if case .chat(let chat, var state, let project) = entries.entries[0] {
+            state.selected = true
+            entries.entries[0] = .chat(chat: chat, state: state, projectID: project)
+        }
+        document.update(entries, width: 360, animated: false)
+        let selectedID = sideRows ? "side|side-0" : "chat|chat-0"
+        let selectedView = try XCTUnwrap(document.views[selectedID])
+        func control(_ view: NSView) throws -> PiKit.SelectableRow {
+            try XCTUnwrap((view as? SidebarChatRowView)?.row ?? (view as? SidebarSideRowView)?.row)
+        }
+        let recycledControl = try control(selectedView)
+        XCTAssertTrue(recycledControl.selected)
+        try self.scroll(scroll, document, to: sideRows ? "side|side-150" : "chat|chat-150")
+        XCTAssertNil(document.views[selectedID])
+        XCTAssertTrue(document.views.values.contains { $0 === selectedView }, "The selected control must actually acquire another binding")
+        XCTAssertFalse(recycledControl.selected)
+        let nextView = try XCTUnwrap(document.views.values.first { $0 !== selectedView })
+        let next = try control(nextView)
+        XCTAssertTrue(next.window === window)
+        next.selected = true
+        XCTAssertNil(next.fill.animation(forKey: "glide"), "A recycled control cannot supply the previous chat's highlight position")
+
+        next.selected = false
+        recycledControl.selected = true
+        XCTAssertNotNil(recycledControl.fill.animation(forKey: "glide"), "Ordinary deselection must preserve the glide between live rows")
+        nextView.prepareForReuse()
+        recycledControl.selected = false
+        next.selected = true
+        XCTAssertNotNil(next.fill.animation(forKey: "glide"), "Recycling another row must not clear the current selection's glide source")
+    }
+
     func testEmptyEntriesAndGapsUseTheSameVisibilityRulesAtBothEnds() {
         let (model, document, scroll) = fixture()
         var values = contents(0..<60, model: model)

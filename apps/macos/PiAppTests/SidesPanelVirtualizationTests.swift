@@ -28,6 +28,51 @@ import XCTest
         XCTAssertTrue(panel.newSide.isHiddenOrHasHiddenAncestor)
     }
 
+    func testRecycledPanelRowsCannotStartASelectionGlide() throws {
+        let root = scratchRoot("sides-panel-selection-reuse")
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let reduced = PiKit.Motion.reducedOverride
+        PiKit.Motion.reducedOverride = false
+        let scroll = NSScrollView(frame: CGRect(x: 0, y: 0, width: 260, height: 450))
+        let window = NSWindow(contentRect: scroll.frame, styleMask: [], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = scroll
+        defer { window.contentView = nil; window.close(); PiKit.Motion.reducedOverride = reduced }
+        let newSide = PiKit.TextLine(PiKit.Line("New side", font: PiKit.Font.body, color: .piInk))
+        let document = SidesPanelListDocument(model: model, newSide: newSide, empty: NSView(), glide: PiKit.SelectionGlide())
+        func content(_ entry: SidesPanelEntry) -> SidesPanelRowView.Content {
+            .init(entry: entry, stats: ChatRowStats(totals: nil), unread: false, failed: false, enabled: true)
+        }
+        document.content = { content($0) }
+        let entries = (0..<100).map { SidesPanelEntry(id: "side-\($0)", title: "Side \($0)", open: $0 == 0, saved: true) }
+        document.update(entries.map { .init(entry: $0, unread: false) }, hasParent: true)
+        scroll.documentView = document
+        document.frame = CGRect(x: 0, y: 0, width: 260, height: document.height(forWidth: 260))
+        document.refreshVisible()
+        let recycled = try XCTUnwrap(document.rows["side-0"])
+        XCTAssertTrue(recycled.row.selected)
+        scroll.contentView.scroll(to: CGPoint(x: 0, y: document.frame.height / 2))
+        document.viewportChanged()
+        XCTAssertNil(document.rows["side-0"])
+        XCTAssertTrue(document.rows.values.contains { $0 === recycled }, "The selected control must actually acquire another binding")
+        XCTAssertNotEqual(recycled.content?.entry.id, "side-0")
+        XCTAssertFalse(recycled.row.selected)
+        let next = try XCTUnwrap(document.rows.values.first { $0 !== recycled })
+        let entry = try XCTUnwrap(next.content?.entry)
+        XCTAssertTrue(next.row.window === window)
+        next.update(content(SidesPanelEntry(id: entry.id, title: entry.title, open: true, saved: entry.saved)))
+        XCTAssertNil(next.row.fill.animation(forKey: "glide"), "A recycled side cannot supply the previous selection's highlight position")
+
+        let selected = try XCTUnwrap(next.content)
+        next.prepareForReuse()
+        next.update(selected)
+        XCTAssertTrue(next.row.selected, "Returning to the same side must restore its selection even when its content is unchanged")
+        next.row.selected = false
+        recycled.row.selected = true
+        XCTAssertNotNil(recycled.row.fill.animation(forKey: "glide"), "The rebound selection must remain a glide source for a live row")
+    }
+
     func testALargeSideListMountsOnlyNearbyRowsAndKeepsEverySideReachable() async throws {
         let root = scratchRoot("sides-panel-virtualization")
         let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

@@ -49,6 +49,14 @@ extension PiKit {
             setAccessibilityLabel(PiKit.spokenText(of: content))
         }
         required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+        /// Recycling ends this binding's motion history. Ordinary deselection
+        /// keeps it until the next row can glide from the previous selection.
+        override func prepareForReuse() {
+            super.prepareForReuse()
+            if glide?.selectedRow === self { glide?.selectedRow = nil }
+            selected = false
+            fill.removeAnimation(forKey: "glide")
+        }
         override func isAccessibilitySelected() -> Bool { selected }
         override func cornerRadius(for size: CGSize) -> CGFloat { PiRadius.sm }
         /// Disabled, the row's content dims as a disabled plain button's label

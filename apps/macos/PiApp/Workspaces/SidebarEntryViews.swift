@@ -101,7 +101,7 @@ import Combine
         sourceWatch = nil; minuteWatch = nil; watchedDisplay = nil; retained = nil
         bodyScheduled = false
         body.prepareForReuse()
-        row.selected = false; row.marked = false; row.recencyTint = 0
+        row.prepareForReuse(); row.marked = false; row.recencyTint = 0
         row.cell?.isHighlighted = false
     }
 
@@ -285,7 +285,7 @@ import Combine
         super.prepareForReuse()
         sourceWatch = nil; minuteWatch = nil; bodyScheduled = false
         body.prepareForReuse()
-        row.selected = false; row.recencyTint = 0; row.cell?.isHighlighted = false
+        row.prepareForReuse(); row.recencyTint = 0; row.cell?.isHighlighted = false
     }
     /// A live side's changes, coalesced to one redraw a turn (or the next layout).
     private var bodyScheduled = false
