@@ -362,6 +362,25 @@ final class ContinueRunTests: XCTestCase {
         await session.close()
     }
 
+    /// A connection test is never continued by itself, but what waits in it
+    /// is still sent by Resume, as by Resume Follow-ups.
+    func testAConnectionTestResumesOnlyWhatWaits() async throws {
+        let chat = try chat(), client = ContinueClient([.streamForever("Cut"), .reply(answer("Follow-up"))])
+        let session = try chat.session(client, tools: DisabledTools())
+        _ = try await session.submit(Submission(commandID: "c1", turnID: "t1", text: "Ping"), steer: false)
+        try await eventually { await client.streamed == 1 }
+        _ = try await session.submit(Submission(commandID: "c2", turnID: "t2", text: "Again"), steer: false)
+        try await stopped(session)
+        let state = await session.snapshot()
+        XCTAssertEqual(state["continuable"].flag, false)
+        let resumed = try await session.continueRun(commandID: "resume-1")
+        XCTAssertEqual(resumed["resumedQueue"].flag, true)
+        try await eventually { !(await session.isRunning) }
+        let requests = await client.requests
+        XCTAssertEqual(requests.count, 2); XCTAssertEqual(requests.last?.last?.text, "Again")
+        await session.close()
+    }
+
     /// At the chat's cost limit, Resume stops at once with the cost-limit
     /// notice the app draws, before any model request.
     func testResumeAtTheCostLimitStopsWithTheCostLimitNotice() async throws {

@@ -62,12 +62,11 @@ extension AgentSession {
         }
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
         guard queueEdit == nil else { throw Self.editHeldError }
-        guard !titleTask, !isConnectionTest else {
-            throw AgentError(AgentErrorCode.nothingToContinue, "There is nothing to resume; send a new message instead")
-        }
-        guard let tail = continuationTail, Self.continues(from: tail) else {
+        guard !titleTask, !isConnectionTest, let tail = continuationTail, Self.continues(from: tail) else {
             // Pi: from an answered context (or none: a first message stopped
             // before it was delivered), continue sends what waits instead.
+            // So does a chat the model is never asked to go on in by itself
+            // (a connection test, a title).
             guard !queue.isEmpty || !steering.isEmpty else {
                 throw AgentError(AgentErrorCode.nothingToContinue, "There is nothing to resume; send a new message instead")
             }

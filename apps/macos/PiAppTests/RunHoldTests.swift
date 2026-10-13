@@ -148,6 +148,11 @@ final class RunHoldTests: XCTestCase {
         do { try await model.pauseRunsForUpdate(settleTimeout: 0.05); XCTFail("a send that never finishes holds the pause") }
         catch { XCTAssertTrue(error.localizedDescription.contains("still being sent"), error.localizedDescription) }
         XCTAssertFalse(model.installPreparing)
+        // A background request loading for as long as its model answers does not hold the pause.
+        var probe = ChatRecord(id: "t", workspaceID: "w", title: "T", path: nil, profileID: "p"); probe.connectionTest = true
+        model.chats = [probe]; view.loading = false
+        let background = SessionDisplay(id: "t"); background.loading = true; model.displays["t"] = background
+        try await model.pauseRunsForUpdate(settleTimeout: 0.05)
         await close(model)
     }
 
@@ -161,6 +166,8 @@ final class RunHoldTests: XCTestCase {
         XCTAssertTrue(view.hasActiveWork, "follow-ups about to go")
         view.queueCount = 0; view.runState = .running
         XCTAssertTrue(view.hasActiveWork)
+        view.runState = .paused; view.resuming = true
+        XCTAssertTrue(view.hasActiveWork, "a Resume on its way holds the update's barrier")
     }
 
     @MainActor private func model(root: URL) async throws -> WorkspaceModel {

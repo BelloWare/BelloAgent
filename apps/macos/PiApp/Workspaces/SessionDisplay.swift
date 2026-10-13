@@ -784,7 +784,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     var busy: Bool { runState.isBusy }
     var hasWork: Bool { busy || queueCount > 0 }
     /// Work that runs without the reader: a run, or follow-ups not held for Resume.
-    var hasActiveWork: Bool { busy || (queueCount > 0 && !queuePaused) }
+    /// A Resume on its way to the helper counts: an update must not stop
+    /// the helper under it.
+    var hasActiveWork: Bool { busy || resuming || (queueCount > 0 && !queuePaused) }
 }
 
 extension SessionDisplay {

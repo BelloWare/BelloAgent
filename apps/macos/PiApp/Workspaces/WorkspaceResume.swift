@@ -108,7 +108,12 @@ extension WorkspaceModel {
         installPreparing = true
         defer { installPreparing = wasPreparing }
         let deadline = ProcessInfo.processInfo.systemUptime + settleTimeout
-        while displays.values.contains(where: { $0.loading || $0.resuming }) || !hostStarts.isEmpty || !sessionOpenings.isEmpty {
+        // Only the reader's chats: a background request (a title, the mini
+        // model) is loading for as long as its model answers, and ends with
+        // its helper like any run.
+        func preflight(_ id: String) -> Bool { record(id).map { !$0.isUtilityChat } ?? true }
+        while displays.values.contains(where: { ($0.loading || $0.resuming) && preflight($0.id) }) || !hostStarts.isEmpty
+                || sessionOpenings.keys.contains(where: preflight) {
             guard ProcessInfo.processInfo.systemUptime < deadline else {
                 throw HostError.failure("A message is still being sent. Try the update again in a moment.")
             }
