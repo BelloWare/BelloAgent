@@ -158,6 +158,28 @@ final class RunHoldTests: XCTestCase {
         model.chats = [probe]; view.loading = false
         let background = SessionDisplay(id: "t"); background.loading = true; model.displays["t"] = background
         try await model.pauseRunsForUpdate(settleTimeout: 0.05)
+        // But its session being opened does: once open it would start a helper the pause did not stop.
+        model.sessionOpenCallers["t"] = 1
+        do { try await model.pauseRunsForUpdate(settleTimeout: 0.05); XCTFail("a background open under way holds the pause") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("still being sent"), error.localizedDescription) }
+        model.sessionOpenCallers["t"] = nil
+        await close(model)
+    }
+
+    /// Resume goes on in the latest version: a chat showing an earlier
+    /// version of an edited message returns to the latest, as a send does.
+    @MainActor func testResumeReturnsToTheLatestVersion() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("run-hold-version-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try await model(root: root)
+        model.chats = [ChatRecord(id: "c", workspaceID: "w", title: "C", path: nil, profileID: "p")]
+        let view = SessionDisplay(id: "c"); model.displays["c"] = view
+        view.runState = .paused
+        view.versionView = TranscriptVersionView(latestID: "m", index: 1, count: 2, ids: ["m0", "m"], live: 2)
+        model.resumeRun(sessionID: "c")
+        XCTAssertNil(view.versionView, "the transcript shows the latest version the run goes on in")
+        XCTAssertTrue(view.resuming)
+        for _ in 0..<100 where view.resuming { try await Task.sleep(for: .milliseconds(10)) }
         await close(model)
     }
 

@@ -28,6 +28,8 @@ extension WorkspaceModel {
               let view = displays[id] else { return }
         guard !item.isArchived else { view.notice = Self.archivedNotice; return }
         guard !view.resuming, !view.busy, !view.loading else { return }
+        // The run goes on in the latest version, and the transcript returns to it, as for a send.
+        latestVersion(sessionID: id)
         view.resuming = true
         let commandID = UUID().uuidString, params = turnOverrides(for: item)
         let durable = !isEphemeral(item.id)
@@ -109,12 +111,18 @@ extension WorkspaceModel {
         installPreparing = true
         defer { installPreparing = wasPreparing }
         let deadline = ProcessInfo.processInfo.systemUptime + settleTimeout
-        // Only the reader's chats: a background request (a title, the mini
-        // model) is loading for as long as its model answers, and ends with
-        // its helper like any run.
-        func preflight(_ id: String) -> Bool { record(id).map { !$0.isUtilityChat } ?? true }
-        while displays.values.contains(where: { ($0.loading || $0.resuming) && preflight($0.id) }) || !hostStarts.isEmpty
-                || sessionOpenings.keys.contains(where: preflight) || sessionOpenCallers.keys.contains(where: preflight) {
+        // A display's loading counts only for the reader's chats: a background
+        // request (a title, the mini model) is loading for as long as its
+        // model answers, and ends with its helper like any run.
+        let readers = { [unowned self] (id: String) -> Bool in record(id).map { !$0.isUtilityChat } ?? true }
+        func underWay() -> Bool {
+            if !hostStarts.isEmpty { return true }
+            if displays.values.contains(where: { ($0.loading || $0.resuming) && readers($0.id) }) { return true }
+            // Any session being opened, a background request's too: once
+            // open it would start a helper the pause no longer stops.
+            return !sessionOpenings.isEmpty || !sessionOpenCallers.isEmpty
+        }
+        while underWay() {
             guard ProcessInfo.processInfo.systemUptime < deadline else {
                 throw HostError.failure("A message is still being sent. Try the update again in a moment.")
             }

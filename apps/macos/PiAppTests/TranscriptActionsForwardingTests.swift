@@ -67,7 +67,7 @@ final class TranscriptActionsForwardingTests: XCTestCase {
     /// Fails when `TranscriptActions` gains or loses an action, so the
     /// relays cannot fall behind it.
     @MainActor func testTheRelaysForwardEveryAction() {
-        XCTAssertEqual(Mirror(reflecting: TranscriptActions()).children.count, 15,
+        XCTAssertEqual(Mirror(reflecting: TranscriptActions()).children.count, 16,
                        "TranscriptActions changed. Forward the action in `TranscriptActions.forwarding`, list it in `offered` if it is optional, and call it in testEveryActionReachesThePaneThroughBothRelays.")
     }
 }
