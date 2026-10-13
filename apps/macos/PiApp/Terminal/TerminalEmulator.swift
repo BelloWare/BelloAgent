@@ -16,9 +16,13 @@ final class TerminalEmulator {
     @exclusivity(unchecked) private(set) var columns: Int
     @exclusivity(unchecked) private(set) var rows: Int
     @exclusivity(unchecked) private(set) var screen: [[TerminalCell]]
+    /// The logical end of each automatically wrapped row; nil for a hard break.
+    private(set) var screenWrapColumns: [Int?]
     @exclusivity(unchecked) private(set) var scrollback: [TerminalHistoryLine] = []
     /// Lines dropped from the front of the scrollback since the start, so absolute line numbers stay stable.
     private(set) var trimmedLines = 0
+    /// Clearing saved lines reuses absolute indices; readers must discard old identities.
+    private(set) var historyGeneration = 0
     let scrollbackLimit: Int
     @exclusivity(unchecked) private(set) var cursor = TerminalCursor()
     private(set) var cursorVisible = true
@@ -70,6 +74,7 @@ final class TerminalEmulator {
     private var tabStops: Set<Int> = []
     private var savedCursor = TerminalCursor(), savedStyle = CellStyle.plain, savedOrigin = false, savedAutowrap = true, savedWrapNext = false, savedCharset = 0, savedCharsets: [Int] = [0, 0]
     private var savedMainScreen: [[TerminalCell]]? = nil
+    private var savedMainWrapColumns: [Int?]?
     private var savedMainCursor = TerminalCursor()
     /// G0 and G1 designations: 0 ASCII, 1 DEC special graphics. `charset` picks the active one (SI/SO).
     @exclusivity(unchecked) private var charsets = [0, 0]
@@ -78,6 +83,7 @@ final class TerminalEmulator {
     init(columns: Int = 80, rows: Int = 24, scrollbackLimit: Int = 10_000) {
         self.columns = max(2, columns); self.rows = max(1, rows); self.scrollbackLimit = max(0, scrollbackLimit)
         screen = Array(repeating: Array(repeating: .blank, count: max(2, columns)), count: max(1, rows))
+        screenWrapColumns = Array(repeating: nil, count: max(1, rows))
         scrollBottom = max(1, rows) - 1
         resetTabStops()
     }
@@ -113,7 +119,7 @@ final class TerminalEmulator {
     /// Prints the printable ASCII run starting at `start`, as far as the current line takes it; returns the bytes consumed.
     private func printRun(_ bytes: UnsafeRawBufferPointer, from start: Int) -> Int {
         if wrapNext {
-            if autowrap { cursor.x = 0; lineFeed() } else { cursor.x = columns - 1 }
+            if autowrap { cursor.x = 0; lineFeed(wrappedAt: columns) } else { cursor.x = columns - 1 }
             wrapNext = false
         }
         let y = cursor.y, columns = self.columns, style = self.style, count = bytes.count
@@ -131,6 +137,7 @@ final class TerminalEmulator {
             }
         }
         lastPrinted = Unicode.Scalar(bytes[index - 1])
+        if let boundary = screenWrapColumns[y], x > boundary { screenWrapColumns[y] = nil }
         markDirty(y)
         if x >= columns { cursor.x = columns - 1; wrapNext = true } else { cursor.x = x }
         return index - start
@@ -394,12 +401,16 @@ final class TerminalEmulator {
         if alternate {
             if save { saveCursor() }
             savedMainScreen = screen; savedMainCursor = cursor
+            savedMainWrapColumns = screenWrapColumns
             screen = Array(repeating: Array(repeating: .blank, count: columns), count: rows)
+            screenWrapColumns = Array(repeating: nil, count: rows)
             alternateScreen = true
         } else {
             if let main = savedMainScreen { screen = Self.fit(main, columns: columns, rows: rows) }
+            screenWrapColumns = Self.fitWraps(savedMainWrapColumns ?? [], columns: columns, rows: rows)
             cursor = savedMainCursor; clampCursor()
             savedMainScreen = nil
+            savedMainWrapColumns = nil
             alternateScreen = false
             if save { restoreCursor() }
         }
@@ -495,12 +506,12 @@ final class TerminalEmulator {
             return
         }
         if wrapNext {
-            if autowrap { cursor.x = 0; lineFeed() } else { cursor.x = columns - 1 }
+            if autowrap { cursor.x = 0; lineFeed(wrappedAt: columns) } else { cursor.x = columns - 1 }
             wrapNext = false
         }
         if width == 2 && cursor.x == columns - 1 {
             // A wide character never splits: leave a blank in the last column and start a new line.
-            if autowrap { screen[cursor.y][cursor.x] = TerminalCell(text: " ", width: 1, style: blankStyle); markDirty(cursor.y); cursor.x = 0; lineFeed() }
+            if autowrap { screen[cursor.y][cursor.x] = TerminalCell(text: " ", width: 1, style: blankStyle); markDirty(cursor.y); cursor.x = 0; lineFeed(wrappedAt: columns - 1) }
             else { screen[cursor.y][cursor.x] = TerminalCell(text: " ", width: 1, style: blankStyle); markDirty(cursor.y); return }
         }
         if insertMode { insertBlanks(width) }
@@ -511,6 +522,7 @@ final class TerminalEmulator {
         if width == 2 { screen[cursor.y][cursor.x + 1] = TerminalCell(text: "", width: 0, style: style) }
         markDirty(cursor.y)
         cursor.x += width
+        if let boundary = screenWrapColumns[cursor.y], cursor.x > boundary { screenWrapColumns[cursor.y] = nil }
         if cursor.x >= columns { cursor.x = columns - 1; wrapNext = true }
     }
     private func clearWideNeighbour(at x: Int) {
@@ -528,7 +540,12 @@ final class TerminalEmulator {
 
     // MARK: Scrolling and lines
 
-    private func lineFeed() {
+    private func breakWrap(before row: Int) {
+        if row > 0 { screenWrapColumns[row - 1] = nil }
+        else if !alternateScreen, !scrollback.isEmpty { scrollback[scrollback.count - 1].wrappedAt = nil }
+    }
+    private func lineFeed(wrappedAt: Int? = nil) {
+        screenWrapColumns[cursor.y] = wrappedAt
         wrapNext = false
         if cursor.y == scrollBottom { scrollUp(1) }
         else if cursor.y < rows - 1 { cursor.y += 1; markDirty(cursor.y - 1); markDirty(cursor.y) }
@@ -543,17 +560,24 @@ final class TerminalEmulator {
         let count = min(max(1, count), scrollBottom - scrollTop + 1)
         for _ in 0..<count {
             let line = screen.remove(at: scrollTop)
-            if scrollTop == 0 && !alternateScreen { pushScrollback(line) }
+            let wrappedAt = screenWrapColumns.remove(at: scrollTop)
+            if scrollTop == 0 && !alternateScreen { pushScrollback(line, wrappedAt: wrappedAt) }
             screen.insert(Array(repeating: blank(), count: columns), at: scrollBottom)
+            screenWrapColumns.insert(nil, at: scrollBottom)
         }
+        if scrollTop > 0 { breakWrap(before: scrollTop) }
         if scrollTop == 0 && scrollBottom == rows - 1 { markAllDirty() } else { for row in scrollTop...scrollBottom { markDirty(row) } }
     }
     private func scrollDown(_ count: Int) {
         let count = min(max(1, count), scrollBottom - scrollTop + 1)
         for _ in 0..<count {
             screen.remove(at: scrollBottom)
+            screenWrapColumns.remove(at: scrollBottom)
             screen.insert(Array(repeating: blank(), count: columns), at: scrollTop)
+            screenWrapColumns.insert(nil, at: scrollTop)
         }
+        breakWrap(before: scrollTop)
+        screenWrapColumns[scrollBottom] = nil
         for row in scrollTop...scrollBottom { markDirty(row) }
     }
     /// Cells the history may hold. A line costs as many cells as the terminal
@@ -563,10 +587,12 @@ final class TerminalEmulator {
     static let scrollbackByteLimit = 16 * 1024 * 1024
     private(set) var scrollbackBytes = 0
     @exclusivity(unchecked) private var scrollbackCells = 0
-    private func pushScrollback(_ line: [TerminalCell]) {
+    private var nextHistoryLineID = 0
+    private func pushScrollback(_ line: [TerminalCell], wrappedAt: Int?) {
         var end = line.count
-        while end > 0, line[end - 1].isBlank, line[end - 1].style == .plain { end -= 1 }
-        let history = TerminalHistoryLine(line[..<end])
+        while end > (wrappedAt ?? 0), line[end - 1].isBlank, line[end - 1].style == .plain { end -= 1 }
+        let history = TerminalHistoryLine(line[..<end], id: nextHistoryLineID, wrappedAt: wrappedAt)
+        nextHistoryLineID += 1
         scrollback.append(history); scrollbackBytes += history.retainedBytes
         scrollbackCells += end
         if scrollback.count > scrollbackLimit {
@@ -588,7 +614,10 @@ final class TerminalEmulator {
             dropOldest(excess)
         }
     }
-    private func clearScrollback() { scrollback.removeAll(); scrollbackCells = 0; scrollbackBytes = 0; trimmedLines = 0 }
+    private func clearScrollback() {
+        scrollback.removeAll(); scrollbackCells = 0; scrollbackBytes = 0; trimmedLines = 0
+        historyGeneration += 1
+    }
     /// Gives up the oldest lines of the history, keeping the counts with them.
     private func dropOldest(_ count: Int) {
         let count = min(count, scrollback.count)
@@ -601,8 +630,12 @@ final class TerminalEmulator {
         wrapNext = false
         for _ in 0..<min(count, scrollBottom - cursor.y + 1) {
             screen.remove(at: scrollBottom)
+            screenWrapColumns.remove(at: scrollBottom)
             screen.insert(Array(repeating: blank(), count: columns), at: cursor.y)
+            screenWrapColumns.insert(nil, at: cursor.y)
         }
+        breakWrap(before: cursor.y)
+        screenWrapColumns[scrollBottom] = nil
         for row in cursor.y...scrollBottom { markDirty(row) }
     }
     private func deleteLines(_ count: Int) {
@@ -610,8 +643,13 @@ final class TerminalEmulator {
         wrapNext = false
         for _ in 0..<min(count, scrollBottom - cursor.y + 1) {
             screen.remove(at: cursor.y)
+            screenWrapColumns.remove(at: cursor.y)
             screen.insert(Array(repeating: blank(), count: columns), at: scrollBottom)
+            screenWrapColumns.insert(nil, at: scrollBottom)
         }
+        breakWrap(before: cursor.y)
+        let lastMoved = scrollBottom - min(count, scrollBottom - cursor.y + 1)
+        if lastMoved >= cursor.y { screenWrapColumns[lastMoved] = nil }
         for row in cursor.y...scrollBottom { markDirty(row) }
     }
     private func insertBlanks(_ count: Int) {
@@ -622,6 +660,7 @@ final class TerminalEmulator {
         row.insert(contentsOf: Array(repeating: blank(), count: count), at: cursor.x)
         Self.repairWidePairs(&row)
         screen[cursor.y] = row; markDirty(cursor.y)
+        screenWrapColumns[cursor.y] = nil
     }
     private func deleteCharacters(_ count: Int) {
         wrapNext = false
@@ -631,10 +670,13 @@ final class TerminalEmulator {
         row.append(contentsOf: Array(repeating: blank(), count: count))
         Self.repairWidePairs(&row)
         screen[cursor.y] = row; markDirty(cursor.y)
+        screenWrapColumns[cursor.y] = nil
     }
     private func eraseCharacters(_ count: Int) {
         wrapNext = false
         for x in cursor.x..<min(columns, cursor.x + count) { screen[cursor.y][x] = blank() }
+        if cursor.x + count >= (screenWrapColumns[cursor.y] ?? columns) { screenWrapColumns[cursor.y] = nil }
+        if cursor.x == 0, count >= columns { breakWrap(before: cursor.y) }
         Self.repairWidePairs(&screen[cursor.y])
         markDirty(cursor.y)
     }
@@ -647,6 +689,8 @@ final class TerminalEmulator {
         default: range = cursor.x..<columns
         }
         for x in range { screen[cursor.y][x] = blank() }
+        if range.upperBound >= (screenWrapColumns[cursor.y] ?? columns) { screenWrapColumns[cursor.y] = nil }
+        if range == 0..<columns { breakWrap(before: cursor.y) }
         Self.repairWidePairs(&screen[cursor.y])
         markDirty(cursor.y)
     }
@@ -671,16 +715,19 @@ final class TerminalEmulator {
         wrapNext = false
         switch mode {
         case 1:
-            for row in 0..<cursor.y { screen[row] = Array(repeating: blank(), count: columns); markDirty(row) }
+            if cursor.y > 0 { breakWrap(before: 0) }
+            for row in 0..<cursor.y { screen[row] = Array(repeating: blank(), count: columns); screenWrapColumns[row] = nil; markDirty(row) }
             eraseInLine(1)
         case 2:
+            breakWrap(before: 0)
             for row in 0..<rows { screen[row] = Array(repeating: blank(), count: columns) }
+            screenWrapColumns = Array(repeating: nil, count: rows)
             markAllDirty()
         case 3:
             clearScrollback(); markAllDirty()
         default:
             eraseInLine(0)
-            if cursor.y + 1 < rows { for row in cursor.y + 1..<rows { screen[row] = Array(repeating: blank(), count: columns); markDirty(row) } }
+            if cursor.y + 1 < rows { for row in cursor.y + 1..<rows { screen[row] = Array(repeating: blank(), count: columns); screenWrapColumns[row] = nil; markDirty(row) } }
         }
     }
     private func setScrollRegion(top: Int, bottom: Int) {
@@ -690,7 +737,9 @@ final class TerminalEmulator {
         setCursor(x: 0, y: 0, origin: true)
     }
     private func alignmentPattern() {
+        breakWrap(before: 0)
         for row in 0..<rows { screen[row] = Array(repeating: TerminalCell(text: "E", width: 1, style: .plain), count: columns) }
+        screenWrapColumns = Array(repeating: nil, count: rows)
         scrollTop = 0; scrollBottom = rows - 1
         setCursor(x: 0, y: 0); markAllDirty()
     }
@@ -761,10 +810,14 @@ final class TerminalEmulator {
         if newRows < rows {
             var remove = rows - newRows
             // Prefer dropping blank lines below the cursor; then push lines from the top into the scrollback.
-            while remove > 0, screen.count > cursor.y + 1, Self.text(of: screen[screen.count - 1]).isEmpty { screen.removeLast(); remove -= 1 }
+            while remove > 0, screen.count > cursor.y + 1, Self.text(of: screen[screen.count - 1]).isEmpty {
+                screen.removeLast(); screenWrapColumns.removeLast(); remove -= 1
+                if !screenWrapColumns.isEmpty { screenWrapColumns[screenWrapColumns.count - 1] = nil }
+            }
             while remove > 0, !screen.isEmpty {
                 let line = screen.removeFirst()
-                if !alternateScreen { pushScrollback(line) }
+                let wrappedAt = screenWrapColumns.removeFirst()
+                if !alternateScreen { pushScrollback(line, wrappedAt: wrappedAt) }
                 cursor.y -= 1; remove -= 1
             }
         } else if newRows > rows {
@@ -773,12 +826,15 @@ final class TerminalEmulator {
                 scrollbackCells -= line.cellCount
                 scrollbackBytes -= line.retainedBytes
                 screen.insert(line.cells, at: 0); cursor.y += 1; add -= 1   // fitted to the new columns below
+                screenWrapColumns.insert(line.wrappedAt, at: 0)
             }
-            while add > 0 { screen.append(Array(repeating: .blank, count: columns)); add -= 1 }
+            while add > 0 { screen.append(Array(repeating: .blank, count: columns)); screenWrapColumns.append(nil); add -= 1 }
         }
         columns = newColumns; rows = newRows
         screen = Self.fit(screen, columns: columns, rows: rows)
+        screenWrapColumns = Self.fitWraps(screenWrapColumns, columns: columns, rows: rows)
         if let main = savedMainScreen { savedMainScreen = Self.fit(main, columns: columns, rows: rows) }
+        if let wraps = savedMainWrapColumns { savedMainWrapColumns = Self.fitWraps(wraps, columns: columns, rows: rows) }
         scrollTop = 0; scrollBottom = rows - 1
         clampCursor(); savedCursor.x = min(savedCursor.x, columns - 1); savedCursor.y = min(savedCursor.y, rows - 1)
         savedMainCursor.x = min(savedMainCursor.x, columns - 1); savedMainCursor.y = min(savedMainCursor.y, rows - 1)
@@ -796,9 +852,18 @@ final class TerminalEmulator {
         while result.count < rows { result.append(Array(repeating: .blank, count: columns)) }
         return result
     }
+    private static func fitWraps(_ wraps: [Int?], columns: Int, rows: Int) -> [Int?] {
+        var result = wraps.prefix(rows).map { $0.map { min($0, columns) } }
+        if wraps.count > rows { result[rows - 1] = nil }
+        while result.count < rows { result.append(nil) }
+        return result
+    }
     func reset() {
         screen = Array(repeating: Array(repeating: .blank, count: columns), count: rows)
+        screenWrapColumns = Array(repeating: nil, count: rows)
+        savedMainWrapColumns = nil
         savedMainScreen = nil; alternateScreen = false
+        breakWrap(before: 0)
         cursor = TerminalCursor(); savedCursor = TerminalCursor(); style = .plain; savedStyle = .plain
         scrollTop = 0; scrollBottom = rows - 1
         cursorVisible = true; cursorShape = .block; originMode = false; autowrap = true; insertMode = false; newlineMode = false

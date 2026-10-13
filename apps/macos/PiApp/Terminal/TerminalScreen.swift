@@ -43,6 +43,13 @@ struct TerminalCell: Equatable, Sendable {
 /// only happens for the rows a reader who has scrolled back can see.
 struct TerminalHistoryLine: Sendable {
     struct StyleRun: Sendable { var length: Int32; var style: CellStyle }
+    /// Unique within the owning emulator, including after clear and resize.
+    let id: Int
+    /// Non-nil when this row continues on the next one. The column excludes
+    /// a wide character's edge padding and any padding added by a resize.
+    /// Clearing the first screen row can break the last history row's join;
+    /// its retained cells and drawing identity are unchanged.
+    var wrappedAt: Int?
     /// One character per cell that starts one; the trailing half of a wide
     /// character carries no text and none is stored for it.
     let text: String
@@ -56,7 +63,9 @@ struct TerminalHistoryLine: Sendable {
     let exact: [String]?
     var retainedBytes: Int { text.utf8.count + styles.count * MemoryLayout<StyleRun>.stride + (exact?.reduce(0) { $0 + $1.utf8.count + MemoryLayout<String>.stride } ?? 0) + 128 }
 
-    init(_ cells: ArraySlice<TerminalCell>) {
+    init(_ cells: ArraySlice<TerminalCell>, id: Int = 0, wrappedAt: Int? = nil) {
+        self.id = id
+        self.wrappedAt = wrappedAt
         // The text is built as bytes and decoded once: appending a hundred
         // short strings costs far more than one pass over their UTF-8.
         var utf8: [UInt8] = [], runs: [StyleRun] = [], count = 0, written = 0

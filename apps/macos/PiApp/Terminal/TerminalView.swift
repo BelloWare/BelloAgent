@@ -9,9 +9,20 @@ import CoreText
     let emulator: TerminalEmulator
     var onInput: ((Data) -> Void)?
     var onResize: ((Int, Int) -> Void)?
+    /// Observes redraw requests before AppKit coalesces them or ignores a
+    /// detached view. Tests can measure refreshes without an onscreen window.
+    var onDisplayInvalidation: ((NSRect) -> Void)?
     /// The Option key sends ESC before the character, the way most shells expect Meta.
     var optionSendsMeta = true
-    var font: NSFont { didSet { measureFont(); clearLineCache(); fitGrid(); needsDisplay = true } }
+    var font: NSFont {
+        didSet {
+            let oldHeight = cellHeight
+            measureFont()
+            scrollFraction *= cellHeight / oldHeight
+            normalScrollFraction *= cellHeight / oldHeight
+            clearLineCache(); fitGrid(); needsDisplay = true
+        }
+    }
 
     struct Position: Equatable, Comparable, Sendable {
         var line: Int   // absolute: TerminalEmulator.trimmedLines + index into lines
@@ -27,9 +38,18 @@ import CoreText
     private var cellWidth: CGFloat = 8, cellHeight: CGFloat = 16, ascent: CGFloat = 12
     private let inset: CGFloat = 8
     private var scrollOffset = 0
+    /// Points beyond `scrollOffset` complete rows, always in 0..<cellHeight.
+    private var scrollFraction: CGFloat = 0
     private var scrollAccumulator: CGFloat = 0
+    private var showingAlternateScreen = false
+    private var normalScrollOffset = 0
+    private var normalScrollFraction: CGFloat = 0
+    private var historyGeneration = 0
     private var selection: Selection?
     private var selectionAnchor: Position?
+    private var selectionDragPoint: NSPoint?
+    private var selectionAutoscrollTimer: Timer?
+    var selectionAutoscrollActive: Bool { selectionAutoscrollTimer != nil }
     private var markedText = ""
     /// Hands key events to the text input system; a seam, so a test can stand
     /// in for an input method that holds repeats back.
@@ -40,6 +60,18 @@ import CoreText
     /// A run's line, and whether every glyph in it starts on its own cell.
     private struct CachedLine { let line: CTLine; let onGrid: Bool }
     private var lineCache: [LineKey: CachedLine] = [:]
+    private(set) var decodedHistoryLineCount = 0
+    private struct DecodedHistoryLine {
+        var cells: [TerminalCell]
+        var lastUse: Int
+        var bytes: Int
+    }
+    private var decodedHistory: [Int: DecodedHistoryLine] = [:]
+    private var historyCacheClock = 0
+    private(set) var decodedHistoryBytes = 0
+    var decodedHistoryCacheCount: Int { decodedHistory.count }
+    static let decodedHistoryLineLimit = 256
+    static let decodedHistoryByteLimit = 2 * 1024 * 1024
     private(set) var lineCacheBytes = 0
     static let lineCacheByteLimit = 8 * 1024 * 1024
     private func clearLineCache() { lineCache.removeAll(keepingCapacity: true); lineCacheBytes = 0 }
@@ -64,6 +96,17 @@ import CoreText
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     override var isOpaque: Bool { true }
+    override var needsDisplay: Bool {
+        get { super.needsDisplay }
+        set {
+            if newValue { onDisplayInvalidation?(bounds) }
+            super.needsDisplay = newValue
+        }
+    }
+    override func setNeedsDisplay(_ invalidRect: NSRect) {
+        onDisplayInvalidation?(invalidRect)
+        super.setNeedsDisplay(invalidRect)
+    }
 
     /// The shell was asked for the keyboard before this view was in a window
     /// (`TerminalSession.focus`); it takes the keyboard once it is.
@@ -75,7 +118,11 @@ import CoreText
         if let resignKeyObserver { NotificationCenter.default.removeObserver(resignKeyObserver) }
         resignKeyObserver = window.map {
             NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: $0, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.heldKeyCode = nil }
+                MainActor.assumeIsolated {
+                    self?.heldKeyCode = nil
+                    self?.selectionAnchor = nil
+                    self?.stopSelectionAutoscroll()
+                }
             }
         }
         guard focusWhenInWindow, window != nil else { return }
@@ -156,15 +203,27 @@ import CoreText
         let columns = max(2, Int((bounds.width - inset * 2) / cellWidth))
         let rows = max(1, Int((bounds.height - inset * 2) / cellHeight))
         guard columns != emulator.columns || rows != emulator.rows else { return }
+        // Account for output before moving rows between history and the grid.
+        // Resizing is not output: both directions keep the bottom visible line.
+        refresh()
+        let bottom = CGFloat(emulator.trimmedLines + emulator.lineCount) * cellHeight - scrolledBackPoints
         emulator.resize(columns: columns, rows: rows)
+        if isScrolledBack {
+            setScrollDistance(CGFloat(emulator.trimmedLines + emulator.lineCount) * cellHeight - bottom)
+        }
+        producedLines = emulator.trimmedLines + emulator.scrollback.count
         onResize?(columns, rows)
         needsDisplay = true
     }
     /// The first line on screen, in emulator line indices.
-    private var firstVisibleLine: Int { max(0, emulator.lineCount - emulator.rows - scrollOffset) }
-    private func rowRect(_ row: Int) -> NSRect { NSRect(x: 0, y: inset + CGFloat(row) * cellHeight, width: bounds.width, height: cellHeight) }
+    private var partialRow: Int { scrollFraction > 0 ? 1 : 0 }
+    private var firstVisibleLine: Int { max(0, emulator.scrollback.count - scrollOffset - partialRow) }
+    private var visibleRowCount: Int { emulator.rows + partialRow }
+    private var rowOrigin: CGFloat { inset + scrollFraction - CGFloat(partialRow) * cellHeight }
+    private var gridRect: NSRect { NSRect(x: 0, y: inset, width: bounds.width, height: CGFloat(emulator.rows) * cellHeight) }
+    private func rowRect(_ row: Int) -> NSRect { NSRect(x: 0, y: rowOrigin + CGFloat(row) * cellHeight, width: bounds.width, height: cellHeight) }
     private func cellRect(column: Int, row: Int, width: Int = 1) -> NSRect {
-        NSRect(x: inset + CGFloat(column) * cellWidth, y: inset + CGFloat(row) * cellHeight, width: cellWidth * CGFloat(width), height: cellHeight)
+        NSRect(x: inset + CGFloat(column) * cellWidth, y: rowOrigin + CGFloat(row) * cellHeight, width: cellWidth * CGFloat(width), height: cellHeight)
     }
     /// A painted rectangle with its edges on device pixels, so cells, the
     /// cursor and backgrounds stay crisp though a cell is a fractional width.
@@ -177,15 +236,53 @@ import CoreText
     /// Redraws what the emulator changed since the last refresh.
     func refresh() {
         let produced = emulator.trimmedLines + emulator.scrollback.count
-        defer { emulator.clearDirty(); producedLines = produced }
-        if scrollOffset > 0 {
+        defer { emulator.clearDirty(); producedLines = produced; historyGeneration = emulator.historyGeneration }
+        let historyWasCleared = historyGeneration != emulator.historyGeneration
+        if historyWasCleared {
+            setScrollDistance(0); normalScrollOffset = 0; normalScrollFraction = 0
+            decodedHistory.removeAll(keepingCapacity: true); decodedHistoryBytes = 0
+            clearLineCache()
+            selection = nil; selectionAnchor = nil
+            stopSelectionAutoscroll()
+        }
+        if showingAlternateScreen != emulator.alternateScreen {
+            if emulator.alternateScreen {
+                if isScrolledBack { setScrollDistance(scrolledBackPoints + CGFloat(max(0, produced - producedLines)) * cellHeight) }
+                normalScrollOffset = scrollOffset; normalScrollFraction = scrollFraction
+                setScrollDistance(0)
+            } else {
+                setScrollDistance(CGFloat(normalScrollOffset) * cellHeight + normalScrollFraction)
+            }
+            showingAlternateScreen = emulator.alternateScreen
+            scrollAccumulator = 0
+            selection = nil; selectionAnchor = nil
+            stopSelectionAutoscroll()
+            needsDisplay = true
+        }
+        if isScrolledBack {
+            let previousFirst = producedLines - scrollOffset - partialRow
+            let previousFraction = scrollFraction
             // A reader who has scrolled back stays on the lines they are
             // reading: output arriving underneath pushes the bottom further
             // away instead of dragging the text out from under them.
-            scrollOffset = min(scrollOffset + max(0, produced - producedLines), emulator.scrollback.count)
-            needsDisplay = true
+            setScrollDistance(scrolledBackPoints + CGFloat(max(0, produced - producedLines)) * cellHeight)
+            if produced - scrollOffset - partialRow != previousFirst || scrollFraction != previousFraction {
+                needsDisplay = true
+            } else {
+                // History cells never change. Only live rows intersecting this
+                // viewport can have changed; output below it needs no paint.
+                if let dirty = emulator.dirtyRows {
+                    for row in dirty where row + scrollOffset + partialRow < visibleRowCount {
+                        setNeedsDisplay(rowRect(row + scrollOffset + partialRow).intersection(gridRect))
+                    }
+                } else if scrollOffset < emulator.rows {
+                    let firstLive = rowRect(scrollOffset + partialRow)
+                    setNeedsDisplay(firstLive.union(rowRect(visibleRowCount - 1)).intersection(gridRect))
+                }
+            }
             return
         }
+        if historyWasCleared { needsDisplay = true; return }
         guard let dirty = emulator.dirtyRows else { needsDisplay = true; return }
         for row in dirty { setNeedsDisplay(rowRect(row)) }
     }
@@ -201,20 +298,46 @@ import CoreText
         context.clip(to: bounds)
         context.setFillColor(defaultBackground.cgColor)
         context.fill(area)
+        context.clip(to: gridRect)
         let first = firstVisibleLine
-        let firstRow = max(0, Int((area.minY - inset) / cellHeight))
-        let lastRow = min(emulator.rows - 1, Int((area.maxY - inset) / cellHeight))
+        let firstRow = max(0, Int(floor((area.minY - rowOrigin) / cellHeight)))
+        let lastRow = min(visibleRowCount - 1, Int(floor((area.maxY - rowOrigin) / cellHeight)))
         guard firstRow <= lastRow else { return }
         for row in firstRow...lastRow {
             let index = first + row
             guard index < emulator.lineCount else { continue }
-            drawRow(row, absoluteLine: emulator.trimmedLines + index, cells: emulator.line(at: index), in: context)
+            drawRow(row, absoluteLine: emulator.trimmedLines + index, cells: cellsForDrawing(at: index), in: context)
         }
         drawCursor(in: context, firstVisible: first)
     }
 
+    func cellsForDrawing(at index: Int) -> [TerminalCell] {
+        guard index >= 0, index < emulator.lineCount else { return [] }
+        guard index < emulator.scrollback.count else { return emulator.line(at: index) }
+        let history = emulator.scrollback[index]
+        historyCacheClock += 1
+        if var cached = decodedHistory[history.id] {
+            cached.lastUse = historyCacheClock
+            decodedHistory[history.id] = cached
+            return cached.cells
+        }
+        decodedHistoryLineCount += 1
+        let cells = history.cells
+        let bytes = cells.count * MemoryLayout<TerminalCell>.stride + cells.reduce(128) { $0 + $1.text.utf8.count }
+        if bytes <= Self.decodedHistoryByteLimit {
+            while decodedHistory.count >= Self.decodedHistoryLineLimit || decodedHistoryBytes + bytes > Self.decodedHistoryByteLimit {
+                guard let oldest = decodedHistory.min(by: { $0.value.lastUse < $1.value.lastUse }) else { break }
+                decodedHistoryBytes -= oldest.value.bytes
+                decodedHistory.removeValue(forKey: oldest.key)
+            }
+            decodedHistory[history.id] = DecodedHistoryLine(cells: cells, lastUse: historyCacheClock, bytes: bytes)
+            decodedHistoryBytes += bytes
+        }
+        return cells
+    }
+
     private func drawRow(_ row: Int, absoluteLine: Int, cells: [TerminalCell], in context: CGContext) {
-        let top = inset + CGFloat(row) * cellHeight
+        let top = rowOrigin + CGFloat(row) * cellHeight
         // Backgrounds first, in runs of one colour.
         var column = 0
         while column < cells.count {
@@ -304,7 +427,7 @@ import CoreText
         return cached
     }
     private func drawCursor(in context: CGContext, firstVisible: Int) {
-        guard scrollOffset == 0, emulator.cursorVisible else { return }
+        guard !isScrolledBack, emulator.cursorVisible else { return }
         let cursor = emulator.cursor
         let row = emulator.scrollback.count + cursor.y - firstVisible
         guard row >= 0, row < emulator.rows else { return }
@@ -356,6 +479,7 @@ import CoreText
     /// AppKit takes the keyboard from a view it removes without asking it to
     /// resign: showing another terminal left this one's program focused.
     override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow !== window { stopSelectionAutoscroll(); selectionAnchor = nil }
         if newWindow !== window, let window, window.firstResponder === self {
             focused = false
             if emulator.focusReporting { send("\u{1b}[O") }
@@ -368,7 +492,7 @@ import CoreText
     private func send(_ text: String) { send(Data(text.utf8)) }
     private func send(_ data: Data) {
         guard !data.isEmpty else { return }
-        if scrollOffset != 0 { scrollOffset = 0; needsDisplay = true }
+        scrollToBottom()
         onInput?(data)
     }
     override func keyDown(with event: NSEvent) {
@@ -499,8 +623,9 @@ import CoreText
     }
     @objc override func selectAll(_ sender: Any?) {
         // Everything with content: the blank rows under the cursor add nothing.
-        guard let last = (0..<emulator.lineCount).last(where: { !emulator.text(atLine: $0).isEmpty }) else { selection = nil; needsDisplay = true; return }
-        selection = Selection(start: Position(line: emulator.trimmedLines, column: 0), end: Position(line: emulator.trimmedLines + last, column: emulator.columns))
+        let first = emulator.alternateScreen ? emulator.scrollback.count : 0
+        guard let last = (first..<emulator.lineCount).last(where: { !emulator.text(atLine: $0).isEmpty }) else { selection = nil; needsDisplay = true; return }
+        selection = Selection(start: Position(line: emulator.trimmedLines + first, column: 0), end: Position(line: emulator.trimmedLines + last, column: emulator.line(at: last).count))
         needsDisplay = true
     }
     @objc func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
@@ -509,26 +634,34 @@ import CoreText
     }
     var selectedText: String? {
         guard let selection else { return nil }
-        var lines: [String] = []
-        for absolute in selection.start.line...selection.end.line {
+        var result = ""
+        let first = max(selection.start.line, emulator.trimmedLines + (emulator.alternateScreen ? emulator.scrollback.count : 0))
+        let last = min(selection.end.line, emulator.trimmedLines + emulator.lineCount - 1)
+        guard first <= last else { return result }
+        for absolute in first...last {
             let index = absolute - emulator.trimmedLines
             guard index >= 0, index < emulator.lineCount else { continue }
             let cells = emulator.line(at: index)
+            let wrappedAt = emulator.wrappedAt(line: index)
             let from = absolute == selection.start.line ? selection.start.column : 0
-            let to = absolute == selection.end.line ? min(selection.end.column, cells.count) : cells.count
-            guard from < to else { lines.append(""); continue }
-            var text = cells[from..<to].map(\.text).joined()
-            if absolute != selection.end.line || to >= cells.count { while text.last == " " { text.removeLast() } }
-            lines.append(text)
+            let end = absolute == selection.end.line ? min(selection.end.column, cells.count) : cells.count
+            let to = min(end, wrappedAt ?? end)
+            if from < to {
+                var text = cells[from..<to].map(\.text).joined()
+                if wrappedAt == nil, absolute != selection.end.line || to >= cells.count { while text.last == " " { text.removeLast() } }
+                result += text
+            }
+            if absolute < last, wrappedAt == nil { result += "\n" }
         }
-        return lines.joined(separator: "\n")
+        return result
     }
     private func position(at point: NSPoint) -> Position {
         let column = min(max(0, Int((point.x - inset) / cellWidth)), emulator.columns)
-        let row = min(max(0, Int((point.y - inset) / cellHeight)), emulator.rows - 1)
+        let row = min(max(0, Int(floor((point.y - rowOrigin) / cellHeight))), visibleRowCount - 1)
         return Position(line: emulator.trimmedLines + firstVisibleLine + row, column: column)
     }
     override func mouseDown(with event: NSEvent) {
+        stopSelectionAutoscroll()
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
         let position = position(at: point)
@@ -540,14 +673,52 @@ import CoreText
         needsDisplay = true
     }
     override func mouseDragged(with event: NSEvent) {
-        guard let anchor = selectionAnchor else { return }
-        let current = position(at: convert(event.locationInWindow, from: nil))
-        selection = current < anchor ? Selection(start: current, end: anchor) : Selection(start: anchor, end: current)
+        guard selectionAnchor != nil else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        extendSelection(to: point)
+        if !emulator.alternateScreen, point.y < gridRect.minY || point.y > gridRect.maxY {
+            selectionDragPoint = point
+            if selectionAutoscrollTimer == nil {
+                let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] timer in
+                    guard let self else { timer.invalidate(); return }
+                    MainActor.assumeIsolated { self.advanceSelectionAutoscroll() }
+                }
+                selectionAutoscrollTimer = timer
+                RunLoop.main.add(timer, forMode: .common)
+            }
+            advanceSelectionAutoscroll()
+        } else { stopSelectionAutoscroll() }
         needsDisplay = true
     }
     override func mouseUp(with event: NSEvent) {
+        stopSelectionAutoscroll()
         if let selection, selection.start == selection.end { self.selection = nil; needsDisplay = true }
         selectionAnchor = nil
+    }
+    private func extendSelection(to point: NSPoint) {
+        guard let anchor = selectionAnchor else { return }
+        var current = position(at: point)
+        if point.y < gridRect.minY { current.column = 0 }
+        if point.y > gridRect.maxY { current.column = emulator.columns }
+        selection = current < anchor ? Selection(start: current, end: anchor) : Selection(start: anchor, end: current)
+    }
+    /// The same tick runs immediately on a drag and while the pointer is held
+    /// outside the grid. Absolute selection endpoints survive every scroll.
+    func advanceSelectionAutoscroll() {
+        guard selectionAnchor != nil, let point = selectionDragPoint, !emulator.alternateScreen else {
+            stopSelectionAutoscroll(); return
+        }
+        let distance = point.y < gridRect.minY ? gridRect.minY - point.y : gridRect.maxY - point.y
+        let steps = min(4, max(1, ceil(abs(distance) / cellHeight)))
+        guard setScrollDistance(scrolledBackPoints + (distance > 0 ? steps : -steps) * cellHeight) else {
+            stopSelectionAutoscroll(); return
+        }
+        extendSelection(to: point)
+        needsDisplay = true
+    }
+    private func stopSelectionAutoscroll() {
+        selectionAutoscrollTimer?.invalidate(); selectionAutoscrollTimer = nil
+        selectionDragPoint = nil
     }
     private func selectWord(at position: Position) {
         let index = position.line - emulator.trimmedLines
@@ -566,29 +737,36 @@ import CoreText
     // MARK: Scrolling
 
     override func scrollWheel(with event: NSEvent) {
-        let lines: Int
-        if event.hasPreciseScrollingDeltas {
-            scrollAccumulator += event.scrollingDeltaY
-            lines = Int(scrollAccumulator / cellHeight)
-            scrollAccumulator -= CGFloat(lines) * cellHeight
-        } else {
-            lines = Int(event.scrollingDeltaY.rounded(.towardZero)) * 3
-        }
-        guard lines != 0 else { return }
         if emulator.alternateScreen {
+            let lines: Int
+            if event.hasPreciseScrollingDeltas {
+                scrollAccumulator += event.scrollingDeltaY
+                lines = Int(scrollAccumulator / cellHeight)
+                scrollAccumulator -= CGFloat(lines) * cellHeight
+            } else {
+                lines = Int(event.scrollingDeltaY.rounded(.towardZero)) * 3
+            }
+            guard lines != 0 else { return }
             // Full-screen programs have no scrollback; the wheel moves their cursor instead.
             let key: TerminalKeyEncoder.Key = lines > 0 ? .up : .down
             for _ in 0..<min(abs(lines), 20) { onInput?(TerminalKeyEncoder.encode(key, applicationCursor: emulator.applicationCursorKeys)) }
             return
         }
-        let next = min(max(0, scrollOffset + lines), emulator.scrollback.count)
-        guard next != scrollOffset else { return }
-        scrollOffset = next
-        needsDisplay = true
+        let distance = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY.rounded(.towardZero) * 3 * cellHeight
+        if setScrollDistance(scrolledBackPoints + distance) { needsDisplay = true }
     }
     /// Lines the reader has scrolled back from the newest output.
     var scrolledBackLines: Int { scrollOffset }
-    func scrollToBottom() { if scrollOffset != 0 { scrollOffset = 0; needsDisplay = true } }
+    var scrolledBackPoints: CGFloat { CGFloat(scrollOffset) * cellHeight + scrollFraction }
+    private var isScrolledBack: Bool { scrollOffset > 0 || scrollFraction > 0 }
+    @discardableResult private func setScrollDistance(_ points: CGFloat) -> Bool {
+        let next = min(max(0, points), CGFloat(emulator.scrollback.count) * cellHeight)
+        let changed = next != scrolledBackPoints
+        scrollOffset = Int(next / cellHeight)
+        scrollFraction = next - CGFloat(scrollOffset) * cellHeight
+        return changed
+    }
+    func scrollToBottom() { if setScrollDistance(0) { needsDisplay = true } }
 
     // MARK: Accessibility
 
