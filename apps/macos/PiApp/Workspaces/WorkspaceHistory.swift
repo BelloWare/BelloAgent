@@ -370,22 +370,36 @@ extension WorkspaceModel {
         let lineage = view.presentation.identity?.lineage
         guard view.positionsReadFor != (lineage ?? "") else { return }
         view.positionsReadFor = lineage ?? ""
+        let generation = view.presentationGeneration
         Task { [weak self, weak view] in
             guard let self, let view else { return }
-            guard let page = try? await self.readConversationWindow(item, cursor: nil) else {
-                // Not read (a helper busy, say): asked again by the next update.
-                if view.positionsReadFor == (lineage ?? "") { view.positionsReadFor = nil }
-                return
+            @MainActor func current() -> Bool {
+                !Task.isCancelled && self.displays[id] === view && view.presentationGeneration == generation
+                    && view.presentation.identity?.lineage == lineage && view.positionsReadFor == (lineage ?? "")
+                    && view.historyPositions.total == nil
             }
-            // The timeline the window shows now (a new side's first snapshot
-            // names it after this was asked).
-            let shown = view.presentation.identity?.lineage
-            guard shown == nil || page.lineage == shown, view.historyPositions.total == nil else { return }
-            view.historyPositions.record(page)
-            // The page works out the room again for the rows it shows.
-            view.presentationChanges.send(view.presentationChanges.value)
+            // An idle chat gets two retries without needing another model
+            // update. A newer display, branch or successful edge read ends it.
+            for attempt in 0..<3 {
+                if attempt > 0 {
+                    do { try await Task.sleep(for: .milliseconds(attempt == 1 ? 100 : 300)) }
+                    catch { return }
+                }
+                guard current() else { return }
+                do {
+                    let page = try await self.readConversationWindow(item, cursor: nil)
+                    guard current(), lineage == nil || page.lineage == lineage else { return }
+                    view.historyPositions.record(page)
+                    view.presentationChanges.send(view.presentationChanges.value)
+                    return
+                } catch is CancellationError { return }
+                catch { /* Transient failures retry within this generation. */ }
+            }
+            // A later real update may try again; idle retries remain bounded.
+            if current() { view.positionsReadFor = nil }
         }
     }
+
     func latest(sessionID: String? = nil) {
         if let id = sessionID ?? selectedID, let view = displays[id] {
             view.abandonReveal(); view.abandonJump()

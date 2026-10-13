@@ -14,6 +14,43 @@ final class HistoryExtentTests: XCTestCase {
         return file
     }
 
+    @MainActor func testAnIdleChatsExtentRecoversWithoutAnotherModelUpdate() async throws {
+        let chat = try await LongChatScroll(turns: 40)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        chat.view.presentation.olderTask?.cancel(); chat.view.presentation.newerTask?.cancel()
+        try await eventually("Edges stopped") { !chat.view.olderPage.loading && !chat.view.newerPage.loading }
+        let page = try await chat.model.readConversationWindow(chat.chat, cursor: nil)
+        let reads = GatedReads()
+        chat.model.historyWindowLoader = { _, _, _, _ in
+            if reads.next() == 1 { throw HostError.failure("Transient fixture read failure") }
+            return page
+        }
+        chat.view.historyPositions.forget(); chat.view.positionsReadFor = nil
+        chat.model.reacquireHistoryPositions(chat.chat.id)
+        // No redraw, edge read, stream or other model update drives recovery.
+        try await eventually("An idle chat never retried its failed extent read") { chat.view.historyPositions.total != nil }
+        print("SCROLL-06 recovery reads=\(reads.started) total=\(chat.view.historyPositions.total ?? -1)")
+        XCTAssertEqual(reads.started, 2)
+        XCTAssertEqual(chat.view.historyPositions.total, page.total)
+    }
+
+    @MainActor func testExtentRecoveryHasABoundedRetryCount() async throws {
+        let chat = try await LongChatScroll(turns: 10)
+        registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
+        addTeardownBlock { @MainActor in chat.close() }
+        try await chat.ready()
+        chat.view.presentation.olderTask?.cancel(); chat.view.presentation.newerTask?.cancel()
+        try await eventually("Edges stopped") { !chat.view.olderPage.loading && !chat.view.newerPage.loading }
+        let reads = GatedReads()
+        chat.model.historyWindowLoader = { _, _, _, _ in _ = reads.next(); throw HostError.failure("Unavailable fixture") }
+        chat.view.historyPositions.forget(); chat.view.positionsReadFor = nil
+        chat.model.reacquireHistoryPositions(chat.chat.id)
+        try await eventually("The bounded retries did not finish") { reads.started == 3 && chat.view.positionsReadFor == nil }
+        XCTAssertNil(chat.view.historyPositions.total)
+    }
+
     /// Each turn of the fixture is five rows: question, reply with two
     /// calls, their two results, and the closing reply.
     @MainActor func testAPageSaysWhereItStandsAndAnyRowCanBeRead() async throws {
