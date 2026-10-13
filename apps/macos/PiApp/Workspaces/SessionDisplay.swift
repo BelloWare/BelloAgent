@@ -146,10 +146,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// Why the last reveal's read failed, for whoever asked for it.
     var revealFailure: String?
     /// The reader went somewhere else (a key, Back to bottom, Latest, their
-    /// own scroll): a reveal still reading its page is let go of, with the
-    /// place it would mark, so a page read in later does not take them there.
+    /// own scroll): a reveal still reading its page or waiting for presentation
+    /// is let go of, so a queued refresh cannot take them back to its mark.
     func abandonReveal() {
-        guard revealRead != nil else { return }
+        guard revealRead != nil || reveal != nil else { return }
         revealRead = nil
         reveal = nil
     }

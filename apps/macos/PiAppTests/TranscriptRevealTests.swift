@@ -66,6 +66,37 @@ final class TranscriptRevealTests: XCTestCase {
         XCTAssertEqual(chat.clipY, chat.highest, accuracy: 1, "The reader remains at the bottom they chose")
     }
 
+    @MainActor func testNavigationAfterAMarkedReadFinishesCancelsItsQueuedMark() async throws {
+        for end in [false, true] {
+            let chat = try await chat(turns: 40)
+            let pane = try XCTUnwrap(LongChatScroll.views(NativeTranscriptPane.self, in: chat.pane).first)
+            chat.view.presentation.olderTask?.cancel(); chat.view.presentation.newerTask?.cancel()
+            try await eventually("Edge reads stopped") { !chat.view.olderPage.loading && !chat.view.newerPage.loading }
+            XCTAssertFalse(chat.view.messages.contains { $0.id == "a1b" })
+            let shown = await chat.model.revealInTranscript(sessionID: chat.chat.id, messageID: "a1b",
+                mark: .excerpt("The parser in module 1", highlight: NSRange(location: 4, length: 6)))
+            XCTAssertTrue(shown)
+            XCTAssertNil(chat.view.revealRead, "The history read has finished")
+            XCTAssertNotNil(chat.view.reveal, "Its mark is still waiting for presentation")
+            XCTAssertNil(pane.document.highlights.focus, "The queued pane refresh has not consumed the mark")
+            // Do not yield between completing the read and the newer input.
+            // Both the gesture path and End must cancel the unpresented mark.
+            if end { pane.scrollView.scrollToEndOfDocument(nil) }
+            else { chat.gestureStep(80) }
+            XCTAssertNil(chat.view.reveal, end ? "End cancels the queued mark" : "Scrolling cancels the queued mark")
+            pane.refresh()
+            XCTAssertNil(pane.document.highlights.focus, "A queued refresh must not revive the cancelled mark")
+            XCTAssertFalse(pane.document.focusPending, "The earlier reveal must not reclaim scrolling")
+            if end {
+                try await eventually("End never reached the latest page") {
+                    chat.draw(); return chat.view.historyState == .ready && !chat.view.browsingHistory && !pane.page.landingPending
+                }
+                XCTAssertEqual(chat.clipY, chat.highest, accuracy: 1, "The reader stays at the end they chose")
+            }
+            chat.close()
+        }
+    }
+
     @MainActor func testRevealAndHomeOfferReloadWhenTheJournalWasReplaced() async throws {
         for home in [false, true] {
             let chat = try await chat()
