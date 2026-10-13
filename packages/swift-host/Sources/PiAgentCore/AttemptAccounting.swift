@@ -39,7 +39,7 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
             if let old = entry.admission {
                 guard old.removing(["state", "accountingRevision"]) == data.removing(["state", "accountingRevision"]) else { throw Self.damaged() }
                 if old["state"] == data["state"] { return false }
-                guard old["state"].text == "admitted", entry.contribution == nil else { throw Self.damaged() }
+                guard old["state"].text == "admitted" || old["state"].text == "dispatched" && data["state"].text == "not_dispatched", entry.contribution == nil else { throw Self.damaged() }
             }
             entry.admission = data
         } else {

@@ -74,3 +74,23 @@ No UI was exposed. Later phases add execution and read-only child controls.
 - App classes: `CostLimitTests`, `SessionAccountingCacheTests`, parallel lane:
   18 passed, invoked with a bash array. Logs: `$PI_BUILD_ROOT/logs/phase4-{red-helper,helper-final,app}.log`
   and `phase4-mutation-*.log`.
+
+## Phase 5 — request admission and family cancellation
+
+- Throwing admission/dispatch/settlement hooks on the provider path, with typed
+  immutable scope before capture, physical attempt IDs and cancellation permits.
+- Owner settlement precedes child mirroring. A family limit cancels permits and
+  pauses the owner, while late final charges remain durable. Raising the limit
+  does not revive old child work. Turns, retries and summaries share this path.
+- Failing first: the provider did not invoke the new admission callback.
+- `SubagentAdmissionTests`, `CostLimitTests`, `ContinueRunTests`, `RetryTests`:
+  41 passed. A real loopback gateway verifies three durable dispatch admissions
+  before three HTTP attempts. The summary fixture verifies retry accounting.
+- Mutations: capture before admission, live permits after family Stop, and a
+  summary bypassing admission each fail the respective behavioral test.
+- Additional `CaptureTraceTests`, `CredentialCaptureTests`,
+  `CompactionRequestShapeTests`: 24 passed. App classes `CostLimitOpeningTests`,
+  `RequestContextObservationTests`, `WireContractTests`: 15 passed, one existing
+  environment-dependent WireContract test skipped (parallel lane, bash array).
+- Logs: `$PI_BUILD_ROOT/logs/phase5-{red-helper,helper-final,capture-helper,app}.log`
+  and `phase5-mutation-*.log`.

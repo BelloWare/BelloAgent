@@ -94,6 +94,7 @@ extension AgentSession {
         guard costLimitUSD != usd else { return }
         costLimitUSD = usd
         event("cost.limit", costSnapshot)
+        stopFamilyAtLimit()
     }
     /// Adopts the spend the app counted for this chat before its journal
     /// recorded costs, once: a journal that records them never takes another.
@@ -109,6 +110,7 @@ extension AgentSession {
     /// request that reported none. Every attempt of this session passes
     /// here, whatever its purpose, before its request returns or throws.
     func countAttempt(_ observation: RequestObservation) {
+        guard !familyBudgetEnabled, !isSubagent else { return }
         guard let outcome = observation.monitoring["outcome"].text, outcome != "running", observation.sessionID == id,
               !closed || runTask != nil, accounting.attempts[observation.attemptID]?.contribution == nil else { return }
         // The throwing lifecycle settles managed requests. This compatibility

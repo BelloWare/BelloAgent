@@ -6,6 +6,7 @@ import Foundation
 extension AgentSession {
     func launch(compactOnly: Bool = false) {
         turnSubagentModels = activeSubmission?.subagentModels ?? subagentModelGrants
+        if !costLimitReached, accountingFailure == nil { familyStopReason = nil }
         presentationUtility = compactOnly || titleTask
         if retrying || continuing, let root = taskRootID {
             beginPresentedTask(root)
@@ -62,7 +63,7 @@ extension AgentSession {
             let started=nowMS(); var measured=false
             defer { if !measured { modelRequestsMs += nowMS()-started } }
             do {
-                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,cacheSessionID:promptCacheSessionID,turnID:turnID,purpose:purpose,onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
+                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,cacheSessionID:promptCacheSessionID,turnID:turnID,purpose:purpose,lifecycle:try await requestLifecycle(turnID:turnID,purpose:purpose),onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
                 modelReplyMs = nowMS()-started; modelRequestsMs += modelReplyMs; measured = true
                 return reply
             } catch let error as AgentError {
@@ -278,7 +279,8 @@ extension AgentSession {
             }
             state = .idle; runStatus = .idle; errorMessage=nil; errorCode=nil
         } catch {
-            queuePaused=true; runStatus=Task.isCancelled || error is CancellationError ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
+            let error: Error = familyStopReason ?? error
+            queuePaused=true; runStatus=familyStopReason == nil && (Task.isCancelled || error is CancellationError) ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
             errorMessage=(error as? AgentError)?.message ?? (runStatus == .cancelled ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
             errorCode=runStatus == .failed ? (error as? AgentError)?.code : nil
             if let activeSubmission { commandState(activeSubmission,runStatus.rawValue) }
