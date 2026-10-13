@@ -266,7 +266,7 @@ extension AgentSession {
             // A fork is a chat of its own: it starts with no spend of its own.
             // A copy's marker is the chat's binding now: the moves that led
             // there are the chat's history, not the fork's.
-            let left: Set<String> = [JournalRecordKind.marker, JournalRecordKind.state, JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin, JournalRecordKind.contextRecovery, SessionSpend.recordType, JournalRecordKind.rebind]
+            let left: Set<String> = [JournalRecordKind.marker, JournalRecordKind.state, JournalRecordKind.sideOrigin, JournalRecordKind.forkOrigin, JournalRecordKind.contextRecovery, SessionSpend.recordType, JournalRecordKind.budgetAttempt, JournalRecordKind.costUpdate, JournalRecordKind.rebind]
             let reader=try journal.recordReader(); var index=0
             func copied(from lineStart: UInt64, length: Int) { if hydrating, let span=prepared.lastAppend { sourcePlaces[span.offset]=(lineStart, length) } }
             while true {
@@ -422,7 +422,9 @@ extension AgentSession {
         if message.turn == nil, !currentTurnID.isEmpty { message.turn=currentTurnID }
         let observedAt = observedAt ?? displayClock()
         var record: JSON=["type":"message","message":message.pi]; for (key,value) in extra.map { record[key]=value }
+        var delegated = subagents; try delegated.consume(record, sessionID: id)
         try journal?.append(record,id:message.id,flush:journalFlushesEachRecord)
+        subagents = delegated
         toolHistory.append(message, at: history.count); history.append(message); context.append(message); visible.append(message); currentContextCount=nil
         if message.role == "user" { versions.ledger.recorded(userMessage: message.id) }
         observePresentedMessage(message)

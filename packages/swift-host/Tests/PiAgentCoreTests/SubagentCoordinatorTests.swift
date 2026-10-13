@@ -11,11 +11,11 @@ final class SubagentCoordinatorTests: XCTestCase {
         try await eventually { await client.started["parent"]?.count == 16 }
         let first = await client.started["parent"] ?? []
         XCTAssertEqual(Set(first), Set(0..<16))
-        let pending = await coordinator.list(owner: "parent")
+        let pending = await coordinator.list(parent: parent)
         XCTAssertEqual(pending["children"].list.count, 18); XCTAssertEqual(pending["active"].int, 16)
-        let page1 = await coordinator.list(owner: "parent", limit: 7)
-        let page2 = await coordinator.list(owner: "parent", cursor: try XCTUnwrap(page1["cursor"].int), limit: 7)
-        let page3 = await coordinator.list(owner: "parent", cursor: try XCTUnwrap(page2["cursor"].int), limit: 7)
+        let page1 = await coordinator.list(parent: parent, limit: 7)
+        let page2 = await coordinator.list(parent: parent, cursor: try XCTUnwrap(page1["cursor"].int), limit: 7)
+        let page3 = await coordinator.list(parent: parent, cursor: try XCTUnwrap(page2["cursor"].int), limit: 7)
         XCTAssertEqual((page1["children"].list + page2["children"].list + page3["children"].list).compactMap { $0["description"].text }, (0..<18).map(String.init))
         XCTAssertTrue(page3["cursor"].isNull); XCTAssertEqual(page1["total"].int, 18)
         await client.release(0, owner: "parent")
@@ -28,6 +28,8 @@ final class SubagentCoordinatorTests: XCTestCase {
         XCTAssertEqual(last, 17)
         await client.releaseAll()
         try await eventually { !(await parent.isRunning) }
+        let retained = await coordinator.retainedJobCount
+        XCTAssertEqual(retained, 0)
         let rows = await parent.history, results = rows.filter { $0.toolName == "subagent" }
         XCTAssertEqual(results.count, 18)
         XCTAssertEqual(results.map(\.toolCallId), (0..<18).map { "call-\($0)" })
@@ -55,7 +57,15 @@ final class SubagentCoordinatorTests: XCTestCase {
             XCTAssertFalse(body.contains(result.nativeSubagent?["sessionId"].text ?? "missing"))
             XCTAssertFalse(body.contains(result.nativeSubagent?["delegationId"].text ?? "missing"))
         }
+        let plans = await parent.subagents.plans.values, path = await parent.path
+        XCTAssertEqual(plans.filter { $0.adoptionSeed != nil }.count, 1)
+        XCTAssertEqual(plans.compactMap(\.adoptionSeed).first?["usd"].double, 0.01)
         await parent.close()
+        let restored = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+            readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: path)
+        let spend = await restored.spend, enabled = await restored.familyBudgetEnabled
+        XCTAssertEqual(spend, total); XCTAssertTrue(enabled)
+        await restored.close()
     }
 
     func testTwoOwnersHaveIndependentLimitsWithoutAHelperWideCap() async throws {
@@ -67,7 +77,7 @@ final class SubagentCoordinatorTests: XCTestCase {
         _ = try await a.submit(Submission(commandID: "a", turnID: "a", text: "tasks"), steer: false)
         _ = try await b.submit(Submission(commandID: "b", turnID: "b", text: "tasks"), steer: false)
         try await eventually { await client.active == 32 }
-        let activeA = await coordinator.list(owner: "owner-a"), activeB = await coordinator.list(owner: "owner-b")
+        let activeA = await coordinator.list(parent: a), activeB = await coordinator.list(parent: b)
         XCTAssertEqual(activeA["active"].int, 16); XCTAssertEqual(activeB["active"].int, 16)
         await client.releaseAll()
         try await eventually { let runningA = await a.isRunning, runningB = await b.isRunning; return !runningA && !runningB }
@@ -128,8 +138,13 @@ final class SubagentCoordinatorTests: XCTestCase {
             await parent.close()
         }
         try await eventually { owner == nil }
-        let saved = await coordinator.list(owner: "parent")
+        let parent = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+            readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: root.appendingPathComponent("parent.jsonl").path)
+        let saved = await coordinator.list(parent: parent), retained = await coordinator.retainedJobCount
         XCTAssertEqual(saved["children"].list.count, 1, "Summaries survive runtime release")
+        XCTAssertEqual(saved["children"].list.first?["status"].text, "completed")
+        XCTAssertEqual(retained, 0, "Consumed jobs and plans must leave coordinator memory")
+        await parent.close()
     }
 
     func testOneChildStopLeavesItsSiblingAndParentRunning() async throws {
@@ -182,7 +197,7 @@ final class SubagentCoordinatorTests: XCTestCase {
         let coordinator = SubagentCoordinator(), parent = try await makeParent(root, client: client, coordinator: coordinator)
         _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "tasks"), steer: false)
         try await eventually { !(await parent.isRunning) }
-        let listed = await coordinator.list(owner: "parent"), plans = await parent.subagents.plans, active = await client.active
+        let listed = await coordinator.list(parent: parent), plans = await parent.subagents.plans, active = await client.active
         XCTAssertTrue(listed["children"].list.isEmpty); XCTAssertTrue(plans.isEmpty); XCTAssertEqual(active, 0)
         let results = await parent.history.filter { $0.toolName == "subagent" }
         XCTAssertEqual(results.count, 2)
@@ -206,6 +221,107 @@ final class SubagentCoordinatorTests: XCTestCase {
             XCTAssertNil(terminal, "No in-memory terminal result may pretend to be durable")
         }
         await parent.close()
+    }
+
+    func testEnabledOrdinaryChatKeepsLegacyAccountingAndWriteFailureBehavior() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        for failWrite in [false, true] {
+            let id = failWrite ? "failing" : "ordinary"
+            let parent = try AgentSession(id: id, profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+                readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(),
+                beforeJournalAppend: { record in
+                    if failWrite && record["customType"].text == JournalRecordKind.cost { throw AgentError("fixture_io", "No space") }
+                })
+            await parent.enableSubagents(SubagentCoordinator())
+            let lifecycle = try await parent.requestLifecycle(turnID: "turn", purpose: "turn")
+            XCTAssertNil(lifecycle, "Offering delegation must not activate family accounting")
+            await parent.countAttempt(billingObservation(profile: try fixtureProfile(), session: id, attempt: "physical", cost: 0.25))
+            let spend = await parent.spend, failure = await parent.accountingFailure
+            XCTAssertEqual(spend.usd, 0.25); XCTAssertNil(failure)
+            try await parent.enforceCostLimit()
+            let savedPath = await parent.path, path = try XCTUnwrap(savedPath)
+            await parent.close()
+            let records = try String(contentsOfFile: path, encoding: .utf8).split(separator: "\n").map { try JSON.parse(Data($0.utf8)) }
+            XCTAssertFalse(records.contains { $0["customType"].text == JournalRecordKind.budgetAttempt })
+            if !failWrite {
+                let cost = try XCTUnwrap(records.first { $0["customType"].text == JournalRecordKind.cost })
+                XCTAssertEqual(cost["data"], ["attemptId":"physical","purpose":"turn","outcome":"completed","usd":0.25,"reported":1])
+            }
+        }
+    }
+
+    func testOrdinaryRequestWithToolOfferedWritesNoBudgetAttemptRecords() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = DelegationClient(count: 0), parent = try await makeParent(root, client: client, coordinator: SubagentCoordinator())
+        _ = try await parent.submit(Submission(commandID: "ordinary", turnID: "ordinary", text: "no delegation"), steer: false)
+        try await eventually { !(await parent.isRunning) }
+        let path = await parent.path, spend = await parent.spend
+        XCTAssertEqual(spend.usd, 0.01)
+        await parent.close()
+        let records = try String(contentsOfFile: XCTUnwrap(path), encoding: .utf8).split(separator: "\n").map { try JSON.parse(Data($0.utf8)) }
+        XCTAssertFalse(records.contains { $0["customType"].text == JournalRecordKind.budgetAttempt })
+        XCTAssertFalse(records.contains { $0["customType"].text == JournalRecordKind.subagentCall })
+        XCTAssertEqual(records.filter { $0["customType"].text == JournalRecordKind.cost }.count, 1)
+    }
+
+    func testDirectStopOfQueuedChildPreventsLaterSubmissionAndPinsItsJournal() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = DelegationClient(count: 18), registry = DelegationRegistry()
+        let coordinator = SubagentCoordinator(register: { child, _, _, _ in await registry.add(child) })
+        let parent = try await makeParent(root, client: client, coordinator: coordinator)
+        _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "tasks"), steer: false)
+        try await eventually { await client.active == 16 }
+        let children = await registry.children, queued = try XCTUnwrap(children.last)
+        let unloaded = await queued.unloadIfIdle()
+        XCTAssertFalse(unloaded, "A coordinator-owned queued child must keep its journal")
+        if unloaded { await parent.stop() } else {
+            await queued.stop()
+            await client.releaseAll()
+        }
+        try await eventually { !(await parent.isRunning) }
+        let started = await client.started["parent"] ?? []
+        XCTAssertFalse(started.contains(17), "Stop must survive the queued-to-running transition")
+        for child in children { await child.close() }; await parent.close()
+    }
+
+    func testReopenedParentRuntimeCanDelegateAfterTheOldRuntimeWasStopped() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let coordinator = SubagentCoordinator(), firstClient = DelegationClient(count: 1)
+        let parent = try await makeParent(root, client: firstClient, coordinator: coordinator)
+        _ = try await parent.submit(Submission(commandID: "first", turnID: "first", text: "tasks"), steer: false)
+        try await eventually { await firstClient.active == 1 }
+        let path = await parent.path, oldRuntimeID = await parent.displayEpoch
+        await parent.stop(); await parent.close()
+        let client = DelegationClient(count: 1)
+        let reopened = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+            readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: path)
+        await reopened.enableSubagents(coordinator)
+        _ = try await reopened.submit(Submission(commandID: "second", turnID: "second", text: "new task"), steer: false)
+        try await eventually { let active = await client.active, running = await reopened.isRunning; return active == 1 || !running }
+        await coordinator.cancel(owner: "parent", runtimeID: oldRuntimeID, through: Int.max)
+        let active = await client.active, paused = await reopened.queuePaused
+        XCTAssertEqual(active, 1); XCTAssertFalse(paused)
+        await client.releaseAll()
+        try await eventually { !(await reopened.isRunning) }
+        let count = await client.started["parent"]?.count ?? 0
+        XCTAssertEqual(count, 1, "Old runtime cancellation cannot cancel a new accepted turn")
+        let result = await reopened.history.last { $0.toolName == "subagent" }
+        XCTAssertEqual(result?.nativeSubagent?["status"].text, "completed", "Late callbacks from the old runtime cannot interrupt its replacement")
+        await reopened.close()
+    }
+
+    func testDurableSideAdoptsItsOwnBudgetOnFirstDelegation() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = DelegationClient(count: 1); await client.releaseAll()
+        let side = try AgentSession(id: "side", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+            readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), seed: [], parent: ["parentSessionId":"original"])
+        await side.enableSubagents(SubagentCoordinator())
+        _ = try await side.preserveSide()
+        _ = try await side.submit(Submission(commandID: "side", turnID: "side", text: "task"), steer: false)
+        try await eventually { !(await side.isRunning) }
+        let total = await side.spend, started = await client.started["side"]?.count ?? 0
+        XCTAssertEqual(started, 1); XCTAssertEqual(total.usd, 0.03, accuracy: 1e-8)
+        await side.close()
     }
 
     private func makeParent(_ root: URL, id: String = "parent", client: any ModelClient, coordinator: SubagentCoordinator) async throws -> AgentSession {
@@ -246,20 +362,20 @@ private actor DelegationClient: ModelClient {
         throw AgentError("fixture_unscoped", "Delegation bypassed accounting")
     }
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, cacheSessionID: String, turnID: String, purpose: String, lifecycle: RequestLifecycle?, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
-        let hooks = try XCTUnwrap(lifecycle), attempt = UUID().uuidString
-        let permit = try await hooks.admitAttempt(attempt); defer { permit.finish() }
-        try await hooks.willDispatch(attempt)
+        let hooks = lifecycle, attempt = UUID().uuidString
+        let permit = try await hooks?.admitAttempt(attempt); defer { permit?.finish() }
+        try await hooks?.willDispatch(attempt)
         var observation = RequestObservation(sessionID: sessionID, turnID: turnID, attemptID: attempt, purpose: purpose, fingerprint: "fixture", profile: profile)
         var reply: ModelReply
         do {
-            if let link = hooks.scope.delegation {
+            if let link = hooks?.scope.delegation {
                 XCTAssertEqual(sessionID, cacheSessionID); XCTAssertEqual(messages.filter { $0.role == "user" }.count, 1)
                 XCTAssertFalse(tools.contains { $0.name == "subagent" })
                 let index = Int(messages.first { $0.role == "user" }?.text ?? "") ?? -1
                 started[link.budgetOwnerSessionID, default: []].append(index); active += 1; maximumActive = max(maximumActive, active)
                 defer { active -= 1 }
                 while !allReleased && !released.contains(link.budgetOwnerSessionID + ":\(index)") { try await Task.sleep(for: .milliseconds(5)) }
-                try permit.check(); reply = answer(text ?? "child \(index)")
+                try permit?.check(); reply = answer(text ?? "child \(index)")
             } else {
                 parents[sessionID, default: 0] += 1
                 if parents[sessionID] == 1 {
@@ -272,12 +388,14 @@ private actor DelegationClient: ModelClient {
             }
         } catch {
             observation.monitoring = ["outcome":"cancelled", "gateway":["cost":["status":"unreported"]]]
-            try await hooks.settleAttempt(AttemptSettlement(scope: hooks.scope, observation: observation, dispatched: true))
+            if let hooks { try await hooks.settleAttempt(AttemptSettlement(scope: hooks.scope, observation: observation, dispatched: true)) }
+        await onObservation(observation)
             throw error
         }
         observation.monitoring = ["outcome":"completed", "gateway":["cost":["status":"reported","usd":0.01]]]
         observation.fields = ["input":10,"output":2,"total":12]
-        try await hooks.settleAttempt(AttemptSettlement(scope: hooks.scope, observation: observation, dispatched: true))
+        if let hooks { try await hooks.settleAttempt(AttemptSettlement(scope: hooks.scope, observation: observation, dispatched: true)) }
+        await onObservation(observation)
         reply.message.requestAttemptIDs = [attempt]
         return reply
     }

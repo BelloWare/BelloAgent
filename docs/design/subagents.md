@@ -520,7 +520,7 @@ Rules:
 - Apply existing cost validation. Missing, invalid, or conflicting cost is unknown.
 - Checkpoints carry the required accounting state and revision; missing support forces full replay.
 
-Existing legacy spend seeds remain unchanged. There is no new family seed and no copying of the parent’s existing total into another store.
+Existing legacy spend seeds remain unchanged. A chat uses ordinary single-session accounting until its first accepted delegation. That first `pi-app.subagent-call.v1` plan carries an optional `adoptionSeed`: the existing spend at that exact journal boundary, with `reset: true` and `source: family-adoption`. One synchronized append accepts the delegation and establishes the family ledger. Replay resets the derived attempt index to this seed, then counts subsequent physical attempts. Nothing is copied into another store; chats that never delegate retain their existing cost records and best-effort write behavior. Pre-adoption token coverage is unknown rather than zero.
 
 Reconciliation is limited to registered attempts. It must not re-import historical request-log totals already covered by an existing legacy seed.
 
@@ -1293,6 +1293,9 @@ Future implementation follows the repository’s commit/push workflow. This desi
   This supersedes the 4/8/16 figures used elsewhere in this document.
 
 ## Implementation notes
+
+- Lead review after phase 6 (2026-10-14): family accounting now activates only inside the first accepted `registerDelegation`, with an atomic adoption seed in that plan. The pre-delegation request keeps the ordinary accounting path, including journal-write failure behavior. A preserved side follows the same activation path. Reopening a parent with its own plans restores family ownership; a fork never adopts copied plans.
+- Coordinator review fixes: owner slot/queue keys consistently use `budgetOwnerSessionID`; cancellation generations include the parent runtime identity. Child submission checks its original Stop generation, and unfinished children cannot unload their journals. After synchronized parent result consumption, terminal jobs, rejections, queues and cancellation bookkeeping are removed; paged discovery uses the parent's replayed call order/outcomes with live-job overlays. Parent close also releases terminal jobs. A throwing restricted MCP invocation drops only its private retention mapping, leaving the base executor's unknown-outcome evidence intact. Copy-based forks omit admissions and corrections along with cost records.
 
 - Phase 6: the hidden helper coordinator creates durable children without `side.open`, freezes the parent's resolved resources and actual executable tools, and uses the existing run loop. It owns independent FIFO queues with 16 active slots per owner; paged `subagent.list` preserves assistant-call order without imposing a call or capture limit. Completed jobs release their runtime/credential/parent references after saving and publishing their exact result.
 - Phase 6 creation detail: each accepted parent plan is synchronized before its child is created; all plans are prepared before any child starts. This currently uses one flush per plan instead of §4.2's proposed batch flush, favoring simple durable ordering across actor awaits. The queued task is durable in the parent plan; the child receives its ordinary `Submission` only when it gets a slot. Existing submission delivery immediately launches a run, so delaying it avoids a separately resumable child queue. Phase 7 recovery must derive queued outcomes from these plans without submitting them.

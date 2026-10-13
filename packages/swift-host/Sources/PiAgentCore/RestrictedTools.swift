@@ -35,7 +35,15 @@ actor RestrictedTools: ToolExecuting {
             // shared by parallel sessions. The model still sees its own ID.
             let token = UUID().uuidString; retention[call.id] = token
             var scoped = ToolCall(id: token, name: call.name, arguments: call.arguments); scoped.mcpPolicy = mcpPolicy
-            var result = try await base.invoke(scoped, readOnly: self.readOnly || readOnly, onUpdate: onUpdate)
+            let returned: JSON
+            do { returned = try await base.invoke(scoped, readOnly: self.readOnly || readOnly, onUpdate: onUpdate) }
+            catch {
+                // No durable result exists. Drop only our mapping; the base
+                // executor must retain any unknown-outcome marker it wrote.
+                retention.removeValue(forKey: call.id)
+                throw error
+            }
+            var result = returned
             if call.arguments["action"].text == "list", call.arguments["server"].isNull {
                 result["servers"] = .array(result["servers"].list.filter { servers.contains($0["server"].text ?? "") })
             }

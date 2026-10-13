@@ -4,7 +4,7 @@ struct SubagentEnvironment: Sendable {
     let parent: AgentSession
     let ownerID: String, turnID: String, executionID: String
     let parentAttemptID: String?
-    let generation: Int
+    let generation: Int, runtimeID: String
     let profile: Profile, apiKey: String
     let models: [SubagentModelGrant]
     let definitions: [ToolDefinition], capabilities: [String]
@@ -20,11 +20,8 @@ struct SubagentEnvironment: Sendable {
 extension AgentSession {
     func enableSubagents(_ coordinator: SubagentCoordinator) {
         subagentCoordinator = coordinator
-        if canDelegate {
-            enableFamilyBudget()
-            let ownerID = id
-            familyCancelled = { generation in Task { await coordinator.cancel(owner: ownerID, through: generation) } }
-        }
+        let ownerID = id, runtimeID = displayEpoch
+        familyCancelled = { generation in Task { await coordinator.cancel(owner: ownerID, runtimeID: runtimeID, through: generation) } }
     }
     var canDelegate: Bool { subagentCoordinator != nil && journal != nil && !ephemeral && !titleTask && !isSubagent && !isConnectionTest }
 
@@ -37,19 +34,28 @@ extension AgentSession {
         if let appliedSnapshot { snapshot = appliedSnapshot } else { snapshot = try await resources.resolve() }
         try Task.checkCancellation()
         guard generation == stopCount else { throw CancellationError() }
-        return SubagentEnvironment(parent: self, ownerID: id, turnID: currentTurnID, executionID: execution, parentAttemptID: currentAttemptIDs.last, generation: generation,
+        return SubagentEnvironment(parent: self, ownerID: id, turnID: currentTurnID, executionID: execution, parentAttemptID: currentAttemptIDs.last, generation: generation, runtimeID: displayEpoch,
                                    profile: profile, apiKey: apiKey, models: turnSubagentModels, definitions: definitions, capabilities: capabilities,
                                    mcpPolicy: mcpPolicy, tools: tools, client: client, resources: snapshot, cwd: cwd, directory: directory, readOnly: readOnly,
                                    traces: traces, retry: retrySettings, changed: changed)
     }
-    func registerDelegation(_ plan: SubagentPlan, generation: Int) throws {
+    func registerDelegation(_ proposed: SubagentPlan, generation: Int) throws -> SubagentPlan {
+        var plan = proposed
         try Task.checkCancellation()
         guard canDelegate, !closed, !queuePaused, stopCount == generation, plan.origin.link.valid,
               plan.origin.link.call.parentSessionID == id, activeTaskPresentation?.executionID == plan.origin.link.parentExecutionID,
               toolHistory.owners[plan.origin.link.call.toolCallID] == plan.origin.link.call.assistantMessageID else { throw AgentError("subagent_identity", "Delegation no longer belongs to this parent execution") }
+        var nextAccounting = accounting, total = spend
+        if !familyBudgetEnabled {
+            var seed = spend.record; seed["reset"] = true; seed["source"] = "family-adoption"
+            plan.adoptionSeed = seed
+            try nextAccounting.consume(kind: JournalRecordKind.cost, data: seed, spend: &total)
+        }
         let record: JSON = ["type":"custom", "customType":JSON(JournalRecordKind.subagentCall), "data":try subagentJSON(plan)]
         var next = subagents; try next.consume(record, sessionID: id)
         try journal?.append(record, flush: true); subagents = next
+        accounting = nextAccounting; spend = total; familyBudgetEnabled = true
+        return plan
     }
     func subagentChanged(_ summary: SubagentSummary) {
         if toolStateOwners[summary.link.call.toolCallID] == summary.link.call.assistantMessageID,

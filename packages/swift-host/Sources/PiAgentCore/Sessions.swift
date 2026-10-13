@@ -86,6 +86,7 @@ public actor AgentSession {
     /// as the gateway reported it; and the attempts already counted, so an
     /// attempt is never added twice. See SessionCost.swift.
     var costLimitUSD: Double?
+    var countedAttempts = BoundedIdentitySet(limit: 512)
     var spend = SessionSpend()
     var subagents = SubagentJournalState()
     var subagentModelGrants: [SubagentModelGrant] = []
@@ -333,6 +334,7 @@ public actor AgentSession {
         let replayed=try consumer.finished(); durable=consumer
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
         spend=replayed.spend; spendTracked=replayed.spendTracked; accounting=replayed.accounting; subagents=replayed.subagents
+        familyBudgetEnabled = !subagents.plans.isEmpty
         guard (opened.markerKind == JournalRecordKind.childMarker) == (subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
@@ -529,6 +531,18 @@ public actor AgentSession {
         else if state != .error { state = .paused }
         event("state")
     }
-    public func unloadIfIdle() -> Bool { guard isIdle, !ephemeral else { return false }; cancelHistoryLoads(); closed=true; journal=nil; return true }
-    public func close() async { cancelHistoryLoads(); closed=true; stop(); await runTask?.value; journal=nil }
+    public func unloadIfIdle() -> Bool {
+        guard isIdle, !ephemeral, !isSubagent || subagents.terminal != nil else { return false }
+        cancelHistoryLoads(); closed=true; journal=nil
+        if !isSubagent, let coordinator = subagentCoordinator {
+            let owner = id, runtimeID = displayEpoch
+            Task { await coordinator.release(owner: owner, runtimeID: runtimeID) }
+        }
+        return true
+    }
+    public func close() async {
+        cancelHistoryLoads(); closed=true; stop(); await runTask?.value
+        if !isSubagent { await subagentCoordinator?.release(owner: id, runtimeID: displayEpoch) }
+        journal=nil
+    }
 }

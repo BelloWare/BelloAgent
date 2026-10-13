@@ -43,6 +43,16 @@ final class SubagentPermissionTests: XCTestCase {
         XCTAssertEqual(listing["servers"].list.compactMap { $0["server"].text }, ["allowed"])
     }
 
+    func testThrownMCPInvocationDropsItsRetentionTokenWithoutClaimingAnOutcome() async throws {
+        let base = PermissionTools(); await base.failInvocations()
+        let tools = RestrictedTools(base: base, allowed: ["mcp"], readOnly: false, capabilities: ["mcp:allowed"])
+        do { _ = try await tools.invoke(ToolCall(id: "failed", name: "mcp", arguments: ["server":"allowed"]), readOnly: false); XCTFail("Expected failure") }
+        catch { XCTAssertEqual((error as? AgentError)?.code, "fixture_unknown") }
+        await tools.resultsRetained(["failed"], retained: true)
+        let retained = await base.retained
+        XCTAssertTrue(retained.isEmpty, "A thrown invocation has no retained result; its unknown-outcome marker must stay")
+    }
+
     func testExplicitModelMustBeGrantedButUnlistedParentCanBeInherited() throws {
         let parent = try fixtureProfile()
         XCTAssertEqual(try SubagentModelGrant.resolve(nil, parent: parent, grants: []).1.raw, parent.raw)
@@ -80,12 +90,15 @@ final class SubagentPermissionTests: XCTestCase {
 
 private actor PermissionTools: ToolExecuting {
     var calls: [String] = [], retained: [String] = [], read = true
+    var failing = false
+    func failInvocations() { failing = true }
     func removeRead() { read = false }
     func definitions(readOnly: Bool) -> [ToolDefinition] {
         ((read ? ["read"] : []) + (readOnly ? [] : ["write", "bash"]) + ["mcp", "subagent"]).map { ToolDefinition($0, "fixture", [:]) }
     }
-    func invoke(_ call: ToolCall, readOnly: Bool) -> JSON {
+    func invoke(_ call: ToolCall, readOnly: Bool) throws -> JSON {
         calls.append(call.id)
+        if failing { throw AgentError("fixture_unknown", "Outcome unknown") }
         return ["servers":[["server":"allowed"], ["server":"forbidden"]]]
     }
     func resultsRetained(_ callIDs: [String], retained: Bool) { self.retained += callIDs }

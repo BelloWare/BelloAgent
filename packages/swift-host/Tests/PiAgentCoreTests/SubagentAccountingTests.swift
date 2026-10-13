@@ -78,6 +78,22 @@ final class SubagentAccountingTests: XCTestCase {
         await s.close()
     }
 
+    func testCopyForkDropsAdmissionsCorrectionsAndOwnerAuthority() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let parent = try AgentSession(id: "p", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+            readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore())
+        try await parent.appendAccounting(kind: JournalRecordKind.budgetAttempt, data: admissionRecord("physical"))
+        try await parent.appendAccounting(kind: JournalRecordKind.cost, data: costRecord("physical", usd: nil, revision: 2))
+        try await parent.correctAccounting(costRecord("physical", usd: 2, revision: 3))
+        // The longer identity forces the streaming copy path rather than clone.
+        let fork = try await parent.fork(to: "fork-with-longer-identity")
+        let child = try AgentSession(id: "fork-with-longer-identity", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+            readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(), resumePath: fork["path"].text)
+        let spend = await child.spend, accounting = await child.accounting
+        XCTAssertEqual(spend, SessionSpend()); XCTAssertTrue(accounting.attempts.isEmpty)
+        await child.close(); await parent.close()
+    }
+
     func testPhysicalAttemptIsNotChargedAgainAfterReopen() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let profile = try fixtureProfile()
@@ -87,17 +103,18 @@ final class SubagentAccountingTests: XCTestCase {
                              tools: DisabledTools(), traces: TraceStore(), resumePath: path)
         }
         let observation = billingObservation(profile: profile, session: "parent", attempt: "physical", cost: 0.75)
-        let first = try open(); await first.countAttempt(observation)
+        let first = try open(); let contribution = await first.contribution(observation, owner: "parent")
+        try await first.appendAccounting(kind: JournalRecordKind.cost, data: contribution)
         var task = ChatMessage(role: "user", content: [textBlock("task")]); task.id = "task"
         try await first.append(task)
         try await first.appendForTesting([["type":"custom", "customType":JSON(JournalRecordKind.context), "data":["ids":["task"]]]])
         let path = await first.path; await first.close()
-        let second = try open(path); await second.countAttempt(observation)
+        let second = try open(path); try await second.appendAccounting(kind: JournalRecordKind.cost, data: contribution)
         let total = await second.spend
         XCTAssertEqual(total.usd, 0.75); XCTAssertEqual(total.reported, 1)
         await second.close()
         XCTAssertNotNil(JournalCheckpoint.read(for: root.appendingPathComponent("parent.jsonl")))
-        let checkpoint = try open(path); await checkpoint.countAttempt(observation)
+        let checkpoint = try open(path); try await checkpoint.appendAccounting(kind: JournalRecordKind.cost, data: contribution)
         let retained = await checkpoint.spend
         XCTAssertEqual(retained, total)
         await checkpoint.close()

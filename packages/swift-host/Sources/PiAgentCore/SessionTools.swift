@@ -219,6 +219,13 @@ extension AgentSession {
             if !invoked.isEmpty { await tools.resultsRetained(invoked.map { calls[$0.index].id }, retained:false) }
             throw error
         }
+        if let coordinator = subagentCoordinator {
+            let keys = finished.filter { $0.message.toolName == "subagent" }.compactMap { outcome -> SubagentCallKey? in
+                guard let call = outcome.message.toolCallId, let assistant = toolHistory.owners[call] else { return nil }
+                return SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call)
+            }
+            await coordinator.consumed(keys)
+        }
         if !invoked.isEmpty {
             let lost=invoked.filter { !$0.recorded }.map { calls[$0.index].id }, kept=invoked.filter(\.recorded).map { calls[$0.index].id }
             if !lost.isEmpty { await tools.resultsRetained(lost, retained:false) }

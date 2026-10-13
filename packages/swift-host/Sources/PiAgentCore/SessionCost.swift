@@ -32,6 +32,19 @@ struct SessionSpend: Sendable, Equatable {
     var record: JSON { ["usd": JSON(usd), "reported": JSON(reported), "unreported": JSON(unreported)] }
 }
 
+struct BoundedIdentitySet: Sendable {
+    let limit: Int
+    private var order: [String] = [], members = Set<String>()
+    init(limit: Int) { self.limit = max(1, limit) }
+    /// False when the identity was already present.
+    mutating func insert(_ identity: String) -> Bool {
+        guard members.insert(identity).inserted else { return false }
+        order.append(identity)
+        if order.count > limit { members.remove(order.removeFirst()) }
+        return true
+    }
+}
+
 extension AgentSession {
     static let costLimitCode = "cost_limit"
     /// The most a limit may be: a guard on the wire value, not a policy.
@@ -111,12 +124,24 @@ extension AgentSession {
     /// here, whatever its purpose, before its request returns or throws.
     func countAttempt(_ observation: RequestObservation) {
         guard !familyBudgetEnabled, !isSubagent else { return }
-        guard let outcome = observation.monitoring["outcome"].text, outcome != "running", observation.sessionID == id,
-              !closed || runTask != nil, accounting.attempts[observation.attemptID]?.contribution == nil else { return }
-        // The throwing lifecycle settles managed requests. This compatibility
-        // path counts clients without lifecycle hooks and older ordinary runs.
-        do { try appendAccounting(kind: JournalRecordKind.cost, data: contribution(observation, owner: id)) }
-        catch { accountingFailure = error as? AgentError }
+        let outcome = observation.monitoring["outcome"].text
+        // Closing refuses new work, but the admitted run can still receive
+        // its terminal charge while cancellation settles. close() keeps the
+        // journal attached until that run has returned.
+        guard let outcome, outcome != "running", !closed || runTask != nil, countedAttempts.insert(observation.attemptID) else { return }
+        let cost = observation.monitoring["gateway"]["cost"]
+        var data: JSON = ["attemptId": JSON(observation.attemptID), "purpose": JSON(observation.purpose), "outcome": JSON(outcome)]
+        if cost["status"].text == "reported", let usd = cost["usd"].double, usd.isFinite, usd >= 0 {
+            spend.usd += usd; spend.reported += 1
+            data["usd"] = JSON(usd); data["reported"] = 1
+        } else {
+            spend.unreported += 1
+            data["usd"] = 0; data["unreported"] = 1; data["status"] = JSON(cost["status"].text ?? "unreported")
+        }
+        spendTracked = true
+        // Written with the run's records: an attempt's cost is as durable as
+        // the reply it paid for. A failed write leaves the figure in memory.
+        _ = try? journal?.append(["type":"custom","customType":JSON(SessionSpend.recordType),"data":data], flush: journalFlushesEachRecord)
     }
     /// Whether the next model request may go: never once the spend the
     /// gateway reported reaches the limit. Unreported attempts are unknown,

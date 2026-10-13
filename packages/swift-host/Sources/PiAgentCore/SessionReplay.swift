@@ -119,6 +119,12 @@ struct JournalReplayConsumer {
         }
         let item=try JSON.parse(line)
         try r.subagents.consume(item, sessionID: id)
+        if item["customType"].text == JournalRecordKind.subagentCall,
+           item["data"]["origin"]["link"]["call"]["parentSessionID"].text == id,
+           !item["data"]["adoptionSeed"].isNull {
+            try r.accounting.consume(kind: JournalRecordKind.cost, data: item["data"]["adoptionSeed"], spend: &r.spend)
+            r.spendTracked = true
+        }
         if item["customType"].text == JournalRecordKind.rebind {
             // Named already when the checkpoint resumed from lists it.
             if !rebinds.contains(where: { $0.offset == lineStart }) {

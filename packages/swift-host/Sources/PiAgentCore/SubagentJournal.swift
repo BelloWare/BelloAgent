@@ -14,6 +14,7 @@ struct SubagentPlan: Codable, Sendable, Equatable {
     var origin: SubagentOrigin
     var task: String
     var resultMessageID: String
+    var adoptionSeed: JSON? = nil
 }
 
 func subagentJSON<T: Encodable>(_ value: T) throws -> JSON { try JSON.parse(JSONEncoder().encode(value)) }
@@ -22,11 +23,21 @@ func subagentJSON<T: Encodable>(_ value: T) throws -> JSON { try JSON.parse(JSON
 /// A copied parent record is historical provenance, never transferred authority.
 struct SubagentJournalState: Codable, Sendable, Equatable {
     var plans: [String: SubagentPlan] = [:]
+    var callOrder: [String]? = nil
+    var outcomes: [String: SubagentStatus]? = nil
     var origin: SubagentOrigin?
     var status: SubagentStatus?
     var terminal: JSON?
 
     mutating func consume(_ record: JSON, sessionID: String) throws {
+        if record["type"].text == "message", record["message"]["role"].text == "toolResult" {
+            let metadata = record["message"]["nativeSubagent"]
+            if let key = metadata["delegationId"].text, let plan = plans[key],
+               metadata["sessionId"].text == plan.origin.link.childSessionID,
+               let status = metadata["status"].text.flatMap(SubagentStatus.init(rawValue:)), status.terminal {
+                if outcomes == nil { outcomes = [:] }; outcomes?[key] = status
+            }
+        }
         let data = record["data"]
         switch record["customType"].text {
         case JournalRecordKind.subagentCall:
@@ -36,6 +47,7 @@ struct SubagentJournalState: Codable, Sendable, Equatable {
             let key = plan.origin.link.delegationID
             guard plans[key] == nil || plans[key] == plan,
                   !plans.values.contains(where: { $0.origin.link.call == plan.origin.link.call && $0 != plan }) else { throw damaged() }
+            if plans[key] == nil { if callOrder == nil { callOrder = plans.keys.sorted() }; callOrder?.append(key) }
             plans[key] = plan
         case JournalRecordKind.subagentOrigin:
             let value = try JSONDecoder().decode(SubagentOrigin.self, from: data.data())
@@ -56,6 +68,7 @@ struct SubagentJournalState: Codable, Sendable, Equatable {
 
     mutating func retarget(_ sessionID: String) {
         plans = plans.filter { $0.value.origin.link.call.parentSessionID == sessionID }
+        callOrder = callOrder?.filter { plans[$0] != nil }; outcomes = outcomes?.filter { plans[$0.key] != nil }
         if origin?.link.childSessionID != sessionID { origin = nil; status = nil; terminal = nil }
     }
 

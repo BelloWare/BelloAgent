@@ -28,7 +28,9 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
         }
         guard let id = data["attemptId"].text, !id.isEmpty else {
             guard kind == JournalRecordKind.cost else { throw Self.damaged() }
-            spend.add(record: data); return true // Existing seed/carried records.
+            spend.add(record: data)
+            if data["source"].text == "family-adoption" { usageUnknownRequests += (data["reported"].int ?? 0) + (data["unreported"].int ?? 0) }
+            return true // Existing seed/carried records.
         }
         var entry = attempts[id] ?? Entry()
         let previousEntry = entry
