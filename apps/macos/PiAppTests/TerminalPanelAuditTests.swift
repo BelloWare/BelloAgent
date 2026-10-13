@@ -289,6 +289,26 @@ final class TerminalPanelAuditTests: TerminalPanelTestCase {
 /// which in ten parallel clones was not reported within ten seconds. They
 /// run in the serial lane (`scripts/test-lanes.py`).
 final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
+    @MainActor func testTerminalSessionShowsTheFailedFolder() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("terminal-launch-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let shell = directory.appendingPathComponent("shell")
+        try "#!/bin/sh\nexit 0\n".write(to: shell, atomically: true, encoding: .utf8)
+        XCTAssertEqual(chmod(shell.path, 0o700), 0)
+        let previous = ProcessInfo.processInfo.environment["SHELL"]
+        setenv("SHELL", shell.path, 1)
+        defer {
+            if let previous { setenv("SHELL", previous, 1) } else { unsetenv("SHELL") }
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let missing = directory.appendingPathComponent("missing").path
+        let session = TerminalSession(workspaceID: UUID().uuidString, directory: missing)
+        defer { PseudoTerminal.endForQuit([session.process]) }
+        XCTAssertTrue(session.exited)
+        XCTAssertTrue(session.failure?.contains(missing) == true, session.failure ?? "No failure shown")
+        XCTAssertTrue(session.failure?.contains("Could not open terminal") == true, session.failure ?? "No failure shown")
+    }
+
     /// The panel in a window, switched from one project to another: the new
     /// project's shell has the keyboard, not nothing at all.
     @MainActor func testSwitchingProjectsMovesTheTerminalAndTheKeyboardWithIt() async throws {

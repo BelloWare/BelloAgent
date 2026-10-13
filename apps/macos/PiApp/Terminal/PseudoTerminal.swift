@@ -7,9 +7,12 @@ import Darwin
 /// off the main thread and delivered on the main actor in the order it arrived.
 @MainActor final class PseudoTerminal {
     enum Failure: Error, LocalizedError {
-        case spawn(Int32)
+        case spawn(Int32), directory(String, Int32)
         var errorDescription: String? {
-            switch self { case .spawn(let code): return "Could not start the shell (\(String(cString: strerror(code))))" }
+            switch self {
+            case .spawn(let code): return "Could not start the shell (\(String(cString: strerror(code))))"
+            case .directory(let path, let code): return "Could not open terminal in “\(path)” (\(String(cString: strerror(code))))."
+            }
         }
     }
 
@@ -53,6 +56,24 @@ import Darwin
         let path = strdup(executable)
         let cwd = strdup(directory)
         defer { argv.forEach { free($0) }; envp.forEach { free($0) }; free(path); free(cwd) }
+        guard let path, let cwd, argv.dropLast().allSatisfy({ $0 != nil }), envp.dropLast().allSatisfy({ $0 != nil }) else { throw Failure.spawn(ENOMEM) }
+        // EOF is exec's acknowledgement; a failure sends its stage and errno.
+        // This must come from the child: a parent-side directory check races a
+        // rename or permission change, and silently falling back runs elsewhere.
+        var launchPipe: [Int32] = [-1, -1]
+        guard pipe(&launchPipe) == 0 else { throw Failure.spawn(errno) }
+        defer { for fd in launchPipe where fd >= 0 { close(fd) } }
+        for index in launchPipe.indices {
+            if launchPipe[index] < 3 {
+                let fd = fcntl(launchPipe[index], F_DUPFD_CLOEXEC, 3)
+                guard fd >= 0 else { throw Failure.spawn(errno) }
+                close(launchPipe[index]); launchPipe[index] = fd
+            }
+            guard fcntl(launchPipe[index], F_SETFD, FD_CLOEXEC) == 0 else { throw Failure.spawn(errno) }
+        }
+        let launchRead = launchPipe[0], launchWrite = launchPipe[1]
+        let resetSignals = [SIGPIPE, SIGINT, SIGQUIT, SIGTERM, SIGCHLD, SIGHUP, SIGTSTP, SIGTTIN, SIGTTOU]
+        var failure: [Int32] = [0, 0]
         // A forked child keeps every descriptor the app has open that is not
         // marked close-on-exec, and Foundation's pipes are not: the shell and
         // everything started from it held the helper's stdin, so a helper
@@ -61,20 +82,54 @@ import Darwin
         // before the fork like everything else the child uses.
         let descriptorLimit = getdtablesize()
         var masterFD: Int32 = -1
-        let pid = forkpty(&masterFD, nil, nil, &size)
-        if pid == 0 {
-            // Child: nothing but the terminal, the shell's own signal dispositions, its directory, then the program.
-            var descriptor: Int32 = 3
-            while descriptor < descriptorLimit { _ = close(descriptor); descriptor += 1 }
-            var signals = sigset_t()
-            sigemptyset(&signals)
-            sigprocmask(SIG_SETMASK, &signals, nil)
-            for signal in [SIGPIPE, SIGINT, SIGQUIT, SIGTERM, SIGCHLD, SIGHUP, SIGTSTP, SIGTTIN, SIGTTOU] { Darwin.signal(signal, SIG_DFL) }
-            if let cwd { _ = chdir(cwd) }
-            execve(path, argv, envp)
-            _exit(127)
-        }
+        // Enter these buffer scopes before fork, so the child never bridges or
+        // mutates a Swift array while another thread may hold a runtime lock.
+        let pid = argv.withUnsafeBufferPointer { argv in envp.withUnsafeBufferPointer { envp in
+            resetSignals.withUnsafeBufferPointer { resetSignals in failure.withUnsafeMutableBytes { report in
+                let pid = forkpty(&masterFD, nil, nil, &size)
+                if pid == 0 {
+                    var descriptor: Int32 = 3
+                    while descriptor < descriptorLimit { if descriptor != launchWrite { _ = close(descriptor) }; descriptor += 1 }
+                    var signals = sigset_t()
+                    sigemptyset(&signals)
+                    sigprocmask(SIG_SETMASK, &signals, nil)
+                    for index in resetSignals.indices { Darwin.signal(resetSignals[index], SIG_DFL) }
+                    var stage: Int32 = 1
+                    if chdir(cwd) == 0 { stage = 2; execve(path, argv.baseAddress!, envp.baseAddress!) }
+                    let code = errno
+                    report.storeBytes(of: stage, as: Int32.self)
+                    report.storeBytes(of: code, toByteOffset: MemoryLayout<Int32>.size, as: Int32.self)
+                    var sent = 0
+                    while sent < report.count {
+                        let count = Darwin.write(launchWrite, report.baseAddress! + sent, report.count - sent)
+                        if count > 0 { sent += count } else if count < 0 && errno == EINTR { continue } else { break }
+                    }
+                    _exit(127)
+                }
+                return pid
+            } }
+        } }
         guard pid > 0 else { throw Failure.spawn(errno) }
+        close(launchWrite); launchPipe[1] = -1
+        var received = 0, readError: Int32?
+        failure.withUnsafeMutableBytes { report in
+            while received < report.count {
+                let count = read(launchRead, report.baseAddress! + received, report.count - received)
+                if count > 0 { received += count }
+                else if count == 0 { break }
+                else if errno != EINTR { readError = errno; break }
+            }
+        }
+        if received > 0 || readError != nil {
+            close(masterFD)
+            // A failed handshake owns its child until it is reaped, just as a
+            // successful launch's process watcher does. Never leave a zombie.
+            kill(pid, SIGKILL)
+            var status: Int32 = 0
+            while waitpid(pid, &status, 0) < 0 && errno == EINTR {}
+            if received == MemoryLayout<Int32>.size * 2, failure[0] == 1 { throw Failure.directory(directory, failure[1]) }
+            throw Failure.spawn(readError ?? (received == MemoryLayout<Int32>.size * 2 ? failure[1] : EIO))
+        }
         let attempt = UUID(); generation = attempt; inputLifetime = TerminalInputLifetime()
         pending = PendingOutput()
         let pending = pending
