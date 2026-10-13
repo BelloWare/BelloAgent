@@ -93,7 +93,7 @@ public actor NativeHostService {
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
             hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true; unknownToolOutcomes = frame["unknownToolOutcomes"].flag == true
-            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold"]]); return
+            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold","run-continue"]]); return
         }
         let id=frame["commandId"].text ?? ""
         guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }
@@ -294,7 +294,9 @@ public actor NativeHostService {
         case "workspace.quiesce":
             quiesced=true
             for s in sessions.values { await s.cancelHistoryFill() }
-            for s in sessions.values { let idle=await s.isIdle, ephemeral=await s.isEphemeral; if !idle || ephemeral { quiesced=false; throw AgentError("session_busy", "A run is active; stop it before updating") } }
+            // A chat whose work is held for Resume is restored paused after
+            // the relaunch; nothing sends it while the workspace is quiesced.
+            for s in sessions.values { let idle=await s.isIdle, held=await s.isHeldForResume, ephemeral=await s.isEphemeral; if !(idle || held) || ephemeral { quiesced=false; throw AgentError("session_busy", "A run is active; stop it before updating") } }
             return ["quiesced":true]
         case "workspace.resume": quiesced=false; return ["resumed":true]
         case "resources.configure":
@@ -517,6 +519,7 @@ public actor NativeHostService {
         case "queue.steer": try await session.steerQueued(required(params["turnId"],"turn id")); return ["accepted":true]
         case "queue.resume": try await session.resumeQueue(); return ["accepted":true]
         case "turn.retry": try await session.retryRun(overrides: params); return ["accepted":true]
+        case "run.continue": return try await session.continueRun(commandID: commandID, overrides: params)
         case "queue.configure": try await session.configureQueue(params); return ["accepted":true]
         case "context.compact": try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true]
         case "mcp.invoke":

@@ -141,6 +141,9 @@ extension AgentSession {
     }
     func deliver(_ submission: Submission, lane: String = "follow-up", newTask: Bool = true) async throws {
         let turn = try profile.overriding(submission)
+        // Steering delivered at a Resume's start takes the run over: the
+        // continuation's command is done, its receipt says so.
+        if let resumed=activeSubmission, resumed.turnID.hasPrefix(Self.continuePrefix), resumed.turnID != submission.turnID { commandState(resumed,"completed") }
         // A new task is a new turn, also when a queued follow-up starts inside
         // a run that is already going: its clock and model/tool split start
         // now, not when the run's first task did.

@@ -6,7 +6,7 @@ import Foundation
 extension AgentSession {
     func launch(compactOnly: Bool = false) {
         presentationUtility = compactOnly || titleTask
-        if retrying, let root = taskRootID {
+        if retrying || continuing, let root = taskRootID {
             beginPresentedTask(root)
             activeTaskPresentation?.activeInputID = currentTurnID.isEmpty ? root : currentTurnID
             activeTaskPresentation?.anchorSourceID = visible.last?.id ?? root
@@ -117,13 +117,19 @@ extension AgentSession {
             else {
                 // Deliver the next eligible input before sizing the pending request.
                 var startedFollowUp=false
-                if steering.isEmpty, !retrying {
+                if steering.isEmpty, !retrying, !continuing {
                     // A follow-up that cannot be answered stays queued, paused.
                     if !queue.isEmpty, queueEdit == nil { try enforceCostLimit() }
                     startedFollowUp=try await startFollowUp()
                 }
                 let retryFirstRequest=retrying
                 retrying=false
+                // A Resume asks the model from the context as it stands. Unlike
+                // a retry, the request is a new one: steering waiting at its
+                // start is delivered first (pi's loop polls it before the first
+                // request), and the context may be compacted before it.
+                let continued=continuing
+                continuing=false
                 // Pi's _overflowRecoveryAttempted: one compact-and-retry until a
                 // user message arrives or a reply completes.
                 var overflowRecoveryAttempted=retryFirstRequest && contextRecovery["consumed"].flag == true
@@ -142,7 +148,7 @@ extension AgentSession {
                     // A run started for pending input that delivered none (a
                     // queued edit took the hold first, or the message left)
                     // settles without asking the model about the old context.
-                    if rounds == 1, !retryFirstRequest, !startedFollowUp, !drained { break }
+                    if rounds == 1, !retryFirstRequest, !continued, !startedFollowUp, !drained { break }
                     let resourceSnapshot: ResourceSnapshot
                     if let appliedSnapshot { resourceSnapshot=appliedSnapshot }
                     else { resourceSnapshot=try await resources.resolve(); appliedSnapshot=resourceSnapshot }
@@ -288,7 +294,9 @@ extension AgentSession {
         await flushRequestLinks()
         if partialID != nil { invalidateDisplay() }
         modelActive=false; partialID=nil; partialText=""; partialThinking=""; resetPartialRow(); end=nowMS(); runTask=nil
-        retrySubmission = runStatus == .idle ? nil : activeSubmission; activeSubmission=nil
+        // A Retry after a failed Resume answers the turn it continued, never
+        // the continuation's own receipt.
+        retrySubmission = runStatus == .idle || activeSubmission?.turnID.hasPrefix(Self.continuePrefix) == true ? nil : activeSubmission; activeSubmission=nil
         if let pending=pendingConfiguration { apply(profile:pending.profile, apiKey:pending.apiKey) }
         // A reply the journal refused has its log set aside before the run
         // is saved as settled: a reopen of a settled run removes the log.

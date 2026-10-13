@@ -256,20 +256,38 @@ struct TranscriptVersionView: Equatable, Sendable {
                     : (footer.cost.limit.usd == nil ? "This chat has no limit now." : "The limit is now \(footer.cost.limit.label).")
                         + " Continue picks up where the run stopped" + (paused ? "; queued follow-ups go on after it." : ".")
             }
+            // A run cut off by a restart, read from the journal before its
+            // helper has the chat: Resume goes on with it.
+            if runState == .interrupted && failureCode == nil && continuable != false && !resuming { row.failureCode = Self.interruptedCode; row.detail = Self.resumeDetail(paused) }
             rows.append(row)
-        } else if let sendFailure {
-            var row = TranscriptMessage(id: "failure:send:" + id, role: "system", text: sendFailure, kind: "failure")
-            if sendFailureCode == Self.costLimitCode {
-                row.failureCode = Self.costLimitCode
-                row.detail = "Your message is back in the composer. Raise the limit, then send it again."
+        } else {
+            if offersResume {
+                // Stopped, or paused by a quit or an update: one row says so
+                // where the run stopped, with Resume.
+                var row = TranscriptMessage(id: "paused:run:" + id, role: "system", text: Self.pausedText, kind: "failure",
+                                            detail: Self.resumeDetail(queuePaused && !queue.isEmpty))
+                row.failureCode = Self.pausedCode
+                rows.append(row)
             }
-            rows.append(row)
+            if let sendFailure {
+                var row = TranscriptMessage(id: "failure:send:" + id, role: "system", text: sendFailure, kind: "failure")
+                if sendFailureCode == Self.costLimitCode {
+                    row.failureCode = Self.costLimitCode
+                    row.detail = "Your message is back in the composer. Raise the limit, then send it again."
+                }
+                rows.append(row)
+            }
         }
         return rows
     }
     /// The helper's code for a run stopped, or a message refused, at the
     /// chat's cost limit; and the notice's state once the limit is raised.
     nonisolated static let costLimitCode = "cost_limit", costLimitRaised = "cost_limit_raised"
+    /// The row of a run stopped before it finished, which offers Resume; and
+    /// the failure row's code for a run a restart cut off, which offers it too.
+    nonisolated static let pausedCode = "run_paused", interruptedCode = "run_interrupted"
+    nonisolated static let pausedText = "The run stopped before it finished. Resume picks up from here; a tool call that was cut off is not run again, and the model sees how it ended."
+    nonisolated static func resumeDetail(_ queued: Bool) -> String? { queued ? "Queued follow-ups go on after it." : nil }
     /// Whether the chat's reported spend is still at its limit, as the stop
     /// notice last read it: it offers Raise limit… until it is not.
     private(set) var costLimitHeld = true
@@ -387,6 +405,20 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// records are shown read-only and Recover Copy is offered instead of the composer.
     @Published var damagedTail = false
     var canResumeQueue: Bool { !busy && (!queue.isEmpty || queuePaused || runState.holdsQueue) }
+    /// Whether the helper would run the model on Resume (`run.continue`): the
+    /// chat's context ends with something the model has not answered — a user
+    /// message, or tool results a stop cut off. Nil until a snapshot says
+    /// (a chat read only from its journal, or whose helper stopped for an
+    /// update): Resume is offered, and the helper decides.
+    @Published var continuable: Bool? { didSet { if continuable != oldValue { publishTranscript() } } }
+    /// A Resume of this chat is on its way to the helper: the row's Resume and
+    /// the menu's are off until it is answered, so a double click sends one.
+    @Published var resuming = false { didSet { if resuming != oldValue { publishTranscript() } } }
+    /// The chat's run stopped before it finished (Stop, a quit, a restart or
+    /// an update paused it) and Resume would go on with it.
+    var offersResume: Bool {
+        !busy && !loading && !resuming && runState.holdsQueue && continuable != false && queueEditHold == nil
+    }
     func observeRunState(_ snapshot: [String: WireValue]) {
         let rawState = snapshot["state"]?.string ?? "idle", run = snapshot["runStatus"]?.string ?? rawState
         // Older helpers reported failed runs as paused. Keep the run's outcome
@@ -396,6 +428,9 @@ struct TranscriptVersionView: Equatable, Sendable {
         if runStatus != run { runStatus = run }
         let paused = snapshot["queuePaused"]?.bool ?? RunState(rawValue: rawState).holdsQueue
         if queuePaused != paused { queuePaused = paused }
+        // A helper before 0.1.125 does not say; Resume then stays offered.
+        let continues = snapshot["continuable"]?.bool
+        if continuable != continues { continuable = continues }
         let detail = snapshot["preflightError"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
         let failure = RunState(rawValue: nextState) == .error ? (detail?.isEmpty == false ? detail : "Run failed.") : nil
         let code = failure == nil ? nil : snapshot["errorCode"]?.string
@@ -743,6 +778,8 @@ struct TranscriptVersionView: Equatable, Sendable {
     }
     var busy: Bool { runState.isBusy }
     var hasWork: Bool { busy || queueCount > 0 }
+    /// Work that runs without the reader: a run, or follow-ups not held for Resume.
+    var hasActiveWork: Bool { busy || (queueCount > 0 && !queuePaused) }
 }
 
 extension SessionDisplay {

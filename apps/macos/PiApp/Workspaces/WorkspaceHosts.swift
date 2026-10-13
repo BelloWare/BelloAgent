@@ -44,6 +44,7 @@ extension WorkspaceModel {
             // A helper stopped for being idle has not crashed: nothing was
             // running, and what the footers show is still what the chats hold.
             let retired = self.retiringHosts.remove(ObjectIdentifier(host)) != nil
+            let paused = self.pausingHosts.remove(ObjectIdentifier(host)) != nil
             self.boundHostConnections.removeValue(forKey: workspace.id)
             self.liveActivity.disconnect(workspace.id)
             self.discardLostSides(workspaceID: workspace.id)
@@ -61,6 +62,7 @@ extension WorkspaceModel {
                 // sent any more; its record says the outcome is uncertain. A
                 // send still waiting for its answer settles that itself.
                 if !retired, let view = self.displays[chat.id], !view.loading { view.dropAllSending() }
+                if paused, let view = self.displays[chat.id] { self.settlePausedForUpdate(view); continue }
                 if let view = self.displays[chat.id], view.hasWork, view.runState != .error { view.runState = .interrupted; view.runStatus = "interrupted"; view.queueCount = 0; view.uncertain = true; view.notice = "Host interrupted. Outcome uncertain. No command was replayed."; view.settleInterruptedRows() }
             }
         }
@@ -78,7 +80,7 @@ extension WorkspaceModel {
         })
         // The previous helper has exited by now, or never had a process to
         // exit: a stop that marked it retired no longer describes this one.
-        retiringHosts.remove(ObjectIdentifier(host))
+        retiringHosts.remove(ObjectIdentifier(host)); pausingHosts.remove(ObjectIdentifier(host))
         try Task.checkCancellation()
         let connection = host.connectionID
         // "cwd" remains for hosts that predate multi-folder roots; "roots" lists every trusted folder, primary first.

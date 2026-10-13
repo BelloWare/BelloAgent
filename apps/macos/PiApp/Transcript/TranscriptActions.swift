@@ -8,6 +8,8 @@ struct TranscriptActions {
     var stop: () -> Void = {}
     /// Runs the failed turn again from where it stopped.
     var retry: () -> Void = {}
+    /// Goes on with a run that stopped before it finished (`run.continue`).
+    var resume: () -> Void = {}
     /// Nil for panes that cannot create a child conversation. Rows never
     /// call it; the page's selection controller does (`forwarding`).
     var quoteReply: ((TranscriptQuote) -> Void)? = nil
@@ -64,6 +66,7 @@ extension TranscriptActions {
             copyMessage: { source()?.copyMessage($0) },
             stop: { source()?.stop() },
             retry: { source()?.retry() },
+            resume: { source()?.resume() },
             inspectTurn: { source()?.inspectTurn?($0) },
             skillPressed: { source()?.skillPressed?($0, $1, $2) },
             skillHovered: { source()?.skillHovered?($0, $1, $2, $3) },

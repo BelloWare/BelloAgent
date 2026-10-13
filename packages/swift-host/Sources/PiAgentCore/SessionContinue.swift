@@ -1,0 +1,85 @@
+import Foundation
+
+// Resume: the run a Stop, a quit, a restart or an update cut off goes on
+// from the chat's history as it stands, with no new user message. This is
+// pi 0.85.1's continue (agent.ts `continue`, agent-loop `agentLoopContinue`):
+// the model is asked again from the context; a context that ends with an
+// assistant reply has nothing to continue, and only then do pending steering
+// and follow-ups go instead, as a prompt would send them.
+//
+// The no-replay rule stays: nothing here runs a tool. A call that was cut
+// off already has its result in the context (cancelled before it ran, or
+// interrupted with its effects unknown), and the model reads that and
+// decides. A reply cut off mid-stream is kept as its interrupted row, which
+// is never sent again (`replayEligible` is false); the continuation is a new
+// assistant turn after it.
+
+extension AgentSession {
+    /// The receipt key a continuation's command is kept under. It never names
+    /// a user turn, so a continuation's receipt cannot replace a message's.
+    static let continuePrefix = "continue:"
+
+    /// The last message a request would carry: what a continuation answers.
+    var continuationTail: ChatMessage? {
+        context.last { $0.replayEligible && !requestExclusions.contains($0.id) }
+    }
+    /// Whether `run.continue` would run the model now: nothing is running,
+    /// no queued edit holds the chat, and the context ends with something the
+    /// model has not answered — a user message, or tool results (cut-off
+    /// ones included). The snapshot says so, and the app offers Resume.
+    var canContinue: Bool {
+        guard runTask == nil, !closed, queueEdit == nil, !titleTask, !isConnectionTest, let tail = continuationTail else { return false }
+        return tail.role == "user" || tail.role == "toolResult"
+    }
+
+    /// `run.continue`. `overrides` are the chat's current choices (model,
+    /// thinkingLevel, contextWindow, maxOutputTokens, modelOutputLimit, input),
+    /// as for a send or a retry; absent keys mean the connection's defaults.
+    ///
+    /// Idempotent by `commandID`: the receipt is saved with the run state
+    /// before the run starts, so the same command sent again — a reply lost
+    /// to a helper that then restarted — finds it and runs nothing. A second
+    /// Resume with a new identity while this one runs is refused as busy.
+    public func continueRun(commandID: String, overrides: JSON = [:]) throws -> JSON {
+        guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
+        let receiptKey = Self.continuePrefix + commandID
+        if let receipt = commands.last(where: { $0["commandId"].text == commandID }) {
+            guard receipt["turnId"].text == receiptKey else { throw AgentError("command_conflict", "Command identity already used for another command") }
+            return ["accepted": true, "duplicate": true, "continued": true, "state": receipt["state"]]
+        }
+        guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
+        guard queueEdit == nil else { throw Self.editHeldError }
+        guard !titleTask, !isConnectionTest, let tail = continuationTail else {
+            throw AgentError(AgentErrorCode.nothingToContinue, "There is nothing to resume; send a new message instead")
+        }
+        if tail.role == "assistant" {
+            // Pi: from an answered context, continue sends what waits instead.
+            guard !queue.isEmpty || !steering.isEmpty else {
+                throw AgentError(AgentErrorCode.nothingToContinue, "There is nothing to resume; send a new message instead")
+            }
+            try resumeQueue()
+            return ["accepted": true, "continued": false, "resumedQueue": true]
+        }
+        guard tail.role == "user" || tail.role == "toolResult" else {
+            throw AgentError(AgentErrorCode.nothingToContinue, "There is nothing to resume; send a new message instead")
+        }
+        var submission = Submission(commandID: commandID, turnID: receiptKey, text: "")
+        submission.model = overrides["model"].text; submission.thinkingLevel = overrides["thinkingLevel"].text
+        submission.contextWindow = overrides["contextWindow"].int; submission.maxOutputTokens = overrides["maxOutputTokens"].int
+        submission.modelOutputLimit = overrides["modelOutputLimit"].int; submission.input = try NativeHostService.turnInput(overrides["input"])
+        _ = try profile.overriding(submission)
+        // The continuation's rows belong to the turn they continue.
+        let previous = (turn: currentTurnID, paused: queuePaused, message: errorMessage, code: errorCode)
+        if let turn = context.last(where: { $0.role == "user" })?.id { currentTurnID = turn }
+        activeSubmission = submission; continuing = true; queuePaused = false; errorMessage = nil; errorCode = nil
+        commandState(submission, "queued")
+        do { try persistState() } catch {
+            commands.removeAll { $0["turnId"].text == receiptKey }
+            activeSubmission = nil; continuing = false
+            currentTurnID = previous.turn; queuePaused = previous.paused; errorMessage = previous.message; errorCode = previous.code
+            throw error
+        }
+        launch()
+        return ["accepted": true, "continued": true]
+    }
+}

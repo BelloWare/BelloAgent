@@ -60,6 +60,8 @@ import Combine
         updates.prepareForInstall = { [weak model] in try await model?.prepareForInstall() }
         updates.releaseBarrier = { [weak model] in model?.releaseUpdateBarrier() }
         updates.reportFailure = { [weak model] in model?.error = $0 }
+        updates.pauseActiveWork = { [weak model] in try await model?.pauseRunsForUpdate() }
+        updates.runningChats = { [weak model] in model?.runningChatCount ?? 0 }
         observer = ShellObserver { [weak self] in self?.configurationChanged() }
         observer.observe(model)
     }

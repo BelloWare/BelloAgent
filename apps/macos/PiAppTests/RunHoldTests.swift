@@ -80,6 +80,49 @@ final class RunHoldTests: XCTestCase {
         XCTAssertEqual(RunHoldRecord(id: "c", state: "active").presented, "paused", "a run under way when the app quit was stopped by the quit")
     }
 
+    /// Resume (0.1.125) is offered where the run stopped: a paused chat the
+    /// helper can continue (or whose helper has not said, as after a
+    /// restart) ends with the Paused row; one with nothing to continue, one
+    /// running, or one whose Resume is on its way does not. A run a restart
+    /// cut off, read from the journal, offers Resume on its failure row.
+    @MainActor func testAPausedChatOffersResumeWhereItStopped() {
+        let view = SessionDisplay(id: "c")
+        view.observeRunState(["state": .string("paused"), "runStatus": .string("cancelled"), "queuePaused": .bool(true), "continuable": .bool(true)])
+        XCTAssertTrue(view.offersResume)
+        XCTAssertEqual(view.presentedMessages.last?.id, "paused:run:c")
+        XCTAssertEqual(view.presentedMessages.last?.failureCode, SessionDisplay.pausedCode)
+        XCTAssertNil(view.presentedMessages.last?.detail)
+        view.queue = [["turnId": .string("t")]]
+        XCTAssertEqual(view.presentedMessages.last?.detail, "Queued follow-ups go on after it.")
+        view.resuming = true
+        XCTAssertFalse(view.offersResume); XCTAssertNil(view.presentedMessages.last { $0.id == "paused:run:c" }, "one Resume at a time")
+        view.resuming = false
+        view.observeRunState(["state": .string("paused"), "runStatus": .string("cancelled"), "queuePaused": .bool(true), "continuable": .bool(false)])
+        XCTAssertFalse(view.offersResume, "nothing the model has not answered: the queue's Resume is the one")
+        view.observeRunState(["state": .string("running"), "runStatus": .string("running"), "continuable": .bool(false)])
+        XCTAssertFalse(view.offersResume)
+        // An older helper says nothing: Resume stays offered for a paused chat.
+        view.observeRunState(["state": .string("paused"), "runStatus": .string("cancelled"), "queuePaused": .bool(true)])
+        XCTAssertNil(view.continuable); XCTAssertTrue(view.offersResume)
+
+        let cut = SessionDisplay(id: "d")
+        cut.runState = .interrupted; cut.failureMessage = "The previous run was interrupted before it finished."
+        XCTAssertEqual(cut.presentedMessages.last?.id, "failure:run:d")
+        XCTAssertEqual(cut.presentedMessages.last?.failureCode, SessionDisplay.interruptedCode)
+    }
+
+    /// Work held for Resume does not hold a quit or an update; a run does,
+    /// and so do follow-ups about to go.
+    @MainActor func testOnlyWorkThatRunsWithoutTheReaderIsActive() {
+        let view = SessionDisplay(id: "c")
+        view.queueCount = 1; view.queuePaused = true
+        XCTAssertTrue(view.hasWork); XCTAssertFalse(view.hasActiveWork, "paused follow-ups wait in the journal")
+        view.queuePaused = false
+        XCTAssertTrue(view.hasActiveWork, "follow-ups about to go")
+        view.queueCount = 0; view.runState = .running
+        XCTAssertTrue(view.hasActiveWork)
+    }
+
     @MainActor private func model(root: URL) async throws -> WorkspaceModel {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
