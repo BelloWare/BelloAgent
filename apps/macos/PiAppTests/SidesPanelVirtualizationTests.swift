@@ -3,6 +3,31 @@ import XCTest
 @testable import PiApp
 
 @MainActor final class SidesPanelVirtualizationTests: XCTestCase {
+    func testPinnedPanelWithoutAChatShowsOnlyTheEmptyStateFromItsFirstLayout() throws {
+        let root = scratchRoot("sides-panel-empty-visibility")
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        model.chats = [ChatRecord(id: "parent", workspaceID: "project", title: "Parent", path: nil, profileID: "fixture")]
+        let panel = SidesPanelView(model: model, parentID: nil, pinned: true)
+        panel.frame = CGRect(x: 0, y: 0, width: 260, height: 450)
+        panel.layoutSubtreeIfNeeded()
+        let empty = try XCTUnwrap(InspectorExpandFixture.descendants(PiKit.TextLine.self, in: panel)
+            .first { $0.line.text == "Open a chat to see its sides." })
+        XCTAssertFalse(empty.isHiddenOrHasHiddenAncestor)
+        XCTAssertGreaterThan(empty.frame.height, 0)
+        XCTAssertTrue(panel.newSide.isHiddenOrHasHiddenAncestor, "The first empty update must hide New side")
+
+        panel.parentID = "parent"
+        panel.layoutSubtreeIfNeeded()
+        XCTAssertTrue(empty.isHiddenOrHasHiddenAncestor)
+        XCTAssertFalse(panel.newSide.isHiddenOrHasHiddenAncestor)
+
+        panel.parentID = nil
+        panel.layoutSubtreeIfNeeded()
+        XCTAssertFalse(empty.isHiddenOrHasHiddenAncestor)
+        XCTAssertTrue(panel.newSide.isHiddenOrHasHiddenAncestor)
+    }
+
     func testALargeSideListMountsOnlyNearbyRowsAndKeepsEverySideReachable() async throws {
         let root = scratchRoot("sides-panel-virtualization")
         let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

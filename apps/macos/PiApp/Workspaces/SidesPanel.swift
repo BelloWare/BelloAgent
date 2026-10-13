@@ -575,6 +575,7 @@ struct SidesPanelActivity: Equatable {
         measuring = SidesPanelRowView(model: model, glide: PiKit.SelectionGlide())
         super.init(frame: .zero)
         addSubview(newSide); addSubview(empty)
+        newSide.isHidden = true; empty.isHidden = false
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
