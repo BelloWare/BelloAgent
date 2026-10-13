@@ -28,7 +28,17 @@ actor FileSyntaxReader {
     private struct Pass { let from: Int; let to: Int; let task: Task<Bool, Never> }
     private var passes: [Int: Pass] = [:], passTickets = 0
     /// Test seams: lines coloured, chunks read, and the most scalars one lex was given.
+    private(set) var colourCount = 0
+    #if DEBUG
     private(set) var colouredLines = Set<Int>()
+    #endif
+    var retainedDiagnosticLines: Int {
+        #if DEBUG
+        colouredLines.count
+        #else
+        0
+        #endif
+    }
     private(set) var chunkLoads = 0
     private(set) var largestLexInput = 0
 
@@ -113,7 +123,11 @@ actor FileSyntaxReader {
         guard let state = await state(atLine: line, language: language, load: load), !stop.isStopped else { return [] }
         let tokens = SyntaxHighlighter.resume(text, language: language, state: state).tokens
         if final, known(line + 1) == nil { remember(line + 1, SyntaxHighlighter.resume(text + "\n", language: language, state: state, collect: false).state) }
+        colourCount &+= 1
+        #if DEBUG
+        if colouredLines.count >= 256 { colouredLines.removeAll(keepingCapacity: true) }
         colouredLines.insert(line)
+        #endif
         var offsets = [0]
         for scalar in text.unicodeScalars { offsets.append(offsets.last! + (scalar.value > 0xffff ? 2 : 1)) }
         return tokens.map { Ink(range: offsets[$0.range.lowerBound]..<offsets[$0.range.upperBound], kind: $0.kind) }
@@ -129,7 +143,9 @@ actor FileSyntaxReader {
     private(set) var reader = FileSyntaxReader()
     private var generation: Int
     private var pending = Set<Int>()
-    private var cache: [Int: (text: String, ink: [FileSyntaxReader.Ink])] = [:]
+    private struct Cached { let ink: [FileSyntaxReader.Ink]; var used: Int }
+    private var cache: [Int: Cached] = [:]
+    private var clock = 0
     private weak var view: FileTextView?
     /// The most text one read for lexical state asks for, in UTF-16 units.
     static let chunkUnits = 64 << 10
@@ -142,7 +158,9 @@ actor FileSyntaxReader {
 
     func colors(line: Int, piece: Range<Int>, text: String) -> [FileTextColorRun] {
         if generation != source.generation { generation = source.generation; reader.cancel(); reader = FileSyntaxReader(); cache = [:]; pending = [] }
-        if let cached = cache[line] {
+        clock &+= 1
+        if var cached = cache[line] {
+            cached.used = clock; cache[line] = cached
             return cached.ink.compactMap { token in
                 let low = max(token.range.lowerBound, piece.lowerBound), high = min(token.range.upperBound, piece.upperBound)
                 guard high > low else { return nil }
@@ -173,8 +191,15 @@ actor FileSyntaxReader {
             let ink = await reader.tokens(line: line, text: whole, final: final, language: language, load: load)
             guard let self, self.source.generation == asked else { return }
             self.pending.remove(line)
-            if self.cache.count >= 256, let oldest = self.cache.keys.min() { self.cache[oldest] = nil }
-            self.cache[line] = (whole, ink)
+            self.clock &+= 1
+            self.cache[line] = Cached(ink: ink, used: self.clock)
+            let visible = self.view?.visibleLines
+            // Late offscreen ink never displaces the current viewport. The
+            // rest is evicted by use, independent of scrolling direction.
+            while self.cache.count > 256,
+                  let oldest = self.cache.filter({ visible?.contains($0.key) != true }).min(by: { $0.value.used < $1.value.used })?.key {
+                self.cache[oldest] = nil
+            }
             self.view?.invalidateSyntax(inLine: line)
         }
         return []

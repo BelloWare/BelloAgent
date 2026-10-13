@@ -12,6 +12,23 @@ import ApplicationServices
 /// Mac text view; copy; and the text VoiceOver reads, asked for through the
 /// accessibility interface VoiceOver itself uses.
 final class FileTextViewTests: XCTestCase {
+    @MainActor func testOffscreenSyntaxArrivalDoesNotDirtyTheVisibleText() {
+        let fixture = fixture(GeneratedLines(2_000)), view = fixture.text
+        fixture.scroll.contentView.scroll(to: NSPoint(x: 0, y: view.top(ofLine: 1_000)))
+        fixture.draw()
+        view.needsDisplay = false
+        FileTextRenderCount.reset()
+        for line in 0..<100 { view.invalidateSyntax(inLine: line) }
+        XCTAssertFalse(view.needsDisplay, "100 offscreen completions must produce zero visible invalidations")
+        XCTAssertEqual(FileTextRenderCount.syntaxInvalidations, 0)
+        let line = view.visibleLines.lowerBound + 2
+        view.invalidateSyntax(inLine: line)
+        let dirty = NSRect(x: view.visibleRect.minX, y: view.top(ofLine: line), width: view.visibleRect.width, height: view.lineHeight)
+        XCTAssertTrue(view.needsDisplay)
+        XCTAssertEqual(FileTextRenderCount.syntaxInvalidations, 1)
+        XCTAssertEqual(FileTextRenderCount.syntaxInvalidatedArea, dirty.width * dirty.height, accuracy: 1,
+                       "a visible arrival dirties its own line only")
+    }
 
     // MARK: Sources
 

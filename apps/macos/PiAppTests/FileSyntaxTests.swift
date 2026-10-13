@@ -4,6 +4,62 @@ import XCTest
 @testable import PiApp
 
 final class FileSyntaxTests: XCTestCase {
+    @MainActor func testScrollingUpKeepsTheNewViewportColouredWithoutRelexing() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("syntax-lru-\(UUID().uuidString).swift")
+        try String(repeating: "let value = 1\n", count: 1_400).write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let document = FileView.FileDocument(url: url)
+        defer { document.close() }
+        let scroll = FileTextScrollView(frame: NSRect(x: 0, y: 0, width: 400, height: 340))
+        let window = NSWindow(contentRect: scroll.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = scroll
+        defer { window.contentView = nil; window.close() }
+        let view = scroll.textView
+        let syntax = try XCTUnwrap(FileSyntax(source: document, view: view, extension: "swift"))
+        try await waitForSyntax { document.status == .ready }
+        view.show(document, name: "fixture.swift")
+        scroll.layoutSubtreeIfNeeded()
+        func colour(_ line: Int) -> Bool {
+            !syntax.colors(line: line, piece: 0..<13, text: "").isEmpty
+        }
+        for line in 1_000..<1_256 { try await waitForSyntax { colour(line) } }
+        scroll.contentView.scroll(to: NSPoint(x: 0, y: view.top(ofLine: 100)))
+        let visible = view.visibleLines
+        XCTAssertGreaterThan(visible.count, 2)
+        XCTAssertGreaterThanOrEqual(visible.lowerBound, 100)
+        for line in visible { try await waitForSyntax { colour(line) } }
+        let before = await syntax.reader.colourCount
+        let hits = visible.filter { colour($0) }.count
+        print("FILE_SYNTAX upward cache hits=\(hits)/\(visible.count)")
+        XCTAssertEqual(hits, visible.count, "every newly coloured visible line must survive the full cache")
+        // A late offscreen completion also cannot evict the screen's ink.
+        try await waitForSyntax { colour(1_300) }
+        XCTAssertTrue(visible.allSatisfy { colour($0) })
+        let after = await syntax.reader.colourCount
+        XCTAssertEqual(after, before + 1, "only the late offscreen line was lexed, not the revisited viewport")
+    }
+
+    func testSyntaxDiagnosticsDoNotRetainEveryVisitedLine() async {
+        let reader = FileSyntaxReader()
+        for line in 0..<100_000 {
+            _ = await reader.tokens(line: line, text: "let a = 1", language: .swift, load: { _ in nil })
+        }
+        let count = await reader.colourCount, retained = await reader.retainedDiagnosticLines
+        print("FILE_SYNTAX diagnostic count=\(count) retained line IDs=\(retained)")
+        XCTAssertEqual(count, 100_000)
+        #if DEBUG
+        XCTAssertLessThanOrEqual(retained, 256, "even debug sampling is bounded")
+        #else
+        XCTAssertEqual(retained, 0, "production diagnostics are a counter, with no visited-line identities")
+        #endif
+    }
+
+    @MainActor private func waitForSyntax(_ ready: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(10)
+        while !ready(), ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertTrue(ready(), "syntax fixture did not finish")
+    }
+
     func testResumingKeepsNestedCommentsAndMultilineStringsAcrossLines() {
         var state = SyntaxHighlighter.State()
         func read(_ line: String) -> [SyntaxHighlighter.TokenKind] {
@@ -58,8 +114,8 @@ final class FileSyntaxTests: XCTestCase {
         XCTAssertEqual(ink.first?.kind, .keyword)
         XCTAssertEqual(ink.first?.range, 3..<6, "colours address UTF-16 after a surrogate pair")
         XCTAssertTrue(lines.loads.allSatisfy { $0.units <= 64 })
-        let coloured = await reader.colouredLines
-        XCTAssertEqual(coloured, [270], "prefix work produces states, not colours")
+        let coloured = await reader.colourCount
+        XCTAssertEqual(coloured, 1, "prefix work produces states, not colours")
         let before = lines.loads.count
         _ = await reader.tokens(line: 271, text: "let next = 2", language: .swift, load: lines.load)
         XCTAssertEqual(lines.loads.count, before, "the line below starts where the coloured one ended")
