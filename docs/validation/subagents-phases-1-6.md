@@ -56,3 +56,21 @@ No UI was exposed. Later phases add execution and read-only child controls.
   with the picker's connection-plus-descriptor rule (`phase3-app-final.log`).
 - Logs: `$PI_BUILD_ROOT/logs/phase3-{red-helper,helper-final,app}.log` and
   `phase3-mutation-*.log`. The feature remains hidden.
+
+## Phase 4 — parent journal accounting
+
+- Replaced the 512-entry memory-only dedup guard with a durable attempt index.
+  Existing cost records remain readable; registered corrections replace charges;
+  admission-only records count unknown; fork reset clears authority and spend.
+- Added cached usage rollups and accounting revision, checkpoint/replay and
+  slimming equivalence. Accounting write failures block new requests.
+- Failing first: redelivery after reopening charged $1.50 instead of $0.75.
+- Helper classes: `SubagentAccountingTests`, `CostLimitTests`,
+  `JournalCheckpointTests`, `JournalSlimmingTests`: 31 passed after restoration.
+- Mutations: dropping the checkpoint index doubles a charge; bypassing the
+  accounting-failure guard admits after a failed write. Both failed behaviorally,
+  then were restored. An earlier mutation run hit a fixture compilation error;
+  it is not counted as mutation evidence.
+- App classes: `CostLimitTests`, `SessionAccountingCacheTests`, parallel lane:
+  18 passed, invoked with a bash array. Logs: `$PI_BUILD_ROOT/logs/phase4-{red-helper,helper-final,app}.log`
+  and `phase4-mutation-*.log`.

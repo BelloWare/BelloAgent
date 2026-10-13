@@ -270,7 +270,7 @@ enum JournalSlimming {
         if rows(lhs.context) != rows(rhs.context) { return "context" }
         if lhs.versions.ledger != rhs.versions.ledger || lhs.versions.timelines != rhs.versions.timelines { return "versions" }
         if lhs.versions.starts.mapValues({ [$0.timeline, $0.offset] }) != rhs.versions.starts.mapValues({ [$0.timeline, $0.offset] }) { return "versions" }
-        if lhs.subagents != rhs.subagents { return "subagents" }
+        if lhs.subagents != rhs.subagents || lhs.accounting != rhs.accounting { return "subagents" }
         if lhs.spend != rhs.spend || lhs.spendTracked != rhs.spendTracked { return "spend" }
         if lhs.assistantMessageCount != rhs.assistantMessageCount || lhs.latestAssistantMessageID != rhs.latestAssistantMessageID { return "replies" }
         if lhs.pendingRequestLinks != rhs.pendingRequestLinks { return "request-links" }

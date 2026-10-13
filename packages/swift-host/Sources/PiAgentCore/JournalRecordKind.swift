@@ -12,6 +12,8 @@ enum JournalRecordKind {
     static let marker = "pi-app.native.v1"
     static let childMarker = "pi-app.native.v2"
     static func isMarker(_ value: String?) -> Bool { value == marker || value == childMarker }
+    static let budgetAttempt = "pi-app.budget-attempt.v1"
+    static let costUpdate = "pi-app.cost-update.v1"
     static let subagentCall = "pi-app.subagent-call.v1"
     static let subagentOrigin = "pi-app.subagent-origin.v1"
     static let subagentState = "pi-app.subagent-state.v1"

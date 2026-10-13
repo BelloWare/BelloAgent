@@ -300,12 +300,13 @@ final class CostLimitTests: XCTestCase {
         XCTAssertEqual(requests, 3, "Unreported attempts cannot reach a limit"); XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
         assertSpend(state, usd: 0.001, reported: 1, unreported: 2)
         // A zero the gateway reported is a reported zero, not an unknown.
-        var observation = RequestObservation(sessionID: "x", turnID: "t", attemptID: "zero", purpose: "turn", fingerprint: "f", profile: try fixtureProfile())
+        let source = await s.id
+        var observation = RequestObservation(sessionID: source, turnID: "t", attemptID: "zero", purpose: "turn", fingerprint: "f", profile: try fixtureProfile())
         observation.monitoring = ["gateway": ["cost": ["status": "reported", "usd": 0]], "outcome": "completed"]
         await s.countAttempt(observation)
         // A conflicting or invalid report is no amount either.
         for status in ["conflict", "invalid"] {
-            var other = RequestObservation(sessionID: "x", turnID: "t", attemptID: status, purpose: "turn", fingerprint: "f", profile: try fixtureProfile())
+            var other = RequestObservation(sessionID: source, turnID: "t", attemptID: status, purpose: "turn", fingerprint: "f", profile: try fixtureProfile())
             other.monitoring = ["gateway": ["cost": ["status": JSON(status), "usd": .null]], "outcome": "completed"]
             await s.countAttempt(other)
         }

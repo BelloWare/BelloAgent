@@ -90,7 +90,8 @@ public actor AgentSession {
     var subagents = SubagentJournalState()
     var subagentModelGrants: [SubagentModelGrant] = []
     var turnSubagentModels: [SubagentModelGrant] = []
-    var countedAttempts = BoundedIdentitySet(limit: 512)
+    var accounting = AttemptAccounting()
+    var accountingFailure: AgentError?
     /// Whether this journal records every attempt's cost from its start: a
     /// new chat does, and so does one with a cost record. A chat written
     /// before cost records existed takes its earlier spend from the app once.
@@ -324,7 +325,7 @@ public actor AgentSession {
         else { consumer=try Self.replayConsumer(opened, url: url, id: id, binding: profile.binding, spendTracked: resumePath == nil, resume: true) }
         let replayed=try consumer.finished(); durable=consumer
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
-        spend=replayed.spend; spendTracked=replayed.spendTracked; subagents=replayed.subagents
+        spend=replayed.spend; spendTracked=replayed.spendTracked; accounting=replayed.accounting; subagents=replayed.subagents
         guard (opened.markerKind == JournalRecordKind.childMarker) == (subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
