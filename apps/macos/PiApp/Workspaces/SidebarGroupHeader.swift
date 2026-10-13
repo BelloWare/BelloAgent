@@ -288,6 +288,18 @@ enum ProjectSidebarActions {
             PiMenuEntry.button("Changes and History…", systemImage: "arrow.triangle.branch", enabled: state.available,
                                identifier: "projectChangesAction-" + state.projectID) { model.showChanges(in: state.projectID) }
         }
+        if !state.scratch {
+            // How the project lists its chats: in topic folders, or flat,
+            // newest first with each topic as a tag. Kept with the project.
+            let flat = model.projectListsFlat(state.projectID)
+            PiMenuEntry.divider
+            PiMenuEntry.note("Show Chats")
+            PiMenuEntry.button("Topics", systemImage: "folder", checked: !flat, identifier: "projectTopicView-topics-" + state.projectID,
+                               help: "Group this project's chats in topic folders") { model.setProjectListsFlat(state.projectID, flat: false) }
+            PiMenuEntry.button("Flat", systemImage: "list.bullet", checked: flat, identifier: "projectTopicView-flat-" + state.projectID,
+                               help: "List every chat of this project newest first, its topic as a tag") { model.setProjectListsFlat(state.projectID, flat: true) }
+            PiMenuEntry.divider
+        }
         PiMenuEntry.button(state.expanded ? "Collapse Project" : "Expand Project", enabled: !state.filtering) {
             if let expand { expand(!state.expanded) } else { model.setProjectExpanded(state.projectID, expanded: !state.expanded) }
         }

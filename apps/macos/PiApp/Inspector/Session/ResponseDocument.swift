@@ -99,7 +99,7 @@ struct ResponseDocument: Sendable {
         for frame in stream.frames {
             try Task.checkCancellation()
             guard let event = frame.content.json as? [String: Any], let type = event["type"] as? String ?? frame.event else { continue }
-            let index = RequestDocument.number(event["index"]).map { Int($0) }
+            let index = CapturedNumber.integer(RequestDocument.number(event["index"]))
             switch type {
             case "message_start": message = event["message"] as? [String: Any] ?? [:]; sawStart = true
             case "content_block_start":

@@ -21,9 +21,11 @@ extension AgentSession {
         compactionState["summaryInput"] = count.json
         compactionState["wireCap"] = profile.wireOutputLimit.map { JSON($0) } ?? .null
         var used = 0
+        // One policy for the whole summary request: a change applies from the next one.
+        let retry = retrySettings
         do {
             let reply = try await summaryReply(messages,instructions:instructions,tools:tools,profile:profile,originalProfile:originalProfile,revision:revision,
-                limit:min(max(1,compactionPolicy.maximumAttempts),1+max(0,retrySettings.enabled ? retrySettings.maxRetries : 0)),used:&used)
+                limit:min(max(1,compactionPolicy.maximumAttempts),1+max(0,retry.enabled ? retry.maxRetries : 0)),retry:retry,used:&used)
             return try adopt(reply,cap:profile.maxOutput)
         } catch let error as AgentError where Self.isContextOverflow(error) {
             throw AgentError("compaction_too_large", "The gateway rejected the intact summary request as longer than the model's window. The context is unchanged; no alternate summary was sent.", attemptID:error.attemptID)
@@ -33,7 +35,7 @@ extension AgentSession {
     /// One summary request, retried as pi's retryAssistantCall retries it:
     /// a failure pi reads as transient gets settings.retry's retries, within
     /// `limit` physical attempts counted in `used`.
-    func summaryReply(_ messages: [ChatMessage], instructions: String, tools: [ToolDefinition], profile: Profile, originalProfile: Profile, revision: UInt64, limit: Int, used: inout Int) async throws -> ModelReply {
+    func summaryReply(_ messages: [ChatMessage], instructions: String, tools: [ToolDefinition], profile: Profile, originalProfile: Profile, revision: UInt64, limit: Int, retry: PiProviderRules.RetrySettings, used: inout Int) async throws -> ModelReply {
         compactionState["phase"]="summarizing"
         compactionState["outputAllowance"]=JSON(profile.maxOutput)
         event("compaction_progress")
@@ -60,11 +62,11 @@ extension AgentSession {
                 requestMs=nowMS()-start
                 operationStatus("Summary request failed: " + error.message)
                 if let attempt=error.attemptID, !compactionAttemptIDs.contains(attempt) { compactionAttemptIDs.append(attempt) }
-                guard !Self.isContextOverflow(error), !["compaction_incompatible", "compact_stale", "provider_incomplete", "provider_refused"].contains(error.code), retrySettings.enabled, retries<retrySettings.maxRetries, used<limit,
+                guard !Self.isContextOverflow(error), !["compaction_incompatible", "compact_stale", "provider_incomplete", "provider_refused"].contains(error.code), retry.enabled, retries<retry.maxRetries, used<limit,
                       PiProviderRules.isRetryableText(error.piMessage), !Task.isCancelled else { throw error }
                 retries += 1
                 compactionState["phase"]="retrying"; event("compaction_progress")
-                try await Task.sleep(nanoseconds:UInt64(retrySettings.delayMs(attempt:retries)*1_000_000))
+                try await Task.sleep(nanoseconds:UInt64(retry.delayMs(attempt:retries)*1_000_000))
                 compactionState["phase"]="summarizing"
             }
         }

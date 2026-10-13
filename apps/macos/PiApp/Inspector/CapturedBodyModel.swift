@@ -3,6 +3,15 @@ import Foundation
 // A captured body once read: its metadata, its JSON, and the server-sent
 // event frames of a streamed response, parsed off the main actor.
 
+enum CapturedNumber {
+    /// Captured counts and indices are untrusted. Comparing to Double(Int.max)
+    /// is insufficient: that rounded boundary is already outside Int's range.
+    static func integer(_ value: Double?) -> Int? {
+        guard let value, value >= 0 else { return nil }
+        return Int(exactly: value)
+    }
+}
+
 struct CapturedBodyMetadata: Equatable, Sendable {
     let body: [String: WireValue]
     let hash: WireValue?
@@ -21,11 +30,10 @@ struct CapturedBodyMetadata: Equatable, Sendable {
     }
 
     func count() throws -> Int {
-        guard let number = body["retainedBytes"]?.number, number.isFinite,
-              number >= 0, number <= Double(PayloadArchive.largestCount), number.rounded() == number else {
+        guard let count = CapturedNumber.integer(body["retainedBytes"]?.number), count <= PayloadArchive.largestCount else {
             throw HostError.failure("The retained body length is invalid.")
         }
-        return Int(number)
+        return count
     }
     var summary: String {
         let state = body["state"]?.string ?? "unavailable"

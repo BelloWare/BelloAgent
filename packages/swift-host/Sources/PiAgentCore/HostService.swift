@@ -59,6 +59,9 @@ public actor NativeHostService {
     private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:HostOutput]=[:], replyOrder:[String]=[]
     private var mutationLedger = MutationLedger()
     private var dirty:[String:Int]=[:], flushTask:Task<Void,Never>?
+    /// The app's retry setting (pi's settings.retry), for every chat of every
+    /// connection: sent with `workspace.open` and by `retry.configure`.
+    private var retrySettings = PiProviderRules.RetrySettings()
     public init(output: @escaping @Sendable (HostOutput)->Void) {
         self.output=output
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
@@ -192,9 +195,19 @@ public actor NativeHostService {
     private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, prepared: JournalReplayConsumer? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
         guard let cwd, let directory else { throw AgentError("workspace_required", "Open a workspace first") }
         let client=ProviderClient(traces:traces), traces=traces, outcomes=unknownToolOutcomes, changed=notification()
-        return try await Task.detached(priority:.userInitiated) {
+        let session = try await Task.detached(priority:.userInitiated) {
             try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
         }.value
+        await adoptRetrySettings(session)
+        return session
+    }
+    /// Hands a session the latest retry setting. Called once it is made and
+    /// again once it is in `sessions`: a `retry.configure` that ran in between
+    /// reached neither the session nor the list it goes through, and one that
+    /// runs while this hands the setting over is handed on again.
+    private func adoptRetrySettings(_ session: AgentSession) async {
+        var applied: PiProviderRules.RetrySettings
+        repeat { applied = retrySettings; await session.useRetrySettings(applied) } while applied != retrySettings
     }
     /// Runs `body` holding the runtime gate, which serializes opens, forks
     /// and sides, and releases the gate however `body` ends.
@@ -237,10 +250,16 @@ public actor NativeHostService {
     /// Commands a host that is not closing answers without a workspace.
     private func hostCommand(_ method:String, params:JSON) async throws -> JSON? {
         switch method {
-        case "runtime.info": return ["engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"bundledNode":false,"protocolMajor":1,"protocolMinor":1]
+        case "runtime.info": return ["engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"bundledNode":false,"protocolMajor":1,"protocolMinor":1,"retry":retrySettings.wire]
         case "clock.sync": return ["monotonic":JSON(nowMS()),"monotonicMs":JSON(nowMS()),"hostMonotonicMs":JSON(nowMS()),"wallTime":JSON(isoNow())]
+        case "retry.configure":
+            // Every open chat takes it for its next request; later ones start with it.
+            retrySettings = try PiProviderRules.RetrySettings(wire: params)
+            for session in sessions.values { await session.useRetrySettings(retrySettings) }
+            return ["applied":true,"retry":retrySettings.wire]
         case "workspace.open":
             guard !opening else { throw AgentError("workspace_busy", "Workspace initialization is already in progress") }
+            let retry = params["retry"].isNull ? nil : try PiProviderRules.RetrySettings(wire: params["retry"])
             opening=true; defer { opening=false }
             let requestedRoots=try Self.workspaceRoots(params)
             guard let requested=requestedRoots.first else { throw AgentError("invalid_params", "Workspace roots must list 1 to 16 directories") }
@@ -261,6 +280,7 @@ public actor NativeHostService {
             try await manager.configure(params["mcp"].isNull ? ["servers":[:]] : params["mcp"])
             if params["captureProtocol"].int == 1 { await capture.enable() }
             cwd=requested; roots=requestedRoots; directory=state; mcp=manager
+            if let retry { retrySettings = retry }
             resources=Resources(cwd:requested,roots:extra,options:params["resources"].isNull ? [:] : params["resources"])
             nativeTools=NativeTools(cwd:requested,roots:extra,outputs:state.appendingPathComponent("tool-output"),mcp:manager)
             return ["opened":true,"cwd":JSON(requested.path),"roots":.array(requestedRoots.map { JSON($0.path) }),"directory":JSON(state.path)]
@@ -296,6 +316,11 @@ public actor NativeHostService {
             var args=params;args["action"]=JSON(method == "mcp.list" ? "list":"describe");var result=try await mcp.perform(args,readOnly:true)
             result["configurationSource"]="native vault via private IPC";return result
         case "mcp.acknowledgeUnknown": guard params["confirmed"].flag == true else { throw AgentError("confirmation_required","Confirm that the previous invocation outcome has been checked") }; try await mcp.acknowledgeUnknown(); return ["acknowledged":true]
+        case "mcp.resultRetained":
+            guard Set(params.map.keys) == ["commandId","retained"], let retained=params["retained"].flag else { throw AgentError("invalid_params","Expected an invocation commandId and a retained boolean") }
+            let command=try identity(params["commandId"])
+            await mcp.resultsRetained(["inspector:\(epoch):\(command)"],retained:retained)
+            return ["acknowledged":true]
         case "connection.test":
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
             let id = try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
@@ -342,7 +367,7 @@ public actor NativeHostService {
                 let sessionResources = titleTask ? Resources(cwd: cwd, titleTask: true, utility: utility) : resources
                 let tools: any ToolExecuting = titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools
                 let session=try await makeSession(id,profile:profile,apiKey:key,readOnly:titleTask || mode == "read-only",resources:sessionResources,tools:tools,resumePath:params["path"].text,titleTask:titleTask,utilityPurpose:utility)
-                sessions[id]=session; profiles[id]=(profile,key)
+                sessions[id]=session; profiles[id]=(profile,key); await adoptRetrySettings(session)
                 if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
                 if let costLimit { await session.setCostLimit(costLimit) }
                 if let costSeed { await session.adoptSpendSeed(costSeed) }
@@ -436,7 +461,7 @@ public actor NativeHostService {
                 // written, instead of reading it all again.
                 let (result,replay)=try await session.forked(to:forkID,at:point)
                 let fork=try await makeSession(forkID,profile:profile,apiKey:key,readOnly:session.readOnly,resources:resources,tools:session.isConnectionTest ? DisabledTools() : nativeTools,resumePath:result["path"].text,prepared:replay)
-                sessions[forkID]=fork; profiles[forkID]=(profile,key)
+                sessions[forkID]=fork; profiles[forkID]=(profile,key); await adoptRetrySettings(fork)
                 // Opened with only its latest rows, the fork loads the rest in the background.
                 if !quiesced, !closing { await fork.startHistoryFill() }
                 // A fork is a chat of its own, with its own limit.
@@ -454,7 +479,7 @@ public actor NativeHostService {
                 // A side is a session of its own: its own spend and limit.
                 if let costLimit { await side.setCostLimit(costLimit) }
                 let saved=try await side.preserveSide()
-                sessions[sideID]=side; profiles[sideID]=(profile,key)
+                sessions[sideID]=side; profiles[sideID]=(profile,key); await adoptRetrySettings(side)
                 _=try await traces.command("debug.mode",session:sideID,params:["mode":JSON(await traces.mode(id))])
                 return ["accepted":true,"sessionId":JSON(sideID),"side":seed.info,"ephemeral":false,"path":saved["path"]]
             }
@@ -494,7 +519,11 @@ public actor NativeHostService {
         case "turn.retry": try await session.retryRun(overrides: params); return ["accepted":true]
         case "queue.configure": try await session.configureQueue(params); return ["accepted":true]
         case "context.compact": try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true]
-        case "mcp.invoke": var args=params; args["action"]="invoke"; return try await mcp.perform(args,readOnly:session.readOnly)
+        case "mcp.invoke":
+            var args=params; args["action"]="invoke"
+            // Sending IPC is not retention. The app acknowledges this command
+            // only after the complete result is saved and synced locally.
+            return try await mcp.perform(args,readOnly:session.readOnly,retainedBy:"inspector:\(epoch):\(commandID)")
         case "session.configure":
             // The chat's cost limit applies at once, also to a running session:
             // its next model request is checked against it. A configure that

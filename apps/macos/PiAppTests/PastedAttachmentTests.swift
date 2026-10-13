@@ -1,0 +1,151 @@
+import AppKit
+import XCTest
+@testable import PiApp
+
+final class PastedAttachmentTests: XCTestCase {
+    private let png = Data([137, 80, 78, 71, 13, 10, 26, 10, 0])
+
+    @MainActor func testPastedImageSurvivesReopeningAfterTheClipboardSourceIsGone() async throws {
+        let root = scratchRoot("pasted-durable")
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let source = root.appendingPathComponent("temporary-clipboard.png")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); try png.write(to: source)
+        let pasted = try XCTUnwrap(ComposerTextView.writePastedImage(.init(data: try Data(contentsOf: source), isPNG: true), storage: model.pastedImages))
+        let image = try AttachmentRecord.inspect(pasted)
+        let store = try XCTUnwrap(model.store)
+        try await store.put(DraftRecord(id: "chat", text: "Screenshot", attachments: [image]), kind: "draft", id: "chat")
+        try FileManager.default.removeItem(at: source)
+        await store.close()
+        let reopened = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
+        let draft = try await reopened.get(DraftRecord.self, kind: "draft", id: "chat")
+        let saved = try XCTUnwrap(draft?.attachments?.first)
+        XCTAssertTrue(saved.path.hasPrefix(root.resolvingSymlinksInPath().appendingPathComponent("PastedImages").path + "/"))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: saved.path)), png)
+        await reopened.close()
+    }
+
+    @MainActor func testCleanupKeepsAllReferencesAndCurrentPastesButRemovesOrphans() async throws {
+        let root = scratchRoot("pasted-cleanup")
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.launching = false
+        let previous = PastedImageStorage(root: root), store = try XCTUnwrap(model.store)
+        let files = try (0..<6).map { _ in try XCTUnwrap(ComposerTextView.writePastedImage(.init(data: png, isPNG: true), storage: previous)) }
+        let images = try files.map(AttachmentRecord.inspect)
+        var draft = DraftRecord(id: "chat", text: "", attachments: [images[0]])
+        draft.edit = MessageEditDraft(messageID: "old", originalText: "", originalAttachments: [images[1]])
+        try await store.put(draft, kind: "draft", id: "chat")
+        try await store.put(CommandIntent(id: "pending", sessionID: "chat", turnID: "turn", text: "", state: "intent", attachments: [images[2]]), kind: "pending:chat", id: "pending")
+        let journal = root.appendingPathComponent("saved.jsonl")
+        // Queued delivery and a historical edit still need their paths, even
+        // after the corresponding app intent has been retired.
+        let records: [WireValue] = [.object(["userInput": .object(["attachments": .array([images[3].wire])])]),
+                                   .object(["queue": .array([.object(["attachments": .array([images[4].wire])])])])]
+        var bytes = Data(); for record in records { bytes.append(try JSONEncoder().encode(record)); bytes.append(10) }; try bytes.write(to: journal)
+        try await store.put(ChatRecord(id: "chat", workspaceID: "w", title: "Fixture", path: journal.path, profileID: "p"), kind: "chat", id: "chat")
+        let current = try XCTUnwrap(ComposerTextView.writePastedImage(.init(data: png, isPNG: true), storage: model.pastedImages))
+        let userFile = root.appendingPathComponent("user.png"); try png.write(to: userFile)
+        let symlink = previous.directory.appendingPathComponent("pasted-\(UUID().uuidString)-\(UUID().uuidString).png")
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: userFile)
+        try await model.cleanupPastedImages()
+        for file in files.prefix(5) + [current, userFile, symlink] { XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), file.path) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: files[5].path))
+    }
+
+    @MainActor func testMissingSavedJournalDefersCleanup() async throws {
+        let root = scratchRoot("pasted-unavailable-journal")
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.launching = false
+        let previous = PastedImageStorage(root: root), store = try XCTUnwrap(model.store)
+        let file = try XCTUnwrap(ComposerTextView.writePastedImage(.init(data: png, isPNG: true), storage: previous))
+        let chat = ChatRecord(id: "chat", workspaceID: "w", title: "Fixture", path: root.appendingPathComponent("missing.jsonl").path, profileID: "p")
+        try await store.put(chat, kind: "chat", id: chat.id)
+        do { try await model.cleanupPastedImages(); XCTFail("Missing reference sources must defer cleanup") } catch {}
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    @MainActor func testAnUnkeptSidesPastedImageMovesToItsParentAndReopens() async throws {
+        let root = scratchRoot("side-pasted")
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let file = try XCTUnwrap(ComposerTextView.writePastedImage(.init(data: png, isPNG: true), storage: model.pastedImages))
+        let side = SessionDisplay(id: "side"); side.draft = "Side draft"; side.attachments = [try AttachmentRecord.inspect(file)]
+        let info = SideRecord(id: side.id, parentID: "parent", workspaceID: "w", profileID: "p", title: "Side", kept: false)
+        model.displays[side.id] = side; model.sides[info.parentID] = info
+        try await model.moveUnsavedSideDraftsToParents()
+        let saved = try await model.store?.get(DraftRecord.self, kind: "draft", id: "parent")
+        let attachment = try XCTUnwrap(saved?.attachments?.first)
+        XCTAssertEqual(saved?.text, "Side draft"); XCTAssertTrue(side.attachments.isEmpty)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: attachment.path)), png)
+        let sideDraft = try await model.store?.get(DraftRecord.self, kind: "draft", id: side.id)
+        XCTAssertNil(sideDraft, "Unkept side drafts remain ephemeral")
+    }
+}
+
+private final class PastedJournalPause: @unchecked Sendable {
+    private let lock = NSLock(), releaseRead = DispatchSemaphore(value: 0)
+    private var began = false
+    var entered: Bool { lock.lock(); defer { lock.unlock() }; return began }
+    func read(_ path: String) throws -> Set<String> {
+        lock.lock(); began = true; lock.unlock()
+        releaseRead.wait()
+        return try PastedImageStorage.names(inJournal: path)
+    }
+    func release() { releaseRead.signal() }
+}
+
+extension PastedAttachmentTests {
+    @MainActor func testCleanupRechecksStoredLiveAndInFlightReferencesAfterScanning() async throws {
+        for source in ["stored", "live", "sending", "importing"] {
+            let root = scratchRoot("paste-race-" + source)
+            let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+            registerWorkspaceFixtureTeardown(model, root: root)
+            let store = try XCTUnwrap(model.store), pause = PastedJournalPause(), old = PastedImageStorage(root: root)
+            let file = try old.write(png), image = try AttachmentRecord.inspect(file)
+            let journal = root.appendingPathComponent("chat.jsonl"); try Data("{}\n".utf8).write(to: journal)
+            let chat = ChatRecord(id: "chat", workspaceID: "w", title: "Fixture", path: journal.path, profileID: "p")
+            try await store.put(chat, kind: "chat", id: chat.id); model.chats = [chat]
+            let view = SessionDisplay(id: chat.id); view.selectionMetadataLoaded = true; model.displays[chat.id] = view
+            model.pastedImageRead = { try pause.read($0) }; defer { pause.release() }
+            let sweep = Task { try await model.cleanupPastedImages() }
+            try await eventually("journal sweep held") { pause.entered }
+            switch source {
+            case "stored": try await store.put(DraftRecord(id: "other", text: "", attachments: [image]), kind: "draft", id: "other")
+            case "live": view.attachments = [image]
+            case "sending": view.loading = true
+            default:
+                var profile = ProfileRecord(); profile.id = "p"; profile.advancedJSON = "{\"input\":[\"text\",\"image\"]}"
+                model.profiles = [profile]; model.attachImageFiles([file], sessionID: view.id)
+                XCTAssertEqual(model.attachmentImports, 1, "An import registers before its detached file inspection starts")
+            }
+            pause.release(); try await sweep.value
+            XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), source)
+            if source == "importing" { try await eventually("image import finished") { model.attachmentImports == 0 }; XCTAssertEqual(view.attachments.first?.path, image.path) }
+            view.loading = false
+        }
+    }
+    @MainActor func testCleanupDoesNotHoldRestorationOrMetadataReads() async throws {
+        let root = scratchRoot("paste-cleanup-restore")
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let store = try XCTUnwrap(model.store), old = PastedImageStorage(root: root), pause = PastedJournalPause()
+        _ = try old.write(Data([1]))
+        let journal = root.appendingPathComponent("old.jsonl"); try Data("{}\n".utf8).write(to: journal)
+        var chat = ChatRecord(id: "old", workspaceID: "w", title: "Old chat", path: journal.path, profileID: "p"); chat.archivedAt = Date(timeIntervalSince1970: 1)
+        try await store.put(chat, kind: "chat", id: chat.id)
+        model.pastedImageRead = { try pause.read($0) }
+        defer { pause.release() }
+        var restored = false
+        let restoration = Task { await model.restore(); restored = true }
+        try await eventually("cleanup started") { pause.entered }
+        XCTAssertTrue(restored, "Initial restoration must finish before a retained journal sweep starts")
+        XCTAssertFalse(model.launching)
+        XCTAssertEqual(model.chats.map(\.id), [chat.id])
+        let read = expectation(description: "metadata stays available during journal scan")
+        let lookup = Task { _ = try? await store.get(ChatRecord.self, kind: "chat", id: chat.id); read.fulfill() }
+        await fulfillment(of: [read], timeout: 1)
+        pause.release(); await restoration.value; await lookup.value; await model.pastedImageCleanup?.value
+    }
+}

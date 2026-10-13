@@ -3,6 +3,52 @@ import CryptoKit
 import AppKit
 import UniformTypeIdentifiers
 
+/// The app owns clipboard bytes, unlike files the reader chose. A launch's
+/// prefix protects pastes still being converted or waiting in an unsaved side
+/// while old, unreferenced files are swept after restoration.
+struct PastedImageStorage: Sendable {
+    let root: URL
+    let generation = UUID().uuidString
+    var directory: URL { root.appendingPathComponent("PastedImages", isDirectory: true) }
+    var prefix: String { "pasted-" + generation + "-" }
+    func write(_ bytes: Data) throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let file = directory.appendingPathComponent(prefix + UUID().uuidString + ".png")
+        try bytes.write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        return file
+    }
+    func oldFiles() throws -> [URL] {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey]).filter { file in
+            let name = file.lastPathComponent
+            guard !name.hasPrefix(prefix), Self.names(in: Data(name.utf8)).contains(name) else { return false }
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            return values.isRegularFile == true && values.isSymbolicLink != true
+        }
+    }
+    private static let pattern = try! NSRegularExpression(pattern: "pasted-[A-Fa-f0-9-]{36}-[A-Fa-f0-9-]{36}\\.png")
+    static func names(in data: Data) -> Set<String> {
+        let text = String(decoding: data, as: UTF8.self) as NSString
+        return Set(pattern.matches(in: text as String, range: NSRange(location: 0, length: text.length)).map { text.substring(with: $0.range) })
+    }
+    /// Filenames contain only ASCII UUIDs, so they survive JSON escaping.
+    /// Scan bytes in bounded pieces: queued inputs and old branches both
+    /// retain paths, and neither is necessarily on the current history page.
+    static func names(inJournal path: String) throws -> Set<String> {
+        let file = try FileHandle(forReadingFrom: URL(fileURLWithPath: path)); defer { try? file.close() }
+        var names: Set<String> = [], tail = Data()
+        while let bytes = try file.read(upToCount: 65_536), !bytes.isEmpty {
+            try Task.checkCancellation()
+            let data = tail + bytes; names.formUnion(Self.names(in: data)); tail = data.suffix(128)
+        }
+        return names
+    }
+}
+
+struct PastedImageReferenceToken: Sendable, Equatable { let connection: UUID; let changes: Int64; let version: Int64 }
+struct PastedImageReferences: Sendable { let token: PastedImageReferenceToken; let names: Set<String>; let journals: Set<String> }
+
 struct AttachmentRecord: Codable, Sendable, Identifiable, Hashable {
     let id: String; let path: String; let sha256: String; let bytes: Int; let mimeType: String
     var wire: WireValue { .object(["id": .string(id), "path": .string(path), "sha256": .string(sha256), "bytes": .number(Double(bytes)), "mimeType": .string(mimeType)]) }
@@ -66,6 +112,18 @@ extension WorkspaceModel {
     /// no images: ones that arrive while it is in the composer join the draft
     /// set aside for it, which they were chosen for.
     func receiveAttachments(_ items: [AttachmentRecord], into view: SessionDisplay) {
+        if let recovery = draftWrites.recoveries[view.id] {
+            attachmentImports += 1
+            Task {
+                defer { attachmentImports -= 1 }
+                await recovery.value
+                guard view.attachments.count + items.count <= 4, (view.attachments + items).reduce(0, { $0 + $1.bytes }) <= 16 * 1024 * 1024 else {
+                    view.notice = "The images could not be attached after recovery: a submission supports four images and 16 MiB in total."; return
+                }
+                receiveAttachments(items, into: view)
+            }
+            return
+        }
         if view.queueEditingID != nil, var before = view.draftBeforeQueueEdit {
             before.attachments = (before.attachments ?? []) + items; view.draftBeforeQueueEdit = before
         } else { view.attachments.append(contentsOf: items) }
@@ -75,10 +133,54 @@ extension WorkspaceModel {
     func attachImageFiles(_ urls: [URL], sessionID: String? = nil) {
         guard let id = sessionID ?? selectedID, let view = displays[id], !urls.isEmpty else { return }
         guard supportsImages(id) else { error = Self.imagesUnsupported; return }
-        Task { do {
+        attachmentImports += 1
+        Task { defer { attachmentImports -= 1 }; do {
             let items = try await Task.detached { try urls.map(AttachmentRecord.inspect) }.value
             guard view.attachments.count + items.count <= 4, (view.attachments + items).reduce(0, { $0 + $1.bytes }) <= 16 * 1024 * 1024 else { throw HostError.failure("A submission supports four images and 16 MiB in total") }
             receiveAttachments(items, into: view)
         } catch { self.error = error.localizedDescription } }
+    }
+    func schedulePastedImageCleanup() {
+        guard pastedImageCleanup == nil else { return }
+        pastedImageCleanup = Task(priority: .utility) { [weak self] in
+            // A failed or changing reference inventory simply defers cleanup
+            // until next launch; retaining an orphan is always safe.
+            try? await self?.cleanupPastedImages()
+        }
+    }
+    func cleanupPastedImages() async throws {
+        guard let store, pastedImageCleanupIsSafe else { return }
+        let storage = pastedImages, read = pastedImageRead
+        let files = try await Task.detached(priority: .utility) { try storage.oldFiles() }.value
+        guard !files.isEmpty else { return }
+        let inventory = try await store.pastedImageReferences(root: root)
+        let scan = Task.detached(priority: .utility) {
+            var names = inventory.names
+            let candidates = Set(files.map(\.lastPathComponent))
+            for path in inventory.journals {
+                try Task.checkCancellation()
+                if candidates.isSubset(of: names) { break }
+                names.formUnion(try read(path))
+            }
+            return names
+        }
+        var names = try await withTaskCancellationHandler { try await scan.value } onCancel: { scan.cancel() }
+        guard try await store.pastedImageReferencesUnchanged(inventory.token), pastedImageCleanupIsSafe else { return }
+        // From this check through unlink, no MainActor suspension: typing,
+        // imports and sends cannot acquire a new reference in between. SQLite
+        // has one app writer; in-flight producers defer this sweep instead.
+        for view in displays.values {
+            names.formUnion(PastedImageStorage.names(in: try JSONEncoder().encode(view.savedDraft)))
+            names.formUnion(view.attachments.map { URL(fileURLWithPath: $0.path).lastPathComponent })
+            for draft in [view.draftBeforeEdit, view.draftBeforeQueueEdit].compactMap({ $0 }) {
+                names.formUnion(PastedImageStorage.names(in: try JSONEncoder().encode(draft)))
+            }
+        }
+        for file in files where !names.contains(file.lastPathComponent) { try FileManager.default.removeItem(at: file) }
+    }
+    private var pastedImageCleanupIsSafe: Bool {
+        !Task.isCancelled && !isShutDown && !launching && !installPreparing && !hasActiveWork && attachmentImports == 0 &&
+            draftWrites.tasks.isEmpty && draftWrites.recoveries.isEmpty && sideDraftTransfers.isEmpty && hostStarts.isEmpty && sessionOpenings.isEmpty &&
+            !sides.values.contains(where: \.keeping)
     }
 }

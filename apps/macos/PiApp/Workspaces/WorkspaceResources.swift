@@ -25,6 +25,33 @@ extension WorkspaceModel {
         // An unopened session still has a deliberate tool mode. Discovery must
         // not borrow the editing capabilities of another pane or open a run.
         if method == "resources.inspect", let item { params["readOnly"] = .bool(item.toolMode == ChatRecord.readOnlyTools) }
+        if method == "mcp.invoke" {
+            let commandID = UUID().uuidString, connection = host.connectionID, epoch = host.epoch
+            func acknowledge(_ retained: Bool) async throws {
+                // The sheet may have closed after dispatch. Its cancellation
+                // must not strand a completed result in awaitingRetention.
+                try await Task { @MainActor in
+                    guard host.connectionID == connection, host.epoch == epoch else { throw HostError.failure("The project helper changed before MCP result retention was acknowledged. Check the invocation's effects before acknowledging it.") }
+                    _ = try await host.request("mcp.resultRetained", params: ["commandId": .string(commandID), "retained": .bool(retained)])
+                }.value
+            }
+            let result: WireValue
+            do { result = try await host.request(method, sessionID: target, params: params, commandID: commandID) }
+            catch { try? await acknowledge(false); throw error }
+            let record: WireValue = .object(["commandId": .string(commandID), "hostEpoch": epoch.map(WireValue.string) ?? .null,
+                "sessionId": target.map(WireValue.string) ?? .null, "server": params["server"] ?? .null, "tool": params["tool"] ?? .null, "result": result])
+            let root = self.root, folder = root.appendingPathComponent("Workspaces/\(workspace.id)/MCPResults", isDirectory: true)
+            do {
+                // A cancelled sheet can still receive an already dispatched
+                // call. Keep its result off the UI actor before acknowledging.
+                try await Task.detached(priority: .utility) { try MCPInvocationResult.save(record, commandID: commandID, folder: folder, root: root) }.value
+            } catch {
+                try? await acknowledge(false)
+                throw HostError.failure("MCP result could not be saved; its outcome remains unknown. Check the invocation's effects before acknowledging it. \(error.localizedDescription)")
+            }
+            try await acknowledge(true)
+            return result.object ?? [:]
+        }
         return try await host.request(method, sessionID: target, params: params).object ?? [:]
     }
     func saveResourceSettings(_ options: [String: WireValue], sessionID: String? = nil) async throws {
@@ -223,6 +250,7 @@ extension WorkspaceModel {
         return false
     }
     func chooseCompletion(_ choice: CommandCompletion, view: SessionDisplay) {
+        guard !view.recoveringDraft else { return }
         guard let token = view.completionToken, let editor = view.composerEditor,
               editor.completionLocation == token.location, editor.selectedRange() == token.location.selectedRangeUTF16,
               !editor.hasMarkedText(), view.composerLocation == token.location,
@@ -242,6 +270,7 @@ extension WorkspaceModel {
         view.completionVisible = false; view.completionToken = nil; view.completionParse?.cancel()
     }
     func canSelectSkill(_ skill: SkillDescriptor, view: SessionDisplay) -> Bool {
+        guard !view.recoveringDraft else { return false }
         guard let workspaceID = record(view.id)?.workspaceID, skillEnabledInBelloAgent(skill.id), skill.canSelect,
               view.skillCatalog.authorizes, view.skillCatalog.scope == skillScope(sessionID: view.id, workspaceID: workspaceID) else { return false }
         return view.skillCatalog.entries.contains { $0.skill.id == skill.id && $0.skill.canSelect && $0.skill.contentHash == skill.contentHash && $0.skill.metadataHash == skill.metadataHash }
@@ -294,8 +323,9 @@ extension WorkspaceModel {
         send(steer: steer, sessionID: view.id); return true
     }
     func editSkillArguments(_ chip: SkillChip, view: SessionDisplay) {
+        guard !view.recoveringDraft else { return }
         if !questions.askText("Arguments for /\(chip.name)", value: chip.arguments, action: "Save Arguments", limit: 16384, about: view.id, entered: { [weak self] text in
-            guard let self, let index = view.skills.firstIndex(where: { $0.id == chip.id }) else { return }
+            guard let self, !view.recoveringDraft, let index = view.skills.firstIndex(where: { $0.id == chip.id }) else { return }
             view.skills[index].arguments = text
             self.draftChanged(view)
         }) { view.notice = PiQuestion.busyNotice }

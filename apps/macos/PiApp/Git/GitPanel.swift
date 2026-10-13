@@ -57,7 +57,12 @@ import GitView
                                    titleFont: PiKit.Font.title(17), detail: "", detailFont: PiKit.Font.caption)
         notRepository.spacing = PiSpacing.sm; notRepository.padding = 0; notRepository.detailWidth = 420
         let discard: @MainActor ([GitStatusEntry]) -> Void = { [questions, controller, place] entries in
-            place.askToDiscard(entries, questions: questions) { entries in Task { await controller.discard(entries) } }
+            let context = controller.repositoryContext
+            guard controller.accepts(context) else { return }
+            place.askToDiscard(entries, questions: questions) { entries in
+                guard controller.accepts(context) else { return }
+                Task { await controller.discard(entries, context: context) }
+            }
         }
         changesList = GitChangesList(controller: controller, discard: discard, observeFileRow: observeFileRow)
         commitBox = GitCommitBox(controller: controller, inputs: GitCommitBox.Inputs(controller), discard: discard)
@@ -435,10 +440,12 @@ enum GitPanelSplit {
 @MainActor final class GitPanelToolbar: NSView, PiKit.WidthSizing {
     struct Inputs: Equatable {
         var roots: [String], root: String?, displayRoot: String, repository: Bool
+        var context: GitController.RepositoryContext?
         var branch: String, upstream: String?, behind: Int, ahead: Int
         var stashes: Int, busy: Bool, panel: GitController.Panel, notice: String, lastCommit: String?
         @MainActor init(_ controller: GitController) {
             roots = controller.roots; root = controller.root; displayRoot = controller.displayRoot; repository = controller.repositoryRoot != nil
+            context = controller.repositoryContext
             branch = controller.status.branch; upstream = controller.status.upstream; behind = controller.status.behind; ahead = controller.status.ahead
             stashes = controller.stashes.count; busy = controller.busy; panel = controller.panel; notice = controller.notice; lastCommit = controller.lastCommit
         }
@@ -454,20 +461,21 @@ enum GitPanelSplit {
     private var rootDropdown: PiKit.Dropdown<String>?
     private let rootLabel = GitRootCaption()
     private lazy var branchMenu = PiKit.MenuButton(title: "", icon: "arrow.triangle.branch", identifier: "git-branch-menu") { [weak self, controller] in
-        let current = controller.status.branch
-        PiMenuEntry.button("New Branch from \(current.isEmpty ? "HEAD" : current)…") { self?.showNewBranch() }
+        let current = controller.status.branch, context = self?.inputs?.context
+        PiMenuEntry.button("New Branch from \(current.isEmpty ? "HEAD" : current)…") { self?.showNewBranch(context: context) }
         PiMenuEntry.divider
         for branch in controller.branches {
-            PiMenuEntry.button(branch, enabled: branch != current, checked: branch == current) { Task { await controller.checkout(branch) } }
+            PiMenuEntry.button(branch, enabled: branch != current, checked: branch == current) { guard controller.accepts(context) else { return }; Task { await controller.checkout(branch, context: context) } }
         }
     }
     private let remote: GitRemoteControls
     private lazy var stashMenu = PiKit.MenuButton(title: "Stash", icon: "tray.and.arrow.down", identifier: "git-stash-menu") { [weak self, controller] in
-        PiMenuEntry.button("Stash Changes…", enabled: !controller.status.entries.isEmpty) { self?.showStash() }
+        let context = self?.inputs?.context
+        PiMenuEntry.button("Stash Changes…", enabled: !controller.status.entries.isEmpty) { self?.showStash(context: context) }
         if !controller.stashes.isEmpty {
             PiMenuEntry.divider
             for stash in controller.stashes {
-                PiMenuEntry.button("Pop \(stash.name): \(stash.subject)") { Task { await controller.popStash(stash.name) } }
+                PiMenuEntry.button("Pop \(stash.name): \(stash.subject)") { guard controller.accepts(context) else { return }; Task { await controller.popStash(stash.name, context: context) } }
             }
         }
     }
@@ -475,6 +483,10 @@ enum GitPanelSplit {
     private let notice = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piDanger))
     private var committed: PiKit.Badge?
     private let branchPopover = AnchoredPopover(), stashPopover = AnchoredPopover()
+    private struct RepositoryForm { let token = UUID(); let repository: GitController.RepositoryIdentity }
+    private var branchForm: RepositoryForm?, stashForm: RepositoryForm?
+    private var repositoryWatch: AnyCancellable?
+    private var formNotice = ""
 
     init(controller: GitController) {
         self.controller = controller
@@ -482,6 +494,7 @@ enum GitPanelSplit {
         panelTabs = PiKit.Tabs(selection: controller.panel, items: GitController.Panel.allCases.map { ($0, $0.title) }) { [controller] in controller.panel = $0 }
         super.init(frame: .zero)
         for view in [rootLabel, branchMenu, remote, stashMenu, panelTabs, notice] as [NSView] { addSubview(view) }
+        repositoryWatch = controller.$repositoryIdentity.sink { [weak self] in self?.repositoryChanged($0) }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
@@ -517,11 +530,11 @@ enum GitPanelSplit {
         branchMenu.label = next.branch.isEmpty ? "detached" : next.branch
         branchMenu.maxLabelWidth = wide ? nil : Self.narrowLabelWidth
         branchMenu.isEnabled = !next.busy
-        remote.apply(behind: next.behind, ahead: next.ahead, upstream: next.upstream, busy: next.busy)
+        remote.apply(behind: next.behind, ahead: next.ahead, upstream: next.upstream, busy: next.busy, context: next.context)
         stashMenu.label = next.stashes == 0 ? "Stash" : "Stash · \(next.stashes)"
         stashMenu.isEnabled = !next.busy
         panelTabs.selection = next.panel
-        notice.line.text = next.notice; notice.toolTip = next.notice; notice.isHidden = next.notice.isEmpty
+        showNotice(next.notice)
         if let last = next.lastCommit {
             if let committed { committed.text = "Committed \(last)" } else {
                 let badge = PiKit.Badge(text: "Committed \(last)", tone: .success, icon: "checkmark")
@@ -632,29 +645,65 @@ enum GitPanelSplit {
 
     // MARK: Popovers
 
+    private func showNotice(_ message: String) {
+        let text = [formNotice, message].filter { !$0.isEmpty }.joined(separator: " ")
+        notice.line.text = text; notice.toolTip = text; notice.isHidden = text.isEmpty
+    }
+    private func repositoryChanged(_ identity: GitController.RepositoryIdentity?) {
+        var closed: [String] = []
+        if let branchForm, branchForm.repository != identity {
+            self.branchForm = nil
+            if branchPopover.isShown { branchPopover.close(); closed.append("New Branch") }
+        }
+        if let stashForm, stashForm.repository != identity {
+            self.stashForm = nil
+            if stashPopover.isShown { stashPopover.close(); closed.append("Stash") }
+        }
+        guard !closed.isEmpty else { return }
+        // Keep the explanation even if the new repository's status read
+        // fails; that error does not explain why the reader's form closed.
+        formNotice = "Repository changed. \(closed.joined(separator: " and ")) closed."
+        showNotice(controller.notice); measures = nil; needsLayout = true; PiKit.sizeChanged(self)
+    }
+
     /// IntelliJ's branch popup: a new branch from HEAD, checked out.
-    private func showNewBranch() {
+    private func showNewBranch(context: GitController.RepositoryContext?) {
+        guard controller.accepts(context), let identity = controller.repositoryIdentity else { return }
+        let request = RepositoryForm(repository: identity)
         let form = GitNamePopover(title: "New branch", placeholder: "feature/name", icon: "arrow.triangle.branch", mono: true,
                                   note: "Created from the current HEAD and checked out; your changes come along.", action: "Create",
                                   requiresText: true, width: 320)
-        form.cancel = { [weak self] in self?.branchPopover.close() }
+        form.cancel = { [weak self] in
+            guard let self, self.branchForm?.token == request.token else { return }
+            self.branchForm = nil; self.branchPopover.close()
+        }
         form.submit = { [weak self, controller] name in
             let name = name.trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty else { return }
-            self?.branchPopover.close()
-            Task { await controller.createBranch(name) }
+            guard !name.isEmpty, let self, self.branchForm?.token == request.token, self.branchPopover.isShown,
+                  controller.acceptsRepository(identity) else { return }
+            self.branchForm = nil; self.branchPopover.close()
+            Task { await controller.createBranch(name, repository: identity) }
         }
+        branchForm = request; formNotice = ""; showNotice(controller.notice)
         branchPopover.show(form, width: 320, below: branchMenu, focus: form.field.field)
     }
-    private func showStash() {
+    private func showStash(context: GitController.RepositoryContext?) {
+        guard controller.accepts(context), let identity = controller.repositoryIdentity else { return }
+        let request = RepositoryForm(repository: identity)
         let form = GitNamePopover(title: "Stash changes", placeholder: "Message (optional)", icon: "text.quote", mono: false,
                                   note: "Sets aside every change, untracked files included, and restores a clean working tree.", action: "Stash",
                                   requiresText: false, width: 340)
-        form.cancel = { [weak self] in self?.stashPopover.close() }
-        form.submit = { [weak self, controller] message in
-            self?.stashPopover.close()
-            Task { await controller.stash(message: message) }
+        form.cancel = { [weak self] in
+            guard let self, self.stashForm?.token == request.token else { return }
+            self.stashForm = nil; self.stashPopover.close()
         }
+        form.submit = { [weak self, controller] message in
+            guard let self, self.stashForm?.token == request.token, self.stashPopover.isShown,
+                  controller.acceptsRepository(identity) else { return }
+            self.stashForm = nil; self.stashPopover.close()
+            Task { await controller.stash(message: message, repository: identity) }
+        }
+        stashForm = request; formNotice = ""; showNotice(controller.notice)
         stashPopover.show(form, width: 340, below: stashMenu, focus: form.field.field)
     }
 }
@@ -709,6 +758,7 @@ enum GitPanelSplit {
 /// (`ViewThatFits`). The symbols are built only when they are what shows.
 @MainActor final class GitRemoteControls: NSView {
     private let controller: GitController
+    private var context: GitController.RepositoryContext?
     private var behind = 0, ahead = 0, upstream: String?
     private let fetchButton: PiKit.Button, pullButton: PiKit.Button, pushButton: PiKit.Button
     private var icons: GitRemoteIconButtons?
@@ -718,21 +768,25 @@ enum GitPanelSplit {
 
     init(controller: GitController) {
         self.controller = controller
-        fetchButton = PiKit.Button("Fetch", symbol: "arrow.down.to.line", style: .secondary, compact: true) { Task { await controller.fetch() } }
-        pullButton = PiKit.Button("Pull", symbol: "arrow.down.circle", style: .secondary, compact: true) { Task { await controller.pull() } }
-        pushButton = PiKit.Button("Push", symbol: "arrow.up.circle", style: .secondary, compact: true) { Task { await controller.push() } }
+        fetchButton = PiKit.Button("Fetch", symbol: "arrow.down.to.line", style: .secondary, compact: true)
+        pullButton = PiKit.Button("Pull", symbol: "arrow.down.circle", style: .secondary, compact: true)
+        pushButton = PiKit.Button("Push", symbol: "arrow.up.circle", style: .secondary, compact: true)
         super.init(frame: .zero)
         for (button, name) in [(fetchButton, "fetch"), (pullButton, "pull"), (pushButton, "push")] {
             button.setAccessibilityIdentifier("git-remote-" + name); addSubview(button)
         }
         fetchButton.toolTip = "Fetch from every remote and prune"
-        apply(behind: 0, ahead: 0, upstream: nil, busy: false)
+        apply(behind: 0, ahead: 0, upstream: nil, busy: false, context: controller.repositoryContext)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
 
-    func apply(behind: Int, ahead: Int, upstream: String?, busy: Bool) {
+    func apply(behind: Int, ahead: Int, upstream: String?, busy: Bool, context: GitController.RepositoryContext? = nil) {
         self.behind = behind; self.ahead = ahead; self.upstream = upstream
+        self.context = context
+        fetchButton.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.fetch(context: context) } }
+        pullButton.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.pull(context: context) } }
+        pushButton.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.push(context: context) } }
         pullButton.title = behind > 0 ? "Pull \(behind)" : "Pull"
         pullButton.toolTip = behind > 0 ? "Pull \(behind) new commits (fast-forward only)" : "Pull (fast-forward only)"
         pullButton.setAccessibilityLabel(behind > 0 ? "Pull, \(behind) commits" : "Pull")
@@ -740,7 +794,7 @@ enum GitPanelSplit {
         pushButton.toolTip = ahead > 0 ? "Push \(ahead) commits to \(upstream ?? "the upstream")" : "Push"
         pushButton.setAccessibilityLabel(ahead > 0 ? "Push, \(ahead) commits" : "Push")
         for button in [fetchButton, pullButton, pushButton] { button.isEnabled = !busy }
-        icons?.apply(behind: behind, ahead: ahead, upstream: upstream, busy: busy)
+        icons?.apply(behind: behind, ahead: ahead, upstream: upstream, busy: busy, context: context)
         self.busy = busy
     }
     private var busy = false
@@ -764,7 +818,7 @@ enum GitPanelSplit {
         for button in [fetchButton, pullButton, pushButton] { button.isHidden = !named }
         if !named, icons == nil {
             let made = GitRemoteIconButtons(controller: controller)
-            made.apply(behind: behind, ahead: ahead, upstream: upstream, busy: busy)
+            made.apply(behind: behind, ahead: ahead, upstream: upstream, busy: busy, context: context)
             addSubview(made); icons = made
         }
         icons?.isHidden = named
@@ -788,20 +842,25 @@ enum GitPanelSplit {
 /// Fetch, pull and push as three symbols, where the toolbar has no room for
 /// their names: each keeps its count and its help.
 @MainActor final class GitRemoteIconButtons: NSView {
+    private let controller: GitController
     private let fetch: PiKit.IconButton, pull: PiKit.IconButton, push: PiKit.IconButton
     private let pullCount = GitCountBadge(), pushCount = GitCountBadge()
     init(controller: GitController) {
-        fetch = PiKit.IconButton(symbol: "arrow.down.to.line", label: "Fetch", size: 26) { Task { await controller.fetch() } }
-        pull = PiKit.IconButton(symbol: "arrow.down.circle", label: "Pull", size: 26) { Task { await controller.pull() } }
-        push = PiKit.IconButton(symbol: "arrow.up.circle", label: "Push", size: 26) { Task { await controller.push() } }
+        self.controller = controller
+        fetch = PiKit.IconButton(symbol: "arrow.down.to.line", label: "Fetch", size: 26)
+        pull = PiKit.IconButton(symbol: "arrow.down.circle", label: "Pull", size: 26)
+        push = PiKit.IconButton(symbol: "arrow.up.circle", label: "Push", size: 26)
         super.init(frame: .zero)
         for view in [fetch, pull, push, pullCount, pushCount] as [NSView] { addSubview(view) }
         fetch.toolTip = "Fetch from every remote and prune"
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
-    func apply(behind: Int, ahead: Int, upstream: String?, busy: Bool) {
+    func apply(behind: Int, ahead: Int, upstream: String?, busy: Bool, context: GitController.RepositoryContext? = nil) {
         RedrawCounter.note("GitRemoteIconButtons")
+        fetch.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.fetch(context: context) } }
+        pull.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.pull(context: context) } }
+        push.onPress = { [controller] in guard controller.accepts(context) else { return }; Task { await controller.push(context: context) } }
         pull.toolTip = behind > 0 ? "Pull \(behind) new commits (fast-forward only)" : "Pull (fast-forward only)"
         push.toolTip = ahead > 0 ? "Push \(ahead) commits to \(upstream ?? "the upstream")" : "Push"
         pullCount.value = behind; pushCount.value = ahead
@@ -860,9 +919,11 @@ extension SymbolButton {
     struct Inputs: Equatable {
         var read: Bool, staged: [GitStatusEntry], unstaged: [GitStatusEntry], empty: Bool
         var checked: Set<String>, selection: GitController.Selection?
+        var context: GitController.RepositoryContext?
         @MainActor init(_ controller: GitController) {
             read = controller.statusRead; staged = controller.staged; unstaged = controller.unstaged; empty = controller.status.entries.isEmpty
             checked = controller.checked; selection = controller.selection
+            context = controller.repositoryContext
         }
     }
     private enum Row: Hashable { case empty, section(staged: Bool), file(path: String, staged: Bool) }
@@ -943,7 +1004,7 @@ extension SymbolButton {
                 guard let entry = isStaged ? staged[path] : unstaged[path] else { return existing ?? NSView() }
                 let row = existing as? GitFileRowView ?? GitFileRowView(controller: self.controller, discard: self.discard, glide: self.glide)
                 row.apply(entry: entry, staged: isStaged, selected: next.selection == GitController.Selection(path: entry.path, staged: isStaged),
-                          checked: next.checked.contains(entry.path))
+                          checked: next.checked.contains(entry.path), context: next.context)
                 return row
             }
         })
@@ -955,14 +1016,15 @@ extension SymbolButton {
         let controller = controller
         let count = staged ? inputs.staged.count : inputs.unstaged.count
         let title = staged ? "Staged · \(count)" : "Changes · \(count)"
-        let paths = staged ? controller.stagedPaths : controller.unstagedPaths
+        let paths = Set((staged ? inputs.staged : inputs.unstaged).map(\.path)), context = inputs.context
         let all = paths.isSubset(of: inputs.checked)
         row.apply(title: title, all: all, mixed: !all && !paths.isDisjoint(with: inputs.checked),
                   actionTitle: staged ? "Unstage all" : "Stage all",
                   tick: {
+                      guard controller.accepts(context) else { return }
                       if all { controller.checked.subtract(paths) } else { controller.checked.formUnion(paths) }
                   },
-                  action: { if staged { Task { await controller.unstage(controller.staged.map(\.path)) } } else { Task { await controller.stage(controller.unstaged.map(\.path)) } } })
+                  action: { guard controller.accepts(context) else { return }; Task { if staged { await controller.unstage(Array(paths), context: context) } else { await controller.stage(Array(paths), context: context) } } })
     }
 }
 
@@ -1026,6 +1088,7 @@ extension SymbolButton {
     private(set) var entry: GitStatusEntry?
     private var shown: (entry: GitStatusEntry, staged: Bool, selected: Bool, checked: Bool)?
     private var staged = false
+    private var context: GitController.RepositoryContext?
 
     init(controller: GitController, discard: @escaping @MainActor ([GitStatusEntry]) -> Void, glide: PiKit.SelectionGlide) {
         self.controller = controller; self.discard = discard
@@ -1037,37 +1100,39 @@ extension SymbolButton {
     override var isFlipped: Bool { true }
     override func layout() { super.layout(); row.frame = bounds }
 
-    func apply(entry: GitStatusEntry, staged: Bool, selected: Bool, checked: Bool) {
-        if let shown, shown.entry == entry, shown.staged == staged, shown.selected == selected, shown.checked == checked { return }
+    func apply(entry: GitStatusEntry, staged: Bool, selected: Bool, checked: Bool, context: GitController.RepositoryContext? = nil) {
+        let context = context ?? controller.repositoryContext
+        if let shown, shown.entry == entry, shown.staged == staged, shown.selected == selected, shown.checked == checked, self.context == context { return }
         shown = (entry, staged, selected, checked)
-        self.entry = entry; self.staged = staged
+        self.entry = entry; self.staged = staged; self.context = context
         RedrawCounter.note("GitFileRow")
         let controller = controller
         row.selected = selected
-        row.onPress = { controller.selection = GitController.Selection(path: entry.path, staged: staged) }
+        row.onPress = { guard controller.accepts(context) else { return }; controller.selection = GitController.Selection(path: entry.path, staged: staged) }
         row.setAccessibilityIdentifier("git-file-" + entry.path)
-        content.apply(entry: entry, staged: staged, checked: checked, controller: controller)
+        content.apply(entry: entry, staged: staged, checked: checked, controller: controller, context: context)
         row.setAccessibilityLabel(content.spokenText)
         row.setAccessibilityValue(entry.summary)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
         guard let entry else { return nil }
-        let staged = staged, controller = controller, discard = discard
+        let staged = staged, controller = controller, discard = discard, context = context
         var entries: [PiMenuEntry] = [
-            staged ? .button("Unstage") { Task { await controller.unstage([entry.path]) } } : .button("Stage") { Task { await controller.stage([entry.path]) } },
-            .button(entry.untracked ? "Delete Untracked File…" : "Discard Changes…") { discard([entry]) },
+            staged ? .button("Unstage") { guard controller.accepts(context) else { return }; Task { await controller.unstage([entry.path], context: context) } } : .button("Stage") { guard controller.accepts(context) else { return }; Task { await controller.stage([entry.path], context: context) } },
+            .button(entry.untracked ? "Delete Untracked File…" : "Discard Changes…") { guard controller.accepts(context) else { return }; discard([entry]) },
             .divider,
         ]
         if !entry.untracked {
             entries.append(.button("Show History of This File", systemImage: "clock.arrow.circlepath", identifier: "git-file-history-" + entry.path) {
+                guard controller.accepts(context) else { return }
                 controller.showFileHistory(entry.path)
             })
         }
         entries.append(.button("Reveal in Finder") {
-            if let root = controller.repositoryRoot { NSWorkspace.shared.selectFile((root as NSString).appendingPathComponent(entry.path), inFileViewerRootedAtPath: root) }
+            if controller.accepts(context), let root = context?.root { NSWorkspace.shared.selectFile((root as NSString).appendingPathComponent(entry.path), inFileViewerRootedAtPath: root) }
         })
-        entries.append(.button("Copy Path") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(entry.path, forType: .string) })
+        entries.append(.button("Copy Path") { guard controller.accepts(context) else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(entry.path, forType: .string) })
         return PiMenus.menu(entries)
     }
 
@@ -1097,16 +1162,16 @@ extension SymbolButton {
     /// An empty `Text` is 14 points tall in SwiftUI, a point more than a line of micro text.
     private var folderHeight: CGFloat { folder.line.text.isEmpty ? 14 : folder.intrinsicContentSize.height }
 
-    func apply(entry: GitStatusEntry, staged: Bool, checked: Bool, controller: GitController) {
+    func apply(entry: GitStatusEntry, staged: Bool, checked: Bool, controller: GitController, context: GitController.RepositoryContext?) {
         tick.setTick(on: checked, label: checked ? "Exclude \(entry.path) from the commit" : "Include \(entry.path) in the commit")
         tick.setAccessibilityIdentifier("git-check-" + entry.path)
-        tick.onPress = { if checked { controller.checked.remove(entry.path) } else { controller.checked.insert(entry.path) } }
+        tick.onPress = { guard controller.accepts(context) else { return }; if checked { controller.checked.remove(entry.path) } else { controller.checked.insert(entry.path) } }
         badge.text = entry.badge; badge.color = GitFileRowView.badgeColor(entry.badge); badge.toolTip = entry.summary
         name.line.text = (entry.path as NSString).lastPathComponent
         folder.line.text = Self.folder(of: entry)
         stageButton.symbol = staged ? "minus" : "plus"
         stageButton.label = staged ? "Unstage \(entry.path)" : "Stage \(entry.path)"
-        stageButton.onPress = { Task { if staged { await controller.unstage([entry.path]) } else { await controller.stage([entry.path]) } } }
+        stageButton.onPress = { guard controller.accepts(context) else { return }; Task { if staged { await controller.unstage([entry.path], context: context) } else { await controller.stage([entry.path], context: context) } } }
         needsLayout = true
     }
     override func layout() {
@@ -1145,10 +1210,12 @@ extension SymbolButton {
 @MainActor final class GitCommitBox: NSView, PiKit.WidthSizing {
     struct Inputs: Equatable {
         var message: String, amend: Bool, scope: GitCommitScope, checkedCount: Int, stagedCount: Int, entries: Int, hasHead: Bool, loading: Bool, busy: Bool
+        var context: GitController.RepositoryContext?, rows: [GitStatusEntry]
         @MainActor init(_ controller: GitController) {
             message = controller.commitMessage; amend = controller.amend; scope = controller.commitScope; checkedCount = controller.checkedCount
             stagedCount = controller.staged.count; entries = controller.status.entries.count; hasHead = controller.status.head != nil
             loading = controller.loading; busy = controller.busy
+            context = controller.repositoryContext; rows = controller.status.entries
         }
     }
 
@@ -1213,12 +1280,9 @@ extension SymbolButton {
         amendLabel.toolTip = "Add this commit's content to the last commit and replace its message."
         reword.toolTip = "Change the last commit's message only. Its files, and your staged and unstaged changes, stay as they are."
         reword.setAccessibilityIdentifier("git-reword")
-        reword.onPress = { [controller] in Task { await controller.rewordLastCommit() } }
         discardAll.setAccessibilityIdentifier("git-discard-all")
-        discardAll.onPress = { [controller, discard] in discard(controller.status.entries) }
         hint.setAccessibilityIdentifier("git-commit-hint")
         commit.setAccessibilityIdentifier("git-commit")
-        commit.onPress = { [controller] in Task { await controller.commitInScope() } }
         for view in [message, scopeTabs, amendTick, amendLabel, reword, discardAll, hint, commit] as [NSView] { addSubview(view) }
         apply(inputs)
     }
@@ -1231,6 +1295,9 @@ extension SymbolButton {
         let onlyMessage = inputs.map { previous in var same = next; same.message = previous.message; return same == previous } ?? false
         inputs = next
         RedrawCounter.note("GitCommitBox")
+        reword.onPress = { [controller] in guard controller.accepts(next.context) else { return }; Task { await controller.rewordLastCommit(context: next.context) } }
+        discardAll.onPress = { [controller, discard] in guard controller.accepts(next.context) else { return }; discard(next.rows) }
+        commit.onPress = { [controller] in guard controller.accepts(next.context) else { return }; Task { await controller.commitInScope(context: next.context) } }
         let shown = Self.presentation(next)
         message.placeholder = next.amend ? "Amended commit message" : "Commit message"
         message.text = next.message

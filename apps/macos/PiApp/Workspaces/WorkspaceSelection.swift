@@ -86,7 +86,7 @@ extension WorkspaceModel {
         view.olderPage = .init(cursor: view.olderPage.cursor); view.newerPage = .init(cursor: view.newerPage.cursor)
         view.historyProgress = nil
         view.contextSelectionReady = false; view.browsingHistory = true
-        view.draftReady = view.selectionMetadataLoaded
+        view.draftReady = false
         view.used = Date(); displays[id] = view
         adoptContextReading(view, item: item)
         // Opened for a side beside it, which takes the cursor, the chat's
@@ -115,7 +115,7 @@ extension WorkspaceModel {
             let sideCached = sideView.hasPresentedRows
             sideView.presentation.begin(); sideView.presentationGeneration = sideView.presentation.generation
             sideView.historyProgress = nil; sideView.historyState = .loading; sideView.refreshingCachedRows = sideCached; sideView.browsingHistory = true
-            sideView.draftReady = sideView.selectionMetadataLoaded || info.pending
+            sideView.draftReady = info.pending
             sideView.publishTranscript()
             shownSide = (child, sideView)
         } else if reopensSide, sides[id] == nil, !installPreparing, let child = rememberedSide(of: id) {
@@ -158,19 +158,7 @@ extension WorkspaceModel {
                 self.displays[id] === view && view.presentationGeneration == generation
         }
         do {
-            let wantsMetadata = !view.selectionMetadataLoaded
-            let draftAtStart = view.savedDraft
-            let metadata = try await self.store?.selectionMetadata(id: id, draft: wantsMetadata,
-                                            anchor: wantsMetadata && view.scrollAnchor == nil)
-            guard current() else { return }
-            if wantsMetadata {
-                if let draft = metadata?.draft, view.draft == draftAtStart.text && view.attachments == (draftAtStart.attachments ?? []) && view.skills == (draftAtStart.skills ?? []),
-                   view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil { view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } } }
-                if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
-                view.selectionMetadataLoaded = true
-            }
-            view.draftReady = true
-            view.recovered = metadata?.recovered ?? []; view.uncertain = !view.recovered.isEmpty
+            guard try await reconcileSubmissionDraft(item, view: view, current: current) else { return }
             if focusesComposer { view.composerFocusRequest += 1 }
             // The chat's file can be named while its page is read: its
             // first message writes the journal, and the helper can report
@@ -218,7 +206,7 @@ extension WorkspaceModel {
         catch {
             guard current() else { return }
             view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false
-            view.notice = error.localizedDescription; view.draftReady = view.selectionMetadataLoaded
+            view.notice = error.localizedDescription
         }
     }
     /// The page a chat opens on: its newest turns, or, when the reader left it

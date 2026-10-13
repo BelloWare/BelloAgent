@@ -26,7 +26,7 @@ import AppKit
     private var detailGeneration = UUID(), refreshGeneration = UUID()
     private var originID: String?, isPresented = false
     private var observing = false
-    private var detail = "", bodyOffset = 0, nextBody: Double?
+    private var detail = "", bodyOffset = 0, nextBody: Int?
     private var snapshot: [String: WireValue] = [:], sourceOffset = 0, options: [String: WireValue] = [:]
     private var home = "", fallbacks = "", byteLimit = 32768, overrideBudget = false
     private var notice = "" { didSet { refreshFooter() } }
@@ -55,7 +55,7 @@ import AppKit
     private lazy var sourceBox = PiKit.inset(sourceText)
     private let sourceLabel = PiKit.TextLine(PiKit.Line("Skill file · from the start", font: PiKit.Font.caption, color: .piInkSecondary))
     private lazy var bodyPager = PiKit.Pager(previousLabel: "Start", nextLabel: "Next", center: sourceLabel, canPrevious: false, canNext: false,
-        previous: { [weak self] in self?.bodyOffset = 0; self?.loadBody() }, next: { [weak self] in guard let self else { return }; self.bodyOffset = Int(self.nextBody ?? 0); self.loadBody() })
+        previous: { [weak self] in self?.bodyOffset = 0; self?.loadBody() }, next: { [weak self] in guard let self, let next = self.nextBody else { return }; self.bodyOffset = next; self.loadBody() })
     private lazy var skillsPage: NSView = {
         let left = PayloadEmptyOverlay(content: skillList, empty: skillEmpty)
         // HSplitView's first allocation in the standard sheet was wider
@@ -382,7 +382,7 @@ import AppKit
         let source = source
         detailTask = work.run({ try await source.request("resources.skill.read", ["skillId": .string(id), "offset": .number(Double(offset))], origin) }) { [weak self] outcome in
             guard let self, generation == self.detailGeneration, id == self.selectedID, offset == self.bodyOffset, origin == self.originID, hash == self.selected?.contentHash, metadata == self.selected?.metadataHash else { return }
-            switch outcome { case .success(let page): self.detail = page["text"]?.string ?? ""; self.nextBody = page["next"]?.number; case .failure(let error): self.detail = error.localizedDescription }
+            switch outcome { case .success(let page): self.detail = page["text"]?.string ?? ""; self.nextBody = CapturedNumber.integer(page["next"]?.number); case .failure(let error): self.detail = error.localizedDescription }
             self.refreshSkills()
         }
     }

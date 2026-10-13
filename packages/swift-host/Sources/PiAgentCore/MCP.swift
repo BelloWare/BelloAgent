@@ -274,11 +274,12 @@ final class MCPWriteQueue: @unchecked Sendable {
 /// is advertised. A response SSE stream is terminated after its matching reply.
 actor HTTPMCP: MCPTransport {
     let url: URL, headers: [String: String]
+    private let timeout: Duration
     var session: String?, version = "2025-11-25"
     /// Set when the server answered 404 to a request carrying its session id:
     /// it has forgotten the session, and this connection is spent.
     private var expired = false, catalogChanges = 0
-    init(url: URL, headers: [String: String]) { self.url=url; self.headers=headers }
+    init(url: URL, headers: [String: String], timeoutSeconds: Int) { self.url=url; self.headers=headers; timeout = .seconds(timeoutSeconds) }
     func isAlive() -> Bool { !expired }
     func catalogGeneration() -> Int { catalogChanges }
     func request(_ method: String, params: JSON) async throws -> JSON {
@@ -288,13 +289,29 @@ actor HTTPMCP: MCPTransport {
     }
     func notify(_ method: String, params: JSON) async throws { _ = try await exchange(["jsonrpc":"2.0","method":JSON(method),"params":params], expected: nil) }
     private func exchange(_ message: JSON, expected: String?) async throws -> JSON {
+        let transport = HTTPStream(), deadline = ContinuousClock.now.advanced(by: timeout)
+        // HTTPStream's idle timeout serves model streaming. MCP has an
+        // overall request deadline: heartbeats must not keep a call alive.
+        return try await withThrowingTaskGroup(of: JSON.self) { group in
+            group.addTask { try await self.exchange(message, expected: expected, transport: transport) }
+            group.addTask {
+                try await Task.sleep(until: deadline, clock: .continuous)
+                throw AgentError("mcp_timeout", "MCP request timed out; invocation outcome may be unknown. No replay attempted.")
+            }
+            // Cancel before the group waits for its loser, including the
+            // URLSession task when the peer keeps its stream open forever.
+            defer { group.cancelAll(); transport.cancel() }
+            return try await group.next()!
+        }
+    }
+    private func exchange(_ message: JSON, expected: String?, transport: HTTPStream) async throws -> JSON {
+        try Task.checkCancellation()
         var request = URLRequest(url: url); request.httpMethod = "POST"; request.httpBody = try message.data()
         for (key,value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type"); request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
         let sentSession = session
         if let session { request.setValue(session, forHTTPHeaderField: "Mcp-Session-Id") }
         if message["method"].text != "initialize" { request.setValue(version, forHTTPHeaderField: "MCP-Protocol-Version") }
-        let transport = HTTPStream(); defer { transport.cancel() }
         var code = 0, sse = false, parser = SSEParser(), body = Data()
         for try await part in transport.start(request) {
             try Task.checkCancellation()
@@ -383,7 +400,7 @@ public actor MCPManager {
         var catalog: [JSON]? = nil, catalogGeneration = 0
     }
     private var servers: [String: Server] = [:]
-    private var unknownOutcome=false
+    private var unknownOutcome=false, closed=false
     private let gate = AsyncGate(), connectionGate = AsyncGate(), cwd: URL
     /// Workspace roots, primary first. stdio servers start in the primary root.
     public let roots: [URL]
@@ -407,35 +424,49 @@ public actor MCPManager {
     private func cancelDrain(_ id: UUID) {
         if let i = drainWaiters.firstIndex(where: { $0.0 == id }) { drainWaiters.remove(at: i).1.resume(throwing: CancellationError()) }
     }
-    /// Results returned to a caller that keeps them (a chat's journal), by
+    /// Results returned to a caller that keeps them (a journal or the app), by
     /// the call they answer, until it says they are kept: until then a crash
     /// or a failed write could lose the only sign the call ran, so the
     /// outcome marker stays.
     private var awaitingRetention: [String: Int] = [:]
+    /// An IPC read can time out during setup or execution. Remember that
+    /// failure until the call returns; a call that never ran needs no recovery.
+    private var inFlightRetention: [String: Int] = [:]
+    private var failedRetention: Set<String> = []
     /// Ends one invocation; `retainedBy` names a result its caller has yet
     /// to keep. The last one to end, with every result kept, clears the
     /// outcome marker unless an outcome is unknown, whichever invocation
     /// wrote it.
     private func finishInvocation(retainedBy key: String? = nil) {
         inFlight -= 1
-        if let key { awaitingRetention[key, default: 0] += 1 }
+        if let key {
+            if failedRetention.contains(key) { unknownOutcome=true }
+            else { awaitingRetention[key, default: 0] += 1 }
+        }
         guard inFlight == 0 else { return }
         clearSettledMarker()
         let waiters = drainWaiters; drainWaiters.removeAll(); for waiter in waiters { waiter.1.resume() }
     }
     private func clearSettledMarker() {
-        guard inFlight == 0, awaitingRetention.isEmpty, !unknownOutcome, let outcomeMarker else { return }
+        guard !closed, inFlight == 0, awaitingRetention.isEmpty, !unknownOutcome, let outcomeMarker else { return }
         try? FileManager.default.removeItem(at: outcomeMarker)
     }
     /// The caller of `perform(_:readOnly:retainedBy:)` kept these results
     /// durably, or could not: a result that was not kept leaves its call's
     /// outcome unknown, marker and all, for the user to verify.
     public func resultsRetained(_ keys: [String], retained: Bool) {
+        guard !closed else { return }
+        var matched=false
         for key in keys {
-            guard let count = awaitingRetention[key] else { continue }
-            awaitingRetention[key] = count > 1 ? count - 1 : nil
+            if let count = awaitingRetention[key] {
+                matched=true
+                awaitingRetention[key] = count > 1 ? count - 1 : nil
+            }
+            // A success cannot retain a result that does not exist yet. A
+            // failure applies to every running use of the same identity.
+            if !retained, inFlightRetention[key] != nil { failedRetention.insert(key) }
         }
-        if !retained { unknownOutcome = true }
+        if matched, !retained { unknownOutcome = true }
         clearSettledMarker()
     }
     public init(cwd: URL, roots: [URL] = [], outcomeMarker: URL? = nil) { self.cwd=cwd; self.roots=workspaceRoots(primary:cwd,additional:roots); self.outcomeMarker=outcomeMarker; unknownOutcome=outcomeMarker.map { FileManager.default.fileExists(atPath:$0.path) } ?? false }
@@ -482,6 +513,7 @@ public actor MCPManager {
     private func connect(_ name: String) async throws -> any MCPTransport {
         try await connectionGate.acquire()
         do {
+            guard !closed else { throw AgentError("mcp_closed","MCP manager is closed") }
             guard var server = servers[name] else { throw AgentError("mcp_server", "Unknown or disabled MCP server") }
             if server.initialized, let ready = server.transport {
                 if await ready.isAlive() { await connectionGate.release(); return ready }
@@ -493,23 +525,26 @@ public actor MCPManager {
                 servers[name] = server
             }
             if server.transport == nil {
+                let timeout = min(300,max(1,server.config["timeoutSeconds"].int ?? 60))
                 if let configured = server.config["url"].text {
                     var headers: [String: String] = [:]
                     for (key,value) in server.config["headers"].map {
                         guard let v = value.text, !v.utf8.contains(13), !v.utf8.contains(10), !["host","content-length"].contains(key.lowercased()) else { throw AgentError("mcp_config", "Invalid MCP header") }; headers[key]=v
                     }
                     guard let url = URL(string: configured) else { throw AgentError("mcp_config", "This server's URL is not a usable address; correct it in the native vault") }
-                    server.transport = HTTPMCP(url:url,headers:headers)
+                    server.transport = HTTPMCP(url:url,headers:headers,timeoutSeconds:timeout)
                 } else {
                     var env: [String:String] = [:]
                     for (key,value) in server.config["env"].map { guard let value = value.text else { throw AgentError("mcp_config", "Environment values must be strings") }; env[key]=value }
-                    server.transport = try StdioMCP(command:required(server.config["command"], "command"), args:server.config["args"].list.compactMap(\.text), cwd:cwd, environment:toolEnvironment(env), timeoutSeconds:min(300,max(1,server.config["timeoutSeconds"].int ?? 60)))
+                    server.transport = try StdioMCP(command:required(server.config["command"], "command"), args:server.config["args"].list.compactMap(\.text), cwd:cwd, environment:toolEnvironment(env), timeoutSeconds:timeout)
                 }
             }
             guard let transport=server.transport else { throw AgentError("mcp_server", "MCP server has no usable transport") }
             let hello = try await transport.request("initialize", params:["protocolVersion":"2025-11-25","capabilities":[:],"clientInfo":["name":"pi-app-native","version":"1.0.0"]])
             guard ["2025-11-25","2025-06-18"].contains(hello["protocolVersion"].text), hello["capabilities"]["tools"].isObject else { await transport.close(); throw AgentError("mcp_version", "Server must support MCP 2025-11-25 or 2025-06-18 and tools capability") }
-            try await transport.notify("notifications/initialized", params:[:]); server.initialized=true; servers[name]=server
+            try await transport.notify("notifications/initialized", params:[:])
+            guard !closed else { await transport.close(); throw AgentError("mcp_closed","MCP manager is closed") }
+            server.initialized=true; servers[name]=server
             await connectionGate.release(); return transport
         } catch { await connectionGate.release(); throw error }
     }
@@ -572,6 +607,13 @@ public actor MCPManager {
             guard !readOnly else { throw AgentError("read_only", "MCP invocation is disabled in discussion-only sessions; annotations are not authorization") }
             guard Set(p.map.keys) == ["action","server","tool","arguments"], p["arguments"].isObject else { throw AgentError("mcp_arguments", "Invoke requires exactly one server, tool and arguments object; batches are not supported") }
             let server=try required(p["server"],"server"), name=try required(p["tool"],"tool")
+            if let retainedBy { inFlightRetention[retainedBy, default: 0] += 1 }
+            defer {
+                if let retainedBy, let count=inFlightRetention[retainedBy] {
+                    inFlightRetention[retainedBy] = count > 1 ? count - 1 : nil
+                    if count == 1 { failedRetention.remove(retainedBy) }
+                }
+            }
             // The gate is held only to start: a configuration change waits for
             // running invocations, and invocations do not wait for each other.
             try await gate.acquire(); inFlight += 1; await gate.release()
@@ -581,6 +623,7 @@ public actor MCPManager {
                 guard !unknownOutcome else { throw AgentError("mcp_outcome_unknown","A previous invocation has an unknown outcome. The user must verify it and acknowledge before another invocation.") }
                 guard try await tools(server).contains(where:{$0["name"].text == name}) else { throw AgentError("mcp_tool", "Unknown or disallowed MCP tool") }
                 var transport = try await connect(server)
+                guard !closed else { throw AgentError("mcp_closed","MCP manager is closed") }
                 if let outcomeMarker {
                     let bytes = try JSON.object(["server":JSON(server),"tool":JSON(name),"startedAt":JSON(isoNow()),"state":"outcome-unknown-until-result-retained"]).data()
                     try bytes.write(to:outcomeMarker,options:.atomic)
@@ -609,9 +652,16 @@ public actor MCPManager {
         }
     }
     public func acknowledgeUnknown() throws {
-        guard inFlight == 0, awaitingRetention.isEmpty else { throw AgentError("mcp_busy","An invocation is still running") }
+        guard !closed else { throw AgentError("mcp_closed","MCP manager is closed") }
+        guard inFlight == 0, inFlightRetention.isEmpty, awaitingRetention.isEmpty else { throw AgentError("mcp_busy","An invocation is still running") }
         if let outcomeMarker, FileManager.default.fileExists(atPath:outcomeMarker.path) { try FileManager.default.removeItem(at:outcomeMarker) }
         unknownOutcome=false
     }
-    public func close() async { for s in servers.values { await s.transport?.close() }; servers.removeAll() }
+    public func close() async {
+        // A reopened workspace may already own this marker. Late results and
+        // retention callbacks from the retired manager must never remove it.
+        closed=true
+        let retiring=servers; servers.removeAll()
+        for s in retiring.values { await s.transport?.close() }
+    }
 }

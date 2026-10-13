@@ -1,5 +1,14 @@
 import AppKit
 
+/// The copy destination, kept injectable without involving the desktop's
+/// pasteboard service in tests of delayed reads.
+@MainActor protocol FileCopyPasteboard: AnyObject {
+    var changeCount: Int { get }
+    func clearContents() -> Int
+    func setString(_ string: String, forType type: NSPasteboard.PasteboardType) -> Bool
+}
+extension NSPasteboard: FileCopyPasteboard {}
+
 /// Optional host-provided ink for a piece of a visible line. The engine
 /// knows no lexer or application palette; ranges are local UTF-16 units.
 public struct FileTextColorRun {
@@ -891,17 +900,22 @@ public struct FileTextStyle {
 
     /// Copies the selection: at once when its text is at hand, else when it
     /// has been read (a later Copy of another selection supersedes it).
-    @objc public func copy(_ sender: Any?) {
+    @objc public func copy(_ sender: Any?) { copy(to: pasteboard) }
+    func copy(to pasteboard: any FileCopyPasteboard) {
         guard hasSelection else { return }
         let (start, end) = selectedRange
         copies += 1
-        let ticket = copies
+        Self.copyGeneration &+= 1
+        let ticket = copies, generation = Self.copyGeneration, change = pasteboard.changeCount
         source.fetch(from: start, to: end) { [weak self] text in
-            guard let self, ticket == self.copies, let text, !text.isEmpty else { return }
-            self.pasteboard.clearContents(); self.pasteboard.setString(text, forType: .string)
+            // A newer request in any viewer owns Copy before its text arrives;
+            // an unrelated clipboard write owns the pasteboard immediately.
+            guard let self, ticket == self.copies, generation == Self.copyGeneration, pasteboard.changeCount == change, let text, !text.isEmpty else { return }
+            _ = pasteboard.clearContents(); _ = pasteboard.setString(text, forType: .string)
         }
     }
     private var copies = 0
+    private static var copyGeneration: UInt64 = 0
     public override func selectAll(_ sender: Any?) { select(from: .start, to: end) }
 
     // MARK: Keys

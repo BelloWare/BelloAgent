@@ -9,6 +9,12 @@ import SwiftUI
 /// The end-to-end cases run on the packaged helper against the wire gateway,
 /// whose "wire paid" replies report a cost of $0.004 each.
 final class CostLimitTests: XCTestCase {
+    func testMalformedOrOversizedCostFractionsHaveNoIntegerPercentage() {
+        for fraction in [1e20, -1, -0.001, Double.infinity, .nan] { XCTAssertEqual(CostLimitMeter.percent(fraction), "n/a") }
+        XCTAssertEqual(CostLimitMeter.percent(0.125), "13%")
+        XCTAssertEqual(CostLimitMeter.percent(0.004), "<1%")
+    }
+
     /// A model on a scratch store and vault, restored the way launch does, with chats on disk.
     @MainActor private func model(root: URL, vault: ConfigurationVault? = nil, chats names: [String]) async throws -> (model: WorkspaceModel, vault: ConfigurationVault, chats: [ChatRecord]) {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

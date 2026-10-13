@@ -4,6 +4,19 @@ import XCTest
 /// How the Response tab reads a response body: the text, the reasoning the
 /// provider shared, the calls, why it stopped and what it reported using.
 final class ResponseDocumentTests: XCTestCase {
+    func testMalformedMessagesIndicesAreIgnoredWithoutChangingValidBlocks() throws {
+        for index in ["1.5", "-1", "1e20", "9223372036854775808", "true"] {
+            let document = try XCTUnwrap(try ResponseDocument.parse(sse([
+                ("message_start", #"{"type":"message_start","message":{"role":"assistant"}}"#),
+                ("content_block_start", #"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Safe"}}"#),
+                ("content_block_start", "{\"type\":\"content_block_start\",\"index\":\(index),\"content_block\":{\"type\":\"text\",\"text\":\"Invalid\"}}"),
+                ("content_block_delta", "{\"type\":\"content_block_delta\",\"index\":\(index),\"delta\":{\"type\":\"text_delta\",\"text\":\"Invalid delta\"}}"),
+                ("message_stop", #"{"type":"message_stop"}"#)
+            ])))
+            XCTAssertEqual(document.items.map(\.preview), ["Safe"], "Invalid index \(index) must not become an item or attach a delta")
+        }
+    }
+
     private func sse(_ events: [(String, String)]) -> Data {
         Data(events.map { "event: \($0.0)\ndata: \($0.1)\n\n" }.joined().utf8)
     }

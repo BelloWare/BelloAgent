@@ -416,7 +416,7 @@ import AppKit
             let versions = group["versions"]?.array?.compactMap(\.object) ?? []
             guard let current = versions.last(where: { $0["live"]?.bool == true }), let latest = current["messageId"]?.string else { continue }
             for version in versions where version["messageId"]?.string != latest {
-                guard let id = version["messageId"]?.string, let index = version["index"]?.number.flatMap({ Int(exactly: $0) }) else { continue }
+                guard let id = version["messageId"]?.string, let index = CapturedNumber.integer(version["index"]?.number) else { continue }
                 let entry = InspectorVersionMap.Entry(latest: latest, index: index, count: versions.count, version: id)
                 map.earlier[id] = entry
                 for turn in version["turns"]?.array?.compactMap(\.string) ?? [] where turn != latest && map.earlier[turn] == nil { map.earlier[turn] = entry }

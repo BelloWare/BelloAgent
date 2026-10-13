@@ -167,7 +167,10 @@ public actor GitService {
                                             environment extra: [String: String] = [:], input: Data? = nil, gitOptions: Bool = true) throws -> Output {
         let process = Process()
         process.executableURL = executable
-        let all = (gitOptions ? ["-c", "core.quotepath=off", "-c", "color.ui=never"] : []) + arguments
+        // Every parsed patch, including show and no-index, uses the parser's
+        // a/ and b/ names regardless of the reader's display preferences.
+        let all = (gitOptions ? ["-c", "core.quotepath=off", "-c", "color.ui=never",
+                                "-c", "diff.mnemonicPrefix=false", "-c", "diff.noprefix=false"] : []) + arguments
         // Foundation raises an uncaught Objective-C exception past its own
         // 4096-argument limit, which no `catch` can stop: refuse first.
         guard all.count <= 4_000 else { throw GitFailure(message: "Too many paths for one git command.") }
@@ -433,8 +436,8 @@ public actor GitService {
     /// The message, the changed paths and their line counts. Both reads are
     /// cheap and run together: neither asks git to produce any patch text.
     func commitDetail(in root: String, commit: GitCommit) async throws -> GitCommitDetail {
-        async let named = run(["-c", "log.showRoot=true", "show", "--format=%B", "--name-status", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
-        async let counted = run(["-c", "log.showRoot=true", "show", "--format=", "--numstat", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
+        async let named = run(["-c", "log.showRoot=true", "show", "--src-prefix=a/", "--dst-prefix=b/", "--format=%B", "--name-status", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
+        async let counted = run(["-c", "log.showRoot=true", "show", "--src-prefix=a/", "--dst-prefix=b/", "--format=", "--numstat", "-z", "--find-renames", "-m", "--first-parent", commit.hash], in: root)
         let names = try require(await named, "Reading the commit")
         let numbers = try? require(await counted, "Reading the commit stats")
         let (message, files) = Self.parseMessageAndNameStatus(names.stdout)
@@ -483,7 +486,7 @@ public actor GitService {
     /// under the new one alone, git has nothing to match it with and shows the
     /// whole file as added.
     func commitDiffFiles(in root: String, commit: GitCommit, path: String? = nil, renamedFrom: String? = nil) async throws -> [GitDiffFile] {
-        var arguments = ["-c", "log.showRoot=true", "show", "--format=", "--no-ext-diff", "--no-textconv", "-U3", "--find-renames", "-m", "--first-parent", commit.hash]
+        var arguments = ["-c", "log.showRoot=true", "show", "--src-prefix=a/", "--dst-prefix=b/", "--format=", "--no-ext-diff", "--no-textconv", "-U3", "--find-renames", "-m", "--first-parent", commit.hash]
         if let path { arguments += ["--"] + Self.literal([renamedFrom, path].compactMap { $0 }) }
         return try await detached(arguments, in: root, timeout: 20) { output in
             guard output.status == 0 else {
@@ -499,9 +502,9 @@ public actor GitService {
     /// nothing to match against and reports the whole file as added.
     func diffFiles(in root: String, paths: [String] = [], staged: Bool, untracked: Bool = false) async throws -> [GitDiffFile] {
         var arguments: [String]
-        if untracked, let path = paths.last { arguments = ["diff", "--no-index", "--no-ext-diff", "-U3", "--", "/dev/null", path] }
+        if untracked, let path = paths.last { arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-index", "--no-ext-diff", "-U3", "--", "/dev/null", path] }
         else {
-            arguments = ["diff", "--no-ext-diff", "-U3", "--find-renames"]
+            arguments = ["diff", "--src-prefix=a/", "--dst-prefix=b/", "--no-ext-diff", "-U3", "--find-renames"]
             if staged { arguments.append("--cached") }
             if !paths.isEmpty { arguments += ["--"] + Self.literal(paths) }
         }

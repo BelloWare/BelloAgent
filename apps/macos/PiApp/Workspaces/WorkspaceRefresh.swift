@@ -367,6 +367,14 @@ extension WorkspaceModel {
             view.receipts = carried.compactMap(\.object); view.commandsRevision = result["commandsRevision"]?.string
         }
         let receipts = view.receipts
+        // The receipt is evidence even when saving it below fails. An old
+        // recovery button must stop being actionable before any store await.
+        view.acceptedCommands.formUnion(receipts.compactMap { $0["commandId"]?.string })
+        try await protectReturnedDrafts(view.recovered, view: view)
+        if !view.recovered.isEmpty {
+            view.recovered.removeAll { view.acceptedCommands.contains($0.id) }
+            if view.recovered.isEmpty { view.uncertain = false }
+        }
         // A message sent from here that the helper took elsewhere —
         // refused at delivery, removed, or held by a paused queue —
         // leaves the transcript, and the panel shows it at once.
@@ -382,6 +390,8 @@ extension WorkspaceModel {
             guard current() else { return false }
         }
         var settled: Set<String> = []
+        try await protectReturnedDrafts(intents, view: view)
+        guard current() else { return false }
         for var intent in intents {
             guard let receipt = receipts.last(where: { $0["commandId"]?.string == intent.id }), let state = receipt["state"]?.string,
                   state != "dispatched" else { continue }
@@ -395,8 +405,15 @@ extension WorkspaceModel {
         if !settled.isEmpty { intents.removeAll { settled.contains($0.id) } }
         // Held against the revision read: a write during the awaits
         // above moves the revision on, and the next snapshot reads again.
+        guard revision == view.pendingIntentRevision else { return true }
         view.pendingIntents = (revision, intents)
-        if intents != view.recovered { view.recovered = intents }
+        view.acceptedCommands.formIntersection(Set(intents.map(\.id)))
+        // A dispatched receipt or a local acknowledgement proves acceptance,
+        // even while the intent waits here for its terminal receipt.
+        let recoverable = intents.filter { intent in
+            intent.state == "intent" && !view.acceptedCommands.contains(intent.id) && !receipts.contains { $0["commandId"]?.string == intent.id }
+        }
+        if recoverable != view.recovered { view.recovered = recoverable }
         if view.recovered.isEmpty { view.uncertain = false }
         return true
     }

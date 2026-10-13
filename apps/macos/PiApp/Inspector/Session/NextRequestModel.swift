@@ -70,9 +70,11 @@ import Foundation
                     let page = try await workspace.readPreparedContext(id, revision: revision, section: "request", offset: offset)
                     guard self.generation == generation else { return }
                     let text = page["text"]?.string ?? ""
-                    pages.append(text); total = Int(page["total"]?.number ?? 0)
-                    self.document = .loading(loaded: offset + (text as NSString).length, total: total)
-                    guard let next = page["next"]?.number.map(Int.init), next > offset else { break }
+                    pages.append(text); total = CapturedNumber.integer(page["total"]?.number) ?? 0
+                    let (loaded, overflow) = offset.addingReportingOverflow((text as NSString).length)
+                    guard !overflow else { throw HostError.failure("The prepared request's page offset is invalid.") }
+                    self.document = .loading(loaded: loaded, total: total)
+                    guard let next = CapturedNumber.integer(page["next"]?.number), next > offset else { break }
                     offset = next
                 }
                 let joined = pages

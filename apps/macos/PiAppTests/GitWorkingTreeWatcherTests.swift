@@ -144,7 +144,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
         var spinner = false, statuses = 0, histories = 0, diffs = 0
         let watches = [
             controller.$diffLoading.sink { if $0 { spinner = true } },
-            controller.$status.dropFirst().sink { _ in statuses += 1 },
+            controller.$repository.map(\.status).removeDuplicates().dropFirst().sink { _ in statuses += 1 },
             controller.$commits.dropFirst().sink { _ in histories += 1 },
             controller.$diff.dropFirst().sink { _ in diffs += 1 },
         ]
@@ -352,7 +352,7 @@ final class GitWorkingTreeWatcherTests: GitPanelTestCase {
             controller.$branches.sink { branches.append($0.count) },
             // Each refresh is replaced the moment it has read the status, so
             // the branch and stash reads after it are the ones cancelled.
-            controller.$status.dropFirst().sink { _ in
+            controller.$repository.map(\.status).removeDuplicates().dropFirst().sink { _ in
                 superseded += 1
                 if superseded <= 3 { controller.startRefresh() }
             },

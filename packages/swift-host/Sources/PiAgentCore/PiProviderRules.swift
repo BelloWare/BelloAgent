@@ -97,11 +97,27 @@ enum PiProviderRules {
 
     /// settings.retry: three retries, 2 s doubling (2, 4, 8 s).
     struct RetrySettings: Sendable, Equatable {
-        var enabled = true
-        var maxRetries = 3
-        var baseDelayMs = 2_000.0
+        var enabled: Bool
+        var maxRetries: Int
+        var baseDelayMs: Double
         /// baseDelayMs × 2^(attempt − 1), for the 1-based retry attempt.
         func delayMs(attempt: Int) -> Double { baseDelayMs * pow(2, Double(max(0, attempt - 1))) }
+        /// Ours: the bounds the app's Settings allow (0–10 retries, a first
+        /// wait of up to 60 s); pi leaves them unbounded.
+        static let retryRange = 0...10
+        static let baseDelayRangeMs = 1.0...60_000.0
+        init(enabled: Bool = true, maxRetries: Int = 3, baseDelayMs: Double = 2_000) {
+            self.enabled = enabled; self.maxRetries = maxRetries; self.baseDelayMs = baseDelayMs
+        }
+        /// The app's setting, as `workspace.open` and `retry.configure` carry it.
+        init(wire: JSON) throws {
+            guard let enabled = wire["enabled"].flag, let retries = wire["maxRetries"].int, Self.retryRange.contains(retries),
+                  let base = wire["baseDelayMs"].double, Self.baseDelayRangeMs.contains(base) else {
+                throw AgentError("invalid_params", "Retry settings need enabled, maxRetries 0–10 and baseDelayMs from 1 to 60000")
+            }
+            self.init(enabled: enabled, maxRetries: retries, baseDelayMs: base)
+        }
+        var wire: JSON { ["enabled": JSON(enabled), "maxRetries": JSON(maxRetries), "baseDelayMs": JSON(baseDelayMs)] }
     }
 
     /// repairJson: escape raw control characters inside strings and double a

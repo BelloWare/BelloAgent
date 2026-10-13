@@ -31,6 +31,7 @@ extension WorkspaceModel {
     /// Entering an edit is read-only; active work can finish while the user
     /// prepares a replacement. Sending additionally requires an empty queue.
     func editEntryBlocker(_ view: SessionDisplay) -> String? {
+        if draftWrites.recoveries[view.id] != nil { return "Wait for the interrupted submission to finish saving." }
         guard let item = record(view.id) else { return "This conversation is unavailable." }
         if item.imported { return "Imported originals are read-only. Continue as a separate chat before editing." }
         if item.isArchived { return WorkspaceModel.archivedNotice }
@@ -84,7 +85,7 @@ extension WorkspaceModel {
                     guard let path = item.path else { throw HostError.failure("The original message has no retained journal.") }
                     result = try await history.editTarget(path: path, id: messageID)
                 }
-                guard view.editGeneration == generation, view.draft == draft.text, view.attachments == draft.attachments ?? [], view.skills == draft.skills ?? [] else { return }
+                guard view.editGeneration == generation, view.savedDraft == draft else { return }
                 guard result["messageId"]?.string == messageID, let text = result["text"]?.string, text.utf8.count <= SubmissionLimits.messageBytes else { throw HostError.failure("The complete original input is unavailable.") }
                 let input = result["input"]?.object
                 guard input == nil || input?["version"]?.number == 1 else { throw HostError.failure("Update Bello Agent to edit this input format.") }
@@ -96,8 +97,8 @@ extension WorkspaceModel {
                         return actual.sha256 != original.sha256 || actual.bytes != original.bytes
                     }.map(\.id))
                 }.value
-                guard view.editGeneration == generation, view.draft == draft.text, view.attachments == draft.attachments ?? [], view.skills == draft.skills ?? [] else { return }
-                if view.editingMessageID == nil { view.draftBeforeEdit = draft }
+                guard view.editGeneration == generation, view.savedDraft == draft else { return }
+                if view.editingMessageID == nil { view.draftBeforeEdit = draft; view.submissionReviews = [] }
                 view.editingMessageID = messageID; view.editSourceTimeline = result["sourceTimeline"]?.string; view.editSourceTextDigest = result["sourceTextDigest"]?.string
                 view.draft = text; view.attachments = attachments; view.skills = skills; view.editMissingAttachments = missing
                 view.editInputReviewRequired = result["legacyInputs"]?.bool ?? false
@@ -105,7 +106,7 @@ extension WorkspaceModel {
                 if (focusedSessionID ?? selectedID) == focusOrigin, focusOrigin == sessionID { focusedSessionID = sessionID; view.composerFocusRequest += 1 }
                 draftChanged(view)
             } catch {
-                guard view.editGeneration == generation, view.draft == draft.text, view.attachments == draft.attachments ?? [], view.skills == draft.skills ?? [] else { return }
+                guard view.editGeneration == generation, view.savedDraft == draft else { return }
                 view.editNotice = error.localizedDescription; view.notice = "The complete message could not be loaded for editing: " + error.localizedDescription
             }
         }
@@ -124,13 +125,14 @@ extension WorkspaceModel {
     /// Resends the edited message with `turn.edit`. Preconditions mirror the
     /// host: idle session, empty queue, retained user on the selected timeline.
     func sendEdit(sessionID: String? = nil) {
-        guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), let view = displays[id], let messageID = view.editingMessageID, let store else { return }
+        guard let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), let view = displays[id], view.draftReady, let messageID = view.editingMessageID, let store else { return }
         if let reason = editBlocker(view) { view.notice = reason; view.editNotice = reason; return }
         guard view.hasSubmittableInput else { view.editNotice = "Enter a replacement message, add an image or select a skill."; return }
         guard !item.imported, !isEphemeral(id) else { view.notice = "Continue or keep this chat before editing its messages."; return }
         guard !item.isArchived else { view.notice = WorkspaceModel.archivedNotice; return }
         guard !view.busy, view.queue.isEmpty, view.queueCount == 0 else { view.notice = "Wait for the current run and queue to finish before resending an edited message."; return }
         guard view.draft.utf8.count <= SubmissionLimits.messageBytes else { error = "The draft exceeds the 256 KiB submission limit"; return }
+        if reviewReturnedSubmission(view, retry: { [weak self] in self?.sendEdit(sessionID: id) }) { return }
         if view.uncertain {
             // A sheet on the chat's window, not a modal run loop: the other
             // chats keep streaming while this question waits for an answer.
@@ -143,6 +145,9 @@ extension WorkspaceModel {
         }
         let attachments = view.attachments, skills = view.skills
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString
+        // An edit stays in the composer while the helper replies. Its saved
+        // copy needs the same review gate as a normal send returned on failure.
+        view.submissionReviews.insert(commandID)
         let savedDraft = view.savedDraft
         var params = turnOverrides(for: item, base: Self.editTurnParams(messageID: messageID, text: text, turnID: turnID, attachments: attachments, skills: skills))
         if let timeline = view.editSourceTimeline { params["editSourceTimeline"] = .string(timeline) }
@@ -163,7 +168,7 @@ extension WorkspaceModel {
                 let lease = try connection.get()
                 try requireConnection(lease)
                 let host = try await open(item)
-                let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent", epoch: host.epoch, attachments: attachments, skills: skills)
+                let intent = CommandIntent(id: commandID, sessionID: item.id, turnID: turnID, text: text, state: "intent", epoch: host.epoch, attachments: attachments, skills: skills, draftReviewTracked: true)
                 if !isEphemeral(item.id) { try await store.put(intent, kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
                 try requireConnection(lease)
                 dispatched = true
@@ -197,6 +202,7 @@ extension WorkspaceModel {
                 if view.editGeneration == generation { view.editNotice = error.localizedDescription }
                 if case HostError.rejected(let code, _) = error, code == "journal_uncertain" { view.uncertain = true; view.runState = .interrupted }
                 else if case HostError.rejected(let code, _) = error {
+                    view.submissionReviews.remove(commandID); draftChanged(view)
                     // Refused: no branch was made.
                     if view.pendingBranch?.turnID == turnID { view.pendingBranch = nil }
                     // At the chat's cost limit the conversation says so, with a way to raise it.
@@ -205,7 +211,7 @@ extension WorkspaceModel {
                     if code == "connection_unavailable" { view.runState = .interrupted } else { undoShownState() }
                 }
                 else if dispatched { view.uncertain = true; view.runState = .interrupted }
-                else { undoShownState() }
+                else { view.submissionReviews.remove(commandID); draftChanged(view); undoShownState() }
             }
         }
     }

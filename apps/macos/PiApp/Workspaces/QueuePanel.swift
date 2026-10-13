@@ -164,6 +164,7 @@ extension WorkspaceModel {
     /// `editID` resumes an edit the helper already holds (after a restart).
     func editQueued(_ turnID: String, sessionID: String, resuming editID: String? = nil) {
         guard let view = displays[sessionID] else { return }
+        guard draftWrites.recoveries[view.id] == nil else { view.notice = "Wait for the interrupted submission to finish saving."; return }
         guard view.editingMessageID == nil, !view.editPreparing else {
             view.notice = "Finish or cancel the message edit before rewriting a queued message."; return
         }
@@ -257,6 +258,7 @@ extension WorkspaceModel {
         guard view.editingMessageID == nil, view.queueEditingID == nil else { return }
         // Set aside first: the draft saved for the chat stays the one typed.
         view.draftBeforeQueueEdit = view.savedDraft
+        view.submissionReviews = []
         view.draftBeforeQueueEdit?.queuedEdit = nil; view.unreconciledQueuedEdit = nil
         view.queueEditOriginal = original
         view.queueEditingID = turnID; view.queueEditID = editID; view.queueEditKeepsInput = keepsInput; view.queueEditResolving = false

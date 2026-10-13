@@ -75,6 +75,7 @@ extension WorkspaceModel {
             }
             // Journals written before 0.1.111, slimmed once while nothing else is going on.
             scheduleJournalSlimming()
+            schedulePastedImageCleanup()
         } catch { restoring = false; launching = false; self.error = "Chats could not be restored. \(error.localizedDescription)" }
     }
     /// A chat's journal is named in its record only once the helper has made

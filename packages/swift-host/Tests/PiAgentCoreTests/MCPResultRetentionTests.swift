@@ -25,6 +25,26 @@ private final class RetentionProbe: @unchecked Sendable {
     }
 }
 
+/// Holds setup or execution until the caller has reported that it lost the
+/// reply, without waiting for the Inspector's real IPC timeout.
+private actor HeldRetentionMCP: MCPTransport {
+    private let transport = FakeMCP(), method: String
+    private var held = true, failure: String?
+    var waiting = false
+    init(_ method: String, failure: String? = nil) { self.method=method; self.failure=failure }
+    func release() { held=false }
+    func request(_ method: String, params: JSON) async throws -> JSON {
+        if method == self.method {
+            waiting=true
+            while held { try await Task.sleep(nanoseconds: 5_000_000) }
+            if let failure { self.failure=nil; throw AgentError(failure, "Fixture: request did not execute") }
+        }
+        return try await transport.request(method, params: params)
+    }
+    func notify(_ method: String, params: JSON) async throws {}
+    func close() async { held=false }
+}
+
 /// An MCP call's "outcome unknown" marker stays until the call's result is in
 /// the chat's journal: a crash or a failed write before then keeps the
 /// evidence that a call which may have changed something ran.
@@ -84,6 +104,71 @@ final class MCPResultRetentionTests: XCTestCase {
         try await assertUnknown(manager, marker: probe.marker)
     }
 
+    func testAFailedReadWhileTheInvocationRunsLeavesTheOutcomeUnknown() async throws {
+        try await assertFailedReadWhileRunning("tools/call")
+    }
+
+    func testAFailedReadDuringInitializationLeavesTheOutcomeUnknown() async throws {
+        try await assertFailedReadWhileRunning("initialize")
+    }
+
+    private func assertFailedReadWhileRunning(_ method: String) async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("unknown.json"), manager = MCPManager(cwd: root, outcomeMarker: marker), transport = HeldRetentionMCP(method)
+        await manager.installForTesting(name: "test", transport: transport)
+        let call = Task { try await manager.perform(["action": "invoke", "server": "test", "tool": "echo", "arguments": [:]], retainedBy: "inspector-call") }
+        defer { call.cancel() }
+        try await eventually { await transport.waiting }
+        // The IPC request expired while MCP was still running. Its eventual
+        // successful reply will be dropped, so no later retention is coming.
+        await manager.resultsRetained(["inspector-call"], retained: false)
+        await manager.resultsRetained(["inspector-call"], retained: true)
+        await transport.release(); _ = try await call.value
+        try await assertUnknown(manager, marker: marker)
+    }
+
+    func testAnEarlyReadFailureDoesNotQuarantineACallThatNeverRan() async throws {
+        for (method, code) in [("initialize", "fixture_initialize"), ("tools/call", "mcp_rejected")] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+            let marker = root.appendingPathComponent("unknown.json"), manager = MCPManager(cwd: root, outcomeMarker: marker), transport = HeldRetentionMCP(method, failure: code)
+            await manager.installForTesting(name: "test", transport: transport)
+            let args: JSON = ["action": "invoke", "server": "test", "tool": "echo", "arguments": [:]]
+            let call = Task { try await manager.perform(args, retainedBy: "a") }; defer { call.cancel() }
+            try await eventually { await transport.waiting }
+            await manager.resultsRetained(["a"], retained: false)
+            await transport.release()
+            do { _ = try await call.value; XCTFail("The fixture must refuse this request") }
+            catch let error as AgentError { XCTAssertEqual(error.code, code) }
+            let list = try await manager.perform(["action": "list"])
+            XCTAssertEqual(list["outcomeUnknown"].flag, false)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+            try await manager.acknowledgeUnknown()
+            // Neither the failed invocation nor its acknowledgement may leak
+            // into a later call, even if that caller reuses the retention key.
+            _ = try await manager.perform(args, retainedBy: "a")
+            await manager.resultsRetained(["a"], retained: true)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        }
+    }
+
+    func testUnrelatedAndEarlySuccessAcknowledgementsCannotDischargeARunningCall() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("unknown.json"), manager = MCPManager(cwd: root, outcomeMarker: marker), transport = HeldRetentionMCP("tools/call")
+        await manager.installForTesting(name: "test", transport: transport)
+        let call = Task { try await manager.perform(["action": "invoke", "server": "test", "tool": "echo", "arguments": [:]], retainedBy: "a") }; defer { call.cancel() }
+        try await eventually { await transport.waiting }
+        await manager.resultsRetained(["other"], retained: false)
+        await manager.resultsRetained(["a"], retained: true)
+        await transport.release(); _ = try await call.value
+        let list = try await manager.perform(["action": "list"])
+        XCTAssertEqual(list["outcomeUnknown"].flag, false)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+        do { try await manager.acknowledgeUnknown(); XCTFail("An early success cannot have saved a result that does not exist yet") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "mcp_busy") }
+        await manager.resultsRetained(["a"], retained: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
     /// The marker and the in-memory state both say unknown; the user's
     /// acknowledgement is what clears them, as before.
     private func assertUnknown(_ manager: MCPManager, marker: URL) async throws {
@@ -112,8 +197,31 @@ final class MCPResultRetentionTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "one of the two results is still not kept")
         await manager.resultsRetained(["a"], retained: true)
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
-        // A caller that keeps nothing (the inspector's one-shot call) clears it on return, as before.
+        // An explicitly unretained caller still clears it on return.
         _ = try await manager.perform(["action": "invoke", "server": "test", "tool": "echo", "arguments": [:]])
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testAClosedManagerCannotRemoveTheReopenedWorkspacesMarker() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("unknown.json"), old = MCPManager(cwd: root, outcomeMarker: marker)
+        await old.installForTesting(name: "test", transport: FakeMCP())
+        _ = try await old.perform(["action": "invoke", "server": "test", "tool": "echo", "arguments": [:]], retainedBy: "old-call")
+        await old.close()
+        let reopened = MCPManager(cwd: root, outcomeMarker: marker)
+        await reopened.installForTesting(name: "test", transport: FakeMCP())
+        // Reopening inherits the unresolved call; its old owner no longer
+        // has authority to remove the marker when a delayed write completes.
+        await old.resultsRetained(["old-call"], retained: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path))
+        let recovered = try await MCPManager(cwd: root, outcomeMarker: marker).perform(["action": "list"])
+        XCTAssertEqual(recovered["outcomeUnknown"].flag, true)
+        try await reopened.acknowledgeUnknown()
+        _ = try await reopened.perform(["action": "invoke", "server": "test", "tool": "echo", "arguments": [:]], retainedBy: "new-call")
+        await old.resultsRetained(["old-call"], retained: true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: marker.path), "The new manager owns this pending result")
+        await reopened.resultsRetained(["new-call"], retained: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        await reopened.close()
     }
 }
