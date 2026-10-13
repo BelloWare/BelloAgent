@@ -115,6 +115,15 @@ struct FileLengths: Sendable {
     mutating func removeAll() { chunks = []; count = 0 }
 }
 
+/// Cancellation checked before and after blocking I/O. A cancelled worker
+/// keeps its queue slot until it actually returns, including on slow disks.
+private final class FilePageReadStop: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+    var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
+    func cancel() { lock.lock(); stopped = true; lock.unlock() }
+}
+
 @MainActor public final class FileDocument: FileTextSource {
     public enum Status: Equatable, Sendable {
         case indexing
@@ -145,6 +154,9 @@ struct FileLengths: Sendable {
         /// costing a little more than its text. What the screen shows, and
         /// reads held until answered, are kept even past it.
         public var cacheUnits = 8 << 20
+        /// Concurrent viewport page/window reads. Explicit holds share the
+        /// same workers; queued screens that have been left behind are dropped.
+        public var maximumPageReads = 4
         /// Called before opening, before each chunk the pass reads, and
         /// before each page or window is read.
         public var beforeOpen: (@Sendable () async -> Void)?
@@ -199,6 +211,26 @@ struct FileLengths: Sendable {
     private var cache: FileReadCache
     /// Reads under way, by what they read, with when each was last asked for.
     private var inFlight: [FileReadCache.Key: Int] = [:]
+    private var readTickets: [FileReadCache.Key: Int] = [:]
+    private var nextReadTicket = 0
+    private struct QueuedRead {
+        let key: FileReadCache.Key
+        /// The first line's extent when the page was requested. If that
+        /// line becomes long, only this bounded prefix was promised.
+        var pageUnits: Int
+    }
+    private var queuedReads: [QueuedRead] = []
+    private var explicitReads = Set<FileReadCache.Key>()
+    private var viewportReads = Set<FileReadCache.Key>()
+    private var screenKeys = Set<FileReadCache.Key>()
+    private var schedulingScreen = false
+    private struct ReadWorker {
+        let stop: FilePageReadStop
+        let task: Task<Void, Never>
+    }
+    private var activeReads: [Int: ReadWorker] = [:]
+    /// Blocking pread/decoding never occupies a cooperative executor thread.
+    private nonisolated static let pageReadQueue = DispatchQueue(label: "Bello.FilePages", qos: .userInitiated, attributes: .concurrent)
     /// The screen the view shows, as it said: what it needs is worked out
     /// again whenever what is known of the lines changes.
     private var screen: (lines: ClosedRange<Int>, columns: Range<Int>)?
@@ -213,7 +245,9 @@ struct FileLengths: Sendable {
     var cachedCost: Int { cache.cost }
     var cachedPages: Int { cache.pageCount }
     var holdsKept: Int { cache.holdCount }
-    var readsUnderWay: Int { inFlight.count + fetching }
+    var readsUnderWay: Int { queuedReads.count + activeReads.count + fetching }
+    var queuedPageReads: Int { queuedReads.count }
+    var activePageReads: Int { activeReads.count }
     /// Searches waiting for more of the text to be found.
     private var searchWaiters: [Int: CheckedContinuation<Void, Never>] = [:]
     private var searchWaiterTickets = 0
@@ -237,6 +271,7 @@ struct FileLengths: Sendable {
     public func close() {
         indexing?.cancel(); indexing = nil
         version += 1
+        cancelPageReads()
         bytes = nil
         wakeSearches()
     }
@@ -421,7 +456,7 @@ struct FileLengths: Sendable {
         status = .changed
         indexing?.cancel()
         self.version += 1
-        inFlight = [:]
+        cancelPageReads()
         arrival?(0...max(0, lineCount - 1))
         wakeSearches()
     }
@@ -430,7 +465,7 @@ struct FileLengths: Sendable {
         status = .failed(message); complete = true
         indexing?.cancel()
         self.version += 1
-        inFlight = [:]
+        cancelPageReads()
         arrival?(0...max(0, lineCount - 1))
         wakeSearches()
     }
@@ -439,7 +474,7 @@ struct FileLengths: Sendable {
         version += 1
         lengths.removeAll(); checkpoints = []; longLines = [:]; openLong = nil
         provisional = 0; finishedUTF16 = 0; scanned = 0; keptEnd = nil; complete = false; longestLine = 0
-        cache.removeAll(); inFlight = [:]
+        cache.removeAll(); cancelPageReads()
         #if DEBUG
         pagesEverLoaded = []
         #endif
@@ -546,24 +581,31 @@ struct FileLengths: Sendable {
             let high = grid ? min(max(low + 1, screen.columns.upperBound), length) : length
             for mark in Self.mark(before: low, in: long)...Self.mark(before: high - 1, in: long) { keys.insert(.window(line: line, mark: mark)) }
         }
-        cache.pin(screen: keys)
-        for key in keys where !cache.contains(key) { load(key) }
         // Around the screen, from its middle out, as much as half the cache
         // holds, not kept past the budget: pushing out nothing on screen.
         let span = last - first + 1
         let low = checkpoint(holding: max(0, first - span)), high = checkpoint(holding: min(lineCount - 1, last + span))
         let middle = checkpoint(holding: (first + last) / 2)
         var room = options.cacheUnits / 2
-        for distance in 0...max(middle - low, high - middle) {
+        var ahead: [FileReadCache.Key] = []
+        readAhead: for distance in 0...max(middle - low, high - middle) {
             for page in distance == 0 ? [middle] : [middle - distance, middle + distance] where page >= low && page <= high {
                 // A long line is read by the part the view asks for.
                 guard longLine(checkpoints[page].line) == nil else { continue }
                 let cost = pageCost(page)
-                guard cost <= room else { return }
+                guard cost <= room else { break readAhead }
                 room -= cost
-                if cache.payload(.page(page), use: true) == nil { load(page: page) }
+                ahead.append(.page(page))
             }
         }
+        cache.pin(screen: keys); screenKeys = keys
+        viewportReads = keys.union(ahead)
+        discardObsoleteReads()
+        schedulingScreen = true
+        for key in keys where !cache.contains(key) { load(key) }
+        for key in ahead where cache.payload(key, use: true) == nil { load(key) }
+        schedulingScreen = false
+        drainPageReads()
     }
     /// Runs `body`, which asks for text, and when some of what it asked for
     /// had not come, keeps all of it until the hold returned is let go of:
@@ -581,6 +623,117 @@ struct FileLengths: Sendable {
     }
 
     // MARK: Pages
+
+    private func enqueueRead(_ key: FileReadCache.Key) {
+        if !schedulingScreen, recording != nil || !viewportReads.contains(key) { explicitReads.insert(key) }
+        let pageUnits: Int
+        if case .page(let page) = key { pageUnits = utf16Length(ofLine: checkpoints[page].line) }
+        else { pageUnits = 0 }
+        if inFlight[key] != nil {
+            inFlight[key] = cache.tick()
+            if !complete, pageUnits > 0, let index = queuedReads.firstIndex(where: { $0.key == key }) {
+                queuedReads[index].pageUnits = max(queuedReads[index].pageUnits, pageUnits)
+            }
+            return
+        }
+        inFlight[key] = cache.tick()
+        nextReadTicket += 1; readTickets[key] = nextReadTicket
+        queuedReads.append(QueuedRead(key: key, pageUnits: pageUnits))
+        if !schedulingScreen { drainPageReads() }
+    }
+
+    private func discardObsoleteReads() {
+        let kept = cache.kept.union(viewportReads).union(explicitReads)
+        for key in Array(inFlight.keys) where !kept.contains(key) {
+            inFlight[key] = nil
+            if let ticket = readTickets.removeValue(forKey: key), let worker = activeReads[ticket] {
+                worker.stop.cancel(); worker.task.cancel()
+            }
+        }
+        queuedReads.removeAll { inFlight[$0.key] == nil }
+    }
+
+    private func cancelPageReads() {
+        for worker in activeReads.values { worker.stop.cancel(); worker.task.cancel() }
+        // Keep occupied slots until those workers return. A reopen cannot
+        // start another batch while cancelled disk reads are still blocked.
+        inFlight = [:]; readTickets = [:]; queuedReads = []
+        explicitReads = []; viewportReads = []; screenKeys = []
+    }
+
+    private func drainPageReads() {
+        guard reading else { return }
+        var kept = cache.kept
+        while activeReads.count < max(1, options.maximumPageReads), !queuedReads.isEmpty {
+            let next = queuedReads.firstIndex { screenKeys.contains($0.key) }
+                ?? queuedReads.firstIndex { kept.contains($0.key) || explicitReads.contains($0.key) } ?? 0
+            let request = queuedReads.remove(at: next), key = request.key
+            guard let ticket = readTickets[key] else { continue }
+            switch key {
+            case .page(let page):
+                if let long = longLine(checkpoints[page].line) {
+                    replanQueuedPage(request, long: long)
+                    kept = cache.kept
+                } else { startPage(page, ticket: ticket) }
+            case .window(let line, let mark):
+                if let long = longLine(line) { startWindow(mark, of: line, long: long, ticket: ticket) }
+                else { inFlight[key] = nil; readTickets[key] = nil; explicitReads.remove(key) }
+            }
+        }
+    }
+
+    /// A queued page is a plan made against an earlier index. A line that
+    /// was short then must not be read whole after the pass makes it long.
+    private func replanQueuedPage(_ request: QueuedRead, long: FileLongLine) {
+        let key = request.key
+        let lastColumn = max(0, min(request.pageUnits, utf16Length(ofLine: long.line)) - 1)
+        let windows = (0...Self.mark(before: lastColumn, in: long)).map { FileReadCache.Key.window(line: long.line, mark: $0) }
+        let replacements = Set(windows)
+        cache.replace(key, with: replacements)
+        let missing = windows.filter { !cache.contains($0) }
+        if explicitReads.remove(key) != nil { explicitReads.formUnion(missing) }
+        if viewportReads.remove(key) != nil { viewportReads.formUnion(replacements) }
+        if screenKeys.remove(key) != nil { screenKeys.formUnion(replacements) }
+        if recording?.remove(key) != nil { recording?.formUnion(replacements) }
+        inFlight[key] = nil; readTickets[key] = nil
+        // The outer drain selects the next worker. Preserve the old
+        // request's ownership instead of inferring new viewport demand.
+        let wasScheduling = schedulingScreen
+        schedulingScreen = true
+        defer { schedulingScreen = wasScheduling }
+        for window in missing { enqueueRead(window) }
+    }
+
+    private func readPage<Value: Sendable>(_ key: FileReadCache.Key, ticket: Int, version: Int,
+                                           work: @escaping @Sendable (FilePageReadStop) throws -> Value,
+                                           install: @escaping @MainActor (Result<Value, Error>) -> Void) {
+        let stop = FilePageReadStop(), before = options.beforePage
+        let task = Task.detached(priority: .userInitiated) { [weak self] in
+            if !stop.isStopped { await before?() }
+            let result: Result<Value, Error> = await withCheckedContinuation { continuation in
+                Self.pageReadQueue.async {
+                    let result = Result { () throws -> Value in
+                        guard !stop.isStopped else { throw CancellationError() }
+                        let value = try work(stop)
+                        guard !stop.isStopped else { throw CancellationError() }
+                        return value
+                    }
+                    continuation.resume(returning: result)
+                }
+            }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.activeReads[ticket] = nil
+                if self.readTickets[key] == ticket {
+                    self.readTickets[key] = nil; self.explicitReads.remove(key)
+                    if version == self.version, !stop.isStopped { install(result) }
+                    else { self.inFlight[key] = nil }
+                }
+                self.drainPageReads()
+            }
+        }
+        activeReads[ticket] = ReadWorker(stop: stop, task: task)
+    }
 
     private func longLine(_ index: Int) -> FileLongLine? {
         if let long = longLines[index] { return long }
@@ -609,11 +762,13 @@ struct FileLengths: Sendable {
         }
     }
     private func load(page: Int) {
-        guard reading, let bytes, let identity else { return }
+        guard reading else { return }
+        enqueueRead(.page(page))
+    }
+    private func startPage(_ page: Int, ticket: Int) {
+        guard let bytes, let identity else { return }
         let key = FileReadCache.Key.page(page)
-        // Asked for again while it is being read: as used from now.
-        guard inFlight[key] == nil else { inFlight[key] = cache.tick(); return }
-        inFlight[key] = cache.tick(); pageLoads += 1
+        pageLoads += 1
         #if DEBUG
         pagesEverLoaded.insert(page)
         #endif
@@ -625,12 +780,10 @@ struct FileLengths: Sendable {
         // made the length the pass has counted: kept only if the pass has
         // found nothing more by the time it comes.
         let partial = last && !complete ? epoch : nil
-        let encoding = encoding, version = version, before = options.beforePage
-        Task.detached(priority: .userInitiated) { [weak self] in
-            await before?()
-            let result: Result<[String], Error>
-            do {
+        let encoding = encoding, version = version
+        readPage(key, ticket: ticket, version: version, work: { stop in
                 let data = try bytes.read(at: range.lowerBound, count: range.count)
+                guard !stop.isStopped else { throw CancellationError() }
                 guard data.count == range.count, bytes.unchanged(since: identity) else { throw CocoaError(.fileReadUnknown) }
                 var found = FileDocument.lines(of: data, encoding: encoding, last: last)
                 if partial != nil, found.count == expected.count, let open = expected.last {
@@ -641,10 +794,10 @@ struct FileLengths: Sendable {
                 guard found.count >= expected.count, zip(found, expected).allSatisfy({ ($0.0 as NSString).length == $0.1 }) else {
                     throw CocoaError(.fileReadCorruptFile)
                 }
-                result = .success(Array(found.prefix(expected.count)))
-            } catch { result = .failure(error) }
-            await self?.install(page: page, firstLine: lines.lowerBound, result, bytes: range.count, version: version, partial: partial)
-        }
+                return Array(found.prefix(expected.count))
+        }, install: { [weak self] result in
+            self?.install(page: page, firstLine: lines.lowerBound, result, bytes: range.count, version: version, partial: partial)
+        })
     }
     private func install(page: Int, firstLine: Int, _ result: Result<[String], Error>, bytes: Int, version: Int, partial: Int?) {
         guard version == self.version, let asked = inFlight.removeValue(forKey: .page(page)) else { return }
@@ -755,10 +908,13 @@ struct FileLengths: Sendable {
         return text.substring(with: NSRange(location: from, length: to - from))
     }
     private func load(window index: Int, of line: Int, long: FileLongLine) {
-        guard reading, let bytes, let identity else { return }
+        guard reading else { return }
+        enqueueRead(.window(line: line, mark: index))
+    }
+    private func startWindow(_ index: Int, of line: Int, long: FileLongLine, ticket: Int) {
+        guard let bytes, let identity else { return }
         let key = FileReadCache.Key.window(line: line, mark: index)
-        guard inFlight[key] == nil else { inFlight[key] = cache.tick(); return }
-        inFlight[key] = cache.tick(); windowRequests += 1
+        windowRequests += 1
         let isLast = index == long.marks.count
         let mark = Self.mark(index, of: long)
         let from = long.byte + mark.byte
@@ -768,21 +924,19 @@ struct FileLengths: Sendable {
         // The last window of the line the pass is still in: as far as the
         // pass has gone, kept only if it has found nothing more since.
         let partial = isLast && openLong?.line == line ? epoch : nil
-        let encoding = encoding, version = version, before = options.beforePage
-        Task.detached(priority: .userInitiated) { [weak self] in
-            await before?()
-            let result: Result<String, Error>
-            do {
+        let encoding = encoding, version = version
+        readPage(key, ticket: ticket, version: version, work: { stop in
                 let count = Int(to - from)
                 let data = try bytes.read(at: from, count: count)
+                guard !stop.isStopped else { throw CancellationError() }
                 guard data.count == count, bytes.unchanged(since: identity) else { throw CocoaError(.fileReadUnknown) }
                 var text = data.withUnsafeBytes { FileDocument.decode($0, encoding) }
                 if partial != nil { text = FileDocument.fitted(text, to: expected) }
                 guard (text as NSString).length == expected else { throw CocoaError(.fileReadCorruptFile) }
-                result = .success(text)
-            } catch { result = .failure(error) }
-            await self?.install(window: key, line: line, result, bytes: Int(to - from), version: version, partial: partial)
-        }
+                return text
+        }, install: { [weak self] result in
+            self?.install(window: key, line: line, result, bytes: Int(to - from), version: version, partial: partial)
+        })
     }
     private func install(window key: FileReadCache.Key, line: Int, _ result: Result<String, Error>, bytes: Int, version: Int, partial: Int?) {
         guard version == self.version, let asked = inFlight.removeValue(forKey: key) else { return }

@@ -12,6 +12,56 @@ import ApplicationServices
 /// Mac text view; copy; and the text VoiceOver reads, asked for through the
 /// accessibility interface VoiceOver itself uses.
 final class FileTextViewTests: XCTestCase {
+    @MainActor func testOffscreenSyntaxArrivalDoesNotDirtyTheVisibleText() throws {
+        let fixture = fixture(GeneratedLines(2_000)), view = fixture.text
+        fixture.scroll.contentView.scroll(to: NSPoint(x: 0, y: view.top(ofLine: 1_000)))
+        fixture.draw()
+        // Explicitly leave the distant lines unprepared. AppKit may retain
+        // the previous viewport in preparedContentRect after a scroll.
+        view.preparedContentRect = view.visibleRect
+        XCTAssertGreaterThanOrEqual(view.visibleLines.lowerBound, 1_000)
+        let line = view.visibleLines.lowerBound + 2
+        let layout = try XCTUnwrap(view.layout(line))
+        let offscreenLayout = try XCTUnwrap(view.layout(0))
+        FileTextRenderCount.reset()
+        for line in 0..<100 { view.invalidateSyntax(inLine: line) }
+        // needsDisplay includes AppKit's pending window/scroll invalidation;
+        // cacheDisplay does not flush it. Observe syntax's requests directly.
+        XCTAssertEqual(FileTextRenderCount.syntaxInvalidations, 0, "100 offscreen completions must produce zero visible invalidations")
+        XCTAssertEqual(FileTextRenderCount.syntaxInvalidatedArea, 0)
+        XCTAssertTrue(view.layout(line) === layout, "offscreen syntax must preserve the visible layout")
+        XCTAssertFalse(view.layout(0) === offscreenLayout, "offscreen syntax must discard stale colours before scrolling back")
+        view.invalidateSyntax(inLine: line)
+        let dirty = NSRect(x: view.visibleRect.minX, y: view.top(ofLine: line), width: view.visibleRect.width, height: view.lineHeight)
+        XCTAssertEqual(FileTextRenderCount.syntaxInvalidations, 1)
+        XCTAssertEqual(FileTextRenderCount.syntaxInvalidatedArea, dirty.width * dirty.height, accuracy: 1,
+                       "a visible arrival dirties its own line only")
+        XCTAssertFalse(view.layout(line) === layout, "visible syntax must discard that line's old layout")
+    }
+
+    @MainActor func testSyntaxArrivalInvalidatesPreparedContentOutsideTheViewport() throws {
+        let fixture = fixture(GeneratedLines(2_000)), view = fixture.text
+        fixture.scroll.contentView.scroll(to: NSPoint(x: 0, y: view.top(ofLine: 1_000)))
+        fixture.draw()
+        let visible = view.visibleRect, line = view.visibleLines.upperBound + 3
+        let prepared = visible.union(NSRect(x: visible.minX, y: view.top(ofLine: line), width: visible.width, height: 2 * view.lineHeight))
+        let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: prepared))
+        view.cacheDisplay(in: prepared, to: bitmap)
+        view.preparedContentRect = prepared
+        let layout = try XCTUnwrap(view.layout(line))
+        let dirty = NSRect(x: prepared.minX, y: view.top(ofLine: line), width: prepared.width, height: view.lineHeight)
+        XCTAssertFalse(dirty.intersects(view.visibleRect))
+        XCTAssertTrue(view.preparedContentRect.contains(dirty))
+        FileTextRenderCount.reset()
+        view.invalidateSyntax(inLine: line)
+        print("FILE_TEXT prepared syntax invalidations=\(FileTextRenderCount.syntaxInvalidations) area=\(FileTextRenderCount.syntaxInvalidatedArea)")
+        XCTAssertEqual(FileTextRenderCount.syntaxInvalidations, 1, "prepared pixels must be redrawn before scrolling reveals them")
+        XCTAssertEqual(FileTextRenderCount.syntaxInvalidatedArea, dirty.width * dirty.height, accuracy: 1)
+        XCTAssertFalse(view.layout(line) === layout)
+        FileTextRenderCount.reset()
+        view.invalidateSyntax(inLine: 0)
+        XCTAssertEqual(FileTextRenderCount.syntaxInvalidations, 0, "genuinely unprepared lines still cause no repaint")
+    }
 
     // MARK: Sources
 

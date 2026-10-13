@@ -70,6 +70,17 @@ struct FileReadCache {
     mutating func release(_ hold: Int) {
         if holds.removeValue(forKey: hold) != nil { evict() }
     }
+    /// Indexing can turn a queued short page into long-line windows. Keep
+    /// the replacement payloads for every reader that held the old key.
+    mutating func replace(_ key: Key, with replacements: Set<Key>) {
+        if screen.remove(key) != nil { screen.formUnion(replacements) }
+        for hold in Array(holds.keys) {
+            guard var keys = holds[hold], keys.remove(key) != nil else { continue }
+            keys.formUnion(replacements); holds[hold] = keys
+        }
+        remove(key)
+        evict()
+    }
     /// What the screen and the holds keep.
     var kept: Set<Key> { holds.values.reduce(into: screen) { $0.formUnion($1) } }
 

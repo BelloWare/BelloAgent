@@ -687,7 +687,7 @@ final class FileDocumentTests: XCTestCase {
         options.beforePage = { await gate.wait() }
         let document = try await opened(try file((0..<100_000).map { "row \($0)" }.joined(separator: "\n")), options)
         for place in stride(from: 0, to: 100_000, by: 10_000) { document.showScreen(lines: place...(place + 511), columns: 0..<80) }
-        XCTAssertGreaterThan(document.readsUnderWay, 20, "each place asked for its runs")
+        XCTAssertLessThanOrEqual(document.queuedPageReads, 14, "only the last screen and its read-ahead stay queued")
         await gate.open()
         try await eventually("read") { document.readsUnderWay == 0 }
         XCTAssertGreaterThan(document.cachedPages, 0)

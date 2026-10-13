@@ -138,6 +138,10 @@ final class HostTransport: @unchecked Sendable {
     }
     private func captureEnded(status: Int32) {
         guard let capture, let epoch = hostEpoch else { receive(.exited(status)); return }
+        // Command admission ends now, even if archive work is stalled. The
+        // separate .exited below keeps ownership, clear and shutdown behind
+        // capture finalization; it must not keep a dead helper advertised ready.
+        receive(.failed(status == 0 ? "Runtime stopped" : "Runtime interrupted (\(status)). No request was replayed."))
         let pending = captureTask
         Task { [self] in
             // A received page may still be committing. Settle it and mark any
