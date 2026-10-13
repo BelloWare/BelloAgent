@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import PiApp
 
 private actor DrainArchiveConsumer {
@@ -30,7 +31,10 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
     @MainActor func testClearingWhileHelperStopsCannotBeUndoneByAnInFlightBegin() async throws {
         try await shutdownFixture(pastDeadline: false, clearDuringStop: true)
     }
-    @MainActor private func shutdownFixture(pastDeadline: Bool, clearDuringStop: Bool = false) async throws {
+    @MainActor func testKilledHelperStopsAcceptingCommandsBeforeCaptureFinalization() async throws {
+        try await shutdownFixture(pastDeadline: false, crashDuringCapture: true)
+    }
+    @MainActor private func shutdownFixture(pastDeadline: Bool, clearDuringStop: Bool = false, crashDuringCapture: Bool = false) async throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("capture-drain-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { if !clearDuringStop { try? FileManager.default.removeItem(at: root) } }
@@ -54,7 +58,7 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
         let archive = model?.traces ?? PayloadArchive(root: root.appendingPathComponent("archive"))
         let consumer = DrainArchiveConsumer(archive, holdBegin: clearDuringStop)
         try await archive.configure(quota: nil, bodyRetention: 86400, metricRetention: 604800)
-        let state = root.appendingPathComponent("state"), host = HostSupervisor()
+        let state = root.appendingPathComponent("state"), host = HostSupervisor(acknowledgmentTimeout: crashDuringCapture ? .milliseconds(200) : nil)
         defer { host.shutdown() }
         try await host.connect(cwd: root, state: state, capture: { try await consumer.accept($0) })
         _ = try await host.request("workspace.open", params: ["cwd": .string(root.path), "directory": .string(state.appendingPathComponent("Sessions").path), "captureProtocol": .number(1),
@@ -68,6 +72,10 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
             return snapshot["state"]?.string == "idle" && snapshot["messages"]?.array?.contains { $0.object?["role"]?.string == "assistant" } == true
         }
         try await eventually { await consumer.held }
+        if crashDuringCapture {
+            try await checkCrash(host: host, root: root, state: state, consumer: consumer, archive: archive)
+            return
+        }
         let release = Task {
             try await Task.sleep(for: .milliseconds(pastDeadline ? 4_000 : 50))
             await consumer.release()
@@ -113,6 +121,55 @@ final class CaptureDrainTests: XCTestCase, SerialTestLane {
         print("CAPTURE gracefulShutdown pastDeadline=\(pastDeadline) elapsed=\(elapsed) responseRetained=\(metadata["response"]?.object?["retainedBytes"]?.number ?? 0)")
         try await release.value
         XCTAssertFalse(FileManager.default.fileExists(atPath: state.appendingPathComponent("Sessions/.capture-outbox").path))
+        try await archive.clear(sessionID: "s")
+        let remaining = try await archive.statistics()
+        XCTAssertEqual(remaining["chunks"], 0); XCTAssertEqual(remaining["storedBytes"], 0)
+        try await archive.close()
+    }
+
+    @MainActor private func checkCrash(host: HostSupervisor, root: URL, state: URL, consumer: DrainArchiveConsumer, archive: PayloadArchive) async throws {
+        let connection = try XCTUnwrap(host.connectionID), pid = try XCTUnwrap(host.helperProcessIdentifier)
+        let lost = expectation(description: "Command channel loss precedes the stalled archive")
+        var losses = 0
+        host.onLoss = { losses += 1; if losses == 1 { lost.fulfill() } }
+        XCTAssertEqual(kill(pid, SIGKILL), 0)
+        await fulfillment(of: [lost], timeout: 1)
+        XCTAssertFalse(host.isReady, "A dead helper must not stay ready behind a capture callback")
+        XCTAssertEqual(host.connectionID, connection, "Retain capture ownership until finalization finishes")
+        XCTAssertThrowsError(try WorkspaceLock(url: state.appendingPathComponent("writer.lock")))
+        for method in ["turn.submit", "turn.edit"] {
+            do {
+                _ = try await host.request(method, sessionID: "s", params: ["clientTurnId": .string(UUID().uuidString), "text": .string("After the crash"), "messageId": .string("m")])
+                XCTFail("A dead command channel must reject this submission")
+            } catch {
+                XCTAssertTrue(error.localizedDescription.contains("Host is unavailable"), "Refuse before dispatch, without an uncertain acknowledgment timeout: \(error)")
+            }
+        }
+        var reconnected = false, cleared = false, stopped = false
+        let reconnecting = Task {
+            try await host.connect(cwd: root, state: state, capture: { try await consumer.accept($0) })
+            reconnected = true
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(reconnected, "connect() must not reuse the dead connection or replace its capture owner")
+        reconnecting.cancel()
+        let clearing = Task { try await host.settleCaptureIfStopping(); cleared = true }
+        let stopping = Task { try await host.shutdownAndWait(); stopped = true }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertFalse(cleared, "Clear must still wait for capture finalization")
+        XCTAssertFalse(stopped, "Shutdown must still wait for capture finalization")
+        await consumer.release()
+        try await clearing.value; try await stopping.value
+        _ = await reconnecting.result
+        XCTAssertNil(host.connectionID)
+        let attempts = try await archive.list(sessionID: "s")
+        XCTAssertEqual(attempts.first?["outcome"]?.string, "interrupted")
+        XCTAssertEqual(attempts.first?["response"]?.object?["state"]?.string, "partial")
+        try await host.connect(cwd: root, state: state, capture: { try await consumer.accept($0) })
+        XCTAssertNotEqual(host.connectionID, connection)
+        let info = try await host.request("runtime.info")
+        XCTAssertEqual(info.object?["engine"]?.string, "swift", "A new connection works after capture settles")
+        try await host.shutdownAndWait()
         try await archive.clear(sessionID: "s")
         let remaining = try await archive.statistics()
         XCTAssertEqual(remaining["chunks"], 0); XCTAssertEqual(remaining["storedBytes"], 0)
