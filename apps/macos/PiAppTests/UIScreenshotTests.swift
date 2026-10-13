@@ -284,6 +284,13 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
+        if testEnvironment("PI_APP_UI_GALLERY_RETRY_ONLY") == "1" {
+            try await captureRetrySettingsScenes(model: model, window: window, gallery: gallery, appearances: appearances)
+            XCTAssertNil(model.error, model.error ?? "")
+            for host in model.hosts.values { try await host.shutdownAndWait() }
+            try await model.traces.close()
+            return
+        }
         if testEnvironment("PI_APP_UI_GALLERY_COST_ONLY") == "1" {
             try await captureCostLimitScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                              workspaceID: workspace.id, profileID: connections[0].profile.id)
@@ -459,6 +466,7 @@ final class UIScreenshotTests: XCTestCase {
         try await captureLiteralTextScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                            workspaceID: workspace.id, profileID: connections[0].profile.id)
         try await captureWebhookScenes(model: model, window: window, gallery: gallery, appearances: appearances, chatID: main.id)
+        try await captureRetrySettingsScenes(model: model, window: window, gallery: gallery, appearances: appearances)
         try await captureBackgroundRequestScenes(model: model, window: window, gallery: gallery, appearances: appearances,
                                                  chatID: main.id, workspaceID: workspace.id, profileID: connections[0].profile.id)
         try await captureSidesPanelScenes(model: model, window: window, gallery: gallery, appearances: appearances,
@@ -1423,6 +1431,35 @@ final class UIScreenshotTests: XCTestCase {
             NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
             try capture(panel, to: gallery.appendingPathComponent("20-compaction-requests-\(name).png"))
         }
+    }
+
+    /// 30 · Settings → Connections → Retries: the one retry setting every
+    /// connection uses, with its back-off spelled out. Saved for the scene
+    /// and put back to pi's default afterwards.
+    @MainActor private func captureRetrySettingsScenes(model: WorkspaceModel, window: NSWindow, gallery: URL,
+                                                       appearances: [(String, NSAppearance.Name)]) async throws {
+        try await model.updateConfiguration { $0.retry = RetryPreferences(enabled: true, maxRetries: 4, baseDelaySeconds: 3) }
+        model.settingsSection = .connections
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance)
+            if window.attachedSheet == nil { model.showProfiles = true; try await settle(2.2) }
+            let sheet = try XCTUnwrap(window.attachedSheet, "Settings opened as a sheet")
+            let scroll = try XCTUnwrap(descendants(NSScrollView.self, in: sheet.contentView ?? NSView()).max { $0.frame.height < $1.frame.height })
+            let document = try XCTUnwrap(scroll.documentView)
+            let summary = try XCTUnwrap(descendants(RowText.self, in: document).first { $0.accessibilityIdentifier() == "settings-retry-summary" }, "The retry summary")
+            XCTAssertEqual(summary.block.text, "Waits 3 s, 6 s, 12 s, 24 s")
+            for _ in 0..<2 {
+                let frame = summary.convert(summary.bounds, to: document)
+                let bottom = document.isFlipped ? frame.maxY : document.frame.height - frame.minY
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, min(bottom + 110 - scroll.contentView.bounds.height, document.frame.height - scroll.contentView.bounds.height))))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                try await settle(0.4)
+            }
+            try await settle(0.6)
+            try capture(window, to: gallery.appendingPathComponent("30-retry-settings-\(name).png"))
+        }
+        model.showProfiles = false; try await settle(0.8)
+        try await model.updateConfiguration { $0.retry = nil }
     }
 
     /// 19 · The webhook: its group in Settings, and a finished chat's preview

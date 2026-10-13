@@ -41,7 +41,9 @@ extension AgentSession {
     func completeWithRetries(profile: Profile, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], turnID: String, purpose: String, operation: JSON = .null, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void, reset: () throws -> Void,
                              refresh: () async throws -> (profile: Profile, messages: [ChatMessage], instructions: String, tools: [ToolDefinition])? = { nil }) async throws -> ModelReply {
         var profile = profile, messages = messages, instructions = instructions, tools = tools
-        let attempts = retrySettings.enabled ? 1 + max(0, retrySettings.maxRetries) : 1
+        // One policy for the whole request: a setting changed meanwhile applies from the next one.
+        let retry = retrySettings
+        let attempts = retry.enabled ? 1 + max(0, retry.maxRetries) : 1
         var attempt = 0
         modelRequestsMs = 0; modelReplyMs = 0
         // The retry notice describes this request only. It goes whichever way
@@ -70,7 +72,7 @@ extension AgentSession {
                 try reset()
                 retryInfo = ["attempt": JSON(attempt + 1), "of": JSON(attempts), "reason": JSON(error.message)]
                 runStatus = .retrying; event("retry", retryInfo)
-                try await Task.sleep(nanoseconds: UInt64(retrySettings.delayMs(attempt: attempt) * 1_000_000))
+                try await Task.sleep(nanoseconds: UInt64(retry.delayMs(attempt: attempt) * 1_000_000))
                 runStatus = .running; event("state")
                 if let next = try await refresh() { (profile, messages, instructions, tools) = next }
             }

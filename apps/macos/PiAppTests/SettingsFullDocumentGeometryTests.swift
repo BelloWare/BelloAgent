@@ -107,19 +107,19 @@ import XCTest
         nativeScroll.scrollerStyle = .legacy
         let page = try XCTUnwrap(nativeScroll.documentView as? VerticalStack)
         let nativeInitial = try await settle(native, window: nativeWindow, scroll: nativeScroll, phase: "native-initial") {
-            controller.loaded && !controller.busy && page.items.count == 6
+            controller.loaded && !controller.busy && page.items.count == 7
         }
-        XCTAssertEqual(page.items.count, 6)
+        XCTAssertEqual(page.items.count, 7)
         let cards = page.items.compactMap { $0 as? SettingsCard }
-        XCTAssertEqual(cards.map { $0.rows.count }, [11, 1, 5, 1, 1], "Every saved-connection row and lower group is retained")
+        XCTAssertEqual(cards.map { $0.rows.count }, [11, 1, 5, 1, 1, 4], "Every saved-connection row and lower group is retained, then the Retries group (0.1.124)")
         let editor = try XCTUnwrap(views(CodeEditorView.self, in: native).first)
         XCTAssertEqual(editor.frame.height, 130, accuracy: 0.5, "The last capabilities group retains its full editor")
         try record("initial", kind: "native", snapshot: nativeInitial, groups: frames(page), window: nativeWindow)
         scroll(nativeScroll, toBottom: true)
         let nativeBottom = try await settle(native, window: nativeWindow, scroll: nativeScroll, phase: "native-bottom")
         XCTAssertGreaterThan(nativeBottom.origin, 0)
-        XCTAssertGreaterThanOrEqual(nativeBottom.origin + nativeBottom.clipHeight, try XCTUnwrap(frames(page)[.capabilities]).maxY,
-                                    "The entire final capabilities group and footnote are reachable")
+        XCTAssertGreaterThanOrEqual(nativeBottom.origin + nativeBottom.clipHeight, page.items[6].frame.maxY,
+                                    "The entire final Retries group and footnote are reachable")
         try record("bottom", kind: "native", snapshot: nativeBottom, groups: frames(page), window: nativeWindow)
         scroll(nativeScroll, toBottom: false)
         let nativeTop = try await settle(native, window: nativeWindow, scroll: nativeScroll, phase: "native-returned-top")
@@ -192,13 +192,17 @@ import XCTest
         }
         XCTAssertEqual(nativeInitial.clipWidth, lazyBottom.clipWidth, accuracy: 0.5)
         XCTAssertEqual(nativeInitial.clipHeight, lazyBottom.clipHeight, accuracy: 0.5)
-        XCTAssertEqual(nativeInitial.documentHeight, lazyBottom.documentHeight, accuracy: 0.5, "The native page retains the original complete content height")
-        XCTAssertEqual(nativeInitial.knob, lazyBottom.knob, accuracy: 0.001, "The native thumb matches the original fully realized page")
+        // The Retries group (0.1.124) follows the frozen page's last group: the
+        // native page is the original plus that group and its spacing.
+        let retries = page.items[6].frame.maxY - page.items[5].frame.maxY
+        XCTAssertGreaterThan(retries, 100)
+        XCTAssertEqual(nativeInitial.documentHeight - retries, lazyBottom.documentHeight, accuracy: 0.5, "The native page retains the original complete content height")
+        XCTAssertEqual(nativeInitial.knob, lazyBottom.knob * lazyBottom.documentHeight / nativeInitial.documentHeight, accuracy: 0.002, "The native thumb matches the original fully realized page")
         XCTAssertEqual(nativeInitial.clipWidth, eagerComplete.clipWidth, accuracy: 0.5)
         XCTAssertEqual(nativeInitial.clipHeight, eagerComplete.clipHeight, accuracy: 0.5)
-        XCTAssertEqual(nativeInitial.documentHeight, eagerComplete.documentHeight, accuracy: 1.01, "The native page retains the complete old content height")
+        XCTAssertEqual(nativeInitial.documentHeight - retries, eagerComplete.documentHeight, accuracy: 1.01, "The native page retains the complete old content height")
         XCTAssertEqual(lazyBottom.knob, eagerComplete.knob, accuracy: 0.001, "The old thumb at the bottom reflects the complete content")
-        XCTAssertEqual(nativeInitial.knob, eagerComplete.knob, accuracy: 0.001, "The native thumb reflects the complete old content")
+        XCTAssertEqual(nativeInitial.knob, eagerComplete.knob * eagerComplete.documentHeight / nativeInitial.documentHeight, accuracy: 0.002, "The native thumb reflects the complete content")
         print("SETTINGS-LAZY-ESTIMATE initialHeight=\(lazyInitial.documentHeight) realizedHeight=\(lazyBottom.documentHeight) returnedTopHeight=\(lazyTop.documentHeight) nativeHeight=\(nativeInitial.documentHeight) initialKnob=\(lazyInitial.knob) realizedKnob=\(lazyBottom.knob) returnedTopKnob=\(lazyTop.knob)")
     }
 }

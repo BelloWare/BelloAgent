@@ -82,7 +82,10 @@ extension WorkspaceModel {
         try Task.checkCancellation()
         let connection = host.connectionID
         // "cwd" remains for hosts that predate multi-folder roots; "roots" lists every trusted folder, primary first.
-        _ = try await host.request("workspace.open", params: ["cwd": .string(workspace.path), "roots": .array(workspace.roots.map(WireValue.string)), "directory": .string(state.appendingPathComponent("Sessions").path), "captureProtocol": .number(1), "resources": try await resourceSettings(workspaceID: workspace.id), "mcp": configuration.mcp[workspace.id] ?? .object(["servers": .object([:])])])
+        let retry = configuration.retrySettings
+        _ = try await host.request("workspace.open", params: ["cwd": .string(workspace.path), "roots": .array(workspace.roots.map(WireValue.string)), "directory": .string(state.appendingPathComponent("Sessions").path), "captureProtocol": .number(1), "resources": try await resourceSettings(workspaceID: workspace.id), "mcp": configuration.mcp[workspace.id] ?? .object(["servers": .object([:])]), "retry": retry.wire])
+        // A change saved while the helper was opening missed both the open and the broadcast to ready helpers.
+        if configuration.retrySettings != retry { _ = try await host.request("retry.configure", params: configuration.retrySettings.wire.object ?? [:]) }
         if PerformanceProbe.shared.enabled { try await host.calibrateClock() }
         try Task.checkCancellation()
         guard host.isReady, hosts[workspace.id] === host, let connection, host.connectionID == connection else {
