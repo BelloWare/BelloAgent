@@ -29,6 +29,8 @@ import Darwin
     private let writeQueue = DispatchQueue(label: "com.belloware.PiApp.pty.input", qos: .userInitiated)
     var onData: ((Data) -> Void)?
     var onExit: ((Int32) -> Void)?
+    /// Process ownership ends at reap, before the last output reaches its view.
+    var onReap: (() -> Void)?
     var onNotice: ((String) -> Void)?
     /// Reaps the child if it can be reaped now: `waitpid` with `WNOHANG`,
     /// retried on `EINTR`. Zero means "not yet". A seam, so a test can make
@@ -218,6 +220,7 @@ import Darwin
         inputLifetime.cancel()
         exitWatcher?.setEventHandler(handler: nil); exitWatcher?.cancel(); exitWatcher = nil
         pendingKill?.cancel(); pendingKill = nil
+        let notify = onReap; onReap = nil; notify?()
         // Drain what the child wrote before it exited, then close.
         let oldReader = reader, oldMaster = reader == nil ? -1 : master
         reader = nil; master = -1

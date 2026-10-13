@@ -599,6 +599,35 @@ final class TerminalPanelSerialTests: TerminalPanelTestCase, SerialTestLane {
         try await eventually("reap the shell", timeout: 10) { !session.process.running }
     }
 
+    /// Removed tabs must remain covered by Quit until the kernel reaps them.
+    @MainActor private func quitImmediatelyAfterEnding(restart: Bool) async throws {
+        let registry = TerminalRegistry.shared
+        registry.shutdown()
+        let (directory, restore) = try hangUpIgnoringShell(restart ? "restart-quit" : "close-quit")
+        defer { registry.shutdown(); restore() }
+        let workspace = WorkspaceRecord(id: UUID().uuidString, path: directory.path, trusted: true)
+        let session = registry.session(for: workspace), shell = session.process.processID
+        let child = try await startedChild(in: directory, session: session)
+        defer {
+            PseudoTerminal.endForQuit([session.process])
+            if !Self.gone(child) { kill(child, SIGKILL) }
+        }
+        if restart { XCTAssertNotNil(registry.restart(session.id, in: workspace.id, generation: session.generation)) }
+        else { registry.close(session.id, in: workspace.id, generation: session.generation) }
+        registry.shutdown()
+        // Quit cannot service the old terminal's delayed SIGKILL or main-actor callbacks.
+        let deadline = ProcessInfo.processInfo.systemUptime + 1
+        while ProcessInfo.processInfo.systemUptime < deadline, !(Self.exited(shell) && Self.gone(child)) { usleep(2_000) }
+        XCTAssertTrue(Self.exited(shell), "Quit must include the terminal just removed from the project")
+        XCTAssertTrue(Self.gone(child), "Quit must also stop the removed terminal's process group")
+        PseudoTerminal.endForQuit([session.process])
+        try await eventually("reap the removed shell", timeout: 10) { !session.process.running }
+        XCTAssertNil(registry.terminating[ObjectIdentifier(session.process)], "Reaping releases the retired process immediately")
+    }
+
+    @MainActor func testCloseThenQuitImmediatelyEndsTheRemovedShell() async throws { try await quitImmediatelyAfterEnding(restart: false) }
+    @MainActor func testRestartThenQuitImmediatelyEndsTheReplacedShell() async throws { try await quitImmediatelyAfterEnding(restart: true) }
+
     /// Closing one terminal keeps the two-second grace before the forced stop.
     @MainActor func testClosingATerminalStillGivesItsShellTheGrace() async throws {
         let registry = TerminalRegistry.shared
