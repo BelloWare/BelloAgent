@@ -35,7 +35,10 @@ extension WorkspaceModel {
     }
 
     func send(steer: Bool = false, sessionID: String? = nil) {
-        if let id = sessionID ?? focusedSessionID ?? selectedID, draftWrites.recoveries[id] != nil || displays[id]?.draftReady == false { return }
+        if let id = sessionID ?? focusedSessionID ?? selectedID, draftWrites.recoveries[id] != nil || displays[id]?.draftReady == false {
+            if sessionID != nil { error = "The message was not sent. Wait for the draft to finish loading or recovering, then try again." }
+            return
+        }
         // Global commands target the visible conversation. Explicit session
         // submissions already accepted by an asynchronous side flow continue.
         guard sessionID != nil || page == .chats else { return }

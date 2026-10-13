@@ -105,6 +105,15 @@ final class SendBookkeepingTests: XCTestCase {
 }
 
 extension SendBookkeepingTests {
+    @MainActor func testExplicitSendReportsAnUnreadyDraftInsteadOfSilentlyReturning() async throws {
+        let root = scratchRoot("unready-send")
+        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let view = SessionDisplay(id: "chat"); view.draftReady = false; view.draft = "Do not drop this request"
+        model.displays[view.id] = view; model.chats = [ChatRecord(id: view.id, workspaceID: "w", title: "Chat", profileID: "p")]
+        model.send(sessionID: view.id)
+        XCTAssertNotNil(model.error); XCTAssertEqual(view.draft, "Do not drop this request"); XCTAssertFalse(view.loading)
+    }
     @MainActor func testRestoredDraftCannotSendWhileAcceptanceIsBeingRead() async throws { try await acceptanceReadGate(fails: false) }
     @MainActor func testFailedAcceptanceReadKeepsSubmissionBlockedUntilRetry() async throws { try await acceptanceReadGate(fails: true) }
     @MainActor private func acceptanceReadGate(fails: Bool) async throws {

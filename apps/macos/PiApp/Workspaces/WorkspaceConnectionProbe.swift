@@ -120,7 +120,34 @@ extension WorkspaceModel {
     /// Selection can change while the saved test chat loads. Its submission
     /// always belongs to that chat, never to the newly selected conversation.
     func submitConnectionTestChat(_ id: String) {
-        guard let view = displays[id], record(id)?.connectionTest == true else { return }
+        guard let view = displays[id], let item = record(id), item.connectionTest == true else {
+            error = "The connection test could not be sent because its chat is no longer available. Test the connection again."; return
+        }
+        guard !view.loading, !installPreparing, !isShutDown else {
+            error = "The connection test could not be sent while its chat or the app is busy. Test the connection again when it finishes."; return
+        }
+        if !view.draftReady || draftWrites.recoveries[id] != nil {
+            // Pin the originating display while navigation can move elsewhere.
+            // The confirmed request owns this read, not the cancelled selection.
+            let navigation = view.presentation.navigation
+            view.loading = true
+            Task {
+                do {
+                    await navigation?.value
+                    if let recovery = draftWrites.recoveries[id] { await recovery.value }
+                    guard try await reconcileSubmissionDraft(item, view: view, current: {
+                        !self.isShutDown && !self.installPreparing && !Task.isCancelled && self.displays[id] === view && self.record(id)?.connectionTest == true
+                    }) else { throw HostError.failure("Its chat is no longer available for submission.") }
+                } catch {
+                    view.loading = false
+                    self.error = "The connection test could not be sent because its draft could not be prepared. \(error.localizedDescription)"; return
+                }
+                // Transfer loading to send in this same turn; a defer here
+                // would clear the flag that the submission now owns.
+                view.loading = false; submitConnectionTestChat(id)
+            }
+            return
+        }
         view.draft = "Reply with OK to confirm this API connection."
         send(sessionID: id)
     }

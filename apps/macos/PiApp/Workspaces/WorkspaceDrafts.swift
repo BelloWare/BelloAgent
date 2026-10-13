@@ -20,6 +20,28 @@ struct DraftWrites {
 }
 
 extension WorkspaceModel {
+    /// Selection may abandon its read, but an explicit submission still needs
+    /// this reconciliation without taking the reader back to its chat.
+    func reconcileSubmissionDraft(_ item: ChatRecord, view: SessionDisplay, current: () -> Bool) async throws -> Bool {
+        guard let store else { throw StoreError.unavailable }
+        let wantsMetadata = !view.selectionMetadataLoaded, draftAtStart = view.savedDraft
+        let metadata = try await store.selectionMetadata(id: view.id, draft: wantsMetadata, anchor: wantsMetadata && view.scrollAnchor == nil)
+        guard current() else { return false }
+        if wantsMetadata {
+            if let draft = metadata.draft, view.draft == draftAtStart.text && view.attachments == (draftAtStart.attachments ?? []) && view.skills == (draftAtStart.skills ?? []),
+               view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil {
+                view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } }
+            }
+            if view.scrollAnchor == nil { view.scrollAnchor = metadata.anchor }
+            view.selectionMetadataLoaded = true
+        }
+        let recovered = try await recoverableIntents(metadata.recovered, for: item, view: view)
+        guard current() else { return false }
+        view.recovered = recovered; view.uncertain = !recovered.isEmpty
+        // Text alone cannot authorize a resend while acceptance is unread.
+        view.draftReady = true
+        return true
+    }
     /// An acknowledgement may be missing locally after a full disk or crash.
     /// Consult durable helper evidence before exposing any recovery action.
     func recoverableIntents(_ intents: [CommandIntent], for item: ChatRecord, view: SessionDisplay) async throws -> [CommandIntent] {

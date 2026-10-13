@@ -158,23 +158,7 @@ extension WorkspaceModel {
                 self.displays[id] === view && view.presentationGeneration == generation
         }
         do {
-            let wantsMetadata = !view.selectionMetadataLoaded
-            let draftAtStart = view.savedDraft
-            let metadata = try await self.store?.selectionMetadata(id: id, draft: wantsMetadata,
-                                            anchor: wantsMetadata && view.scrollAnchor == nil)
-            guard current() else { return }
-            if wantsMetadata {
-                if let draft = metadata?.draft, view.draft == draftAtStart.text && view.attachments == (draftAtStart.attachments ?? []) && view.skills == (draftAtStart.skills ?? []),
-                   view.draft.isEmpty && view.skills.isEmpty && view.attachments.isEmpty && view.editingMessageID == nil && view.queueEditingID == nil { view.restoreDraft(draft); if let queued = draft.queuedEdit { Task { await self.reconcileQueuedEdit(view, queued) } } }
-                if view.scrollAnchor == nil { view.scrollAnchor = metadata?.anchor }
-                view.selectionMetadataLoaded = true
-            }
-            let recovered = try await self.recoverableIntents(metadata?.recovered ?? [], for: item, view: view)
-            guard current() else { return }
-            view.recovered = recovered; view.uncertain = !recovered.isEmpty
-            // Restoring text alone does not authorize it: a slow acceptance
-            // read may still discover that the helper already ran this copy.
-            view.draftReady = true
+            guard try await reconcileSubmissionDraft(item, view: view, current: current) else { return }
             if focusesComposer { view.composerFocusRequest += 1 }
             // The chat's file can be named while its page is read: its
             // first message writes the journal, and the helper can report
