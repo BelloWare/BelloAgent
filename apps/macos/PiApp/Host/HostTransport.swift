@@ -114,6 +114,7 @@ final class HostTransport: @unchecked Sendable {
         let epoch = frame["hostEpoch"] ?? .null
         guard let capture, !capturePending else { acknowledgeCapture(id, epoch: epoch, accepted: false); return }
         if var metadata = packet["metadata"]?.object { metadata["hostEpoch"] = epoch; packet["metadata"] = .object(metadata) }
+        packet["hostEpoch"] = epoch
         let value = packet; capturePending = true
         captureTask = Task { [self] in
             let accepted: Bool

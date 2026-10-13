@@ -88,6 +88,7 @@ public actor TraceStore {
             // one page instead of one acknowledgment each.
             if let index = openPages[id], index >= outboxHead, index < outbox.count, var waiting = outbox[index].page,
                waiting.body == kind, waiting.offset + waiting.bytes.count == offset + start, waiting.bytes.count + page.count <= 32_768 {
+                outbox[index].spoolRevision=spoolPacket(Self.bytePacket(id,Page(body:kind,offset:offset+start,bytes:page)),attempt:id)
                 waiting.bytes.append(page); outbox[index].page = waiting
             } else {
                 post(.null, attempt: id, stage: .bytes, page: Page(body: kind, offset: offset + start, bytes: page))
@@ -229,7 +230,7 @@ public actor TraceStore {
 
     /// What a rejected packet means for its request's later packets.
     private enum Stage { case begin, update, links, bytes, masking, events, operation, finish }
-    private struct Outgoing { let packet: JSON; let attempt: String; let stage: Stage; var page: Page? }
+    private struct Outgoing { let packet: JSON; let attempt: String; let stage: Stage; var page: Page?; var spoolRevision: Int? }
     /// A body page's bytes stay raw until sent, so a later page can join it.
     private struct Page { let body: String, offset: Int; var bytes: Data }
     private struct Delivery { var refused = false, bytesStopped = false, linksStopped = false, eventsStopped = false }
@@ -243,10 +244,60 @@ public actor TraceStore {
     private var openPages: [String: Int] = [:]
     private var deliveries: [String: Delivery] = [:]
     private var idle: [CheckedContinuation<Void, Never>] = []
+    private var spool: CaptureSpool?
+    private var shuttingDown = false
+    /// Bound to this workspace's private state directory, before any request
+    /// starts. Recovery pages use the same one-packet acknowledged transport.
+    func openCaptureSpool(in directory: URL) throws {
+        guard spool == nil else { return }
+        let spool=try CaptureSpool(in:directory); self.spool=spool
+        Task { await self.replayCapture(spool) }
+    }
+    /// Delivery can stop at once: every queued packet is already on disk,
+    /// and final observations from cancelling runs continue to append there.
+    func stopCaptureDelivery() { shuttingDown=true }
+    private static func bytePacket(_ attempt: String, _ page: Page) -> JSON {
+        ["type":"bytes", "attemptId":JSON(attempt), "body":JSON(page.body), "offset":JSON(page.offset), "bytes":JSON(page.bytes.base64EncodedString())]
+    }
+    private func spoolPacket(_ packet: JSON, attempt: String) -> Int? {
+        do { return try spool?.append(packet,attempt:attempt) }
+        catch { traces[attempt]?.persistenceError="Request capture could not be spooled for recovery"; return nil }
+    }
+    private func replayCapture(_ spool: CaptureSpool) async {
+        for file in spool.recovered {
+            guard !shuttingDown else { return }
+            do {
+                let reader=try JournalRecordReader(file,allowIncompleteTail:true)
+                let attempt=file.deletingPathExtension().lastPathComponent
+                var accepted=true, began=false, finished=false, first=true, postlude=false, latest: JSON = .null
+                while let line=try reader.nextLine() {
+                    var packet=try JSON.parse(line)
+                    guard packet["attemptId"].text == attempt || packet["metadata"]["attemptId"].text == attempt else { throw AgentError("capture_spool","Capture recovery identity does not match") }
+                    if first { postlude=packet["type"].text != "begin"; first=false }
+                    if postlude { packet["replay"]=true }
+                    if packet["type"].text == "begin" { packet["type"]="replay.begin"; began=true }
+                    if !packet["metadata"].isNull { latest=packet["metadata"] }
+                    if packet["type"].text == "finish" { finished=true }
+                    guard !shuttingDown else { return }
+                    if !(await sink(packet)) { accepted=false; break }
+                }
+                guard accepted, !shuttingDown else { continue }
+                // A crash can leave a durable prefix without a terminal
+                // packet. Preserve it as interrupted, never as complete.
+                if began, !finished, !latest.isNull {
+                    latest["outcome"]="interrupted"; latest["modelOutcome"]="interrupted"; latest["transportOutcome"]="interrupted"
+                    guard await sink(["type":"finish","metadata":latest]) else { continue }
+                }
+                guard !shuttingDown, await sink(["type":"replay.end","attemptId":JSON(attempt)]) else { continue }
+                try spool.removeRecovered(file)
+            } catch { /* Keep an unreadable or unacknowledged spool for recovery. */ }
+        }
+    }
     private func post(_ packet: JSON, attempt: String, stage: Stage, page: Page? = nil) {
-        outbox.append(Outgoing(packet: packet, attempt: attempt, stage: stage, page: page))
+        let revision=spoolPacket(page.map { Self.bytePacket(attempt,$0) } ?? packet,attempt:attempt)
+        outbox.append(Outgoing(packet: packet, attempt: attempt, stage: stage, page: page,spoolRevision:revision))
         if page != nil { openPages[attempt] = outbox.count - 1 } else { openPages.removeValue(forKey: attempt) }
-        guard !draining else { return }
+        guard !draining, !shuttingDown else { return }
         draining = true
         Task { await self.drain() }
     }
@@ -258,6 +309,7 @@ public actor TraceStore {
     }
     private func drain() async {
         while outboxHead < outbox.count {
+            guard !shuttingDown else { break }
             let item = outbox[outboxHead]; outboxHead += 1
             if outboxHead >= 256, outboxHead * 2 >= outbox.count {
                 outbox.removeFirst(outboxHead)
@@ -268,8 +320,11 @@ public actor TraceStore {
             // for that request, sends nothing more of that kind.
             if delivery.refused || (item.stage == .bytes && delivery.bytesStopped) || (item.stage == .links && delivery.linksStopped)
                 || (item.stage == .events && delivery.eventsStopped) { continue }
-            let packet: JSON = item.page.map { ["type":"bytes", "attemptId":JSON(item.attempt), "body":JSON($0.body), "offset":JSON($0.offset), "bytes":JSON($0.bytes.base64EncodedString())] } ?? item.packet
+            let packet: JSON = item.page.map { Self.bytePacket(item.attempt,$0) } ?? item.packet
             let accepted = await sink(packet)
+            guard !shuttingDown else { break }
+            do { try spool?.confirmed(item.attempt,through:item.spoolRevision,accepted:accepted) }
+            catch { traces[item.attempt]?.persistenceError="Request capture recovery file could not be retired" }
             recorded(item.stage, accepted: accepted, attempt: item.attempt)
         }
         outbox.removeAll(); outboxHead = 0; draining = false; openPages.removeAll()
@@ -398,7 +453,9 @@ public actor TraceStore {
         }
         if method=="debug.clear" {
             guard !traces.values.contains(where:{$0.session==session && $0.outcome=="running"}) else { throw AgentError("capture_busy", "Stop the active request before clearing body captures") }
-            let ids=Set(order.filter{traces[$0]?.session==session}); ids.forEach { if let old = traces.removeValue(forKey: $0) { retainedBytes -= old.request.count + old.response.count }; deliveries.removeValue(forKey: $0) }; order.removeAll{ids.contains($0)}; return ["cleared":true]
+            let ids=Set(order.filter{traces[$0]?.session==session})
+            for id in ids { try spool?.discard(id) }
+            ids.forEach { if let old = traces.removeValue(forKey: $0) { retainedBytes -= old.request.count + old.response.count }; deliveries.removeValue(forKey: $0) }; order.removeAll{ids.contains($0)}; return ["cleared":true]
         }
         if method=="debug.list" {
             let all=order.reversed().compactMap{traces[$0]}.filter{$0.session==session}, offset=try boundedInt(p["offset"],maximum:Int.max)

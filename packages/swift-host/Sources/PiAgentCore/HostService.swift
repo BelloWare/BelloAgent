@@ -280,7 +280,10 @@ public actor NativeHostService {
             let extra=Array(requestedRoots.dropFirst())
             let manager=MCPManager(cwd:requested,roots:extra,outcomeMarker:state.appendingPathComponent(".mcp-outcome-unknown.json"))
             try await manager.configure(params["mcp"].isNull ? ["servers":[:]] : params["mcp"])
-            if params["captureProtocol"].int == 1 { await capture.enable() }
+            if params["captureProtocol"].int == 1 {
+                await capture.enable()
+                try await traces.openCaptureSpool(in:state)
+            }
             cwd=requested; roots=requestedRoots; directory=state; mcp=manager
             if let retry { retrySettings = retry }
             resources=Resources(cwd:requested,roots:extra,options:params["resources"].isNull ? [:] : params["resources"])
@@ -725,9 +728,10 @@ public actor NativeHostService {
         return ["path":JSON(file.path),"sessionId":header["id"],"nativeReplay":false,"damaged":false,"text":JSON(retained),"draft":JSON(retained),"truncated":JSON(retained.utf8.count<text.utf8.count || messages.count>40),"provenance":["sourcePath":JSON(file.path),"sourceSHA256":JSON(digest),"portable":true],"notice":"Portable text only, active branch and latest compaction. Opaque reasoning, executable state and permissions are not transferred. Original unchanged. Review before sending.","sha256":JSON(digest)]
     }
     public func shutdown() async {
-        // Acknowledgments are dropped from here on (see `receive`): a capture
-        // must not hold a stopped run's partial reply and final state.
-        closing=true; await capture.close(); flushTask?.cancel(); for t in tasks.values { t.cancel() }
+        // Capture packets are already spooled, including the one whose ACK
+        // is outstanding. Disconnect delivery at once; cancelling runs keep
+        // spooling their terminal observations without waiting on the owner.
+        closing=true; await traces.stopCaptureDelivery(); await capture.close(); flushTask?.cancel(); for t in tasks.values { t.cancel() }
         for s in sessions.values { await s.stop() }; for s in sessions.values { await s.close() }; await mcp?.close(); sessions.removeAll(); profiles.removeAll(); flush()
     }
 }
