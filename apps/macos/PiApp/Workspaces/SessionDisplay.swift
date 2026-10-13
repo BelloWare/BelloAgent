@@ -457,12 +457,14 @@ struct TranscriptVersionView: Equatable, Sendable {
         }
         messages = rows
     }
-    func observeRetainedFailure(_ message: String?) {
+    func observeRetainedFailure(_ message: String?, code: String? = nil) {
         guard !busy, !loading else { return }
         if let message {
+            // The code goes first, so the notice is drawn once, with its action.
+            if failureCode != code { failureCode = code }
             runState = .error; runStatus = "failed"; failureMessage = message
         } else if runState == .error {
-            runState = .idle; runStatus = "idle"; failureMessage = nil
+            runState = .idle; runStatus = "idle"; failureMessage = nil; failureCode = nil
         }
     }
     /// What a running compaction is doing, for the run line under the

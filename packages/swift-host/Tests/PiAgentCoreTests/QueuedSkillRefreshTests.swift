@@ -124,6 +124,25 @@ final class QueuedSkillRefreshTests: XCTestCase {
         await f.session.close()
     }
 
+    /// Resume is offered only while the re-pinned message waits, across a
+    /// reopen too; once it is removed, the run's failure is what is left.
+    func testTheUpdateNoticeLastsWhileItsMessageWaits() async throws {
+        let f = try await fixture(replies: [answer("initial")])
+        try writeSkill(f.skill, description: "Fixture review, revised", body: "UPDATED_SKILL_BODY")
+        await f.client.release(); try await eventually { !(await f.session.isRunning) }
+        await f.session.close()
+        let reopened = try AgentSession(id: "s", profile: fixtureProfile(), apiKey: "fixture", cwd: f.root, directory: f.root.appendingPathComponent("state"), readOnly: true,
+                                        resources: f.resources, client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore(),
+                                        resumePath: f.root.appendingPathComponent("state/s.jsonl").path, autoCompaction: false)
+        var state = await reopened.snapshot()
+        XCTAssertEqual(state["errorCode"].text, "skill_updated", "The stop survives a reopen")
+        try await reopened.removeQueued("skill")
+        state = await reopened.snapshot()
+        XCTAssertNil(state["errorCode"].text, "Its message is gone: no Resume")
+        XCTAssertEqual(state["preflightError"].text, "The run stopped for a queued message whose skill had changed, and that message is no longer waiting. Retry request finishes the stopped turn.")
+        await reopened.close()
+    }
+
     func testAMessageLeftWithNothingToSendStaysRefused() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let skill = root.appendingPathComponent(".codex/skills/review")

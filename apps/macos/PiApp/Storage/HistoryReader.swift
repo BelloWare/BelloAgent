@@ -43,6 +43,9 @@ struct RetainedRun: Equatable, Sendable {
     /// The waiting submissions, in the shape the helper's queue rows have
     /// (`turnId`, a bounded `text` preview, `kind` for steering).
     var queue: [[String: WireValue]]
+    /// The helper's code for the failure the run stopped on, when the chat
+    /// can still act on it: `skill_updated` while its message waits.
+    var failureCode: String? = nil
     /// Tool calls in the conversation's context with no result: their outcome
     /// is unknown when the run that issued them never finished.
     var unansweredCalls: Set<String>
@@ -106,10 +109,19 @@ actor HistoryReader {
         struct PendingWork: Decodable {
             var active: Bool?; var queue: [PendingItem]?; var steering: [PendingItem]?
             var runStatus: String?; var errorMessage: String?; var queuePaused: Bool?
+            var errorCode: String?; var skillUpdatedTurnId: String?
+            /// A skill-update stop whose re-pinned message still waits.
+            var skillUpdateWaiting: Bool {
+                errorCode == SessionDisplay.skillUpdatedCode && ((queue ?? []) + (steering ?? [])).contains { $0.turnID != nil && $0.turnID == skillUpdatedTurnId }
+            }
             var exists: Bool { active == true || !(queue ?? []).isEmpty || !(steering ?? []).isEmpty }
             var failure: String? {
                 guard active != true, runStatus == "failed" else { return nil }
                 let detail = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                // As the helper says it: once the re-pinned message is gone, the run's failure.
+                if errorCode == SessionDisplay.skillUpdatedCode, !skillUpdateWaiting {
+                    return "The run stopped for a queued message whose skill had changed, and that message is no longer waiting. Retry request finishes the stopped turn."
+                }
                 return detail.isEmpty ? "Run failed." : detail
             }
             /// Stopped by the reader (or a quit) with nothing queued: the run
@@ -127,7 +139,8 @@ actor HistoryReader {
                 }
                 let rows = (steering ?? []).compactMap { row($0, steering: true) } + (queue ?? []).compactMap { row($0, steering: false) }
                 return RetainedRun(active: active == true, runStatus: runStatus, queuePaused: queuePaused == true || !rows.isEmpty || active == true,
-                                   queue: rows, unansweredCalls: active == true ? unanswered : [])
+                                   queue: rows, failureCode: failure == nil ? nil : skillUpdateWaiting ? errorCode : errorCode == SessionDisplay.skillUpdatedCode ? nil : errorCode,
+                                   unansweredCalls: active == true ? unanswered : [])
             }
         }
         struct MessageRole: Decodable {

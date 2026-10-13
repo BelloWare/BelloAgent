@@ -202,6 +202,46 @@ final class SkillRefreshTests: XCTestCase {
         XCTAssertFalse(WorkspaceModel.skillListIncomplete(""))
     }
 
+    /// After a relaunch the chat's journal says the queue stopped on a
+    /// skill update: the notice offers Resume while the re-pinned message
+    /// waits, and is the run's failure (with Retry) once it does not.
+    @MainActor func testARelaunchKeepsTheSkillUpdateNoticeWhileItsMessageWaits() async throws {
+        let root = scratchRoot("skill-refresh-relaunch")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let notice = "\u{201C}review-notes\u{201D} changed after this message was queued. The message now uses the updated version. Press Resume to send it."
+        func journal(_ name: String, queued: String) throws -> String {
+            var data = Data(), parent: String?
+            func append(_ id: String, _ fields: [String: WireValue]) throws {
+                var record = fields; record["id"] = .string(id); record["parentId"] = parent.map(WireValue.string) ?? .null
+                data.append(try JSONEncoder().encode(record)); data.append(10); parent = id
+            }
+            try append(name, ["type": .string("session"), "version": .number(3)]); parent = nil
+            try append("native", ["type": .string("custom"), "customType": .string("pi-app.native.v1")])
+            try append("question", ["type": .string("message"), "message": .object(["role": .string("user"), "content": .string("Question")])])
+            try append("answer", ["type": .string("message"), "message": .object(["role": .string("assistant"), "content": .array([.object(["type": .string("text"), "text": .string("Answer")])])])])
+            let item: WireValue = .object(["commandID": .string("c1"), "turnID": .string(queued), "text": .string("review this"), "attachments": .array([]), "skills": .array([])])
+            try append("state", ["type": .string("custom"), "customType": .string("pi-app.native.state.v1"), "data": .object([
+                "active": .bool(false), "queue": .array([item]), "steering": .array([]), "runStatus": .string("failed"), "queuePaused": .bool(true),
+                "errorMessage": .string(notice), "errorCode": .string(SessionDisplay.skillUpdatedCode), "skillUpdatedTurnId": .string("t-skill")])])
+            let path = root.appendingPathComponent(name + ".jsonl"); try data.write(to: path); return path.path
+        }
+        let waiting = try journal("waiting", queued: "t-skill"), other = try journal("other", queued: "t-other")
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("app"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        model.chats = [ChatRecord(id: "waiting", workspaceID: "workspace", title: "Waiting", path: waiting, profileID: "profile"),
+                       ChatRecord(id: "other", workspaceID: "workspace", title: "Removed", path: other, profileID: "profile")]
+        await model.select("waiting")
+        let shown = try XCTUnwrap(model.displays["waiting"])
+        XCTAssertEqual(shown.failureCode, SessionDisplay.skillUpdatedCode)
+        XCTAssertEqual(shown.presentedMessages.last?.failureCode, SessionDisplay.skillUpdatedCode, "Resume is offered")
+        XCTAssertTrue(model.hosts.isEmpty)
+        await model.select("other")
+        let removed = try XCTUnwrap(model.displays["other"])
+        XCTAssertNil(removed.failureCode)
+        XCTAssertEqual(removed.failureMessage, "The run stopped for a queued message whose skill had changed, and that message is no longer waiting. Retry request finishes the stopped turn.")
+        model.shutdown(); await model.store?.close()
+    }
+
     /// The notice shows even below a run failure the chat still shows: the
     /// reader sees what changed before the Send that confirms it.
     @MainActor func testTheNoticeShowsBelowAnEarlierRunFailure() {

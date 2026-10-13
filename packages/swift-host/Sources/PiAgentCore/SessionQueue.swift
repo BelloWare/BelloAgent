@@ -260,6 +260,7 @@ extension AgentSession {
             return error
         }
         let again = !skillRefreshedTurns.insert(submission.turnID).inserted
+        skillUpdatedTurnID = submission.turnID
         var notice: [String] = []
         if !refreshed.updated.isEmpty {
             let names = Resources.quoted(refreshed.updated), one = refreshed.updated.count == 1
@@ -278,6 +279,11 @@ extension AgentSession {
     /// A paused queue whose head message had its skills pinned again to their
     /// current files: the app draws the notice with Resume.
     static let skillUpdatedCode = "skill_updated"
+    /// What a `skill_updated` stop says once its message no longer waits:
+    /// the run's own failure, which Retry request finishes.
+    static let skillUpdateWithdrawn = "The run stopped for a queued message whose skill had changed, and that message is no longer waiting. Retry request finishes the stopped turn."
+    /// Whether the message a `skill_updated` stop re-pinned still waits.
+    var skillUpdateWaiting: Bool { (queue + steering).contains { $0.turnID == skillUpdatedTurnID } }
     func hasDelivered(_ submission: Submission) -> Bool {
         history.contains { $0.role == "user" && $0.id == submission.turnID }
     }

@@ -78,6 +78,9 @@ public actor AgentSession {
     /// after a change refused them (`refreshingQueuedSkills`), so a second
     /// change before they go says the skill keeps changing.
     var skillRefreshedTurns: Set<String> = []
+    /// The queued message the last `skill_updated` stop re-pinned. The stop
+    /// offers Resume only while that message still waits (`snapshot`).
+    var skillUpdatedTurnID: String?
     /// The chat's cost limit in US dollars, nil for none; what it has spent,
     /// as the gateway reported it; and the attempts already counted, so an
     /// attempt is never added twice. See SessionCost.swift.
@@ -407,6 +410,7 @@ public actor AgentSession {
             if saved["active"].flag == true { errorMessage="The previous run was interrupted. No model or tool request was replayed. Inspect tool effects before continuing." }
             else if saved["runStatus"].text == RunStatus.failed.rawValue {
                 runStatus = .failed; errorMessage=saved["errorMessage"].text ?? "Run failed."; errorCode=saved["errorCode"].text
+                skillUpdatedTurnID=saved["skillUpdatedTurnId"].text
             }
         }
         if unrestored { errorMessage=(errorMessage.map { $0 + " " } ?? "") + "The reply that was arriving could not be added back to the chat; it is kept beside the chat's file." }
