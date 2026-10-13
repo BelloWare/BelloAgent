@@ -39,7 +39,7 @@ final class FileSyntaxTests: XCTestCase {
         XCTAssertEqual(after, before + 1, "only the late offscreen line was lexed, not the revisited viewport")
     }
 
-    func testSyntaxDiagnosticsDoNotRetainEveryVisitedLine() async {
+    func testSyntaxDiagnosticsRetainNoLineIdentitiesInAnyConfiguration() async {
         let reader = FileSyntaxReader()
         for line in 0..<100_000 {
             _ = await reader.tokens(line: line, text: "let a = 1", language: .swift, load: { _ in nil })
@@ -47,11 +47,7 @@ final class FileSyntaxTests: XCTestCase {
         let count = await reader.colourCount, retained = await reader.retainedDiagnosticLines
         print("FILE_SYNTAX diagnostic count=\(count) retained line IDs=\(retained)")
         XCTAssertEqual(count, 100_000)
-        #if DEBUG
-        XCTAssertLessThanOrEqual(retained, 256, "even debug sampling is bounded")
-        #else
-        XCTAssertEqual(retained, 0, "production diagnostics are a counter, with no visited-line identities")
-        #endif
+        XCTAssertEqual(retained, 0, "Debug and Release both use a counter, with no visited-line identities")
     }
 
     @MainActor private func waitForSyntax(_ ready: () -> Bool) async throws {

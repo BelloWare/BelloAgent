@@ -128,13 +128,31 @@ final class GitDiffTableTests: GitPanelTestCase, SerialTestLane {
         cell.draw(rect)
     }
 
-    @MainActor func testWrappedDiffDrawingVisitsOnlyTheDirtyFragments() throws {
+    /// Hosting may change the table width after its first height pass. The
+    /// final geometry is asynchronous; a synchronous layout alone cannot
+    /// establish that drawing and row heights are using the same width.
+    @MainActor private func waitForWrapGeometry(_ diff: GitDiffTable) async throws {
+        let deadline = ContinuousClock.now + .seconds(20)
+        repeat {
+            diff.layoutSubtreeIfNeeded(); diff.table.layoutSubtreeIfNeeded()
+            if !diff.coordinator.preparingWrapGeometry,
+               diff.coordinator.wrappingWidth == diff.table.bounds.width { return }
+            try await Task.sleep(for: .milliseconds(5))
+        } while ContinuousClock.now < deadline
+        XCTFail("wrap geometry did not settle at the hosted table's width")
+    }
+
+    @MainActor func testWrappedDiffDrawingVisitsOnlyTheDirtyFragments() async throws {
         for split in [false, true] {
             let diff = drawingTable(String(repeating: "wrap 😀 me ", count: 10_000), split: split, wrap: true)
             defer { diff.close() }
+            try await waitForWrapGeometry(diff)
             let row = try XCTUnwrap(lineRows(diff.table).first)
+            // Establish the height pass before resetting the counters. No
+            // drawing or direct call to lines(of:) may warm the tile below.
+            let height = diff.coordinator.tableView(diff.table, heightOfRow: row)
             let cell = GitDiffRowCell(); cell.coordinator = diff.coordinator; cell.row = row
-            cell.frame = NSRect(x: 0, y: 0, width: diff.table.bounds.width, height: diff.table.rect(ofRow: row).height)
+            cell.frame = NSRect(x: 0, y: 0, width: diff.table.bounds.width, height: height)
             let tile = NSRect(x: 0, y: 1 + 700 * GitDiffMetrics.monoLine, width: cell.bounds.width, height: 150)
             XCTAssertGreaterThan(cell.bounds.height, tile.maxY)
             GitDiffRenderCount.reset()
@@ -180,6 +198,7 @@ final class GitDiffTableTests: GitPanelTestCase, SerialTestLane {
         let window = host(diff, width: 700, height: 220)
         diff.layoutSubtreeIfNeeded(); diff.table.layoutSubtreeIfNeeded()
         defer { diff.close(); window.contentView = nil; window.close() }
+        try await waitForWrapGeometry(diff)
         let table = diff.table, row = 5_000
         let originalHeight = table.rect(ofRow: row).height
         diff.contentView.scroll(to: NSPoint(x: 0, y: table.rect(ofRow: row).minY + 3))

@@ -27,18 +27,10 @@ actor FileSyntaxReader {
     private var recentOrder: [Int] = [], recentHead = 0
     private struct Pass { let from: Int; let to: Int; let task: Task<Bool, Never> }
     private var passes: [Int: Pass] = [:], passTickets = 0
-    /// Test seams: lines coloured, chunks read, and the most scalars one lex was given.
+    /// Scalar diagnostics in every configuration: visiting another line
+    /// must never retain its identity just to count the work.
     private(set) var colourCount = 0
-    #if DEBUG
-    private(set) var colouredLines = Set<Int>()
-    #endif
-    var retainedDiagnosticLines: Int {
-        #if DEBUG
-        colouredLines.count
-        #else
-        0
-        #endif
-    }
+    var retainedDiagnosticLines: Int { 0 }
     private(set) var chunkLoads = 0
     private(set) var largestLexInput = 0
 
@@ -124,10 +116,6 @@ actor FileSyntaxReader {
         let tokens = SyntaxHighlighter.resume(text, language: language, state: state).tokens
         if final, known(line + 1) == nil { remember(line + 1, SyntaxHighlighter.resume(text + "\n", language: language, state: state, collect: false).state) }
         colourCount &+= 1
-        #if DEBUG
-        if colouredLines.count >= 256 { colouredLines.removeAll(keepingCapacity: true) }
-        colouredLines.insert(line)
-        #endif
         var offsets = [0]
         for scalar in text.unicodeScalars { offsets.append(offsets.last! + (scalar.value > 0xffff ? 2 : 1)) }
         return tokens.map { Ink(range: offsets[$0.range.lowerBound]..<offsets[$0.range.upperBound], kind: $0.kind) }
