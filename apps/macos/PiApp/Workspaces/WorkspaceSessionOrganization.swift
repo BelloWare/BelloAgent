@@ -20,6 +20,8 @@ struct SidebarChatEntry: Identifiable {
         let topic: String?
         let archived: Bool
         let collapsed: [String]
+        /// A flat project's one list (`topic` nil), not its root group.
+        var flat = false
     }
     /// One sidebar group of one project: its chats, filtered and sorted.
     struct GroupKey: Hashable {
@@ -108,6 +110,16 @@ extension WorkspaceModel {
                             .map(\.chat.id)
                     }
                 }
+                // A flat project is one list, as it is drawn.
+                if projectListsFlat(project.id) {
+                    let lists = archive ? [false, true] : [false]
+                    return lists.flatMap { archived in
+                        SidebarSessionPresentation
+                            .filtered(sidebarFlatEntries(in: project.id, archived: archived, collapsed: []), by: query,
+                                      contentMatches: query.isEmpty ? [] : sidebarFlatMatches(in: project.id, query: query))
+                            .map(\.chat.id)
+                    }
+                }
                 let grouped = topics(in: project.id).filter { !query.isEmpty || topicIsExpanded($0) }.flatMap { topic -> [String] in
                     // A topic whose own title matches lists all of its chats.
                     listed(topic.id, matching: topic.title.localizedCaseInsensitiveContains(query) ? "" : query)
@@ -153,6 +165,31 @@ extension WorkspaceModel {
         return sidebarIndex.entries(key) {
             sidebarTree(sidebarGroupChats(in: projectID, topicID: topicID, archived: archived), collapsed: collapsed)
         }
+    }
+
+    /// A flat project's chats, every topic together, as one sorted tree: a
+    /// side stays under its parent whichever topic either is filed in.
+    func sidebarFlatEntries(in projectID: String, archived: Bool, collapsed: Set<String>) -> [SidebarChatEntry] {
+        let key = SidebarIndex.EntryKey(project: projectID, topic: nil, archived: archived, collapsed: collapsed.sorted(), flat: true)
+        return sidebarIndex.entries(key) {
+            let groups = [nil] + topics(in: projectID).map(\.id)
+            // Each group is sorted; together they are sorted again, so a
+            // family's sides keep the order they have within one group.
+            let chats = groups.flatMap { sidebarGroupChats(in: projectID, topicID: $0, archived: archived) }.sorted { sidebarPrecedes($0, $1) }
+            return sidebarTree(chats, collapsed: collapsed)
+        }
+    }
+    /// What a filter lists in a flat project beyond titles: chats whose
+    /// messages match, and chats whose topic's name does, as a matching
+    /// folder listed all of its chats.
+    func sidebarFlatMatches(in projectID: String, query: String) -> Set<String> {
+        let named = Set(topics(in: projectID).filter { $0.title.localizedCaseInsensitiveContains(query) }.map(\.id))
+        var matches = sidebarContentMatches
+        guard !named.isEmpty else { return matches }
+        for chat in chats where chat.workspaceID == projectID {
+            if let topic = effectiveTopicID(for: chat), named.contains(topic) { matches.insert(chat.id) }
+        }
+        return matches
     }
 
     /// The chats of one sidebar group, sorted. Filtering before sorting keeps a

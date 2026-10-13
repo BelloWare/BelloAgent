@@ -19,6 +19,11 @@ struct ProjectSidebarState: Codable, Sendable, Equatable, Identifiable {
     /// How many root chats each of this project's groups shows, keyed by topic
     /// id, or by the project's own id for the chats outside every topic.
     var shownRoots: [String: Int]?
+    /// The project lists its chats flat: one list, newest activity first,
+    /// each chat's topic as a tag, no topic folders (owner, 2026-10-13).
+    /// The choice is the project's, like its disclosure; nil (the default,
+    /// and every record written before) groups the chats by topic.
+    var flatTopics: Bool?
 
     /// Nothing read back from the vault is trusted to be the size or shape the
     /// sidebar last wrote.
@@ -76,6 +81,18 @@ extension WorkspaceModel {
     /// As the sidebar shows it: what the reader saved, unless a relaunch
     /// opened it for this launch to show the chat it reopened
     /// (`WorkspaceLaunchSelection.swift`).
+    /// Whether the project lists its chats flat (`ProjectSidebarState.flatTopics`).
+    /// No project's chats have no topics to flatten, so it never is.
+    func projectListsFlat(_ id: String) -> Bool {
+        id != WorkspaceRecord.scratchID && projectSidebarStates[id]?.flatTopics == true
+    }
+    /// The Topics / Flat choice in a project's menu.
+    func setProjectListsFlat(_ id: String, flat: Bool) {
+        guard id != WorkspaceRecord.scratchID, sidebarProjects.contains(where: { $0.id == id }) else { return }
+        var value = projectSidebarStates[id] ?? ProjectSidebarState(id: id)
+        value.flatTopics = flat ? true : nil
+        saveProjectSidebarState(value)
+    }
     func projectIsExpanded(_ id: String) -> Bool { (projectSidebarStates[id]?.expanded ?? true) || launchReveal.projects.contains(id) }
     /// Whether the sidebar lists archived chats: the reader's switch, or, for
     /// this launch only, the archived chat a relaunch reopened.
@@ -124,7 +141,8 @@ extension WorkspaceModel {
         var value = projectSidebarStates[projectID] ?? ProjectSidebarState(id: projectID)
         let folded = collapsedSidebarSides.filter { record($0)?.workspaceID == projectID }.sorted()
         value.collapsedSides = folded.isEmpty ? nil : Array(folded.prefix(ProjectSidebarState.maximumPresentationEntries))
-        let groups = Set(([projectID] + topics(in: projectID).map(\.id)).flatMap { [$0, SidebarSessionPresentation.archiveGroupID($0)] })
+        let groups = Set(([projectID, SidebarSessionPresentation.flatGroupID(projectID)] + topics(in: projectID).map(\.id))
+            .flatMap { [$0, SidebarSessionPresentation.archiveGroupID($0)] })
         let pages = sidebarPageSizes.filter { groups.contains($0.key) }
         value.shownRoots = pages.isEmpty ? nil : pages
         saveProjectSidebarState(value)
@@ -158,7 +176,9 @@ extension WorkspaceModel {
         var value = projectSidebarStates[item.workspaceID] ?? ProjectSidebarState(id: item.workspaceID)
         value.expanded = true
         saveProjectSidebarState(value)
-        if let topicID = effectiveTopicID(for: item) { setTopicExpanded(topicID, expanded: true) }
+        // A flat project shows the chat without opening its folder: the
+        // folder's own disclosure stays as the reader left it.
+        if !projectListsFlat(item.workspaceID), let topicID = effectiveTopicID(for: item) { setTopicExpanded(topicID, expanded: true) }
     }
 
     func newChat(in projectID: String) {
@@ -179,7 +199,8 @@ extension WorkspaceModel {
     private func saveProjectSidebarState(_ proposed: ProjectSidebarState) {
         let previous = projectSidebarStates[proposed.id] ?? ProjectSidebarState(id: proposed.id)
         guard previous.expanded != proposed.expanded
-                || previous.collapsedSides != proposed.collapsedSides || previous.shownRoots != proposed.shownRoots else { return }
+                || previous.collapsedSides != proposed.collapsedSides || previous.shownRoots != proposed.shownRoots
+                || previous.flatTopics != proposed.flatTopics else { return }
         var value = proposed
         value.revision = max(previous.revision + 1, Int64(Date().timeIntervalSince1970 * 1_000_000))
         projectSidebarStates[value.id] = value
