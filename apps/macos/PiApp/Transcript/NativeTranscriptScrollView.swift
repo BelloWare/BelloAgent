@@ -345,9 +345,11 @@ final class TranscriptNativeScrollView: NSScrollView {
     /// Looks again for a place an inner scroll is building, at most this often.
     var focusRetries = 0
     /// The highlight generation each text view was last marked for, and its
-    /// text's length then (a streamed reply marks again as it grows).
+    /// character revision then (including replacements of the same length).
     let markedText = NSMapTable<NSTextView, NSNumber>.weakToStrongObjects()
-    let markedLength = NSMapTable<NSTextView, NSNumber>.weakToStrongObjects()
+    let textMatches = NSMapTable<NSTextStorage, TranscriptTextMatches>.weakToStrongObjects()
+    let lineMatches = NSMapTable<TranscriptCardLines, TranscriptLineMatches>.weakToStrongObjects()
+    let markedRevision = NSMapTable<NSTextView, NSNumber>.weakToStrongObjects()
     private var focusRevealScheduled = false
     /// After the pass that mounted the focused row, and once the page has
     /// landed wherever it was taking the reader.

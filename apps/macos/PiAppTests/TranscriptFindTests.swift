@@ -27,6 +27,46 @@ final class TranscriptFindTests: XCTestCase {
         return found.lowercased() == query.lowercased() && clip.bounds.contains(CGPoint(x: clip.bounds.midX, y: rect.midY)) && colour == TranscriptHighlights.focusColor
     }
 
+    @MainActor func testMatchRangesTrackCharacterEditsButNotColourEdits() {
+        let storage = NSTextStorage(string: "parser PARSER")
+        let document = TranscriptNativeDocument(page: TranscriptPage())
+        let cache = document.matchCache(for: storage), query = TranscriptMatchQuery(needle: "parser")
+        XCTAssertEqual(cache.ranges(query).map(\.location), [0, 7])
+        let before = TranscriptHighlightSearch.scans
+        storage.addAttribute(.foregroundColor, value: NSColor.red, range: NSRange(location: 0, length: storage.length))
+        XCTAssertEqual(cache.ranges(query).count, 2)
+        XCTAssertEqual(TranscriptHighlightSearch.scans, before)
+        storage.replaceCharacters(in: NSRange(location: 0, length: 6), with: "------")
+        XCTAssertEqual(cache.ranges(query).map(\.location), [7])
+        XCTAssertEqual(TranscriptHighlightSearch.scans, before + 1)
+        storage.append(NSAttributedString(string: " parser"))
+        XCTAssertEqual(cache.ranges(query).map(\.location), [7, 14])
+    }
+
+    @MainActor func testScrollingAResolvedFindDoesNotSearchUnchangedTextAgain() async throws {
+        let chat = try await chat(turns: 10)
+        let pane = try pane(chat)
+        chat.model.findInFocusedConversation(.show, in: chat.window)
+        try await eventually("Find bar") { chat.draw(); return pane.findBar != nil }
+        let bar = try XCTUnwrap(pane.findBar)
+        bar.field.text = "parser"; bar.field.onChange?("parser")
+        try await eventually("Resolved focus", timeout: .seconds(20)) {
+            chat.draw(); return !pane.find.searching && focusShown(chat, query: "parser")
+        }
+        let document = try XCTUnwrap(chat.document), clip = try XCTUnwrap(chat.scroll?.contentView)
+        let origin = clip.bounds.origin
+        document.markMountedRows()
+        let before = TranscriptHighlightSearch.scans
+        for step in 0..<100 {
+            clip.setBoundsOrigin(NSPoint(x: origin.x, y: origin.y + (step.isMultiple(of: 2) ? 0.01 : 0)))
+            document.markMountedRows()
+        }
+        let searches = TranscriptHighlightSearch.scans - before
+        print("SCROLL-12 repeated-scroll searches=\(searches)")
+        XCTAssertEqual(searches, 0, "Scrolling unchanged text must reuse its match ranges")
+        XCTAssertTrue(focusShown(chat, query: "parser"))
+    }
+
     @MainActor func testFindStepsThroughMatchesAcrossTheWholeChat() async throws {
         let chat = try await chat()
         let pane = try pane(chat)
