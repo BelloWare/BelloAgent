@@ -266,10 +266,11 @@ public actor TraceStore {
     private func replayCapture(_ spool: CaptureSpool) async {
         for file in spool.recovered {
             guard !shuttingDown else { return }
+            let attempt=file.deletingPathExtension().lastPathComponent
+            var began=false
             do {
                 let reader=try JournalRecordReader(file,allowIncompleteTail:true)
-                let attempt=file.deletingPathExtension().lastPathComponent
-                var accepted=true, began=false, finished=false, first=true, postlude=false, latest: JSON = .null
+                var finished=false, first=true, postlude=false, latest: JSON = .null
                 while let line=try reader.nextLine() {
                     var packet=try JSON.parse(line)
                     guard packet["attemptId"].text == attempt || packet["metadata"]["attemptId"].text == attempt else { throw AgentError("capture_spool","Capture recovery identity does not match") }
@@ -279,18 +280,25 @@ public actor TraceStore {
                     if !packet["metadata"].isNull { latest=packet["metadata"] }
                     if packet["type"].text == "finish" { finished=true }
                     guard !shuttingDown else { return }
-                    if !(await sink(packet)) { accepted=false; break }
+                    guard await sink(packet) else { throw AgentError("capture_replay", "Capture recovery packet was refused") }
                 }
-                guard accepted, !shuttingDown else { continue }
+                guard !shuttingDown else { return }
                 // A crash can leave a durable prefix without a terminal
                 // packet. Preserve it as interrupted, never as complete.
                 if began, !finished, !latest.isNull {
                     latest["outcome"]="interrupted"; latest["modelOutcome"]="interrupted"; latest["transportOutcome"]="interrupted"
-                    guard await sink(["type":"finish","metadata":latest]) else { continue }
+                    guard await sink(["type":"finish","metadata":latest]) else { throw AgentError("capture_replay", "Capture recovery finalization was refused") }
                 }
-                guard !shuttingDown, await sink(["type":"replay.end","attemptId":JSON(attempt)]) else { continue }
+                guard !shuttingDown else { return }
+                guard await sink(["type":"replay.end","attemptId":JSON(attempt)]) else { throw AgentError("capture_replay", "Capture recovery completion was refused") }
+                began=false
                 try spool.removeRecovered(file)
-            } catch { /* Keep an unreadable or unacknowledged spool for recovery. */ }
+            } catch {
+                // A refused body, failed tail or corrupt later record must
+                // release the native archive's running writers. The entire
+                // spool stays on disk and can be retried on the next open.
+                if began, !shuttingDown { _ = await sink(["type":"replay.abort","attemptId":JSON(attempt)]) }
+            }
         }
     }
     private func post(_ packet: JSON, attempt: String, stage: Stage, page: Page? = nil) {

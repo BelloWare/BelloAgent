@@ -44,10 +44,15 @@ actor PayloadArchive {
         init(workspace: String, scope: String, hostEpoch: WireValue?) { self.workspace = workspace; self.scope = scope; self.hostEpoch = hostEpoch }
     }
     private var writers: [String: Writer] = [:]
-    /// A recovery of an already durable or deliberately removed body consumes
-    /// its old packets without overwriting that decision. Completed attempts
-    /// may still have unacknowledged output links after their finish record.
-    private var skippedReplays: [String: (workspace: String, keepLinks: Bool)] = [:]
+    /// Body retention and metric retention are independent. A replay can skip
+    /// already durable or removed bodies while still saving terminal metadata
+    /// and journal-restored links. The epoch also owns failure cleanup.
+    private struct Replay {
+        let workspace: String
+        let hostEpoch: WireValue?
+        let skipsBodies: Bool
+    }
+    private var replays: [String: Replay] = [:]
     private var leases: Set<String> = []
     /// Running totals for the two tables whose size is checked on every write.
     /// Recomputing them per chunk and per event page made each write cost a
@@ -269,12 +274,13 @@ actor PayloadArchive {
         if stored, let totals = chunkTotals { chunkTotals = (totals.count + 1, totals.bytes + Int64(bytes.count)) }
         writer.hasher.update(data: bytes); writer.length += bytes.count; writer.ordinal += 1
     }
-    func finish(_ metadata: [String: WireValue]) throws {
+    func finish(_ metadata: [String: WireValue], requireComplete: Bool = false) throws {
         guard let id = metadata["attemptId"]?.string else { throw CaptureFailure.unavailable }
         let db = try ready(), row = try record(id), scope = CaptureContent.scope(session: try archiveText(row, "session"))
         guard row["session"]?.string == metadata["sessionId"]?.string else { throw CaptureFailure.sequence }
         // Validate both descriptors before publishing tails or dropping either
         // writer. Off/memory captures and repeated finishes need the same bounds.
+        var retentionFailed = false
         for kind in ["request", "response"] {
             let source = metadata[kind]?.object ?? [:]
             for field in ["observedBytes", "captureBytes"] {
@@ -294,6 +300,7 @@ actor PayloadArchive {
                 do {
                     if writer.failure == nil { let tail = writer.chunker.finish(); try publish(tail, attempt: id, kind: kind, scope: scope, writer: &writer) }
                 } catch { writer.failure = error.localizedDescription }
+                retentionFailed = retentionFailed || writer.failure != nil
                 let source = metadata[kind]?.object ?? [:]
                 let reportedObserved = source["observedBytes"]?.number ?? 0
                 let reportedCapture = source["captureBytes"]?.number
@@ -316,12 +323,17 @@ actor PayloadArchive {
             }
         }
         try update(metadata)
+        // Live capture reports partial retention in its manifest. Recovery
+        // additionally needs a refusal so the helper keeps its complete spool.
+        if requireComplete && retentionFailed { throw CaptureFailure.unavailable }
     }
     func update(_ metadata: [String: WireValue]) throws {
         let db = try ready()
         guard let id = metadata["attemptId"]?.string else { throw CaptureFailure.sequence }
+        try reconcile()
         let existing = try record(id)
         guard existing["session"]?.string == metadata["sessionId"]?.string else { throw CaptureFailure.sequence }
+        guard existing["metrics_retained"]?.number != 0 else { return }
         let encoded = try JSONEncoder().encode(metadata)
         try db.transaction {
             try db.execute("UPDATE attempts SET outcome=?,model=?,updated=?,metadata=? WHERE id=?", [.text(metadata["outcome"]?.string ?? "interrupted"), metadata["identity"]?.object?["effectiveModel"]?.string.map(CaptureSQLValue.text) ?? .null, .real(now().timeIntervalSince1970), .blob(encoded), .text(id)])
@@ -344,21 +356,35 @@ actor PayloadArchive {
               let session = metadata["sessionId"]?.string, let mode = metadata["mode"]?.string,
               ["persist", "memory", "off"].contains(mode) else { throw CaptureFailure.sequence }
         let db = try ready()
+        try reconcile()
         let existing = try db.rows("SELECT * FROM attempts WHERE id=?", [.text(id)]).first
         if let existing {
             guard existing["workspace"]?.string == workspace, existing["session"]?.string == session else { throw CaptureFailure.sequence }
         }
         let bodies = try db.rows("SELECT state FROM bodies WHERE attempt=?", [.text(id)])
         let states = bodies.compactMap { $0["state"]?.string }
-        let expired = (metadata["wallTimestamp"]?.number ?? now().timeIntervalSince1970) < now().timeIntervalSince1970 - bodyRetention
-        if expired || states.contains("purged") || states.contains("expired") || existing?["metrics_retained"]?.number == 0 {
-            skippedReplays[id] = (workspace, false); return
+        let expired = (existing?["wall"]?.double ?? metadata["wallTimestamp"]?.number ?? now().timeIntervalSince1970) < now().timeIntervalSince1970 - bodyRetention
+        let durable = existing != nil && states.count == 2 && states.allSatisfy({ ["complete", "credential-hashed", "credential-masked", "credential-omitted", "not-retained"].contains($0) })
+            && !["running", "interrupted"].contains(existing?["outcome"]?.string ?? "running")
+        let skipsBodies = expired || states.contains("purged") || states.contains("expired") || durable
+        if skipsBodies {
+            if existing == nil {
+                // Even a never-acknowledged begin needs an owned accounting
+                // row. Expired bodies stay absent; metrics get their own TTL.
+                try begin(metadata, workspace: workspace)
+                var interrupted = metadata; interrupted["outcome"] = .string("interrupted")
+                try finish(interrupted)
+                if expired { try evict(id, state: "expired") }
+                try reconcile()
+            }
+            replays[id] = Replay(workspace: workspace, hostEpoch: metadata["hostEpoch"], skipsBodies: true)
+            return
         }
-        if existing != nil, states.count == 2, states.allSatisfy({ ["complete", "credential-hashed", "credential-masked", "credential-omitted", "not-retained"].contains($0) }),
-           !["running", "interrupted"].contains(existing?["outcome"]?.string ?? "running") {
-            skippedReplays[id] = (workspace, true); return
+        guard existing != nil else {
+            try begin(metadata, workspace: workspace)
+            replays[id] = Replay(workspace: workspace, hostEpoch: metadata["hostEpoch"], skipsBodies: false)
+            return
         }
-        guard existing != nil else { try begin(metadata, workspace: workspace); return }
         guard !leases.contains(id) else { throw CaptureFailure.busy }
         // Rebuild a prefix under the same attempt identity. Keep its message
         // links and accounting row, so an ACK lost at quit cannot duplicate a
@@ -368,36 +394,49 @@ actor PayloadArchive {
             try db.execute("DELETE FROM event_indices WHERE attempt=?", [.text(id)])
             try db.execute("UPDATE bodies SET state=?,reason='',observed=0,length=0,digest=NULL,storage='plaintext-v2' WHERE attempt=?", [.text(mode == "persist" ? "recording" : "not-retained"), .text(id)])
         }
+        // Detached partial tails differ from the replacement's final chunks.
+        // Reclaim them before reserve() can count both or evict another request.
+        try collectGarbage()
         for kind in ["request", "response"] {
             writers[writerKey(id, kind)] = mode == "persist" ? Writer(workspace: workspace, scope: CaptureContent.scope(session: session), hostEpoch: metadata["hostEpoch"]) : nil
         }
         listedCache[id] = nil
+        replays[id] = Replay(workspace: workspace, hostEpoch: metadata["hostEpoch"], skipsBodies: false)
         try update(metadata)
     }
     func accept(_ packet: [String: WireValue], workspace: String) throws {
         let attempt = packet["attemptId"]?.string ?? packet["metadata"]?.object?["attemptId"]?.string
-        if let attempt, packet["type"]?.string == "replay.end" {
-            if let skipped = skippedReplays[attempt] {
-                guard skipped.workspace == workspace else { throw CaptureFailure.sequence }
-                skippedReplays.removeValue(forKey: attempt)
+        let type = packet["type"]?.string ?? ""
+        if let attempt, ["replay.end", "replay.abort"].contains(type) {
+            if let replay = replays[attempt] {
+                guard replay.workspace == workspace, replay.hostEpoch == packet["hostEpoch"] else { throw CaptureFailure.sequence }
+                if type == "replay.abort", !replay.skipsBodies {
+                    var metadata = try self.metadata(attempt: attempt)
+                    metadata["outcome"] = .string("interrupted"); metadata["modelOutcome"] = .string("interrupted")
+                    try finish(metadata)
+                }
+                replays.removeValue(forKey: attempt)
             } else { guard try record(attempt)["workspace"]?.string == workspace else { throw CaptureFailure.sequence } }
             return
-        }
-        if let attempt, let skipped = skippedReplays[attempt], packet["type"]?.string != "replay.begin" {
-            guard skipped.workspace == workspace else { throw CaptureFailure.sequence }
-            if !skipped.keepLinks || packet["type"]?.string != "links" { return }
         }
         // An old transport's held consumer may finish after its replacement
         // began recovery. Its metadata or body cannot change the new writer.
         // Live body pages use the writer's epoch without a database read.
-        let postlude = packet["replay"]?.bool == true && ["links", "metadata"].contains(packet["type"]?.string ?? "")
+        let postlude = packet["replay"]?.bool == true && type == "metadata"
             && attempt.map { writers[writerKey($0, "request")] == nil && writers[writerKey($0, "response")] == nil } == true
+        // Links are owned, idempotent relationships, including repairs from
+        // SessionReplay in a new helper. They never replace body or telemetry.
         if let attempt, let epoch = packet["hostEpoch"], !postlude,
-           !["begin", "replay.begin", "interrupted"].contains(packet["type"]?.string ?? ""), skippedReplays[attempt] == nil {
+           !["begin", "replay.begin", "interrupted", "links"].contains(type) {
             let current: WireValue?
-            if let writer = writers[writerKey(attempt, packet["body"]?.string ?? "request")] { current = writer.hostEpoch }
+            if let replay = replays[attempt] { current = replay.hostEpoch }
+            else if let writer = writers[writerKey(attempt, packet["body"]?.string ?? "request")] { current = writer.hostEpoch }
             else { current = try metadata(attempt: attempt)["hostEpoch"] }
             guard epoch == current else { throw CaptureFailure.sequence }
+        }
+        if let attempt, let replay = replays[attempt], type != "replay.begin" {
+            guard replay.workspace == workspace else { throw CaptureFailure.sequence }
+            if replay.skipsBodies && ["bytes", "events"].contains(type) { return }
         }
         switch packet["type"]?.string {
         case "replay.begin": guard let metadata = packet["metadata"]?.object else { throw CaptureFailure.sequence }; try beginReplay(metadata, workspace: workspace)
@@ -411,7 +450,8 @@ actor PayloadArchive {
         case "finish", "metadata":
             guard let metadata = packet["metadata"]?.object, let id = metadata["attemptId"]?.string,
                   try record(id)["workspace"]?.string == workspace else { throw CaptureFailure.sequence }
-            if packet["type"]?.string == "finish" { try finish(metadata) } else { try update(metadata) }
+            if type == "finish", replays[id]?.skipsBodies != true { try finish(metadata, requireComplete: replays[id] != nil) }
+            else { try update(metadata) }
         case "links":
             let db = try ready()
             guard let id = packet["attemptId"]?.string, try record(id)["workspace"]?.string == workspace else { throw CaptureFailure.sequence }
@@ -713,7 +753,11 @@ actor PayloadArchive {
         let db = try ready()
         if try chunkTotalsNow().bytes + bytes <= quota { return }
         for row in try db.rows("SELECT id FROM attempts WHERE outcome!='running' AND id IN (SELECT attempt FROM refs) ORDER BY wall") {
-            let id = try archiveText(row, "id"); if leases.contains(id) { continue }
+            let id = try archiveText(row, "id")
+            // Metrics can already be tombstoned while their longer-lived body
+            // is being recovered. Its terminal row is not an eviction candidate
+            // until those replay writers are released.
+            if leases.contains(id) || writers[writerKey(id, "request")] != nil || writers[writerKey(id, "response")] != nil { continue }
             try evict(id, state: "expired"); try collectGarbage()
             if try chunkTotalsNow().bytes + bytes <= quota { return }
         }
@@ -857,7 +901,7 @@ actor PayloadArchive {
         usageReadGeneration &+= 1
         usageSnapshots.removeAll()
         // Reject new writer/report work while the old read queue drains.
-        writers.removeAll(); skippedReplays.removeAll(); database = nil; legacyCipher = nil; nextReconciliation = -Double.infinity
+        writers.removeAll(); replays.removeAll(); database = nil; legacyCipher = nil; nextReconciliation = -Double.infinity
         chunkTotals = nil; chunkFolders.removeAll()
         listedCache.removeAll(); listedOrder.removeAll()
         // Concurrent shutdown callers share one drain. Its task owns cleanup,

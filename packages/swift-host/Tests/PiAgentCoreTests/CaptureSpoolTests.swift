@@ -2,6 +2,39 @@ import XCTest
 @testable import PiAgentCore
 
 final class CaptureSpoolTests: XCTestCase {
+    func testRefusedRecoveryFinalizesTheArchiveButKeepsItsSpoolForRetry() async throws {
+        for refused in ["bytes", "finish"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+            let spool = try CaptureSpool(in: root), id = UUID().uuidString
+            try spool.append(["type": "begin", "metadata": ["attemptId": JSON(id), "outcome": "running"]], attempt: id)
+            try spool.append(["type": "bytes", "attemptId": JSON(id), "body": "request", "offset": 0, "bytes": "YWJj"], attempt: id)
+            try spool.append(["type": "finish", "metadata": ["attemptId": JSON(id), "outcome": "completed"]], attempt: id)
+            let sink = RecoveredSpoolPackets(rejecting: refused), traces = TraceStore(sink: { await sink.accept($0) })
+            try await traces.openCaptureSpool(in: root)
+            try await eventually { await sink.packets.contains { $0["type"].text == "replay.abort" } }
+            XCTAssertEqual(try CaptureSpool(in: root).recovered.count, 1, "Archive refusal cannot retire complete capture bytes")
+            let packets = await sink.packets
+            XCTAssertEqual(packets.last?["attemptId"].text, id)
+            XCTAssertFalse(packets.contains { $0["type"].text == "replay.end" })
+            let retry = TraceStore()
+            try await retry.openCaptureSpool(in: root)
+            try await eventually { (try? CaptureSpool(in: root).recovered.isEmpty) == true }
+        }
+    }
+
+    func testDamagedRecoveryAlsoAbortsAnAlreadyOpenedArchiveWriter() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let spool = try CaptureSpool(in: root), id = UUID().uuidString
+        try spool.append(["type": "begin", "metadata": ["attemptId": JSON(id), "outcome": "running"]], attempt: id)
+        let file = root.appendingPathComponent(".capture-outbox/\(id).jsonl")
+        let handle = try FileHandle(forWritingTo: file)
+        try handle.seekToEnd(); try handle.write(contentsOf: Data("not-json\n".utf8)); try handle.close()
+        let sink = RecoveredSpoolPackets(), traces = TraceStore(sink: { await sink.accept($0) })
+        try await traces.openCaptureSpool(in: root)
+        try await eventually { await sink.packets.contains { $0["type"].text == "replay.abort" } }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+    }
+
     func testFinishedCapturesWaitingForAcknowledgmentDoNotKeepOpenDescriptors() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let spool = try CaptureSpool(in: root)
@@ -78,5 +111,7 @@ final class CaptureSpoolTests: XCTestCase {
 
 private actor RecoveredSpoolPackets {
     private(set) var packets: [JSON] = []
-    func accept(_ packet: JSON) -> Bool { packets.append(packet); return true }
+    let rejecting: String?
+    init(rejecting: String? = nil) { self.rejecting = rejecting }
+    func accept(_ packet: JSON) -> Bool { packets.append(packet); return packet["type"].text != rejecting }
 }
