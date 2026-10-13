@@ -462,6 +462,7 @@ import AppKit
             if Self.statusReadDelay > .zero { try? await Task.sleep(for: Self.statusReadDelay); guard !Task.isCancelled else { return } }
             let status = try await service.status(in: top)
             guard current(generation) else { return }
+            let previousSelection = selection
             guard publishRepository(top, status: status, generation: generation) else { return }
             updateWatch(on: top)
             let paths = Set(status.entries.map(\.path))
@@ -469,12 +470,17 @@ import AppKit
             // have, a refresh never ticks anything back on. Unticking every
             // file used to re-tick them all and re-arm the commit button.
             applyChecked(checkedByReader ? checked.intersection(paths) : paths)
-            if let selection, !status.entries.contains(where: { $0.path == selection.path && ($0.staged == selection.staged || $0.unstaged == !selection.staged) }) { self.selection = nil }
-            else if selection == nil { if !automatic, let first = status.entries.first { selection = Selection(path: first.path, staged: !first.unstaged && first.staged) } }
-            // A read nobody asked for shows no spinner, and a diff nobody can
-            // see waits until Changes is showing again.
-            else if !automatic || panel == .changes { await loadSelectedDiff(silently: automatic) }
-            else { selectedDiffStale = true }
+            // A repository reset clears the old diff before publishing its
+            // rows. Keep a matching choice, but a missing choice stays empty:
+            // clearing it is not consent to select the new first row.
+            if let chosen = selection ?? previousSelection {
+                if !status.entries.contains(where: { $0.path == chosen.path && ($0.staged == chosen.staged || $0.unstaged == !chosen.staged) }) { selection = nil }
+                else if selection == nil { selection = chosen }
+                // A read nobody asked for shows no spinner, and a diff nobody
+                // can see waits until Changes is showing again.
+                else if !automatic || panel == .changes { await loadSelectedDiff(silently: automatic) }
+                else { selectedDiffStale = true }
+            } else if !automatic, let first = status.entries.first { selection = Selection(path: first.path, staged: !first.unstaged && first.staged) }
             async let branchList = service.branches(in: top)
             async let stashList = service.stashes(in: top)
             async let ignoredList = service.ignoredPaths(in: top)

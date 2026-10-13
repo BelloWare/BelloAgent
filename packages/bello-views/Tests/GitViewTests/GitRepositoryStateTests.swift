@@ -92,4 +92,26 @@ final class GitRepositoryStateTests: XCTestCase {
             controller.letGo(); GitController.statusReadDelay = .zero
         }
     }
+
+    @MainActor func testSwitchingRepositoriesClearsAnInvalidSelectionWithoutChoosingTheFirstRow() async throws {
+        let first = try repository(), second = try repository()
+        try git(["mv", "same.txt", "other.txt"], in: second)
+        let controller = try await read([first, second]), finished = controller.refreshesFinished
+        XCTAssertEqual(controller.selection?.path, "same.txt")
+        controller.root = second.path
+        try await wait { controller.refreshesFinished > finished }
+        XCTAssertEqual(controller.status.entries.map(\.path), ["other.txt"])
+        XCTAssertNil(controller.selection)
+        XCTAssertTrue(controller.diff.isEmpty)
+    }
+
+    @MainActor func testSwitchingRepositoriesKeepsAStillValidSelection() async throws {
+        let first = try repository(), second = try repository(), controller = try await read([first, second])
+        try "another row\n".write(to: second.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        let selection = controller.selection, finished = controller.refreshesFinished
+        controller.root = second.path
+        try await wait { controller.refreshesFinished > finished }
+        XCTAssertEqual(controller.selection, selection)
+        XCTAssertEqual(controller.diff.first?.path, selection?.path)
+    }
 }
