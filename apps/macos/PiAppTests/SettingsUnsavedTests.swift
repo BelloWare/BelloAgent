@@ -260,6 +260,37 @@ import XCTest
 
     // MARK: Quitting
 
+    func testDeletingAnotherConnectionKeepsTheFirstTabsEditsAndRetryPreferences() async throws {
+        let (model, _, controller) = try await fixture()
+        let first = controller.draft.profile.id
+        var second = ProfileRecord(); second.name = "Other"; second.baseUrl = "http://127.0.0.1:2"; second.modelId = "other"
+        let saved = VaultProfile(profile: second, apiKey: "synthetic-other")
+        _ = try await model.vault.update(expectedRevision: model.configuration.revision) { $0.profiles.append(saved) }
+        await controller.load(discardingDrafts: false)
+        controller.draft.profile.name = "Renamed first"
+        controller.select(id: second.id)
+        var retry = controller.preferences.retrySettings
+        retry.maxRetries = 7
+        controller.preferences.retry = retry
+        // Another editor's unrelated saved preference also survives the rebase.
+        _ = try await model.vault.update(expectedRevision: model.configuration.revision) { $0.capture.retentionDays = 91 }
+        try await model.reloadConfiguration()
+
+        await controller.delete()
+        XCTAssertEqual(controller.draft.profile.id, first)
+        XCTAssertEqual(controller.draft.profile.name, "Renamed first")
+        XCTAssertEqual(controller.preferences.retrySettings.maxRetries, 7)
+        XCTAssertEqual(controller.preferences.capture.retentionDays, 91)
+        XCTAssertTrue(controller.isDirty)
+        let result = await controller.saveAll()
+        XCTAssertEqual(result, .saved)
+        let stored = try await model.vault.load()
+        XCTAssertEqual(stored.profiles.map(\.profile.name), ["Renamed first"])
+        XCTAssertEqual(stored.retrySettings.maxRetries, 7)
+        XCTAssertEqual(stored.capture.retentionDays, 91)
+        XCTAssertFalse(controller.isDirty)
+    }
+
     /// Once the app has begun quitting or updating, Settings writes nothing:
     /// a Save All or a deletion already on its way is refused.
     func testNothingIsWrittenOnceTheAppIsQuitting() async throws {

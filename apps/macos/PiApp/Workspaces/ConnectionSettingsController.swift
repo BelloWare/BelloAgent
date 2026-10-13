@@ -493,8 +493,12 @@ import Combine
         do {
             try await model.deleteProfile(id)
             drafts[id] = nil
-            preferences = model.configuration; revision = preferences.revision
-            draft = model.profiles.first.map { Draft.loaded($0, isSaved: true) } ?? Draft.loaded(ProfileRecord(), isSaved: false)
+            preferences = Self.merging(preferences, from: preferencesBaseline, onto: model.configuration)
+            preferencesBaseline = model.configuration; revision = model.configuration.revision
+            // Do not stash the deleted tab again, or replace another tab's
+            // only copy of its edits with its saved form.
+            if let first = model.profiles.first { draft = drafts[first.id] ?? Draft.loaded(first, isSaved: true) }
+            else { draft = drafts.values.sorted { $0.profile.id < $1.profile.id }.first ?? Draft.loaded(ProfileRecord(), isSaved: false) }
             messageTone = .neutral
             message = model.profiles.isEmpty ? "“\(name)” was deleted. Add a new connection to send messages."
                 : "“\(name)” was deleted. \(model.profiles.count) connection\(model.profiles.count == 1 ? " remains" : "s remain")."
