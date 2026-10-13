@@ -216,7 +216,20 @@ extension AgentSession {
             // A result too large to retain still leaves a row in its place.
             var message=ChatMessage(role:"toolResult",content:[textBlock("Tool result could not be recorded; inspect its effects before retrying.")])
             message.toolCallId=call.id; message.toolName=call.name; message.isError=true
-            return ToolOutcome(index:index,message:message,observedAt:displayClock(),cancelled:cancelled,mcpResult:mcpResult,recorded:false)
+            message.requestAttemptIDs=currentAttemptIDs
+            let observedAt=displayClock(), duration=started.map { nowMS()-$0 }
+            let outcome=started == nil ? "not_executed" : uncertain || Self.isEditing(call) ? "unknown" : "failed"
+            message.toolStats=["durationMs":duration.map { JSON($0) } ?? .null,"outcome":JSON(outcome)]
+            // Offloading can fail before recordTool reaches its card update.
+            // Retire the live invocation with the same outcome as its fallback
+            // row, without trying to write the unavailable result again.
+            if var card=toolStates[call.id] {
+                card["state"]=JSON(reportsUnknownToolOutcomes ? Self.cardState(outcome:outcome,isError:true) : "failed")
+                card["output"]=JSON(message.text); card["durationMs"]=duration.map { JSON($0) } ?? .null
+                setToolState(call.id,card); recordDisplayChange(toolStateOwners[call.id],at:observedAt)
+                event("tool_execution_end")
+            }
+            return ToolOutcome(index:index,message:message,observedAt:observedAt,cancelled:cancelled,mcpResult:mcpResult,recorded:false)
         }
         if Task.isCancelled { return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:.cancelled, cancelled:true) }
         do {
