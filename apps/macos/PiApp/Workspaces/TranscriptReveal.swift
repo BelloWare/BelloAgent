@@ -270,7 +270,15 @@ extension WorkspaceModel {
         }
         // Reads at the old window's edges join rows that are about to go.
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
-        defer { if view.revealRead == serial { view.revealRead = nil } }
+        var landed = false
+        defer {
+            if view.revealRead == serial {
+                view.revealRead = nil
+                // A failed read must not leave a mark that ordinary paging
+                // could land on later. A newer request owns its own cleanup.
+                if !landed { view.reveal = nil }
+            }
+        }
         func changedSource() {
             view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere)
             view.browsingHistory = true; view.revealFailure = Self.branchChangedElsewhere
@@ -287,6 +295,7 @@ extension WorkspaceModel {
             adoptInitialHistory(page, into: view, around: first, landing: around == nil ? Double(TranscriptMetrics.pageTopInset) : TranscriptReveal.landing)
             view.browsingHistory = page.newer != nil
             anchorChanged(view)
+            landed = true
             return true
         } catch {
             // Said to whoever asked (the find bar shows it), not at the
