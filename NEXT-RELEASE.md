@@ -2,6 +2,11 @@
 
 **Released 2026-10-14:** 0.1.126 (build 130, tag `v0.1.126`) is the latest release; record `docs/validation/Bello-Agent-0.1.126-2026-10-14.md`.
 
+## 0.1.127
+
+- [x] History modules (`dev/a127-git-history`, stream 3): literal message search, separate exact-hash navigation, immutable branch-tip paging, searchable refs, inclusive committed-date filters in UTC, removable filter chips and accessible keyboard selection across virtual rows. Generated-repository regressions and guard mutations cover stale reads, renamed-file pagination, cursor ownership and preserved repository bytes. [Validation and gallery record](docs/validation/git-history-0.1.127.md).
+- [ ] Stream 1 activates the History modules in its owned controller/panel/service files using the [tested backend handoff patch](docs/validation/git-history-wiring-0.1.127.patch), adapts it to its safety changes and validates the integrated panel. This stream leaves those files unchanged.
+
 ## 0.1.126
 
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.
