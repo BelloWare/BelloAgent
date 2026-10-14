@@ -10,8 +10,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// in tests, nothing is kept.
     let tabs = TabHost(defaults: ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard)
     /// ⌘P's list: its own to publish, so the window is not drawn again for it.
-    let quickOpen = QuickOpen()
+    let quickOpen = QuickOpen(defaults: ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard)
     let replyFileResolver = ReplyFileResolver()
+    let fileReviewNavigation = FileReviewNavigation()
     /// Bumped by any change to the list, so views can cache derived labels
     /// instead of rebuilding them on every redraw.
     private(set) var workspacesRevision = 0
@@ -488,7 +489,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         report.attach(self)
         observeDraftWrites()
         TranscriptKeptRows.policy = self
+        tabs.configureTab = { [weak self] tab in self?.configureFileNavigation(tab) }
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
+        FileTab.activate = { [weak self] tab in self?.tabs.activate(tab) }
+        FileTab.openHistory = { [weak self] tab in self?.showFileHistory(from: tab) }
         ChangesTab.resolveProject = { [weak self] id in self?.changesProject(id) }
         ChangesTab.openLocation = { [weak self] url, line in self?.openChangesFile(url, at: line) }
         FileBlame.openChange = { [weak self] tab, target, repository, still in self?.showHistoricalChange(from: tab, target: target, repository: repository, while: still) }

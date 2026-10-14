@@ -29,6 +29,7 @@ extension WorkspaceModel {
         }) else {
             error = "This file's repository is not one of \(project.name)'s folders."; return
         }
+        fileReviewNavigation.cancel()
         guard let changes = showChanges(in: projectID) else { return }
         changes.cameFrom(tab)
         let controller = changes.controller

@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import AppKit
 import PDFKit
+import QuartzCore
 @testable import PiApp
 @testable import GitView
 import FileView
@@ -1108,6 +1109,63 @@ final class UIScreenshotTests: XCTestCase {
         NSApp.appearance = nil
     }
 
+    /// Generated folder navigation fixtures; nothing outside this gallery root is browsed.
+    @MainActor private func captureFileFolderScenes(model: WorkspaceModel, file: FileTab, window: NSWindow, gallery: URL,
+                                                    appearances: [(String, NSAppearance.Name)], projectRoot: URL) async throws {
+        let originalFrame = window.frame
+        func drawScene(_ appearance: NSAppearance.Name) async throws {
+            NSApp.appearance = NSAppearance(named: appearance)
+            // The window server may otherwise return the previous size or
+            // appearance of this background test window under a loaded gate.
+            window.contentView?.layoutSubtreeIfNeeded(); window.display()
+            CATransaction.flush()
+            try await settle(0.8)
+            window.contentView?.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            CATransaction.flush()
+            try await settle(0.3)
+        }
+        let sources = file.url.deletingLastPathComponent()
+        for name in ["RetryPolicy.swift", "README.md"] { try Data(Self.retrySource.utf8).write(to: sources.appendingPathComponent(name)) }
+        try FileManager.default.createDirectory(at: sources.appendingPathComponent("Tests"), withIntermediateDirectories: true)
+        file.folders.setShown(true)
+        try await until("the folder tree reveals the linked file") { file.folders.browser.rows.contains { $0.url == file.url } }
+        for narrow in [false, true] {
+            if narrow { window.setFrame(NSRect(x: originalFrame.minX, y: originalFrame.minY, width: 920, height: 600), display: true) }
+            else { window.setFrame(originalFrame, display: true) }
+            for (name, appearance) in appearances {
+                try await drawScene(appearance)
+                try capture(window, to: gallery.appendingPathComponent("24i-file-folder-tree-\(narrow ? "narrow-" : "")\(name).png"))
+                let header = try XCTUnwrap(descendants(FileTabHeader.self, in: file.contentView).first)
+                let crumb = try XCTUnwrap(descendants(NSButton.self, in: header).first { $0.accessibilityIdentifier() == "file-crumb-" + file.url.path })
+                crumb.performClick(nil)
+                try await until("the folder menu is visible with its entries") {
+                    file.folders.menu?.browser.snapshot(sources) != nil && file.folders.menu?.window?.isVisible == true
+                }
+                file.folders.menu?.window?.contentView?.layoutSubtreeIfNeeded()
+                file.folders.menu?.window?.display(); CATransaction.flush()
+                try await settle(0.5)
+                try captureWithPopovers(window, to: gallery.appendingPathComponent("24j-file-folder-menu-\(narrow ? "narrow-" : "")\(name).png"))
+                file.folders.menuPresenter.close()
+            }
+        }
+        let deep = sources.appendingPathComponent("Networking/Policies/ExponentialBackoff/Configuration/Session/Budget")
+        try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+        let deepFile = deep.appendingPathComponent("RetryBudget.swift"); try Data(Self.retrySource.utf8).write(to: deepFile)
+        file.folders.setShown(false)
+        let long = model.openFile(deepFile)
+        try await until("the long-path fixture is read") { long.status == .ready }
+        for narrow in [false, true] {
+            window.setFrame(narrow ? NSRect(x: originalFrame.minX, y: originalFrame.minY, width: 920, height: 600) : originalFrame, display: true)
+            for (name, appearance) in appearances {
+                try await drawScene(appearance)
+                XCTAssertTrue(descendants(NSButton.self, in: long.contentView).contains { $0.accessibilityIdentifier() == "file-crumb-ancestors" })
+                try capture(window, to: gallery.appendingPathComponent("24k-file-folder-long-path-\(narrow ? "narrow-" : "")\(name).png"))
+            }
+        }
+        model.tabs.close(long); model.tabs.activate(file)
+        file.folders.setShown(false); window.setFrame(originalFrame, display: true)
+    }
+
     /// 24 · Files beside the chat: the chat's side and two files as tabs in
     /// the pane, a file shown at the lines it was opened at; the side shown
     /// in their place; and a file popped out into a window of its own. The
@@ -1160,6 +1218,7 @@ final class UIScreenshotTests: XCTestCase {
             try capture(window, to: gallery.appendingPathComponent("24d-tabs-go-to-line-\(name).png"))
         }
         file.closeBar(); try await settle(0.6)
+        try await captureFileFolderScenes(model: model, file: file, window: window, gallery: gallery, appearances: appearances, projectRoot: projectRoot)
         let popped = model.tabs.popOut(file)
         let tabWindow = try XCTUnwrap(model.tabs.window(of: popped))
         tabWindow.setFrame(NSRect(x: 120, y: 120, width: 820, height: 560), display: true)

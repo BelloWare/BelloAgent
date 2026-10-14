@@ -7,7 +7,7 @@ import ImageIO
     private final class PDF: @unchecked Sendable { let document: PDFDocument; init(_ document: PDFDocument) { self.document = document } }
     private final class Bitmap: @unchecked Sendable { let image: CGImage; init(_ image: CGImage) { self.image = image } }
     private struct Fingerprint: Equatable, Sendable { let modified: Date?; let size: UInt64; let inode: UInt64 }
-    private enum Content: Sendable { case pdf(PDF), image(Bitmap), failed(String), unchanged }
+    private enum Content: Sendable { case pdf(PDF), image(Bitmap), failed(String), unchanged, cancelled }
     private struct Reading: Sendable { let fingerprint: Fingerprint?; let content: Content }
     let url: URL
     @Published private(set) var image: NSImage?
@@ -16,9 +16,15 @@ import ImageIO
     @Published private(set) var loading = false
     var changed: (() -> Void)?
     private var task: Task<Void, Never>?
+    var readingTask: Task<Void, Never>? { task }
     private var fingerprint: Fingerprint?
     private var token = 0
     private var madePDFView: PDFView?
+    private var suspended = false
+    private var savedPage: Int?
+    /// Held before decoding by generated-file lifecycle regressions.
+    var beforeDecode: (@Sendable () async -> Void)?
+    private(set) var decodeStarts = 0
     var hasPDFView: Bool { madePDFView != nil }
     var pdfView: PDFView {
         if let madePDFView { return madePDFView }
@@ -37,12 +43,16 @@ import ImageIO
         }
     }
     func load() {
+        guard !suspended else { return }
         token &+= 1
         let token = token, url = url, previous = error == nil ? fingerprint : nil
         task?.cancel()
         loading = image == nil && pdf == nil
+        let before = beforeDecode
         task = Task { [weak self] in
-            let reading = await Task.detached(priority: .userInitiated) { () -> Reading in
+            let worker = Task.detached(priority: .userInitiated) { [weak self] () -> Reading in
+                await before?()
+                guard !Task.isCancelled else { return Reading(fingerprint: nil, content: .cancelled) }
                 guard url.resolvingSymlinksInPath().path == url.path else {
                     return Reading(fingerprint: nil, content: .failed("The file's path changed. Open it again to check its location."))
                 }
@@ -50,6 +60,9 @@ import ImageIO
                 let fingerprint = attributes.map { Fingerprint(modified: $0[.modificationDate] as? Date,
                     size: ($0[.size] as? NSNumber)?.uint64Value ?? 0, inode: ($0[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0) }
                 if let fingerprint, fingerprint == previous { return Reading(fingerprint: fingerprint, content: .unchanged) }
+                guard !Task.isCancelled else { return Reading(fingerprint: nil, content: .cancelled) }
+                await self?.noteDecodeStart()
+                guard !Task.isCancelled else { return Reading(fingerprint: nil, content: .cancelled) }
                 if Self.kind(for: url) == "pdf", let document = PDFDocument(url: url) {
                     return Reading(fingerprint: fingerprint, content: .pdf(PDF(document)))
                 }
@@ -61,12 +74,13 @@ import ImageIO
                     return Reading(fingerprint: fingerprint, content: .image(Bitmap(image)))
                 }
                 return Reading(fingerprint: fingerprint, content: .failed("The file could not be previewed."))
-            }.value
+            }
+            let reading = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
             guard let self, !Task.isCancelled, self.token == token else { return }
             self.loading = false; self.task = nil
             switch reading.content {
             case .pdf(let loaded):
-                let index = self.madePDFView.flatMap { view in view.currentPage.flatMap { view.document?.index(for: $0) } }
+                let index = self.madePDFView.flatMap { view in view.currentPage.flatMap { view.document?.index(for: $0) } } ?? self.savedPage
                 self.pdf = loaded.document; self.image = nil; self.error = nil
                 if let view = self.madePDFView {
                     view.document = loaded.document
@@ -81,13 +95,19 @@ import ImageIO
                 image.addRepresentation(bitmap)
                 self.image = image; self.pdf = nil; self.error = nil
             case .failed(let reason): self.error = reason
-            case .unchanged: return
+            case .unchanged, .cancelled: return
             }
             self.fingerprint = reading.fingerprint
             self.changed?()
         }
     }
-    func suspend() { token &+= 1; task?.cancel(); task = nil; loading = false }
-    func close() { suspend(); image = nil; pdf = nil; madePDFView?.document = nil; madePDFView = nil; fingerprint = nil }
+    private func noteDecodeStart() { decodeStarts += 1 }
+    func suspend() {
+        suspended = true; token &+= 1; task?.cancel(); task = nil; loading = false
+        savedPage = madePDFView.flatMap { view in view.currentPage.flatMap { view.document?.index(for: $0) } } ?? savedPage
+        image = nil; pdf = nil; madePDFView?.document = nil; fingerprint = nil
+    }
+    func resume() { guard suspended else { return }; suspended = false; load() }
+    func close() { suspend(); madePDFView = nil; savedPage = nil }
 }
 

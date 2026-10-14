@@ -47,11 +47,12 @@ final class FileBytes: @unchecked Sendable {
     // Immutable after init; pread is safe from any thread.
     let descriptor: Int32
     let path: String
+    private let didRead: (@Sendable (Int) -> Void)?
     struct OpenFailure: LocalizedError {
         let message: String
         var errorDescription: String? { message }
     }
-    init(path: String, noFollow: Bool = false) throws {
+    init(path: String, noFollow: Bool = false, didRead: (@Sendable (Int) -> Void)? = nil) throws {
         // Check the opened inode, not its path: a FIFO may replace a file
         // between selection and open, and must never wait for a writer.
         let descriptor = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC | (noFollow ? O_NOFOLLOW : 0))
@@ -64,6 +65,7 @@ final class FileBytes: @unchecked Sendable {
         let flags = fcntl(descriptor, F_GETFL)
         guard flags >= 0, fcntl(descriptor, F_SETFL, flags & ~O_NONBLOCK) == 0 else { throw OpenFailure(message: "The file can't be opened.") }
         self.descriptor = descriptor; self.path = path
+        self.didRead = didRead
         adopted = true
     }
     deinit { close(descriptor) }
@@ -86,6 +88,7 @@ final class FileBytes: @unchecked Sendable {
             }
         }
         data.count = done
+        didRead?(done)
         return data
     }
     /// Whether the file is still the one opened: the same through the
@@ -166,6 +169,9 @@ private final class FilePageReadStop: @unchecked Sendable {
         /// and before each find.
         public var beforeCount: (@Sendable (Int) async -> Void)?
         public var beforeFind: (@Sendable () async -> Void)?
+        /// Diagnostic seam at actual pread completion, including reads whose
+        /// results are subsequently discarded. Does not count cached text.
+        public var didReadBytes: (@Sendable (Int) -> Void)?
         public init() {}
     }
 
@@ -188,6 +194,9 @@ private final class FilePageReadStop: @unchecked Sendable {
     private(set) var identity: FileIdentity?
     private var start: Int64 = 0
     private var indexing: Task<Void, Never>?
+    var indexingWork: Task<Void, Never>? { indexing }
+    public private(set) var isSuspended = false
+    private var readStop = FilePageReadStop()
     /// Bumped whenever what is read belongs to another reading of the file:
     /// anything read for an older one is dropped when it comes.
     private var version = 0
@@ -269,11 +278,31 @@ private final class FilePageReadStop: @unchecked Sendable {
     }
     /// Stops reading. Reads under way finish and are dropped.
     public func close() {
+        readStop.cancel()
         indexing?.cancel(); indexing = nil
         version += 1
         cancelPageReads()
         bytes = nil
         wakeSearches()
+    }
+
+    /// Hidden readers keep their line metadata/identity, but no decoded text,
+    /// outstanding reads or find counting. A blocked syscall may finish; it
+    /// cannot publish or start another read after suspension.
+    public func suspend() {
+        guard !isSuspended else { return }
+        isSuspended = true; readStop.cancel()
+        indexing?.cancel(); indexing = nil; version += 1
+        cancelPageReads(); cache.removeAll(); screen = nil
+        wakeSearches()
+    }
+    public func resume() {
+        guard isSuspended else { return }
+        isSuspended = false; readStop = FilePageReadStop()
+        if status == .indexing {
+            reset(); generation += 1
+            if bytes != nil { index() } else { open() }
+        }
     }
 
     /// Check both the open inode and its path away from the UI actor, so a
@@ -284,9 +313,10 @@ private final class FilePageReadStop: @unchecked Sendable {
     /// file is unchanged since it was read. Nil when it changed, is longer
     /// than `limit`, is not text, or has not been read through.
     public func snapshot(limit: Int) async -> Data? {
-        guard status == .ready, let bytes, let identity, identity.size <= Int64(limit) else { return nil }
+        guard !isSuspended, status == .ready, let bytes, let identity, identity.size <= Int64(limit) else { return nil }
+        let stop = readStop
         return await Task.detached(priority: .userInitiated) { () -> Data? in
-            guard let data = try? bytes.read(at: 0, count: Int(identity.size)), Int64(data.count) == identity.size,
+            guard !stop.isStopped, let data = try? bytes.read(at: 0, count: Int(identity.size)), !stop.isStopped, Int64(data.count) == identity.size,
                   bytes.unchanged(since: identity) else { return nil }
             return data
         }.value
@@ -305,15 +335,16 @@ private final class FilePageReadStop: @unchecked Sendable {
     // MARK: Opening
 
     private func open() {
-        let path = url.path, version = version, before = options.beforeOpen, requiresResolvedPath = options.requiresResolvedPath
+        let path = url.path, version = version, before = options.beforeOpen, requiresResolvedPath = options.requiresResolvedPath, didRead = options.didReadBytes
         indexing = Task.detached(priority: .userInitiated) { [weak self] in
             await before?()
+            guard !Task.isCancelled else { return }
             guard !requiresResolvedPath || URL(fileURLWithPath: path).resolvingSymlinksInPath().path == path else {
                 await self?.failed("The file's path changed. Open it again to check its location.", version: version)
                 return
             }
             let bytes: FileBytes
-            do { bytes = try FileBytes(path: path, noFollow: requiresResolvedPath) }
+            do { bytes = try FileBytes(path: path, noFollow: requiresResolvedPath, didRead: didRead) }
             catch { await self?.failed(error.localizedDescription, version: version); return }
             guard let identity = FileIdentity.of(descriptor: bytes.descriptor) else {
                 await self?.failed("The file can't be opened.", version: version)
@@ -359,6 +390,7 @@ private final class FilePageReadStop: @unchecked Sendable {
                 while offset < identity.size {
                     try Task.checkCancellation()
                     await options.beforeChunk?(offset)
+                    try Task.checkCancellation()
                     // Only as far as the file was when it was opened: a file
                     // still being written does not keep the pass going. The
                     // first lines are shown as soon as they are read.
@@ -470,6 +502,7 @@ private final class FilePageReadStop: @unchecked Sendable {
         wakeSearches()
     }
     private func reset() {
+        readStop.cancel(); readStop = FilePageReadStop()
         indexing?.cancel(); indexing = nil
         version += 1
         lengths.removeAll(); checkpoints = []; longLines = [:]; openLong = nil
@@ -483,6 +516,7 @@ private final class FilePageReadStop: @unchecked Sendable {
     public var isReading: Bool { reading }
     /// Whether more is read of the file: not once it has changed or failed.
     private var reading: Bool {
+        guard !isSuspended else { return false }
         switch status {
         case .changed, .failed, .binary: return false
         default: return bytes != nil
@@ -1242,14 +1276,14 @@ private final class FilePageReadStop: @unchecked Sendable {
         // The pass may have stopped inside a character of the line it is
         // in: the few bytes that finish it are read too.
         if !complete, to >= scanned { to = min(identity.size, to + 3) }
-        let encoding = encoding, version = version, before = options.beforePage
+        let encoding = encoding, version = version, before = options.beforePage, stop = readStop
         fetchReads += 1; fetching += 1
         Task.detached(priority: .userInitiated) { [weak self] in
             await before?()
             var text: String?
             var read = 0
             let count = Int(max(0, to - from))
-            if let data = try? bytes.read(at: from, count: count), data.count == count, bytes.unchanged(since: identity) {
+            if !stop.isStopped, let data = try? bytes.read(at: from, count: count), !stop.isStopped, data.count == count, bytes.unchanged(since: identity) {
                 read = count
                 // Read to where a line starts, there is that line, empty so far.
                 let lines = FileDocument.lines(of: data, encoding: encoding, last: true)

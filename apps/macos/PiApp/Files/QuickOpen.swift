@@ -86,6 +86,12 @@ import FileFinder
     private var pendingOpen: (query: String, id: String?, open: (Row, Int?) -> Void)?
     /// Files opened lately, newest first, by project.
     private var recents: [String: [URL]] = [:]
+    private var allowedRecentProjects: Set<String>?
+    private let defaults: UserDefaults?
+    /// Fixture seam around the real off-main filesystem validation.
+    var beforeRecentValidation: (@Sendable () -> Void)?
+    var beforeRecentDelivery: (@Sendable () -> Void)?
+    private(set) var recentValidationsFinished = 0
     /// Where the keyboard was before this took it.
     private weak var previousWindow: NSWindow?
     private weak var previousResponder: NSResponder?
@@ -94,10 +100,12 @@ import FileFinder
     /// The window whose keyboard the list took, also where it is drawn.
     var presentationWindow: NSWindow? { isOpen ? previousWindow : nil }
 
-    init(limits: FileListingLimits = FileListingLimits(),
+    init(limits: FileListingLimits = FileListingLimits(), defaults: UserDefaults? = nil,
          refreshListing: @escaping @Sendable (FileFinder) async -> (FileFinderIndex?, String?) = QuickOpen.refreshedListing) {
         listingLimits = limits
         self.refreshListing = refreshListing
+        self.defaults = defaults
+        recents = FileRecentState.read(defaults)
     }
 
     nonisolated private static func refreshedListing(_ finder: FileFinder) async -> (FileFinderIndex?, String?) {
@@ -157,6 +165,7 @@ import FileFinder
         guard isOpen else { return }
         cancelFileFocus()
         isOpen = false
+        generation &+= 1
         pendingOpen = nil
         searching?.stop(); searching = nil
         listing?.cancel(); listing = nil
@@ -212,6 +221,10 @@ import FileFinder
     /// Forgets the projects that are gone or no longer trusted, and closes
     /// the list if it was for one of them.
     func projectsChanged(_ projects: [Project]) {
+        let allowed = Set(projects.filter(\.trusted).map(\.id))
+        allowedRecentProjects = allowed
+        recents = recents.filter { allowed.contains($0.key) }
+        FileRecentState.write(recents, to: defaults)
         let current = Set(projects.filter(\.trusted).map(Self.key))
         finders.removeAll { entry in
             guard !current.contains(entry.key) else { return false }
@@ -277,11 +290,16 @@ import FileFinder
 
     /// Notes a file opened in `project`, for the list with nothing typed.
     func noteOpened(_ url: URL, projectID: String?) {
-        guard let projectID else { return }
+        guard let projectID, allowedRecentProjects?.contains(projectID) != false,
+              url.isFileURL, url.path.utf8.count <= 4096 else { return }
+        if recents[projectID] == nil, recents.count >= FileRecentState.projectLimit,
+           let oldest = recents.keys.sorted().first { recents[oldest] = nil }
         var list = recents[projectID] ?? []
         list.removeAll { $0 == url }
         list.insert(url, at: 0)
         recents[projectID] = Array(list.prefix(Self.recentLimit))
+        FileRecentState.write(recents, to: defaults)
+        if isOpen, project?.id == projectID, FileFinderQuery(query).isEmpty { refresh() }
     }
 
     private func refresh() {
@@ -293,8 +311,21 @@ import FileFinder
         answered = nil; searched = false
         guard isOpen, let project, project.trusted else { rows = []; selection = nil; return }
         if parsed.isEmpty {
-            searched = false; answered = typed
-            show(recentRows(project))
+            let stop = SearchStop(), recent = recents[project.id] ?? [], before = beforeRecentValidation, delivering = beforeRecentDelivery
+            searching = stop
+            DispatchQueue.global(qos: .userInitiated).async {
+                before?()
+                guard !stop.isStopped else { return }
+                let rows = Self.recentRows(project, recent: recent, stop: stop)
+                delivering?()
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated {
+                        self?.recentValidationsFinished += 1
+                        guard let self, self.isOpen, self.project == project, self.generation == generation, !stop.isStopped else { return }
+                        self.answered = typed; self.searched = false; self.show(rows)
+                    }
+                }
+            }
             return
         }
         guard let index else { rows = []; selection = nil; return }
@@ -330,12 +361,17 @@ import FileFinder
 
     /// The files opened lately in `project` that are still there and still
     /// in it, newest first.
-    private func recentRows(_ project: Project) -> [Row] {
+    nonisolated private static func recentRows(_ project: Project, recent: [URL], stop: SearchStop) -> [Row] {
         let roots = project.roots.map { FileTab.key(for: URL(fileURLWithPath: $0)) }
-        return (recents[project.id] ?? []).compactMap { url in
+        return recent.compactMap { url in
+            guard !stop.isStopped else { return nil }
             let key = FileTab.key(for: url)
-            guard let root = roots.first(where: { key.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }),
-                  FileManager.default.fileExists(atPath: key) else { return nil }
+            // URL resource values may be cached on a retained recent reference.
+            // Recreate it so a deleted/replaced file is checked on every show.
+            let current = URL(fileURLWithPath: key)
+            guard key == url.standardizedFileURL.path,
+                  let root = roots.first(where: { key.hasPrefix($0.hasSuffix("/") ? $0 : $0 + "/") }),
+                  (try? current.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
             let relative = String(key.dropFirst(root.count + (root.hasSuffix("/") ? 0 : 1)))
             let rootName = project.roots.count > 1 ? URL(fileURLWithPath: root).lastPathComponent : nil
             return Self.row(key: key, url: URL(fileURLWithPath: key), relative: relative, highlights: [], rootName: rootName)
