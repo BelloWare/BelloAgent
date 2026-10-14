@@ -54,3 +54,13 @@ extension PayloadArchive {
         }
     }
 }
+
+extension PayloadArchive {
+    func attemptsConsuming(_ messageID: String, sessionID: String, workspaceID: String) async throws -> [String] {
+        guard Self.inspectorScope(sessionID, workspaceID) else { throw CaptureFailure.unavailable }
+        return try await dashboardReader().run(consumer: "inspector") { engine in
+            try engine.db.rows("SELECT a.id FROM message_links l JOIN attempts a ON a.id=l.attempt WHERE l.message=? AND l.role='context' AND a.session=? AND a.workspace=? ORDER BY a.wall,a.id LIMIT 1",
+                [.text(messageID),.text(sessionID),.text(workspaceID)]).compactMap { $0["id"]?.string }
+        }
+    }
+}

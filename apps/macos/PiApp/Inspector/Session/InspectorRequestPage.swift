@@ -50,7 +50,8 @@ import AppKit
         if shownRow?.id != row.id { events = false; eventBody = nil; eventKey = nil; eventRoute = nil; eventHost = nil; forceHeader = true }
         let position = inspector.index.position(of: row.id)
         let childLinks = inspector.groups.filter { $0.summary.link.parentAttemptID == row.id }.map(\.id).joined(separator: ",")
-        let headerIdentity = [childLinks, position.map { "\($0.index):\($0.count)" } ?? "", inspector.summaryLabel(row.id) ?? "", inspector.index.kind(of: row.id), inspector.workspace?.canForkFromReply(request.sessionID) == true ? "fork" : ""].joined(separator: "|")
+        let agentLinks = inspector.coordination(for: row)
+        let headerIdentity = [String(describing: agentLinks), childLinks, position.map { "\($0.index):\($0.count)" } ?? "", inspector.summaryLabel(row.id) ?? "", inspector.index.kind(of: row.id), inspector.workspace?.canForkFromReply(request.sessionID) == true ? "fork" : ""].joined(separator: "|")
         if forceHeader || shownRow != row || shownMetadata != request.metadata || shownHeaderIdentity != headerIdentity {
             header?.removeFromSuperview(); header = buildHeader(row); addSubview(header!)
             shownRow = row; shownMetadata = request.metadata; shownHeaderIdentity = headerIdentity; forceHeader = false
@@ -83,7 +84,8 @@ import AppKit
         let title = position.map { "Request \($0.index) of \($0.count)" } ?? "Request"
         let turn = inspector.index.turn(containing: row.id)
         var context = [row.route.label]
-        if let turn, !turn.isOther { context.append("Turn \(turn.number)") }
+        if let childTurn = row.childTurn { context.append("Sub-agent turn \(childTurn)") }
+        else if let turn, !turn.isOther { context.append("Turn \(turn.number)") }
         if row.wall > 0 { context.append(Date(timeIntervalSince1970: row.wall).formatted(date: .omitted, time: .standard)) }
         let kind = PiKit.Badge(text: inspector.summaryLabel(row.id).map { "compaction · " + $0 } ?? inspector.index.kind(of: row.id), tone: .neutral)
         kind.setAccessibilityIdentifier("inspector-request-kind")
@@ -107,6 +109,8 @@ import AppKit
         }
         var views: [NSView] = [heading, inspectorRow(metrics, spacing: 12, alignment: .firstBaseline)]
         var links: [NSView] = []
+        let agentLinks = inspector.coordination(for: row)
+        if !agentLinks.isEmpty { links.append(inspector.coordinationMenu(agentLinks)) }
         if let parent = row.parentSessionID {
             if let attempt = row.parentAttemptID {
                 links.append(PiKit.Button("Parent request", symbol: "arrow.turn.up.left", style: .ghost) { [weak inspector] in
@@ -163,6 +167,8 @@ import AppKit
         if let decode = row.decode { rows.append(("Generation", SessionStatsFormat.duration(decode) + " first to last token")) }
         if let http = DurationObservation.valid(metrics["httpDurationMs"]?.number) ?? row.http { rows.append(("Whole request", MetricFormat.detailedDuration(http))) }
         rows.append(("Purpose", row.purpose))
+        if let turn = row.childTurn { rows.append(("Child turn", String(turn))) }
+        if let execution = row.parentExecutionID { rows.append(("Parent run", execution)) }
         if !row.api.isEmpty { rows.append(("API", row.api)) }
         if let url = request.metadata["url"]?.string { rows.append(("Endpoint", (request.metadata["method"]?.string ?? "POST") + " " + (URL(string: url)?.path ?? url))) }
         rows.append(("Attempt", row.id))

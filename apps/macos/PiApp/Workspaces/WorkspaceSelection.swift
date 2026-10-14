@@ -170,6 +170,12 @@ extension WorkspaceModel {
             try await attachManagedSubagent(item)
             guard current() else { return }
             guard try await reconcileSubmissionDraft(item, view: view, current: current) else { return }
+            let owner = item.delegation.flatMap { record($0.budgetOwnerSessionID) } ?? item
+            view.childSummaries = subagentSummaries.filter { $0.value.link.budgetOwnerSessionID == item.id }
+            if item.isSubagent || !view.childSummaries.isEmpty, let path = owner.path,
+               let state = try? await history.agentCoordination(path: URL(fileURLWithPath: path), ownerID: owner.id) {
+                guard current() else { return }; applyAgentCoordination(state, parentID: owner.id)
+            }
             if let link = item.delegation {
                 view.isManagedSubagent = true; view.subagentStatus = subagentSummaries[id]?.status
                 view.subagentTurn = subagentSummaries[id]?.turn

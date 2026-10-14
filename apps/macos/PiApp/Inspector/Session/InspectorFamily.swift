@@ -13,7 +13,7 @@ struct InspectorSubagentGroup: Equatable {
     var title: String { summary.description.isEmpty ? "Sub-agent" : summary.description }
     var detail: String {
         let coverage = costSamples < requests ? (costSamples == 0 ? " · cost unreported" : " · cost partly unreported") : ""
-        return summary.status.label + " · \(requests) request" + (requests == 1 ? "" : "s") + (cost.map { " · " + compactGatewayUSD($0) } ?? "") + coverage
+        return summary.presentationLabel + " · \(requests) request" + (requests == 1 ? "" : "s") + (cost.map { " · " + compactGatewayUSD($0) } ?? "") + coverage
     }
 }
 

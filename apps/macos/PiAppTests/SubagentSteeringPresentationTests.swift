@@ -44,6 +44,39 @@ final class SubagentSteeringPresentationTests: XCTestCase {
             XCTAssertTrue(view.accessibilityLabel()?.contains("Sub-agent") == true)
         }
     }
+    func testMessageAndWaitReceiptsKeepTheirOwnDeliveryState() {
+        var tool = Self.tool; tool.name = "subagent_send"
+        tool.nativeSubagent?.object.map { fields in
+            var fields = fields; fields["route"] = .string("steer"); tool.nativeSubagent = .object(fields)
+        }
+        tool.output = "{\"accepted\":true,\"child_id\":\"chat-child\",\"turn\":1,\"message_id\":\"steer\"}"
+        tool.agentDeliveryState = "pending"
+        XCTAssertEqual(SubagentToolView(tool).label, "Queued for steering · turn 1", "The child running does not prove it consumed a message")
+        tool.agentDeliveryState = "delivered"
+        XCTAssertEqual(SubagentToolView(tool).label, "Delivered · turn 1")
+        tool.agentDeliveryState = "held"
+        XCTAssertEqual(SubagentToolView(tool).label, "Pending for parent Resume")
+        tool.name = "subagent_wait"; tool.subagent = nil; tool.nativeSubagent = nil; tool.agentDeliveryState = nil
+        tool.output = "{\"version\":3,\"wake_reason\":\"message\",\"pending_count\":1}"
+        XCTAssertEqual(SubagentToolView(tool).label, "Wait ended · new report")
+        tool.output = "{\"version\":3,\"accepted\":false,\"code\":\"subagent_stopped\",\"message\":\"Held by user Stop\"}"
+        XCTAssertEqual(SubagentToolView(tool).label, "Not accepted")
+        XCTAssertEqual(SubagentToolView(tool).error, "Held by user Stop")
+    }
+    @MainActor func testNewRuntimeDropsOldProgressAndHumanStopHoldsTheCard() {
+        let view = SessionDisplay(id: "chat-parent"); view.historyState = .ready; view.runState = .running
+        var tool = Self.tool
+        tool.subagent?.progressEpoch = "old-runtime"
+        tool.subagent?.progress = .init(phase: "model", elapsedMs: 100, requests: 1, tools: 0, preview: "Old preview", usd: 0.01, reported: 1, unreported: 0)
+        var current = tool.subagent!; current.progressEpoch = "new-runtime"; current.progress = nil
+        view.childSummaries["chat-child"] = current
+        view.messages = [.init(id: "source", role: "assistant", text: "", tools: [tool])]
+        let shown = view.presentedMessages.first { $0.id == "source" }?.tools?.first
+        XCTAssertNil(shown?.subagent?.progress, "Progress belongs to the current helper runtime")
+        view.heldAgentChildren = ["chat-child"]
+        let held = view.presentedMessages.first { $0.id == "source" }?.tools?.first
+        XCTAssertEqual(held.map { SubagentToolView($0).label }, "Stopped by you · turn 1")
+    }
     func testCaptureAcceptsANewerTurnButRejectsOldTerminalAndStalePackets() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

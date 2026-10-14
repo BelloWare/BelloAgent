@@ -57,8 +57,9 @@ extension WorkspaceModel {
     func interruptSubagents(workspaceID: String) {
         for child in chats where child.workspaceID == workspaceID && child.isSubagent {
             guard var summary = subagentSummaries[child.id], !summary.status.terminal else { continue }
-            summary.status = .interrupted; summary.revision = 0
+            summary.status = .interrupted; summary.revision = 0; summary.progress = nil; summary.progressEpoch = nil
             subagentSummaries[child.id] = summary; displays[child.id]?.subagentStatus = .interrupted
+            displays[summary.link.budgetOwnerSessionID]?.childSummaries[child.id] = summary
         }
     }
 }

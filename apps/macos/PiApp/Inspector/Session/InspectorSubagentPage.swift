@@ -23,16 +23,29 @@ import AppKit
         actions.append(PiKit.Button("Originating tool", symbol: "arrow.up.left", style: .ghost) { [weak inspector] in
             inspector?.showSubagentParent(link)
         })
-        var views: [NSView] = [InspectorPageHeader(group.title, subtitle: group.summary.model, badges: [PiKit.Badge(text: group.summary.status.label, tone: group.summary.status == .completed ? .success : .neutral)], actions: []),
+        var views: [NSView] = [InspectorPageHeader(group.title, subtitle: group.summary.model, badges: [PiKit.Badge(text: group.summary.presentationLabel, tone: group.summary.status == .completed ? .success : .neutral)], actions: []),
                                inspectorText(group.detail, color: .piInkSecondary), inspectorRow(actions.map { .view($0) }, spacing: 8)]
+        let entries = inspector.coordination.filter { $0.childID == link.childSessionID }
+        if !entries.isEmpty { views.append(inspector.coordinationMenu(entries)) }
         let requests = inspector.index.requests.filter { $0.delegationID == delegationID }.sorted { ($0.wall,$0.id) < ($1.wall,$1.id) }
         if requests.isEmpty {
             views.append(InspectorBanner(symbol: "clock", text: group.requests == 0 ? "This task has no captured requests. Queued or cancelled tasks can finish without dispatching one." : "This task’s requests are outside the current navigator window. Select this sub-agent in the filter to read its newest requests.", tone: .neutral))
         }
         column.items = views.map { .view($0, .fill) }
-        requestsView.update(LazyStackView.Source(count: requests.count, key: { requests[$0].id }, height: { _, _ in 32 }, view: { [weak inspector] offset, _ in
-            let request = requests[offset]
-            let button = PiKit.Button("\(offset + 1). \(inspector?.index.kind(of: request.id) ?? request.purpose) · \(request.route.label)", symbol: "arrow.up.arrow.down", style: .ghost) { [weak inspector] in inspector?.select(.request(request.id)) }
+        let turns = Set(requests.map { $0.childTurn ?? 1 } + entries.map(\.turn)).sorted()
+        let rows: [(turn: Int, request: InspectorRequestRow?)] = turns.flatMap { turn in
+            [(turn, nil)] + requests.filter { ($0.childTurn ?? 1) == turn }.map { (turn, $0) }
+        }
+        requestsView.update(LazyStackView.Source(count: rows.count, key: { rows[$0].request?.id ?? "turn-\(rows[$0].turn)" }, height: { offset, _ in rows[offset].request == nil ? 40 : 32 }, view: { [weak inspector] offset, _ in
+            let item = rows[offset]
+            guard let request = item.request else {
+                let title = inspectorText("Turn \(item.turn)", color: .piInkSecondary)
+                let messages = entries.filter { $0.turn == item.turn }
+                var items: [ShellItem] = [.view(title), .spacer(0)]
+                if let inspector, !messages.isEmpty { items.append(.view(inspector.coordinationMenu(messages))) }
+                return ShellStack(.horizontal, spacing: 8, items)
+            }
+            let button = PiKit.Button("\(inspector?.index.kind(of: request.id) ?? request.purpose) · \(request.route.label)", symbol: "arrow.up.arrow.down", style: .ghost) { [weak inspector] in inspector?.select(.request(request.id)) }
             button.setAccessibilityIdentifier("inspector-subagent-request-" + request.id)
             return button
         }))

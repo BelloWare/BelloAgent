@@ -59,3 +59,44 @@ hidden.
   (`step2-cold-open-recheck.log`); fixture now waits for the actual retained
   dispatch timestamp, not merely an archive row.
 - `step2-SubagentOpeningTests-3.log`: **9 pass**, serial alone, with that barrier.
+
+## Step 3 — delivery and request provenance
+
+Merged helper `3ce58e0e` during implementation. Capture now projects child turn,
+sponsoring parent execution and the helper's exact `agentDeliveryIDs`, with an
+indexed, body-free relationship table that expires with its physical attempt.
+Existing captures fall back to their context-row links. No capture policy or
+quota changed. The family Inspector subdivides requests by child turn and links
+the source operation, delivery row, source request and first retained consuming
+request. Source navigation uses the existing managed child/parent reveal paths,
+including retained versions. Typed delivery inspection follows the consuming
+request instead of creating a human turn root.
+
+Message cards distinguish acceptance, pending delivery and actual delivery;
+completed waits name their wake reason. Journal-derived human Stop holds appear
+on cards and child footers. New runtime progress cannot replace the current
+runtime's progress. Coordination rows expose their source through every
+transcript action relay.
+
+- `step3-red.log`: initial Inspector delivery/turn assertions fail on baseline.
+- `step3-green.log`: compiler caught missing optional initializer arguments in
+  the new journal projection; corrected. `step3-green-2.log`: **24 pass**.
+- `step3-delivery-red.log`: fixture initializer label corrected before the
+  behavioral run. `step3-delivery-red-2.log`: delivery inspection, queued-steer
+  status and completed-wait status fail for the intended reasons.
+- `step3-complete-green.log`: **28 pass**, 0 failures: steering Inspector,
+  presentation/workspace, existing Inspector/capture and action forwarding.
+- `step3-mutation.log`: removing physical-session scoping, treating typed agent
+  input as a human root, and accepting progress from a different runtime each
+  fails its regression. All mutations restored; `step3-restored.log`: **10 pass**.
+
+Contract limits for integration: the helper now supplies exact included event
+IDs, but source operation identities still come from the owner's journal;
+`RequestScope` retains creation ancestry rather than a separate triggering-call
+field. The app joins the durable operation with capture output links. Links mean
+the **first retained** consuming attempt; expired capture cannot prove the first
+historical inclusion. Missing/disabled capture keeps receipt/delivery inspection
+and source transcript navigation, with an explicit unavailable-request note.
+Read-only coordination projection uses a fingerprint-cached journal scan because
+the helper does not yet expose the design's turn/message detail paging command;
+large-family cost is part of phase 6 acceptance, not claimed here.

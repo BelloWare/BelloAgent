@@ -65,7 +65,11 @@ struct AgentMessagePresentation: Equatable {
             let words = AgentDeliveryText(event.text, environment: inputs.environment)
             let badge = PiKit.Badge(text: event.label, tone: event.kind == "blocker" ? .danger : .neutral)
             let inspect = PiKit.Button("Inspect delivery", style: .ghost, compact: true) { actions.inspect(id) }
-            let body = ShellStack(.vertical, spacing: 8, [.view(heading, .fill), .view(badge), .view(words, .fill), .view(inspect)])
+            let source = PiKit.Button(event.author == "parent" ? "Source in parent" : "Source in sub-agent", symbol: "arrow.up.right", style: .ghost, compact: true) {
+                actions.openAgentSource?(.init(childID: event.childID, turn: event.turn, eventID: event.eventID))
+            }
+            source.setAccessibilityIdentifier("agent-message-source")
+            let body = ShellStack(.vertical, spacing: 8, [.view(heading, .fill), .view(badge), .view(words, .fill), .view(ShellStack(.horizontal, spacing: 8, [.view(source), .view(inspect)]))])
             items.append(.view(PiKit.card(body, padding: 12, sunken: true), .fill))
         }
         if items.isEmpty { items = [.view(PiKit.Note("Agent message attribution is unavailable. Inspect the saved row for details.", tone: .neutral), .fill)] }

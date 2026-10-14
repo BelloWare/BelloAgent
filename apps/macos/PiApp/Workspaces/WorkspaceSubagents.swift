@@ -126,7 +126,20 @@ extension WorkspaceModel {
             guard let next = page["cursor"]?.nonnegativeInteger else { break }
             guard next > cursor else { throw StoreError.invalidRecord }; cursor = next
         } while true
+        if let path = record(parent.id)?.path, let projection = try? await history.agentCoordination(path: URL(fileURLWithPath: path), ownerID: parent.id) {
+            guard !Task.isCancelled, hosts[parent.workspaceID] === host, host.connectionID == connection else { throw CancellationError() }
+            applyAgentCoordination(projection, parentID: parent.id)
+        }
         reconcileRunHold(parent.id)
+    }
+    func applyAgentCoordination(_ projection: AgentCoordination, parentID: String) {
+        let entries = Dictionary(projection.entries.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        displays[parentID]?.agentCoordination = entries
+        displays[parentID]?.heldAgentChildren = projection.heldChildren
+        for child in subagentChildren(of: parentID) where displays[child.id] != nil {
+            displays[child.id]?.agentCoordination = entries.filter { $0.value.childID == child.id }
+            displays[child.id]?.heldAgentChildren = projection.heldChildren
+        }
     }
     func registerListedSubagent(_ summary: SubagentSummary, parent: ChatRecord, task: String, connection: UUID? = nil) async throws {
         guard summary.link.budgetOwnerSessionID == parent.id else { throw StoreError.invalidRecord }

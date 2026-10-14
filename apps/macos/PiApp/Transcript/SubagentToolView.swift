@@ -35,6 +35,11 @@ struct SubagentToolView: Equatable, Sendable {
     let operation: String
     let route: String?
     let receiptTurn: Int?
+    let accepted: Bool?
+    let messageReference: AgentMessageReference?
+    let messageState: String?
+    let heldByUser: Bool
+    let wakeReason: String?
     let target: SubagentTarget?
     let summary: SubagentSummary?
     let task: String, description: String, result: String, error: String?
@@ -44,6 +49,13 @@ struct SubagentToolView: Equatable, Sendable {
         operation = tool.name
         let input = tool.input.data(using: .utf8).flatMap { try? JSONDecoder().decode(WireValue.self, from: $0) }?.object ?? [:]
         let output = tool.output.data(using: .utf8).flatMap { try? JSONDecoder().decode(WireValue.self, from: $0) }?.object ?? [:]
+        accepted = output["accepted"]?.bool
+        messageState = tool.agentDeliveryState
+        heldByUser = tool.agentHeldByUser == true
+        wakeReason = output["wake_reason"]?.string
+        messageReference = output["child_id"]?.string.flatMap { child in
+            output["turn"]?.nonnegativeInteger.map { AgentMessageReference(childID: child, turn: $0, eventID: output["message_id"]?.string, recipient: true) }
+        }
         route = tool.nativeSubagent?.object?["route"]?.string ?? output["route"]?.string
         receiptTurn = tool.nativeSubagent?.object?["turn"]?.nonnegativeInteger ?? output["turn"]?.nonnegativeInteger
         summary = tool.subagent ?? tool.nativeSubagent?.object?["summary"].flatMap { try? JSONDecoder().decode(SubagentSummary.self, from: JSONEncoder().encode($0)) }
@@ -52,20 +64,34 @@ struct SubagentToolView: Equatable, Sendable {
         target = destination
         task = input["task"]?.string ?? input["message"]?.string ?? input["reason"]?.string ?? (tool.name == "subagent_wait" ? "Wait for selected child turns to settle." : tool.input)
         description = summary?.description ?? input["description"]?.string ?? String(task.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(120))
-        let savedState = output["status"]?.string == "accepted" ? SubagentStatus.queued : tool.state == "unknown" ? SubagentStatus.interrupted : SubagentStatus(rawValue: tool.state) ?? .queued
+        let savedState = (output["status"]?.string == "accepted" || output["accepted"]?.bool == true) ? SubagentStatus.queued : tool.state == "unknown" ? SubagentStatus.interrupted : SubagentStatus(rawValue: tool.state) ?? .queued
         status = summary?.status ?? output["status"]?.string.flatMap(SubagentStatus.init(rawValue:)) ?? savedState
         result = tool.name == "subagent" ? output["text"]?.string ?? tool.output : output["text"]?.string ?? (output.isEmpty ? tool.output : "")
-        error = output["error"]?.object?["message"]?.string
+        error = output["error"]?.object?["message"]?.string ?? (accepted == false ? output["message"]?.string : nil)
         truncated = output["truncated"]?.bool == true || tool.truncated
     }
     var label: String {
         if operation != "subagent" {
-            if let summary, operation == "subagent_start" || summary.turn == receiptTurn { return summary.presentationLabel }
+            if accepted == false { return "Not accepted" }
+            if heldByUser { return "Stopped by you" + (receiptTurn.map { " · turn \($0)" } ?? "") }
+            if let messageState {
+                switch messageState {
+                case "delivered": return "Delivered" + (receiptTurn.map { " · turn \($0)" } ?? "")
+                case "not_delivered_interrupted": return "Not delivered · interrupted"
+                case "held": return "Pending for parent Resume"
+                default: break
+                }
+            }
             let suffix = receiptTurn.map { " · turn \($0)" } ?? ""
             if route == "steer" { return "Queued for steering" + suffix }
+            if operation == "subagent_report" { return "To parent · queued for delivery" + suffix }
+            if operation == "subagent_wait" {
+                guard let wakeReason else { return "Waiting for sub-agents" }
+                let reason = ["message":"new report", "steering":"new guidance", "settled":"turns settled", "empty":"no pending turns", "timeout":"timeout", "stopped":"stopped"][wakeReason] ?? wakeReason
+                return "Wait ended · " + reason
+            }
+            if let summary, operation == "subagent_start" || summary.turn == receiptTurn { return summary.presentationLabel }
             if route == "follow_up" { return "Follow-up accepted" + suffix }
-            if operation == "subagent_report" { return "To parent" + suffix }
-            if operation == "subagent_wait" { return "Waiting for sub-agents" }
             return "Accepted" + suffix
         }
         guard !status.terminal, status != .queued, status != .stopping else { return status.label }

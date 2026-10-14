@@ -61,6 +61,7 @@ struct HistoryRevision: Codable, Equatable, Sendable {
 // Read-only archive browsing does not launch an agent runtime.
 // First index record offsets and parent links; decode only the requested page.
 actor HistoryReader {
+    var agentCoordinationCache: [String: (fingerprint: String, value: AgentCoordination)] = [:]
     /// Where offset indexes are built (`HistoryOffsetIndex`).
     private let indexDirectory: URL
     init(indexDirectory: URL = FileManager.default.temporaryDirectory) { self.indexDirectory = indexDirectory }

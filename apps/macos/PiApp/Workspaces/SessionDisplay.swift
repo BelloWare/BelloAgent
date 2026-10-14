@@ -84,6 +84,8 @@ struct TranscriptVersionView: Equatable, Sendable {
     var isManagedSubagent = false
     @Published var subagentStatus: SubagentStatus?
     @Published var subagentTurn: Int?
+    var agentCoordination: [String: AgentCoordinationEntry] = [:] { didSet { if agentCoordination != oldValue { publishTranscript() } } }
+    @Published var heldAgentChildren: Set<String> = [] { didSet { if heldAgentChildren != oldValue { publishTranscript() } } }
     var childSummaries: [String: SubagentSummary] = [:] { didSet { if childSummaries != oldValue { publishTranscript() } } }
     @Published var familyWaiting = false { didSet { if familyWaiting != oldValue { publishTranscript() } } }
     @Published var agentInboxPending = 0 { didSet { if agentInboxPending != oldValue { publishTranscript() } } }

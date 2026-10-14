@@ -16,6 +16,7 @@ import AppKit
     @Published var title: String
     @Published private(set) var index = InspectorIndex()
     @Published private(set) var indexLoaded = false
+    @Published var coordination: [AgentCoordinationEntry] = []
     @Published private(set) var groups: [InspectorSubagentGroup] = []
     @Published private(set) var familyFilter: InspectorFamilyFilter = .family
     private var linkedRow: InspectorRequestRow?
@@ -200,7 +201,8 @@ import AppKit
     private func hint(for focus: InspectorFocus) -> InspectorMessageHint? {
         // The rows on screen, an earlier version's included, then the page.
         guard case .message(let id) = focus,
-              let message = display?.presentedMessages.first(where: { $0.id == id }) ?? display?.messages.first(where: { $0.id == id }) else { return nil }
+              let message = display?.presentedMessages.first(where: { $0.id == id }) ?? display?.messages.first(where: { $0.id == id }),
+              message.nativeAgentDelivery == nil else { return nil }
         return InspectorMessageHint(id: id, role: message.role, attempt: message.reply?.attempt, turn: message.turn ?? (message.role == "user" ? id : nil))
     }
 
@@ -208,9 +210,10 @@ import AppKit
     /// from the log's message links.
     private func lookUpMessage(_ id: String) {
         lookups?.cancel()
-        let archive = archive, workspaceID = scope.workspaceID
+        let archive = archive, workspaceID = scope.workspaceID, sessionID = scope.sessionID
+        let delivered = display?.presentedMessages.first { $0.id == id }?.nativeAgentDelivery != nil
         lookups = Task { [weak self] in
-            let attempts = (try? await archive.attempts(producing: id, workspaceID: workspaceID)) ?? []
+            let attempts = delivered ? ((try? await archive.attemptsConsuming(id, sessionID: sessionID, workspaceID: workspaceID)) ?? []) : ((try? await archive.attempts(producing: id, workspaceID: workspaceID)) ?? [])
             guard !Task.isCancelled, let self else { return }
             self.lookups = nil
             guard self.pendingFocus == .message(id) else { return }
@@ -346,6 +349,8 @@ import AppKit
                 let groups = try await archive.inspectorSubagents(owner: scope.sessionID, workspaceID: scope.workspaceID)
                 guard !Task.isCancelled else { return }
                 self.groups = groups
+                await self.readAgentCoordination()
+                guard !Task.isCancelled else { return }
                 self.lastRead = (read.rows, live, read.older)
                 await self.rebuildIndex()
             } catch is CancellationError {
@@ -683,7 +688,7 @@ import AppKit
         }
     }
     /// The app's main window: the one that is not an Inspector and can be main.
-    private func bringMainWindowForward() {
+    func bringMainWindowForward() {
         if let window = NSApp.windows.first(where: { !($0.windowController is SessionInspectorWindowController) && $0.canBecomeMain && ($0.isVisible || $0.isMiniaturized) }) {
             if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)

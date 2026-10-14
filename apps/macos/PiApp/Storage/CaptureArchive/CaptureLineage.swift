@@ -20,8 +20,15 @@ enum CaptureLineage {
         let link = scope.delegation
         let fields = [scope.budgetOwnerSessionID, link?.call.parentSessionID, link?.parentAttemptID,
                       link?.call.assistantMessageID, link?.call.toolCallID, link?.delegationID]
-        try db.execute("UPDATE attempts SET budget_owner=?,parent_session=?,parent_attempt=?,parent_assistant=?,parent_tool_call=?,delegation=? WHERE id=?",
-                       fields.map { $0.map(CaptureSQLValue.text) ?? .null } + [.text(id)])
+        try db.execute("UPDATE attempts SET budget_owner=?,parent_session=?,parent_attempt=?,parent_assistant=?,parent_tool_call=?,delegation=?,child_turn=?,parent_execution=? WHERE id=?",
+                       fields.map { $0.map(CaptureSQLValue.text) ?? .null } + [scope.childTurn.map { .integer(Int64($0)) } ?? .null, scope.parentExecutionID.map(CaptureSQLValue.text) ?? .null, .text(id)])
+        if let events = scope.agentDeliveryIDs {
+            try db.execute("UPDATE attempts SET agent_delivery_ids=? WHERE id=?", [.text(String(decoding: try JSONEncoder().encode(events), as: UTF8.self)), .text(id)])
+            for event in events {
+                guard !event.isEmpty, event.utf8.count <= 512 else { throw CaptureFailure.sequence }
+                try db.execute("INSERT OR IGNORE INTO agent_delivery_links(attempt,event) VALUES(?,?)", [.text(id), .text(event)])
+            }
+        }
     }
     static func prepare(_ db: CaptureDatabase, migrate: Bool) throws {
         try db.transaction {
@@ -29,7 +36,12 @@ enum CaptureLineage {
             for column in ["budget_owner", "parent_session", "parent_attempt", "parent_assistant", "parent_tool_call", "delegation"] where !columns.contains(column) {
                 try db.execute("ALTER TABLE attempts ADD COLUMN \(column) TEXT")
             }
-            if migrate {
+            if !columns.contains("child_turn") { try db.execute("ALTER TABLE attempts ADD COLUMN child_turn INTEGER") }
+            if !columns.contains("parent_execution") { try db.execute("ALTER TABLE attempts ADD COLUMN parent_execution TEXT") }
+            if !columns.contains("agent_delivery_ids") { try db.execute("ALTER TABLE attempts ADD COLUMN agent_delivery_ids TEXT") }
+            try db.execute("CREATE TABLE IF NOT EXISTS agent_delivery_links(attempt TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE,event TEXT NOT NULL,PRIMARY KEY(attempt,event))")
+            try db.execute("CREATE INDEX IF NOT EXISTS agent_delivery_lookup ON agent_delivery_links(event,attempt)")
+            if migrate || !columns.contains("child_turn") || !columns.contains("agent_delivery_ids") {
                 var cursor = ""
                 while true {
                     let page = try db.rows("SELECT id,metadata FROM attempts WHERE id>? ORDER BY id LIMIT 256", [.text(cursor)])

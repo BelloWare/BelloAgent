@@ -48,6 +48,9 @@ struct InspectorRequestRow: Sendable, Equatable, Identifiable {
     var parentAttemptID: String? = nil
     var parentAssistantID: String? = nil
     var parentToolCallID: String? = nil
+    var childTurn: Int? = nil
+    var parentExecutionID: String? = nil
+    var agentDeliveryIDs: [String]? = nil
     var turn: String?
     var purpose: String
     var api: String
@@ -102,7 +105,7 @@ struct InspectorRequestRow: Sendable, Equatable, Identifiable {
     }
 
     /// What the navigator selects from the log: typed columns only.
-    static let columns = "session,delegation,parent_session,parent_attempt,parent_assistant,parent_tool_call,id,wall,turn,purpose,api,alias,model,response_model,reported_models,outcome,metrics_retained,dispatch,ttft_ms,stream_ms,request_ms,http_ms,input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,reasoning_tokens,cost_usd"
+    static let columns = "session,delegation,child_turn,parent_execution,agent_delivery_ids,parent_session,parent_attempt,parent_assistant,parent_tool_call,id,wall,turn,purpose,api,alias,model,response_model,reported_models,outcome,metrics_retained,dispatch,ttft_ms,stream_ms,request_ms,http_ms,input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,reasoning_tokens,cost_usd"
 
     static func archived(_ row: [String: CaptureSQLValue]) throws -> InspectorRequestRow {
         guard let id = row["id"]?.string, !id.isEmpty, let wall = row["wall"]?.double, wall.isFinite, wall >= 0 else { throw CaptureFailure.corrupt }
@@ -124,6 +127,9 @@ struct InspectorRequestRow: Sendable, Equatable, Identifiable {
         result.delegationID = row["delegation"]?.string; result.parentSessionID = row["parent_session"]?.string
         result.parentAttemptID = row["parent_attempt"]?.string; result.parentAssistantID = row["parent_assistant"]?.string
         result.parentToolCallID = row["parent_tool_call"]?.string
+        result.childTurn = row["child_turn"]?.number.flatMap(Int.init(exactly:))
+        result.parentExecutionID = row["parent_execution"]?.string
+        result.agentDeliveryIDs = try row["agent_delivery_ids"]?.string.map { try JSONDecoder().decode([String].self, from: Data($0.utf8)) }
         result.routedVia = GatewayModelIdentity.routedVia(reported.compactMap(GatewayModelIdentity.modelName), answered: model)
         return result
     }
@@ -151,9 +157,13 @@ struct InspectorRequestRow: Sendable, Equatable, Identifiable {
             http: valid(metrics["httpDurationMs"]?.number), source: .live)
         result.routedVia = GatewayModelIdentity.routedVia(PayloadArchive.reportedModels(metadata).compactMap(GatewayModelIdentity.modelName), answered: identity.displayName)
         result.sessionID = metadata["sessionId"]?.string
-        if let scope = try? CaptureLineage.scope(metadata), let link = scope.delegation {
-            result.delegationID = link.delegationID; result.parentSessionID = link.call.parentSessionID
-            result.parentAttemptID = link.parentAttemptID; result.parentAssistantID = link.call.assistantMessageID; result.parentToolCallID = link.call.toolCallID
+        if let scope = try? CaptureLineage.scope(metadata) {
+            result.agentDeliveryIDs = scope.agentDeliveryIDs
+            result.childTurn = scope.childTurn; result.parentExecutionID = scope.parentExecutionID
+            if let link = scope.delegation {
+                result.delegationID = link.delegationID; result.parentSessionID = link.call.parentSessionID
+                result.parentAttemptID = link.parentAttemptID; result.parentAssistantID = link.call.assistantMessageID; result.parentToolCallID = link.call.toolCallID
+            }
         }
         result.operation = metadata["operation"]?.object?["operationId"]?.string
         return result

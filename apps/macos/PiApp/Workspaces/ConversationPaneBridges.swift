@@ -60,6 +60,7 @@ extension NativeTranscriptPane {
                                                         resolveReplyFile: { [weak model] text in await model?.resolveReplyFile(text, fromChat: session.id) },
                                                         openSubagent: { [weak model] target in Task { await model?.openSubagent(target) } },
                                                         inspectSubagent: { [weak model] target in model?.openInspector(session: target.ownerID, focus: .subagent(target.delegationID)) },
-                                                        stopSubagent: { [weak model] target in model?.stopSubagent(target, from: session.id) }), environment: environment, reduceMotion: piReducesMotion)
+                                                        stopSubagent: { [weak model] target in model?.stopSubagent(target, from: session.id) },
+                                                        openAgentSource: { [weak model] reference in Task { await model?.openAgentSource(reference, from: session.id) } }), environment: environment, reduceMotion: piReducesMotion)
     }
 }

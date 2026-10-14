@@ -17,6 +17,8 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
     var inputBytes: Int? = nil
     var subagent: SubagentSummary? = nil
     var nativeSubagent: WireValue? = nil
+    var agentDeliveryState: String? = nil
+    var agentHeldByUser: Bool? = nil
 }
 struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     var id: String; var role: String; var text: String
