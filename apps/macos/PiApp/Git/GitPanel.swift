@@ -40,7 +40,7 @@ import GitView
     private let changesList: GitChangesList
     private let changesRule = HairlineView()
     private let commitBox: GitCommitBox
-    private let history: GitHistoryList
+    private let history: GitHistoryBrowser
     private let splitRule = HairlineView()
     private let detail: GitPanelDetail
     private let probe = GitPanelProbe()
@@ -50,6 +50,7 @@ import GitView
     init(controller: GitController, place: GitPanelPlace = GitPanelPlace(), questions: PiQuestion = PiQuestion(), project: String? = nil,
          openFile: ((String, Int) -> Void)? = nil, observeFileRow: (@MainActor (String, CGRect) -> Void)? = nil) {
         self.controller = controller; self.place = place; self.questions = questions; self.project = project
+        place.projectName = project
         self.openFile = openFile; self.observeFileRow = observeFileRow
         header = GitPanelHeader(controller: controller, project: project)
         toolbar = GitPanelToolbar(controller: controller)
@@ -65,8 +66,11 @@ import GitView
             }
         }
         changesList = GitChangesList(controller: controller, discard: discard, observeFileRow: observeFileRow)
-        commitBox = GitCommitBox(controller: controller, inputs: GitCommitBox.Inputs(controller), discard: discard)
-        history = GitHistoryList(controller: controller)
+        commitBox = GitCommitBox(controller: controller, inputs: GitCommitBox.Inputs(controller), discard: discard,
+                                 operation: { context, reword in place.requestCommit(controller, context: context, reword: reword, questions: questions) })
+        history = GitHistoryBrowser(controller: controller, state: controller.history,
+            options: { controller.historyOptions }, setOptions: { controller.historyOptions = $0 },
+            openExact: { controller.openHistoryCommit($0) }, loadMore: { await controller.loadMoreHistory() })
         detail = GitPanelDetail(controller: controller, openFile: openFile)
         super.init(frame: .zero)
         wantsLayer = true
@@ -79,8 +83,11 @@ import GitView
         // and watches only while it is, and a discard question the panel has
         // up goes down, unanswered, when the panel goes or moves.
         place.probe = probe
-        probe.shown = { [controller, place] shown in
+        probe.shown = { [weak self, controller, place] shown in
             controller.setShown(shown)
+            // A quiet re-show may publish no changed repository values.
+            // Controls must still receive their new readiness state.
+            self?.scheduleRefresh()
             if !shown { place.cancelQuestion() }
         }
         probe.moved = { [place] in place.cancelQuestion() }
@@ -102,7 +109,7 @@ import GitView
     /// nothing outside it does.
     func contentSizeChanged() { framesDirty = true; needsLayout = true }
     /// The project the panel shows was renamed.
-    func setProject(_ name: String) { header.setProject(name) }
+    func setProject(_ name: String) { header.setProject(name); place.projectName = name }
     /// The parts' frames must be worked out again (a part's height, or which
     /// parts show, changed); otherwise a layout pass at the same size only
     /// reads the controller.
@@ -145,7 +152,7 @@ import GitView
             changesList.apply(GitChangesList.Inputs(controller))
             commitBox.apply(GitCommitBox.Inputs(controller))
         } else {
-            history.apply(GitHistoryList.Inputs(controller))
+            history.apply(GitHistoryBrowser.Inputs(controller, options: controller.historyOptions))
         }
         detail.apply(GitPanelDetail.Inputs(controller))
     }
@@ -187,10 +194,14 @@ import GitView
             splitRule.frame = CGRect(x: listWidth, y: body.minY, width: 1, height: body.height)
             detailFrame = CGRect(x: listWidth + 1, y: body.minY, width: max(0, body.width - listWidth - 1), height: body.height)
         } else {
-            // What the side cannot give up: its size when offered no height
-            // at all, the commit message at its two lines.
-            let fixed = changes ? 1 + commitBox.minimumHeight(forWidth: body.width) : history.fixedHeight(forWidth: body.width)
-            let height = GitPanelSplit.listHeight(available: max(0, body.height - 1), least: fixed + GitPanelSplit.leastRows)
+            // Keep the full draft and its actions. Prefer three changelist
+            // rows, but let those scroll before taking the diff's useful
+            // height. Keep one section and file whole while space allows.
+            let available = max(0, body.height - 1)
+            let fixed = changes ? 1 + commitBox.height(forWidth: body.width) : history.fixedHeight(forWidth: body.width)
+            let least = changes ? min(fixed + GitPanelSplit.leastRows, max(fixed + changesList.minimumRowsHeight, available - GitPanelSplit.preferredDetailHeight))
+                : fixed + GitPanelSplit.leastRows
+            let height = GitPanelSplit.listHeight(available: available, least: least)
             list = CGRect(x: 0, y: body.minY, width: body.width, height: height)
             splitRule.frame = CGRect(x: 0, y: body.minY + height, width: body.width, height: 1)
             detailFrame = CGRect(x: 0, y: body.minY + height + 1, width: body.width, height: max(0, body.height - height - 1))
@@ -227,12 +238,13 @@ import GitView
 /// scrolled) stay as they were when the panel's width crosses the line.
 enum GitPanelSplit {
     static let listWidth: CGFloat = 340
+    static let preferredDetailHeight: CGFloat = 180
     /// Narrow: how tall the list side is, of the `available` height (the
     /// panel's less the rule): 45% of it, never less than the side needs
     /// (`least`: its commit box or filters, and a few rows), and leaving the
     /// diff 180 points where that allows; at most all there is.
     static func listHeight(available: CGFloat, least: CGFloat) -> CGFloat {
-        min(max((available * 0.45).rounded(), least), max(available - 180, least), available)
+        min(max((available * 0.45).rounded(), least), max(available - preferredDetailHeight, least), available)
     }
     /// Three rows of the list, below the side's fixed parts.
     static let leastRows: CGFloat = 3 * 44
@@ -894,534 +906,6 @@ enum GitPanelSplit {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-// MARK: - Changes
-
-/// A square that ticks, unticks, or shows some of a section ticked.
-@MainActor func gitCheckbox(on: Bool, mixed: Bool = false, label: String, action: @escaping () -> Void) -> SymbolButton {
-    let button = SymbolButton(symbol: gitCheckboxSymbol(on: on, mixed: mixed), color: on || mixed ? .piAccent : .piInkTertiary,
-                              size: CGSize(width: 18, height: 18), label: label, action: action)
-    return button
-}
-@MainActor func gitCheckboxSymbol(on: Bool, mixed: Bool) -> PiKit.Symbol {
-    PiKit.Symbol(on ? "checkmark.square.fill" : mixed ? "minus.square.fill" : "square", size: 14, weight: .medium)
-}
-extension SymbolButton {
-    /// Sets a Changes tick's state.
-    func setTick(on: Bool, mixed: Bool = false, label: String) {
-        symbol = gitCheckboxSymbol(on: on, mixed: mixed)
-        color = on || mixed ? .piAccent : .piInkTertiary
-        setAccessibilityLabel(label)
-    }
-}
-
-/// The changed files, staged first, each with its tick and its badge.
-@MainActor final class GitChangesList: NSView {
-    struct Inputs: Equatable {
-        var read: Bool, staged: [GitStatusEntry], unstaged: [GitStatusEntry], empty: Bool
-        var checked: Set<String>, selection: GitController.Selection?
-        var context: GitController.RepositoryContext?
-        @MainActor init(_ controller: GitController) {
-            read = controller.statusRead; staged = controller.staged; unstaged = controller.unstaged; empty = controller.status.entries.isEmpty
-            checked = controller.checked; selection = controller.selection
-            context = controller.repositoryContext
-        }
-    }
-    private enum Row: Hashable { case empty, section(staged: Bool), file(path: String, staged: Bool) }
-    private let controller: GitController
-    private let discard: @MainActor ([GitStatusEntry]) -> Void
-    private let observeFileRow: (@MainActor (String, CGRect) -> Void)?
-    let list = LazyStackView()
-    private var inputs: Inputs?
-    private var rows: [Row] = []
-    private var tall: Set<Row> = []
-    private let glide = PiKit.SelectionGlide()
-
-    init(controller: GitController, discard: @escaping @MainActor ([GitStatusEntry]) -> Void, observeFileRow: (@MainActor (String, CGRect) -> Void)?) {
-        self.controller = controller; self.discard = discard; self.observeFileRow = observeFileRow
-        super.init(frame: .zero)
-        list.spacing = 2
-        list.insets = NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm)
-        addSubview(list)
-        if observeFileRow != nil {
-            list.contentView.postsBoundsChangedNotifications = true
-            NotificationCenter.default.addObserver(self, selector: #selector(reportRows), name: NSView.boundsDidChangeNotification, object: list.contentView)
-        }
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    deinit { NotificationCenter.default.removeObserver(self) }
-    override var isFlipped: Bool { true }
-    override func layout() {
-        super.layout()
-        list.frame = bounds
-        if observeFileRow != nil { DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.reportRows() } } }
-    }
-    /// Each file row's frame in the window, from the top left.
-    @objc private func reportRows() {
-        guard let observeFileRow, let window, let content = window.contentView else { return }
-        for case let row as GitFileRowView in list.documentView?.subviews ?? [] {
-            let frame = row.convert(row.bounds, to: nil)
-            guard let path = row.entry?.path else { continue }
-            observeFileRow(path, CGRect(x: frame.minX, y: content.bounds.height - frame.maxY, width: frame.width, height: frame.height))
-        }
-    }
-
-    func apply(_ next: Inputs) {
-        guard next != inputs else { return }
-        let first = inputs == nil
-        inputs = next
-        if !first || next.read { RedrawCounter.note("GitChangesList") }
-        var rows: [Row] = []
-        if next.read && next.empty { rows.append(.empty) }
-        if !next.staged.isEmpty { rows.append(.section(staged: true)); rows += next.staged.map { .file(path: $0.path, staged: true) } }
-        if !next.unstaged.isEmpty { rows.append(.section(staged: false)); rows += next.unstaged.map { .file(path: $0.path, staged: false) } }
-        let staged = Dictionary(next.staged.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
-        let unstaged = Dictionary(next.unstaged.map { ($0.path, $0) }, uniquingKeysWith: { a, _ in a })
-        // The rows' heights: a file with no folder line is a point taller.
-        let tall = Set(rows.compactMap { row -> Row? in
-            guard case .file(let path, let isStaged) = row, let entry = isStaged ? staged[path] : unstaged[path],
-                  GitFileRowContent.folder(of: entry).isEmpty else { return nil }
-            return row
-        })
-        let sameRows = rows == self.rows && tall == self.tall
-        self.rows = rows; self.tall = tall
-        let source = LazyStackView.Source(count: rows.count, key: { [rows] in AnyHashable(rows[$0]) }, height: { [rows, tall] index, width in
-            switch rows[index] {
-            case .empty: return GitEmptyRow.height
-            case .section: return GitSectionRow.height
-            case .file:
-                // A file at the top has no folder: its empty line is a point taller.
-                return GitFileRowView.height + (tall.contains(rows[index]) ? 1 : 0)
-            }
-        }, view: { [weak self, rows] index, existing in
-            guard let self else { return NSView() }
-            switch rows[index] {
-            case .empty: return existing ?? GitEmptyRow("No changes. The working tree matches HEAD.")
-            case .section(let isStaged):
-                let row = existing as? GitSectionRow ?? GitSectionRow()
-                self.configure(section: row, staged: isStaged, inputs: next)
-                return row
-            case .file(let path, let isStaged):
-                guard let entry = isStaged ? staged[path] : unstaged[path] else { return existing ?? NSView() }
-                let row = existing as? GitFileRowView ?? GitFileRowView(controller: self.controller, discard: self.discard, glide: self.glide)
-                row.apply(entry: entry, staged: isStaged, selected: next.selection == GitController.Selection(path: entry.path, staged: isStaged),
-                          checked: next.checked.contains(entry.path), context: next.context)
-                return row
-            }
-        })
-        // A tick or a selection: the same rows, the same heights.
-        if sameRows { list.update(source) } else { list.reload(source) }
-    }
-
-    private func configure(section row: GitSectionRow, staged: Bool, inputs: Inputs) {
-        let controller = controller
-        let count = staged ? inputs.staged.count : inputs.unstaged.count
-        let title = staged ? "Staged · \(count)" : "Changes · \(count)"
-        let paths = Set((staged ? inputs.staged : inputs.unstaged).map(\.path)), context = inputs.context
-        let all = paths.isSubset(of: inputs.checked)
-        row.apply(title: title, all: all, mixed: !all && !paths.isDisjoint(with: inputs.checked),
-                  actionTitle: staged ? "Unstage all" : "Stage all",
-                  tick: {
-                      guard controller.accepts(context) else { return }
-                      if all { controller.checked.subtract(paths) } else { controller.checked.formUnion(paths) }
-                  },
-                  action: { guard controller.accepts(context) else { return }; Task { if staged { await controller.unstage(Array(paths), context: context) } else { await controller.stage(Array(paths), context: context) } } })
-    }
-}
-
-/// "No changes": caption text 16 points in.
-@MainActor final class GitEmptyRow: NSView {
-    static var height: CGFloat { PiKit.Line("", font: PiKit.Font.caption, color: .black).lineHeight + PiSpacing.lg * 2 }
-    private let line: PiKit.TextLine
-    var text: String { get { line.line.text } set { if line.line.text != newValue { line.line.text = newValue; needsLayout = true } } }
-    init(_ text: String) {
-        line = PiKit.TextLine(PiKit.Line(text, font: PiKit.Font.caption, color: .piInkSecondary))
-        super.init(frame: .zero)
-        addSubview(line)
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-    override func layout() {
-        super.layout()
-        let size = line.intrinsicContentSize
-        line.frame = CGRect(x: PiSpacing.lg, y: PiSpacing.lg, width: min(size.width, max(0, bounds.width - PiSpacing.lg * 2)), height: size.height)
-    }
-}
-
-/// A section's head: its tick, its title and count, and Stage all or Unstage all.
-@MainActor final class GitSectionRow: NSView {
-    static var height: CGFloat { PiSpacing.sm + 18 + 2 }
-    private let tick = gitCheckbox(on: false, label: "") {}
-    private let title = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.micro, color: .piInkTertiary, tracking: 0.4, uppercased: true))
-    private let action = PlainTextButton("", font: PiKit.Font.micro, color: .piAccent)
-    init() {
-        super.init(frame: .zero)
-        for view in [tick, title, action] as [NSView] { addSubview(view) }
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-    func apply(title text: String, all: Bool, mixed: Bool, actionTitle: String, tick press: @escaping () -> Void, action run: @escaping () -> Void) {
-        tick.setTick(on: all, mixed: mixed, label: all ? "Uncheck \(text)" : "Check \(text)")
-        tick.onPress = press
-        title.line.text = text
-        action.line.text = actionTitle
-        action.onPress = run
-        needsLayout = true
-    }
-    override func layout() {
-        super.layout()
-        StackLayout.place([.fixed(tick), .line(title), .spacer(), .fixed(action)], spacing: PiSpacing.sm,
-                          in: CGRect(x: PiSpacing.sm, y: PiSpacing.sm, width: bounds.width - PiSpacing.sm * 2, height: 18), scale: piScale)
-    }
-}
-
-/// One changed file: its tick, its badge, its name and folder, and stage or
-/// unstage. Updated only when one of those, or its selection, changes.
-@MainActor final class GitFileRowView: NSView {
-    static var height: CGFloat {
-        let text = PiKit.Line("", font: PiKit.Font.body, color: .black).lineHeight + 1 + PiKit.Line("", font: PiKit.Font.micro, color: .black).lineHeight
-        return max(20, text) + PiKit.SelectableRow.padding.top + PiKit.SelectableRow.padding.bottom
-    }
-    private let controller: GitController
-    private let discard: @MainActor ([GitStatusEntry]) -> Void
-    private let content = GitFileRowContent()
-    let row: PiKit.SelectableRow
-    private(set) var entry: GitStatusEntry?
-    private var shown: (entry: GitStatusEntry, staged: Bool, selected: Bool, checked: Bool)?
-    private var staged = false
-    private var context: GitController.RepositoryContext?
-
-    init(controller: GitController, discard: @escaping @MainActor ([GitStatusEntry]) -> Void, glide: PiKit.SelectionGlide) {
-        self.controller = controller; self.discard = discard
-        row = PiKit.SelectableRow(content: content, glide: glide)
-        super.init(frame: .zero)
-        addSubview(row)
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-    override func layout() { super.layout(); row.frame = bounds }
-
-    func apply(entry: GitStatusEntry, staged: Bool, selected: Bool, checked: Bool, context: GitController.RepositoryContext? = nil) {
-        let context = context ?? controller.repositoryContext
-        if let shown, shown.entry == entry, shown.staged == staged, shown.selected == selected, shown.checked == checked, self.context == context { return }
-        shown = (entry, staged, selected, checked)
-        self.entry = entry; self.staged = staged; self.context = context
-        RedrawCounter.note("GitFileRow")
-        let controller = controller
-        row.selected = selected
-        row.onPress = { guard controller.accepts(context) else { return }; controller.selection = GitController.Selection(path: entry.path, staged: staged) }
-        row.setAccessibilityIdentifier("git-file-" + entry.path)
-        content.apply(entry: entry, staged: staged, checked: checked, controller: controller, context: context)
-        row.setAccessibilityLabel(content.spokenText)
-        row.setAccessibilityValue(entry.summary)
-    }
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        guard let entry else { return nil }
-        let staged = staged, controller = controller, discard = discard, context = context
-        var entries: [PiMenuEntry] = [
-            staged ? .button("Unstage") { guard controller.accepts(context) else { return }; Task { await controller.unstage([entry.path], context: context) } } : .button("Stage") { guard controller.accepts(context) else { return }; Task { await controller.stage([entry.path], context: context) } },
-            .button(entry.untracked ? "Delete Untracked File…" : "Discard Changes…") { guard controller.accepts(context) else { return }; discard([entry]) },
-            .divider,
-        ]
-        if !entry.untracked {
-            entries.append(.button("Show History of This File", systemImage: "clock.arrow.circlepath", identifier: "git-file-history-" + entry.path) {
-                guard controller.accepts(context) else { return }
-                controller.showFileHistory(entry.path)
-            })
-        }
-        entries.append(.button("Reveal in Finder") {
-            if controller.accepts(context), let root = context?.root { NSWorkspace.shared.selectFile((root as NSString).appendingPathComponent(entry.path), inFileViewerRootedAtPath: root) }
-        })
-        entries.append(.button("Copy Path") { guard controller.accepts(context) else { return }; NSPasteboard.general.clearContents(); NSPasteboard.general.setString(entry.path, forType: .string) })
-        return PiMenus.menu(entries)
-    }
-
-    static func badgeColor(_ badge: String) -> NSColor {
-        switch badge { case "A", "U": .piSuccess; case "D": .piDanger; case "R", "C": .piInfo; default: .piBrandOrange }
-    }
-}
-
-/// A file row's content, inside its selectable row.
-@MainActor final class GitFileRowContent: NSView {
-    private let tick = gitCheckbox(on: false, label: "") {}
-    private let badge = GitStatusBadge()
-    private let name = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.body, color: .piInk))
-    private let folder = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.micro, color: .piInkTertiary))
-    private let stageButton = PiKit.IconButton(symbol: "plus", label: "", size: 20)
-    init() {
-        super.init(frame: .zero)
-        folder.truncation = .middle
-        for view in [tick, badge, name, folder, stageButton] as [NSView] { addSubview(view) }
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-    var spokenText: String { [name.line.text, folder.line.text].filter { !$0.isEmpty }.joined(separator: ", ") }
-    static func folder(of entry: GitStatusEntry) -> String {
-        entry.renamed ? "\(entry.originalPath ?? "") → \(entry.path)" : (entry.path as NSString).deletingLastPathComponent
-    }
-    /// An empty `Text` is 14 points tall in SwiftUI, a point more than a line of micro text.
-    private var folderHeight: CGFloat { folder.line.text.isEmpty ? 14 : folder.intrinsicContentSize.height }
-
-    func apply(entry: GitStatusEntry, staged: Bool, checked: Bool, controller: GitController, context: GitController.RepositoryContext?) {
-        tick.setTick(on: checked, label: checked ? "Exclude \(entry.path) from the commit" : "Include \(entry.path) in the commit")
-        tick.setAccessibilityIdentifier("git-check-" + entry.path)
-        tick.onPress = { guard controller.accepts(context) else { return }; if checked { controller.checked.remove(entry.path) } else { controller.checked.insert(entry.path) } }
-        badge.text = entry.badge; badge.color = GitFileRowView.badgeColor(entry.badge); badge.toolTip = entry.summary
-        name.line.text = (entry.path as NSString).lastPathComponent
-        folder.line.text = Self.folder(of: entry)
-        stageButton.symbol = staged ? "minus" : "plus"
-        stageButton.label = staged ? "Unstage \(entry.path)" : "Stage \(entry.path)"
-        stageButton.onPress = { guard controller.accepts(context) else { return }; Task { if staged { await controller.unstage([entry.path], context: context) } else { await controller.stage([entry.path], context: context) } } }
-        needsLayout = true
-    }
-    override func layout() {
-        super.layout()
-        let scale = piScale
-        let textHeight = name.intrinsicContentSize.height + 1 + folderHeight
-        let block = StackLayout.Sizing(width: { [name, folder] proposal in min(max(name.intrinsicContentSize.width, folder.intrinsicContentSize.width), max(0, proposal)) },
-                                       height: { _ in textHeight })
-        let items: [StackLayout.Item] = [.fixed(tick), .view(badge, .fixed(CGSize(width: 18, height: 18))), StackLayout.Item(view: nil, sizing: block), .spacer(4), .fixed(stageButton)]
-        let frames = StackLayout.place(items, spacing: PiSpacing.sm, in: bounds, scale: scale)
-        let text = frames[2]
-        name.frame = CGRect(x: text.minX, y: text.minY, width: min(name.intrinsicContentSize.width, text.width), height: name.intrinsicContentSize.height)
-        folder.frame = CGRect(x: text.minX, y: text.minY + name.intrinsicContentSize.height + 1, width: min(folder.intrinsicContentSize.width, text.width),
-                              height: folder.intrinsicContentSize.height)
-    }
-}
-
-/// A file's status letter on its colour: 18 points square, corners of 5.
-@MainActor final class GitStatusBadge: NSView {
-    var text = "" { didSet { if oldValue != text { needsDisplay = true } } }
-    var color: NSColor = .piBrandOrange { didSet { needsDisplay = true } }
-    override var isFlipped: Bool { true }
-    override func draw(_ dirtyRect: NSRect) {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-        context.addPath(GitDiffMetrics.continuousRoundedRect(bounds, radius: 5))
-        context.setFillColor(GitDiffMetrics.fill(color, opacity: 1)); context.fillPath()
-        let line = PiKit.Line(text, font: .systemFont(ofSize: 10.5, weight: .bold), color: .piOnAccent), size = line.size(scale: piScale)
-        line.draw(at: CGPoint(x: PiKit.round((bounds.width - size.width) / 2, piScale), y: PiKit.round((bounds.height - size.height) / 2, piScale)), scale: piScale)
-    }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
-/// The commit message, what the commit takes (the checked files or the staged
-/// index, always said, never inferred), amend, discard all, Reword Last
-/// Commit and the commit itself.
-@MainActor final class GitCommitBox: NSView, PiKit.WidthSizing {
-    struct Inputs: Equatable {
-        var message: String, amend: Bool, scope: GitCommitScope, checkedCount: Int, stagedCount: Int, entries: Int, hasHead: Bool, loading: Bool, busy: Bool
-        var context: GitController.RepositoryContext?, rows: [GitStatusEntry]
-        @MainActor init(_ controller: GitController) {
-            message = controller.commitMessage; amend = controller.amend; scope = controller.commitScope; checkedCount = controller.checkedCount
-            stagedCount = controller.staged.count; entries = controller.status.entries.count; hasHead = controller.status.head != nil
-            loading = controller.loading; busy = controller.busy
-            context = controller.repositoryContext; rows = controller.status.entries
-        }
-    }
-
-    /// What the box shows and allows for these inputs: the action's name,
-    /// whether it and Reword are armed, and the line saying what the active
-    /// scope takes. Kept apart from the drawing so it can be checked whole.
-    struct Presentation: Equatable {
-        var title: String, commitEnabled: Bool, rewordEnabled: Bool, hint: String
-    }
-    static func presentation(_ inputs: Inputs) -> Presentation {
-        let message = inputs.message.trimmingCharacters(in: .whitespacesAndNewlines)
-        let content = inputs.scope == .checkedFiles ? inputs.checkedCount > 0 : inputs.stagedCount > 0
-        let idle = !inputs.loading && !inputs.busy
-        let title = switch (inputs.scope, inputs.amend) {
-        case (.checkedFiles, false): "Commit Checked Files"
-        case (.checkedFiles, true): "Amend with Checked Files"
-        case (.stagedChanges, false): "Commit Staged Changes"
-        case (.stagedChanges, true): "Amend with Staged Changes"
-        }
-        let hint: String
-        switch inputs.scope {
-        case .checkedFiles where !content:
-            hint = "Tick the files to commit. Their whole working-tree state is committed, not only staged hunks."
-        case .stagedChanges where !content:
-            hint = "Nothing is staged. Stage changes, or commit checked files instead."
-        case _ where inputs.amend && !inputs.hasHead:
-            hint = "There is no commit to amend yet."
-        default:
-            let what = inputs.scope == .checkedFiles
-                ? "\(inputs.checkedCount) of \(inputs.entries) files · their whole working-tree state"
-                : "\(inputs.stagedCount) staged \(inputs.stagedCount == 1 ? "file" : "files") · exactly as staged; unstaged edits stay"
-            hint = message.isEmpty ? what + " · write a message to commit" : what
-        }
-        return Presentation(title: title, commitEnabled: content && !message.isEmpty && idle && (!inputs.amend || inputs.hasHead),
-                            rewordEnabled: inputs.hasHead && !message.isEmpty && idle, hint: hint)
-    }
-
-    private let controller: GitController
-    private let discard: @MainActor ([GitStatusEntry]) -> Void
-    let message = GitMessageEditor()
-    private let scopeTabs: PiKit.Tabs<GitCommitScope>
-    private let amendTick = gitCheckbox(on: false, label: "Amend the last commit") {}
-    private let amendLabel = PiKit.TextLine(PiKit.Line("Amend", font: PiKit.Font.caption, color: .piInkSecondary))
-    private let reword = PlainTextButton("Reword Last Commit", font: PiKit.Font.micro, color: .piAccent)
-    private let discardAll = PlainTextButton("Discard All…", font: PiKit.Font.micro, color: .piDanger)
-    private let hint = TextBlock("", font: PiKit.Font.micro, color: .piInkTertiary, maximumLines: 3)
-    private let commit = PiKit.Button("", symbol: "checkmark.circle", style: .primary, compact: true)
-    private var inputs: Inputs?
-
-    init(controller: GitController, inputs: Inputs, discard: @escaping @MainActor ([GitStatusEntry]) -> Void) {
-        self.controller = controller; self.discard = discard
-        scopeTabs = PiKit.Tabs(selection: inputs.scope, items: [(GitCommitScope.checkedFiles, "Checked files"), (.stagedChanges, "Staged changes")],
-                               accessibilityName: "Commit scope") { [controller] in controller.commitScope = $0 }
-        super.init(frame: .zero)
-        // The SwiftUI tabs here had their animations switched off: the choice moves at once.
-        scopeTabs.animatesSelection = false
-        scopeTabs.setAccessibilityIdentifier("git-commit-scope")
-        message.field.setAccessibilityIdentifier("git-commit-message")
-        message.onChange = { [controller] in controller.commitMessage = $0 }
-        amendTick.setAccessibilityIdentifier("git-amend")
-        amendTick.onPress = { [controller] in controller.amend.toggle() }
-        amendLabel.toolTip = "Add this commit's content to the last commit and replace its message."
-        reword.toolTip = "Change the last commit's message only. Its files, and your staged and unstaged changes, stay as they are."
-        reword.setAccessibilityIdentifier("git-reword")
-        discardAll.setAccessibilityIdentifier("git-discard-all")
-        hint.setAccessibilityIdentifier("git-commit-hint")
-        commit.setAccessibilityIdentifier("git-commit")
-        for view in [message, scopeTabs, amendTick, amendLabel, reword, discardAll, hint, commit] as [NSView] { addSubview(view) }
-        apply(inputs)
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-
-    func apply(_ next: Inputs) {
-        guard next != inputs else { return }
-        // A keystroke changes the message and nothing else the box measures.
-        let onlyMessage = inputs.map { previous in var same = next; same.message = previous.message; return same == previous } ?? false
-        inputs = next
-        RedrawCounter.note("GitCommitBox")
-        reword.onPress = { [controller] in guard controller.accepts(next.context) else { return }; Task { await controller.rewordLastCommit(context: next.context) } }
-        discardAll.onPress = { [controller, discard] in guard controller.accepts(next.context) else { return }; discard(next.rows) }
-        commit.onPress = { [controller] in guard controller.accepts(next.context) else { return }; Task { await controller.commitInScope(context: next.context) } }
-        let shown = Self.presentation(next)
-        message.placeholder = next.amend ? "Amended commit message" : "Commit message"
-        message.text = next.message
-        scopeTabs.selection = next.scope
-        amendTick.setTick(on: next.amend, label: "Amend the last commit")
-        reword.line.color = shown.rewordEnabled ? .piAccent : .piInkTertiary
-        reword.isEnabled = shown.rewordEnabled
-        discardAll.isHidden = next.entries == 0
-        let sameHint = hint.text == shown.hint, sameTitle = commit.title == shown.title
-        hint.text = shown.hint
-        commit.title = shown.title
-        commit.isEnabled = shown.commitEnabled
-        if !(onlyMessage && sameHint && sameTitle) { measures = nil; placed = nil }
-        needsLayout = true
-        if bounds.width > 0, height(forWidth: bounds.width) != bounds.height { PiKit.sizeChanged(self) }
-    }
-
-    /// What the rows below the message take at one width and scale. Typing
-    /// changes only the message, so a keystroke measures the message alone;
-    /// measuring the tabs, the amend row, the hint and the button again for
-    /// each one cost most of a keystroke. Dropped when anything else changes,
-    /// or when a part reports a new size (`PiKit.sizeChanged` invalidates
-    /// each container on its way up).
-    private struct Measures { var width: CGFloat, scale: CGFloat, tabs: CGSize, amendRow: CGFloat, hint: CGFloat, commit: CGSize }
-    private var measures: Measures?
-    /// The size and row heights the parts were last placed for: a layout pass
-    /// that would place them the same way leaves them be.
-    private var placed: (size: CGSize, rows: [CGFloat])?
-    override func invalidateIntrinsicContentSize() { measures = nil; placed = nil; super.invalidateIntrinsicContentSize() }
-    override func viewDidChangeBackingProperties() { super.viewDidChangeBackingProperties(); measures = nil; placed = nil }
-    private func measured(_ width: CGFloat) -> Measures {
-        let scale = piScale
-        if let measures, measures.width == width, measures.scale == scale { return measures }
-        RedrawCounter.note("GitCommitBox measured")
-        let inner = width - PiSpacing.md * 2
-        let next = Measures(width: width, scale: scale, tabs: scopeTabs.intrinsicContentSize,
-                            amendRow: StackLayout.height(amendRow(), spacing: PiSpacing.sm, width: inner),
-                            hint: hint.height(forWidth: inner), commit: commit.intrinsicContentSize)
-        measures = next
-        return next
-    }
-
-    private func amendRow() -> [StackLayout.Item] {
-        var items: [StackLayout.Item] = [.fixed(amendTick), .line(amendLabel), .spacer(), .fixed(reword)]
-        if !discardAll.isHidden { items.append(.fixed(discardAll)) }
-        return items
-    }
-    private func heights(_ width: CGFloat) -> [CGFloat] {
-        let inner = width - PiSpacing.md * 2, rest = measured(width)
-        return [message.height(forWidth: inner), rest.tabs.height, rest.amendRow, rest.hint, rest.commit.height]
-    }
-    func height(forWidth width: CGFloat) -> CGFloat { heights(width).reduce(0, +) + PiSpacing.sm * 4 + PiSpacing.md * 2 }
-    /// Its height with the message at its fewest lines.
-    func minimumHeight(forWidth width: CGFloat) -> CGFloat {
-        height(forWidth: width) - message.height(forWidth: width - PiSpacing.md * 2) + message.minimumHeight
-    }
-    override func layout() {
-        super.layout()
-        let inner = bounds.width - PiSpacing.md * 2, rows = heights(bounds.width), scale = piScale
-        if let placed, placed.size == bounds.size, placed.rows == rows { return }
-        placed = (bounds.size, rows)
-        let rest = measured(bounds.width)
-        var y = PiSpacing.md
-        message.frame = CGRect(x: PiSpacing.md, y: y, width: inner, height: rows[0]); y += rows[0] + PiSpacing.sm
-        let tabs = rest.tabs
-        scopeTabs.frame = CGRect(x: PiSpacing.md, y: y, width: min(tabs.width, inner), height: rows[1]); y += rows[1] + PiSpacing.sm
-        StackLayout.place(amendRow(), spacing: PiSpacing.sm, in: CGRect(x: PiSpacing.md, y: y, width: inner, height: rows[2]), scale: scale); y += rows[2] + PiSpacing.sm
-        hint.frame = CGRect(x: PiSpacing.md, y: y, width: inner, height: rows[3]); y += rows[3] + PiSpacing.sm
-        let size = rest.commit
-        commit.frame = CGRect(x: PiSpacing.md + inner - size.width, y: y, width: size.width, height: size.height)
-    }
-}
-
-/// The commit message: a plain field on an inset surface that wraps, two to
-/// five lines tall, scrolling past five (`TextField(axis: .vertical)` with
-/// `lineLimit(2...5)`, 8 points of padding).
-@MainActor final class GitMessageEditor: NSView, PiKit.WidthSizing, NSTextFieldDelegate {
-    let field = NSTextField()
-    private let box = PiKit.inset(NSView())
-    var onChange: ((String) -> Void)?
-    var text: String {
-        get { field.stringValue }
-        set { if field.stringValue != newValue { field.stringValue = newValue } }
-    }
-    var placeholder: String {
-        get { field.placeholderString ?? "" }
-        set { if field.placeholderString != newValue { field.placeholderString = newValue } }
-    }
-    static let minimumLines = 2, maximumLines = 5
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        PiKit.configurePlain(field, font: PiKit.Font.body, placeholder: "Commit message")
-        field.usesSingleLineMode = false
-        field.cell?.wraps = true; field.cell?.isScrollable = false
-        field.lineBreakMode = .byWordWrapping
-        field.maximumNumberOfLines = 0
-        field.delegate = self
-        addSubview(box)
-        addSubview(field)
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-    func controlTextDidChange(_ notification: Notification) {
-        // The box measures its height again when the controller has the text.
-        onChange?(field.stringValue)
-    }
-    private var lineHeight: CGFloat { PiKit.Line("", font: PiKit.Font.body, color: .black).lineHeight }
-    /// The lines the text takes at this width, from two to five.
-    func lines(forWidth width: CGFloat) -> Int {
-        let inner = max(1, width - PiSpacing.sm * 2)
-        let paragraphs = field.stringValue.components(separatedBy: "\n")
-        let count = paragraphs.reduce(0) { $0 + PiKit.wrappedLines($1, font: PiKit.Font.body, width: inner).count }
-        return min(Self.maximumLines, max(Self.minimumLines, count))
-    }
-    func height(forWidth width: CGFloat) -> CGFloat { CGFloat(lines(forWidth: width)) * lineHeight + PiSpacing.sm * 2 }
-    var minimumHeight: CGFloat { CGFloat(Self.minimumLines) * lineHeight + PiSpacing.sm * 2 }
-    override func layout() {
-        super.layout()
-        box.frame = bounds
-        field.frame = CGRect(x: PiSpacing.sm - PiKit.fieldInset, y: PiSpacing.sm, width: max(0, bounds.width - PiSpacing.sm * 2) + PiKit.fieldInset * 2,
-                             height: max(0, bounds.height - PiSpacing.sm * 2))
-    }
-}
-
 // MARK: - History
 
 /// The filters and the commits, newest first.
@@ -1616,7 +1100,7 @@ extension SymbolButton {
         RedrawCounter.note("GitCommitRow")
         let controller = controller
         row.selected = selected
-        row.onPress = { controller.selectedCommit = commit }
+        row.onPress = { controller.chooseHistoryCommit(commit) }
         row.setAccessibilityIdentifier("git-commit-" + commit.shortHash)
         content.apply(commit)
         row.setAccessibilityLabel(content.spokenText)
@@ -1725,7 +1209,9 @@ extension SymbolButton {
         var commit: String?, detailFiles: Int, detailFile: String?, filesShown: Int
         var detailDiff: GitDiffArray, detailFileDiff: GitDiffArray, commitLoading: Bool, deferred: Bool
         var reveal: GitHistoryReveal?, revealNote: String?
+        var context: GitController.RepositoryContext?
         @MainActor init(_ controller: GitController) {
+            context = controller.repositoryContext
             reveal = controller.revealTarget; revealNote = controller.revealNote
             panel = controller.panel; selection = controller.selection; diff = GitDiffArray(controller.diff); diffLoading = controller.diffLoading
             commit = controller.detail?.commit.hash; detailFiles = controller.detail?.files.count ?? 0
@@ -1782,6 +1268,11 @@ extension SymbolButton {
                 showPlaceholder("Select a file to see its changes.")
             }
         } else if let detail = controller.detail {
+            let context = inputs.context
+            header.openWorkingFile = openFile.map { open in { path in
+                guard controller.accepts(context) else { return }
+                open(path, 1)
+            } }
             if inputs.deferred {
                 setMode(.deferred)
                 header.show(detail, note: nil, selected: inputs.detailFile, shown: inputs.filesShown)
@@ -1802,7 +1293,7 @@ extension SymbolButton {
                 }
                 commitDiff.show(files: files, title: file, subtitle: file == nil ? nil : "In \(detail.commit.shortHash)", identity: identity,
                                 loading: inputs.commitLoading, embedded: true, lead: header, leadKey: leadKey, split: presentation.split,
-                                setSplit: setSplit, expanded: presentation.whole, setExpanded: setExpanded, openFile: openFile,
+                                setSplit: setSplit, expanded: presentation.whole, setExpanded: setExpanded, openFile: nil,
                                 reveal: reveal, revealed: { controller.revealed($0, $1) })
             }
         } else if inputs.commitLoading {
@@ -1854,6 +1345,8 @@ extension SymbolButton {
     private let summaryMerge = PiKit.Badge(text: "Merge · first parent", tone: .info, icon: "arrow.triangle.merge")
     private let summaryRow = NSView()
     let chips = GitFileChipsView()
+    private let workingFile = PlainTextButton("Open Working File", font: PiKit.Font.micro, color: .piAccent)
+    var openWorkingFile: ((String) -> Void)?
     var select: ((String?) -> Void)?
     var showMore: (() -> Void)?
     var showHistory: ((String) -> Void)?
@@ -1861,17 +1354,22 @@ extension SymbolButton {
 
     override init(frame: NSRect) {
         super.init(frame: frame)
+        workingFile.setAccessibilityIdentifier("git-open-working-file")
+        workingFile.toolTip = "Open today's file at its beginning. Historical line numbers may no longer match."
         note.setAccessibilityIdentifier("git-reveal-note")
         summaryRow.setAccessibilityElement(false); summaryRow.setAccessibilityIdentifier("git-commit-summary")
         summaryRow.addSubview(summary); summaryRow.addSubview(summaryMerge)
-        for view in [subject, meta, body, mergeBadge, note, summaryRow, chips] as [NSView] { addSubview(view) }
+        for view in [subject, meta, body, mergeBadge, note, summaryRow, chips, workingFile] as [NSView] { addSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
 
     func show(_ detail: GitCommitDetail, note: String?, selected: String?, shown: Int) {
+        let path = selected ?? (detail.files.count == 1 ? detail.files.first?.path : nil)
+        workingFile.isHidden = path == nil || openWorkingFile == nil
+        workingFile.onPress = { [weak self] in if let path { self?.openWorkingFile?(path) } }
         subject.text = detail.commit.subject
-        meta.set("\(detail.commit.author) · \(detail.commit.date.formatted(date: .abbreviated, time: .shortened)) · \(detail.commit.hash)")
+        meta.set("\(detail.commit.author) · Committed \(detail.commit.date.formatted(date: .abbreviated, time: .shortened)) (local time) · \(detail.commit.hash)")
         hasBody = detail.message.contains("\n")
         if hasBody {
             body.set(detail.message.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().joined(separator: "\n")
@@ -1906,6 +1404,7 @@ extension SymbolButton {
             let row = max(summary.intrinsicContentSize.height, merge ? summaryMerge.intrinsicContentSize.height : 0)
             parts.append((summaryRow, inner, row))
             parts.append((chips, inner, chips.height(forWidth: inner)))
+            if !workingFile.isHidden { parts.append((workingFile, min(inner, workingFile.intrinsicContentSize.width), workingFile.intrinsicContentSize.height)) }
         }
         return parts
     }
@@ -2010,13 +1509,9 @@ struct GitDiffArray: Equatable {
     }
 
     static func alert(for entries: [GitStatusEntry]) -> NSAlert {
-        let alert = NSAlert()
-        alert.messageText = entries.count == 1 ? "Discard changes to \((entries[0].path as NSString).lastPathComponent)?" : "Discard changes to \(entries.count) files?"
-        alert.informativeText = "Tracked files revert to HEAD and untracked files are deleted. Git keeps no copy of these changes."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Discard").hasDestructiveAction = true
-        alert.addButton(withTitle: "Cancel")
-        return alert
+        PiQuestion.alert(title: entries.count == 1 ? "Discard changes to \((entries[0].path as NSString).lastPathComponent)?" : "Discard changes to \(entries.count) files?",
+                         detail: "Tracked files revert to HEAD and untracked files are deleted. Git keeps no copy of these changes.",
+                         action: "Discard", cancel: "Cancel", destructive: true, cancelIsDefault: true)
     }
 }
 
@@ -2037,18 +1532,20 @@ struct GitDiffArray: Equatable {
 /// Where a panel is: the view of its that is in a window, read when asked,
 /// and the discard question it has up.
 @MainActor final class GitPanelPlace {
+    var projectName: String?
     /// The panel's view that is in a window (`GitPanelProbe`).
     weak var probe: NSView?
     /// The window the panel is in now.
     var window: NSWindow? { probe?.window }
     private(set) var question: GitDiscardQuestion?
+    var operation: GitOperationQuestion?
     /// Asks, over the window the panel is in now (not the one it was in when
     /// last told: a tab moves between windows). A request refused because a
     /// question is already up keeps that question as the one to take down.
     func askToDiscard(_ entries: [GitStatusEntry], questions: PiQuestion, then act: @escaping ([GitStatusEntry]) -> Void) {
         if let asked = GitDiscard.ask(questions, discarding: entries, in: window, then: act) { question = asked }
     }
-    func cancelQuestion() { question?.cancel(); question = nil }
+    func cancelQuestion() { question?.cancel(); question = nil; operation?.cancel(); operation = nil }
 }
 
 /// Says whether the panel is on screen: in a window and not hidden there,

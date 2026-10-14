@@ -28,11 +28,17 @@ import GitView
     static var openLocation: (URL, Int) -> Void = { _, _ in }
     /// Brings a tab to the front: set once by the app.
     static var activate: (HostedTab) -> Void = { _ in }
-    /// The file whose blame opened a change here, to go back to: held
+    /// The file that opened history or a blamed change here, to go back to: held
     /// weakly, and offered only while its tab is still open.
     private(set) weak var returnTab: FileTab?
     @Published private(set) var returnName: String?
-    func cameFrom(_ tab: FileTab) { returnTab = tab; returnName = tab.title }
+    enum FileHistorySource { case blame, file
+        var label: String { self == .blame ? "Opened from its blame" : "Opened from the file" }
+    }
+    @Published private(set) var returnSource: FileHistorySource = .blame
+    func cameFrom(_ tab: FileTab, source: FileHistorySource = .blame) {
+        returnTab = tab; returnName = tab.title; returnSource = source
+    }
     /// Back to that file's tab, as it was: its place, its selection, its
     /// find bar and keys.
     func goBack() {
@@ -135,6 +141,7 @@ import GitView
         super.init(frame: .zero)
         wantsLayer = true
         backButton.setAccessibilityIdentifier("changes-back-to-file")
+        backNote.setAccessibilityIdentifier("changes-file-history-source")
         backButton.onPress = { [weak tab] in tab?.goBack() }
         for view in [backButton, backNote, backRule] as [NSView] { backBar.addSubview(view) }
         for view in [notice, backBar, panel] as [NSView] { addSubview(view) }
@@ -157,6 +164,7 @@ import GitView
         panel.isHidden = tab.removed
         backBar.isHidden = tab.removed || !showsBack
         if let name = tab.returnName { backButton.title = "Back to \(name)" }
+        backNote.line.text = tab.returnSource.label
         panel.setProject(tab.name)
         needsLayout = true
     }
