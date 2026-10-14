@@ -8,11 +8,13 @@ struct AgentMessageReference: Sendable, Equatable {
 
 extension WorkspaceModel {
     func openAgentSource(_ reference: AgentMessageReference, from sessionID: String) async {
+        let navigation = selectionRevision
         guard let child = record(reference.childID), let link = child.delegation, link.valid,
               [link.budgetOwnerSessionID, child.id].contains(sessionID), let parent = record(link.budgetOwnerSessionID),
               parent.workspaceID == child.workspaceID, let path = parent.path else { return }
         do {
             let state = try await history.agentCoordination(path: URL(fileURLWithPath: path), ownerID: parent.id)
+            guard !Task.isCancelled, selectionRevision == navigation else { return }
             if let entry = state.entries.first(where: { $0.id == reference.eventID && $0.childID == child.id && $0.turn == reference.turn }) {
                 if reference.recipient {
                     if let row = entry.recipientMessageID, entry.disposition == "delivered" { _ = await revealMessage(sessionID: entry.recipientID, messageID: row) }

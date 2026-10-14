@@ -29,6 +29,20 @@ final class SubagentSteeringPresentationTests: XCTestCase {
         var saved = tool; saved.subagent = nil
         XCTAssertEqual(SubagentToolView(saved).target?.sessionID, "chat-child", "Saved v2 metadata retains navigation")
     }
+    @MainActor func testBackgroundCardHeaderHasFiniteGeometryBeforePlacement() throws {
+        let row = TranscriptNativeActionRow()
+        row.update(tool: Self.tool, open: true, fetched: nil, environment: .init(), toggle: {}, openFile: nil)
+        for width: CGFloat in [0, 0.5, 600] {
+            row.line.frame = CGRect(x: 0, y: 0, width: width, height: 24)
+            row.line.layout()
+            let outline = try XCTUnwrap(row.line.subviews.compactMap { $0 as? TranscriptPanel }.first { $0.stroke != nil })
+            XCTAssertEqual(outline.frame, CGRect(x: 0.5, y: 0.5, width: max(0, width - 1), height: 23), "The focus outline stays inset even before the header has room")
+            for view in row.line.subviews {
+                XCTAssertTrue(view.frame.origin.x.isFinite && view.frame.origin.y.isFinite, "\(type(of: view)) at width \(width): \(view.frame)")
+                XCTAssertTrue(view.frame.width.isFinite && view.frame.height.isFinite)
+            }
+        }
+    }
     @MainActor func testTypedAgentRowsSurviveBothReadersAndNeverRenderAsHuman() throws {
         let saved: [String:WireValue] = ["role":.string("user"), "content":.string("agent envelope"), "nativeAgentDelivery":Self.delivery]
         let journal = TranscriptMessage.project(id: "delivery", message: saved)
@@ -52,6 +66,7 @@ final class SubagentSteeringPresentationTests: XCTestCase {
         tool.output = "{\"accepted\":true,\"child_id\":\"chat-child\",\"turn\":1,\"message_id\":\"steer\"}"
         tool.agentDeliveryState = "pending"
         XCTAssertEqual(SubagentToolView(tool).label, "Queued for steering · turn 1", "The child running does not prove it consumed a message")
+        XCTAssertEqual(SubagentToolView(tool).target?.messageID, "steer", "Open must reveal this steer, not the turn's initial task")
         tool.agentDeliveryState = "delivered"
         XCTAssertEqual(SubagentToolView(tool).label, "Delivered · turn 1")
         tool.agentDeliveryState = "held"
@@ -73,9 +88,10 @@ final class SubagentSteeringPresentationTests: XCTestCase {
         view.messages = [.init(id: "source", role: "assistant", text: "", tools: [tool])]
         let shown = view.presentedMessages.first { $0.id == "source" }?.tools?.first
         XCTAssertNil(shown?.subagent?.progress, "Progress belongs to the current helper runtime")
+        current.turn = 3; view.childSummaries["chat-child"] = current
         view.heldAgentChildren = ["chat-child"]
         let held = view.presentedMessages.first { $0.id == "source" }?.tools?.first
-        XCTAssertEqual(held.map { SubagentToolView($0).label }, "Stopped by you · turn 1")
+        XCTAssertEqual(held.map { SubagentToolView($0).label }, "Stopped by you · turn 3")
     }
     func testCaptureAcceptsANewerTurnButRejectsOldTerminalAndStalePackets() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

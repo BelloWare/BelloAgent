@@ -5,6 +5,31 @@ import XCTest
 @testable import PiApp
 
 final class SubagentNavigationTests: XCTestCase, SerialTestLane {
+    @MainActor func testFollowUpReturnAndTypedSourceKeepTheIssuingSendInAnEarlierVersion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let bench = try ConversationPaneTests.workbench(root: root, chats: ["parent", "child"])
+        registerWorkspaceFixtureTeardown(bench.model, root: root)
+        bench.model.chats[1].delegation = SubagentTranscriptTests.link
+        bench.model.chats[1].parentSessionID = "chat-parent"
+        let view = SessionDisplay(id: "chat-parent"); view.historyState = .ready; view.draft = "Keep my draft"
+        view.messages = [.init(id: "edited", role: "user", text: "Edited ancestor")]
+        var send = SubagentSteeringPresentationTests.tool; send.name = "subagent_send"; send.id = "send-3"
+        view.versionView = TranscriptVersionView(latestID: "edited", index: 1, count: 2, ids: ["turn", "edited"], live: 2,
+            rows: [.init(id: "turn", role: "user", text: "Earlier task", earlierVersion: true),
+                   .init(id: "follow-up", role: "assistant", text: "", tools: [send], earlierVersion: true)], loading: false)
+        bench.model.displays[view.id] = view; bench.model.selectedID = view.id; bench.model.selected = view; bench.model.focusedSessionID = view.id
+        var target = SubagentTarget(SubagentTranscriptTests.link); target.receiptSource = true; target.turn = 3
+        target.assistantID = "follow-up"; target.toolCallID = "send-3"
+        bench.model.subagentReturnTargets["chat-child"] = target
+        await bench.model.backToSubagentParent("chat-child")
+        XCTAssertEqual(view.reveal?.messageID, "follow-up"); XCTAssertEqual(view.reveal?.toolCallID, "send-3")
+        view.reveal = nil
+        await bench.model.showAgentSource(.init(id: "input-3", childID: "chat-child", turn: 3, kind: "follow_up", author: "parent",
+            sourceSessionID: "chat-parent", sourceMessageID: "follow-up", sourceToolCallID: "send-3", recipientID: "chat-child", disposition: "delivered"))
+        XCTAssertEqual(view.reveal?.messageID, "follow-up"); XCTAssertEqual(view.reveal?.toolCallID, "send-3")
+        XCTAssertEqual(view.versionView?.index, 1); XCTAssertEqual(view.draft, "Keep my draft")
+        XCTAssertTrue(bench.model.sessionOpenings.isEmpty)
+    }
     @MainActor func testChildPaneHasNoInputOrContinuationControls() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("subagent-navigation-" + UUID().uuidString)
         let bench = try ConversationPaneTests.workbench(root: root, chats: ["parent", "child"])

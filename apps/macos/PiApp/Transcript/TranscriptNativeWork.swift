@@ -251,7 +251,9 @@ import AppKit
         }
         for panel in [hoverPanel, shimmer, focusFill, focusStroke] as [NSView] { put(panel, line) }
         // The stroke lies inside the row, as `strokeBorder` draws it.
-        focusStroke.frame = line.insetBy(dx: 0.5, dy: 0.5)
+        // Newly mounted lines can lay out before receiving their width.
+        // Insetting a narrower-than-one-point rectangle produces CGRect.null.
+        focusStroke.frame = CGRect(x: 0.5, y: 0.5, width: max(0, width - 1), height: height - 1)
         if let marker { put(marker, line) }
         if let trigger { put(trigger, summary.frame) }
         if rightToLeft { for view in placed { view.frame = TranscriptMotion.mirrored(view.frame, of: view, width: width, true) } }

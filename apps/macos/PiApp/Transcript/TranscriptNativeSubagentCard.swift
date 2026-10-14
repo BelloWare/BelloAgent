@@ -34,6 +34,7 @@ import AppKit
         var lines: [String] = []
         if value.heldByUser { lines.append("Held until a new parent task or explicit Resume.") }
         if let summary = value.summary {
+            if let count = summary.pendingMessages, count > 0 { lines.append("\(count) pending " + (count == 1 ? "message" : "messages")) }
             lines.append("Model: " + summary.model)
             if let tools = summary.tools { lines.append(tools.isEmpty ? "Tools: none" : "Tools: " + tools.joined(separator: ", ")) }
             if let progress = summary.progress {
@@ -44,7 +45,7 @@ import AppKit
             }
         }
         information.update(text: lines.joined(separator: "\n"), face: TranscriptCardFaces.note, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
-        task.title = value.operation == "subagent_send" || value.operation == "subagent_report" ? "Message" : "Task"
+        task.title = value.operation == "subagent_report" ? value.messageKind?.capitalized ?? "Message" : value.operation == "subagent_send" ? "Message" : "Task"
         task.update(value.task, environment: environment)
         let text = [value.result, value.error, value.truncated ? "Result truncated. Open the sub-agent for the complete saved reply." : nil].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
         hasResult = !text.isEmpty; result.isHidden = !hasResult

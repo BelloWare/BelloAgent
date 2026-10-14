@@ -47,7 +47,7 @@ import AppKit
             }
             let button = PiKit.Button("\(inspector?.index.kind(of: request.id) ?? request.purpose) · \(request.route.label)", symbol: "arrow.up.arrow.down", style: .ghost) { [weak inspector] in inspector?.select(.request(request.id)) }
             button.setAccessibilityIdentifier("inspector-subagent-request-" + request.id)
-            return button
+            return ShellStack(.horizontal, spacing: 8, [.view(button), .spacer(0)])
         }))
         needsLayout = true
     }

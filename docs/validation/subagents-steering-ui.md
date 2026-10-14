@@ -99,4 +99,98 @@ historical inclusion. Missing/disabled capture keeps receipt/delivery inspection
 and source transcript navigation, with an explicit unavailable-request note.
 Read-only coordination projection uses a fingerprint-cached journal scan because
 the helper does not yet expose the design's turn/message detail paging command;
-large-family cost is part of phase 6 acceptance, not claimed here.
+the helper's phase 6 acceptance does not measure this app scan. Large-family scan
+cost is not claimed here.
+
+## Step 4 — complete navigation and native gallery
+
+Merged helper acceptance `a2fe6b53` in `dc5a4294`; no app contract change was
+needed for its persisted mailbox rotation. Steer-card Open retains the exact
+message event, rather than revealing the turn's initial task. A source lookup
+cannot replace a newer user selection. Back to Parent and source navigation find
+the follow-up's actual issuing call inside an ancestor's retained version.
+Human Stop on an old start card names the latest held turn. Report cards label
+questions, blockers and notes, and expose pending message counts. Inspector
+request buttons align with the turn headings. Parent/child deletion assertions
+cover both promotion siblings.
+
+Failing-first and mutation evidence:
+
+- `step4-message-navigation-red.log`: steer-card Open loses its message ID.
+  `step4-message-navigation-mutation.log`: removing the card's message ID and
+  the reader's event-ID predicate each fails its regression. Both restored;
+  `step4-message-navigation-restored.log`: **8 pass**.
+- `step4-source-selection-red.log`: a delayed source read reveals the old
+  destination after selection changes. `step4-source-selection-mutation.log`:
+  accepting a changed selection fails the same assertion. Restored;
+  `step4-source-selection-restored.log`: **1 pass**.
+- Gallery diagnostics exposed a zero-width tool header's focus outline becoming
+  `CGRect.null` during mounting. `step4-geometry-red.log` showed that AppKit clamps
+  the invalid coordinates to very large finite values, so a finiteness-only
+  assertion was insufficient. The exact inset-layout assertion fails twice in
+  `step4-geometry-red-2.log`. The outline now keeps a nonnegative width before
+  placement. A temporary stack probe identified the existing work-line layout;
+  the probe was removed before validation and is not part of the implementation.
+
+Final affected-class runs on the merged tree use the isolated test host:
+
+| Evidence | Result |
+|---|---|
+| `final-app-complete.log` | **95 pass**, zero failures across the 13 classes below |
+| `final-app-geometry.log` | **117 pass**, zero failures: those classes plus the new layout regression and `TranscriptNativeWorkBehaviourTests` |
+| `final-SubagentNavigationTests.log` | **6 pass**, alone in the serial lane |
+| `final-SubagentOpeningTests.log` | **9 pass**, alone in the serial lane |
+| `final-SubagentPerformanceTests.log` | **1 pass**, alone in the serial lane |
+| `gallery-final-verified.log` | **1 pass**, alone; all **92 images** rendered, zero invalid-view-geometry diagnostics |
+
+The 13-class bash-array selection is `RunHoldTests`, `SubagentCaptureTests`,
+`SubagentDeletionTests`, `SubagentDiscoveryTests`, `SubagentInspectorTests`,
+`SubagentMetadataTests`, `SubagentModelGrantTests`, `SubagentOrganizationTests`,
+`SubagentTranscriptTests`, `SubagentSteeringInspectorTests`,
+`SubagentSteeringPresentationTests`, `SubagentSteeringWorkspaceTests`, and
+`TranscriptActionsForwardingTests`. This is affected-class validation, not a
+claim that the complete native or helper suite was rerun in this worktree.
+
+The existing generated Debug performance fixture measured 20 progress updates:
+64.74 ms median, 111.49 ms maximum; 52 measured rows, 16 markdown measurements,
+zero sidebar recomputations, and 1127.63 ms for the switch round trip. These are
+the existing fixture's measurements, not production or large-family scan claims.
+
+`UIScreenshotTests/testRenderSubagentSteeringGallery` runs alone and writes
+`$PI_BUILD_ROOT/gallery/steering/manifest.txt`. Its 23 scenes render in light/dark
+at 920×600 and 1240×800: **92 images**. They cover folded/expanded background
+cards, final family wait, pending/delivered results and messages, pending/delivered
+questions and blockers, parent steering, child notes, second/third follow-ups
+with earlier results, follow-up cards, user Stop holds, coordination/cost pauses,
+Resume with undelivered events, long text/keyboard/author accessibility, Inspector
+turns, unavailable capture and a link outside the 5,000-row display window.
+Generated Inspector captures use distinct physical turn IDs and include 5,000
+filler attempts to exercise the actual retained-window path. Assertions cover
+hidden child composers, native agent author labels, visible cards, turn grouping
+and successful out-of-window request focus. Money uses the shared two-decimal
+formatter. Representative settled captures were visually inspected in both
+themes and sizes.
+
+Gallery setup evidence is retained: `gallery-first.log` caught an actor-isolated
+fixture accessor; `gallery-second.log` skipped because the screenshot root had
+not been forwarded through `TEST_RUNNER_PI_APP_UI_SCREENSHOT_ROOT`. Both were
+corrected. The later gallery logs contain actual rendered images; skips are not
+counted as gallery validation.
+The final render also corrects the fixture's stopped-family runtime/status
+projection, so its paused/cost-limit sidebar shows pending messages without
+claiming that stopped children are running. The final pause, narrow long-text
+and out-of-window Inspector scenes were inspected after regeneration.
+
+## Integration status
+
+App implementation commits before the final gallery step: `ace01712` (typed
+presentation/capture ordering), `ae6011fd` (workspace lifetime/navigation), and
+`0835aa7b` (request provenance/Inspector). Helper merges are `8a072872`,
+`f2fc36a0`, and `dc5a4294`. Only `dev/subagents-steer-ui` is pushed by this work.
+
+No helper core files were edited for phase 5. V3 parsing and presentation are
+ready; `SubagentPolicy.steeringEnabled` remains **false** for release integration.
+The remaining contract limitations are the read-only paging/trigger provenance
+items described above; they do not grant a child a composer, new permissions or
+independent budget ownership. Capture policy and limits are unchanged. Release
+activation and the release gate are separate from this app phase.

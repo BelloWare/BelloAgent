@@ -771,6 +771,7 @@
 		9FA2A941679BEDB5F903188B /* TranscriptVersions.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECF164BB4F9E410D5A77E9B6 /* TranscriptVersions.swift */; };
 		9FA48F7F274A1F444D8CCCE2 /* MessageVersions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49DBCAEBEF122D7E2EDD2DFE /* MessageVersions.swift */; };
 		9FA83033C17EA30E13D292B5 /* SubagentOrganizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 261EF08E6759FAA4FD26F6E1 /* SubagentOrganizationTests.swift */; };
+		9FE99B8316714875D9A70546 /* SubagentSteeringGalleryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C38927776862172895A504F /* SubagentSteeringGalleryTests.swift */; };
 		9FF430E727B2415AE6D54C09 /* LazyListAppKitControlTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D06241A7FFE78469AF5BADD3 /* LazyListAppKitControlTests.swift */; };
 		9FF477C343271ACDEA51A05E /* ConfigurationVaultTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC36AB17531D1774FC809475 /* ConfigurationVaultTests.swift */; };
 		A00B9A8FBEE29DC0FC7C8515 /* FileSyntax.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD57EFB4E67144FAA5E2E23D /* FileSyntax.swift */; };
@@ -1737,6 +1738,7 @@
 		8BF5F1265A90148AF8BFA94D /* TerminalPanelAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalPanelAuditTests.swift; sourceTree = "<group>"; };
 		8C26784C1A77C839948FB331 /* TranscriptPlainTextReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptPlainTextReference.swift; sourceTree = "<group>"; };
 		8C3000F8B5567BF00980ACC9 /* bello-views */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "bello-views"; path = "packages/bello-views"; sourceTree = SOURCE_ROOT; };
+		8C38927776862172895A504F /* SubagentSteeringGalleryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubagentSteeringGalleryTests.swift; sourceTree = "<group>"; };
 		8C8797F26A0EEDD529C1F875 /* MetricsFooterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricsFooterView.swift; sourceTree = "<group>"; };
 		8CA217E38A3870E097429A26 /* TurnDurationClockTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TurnDurationClockTests.swift; sourceTree = "<group>"; };
 		8CCA777D374EF3FCCC94839B /* ConversationPaneBridges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPaneBridges.swift; sourceTree = "<group>"; };
@@ -3080,6 +3082,7 @@
 				744D5FFC131F275585845042 /* SubagentOpeningTests.swift */,
 				261EF08E6759FAA4FD26F6E1 /* SubagentOrganizationTests.swift */,
 				76E132DCF11D6E743A1910FF /* SubagentPerformanceTests.swift */,
+				8C38927776862172895A504F /* SubagentSteeringGalleryTests.swift */,
 				C1AC8D0557DB45911FDABC54 /* SubagentSteeringInspectorTests.swift */,
 				D9E1B34F824F4B9391C96AA2 /* SubagentSteeringPresentationTests.swift */,
 				B1C4919324D85C821B9EDA62 /* SubagentSteeringWorkspaceTests.swift */,
@@ -4530,6 +4533,7 @@
 				E56D21B0D2744684376A3AA9 /* SubagentOpeningTests.swift in Sources */,
 				9FA83033C17EA30E13D292B5 /* SubagentOrganizationTests.swift in Sources */,
 				8ABC3BE8DC9D87D464BF5281 /* SubagentPerformanceTests.swift in Sources */,
+				9FE99B8316714875D9A70546 /* SubagentSteeringGalleryTests.swift in Sources */,
 				E0829B86E269E94F3B6916D8 /* SubagentSteeringInspectorTests.swift in Sources */,
 				2BB6B5757F0DD1CD8B45966E /* SubagentSteeringPresentationTests.swift in Sources */,
 				E7AAA0B10FE5DBDAE9BCA1E6 /* SubagentSteeringWorkspaceTests.swift in Sources */,

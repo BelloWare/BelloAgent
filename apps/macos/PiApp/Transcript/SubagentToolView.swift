@@ -40,6 +40,7 @@ struct SubagentToolView: Equatable, Sendable {
     let messageState: String?
     let heldByUser: Bool
     let wakeReason: String?
+    let messageKind: String?
     let target: SubagentTarget?
     let summary: SubagentSummary?
     let task: String, description: String, result: String, error: String?
@@ -53,6 +54,7 @@ struct SubagentToolView: Equatable, Sendable {
         messageState = tool.agentDeliveryState
         heldByUser = tool.agentHeldByUser == true
         wakeReason = output["wake_reason"]?.string
+        messageKind = input["kind"]?.string
         messageReference = output["child_id"]?.string.flatMap { child in
             output["turn"]?.nonnegativeInteger.map { AgentMessageReference(childID: child, turn: $0, eventID: output["message_id"]?.string, recipient: true) }
         }
@@ -61,6 +63,9 @@ struct SubagentToolView: Equatable, Sendable {
         summary = tool.subagent ?? tool.nativeSubagent?.object?["summary"].flatMap { try? JSONDecoder().decode(SubagentSummary.self, from: JSONEncoder().encode($0)) }
         var destination = tool.nativeSubagent.flatMap(SubagentTarget.init(metadata:)) ?? summary.flatMap { $0.link.valid ? SubagentTarget($0.link) : nil }
         if (tool.name == "subagent_start" || destination?.turn == nil), let number = summary?.turn { destination?.turn = number }
+        if tool.name == "subagent_send", route == "steer", let reference = messageReference,
+           reference.childID == destination?.sessionID, reference.turn == destination?.turn,
+           let id = reference.eventID, !id.isEmpty, id.utf8.count <= 512 { destination?.messageID = id }
         target = destination
         task = input["task"]?.string ?? input["message"]?.string ?? input["reason"]?.string ?? (tool.name == "subagent_wait" ? "Wait for selected child turns to settle." : tool.input)
         description = summary?.description ?? input["description"]?.string ?? String(task.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(120))
@@ -73,7 +78,7 @@ struct SubagentToolView: Equatable, Sendable {
     var label: String {
         if operation != "subagent" {
             if accepted == false { return "Not accepted" }
-            if heldByUser { return "Stopped by you" + (receiptTurn.map { " · turn \($0)" } ?? "") }
+            if heldByUser { return "Stopped by you" + ((operation == "subagent_start" ? summary?.turn ?? receiptTurn : receiptTurn).map { " · turn \($0)" } ?? "") }
             if let messageState {
                 switch messageState {
                 case "delivered": return "Delivered" + (receiptTurn.map { " · turn \($0)" } ?? "")

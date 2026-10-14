@@ -80,7 +80,9 @@ final class SubagentDeletionTests: XCTestCase {
         let family = try SubagentDiscoveryTests.family(model)
         let store = try XCTUnwrap(model.store), parent = try XCTUnwrap(model.record("chat-parent"))
         for chat in model.chats { try await store.put(chat, kind: "chat", id: chat.id) }
-        for suffix in [".meta", ".stream", ".stream-unrestored-fixture"] { try Data("fixture".utf8).write(to: URL(fileURLWithPath: family.path.path + suffix)) }
+        for suffix in [".meta", ".stream", ".stream-unrestored-fixture", ".promotion"] { try Data("fixture".utf8).write(to: URL(fileURLWithPath: family.path.path + suffix)) }
+        let parentPromotion = URL(fileURLWithPath: try XCTUnwrap(parent.path) + ".promotion")
+        try Data("private parent promotion fixture".utf8).write(to: parentPromotion)
         let temporary = family.path.deletingLastPathComponent().appendingPathComponent("." + family.path.lastPathComponent + ".meta." + UUID().uuidString)
         let unrelated = family.path.deletingLastPathComponent().appendingPathComponent(".another.jsonl.meta." + UUID().uuidString)
         for file in [temporary, unrelated] { try Data("private checkpoint fixture".utf8).write(to: file) }
@@ -96,6 +98,8 @@ final class SubagentDeletionTests: XCTestCase {
         try await model.deleteSubagentFamily(parent)
         XCTAssertNil(model.record(parent.id)); XCTAssertFalse(FileManager.default.fileExists(atPath: family.path.path))
         XCTAssertTrue(recycled.contains { $0.path == family.path.path + ".meta" })
+        XCTAssertTrue(recycled.contains { $0.path == family.path.path + ".promotion" })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parentPromotion.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.path))
         XCTAssertTrue(ownedOutputs.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
         XCTAssertTrue(FileManager.default.fileExists(atPath: foreignOutputs.path))

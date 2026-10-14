@@ -3,6 +3,50 @@ import XCTest
 @testable import PiApp
 
 final class SubagentSteeringWorkspaceTests: XCTestCase {
+    @MainActor func testSlowSourceLookupCannotReplaceANewerSelection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        let link = try XCTUnwrap(model.chats[1].delegation)
+        let header = SubagentHeader(link: link, description: "Task", model: .init(model: "fixture"), readOnly: true)
+        let path = root.appendingPathComponent("source.jsonl")
+        try Self.write([
+            ["type":.string("session"),"id":.string(link.budgetOwnerSessionID)],
+            ["type":.string("custom"),"customType":.string("pi-app.subagent-call.v1"),"data":.object(["origin":try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(header))])],
+            ["type":.string("custom"),"customType":.string("pi-app.agent-operation.v1"),"data":.object([
+                "key":.object(["parentSessionID":.string(link.budgetOwnerSessionID),"assistantMessageID":.string("follow-up"),"toolCallID":.string("send")]),
+                "turn":.object(["childID":.string(link.childSessionID),"turn":.number(2),"inputID":.string("input-2")])])]
+        ], to: path)
+        model.chats[0].path = path.path
+        let view = SessionDisplay(id: link.budgetOwnerSessionID); view.historyState = .ready
+        view.messages = [.init(id: "follow-up", role: "assistant", text: "Saved source")]
+        model.displays[view.id] = view; model.selected = view; model.selectedID = view.id
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0), reader = model.history
+        let blocking = Task.detached { await reader.holdSteeringRead(entered, release) }
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        var started = false
+        let click = Task { started = true; await model.openAgentSource(.init(childID: link.childSessionID, turn: 2, eventID: "input-2"), from: link.childSessionID) }
+        while !started { await Task.yield() }
+        model.selectionRevision += 1
+        release.signal(); await blocking.value; await click.value
+        XCTAssertNil(view.reveal, "A source read belongs to the selection that requested it")
+    }
+    func testSteerRevealSelectsItsDeliveredEventRatherThanTheInitialTask() async throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        var bytes = Data()
+        for (id, event, turn) in [("task-row", "task", 1), ("steer-row", "steer", 1), ("follow-row", "follow", 2)] {
+            let row: WireValue = .object(["type":.string("message"),"id":.string(id),"message":.object([
+                "role":.string("user"),"content":.string("Saved input"),"nativeAgentDelivery":.object([
+                    "version":.number(1),"author":.string("parent"),"childId":.string("child"),"turn":.number(Double(turn)),"eventIds":.array([.string(event)])])])])
+            bytes.append(try JSONEncoder().encode(row)); bytes.append(10)
+        }
+        try bytes.write(to: path)
+        let history = HistoryReader()
+        let steer = try await history.subagentTurnMessage(path: path, childID: "child", turn: 1, messageID: "steer")
+        let follow = try await history.subagentTurnMessage(path: path, childID: "child", turn: 2, messageID: nil)
+        let foreign = try await history.subagentTurnMessage(path: path, childID: "other", turn: 1, messageID: "steer")
+        XCTAssertEqual(steer, "steer-row"); XCTAssertEqual(follow, "follow-row"); XCTAssertNil(foreign)
+    }
     @MainActor func testFinalFamilyWaitAndPendingDeliveryHoldTheParent() {
         let view = SessionDisplay(id: "parent"); view.historyState = .ready
         view.messages = [.init(id: "answer", role: "assistant", text: "The first check is complete.")]
@@ -55,5 +99,11 @@ final class SubagentSteeringWorkspaceTests: XCTestCase {
     }
     private static func write(_ rows: [[String:WireValue]], to url: URL) throws {
         var bytes = Data(); for row in rows { bytes.append(try JSONEncoder().encode(row)); bytes.append(10) }; try bytes.write(to: url)
+    }
+}
+
+private extension HistoryReader {
+    func holdSteeringRead(_ entered: DispatchSemaphore, _ release: DispatchSemaphore) {
+        entered.signal(); _ = release.wait(timeout: .now() + 5)
     }
 }
