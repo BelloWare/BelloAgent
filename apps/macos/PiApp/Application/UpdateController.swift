@@ -24,6 +24,7 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
         let configuration = ReleaseConfiguration.current
         configurationError = configuration.error
         super.init()
+        #if !PI_TEST_HOST && !PI_LAUNCH_FIXTURE
         guard configuration.error == nil,
               ProcessInfo.processInfo.environment["PI_APP_TESTING"] != "1",
               ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
@@ -37,6 +38,7 @@ final class UpdateController: NSObject, ObservableObject, @preconcurrency SPUUpd
         observation = updater.publisher(for: \.canCheckForUpdates)
             .receive(on: RunLoop.main)
             .sink { [weak self] available in self?.canCheckForUpdates = available }
+        #endif
     }
 
     func configure(automaticChecks: Bool, configurationAvailable: Bool) {

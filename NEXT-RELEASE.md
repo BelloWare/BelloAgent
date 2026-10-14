@@ -5,6 +5,7 @@
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.
 
 - [x] Output speed includes time to first token: all reported output tokens ÷ request-to-last-output duration, consistently across chats, Inspector, reports and menu bar; trailing usage waits remain excluded.
+- [x] Tests use a separate app/defaults identity, scratch data home and private clipboard, with a pre-test isolation guard and Keychain/Sparkle disabled; Debug, Release, gallery and performance runs preserve the installed app's preferences and release identity.
 
 ## 0.1.126 decisions made while the owner was away (2026-10-13 night)
 
