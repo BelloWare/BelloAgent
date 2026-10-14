@@ -481,15 +481,10 @@ enum GitPanelSplit {
         }
     }
     private let remote: GitRemoteControls
-    private lazy var stashMenu = PiKit.MenuButton(title: "Stash", icon: "tray.and.arrow.down", identifier: "git-stash-menu") { [weak self, controller] in
-        let context = self?.inputs?.context
-        PiMenuEntry.button("Stash Changes…", enabled: !controller.status.entries.isEmpty) { self?.showStash(context: context) }
-        if !controller.stashes.isEmpty {
-            PiMenuEntry.divider
-            for stash in controller.stashes {
-                PiMenuEntry.button("Pop \(stash.name): \(stash.subject)") { guard controller.accepts(context) else { return }; Task { await controller.popStash(stash.name, context: context) } }
-            }
-        }
+    private lazy var repositoryTools = GitRepositoryTools(controller: controller)
+    private lazy var stashMenu: PiKit.MenuButton = PiKit.MenuButton(title: "Stash", icon: "tray.and.arrow.down", identifier: "git-stash-menu") { [weak self] in
+        PiMenuEntry.button("Show Stashes…") { guard let self else { return }; self.repositoryTools.showStashes(from: self.stashMenu) }
+        PiMenuEntry.button("New Stash…") { guard let self else { return }; self.repositoryTools.showNewStash(from: self.stashMenu) }
     }
     private let panelTabs: PiKit.Tabs<GitController.Panel>
     private let notice = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piDanger))
@@ -506,6 +501,7 @@ enum GitPanelSplit {
         panelTabs = PiKit.Tabs(selection: controller.panel, items: GitController.Panel.allCases.map { ($0, $0.title) }) { [controller] in controller.panel = $0 }
         super.init(frame: .zero)
         for view in [rootLabel, branchMenu, remote, stashMenu, panelTabs, notice] as [NSView] { addSubview(view) }
+        branchMenu.onPress = { [weak self] in guard let self else { return }; repositoryTools.showBranches(from: branchMenu) }
         repositoryWatch = controller.$repositoryIdentity.sink { [weak self] in self?.repositoryChanged($0) }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
@@ -655,6 +651,11 @@ enum GitPanelSplit {
         remote.layoutForm()
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { repositoryTools.close() }
+    }
+
     // MARK: Popovers
 
     private func showNotice(_ message: String) {
@@ -663,6 +664,9 @@ enum GitPanelSplit {
     }
     private func repositoryChanged(_ identity: GitController.RepositoryIdentity?) {
         var closed: [String] = []
+        if repositoryTools.identity != nil, repositoryTools.identity != identity {
+            repositoryTools.close(); closed.append("Branches and Stashes")
+        }
         if let branchForm, branchForm.repository != identity {
             self.branchForm = nil
             if branchPopover.isShown { branchPopover.close(); closed.append("New Branch") }
@@ -904,299 +908,6 @@ enum GitPanelSplit {
         line.draw(at: CGPoint(x: 4, y: 1), scale: piScale)
     }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
-}
-
-// MARK: - History
-
-/// The filters and the commits, newest first.
-@MainActor final class GitHistoryList: NSView {
-    struct Inputs: Equatable {
-        var filter: GitLogFilter, commits: [GitCommit], selected: GitCommit?, exhausted: Bool, loading: Bool
-        @MainActor init(_ controller: GitController) {
-            filter = controller.logFilter; commits = controller.commits; selected = controller.selectedCommit
-            exhausted = controller.historyExhausted; loading = controller.loading
-        }
-    }
-    private enum Row: Hashable { case empty, commit(String), more }
-    private let controller: GitController
-    private let filterField: PiKit.TextField
-    private let authorField: PiKit.TextField
-    private let allBranches = gitCheckbox(on: false, label: "Show all branches") {}
-    private let allBranchesLabel = PiKit.TextLine(PiKit.Line("All branches", font: PiKit.Font.caption, color: .piInkSecondary))
-    private let pathChip = GitHistoryPathChip()
-    private let rule = HairlineView()
-    let list = LazyStackView()
-    private var inputs: Inputs?
-    private let glide = PiKit.SelectionGlide()
-
-    init(controller: GitController) {
-        self.controller = controller
-        filterField = PiKit.TextField(placeholder: "Filter by message or hash", icon: "magnifyingglass") { [controller] in controller.logFilter.text = $0 }
-        authorField = PiKit.TextField(placeholder: "Author", icon: "person") { [controller] in controller.logFilter.author = $0 }
-        super.init(frame: .zero)
-        filterField.setAccessibilityIdentifier("git-history-filter")
-        allBranches.onPress = { [controller] in controller.logFilter.allBranches.toggle() }
-        pathChip.clear = { [controller] in controller.clearFileHistory() }
-        list.spacing = 2
-        list.insets = NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm)
-        for view in [filterField, authorField, allBranches, allBranchesLabel, pathChip, rule, list] as [NSView] { addSubview(view) }
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-
-    func apply(_ next: Inputs) {
-        guard next != inputs else { return }
-        let previous = inputs
-        inputs = next
-        RedrawCounter.note("GitHistoryList")
-        filterField.text = next.filter.text
-        authorField.text = next.filter.author
-        allBranches.setTick(on: next.filter.allBranches, label: "Show all branches")
-        pathChip.isHidden = next.filter.path == nil
-        if let path = next.filter.path { pathChip.path = path }
-        if previous?.filter.path != next.filter.path { needsLayout = true }
-        var rows: [Row] = []
-        if next.commits.isEmpty && !next.loading { rows.append(.empty) }
-        rows += next.commits.map { .commit($0.hash) }
-        if !next.exhausted && !next.commits.isEmpty { rows.append(.more) }
-        let commits = Dictionary(next.commits.map { ($0.hash, $0) }, uniquingKeysWith: { a, _ in a })
-        let filtered = next.filter.path != nil, empty = next.filter == GitLogFilter() ? "No commits yet." : "No commits match the filter."
-        let controller = controller, glide = glide
-        // The same commits in the same order: their heights stand, and only
-        // the rows in view take the new state (a selection, a keystroke in a filter).
-        let sameRows = rows == self.rows && previous?.commits == next.commits
-        self.rows = rows
-        let source = LazyStackView.Source(count: rows.count, key: { [rows] in AnyHashable(rows[$0]) }, height: { [weak self, rows] index, width in
-            switch rows[index] {
-            case .empty: return GitEmptyRow.height
-            case .more: return GitLoadMoreRow.height
-            case .commit(let hash): return commits[hash].map { self?.height(of: $0, width: width) ?? 0 } ?? 0
-            }
-        }, view: { [rows] index, existing in
-            switch rows[index] {
-            case .empty:
-                let row = existing as? GitEmptyRow ?? GitEmptyRow(empty)
-                row.text = empty
-                return row
-            case .more: return existing ?? GitLoadMoreRow { Task { await controller.loadMoreHistory() } }
-            case .commit(let hash):
-                guard let commit = commits[hash] else { return existing ?? NSView() }
-                let row = existing as? GitCommitRowView ?? GitCommitRowView(controller: controller, glide: glide)
-                row.apply(commit: commit, selected: next.selected == commit, filtered: filtered)
-                return row
-            }
-        })
-        if sameRows { list.update(source) } else { list.reload(source) }
-    }
-    private var rows: [Row] = []
-    /// Each commit's row height, measured once a width.
-    /// By what the height depends on: the subject and the refs.
-    private var heights: [HeightKey: CGFloat] = [:]
-    private struct HeightKey: Hashable { let subject: String, refs: [String] }
-    private var heightsWidth: CGFloat = -1
-    private func height(of commit: GitCommit, width: CGFloat) -> CGFloat {
-        if width != heightsWidth { heights = [:]; heightsWidth = width }
-        let key = HeightKey(subject: commit.subject, refs: commit.refs)
-        if let known = heights[key] { return known }
-        let measured = GitCommitRowView.height(of: commit, width: width)
-        heights[key] = measured
-        return measured
-    }
-
-    private var filterHeights: (field: CGFloat, author: CGFloat, chip: CGFloat) {
-        (filterField.intrinsicContentSize.height, max(authorField.intrinsicContentSize.height, 18, allBranchesLabel.intrinsicContentSize.height),
-         pathChip.isHidden ? 0 : pathChip.intrinsicContentSize.height)
-    }
-    /// The filters and the rule: what the side keeps however short it is.
-    func fixedHeight(forWidth width: CGFloat) -> CGFloat {
-        let heights = filterHeights
-        return PiSpacing.sm * 2 + heights.field + PiSpacing.xs + heights.author + (pathChip.isHidden ? 0 : PiSpacing.xs + heights.chip) + 1
-    }
-    override func layout() {
-        super.layout()
-        let width = bounds.width, inner = width - PiSpacing.sm * 2, heights = filterHeights, scale = piScale
-        var y = PiSpacing.sm
-        filterField.frame = CGRect(x: PiSpacing.sm, y: y, width: inner, height: heights.field); y += heights.field + PiSpacing.xs
-        StackLayout.place([.view(authorField, .flexible(height: { [authorField] _ in authorField.intrinsicContentSize.height })), .fixed(allBranches), .fixed(allBranchesLabel)],
-                          spacing: PiSpacing.sm, in: CGRect(x: PiSpacing.sm, y: y, width: inner, height: heights.author), scale: scale)
-        y += heights.author
-        if !pathChip.isHidden { y += PiSpacing.xs; pathChip.frame = CGRect(x: PiSpacing.sm, y: y, width: inner, height: heights.chip); y += heights.chip }
-        y += PiSpacing.sm
-        rule.frame = CGRect(x: 0, y: y, width: width, height: 1)
-        list.frame = CGRect(x: 0, y: y + 1, width: width, height: max(0, bounds.height - y - 1))
-    }
-}
-
-/// The file the history follows, and All files.
-@MainActor final class GitHistoryPathChip: NSView {
-    var path = "" { didSet { name.line.text = (path as NSString).lastPathComponent; name.toolTip = path; needsLayout = true } }
-    var clear: (() -> Void)?
-    private let symbol = PiKit.SymbolView(PiKit.Symbol("clock.arrow.circlepath", size: 10), color: .piAccent)
-    private let name = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piInk))
-    private let note = PiKit.TextLine(PiKit.Line("history · follows renames", font: PiKit.Font.micro, color: .piInkTertiary))
-    private let allFiles = PiKit.Button("All files", style: .ghost)
-    private let fill = PiKit.Box(fill: .piAccentSoft, cornerRadius: PiRadius.sm)
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        name.truncation = .middle
-        allFiles.setAccessibilityIdentifier("git-history-all-files")
-        allFiles.onPress = { [weak self] in self?.clear?() }
-        for view in [fill, symbol, name, note, allFiles] as [NSView] { addSubview(view) }
-        setAccessibilityElement(false); setAccessibilityIdentifier("git-history-path")
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-    private var items: [StackLayout.Item] { [.fixed(symbol), .line(name), .line(note), .spacer(2), .fixed(allFiles)] }
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: StackLayout.height(items, spacing: 6, width: .infinity) + 8)
-    }
-    override func layout() {
-        super.layout()
-        fill.frame = bounds
-        StackLayout.place(items, spacing: 6, in: bounds.insetBy(dx: PiSpacing.sm, dy: 4), scale: piScale)
-    }
-}
-
-/// "Load older commits".
-@MainActor final class GitLoadMoreRow: NSView {
-    private let button = PiKit.Button("Load older commits", style: .ghost)
-    static var height: CGFloat { PiKit.Button("Load older commits", style: .ghost).intrinsicContentSize.height + PiSpacing.sm * 2 }
-    init(_ action: @escaping () -> Void) {
-        super.init(frame: .zero)
-        button.onPress = action
-        addSubview(button)
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-    override func layout() {
-        super.layout()
-        let size = button.intrinsicContentSize
-        button.frame = CGRect(x: PiSpacing.sm, y: PiSpacing.sm, width: size.width, height: size.height)
-    }
-}
-
-/// One commit: its subject, its refs, its hash, author and age.
-@MainActor final class GitCommitRowView: NSView {
-    private let controller: GitController
-    private let content = GitCommitRowContent()
-    let row: PiKit.SelectableRow
-    private var shown: (commit: GitCommit, selected: Bool, filtered: Bool)?
-    init(controller: GitController, glide: PiKit.SelectionGlide) {
-        self.controller = controller
-        row = PiKit.SelectableRow(content: content, glide: glide)
-        super.init(frame: .zero)
-        addSubview(row)
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-    override func layout() { super.layout(); row.frame = bounds }
-    static func height(of commit: GitCommit, width: CGFloat) -> CGFloat {
-        let padding = PiKit.SelectableRow.padding
-        return GitCommitRowContent.height(of: commit, width: width - padding.left - padding.right) + padding.top + padding.bottom
-    }
-    func apply(commit: GitCommit, selected: Bool, filtered: Bool) {
-        if let shown, shown.commit == commit, shown.selected == selected, shown.filtered == filtered { return }
-        shown = (commit, selected, filtered)
-        RedrawCounter.note("GitCommitRow")
-        let controller = controller
-        row.selected = selected
-        row.onPress = { controller.chooseHistoryCommit(commit) }
-        row.setAccessibilityIdentifier("git-commit-" + commit.shortHash)
-        content.apply(commit)
-        row.setAccessibilityLabel(content.spokenText)
-    }
-    override func menu(for event: NSEvent) -> NSMenu? {
-        guard let shown else { return nil }
-        let commit = shown.commit, controller = controller
-        var entries: [PiMenuEntry] = [
-            .button("Copy Hash") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(commit.hash, forType: .string) },
-            .button("Copy Subject") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(commit.subject, forType: .string) },
-        ]
-        if shown.filtered {
-            entries.append(.divider)
-            entries.append(.button("Show All Files Again", systemImage: "clock.arrow.circlepath") { controller.clearFileHistory() })
-        }
-        return PiMenus.menu(entries)
-    }
-}
-
-/// A commit row's content: the subject (two lines at most), the refs as
-/// badges, and the hash, author and age.
-@MainActor final class GitCommitRowContent: NSView {
-    private let subject = TextBlock("", font: PiKit.Font.body, color: .piInk, maximumLines: 2)
-    private let refs = PiKit.FlowView()
-    private let hashLine = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.mono, color: .piAccent))
-    private let author = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.micro, color: .piInkTertiary))
-    private let date = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.micro, color: .piInkTertiary))
-    private let merge = PiKit.SymbolView(PiKit.Symbol("arrow.triangle.merge", size: 10.5, weight: .medium), color: .piInkTertiary)
-    private var commit: GitCommit?
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        refs.spacing = 4; refs.rowSpacing = 4
-        merge.toolTip = "Merge commit"
-        for view in [subject, refs, hashLine, author, date, merge] as [NSView] { addSubview(view) }
-    }
-    required init?(coder: NSCoder) { fatalError("Not used from a nib") }
-    override var isFlipped: Bool { true }
-    var spokenText: String { [subject.text, hashLine.line.text, author.line.text, date.line.text].joined(separator: ", ") }
-
-    static func refBadge(_ ref: String) -> PiKit.Badge {
-        PiKit.Badge(text: ref.replacingOccurrences(of: "HEAD -> ", with: ""), tone: ref.hasPrefix("HEAD") ? .accent : ref.hasPrefix("tag: ") ? .warning : .info,
-                    icon: ref.hasPrefix("tag: ") ? "tag" : ref.hasPrefix("HEAD") ? "location" : nil)
-    }
-    func apply(_ commit: GitCommit) {
-        let refsChanged = self.commit?.refs != commit.refs
-        self.commit = commit
-        subject.text = commit.subject
-        if refsChanged {
-            refs.subviews.forEach { $0.removeFromSuperview() }
-            for ref in commit.refs { refs.addSubview(Self.refBadge(ref)) }
-        }
-        refs.isHidden = commit.refs.isEmpty
-        hashLine.line.text = commit.shortHash
-        author.line.text = commit.author
-        date.line.text = commit.date.formatted(.relative(presentation: .named))
-        merge.isHidden = commit.parents.count <= 1
-        needsLayout = true
-    }
-    private static let flowProbe = PiKit.FlowView()
-    /// Its height at `width`, without a view: the subject's lines, the refs' rows and the meta line.
-    static func height(of commit: GitCommit, width: CGFloat) -> CGFloat {
-        let subject = CGFloat(min(2, PiKit.wrappedLines(commit.subject, font: PiKit.Font.body, width: width).count)) * PiKit.Line("", font: PiKit.Font.body, color: .black).lineHeight
-        var height = subject
-        if !commit.refs.isEmpty {
-            let flow = flowProbe
-            flow.spacing = 4; flow.rowSpacing = 4
-            flow.subviews.forEach { $0.removeFromSuperview() }
-            for ref in commit.refs { flow.addSubview(refBadge(ref)) }
-            height += 3 + flow.height(forWidth: width)
-        }
-        return height + 3 + metaHeight
-    }
-    private static var metaHeight: CGFloat {
-        max(PiKit.Line("", font: PiKit.Font.mono, color: .black).lineHeight, PiKit.Line("", font: PiKit.Font.micro, color: .black).lineHeight)
-    }
-    private var metaItems: [StackLayout.Item] {
-        var items: [StackLayout.Item] = [.fixed(hashLine), .line(author), .line(date)]
-        if !merge.isHidden { items.append(.fixed(merge)) }
-        return items
-    }
-    override func layout() {
-        super.layout()
-        let width = bounds.width, scale = piScale
-        let subjectHeight = subject.height(forWidth: width)
-        subject.frame = CGRect(x: 0, y: 0, width: width, height: subjectHeight)
-        var y = subjectHeight + 3
-        if !refs.isHidden {
-            let height = refs.height(forWidth: width)
-            refs.frame = CGRect(x: 0, y: y, width: width, height: height); y += height + 3
-        }
-        let meta = Self.metaHeight
-        let frames = StackLayout.widths(metaItems, spacing: 6, proposal: width)
-        let row = CGRect(x: 0, y: y, width: width, height: meta)
-        _ = frames
-        StackLayout.place(metaItems, spacing: 6, in: row, scale: scale)
-    }
 }
 
 // MARK: - Detail

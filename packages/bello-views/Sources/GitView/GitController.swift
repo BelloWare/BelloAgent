@@ -637,7 +637,8 @@ import AppKit
         guard !repository.read || repositoryRoot != root || self.status != status || (root != nil && repository.context?.generation != repositoryGeneration) else { return true }
         if repository.read, case .repository(let owner) = messageOwner, owner != root { commitMessage = "" }
         guard current(generation), !closed, !suspended else { return false }
-        if repositoryRoot != root {
+        let changedRepository = repositoryRoot != root
+        if changedRepository {
             commitReadInterrupted = nil
             selection = nil; clearHistorySelection()
             diff = []; commits = []; branches = []; stashes = []
@@ -656,6 +657,11 @@ import AppKit
         recountChecked()
         // The snapshot's observers can stop us too. Nothing may restart the
         // watcher or a diff read after that stop.
+        guard current(generation), !closed, !suspended else { return false }
+        // A branch belongs to the confirmed repository, unlike text/author/
+        // path filters. Publish the new snapshot before changing the filter
+        // because its observer schedules a history read against that snapshot.
+        if changedRepository, historyOptions.reference != nil { historyOptions.reference = nil }
         guard current(generation), !closed, !suspended else { return false }
         resumeAmendPrefill()
         return true
@@ -746,6 +752,59 @@ import AppKit
         await refresh()
         if let failure { notice = failure }
     }
+    /// Shared admission for additive repository tools. A writer stays alive
+    /// through navigation, but its result is only published to its repository.
+    public func performRepositoryWrite<T: Sendable>(repository identity: RepositoryIdentity,
+        operation: @Sendable (String) async throws -> T) async throws -> T {
+        guard acceptsRepository(identity), !busy else { throw GitFailure(message: "The repository changed or another Git operation is running. Try again.") }
+        busy = true
+        defer { busy = false; drainMissedChange() }
+        do {
+            let result = try await operation(identity.root)
+            if sameRepositoryIdentity(identity) { await refresh() }
+            return result
+        } catch {
+            if sameRepositoryIdentity(identity) { await refresh(reporting: error.localizedDescription) }
+            throw error
+        }
+    }
+    /// Retarget a matching History filter before the write's normal refresh.
+    public func renameBranch(_ branch: GitBranchReference, to name: String, repository identity: RepositoryIdentity) async throws {
+        try await performRepositoryWrite(repository: identity) { [service, weak self] root in
+            let reference = try await service.renameBranch(branch, to: name, in: root)
+            await self?.retargetBranchHistory(branch.ref, to: reference, repository: identity)
+        }
+    }
+    public func deleteBranch(_ review: GitBranchDeletion, allowUnmerged: Bool = false, repository identity: RepositoryIdentity) async throws -> String {
+        try await performRepositoryWrite(repository: identity) { [service, weak self] root in
+            let result = try await service.deleteBranch(review, allowUnmerged: allowUnmerged, in: root)
+            await self?.retargetBranchHistory(review.branch.ref, to: nil, repository: identity)
+            return result
+        }
+    }
+    private func retargetBranchHistory(_ old: String, to reference: String?, repository identity: RepositoryIdentity) {
+        // A hidden panel may be resolving another folder in this repository.
+        // Retarget its retained snapshot; a different repository retires it.
+        guard !closed, repositoryIdentity == identity, repositoryRoot == identity.root, historyOptions.reference == old else { return }
+        historyOptions.reference = reference
+    }
+    public func reportRepositoryResult(_ message: String, repository identity: RepositoryIdentity) {
+        guard acceptsRepository(identity) else { return }
+        notice = message
+    }
+    /// An explicit branch navigation starts the live browser with a removable
+    /// ref filter and retires older blame navigation, even with no selection.
+    public func showBranchHistory(_ reference: String, repository identity: RepositoryIdentity) {
+        guard acceptsRepository(identity) else { return }
+        guard repositoryRoot == identity.root else {
+            notice = "The repository was still loading. Choose Show in History again."; return
+        }
+        notice = ""
+        historyChoices += 1; revealTokens += 1
+        pinnedCommit = nil; revealTarget = nil; selectedCommit = nil
+        logFilter = GitLogFilter(); historyOptions = GitHistoryOptions(reference: reference); panel = .history
+    }
+
     public func checkout(_ branch: String) async { await checkout(branch, context: repositoryContext) }
     public func checkout(_ branch: String, context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("Switch") { try await service.checkout(branch, in: root) } }
     public func createBranch(_ name: String) async { await createBranch(name, context: repositoryContext) }

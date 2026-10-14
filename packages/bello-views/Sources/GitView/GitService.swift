@@ -330,8 +330,8 @@ public actor GitService {
         }
     }
 
-    func run(_ arguments: [String], in root: String, timeout: TimeInterval = 20, environment: [String: String] = [:]) async throws -> Output {
-        try await detached(arguments, in: root, timeout: timeout, environment: environment) { $0 }
+    func run(_ arguments: [String], in root: String, timeout: TimeInterval = 20, environment: [String: String] = [:], input: Data? = nil) async throws -> Output {
+        try await detached(arguments, in: root, timeout: timeout, environment: environment, input: input) { $0 }
     }
 
     private func require(_ output: Output, _ what: String) throws -> Output {
@@ -399,15 +399,19 @@ public actor GitService {
         return status
     }
 
-    func log(in root: String, limit: Int = 50, skip: Int = 0, path: String? = nil, filter: GitLogFilter = GitLogFilter()) async throws -> [GitCommit] {
+    func log(in root: String, limit: Int = 50, skip: Int = 0, path: String? = nil, filter: GitLogFilter = GitLogFilter(), reference: String? = nil) async throws -> [GitCommit] {
         var arguments = ["log", "--format=%H%x00%h%x00%an%x00%cI%x00%s%x00%P%x00%D%x1e", "-n", String(limit), "--skip", String(skip)]
-        if filter.allBranches { arguments.append("--all") }
+        if filter.allBranches && reference == nil { arguments.append("--all") }
         let text = filter.text.trimmingCharacters(in: .whitespaces), author = filter.author.trimmingCharacters(in: .whitespaces)
         if !text.isEmpty { arguments += ["-i", "--grep=" + text] }
         if !author.isEmpty { arguments += ["-i", "--author=" + author] }
         // One path's history follows renames, so a file keeps its story.
         let path = path ?? filter.path
         if path != nil { arguments.append("--follow") }
+        if let reference {
+            guard reference.hasPrefix("refs/heads/") || reference.hasPrefix("refs/remotes/") else { throw GitFailure(message: "Choose a branch again.") }
+            arguments += ["--end-of-options", reference]
+        }
         if let path { arguments += ["--"] + Self.literal([path]) }
         let output = try await run(arguments, in: root)
         if output.status != 0 {
@@ -420,8 +424,8 @@ public actor GitService {
         if skip == 0, text.count >= 4, text.count <= 40, text.allSatisfy(\.isHexDigit), !commits.contains(where: { $0.hash.hasPrefix(text.lowercased()) }) {
             let byHash = try await run(["log", "--format=%H%x00%h%x00%an%x00%cI%x00%s%x00%P%x00%D%x1e", "-n", "1", text + "^{commit}", "--"] + Self.literal(path.map { [$0] } ?? []), in: root)
             if byHash.status == 0, let match = Self.parseLog(byHash.text).first {
-                var show = filter.allBranches
-                if !show { show = (try? await run(["merge-base", "--is-ancestor", match.hash, "HEAD"], in: root))?.status == 0 }
+                var show = filter.allBranches && reference == nil
+                if !show { show = (try? await run(["merge-base", "--is-ancestor", match.hash, reference ?? "HEAD"], in: root))?.status == 0 }
                 if show { commits.insert(match, at: 0) }
             }
         }
@@ -556,12 +560,12 @@ public actor GitService {
         return output.text.split(separator: "\n").map { String($0).trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
     }
     func checkout(_ branch: String, in root: String) async throws {
-        _ = try require(await run(["switch", branch], in: root), "Switching branch")
+        _ = try require(await run(["switch", "--no-overwrite-ignore", "--", branch], in: root), "Switching branch")
     }
     func createBranch(_ name: String, in root: String) async throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !trimmed.contains(" ") else { throw GitFailure(message: "Enter a branch name without spaces.") }
-        _ = try require(await run(["switch", "-c", trimmed], in: root), "Creating the branch")
+        _ = try require(await run(["switch", "--no-overwrite-ignore", "-c", trimmed], in: root), "Creating the branch")
     }
     func stashes(in root: String) async throws -> [GitStashEntry] {
         let output = try require(await run(["stash", "list", "--format=%gd%x00%s"], in: root), "Listing stashes")
@@ -915,7 +919,7 @@ public actor GitService {
     /// inode and change time (any write moves it, whatever git would make of
     /// the bytes), and a link's text. Nothing is opened or followed, so
     /// links, odd names and big files cost the same.
-    private func worktreeSnapshot(in root: String) async throws -> String {
+    func worktreeSnapshot(in root: String) async throws -> String {
         let names = try require(await run(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], in: root, timeout: 120), "Reading the working tree").stdout
             .split(separator: 0)
         var lines: [String] = []

@@ -29,8 +29,7 @@ import GitView
         if self.commit != commit { self.commit = commit; content.show(commit) }
         button.selected = selected; button.onPress = open
         button.setAccessibilityIdentifier("git-commit-" + commit.shortHash)
-        button.setAccessibilityLabel("\(commit.subject), \(commit.shortHash), \(commit.author), committed \(GitHistoryRowContent.stamp(commit.date)) UTC" +
-                                     (commit.refs.isEmpty ? "" : ", " + commit.refs.joined(separator: ", ")))
+        button.setAccessibilityLabel(content.spokenText)
         setAccessibilityLabel(button.accessibilityLabel()); setAccessibilityIdentifier("git-commit-" + commit.shortHash)
     }
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -42,7 +41,8 @@ import GitView
     }
 }
 
-@MainActor private final class GitHistoryRowContent: NSView {
+@MainActor final class GitHistoryRowContent: NSView {
+    private(set) var spokenText = ""
     private let subject = TextBlock("", font: PiKit.Font.body, color: .piInk, maximumLines: 2)
     private let refs = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.micro, color: .piAccent))
     private let refFill = PiKit.Box(fill: .piAccentSoft, cornerRadius: 9)
@@ -63,6 +63,8 @@ import GitView
     required init?(coder: NSCoder) { nil }
     override var isFlipped: Bool { true }
     func show(_ commit: GitCommit) {
+        spokenText = "\(commit.subject), \(commit.shortHash), \(commit.author), committed \(Self.stamp(commit.date)) UTC" +
+            (commit.refs.isEmpty ? "" : ", " + commit.refs.joined(separator: ", "))
         subject.text = commit.subject; subject.toolTip = commit.subject
         hasRefs = !commit.refs.isEmpty; refs.isHidden = !hasRefs; refFill.isHidden = !hasRefs
         refs.line.text = commit.refs.joined(separator: " · "); refs.toolTip = refs.line.text
