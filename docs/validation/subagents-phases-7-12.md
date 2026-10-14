@@ -7,6 +7,131 @@ preferences, Keychain or paid providers. The production switch stayed off
 through phase 11 and is enabled in phase 12. This worktree has not been merged
 into `dev/next` or published as a release.
 
+## Round-5 review — 2026-10-14
+
+Started from `fab5ee6e`, matching `origin/dev/subagents`. Implementation commit:
+`0cbd8aa3`. The restored-source results below cover that executable
+and test tree; the subsequent validation-record commit changes documentation
+only. Artifacts use the build root above and `logs/review5-*`.
+
+| Finding | Disposition and reason |
+| --- | --- |
+| Inspector Show in Chat leaves a registered live child detached | **Fixed.** `WorkspaceModel.select` owns managed attachment before history loading, including reselection. `revealMessage` sends an already selected child through the same path. Family Inspector links validate their card target on every open; standalone child Inspectors use the common selection path. |
+| Reconciliation replaces live status with interrupted | **Fixed.** `DiscoveredSubagent.hasTerminalRecord` distinguishes actual terminal evidence from the recovery fallback. The fallback retains listed progress; real terminal evidence still wins. Helper loss invalidates nonterminal summaries, and a callback from an obsolete helper connection cannot republish live state. |
+| Back to Parent cannot find a later turn hidden by an ancestor edit | **Fixed.** `session.versions(containing:)` locates the retained version containing the exact issuing assistant row and its visible anchor, including nested edits. The existing version pager and tool-call reveal show that exact card. The helper's journal bytes and current branch remain unchanged. |
+| Standalone child Inspector Originating tool takes the generic fallback | **Fixed.** It resolves the immutable origin from child metadata or the owner's retained capture group, validates workspace/call identity, and uses `showSubagentParent`, including bringing the main window forward. |
+
+No findings were rejected. The sweep also fixed Parent request → Show in Chat
+in both Inspector modes: it now follows the issuing attempt's delegation link
+instead of falling back to a current-branch message lookup. A second additional
+regression showed that an older discovery callback could overwrite a newer
+committed topic move/archive in memory; discovery now uses the existing
+`ChatRecord.merged` rules.
+
+The design's Implementation notes describe the shared selection and retained
+version lookup. No owner decision, capture policy, budget semantics, journal
+format, tool permission or rollout switch changed. No editing lock or capture
+cap was added.
+
+Entry-point audit:
+
+| Entry point | Managed route and verification |
+| --- | --- |
+| Sidebar child row, expanded group, next/previous chat shortcuts | Sidebar opening and direct selection converge on `select` → `attachManagedSubagent`; the real-helper tests attach before streaming updates. Selected children retain the existing transient group expansion. |
+| Card title/Open, including retained/copied cards | `openSubagent` checks the original owner and reciprocal child header, then selects through the common path. A cancelled or superseded open returns false so an Inspector follow-up cannot reveal it anyway. |
+| Family Inspector Show in Chat, child request/turn/group | Group targets use `openSubagent`; request/turn reveals converge on `revealMessage` and selection. Registered metadata no longer bypasses attachment. |
+| Standalone child Inspector Show in Chat, overview/Next Request/request | `revealMessage` uses the same selection/attachment path, including a child already selected. The real-helper fixture checks standalone request navigation; the other pages share this adapter. |
+| Originating tool, both Inspector modes | `showOriginatingTool` resolves the immutable link → `showSubagentParent` → `openSubagentParent` → exact issuing-call reveal. Both modes are exercised after an ancestor edit. |
+| Parent request, both Inspector modes | Opens/focuses the owner's Inspector; family filters widen through the existing focus adapter. Show in Chat follows the parent attempt's delegation link. The real-helper test presses both Parent request buttons and follows through to the retained card. |
+| Search results and find | Sidebar opening first selects/attaches; `SidebarSearchReveal` then reveals the matching row, including the existing queued-task placeholder mapping. Find operates within that selected transcript. Search, transcript reveal and sidebar classes pass. |
+| Back to Parent button and ⌘[ | Both use `backToSubagentParent`/`openSubagentParent`. The helper lookup covers direct, ancestor and nested edits. Native navigation tests retain exact tool scrolling, earlier-version/draft behavior and file/Git/terminal/Inspector shortcut ownership. |
+| Menu-bar/live activity/report links and notifications | Direct selection and report `revealMessage` now share managed attachment. Children still generate no independent unread marker, sound, title or webhook; ordinary parent navigation/notifications keep their existing behavior. Inspector lineage actions explicitly reveal the issuing call. |
+| Launch restoration | `reopenRememberedSelection` → `select`. A warm owner attaches its live child; a cold restore reads saved history without starting a helper or resuming work. Both are exercised. Existing restored-reader recovery tests still cover sidebar Resume, parent preview and Back to Parent. |
+| Topic move/removal, reconcile, archive/restore | Reconciliation preserves live status and newer organization without starting execution. Archive replacement uses common selection and restore keeps its existing reveal. Discovery, organization, topic and archive classes verify these paths. |
+
+Failing-first evidence:
+
+- `logs/review5-versions-red.log`: 8 helper tests, 7 assertions failed in the two
+  new containing-version tests (ancestor edit, nested edit, and missing target).
+- `logs/review5-opening-red.log`: 7 native tests, 21 assertions failed. Six
+  opening routes missed attachment; Back and both Inspector modes missed the
+  issuing card after an ancestor edit.
+- `logs/review5-discovery-red.log`: 9 tests, 4 assertions failed: queued/running
+  summaries and child displays became interrupted after a disk scan.
+- `logs/review5-live-discovery-red.log`: the real-helper topic-move regression
+  failed because reconciliation replaced running with interrupted.
+- `logs/review5-parent-request-red.log`: 8 assertions failed in the additional
+  Parent request follow-through cases. The intermediate
+  `review5-opening-restored.log` also failed those cases; selecting by issuing
+  attempt identity fixed them (`review5-opening-green2.log`).
+- `logs/review5-metadata-red.log`: 17 tests, 3 assertions failed: discovery
+  publication undid a newer topic/archive/revision. The existing Inspector
+  classes passed in that invocation.
+
+Eight regression methods were added (two helper, six native), with multiple
+entry routes exercised inside the real-helper cases. All 14 behavioral
+mutations are caught; `logs/review5-mutations.json` lists each mutation, its
+regression and exit status. They remove/break containing-version lookup, nested
+anchors, live-row handling, initial/reselected child attachment, already-selected
+reveals, parent lookup, standalone Originating tool, Parent request follow-through,
+live-status preservation, genuine terminal evidence, helper-loss invalidation,
+connection validation and organization rebasing. Production files are restored
+in the harness's `finally` block. One initially uncompilable unused-value mutant
+is retained in `review5-mutation-discovery-live-status-build-error.log`; it is not
+counted as a caught mutation. The corrected mutant compiled and failed the
+intended assertions.
+
+Final results:
+
+| Check | Result | Text evidence |
+| --- | --- | --- |
+| Helper selected suites | **128 passed**, 0 failed | `logs/review5-helper-final.log` |
+| Affected native parallel-eligible classes | **294 passed**, 0 failed/skipped, 36 classes | `logs/review5-affected-native-final.log` |
+| `SubagentOpeningTests`, serial alone | **8 passed**, 0 failed/skipped | `logs/review5-final-SubagentOpeningTests.log` |
+| `SubagentNavigationTests`, serial alone | **5 passed**, 0 failed/skipped | `logs/review5-final-SubagentNavigationTests.log` |
+| `TopicOrganizationTests`, serial alone | **14 passed**, 0 failed/skipped | `logs/review5-final-TopicOrganizationTests.log` |
+| Native `CaptureDrainTests`, serial alone | **6 passed**, 0 failed/skipped | `logs/review5-final-CaptureDrainTests.log` |
+| `HostSupervisorTests`, serial alone | **7 passed**, 0 failed/skipped | `logs/review5-final-HostSupervisorTests.log` |
+| Crash matrix | **21 cases passed**, 0 failed | `logs/review5-crash-final.log` |
+
+The helper run includes the requested `SessionSettlementTests` (2),
+`CostLimitTests` (11), `CaptureDrainTests` (4), and `HostServiceTests` (6), plus
+version, delegation, accounting, admission, permission, journal, recovery,
+Resume, compaction and host-contract coverage. Native coverage also includes
+cost limits, all affected organization/deletion classes, launch/selection,
+Inspector/report navigation, sidebar/search, history reveals and refresh
+lifecycle. Exact commands and class arrays are in
+`$PI_BUILD_ROOT/review5-validate.sh` and the serial continuation log/script.
+Every command uses the required build root. Native invocations use the custom
+validation bundle identifier. Validation uses generated data and loopback
+providers; no installed app or real preferences, Keychain or user data.
+
+Other workstreams were building/testing on the same Mac. The initial final
+Opening pass overlapped that work; the first Navigation invocation was cancelled
+during its build and is not counted. Their logs are retained as
+`review5-overlap-SubagentOpeningTests.log` and
+`review5-overlap-SubagentNavigationTests.log`. The seven native serial mutations
+were repeated, followed by each full serial class separately. The continuation
+script `$PI_BUILD_ROOT/review5-isolated.py` and
+`logs/review5-isolation.jsonl` record retries and external process activity;
+later samples distinguish compilation overlap from native test execution.
+Accepted final serial runs had no detected external build/test activity while
+their native test hosts were running. Earlier overlapping attempts are diagnostic
+only. The helper-only crash matrix ran separately while the native queue waited.
+No other workstream's processes, files or builds were stopped or modified.
+
+Result retention: removed 79 obsolete task-owned `.xcresult` bundles, reclaiming
+2,714,731,067 bytes (about 2.5 GiB); every text log remains. The manifest is
+`logs/review5-xcresult-cleanup.json`. A mixed-class bundle remains only when it
+is still the newest retained result for at least one of its classes; superseded
+single-class and mutation bundles were deleted. Unrelated bundles were left
+untouched.
+
+No full native parallel lane or gallery was rerun in this round; their earlier
+records remain scoped to the revisions they tested. The existing gallery scenes
+are unchanged. No owner decision is outstanding. Work remains on
+`dev/subagents`; no merge or push to `dev/next` or `main`.
+
 ## Round-4 review — 2026-10-14
 
 Started from `5c88a445`; fetching `origin/dev/subagents` confirmed the same
