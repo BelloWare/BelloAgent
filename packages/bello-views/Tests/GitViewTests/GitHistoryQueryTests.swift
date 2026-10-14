@@ -91,6 +91,51 @@ final class GitHistoryQueryTests: XCTestCase {
         }
     }
 
+    func testDateFilteredFilePagesFollowRenamesAfterTheEndDate() async throws {
+        let before = try commit("Before the range", path: "[old]*.txt", committed: "2026-09-28T23:59:59Z")
+        var matches: [String] = []
+        for i in 0..<7 {
+            let time = i == 0 ? "00:00:00" : i == 6 ? "23:59:59" : "12:00:0\(i)"
+            matches.insert(try commit("Match \(i)\n\nBody-only [needle].*", path: "[old]*.txt", committed: "2026-09-29T\(time)Z"), at: 0)
+            if i == 2 { try commit("Outside the date range", path: "[old]*.txt", committed: "2026-09-30T12:00:00Z") }
+        }
+        for (from, to) in [("[old]*.txt", "middle.txt"), ("middle.txt", "new name.txt")] {
+            try git(["mv", from, to])
+            try git(["commit", "-qm", "Rename"], environment: ["GIT_AUTHOR_NAME": "Rename Fixture", "GIT_COMMITTER_DATE": "2026-10-01T12:00:00Z"])
+        }
+        for i in 0..<4 { try commit("After rename \(i)", path: "new name.txt", committed: "2026-10-02T12:00:00Z") }
+        try "working bytes\r\n".write(to: root.appendingPathComponent("new name.txt"), atomically: true, encoding: .utf8)
+        let index = try Data(contentsOf: root.appendingPathComponent(".git/index"))
+        let bytes = try Data(contentsOf: root.appendingPathComponent("new name.txt"))
+        let tree = try git(["rev-parse", "HEAD^{tree}"]), blob = try git(["show", ":new name.txt"])
+        let service = GitService()
+        let through = GitHistoryDates(through: "2026-09-29")
+        for (query, expected) in [
+            (GitHistoryQuery(path: "new name.txt", dates: through), matches + [before]),
+            (GitHistoryQuery(path: "new name.txt", dates: .init(from: "2026-09-29", through: "2026-09-29")), matches),
+            (GitHistoryQuery(message: "Match", path: "new name.txt", dates: through), matches),
+            (GitHistoryQuery(author: "History Fixture", path: "new name.txt", dates: through), matches + [before]),
+            (GitHistoryQuery(message: "Match", author: "History Fixture", path: "new name.txt"), matches),
+            (GitHistoryQuery(message: "Body-only [needle].*", path: "new name.txt", dates: through), matches),
+            (GitHistoryQuery(author: "history@example.invalid", path: "new name.txt", dates: through), matches + [before])
+        ] {
+            let snapshot = try await service.historySnapshot(in: root.path, query: query)
+            var page = try await service.historyPage(snapshot, limit: 2), found = page.commits.map(\.hash)
+            for _ in 0..<10 {
+                guard let cursor = page.next else { break }
+                XCTAssertEqual(cursor.offset, found.count, "Only date-matching commits advance the cursor")
+                page = try await service.historyPage(snapshot, after: cursor, limit: 2)
+                found += page.commits.map(\.hash)
+            }
+            XCTAssertEqual(found, expected, "Query: \(query)")
+            XCTAssertNil(page.next)
+        }
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(".git/index")), index)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("new name.txt")), bytes)
+        XCTAssertEqual(try git(["rev-parse", "HEAD^{tree}"]), tree)
+        XCTAssertEqual(try git(["show", ":new name.txt"]), blob)
+    }
+
     func testPagingIsAnchoredToImmutableTipsWhileABranchMoves() async throws {
         var expected: [String] = []
         for i in 0..<7 { expected.insert(try commit("Page \(i)"), at: 0) }
@@ -157,7 +202,7 @@ final class GitHistoryQueryTests: XCTestCase {
         // GitService's 4 MiB cap. This is generated metadata, never a patch.
         var hashes: [String] = []
         for i in 0..<52 { hashes.insert(try commit("\(i) " + String(repeating: "x", count: 82_000)), at: 0) }
-        let service = GitService(), snapshot = try await service.historySnapshot(in: root.path, query: GitHistoryQuery(path: "notes.txt"))
+        let service = GitService(), snapshot = try await service.historySnapshot(in: root.path, query: GitHistoryQuery(message: "x", path: "notes.txt"))
         let first = try await service.historyPage(snapshot, limit: 25)
         let second = try await service.historyPage(snapshot, after: XCTUnwrap(first.next), limit: 25)
         let third = try await service.historyPage(snapshot, after: XCTUnwrap(second.next), limit: 25)
@@ -173,7 +218,7 @@ final class GitHistoryQueryTests: XCTestCase {
         }
         let input = root.appendingPathComponent(".git/fixture-stream")
         try Data(stream.utf8).write(to: input); try git(["fast-import", "--quiet"], input: input)
-        let service = GitService(), snapshot = try await service.historySnapshot(in: root.path, query: GitHistoryQuery(path: "notes.txt"))
+        let service = GitService(), snapshot = try await service.historySnapshot(in: root.path, query: GitHistoryQuery(message: "Change", path: "notes.txt"))
         let page = try await service.historyPage(snapshot, limit: 4_000)
         XCTAssertEqual(page.commits.count, 4_000)
         XCTAssertEqual(page.commits.first?.subject, "Change 4000")
@@ -247,6 +292,34 @@ final class GitHistoryQueryTests: XCTestCase {
         release?.resume()
         let accepted = await read.value
         XCTAssertFalse(accepted); XCTAssertEqual(state.reading, GitHistoryState.Reading())
+    }
+
+    @MainActor func testQuietRefreshKeepsItsCursorAndBlocksPagingUntilPublication() async throws {
+        for i in 0..<52 { try commit("Change \(i)") }
+        let state = GitHistoryState(service: GitService())
+        _ = await state.reload(in: root.path, query: .init())
+        let before = state.reading
+        XCTAssertNotNil(before.next)
+        var release: CheckedContinuation<Void, Never>?
+        state.didRead = { _ in
+            // Only hold the refresh, so an incorrectly admitted page fails
+            // assertions instead of parking on a second continuation.
+            if release == nil { await withCheckedContinuation { release = $0 } }
+        }
+        let refresh = Task { await state.reload(in: root.path, query: .init(), preservingCount: true) }
+        try await waitUntil { release != nil }
+        XCTAssertTrue(state.reading == before, "A background read preserves rows, cursor and visible flags")
+        let pagedDuringRefresh = await state.loadMore()
+        XCTAssertFalse(pagedDuringRefresh, "A quiet refresh still owns the in-flight read")
+        XCTAssertTrue(state.reading == before)
+        release?.resume()
+        let accepted = await refresh.value
+        XCTAssertTrue(accepted); XCTAssertFalse(state.reading.loading)
+        XCTAssertEqual(state.reading.commits, before.commits)
+        state.didRead = nil
+        let pagedAfterRefresh = await state.loadMore()
+        XCTAssertTrue(pagedAfterRefresh); XCTAssertEqual(state.reading.commits.count, 52)
+        XCTAssertNil(state.reading.next)
     }
 
     @MainActor private func waitUntil(_ condition: () -> Bool) async throws {

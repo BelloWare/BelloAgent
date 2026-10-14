@@ -52,26 +52,36 @@ extension GitService {
         }
         guard !snapshot.tips.isEmpty else { return GitHistoryPage(commits: [], next: nil) }
         let limit = max(1, min(limit, 100_000)), skip = cursor?.offset ?? 0, query = snapshot.query
-        var args = ["log", "-z", "--format=%H", "--date-order", "--no-show-signature", "--no-color", "--fixed-strings", "-i",
-                    "-n", String((query.path == nil ? 0 : skip) + limit + 1)]
+        let dates = try query.dates.bounds()
+        var filters: [String] = []
+        if !query.message.isEmpty { filters.append("--grep=" + query.message) }
+        if !query.author.isEmpty { filters.append("--author=" + query.author) }
+        let filtersAfterFollowing = query.path != nil && (!query.dates.isEmpty || !filters.isEmpty)
+        var args = ["log", "-z", filtersAfterFollowing ? "--format=%H %ct" : "--format=%H",
+                    "--date-order", "--no-show-signature", "--no-color", "--fixed-strings", "-i"]
         // Git applies --skip before its --follow rename tracking. Walking
         // a prefix of object IDs preserves the path's old names. Full
         // subjects/authors are read for this page only, keeping each page
         // inside the existing output budget even after many long subjects.
         if query.path == nil { args += ["--skip", String(skip)] }
-        if !query.message.isEmpty { args.append("--grep=" + query.message) }
-        if !query.author.isEmpty { args.append("--author=" + query.author) }
-        let dates = try query.dates.bounds()
         // --since alone stops a walk at an old committer timestamp and can
         // hide newer ancestors in a rebased or deliberately dated history.
-        if let from = dates.from { args.append("--since-as-filter=@\(from)") }
-        if let through = dates.through { args.append("--until=@\(through)") }
+        // File predicates must instead be tested after --follow has seen
+        // every rename, even one outside the requested dates/author/message.
+        if !filtersAfterFollowing {
+            args += filters
+            if let from = dates.from { args.append("--since-as-filter=@\(from)") }
+            if let through = dates.through { args.append("--until=@\(through)") }
+        }
         if query.path != nil { args.append("--follow") }
-        args += snapshot.tips
-        args.append("--")
-        if let path = query.path { args += Self.literal([path]) }
-        let output = try await historyRun(args, in: snapshot.root)
-        let ids = output.text.split(separator: "\0").dropFirst(query.path == nil ? 0 : skip).map(String.init)
+        let suffix = snapshot.tips + ["--"] + Self.literal(query.path.map { [$0] } ?? [])
+        let ids: [String]
+        if filtersAfterFollowing {
+            ids = try await historyFilteredFileIDs(args, suffix: suffix, in: snapshot.root, dates: dates, filters: filters, skip: skip, limit: limit)
+        } else {
+            let output = try await historyRun(args + ["-n", String((query.path == nil ? 0 : skip) + limit + 1)] + suffix, in: snapshot.root)
+            ids = output.text.split(separator: "\0").dropFirst(query.path == nil ? 0 : skip).map(String.init)
+        }
         // A refresh can preserve thousands of loaded rows. Each subprocess
         // still reads at most one ordinary page's metadata, in ID order.
         // This bounds both argv and long-subject output, without retaining
@@ -85,6 +95,52 @@ extension GitService {
         }
         return GitHistoryPage(commits: Array(commits.prefix(limit)),
                               next: commits.count > limit ? GitHistoryCursor(snapshot: snapshot.id, offset: skip + limit) : nil)
+    }
+
+    private func historyFilteredFileIDs(_ args: [String], suffix: [String], in root: String,
+                                       dates: (from: Int?, through: Int?), filters: [String], skip: Int, limit: Int) async throws -> [String] {
+        // Expand an ID/date-only prefix until it contains this page plus
+        // lookahead. Do not use --skip: each walk needs the rename chain.
+        // Existing subprocess/output bounds and cancellation still apply;
+        // full metadata is fetched only for the matching page.
+        var count = skip + limit + 1
+        // Only this read retains predicate results. Each expanded prefix
+        // reuses immutable OIDs already examined; cancellation releases them.
+        var accepted: [String: Bool] = [:]
+        while true {
+            try Task.checkCancellation()
+            let output = try await historyRun(args + ["-n", String(count)] + suffix, in: root)
+            let records = output.text.split(separator: "\0")
+            let candidates = try records.compactMap { record -> String? in
+                let fields = record.split(separator: " ", maxSplits: 1)
+                guard fields.count == 2, let seconds = Int(fields[1]) else {
+                    throw GitFailure(message: "Git returned an invalid commit date.")
+                }
+                if let from = dates.from, seconds < from { return nil }
+                if let through = dates.through, seconds > through { return nil }
+                return String(fields[0])
+            }
+            var matches = candidates
+            if !filters.isEmpty {
+                // Let Git retain its exact literal author/message semantics
+                // (including author emails), without pruning rename traversal.
+                let unseen = candidates.filter { accepted[$0] == nil }
+                // These subprocesses return IDs only, so 1,000 stays below
+                // argv/output bounds even for enormous commit messages.
+                for start in stride(from: 0, to: unseen.count, by: 1_000) {
+                    try Task.checkCancellation()
+                    let batch = Array(unseen[start..<min(start + 1_000, unseen.count)])
+                    let matched = try await historyRun(["log", "--no-walk=unsorted", "-z", "--format=%H", "--no-show-signature", "--no-color", "--fixed-strings", "-i"] + filters + batch + ["--"], in: root)
+                    let ids = Set(matched.text.split(separator: "\0").map(String.init))
+                    for id in batch { accepted[id] = ids.contains(id) }
+                }
+                matches = candidates.filter { accepted[$0] == true }
+            }
+            if matches.count >= skip + limit + 1 || records.count < count {
+                return Array(matches.dropFirst(skip).prefix(limit + 1))
+            }
+            count *= 2
+        }
     }
 
     /// Only hexadecimal object IDs (or unambiguous abbreviations), never a

@@ -5,6 +5,35 @@ import XCTest
 @testable import PiApp
 
 final class GitHistoryFilterTests: XCTestCase {
+    @MainActor func testAutomaticRefreshKeepsTheExhaustedTailQuiet() async throws {
+        let fixture = try GitHistoryFixture(count: 8); defer { fixture.close() }
+        try await fixture.start()
+        let browser = fixture.browser, window = fixture.window(size: NSSize(width: 320, height: 300))
+        defer { window.close() }
+        browser.focusList(); for _ in 0..<7 { browser.moveDown(nil) }
+        browser.layoutSubtreeIfNeeded()
+        let document = try XCTUnwrap(browser.list.documentView)
+        let height = document.frame.height, scroll = browser.list.contentView.bounds.origin
+        let before = fixture.state.reading, bytes = try fixture.repositoryBytes()
+        XCTAssertNil(before.next); XCTAssertGreaterThan(scroll.y, 0)
+        var release: CheckedContinuation<Void, Never>?
+        fixture.state.didRead = { _ in await withCheckedContinuation { release = $0 } }
+        let refresh = Task { await fixture.state.reload(in: fixture.historyRoot, query: .init(), preservingCount: true) }
+        try await fixture.wait { release != nil }
+        browser.layoutSubtreeIfNeeded()
+        XCTAssertFalse(fixture.state.reading.loading)
+        XCTAssertEqual(document.frame.height, height, "A working-tree save must not add a loading row")
+        XCTAssertEqual(browser.list.contentView.bounds.origin, scroll)
+        XCTAssertTrue(GitHistoryFixture.views(GitHistoryStatusRow.self, in: browser).isEmpty)
+        release?.resume()
+        let accepted = await refresh.value
+        XCTAssertTrue(accepted); browser.layoutSubtreeIfNeeded()
+        XCTAssertEqual(fixture.state.reading.commits, before.commits)
+        XCTAssertEqual(document.frame.height, height)
+        XCTAssertEqual(browser.list.contentView.bounds.origin, scroll)
+        XCTAssertEqual(try fixture.repositoryBytes(), bytes)
+    }
+
     @MainActor func testOldRefreshCannotReplaceTheNewFilterOrItsLoadingState() async throws {
         let fixture = try GitHistoryFixture(count: 3); defer { fixture.close() }
         try await fixture.start()
