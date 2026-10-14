@@ -7,6 +7,125 @@ preferences, Keychain or paid providers. The production switch stayed off
 through phase 11 and is enabled in phase 12. This worktree has not been merged
 into `dev/next` or published as a release.
 
+## Round-4 review — 2026-10-14
+
+Started from `5c88a445`; fetching `origin/dev/subagents` confirmed the same
+upstream tip, including the audit merge `f4bf746b`. Implementation commit:
+`d94d2592` (`Fix family recovery readers and delegation listing races`). The
+restored-source results below cover that executable/test tree; the following
+validation-record commit changes documentation only. Artifacts are under the
+build root above, in `logs/review4-*` and `review4-*.xcresult`.
+
+| Finding | Disposition and reason |
+| --- | --- |
+| Restored child readers block parent recovery | **Fixed.** The helper releases every idle reader belonging to the budget owner before cold construction, under its existing runtime gate. This covers sidebar Resume, parent preview, Back to Parent and multiple siblings. Live queued/settling children cannot unload; another family's readers stay attached. The existing `session.unloaded` event invalidates the app's opened set, including an open still finishing after its reply. |
+| Plans listed during preparation become interrupted | **Fixed.** Preparation is tracked before durable registration yields, and is listed as queued. Rejected setup retains its actual failure. The parent supplies journal state and sequence together; listing retries if coordinator state changes during that await, including terminal-job consumption. Recovered old-helper results retain their interrupted classification. The Inspector's terminal-state protection remains unchanged. |
+| Archive replacement selects an archived child | **Fixed.** The selection reducer removes each owner's newly archived managed family as one action. This also handles archiving the parent while its child is selected. Ordinary ordered archive behavior and independent sides remain intact. |
+
+No findings were rejected. No owner decision, capture policy, budget semantics,
+journal format or rollout switch changed. Recovery uses the existing runtime
+gate; no editing lock was added. The design's Implementation notes describe the
+corrections.
+
+The nearby sweep also fixed four related cases: an unload overtaking app-side
+open finalization; a rejected preparation incorrectly listed as interrupted;
+consumption pruning a job after an earlier journal snapshot; and live listing
+versus disk discovery rejecting equivalent macOS journal paths. The last case
+surfaced in the first native opening run and was reproduced deterministically:
+`/var` and `/private/var` aliases must compare canonically. A different journal,
+workspace or origin still fails validation. The archive regression also covers
+starting from the child's selected transcript and preserving navigation on
+restore.
+
+Other parent construction paths converge on `makeSession` under the same gate.
+The organization sweep covered archive/restore, topic moves/removal and family
+deletion. Topic moves already pass selected roots to the expanding transaction;
+deletion clears selection for every removed member. Those paths needed no
+additional production change and their regression classes passed below.
+
+Failing-first evidence:
+
+- `logs/review4-helper-red.log`: **34 tests, 4 failures**, reproducing both reader
+  recovery guards and listing during preparation/rejection.
+- `logs/review4-list-consumption-red.log`: **1 test, 1 failure**, using an explicit
+  barrier after the parent snapshot and before the consumed job is pruned.
+- `logs/review4-organization-red.log`: **13 tests, 4 failures**, from both parent
+  and child selection, including navigation after restore.
+- `logs/review4-opening-red.log`: **5 tests, 5 failures**, including actual
+  fixture-helper SIGKILL, sidebar Resume, parent preview, and invalidation during
+  open finalization. Back to Parent is also exercised by the same regression.
+- `logs/review4-discovery-red2.log`: **8 tests, 1 failure**, proving the canonical
+  path mismatch. The earlier discovery fixture's alias assertion and missing
+  capture-store setup were corrected before this behavioral red run.
+
+**15 mutations killed**, all by behavioral failures, not build errors:
+release before recovery, all siblings, owner boundary, live-child protection,
+unload notification, preparing status, recovered status, rejected status,
+snapshot retry, path aliases, different-file rejection, archive candidates,
+selected-child replacement, opening-task cancellation and its final cancellation
+check. `logs/review4-mutations.json` records each result;
+`review4-mutations.py` in the build root is the source-restoring harness. Mutations
+ran sequentially, restored sources in `finally`, and were followed by a rebuild
+and the final tests with every guard restored.
+
+| Final selection | Result | Log |
+| --- | --- | --- |
+| Helper recovery, coordinator, accounting and requested baselines | **120 passed**, no failures/skips | `logs/review4-helper-restored.log` |
+| Affected native classes, supplied as a bash array | **173 passed**, no failures/skips | `logs/review4-native-restored.log` |
+| `SubagentOpeningTests`, alone | **5 passed** | `logs/review4-serial-SubagentOpeningTests.log` |
+| `SubagentNavigationTests`, alone | **5 passed** | `logs/review4-serial-SubagentNavigationTests.log` |
+| `TopicOrganizationTests`, alone | **14 passed** | `logs/review4-serial-TopicOrganizationTests.log` |
+| Native `CaptureDrainTests`, alone | **6 passed** | `logs/review4-serial-CaptureDrainTests.log` |
+| Actual-helper crash matrix | **21 cases passed** | `logs/review4-crash-matrix.log` |
+
+The helper selection includes `SessionSettlementTests` **2**, `CostLimitTests`
+**11**, `CaptureDrainTests` **4**, `HostServiceTests` **6**,
+`SubagentRecoveryTests` **12**, `SubagentCoordinatorTests` **23**,
+`SubagentAccountingTests` **8**, `SubagentAdmissionTests` **6**,
+`SubagentPermissionTests` **6**, `SubagentJournalTests` **8**,
+`SubagentContractTests` **4**, `PausedFamilyCompactionTests` **4**,
+`ContinueRunTests` **15**, `ContractTests` **8**, and `HostDispatchTests` **3**.
+
+The native array includes `SubagentOrganizationTests` **13**,
+`SubagentDiscoveryTests` **8**, `SubagentDeletionTests` **8**,
+`SubagentMetadataTests` **6**, `SubagentCaptureTests` **5**,
+`SubagentInspectorTests` **6**, `OrganizationBatchTests` **9**,
+`SessionOrganizationTests` **9**, `SidebarFlatTopicsTests` **14**,
+`SidebarMultiSelectionTests` **4**, `TopicSidebarPresentationTests` **4**,
+`TopicStorageTests` **17**, `TopicSessionDragTests` **3**,
+`WorkspaceConcurrencyTests` **8**, `WorkspaceDurabilityTests` **7**,
+`WorkspaceLoadingTests` **12**, `WorkspaceRefreshLifecycleTests` **26**,
+`CostLimitTests` **13**, and `CostLimitOpeningTests` **1**. Total native tests:
+**203 passed**. `python3 scripts/test-lanes.py list` determined the lanes; each
+serial class ran in a separate invocation with no other build/test running.
+
+The crash matrix rebuilt its instrumented source copy from this tree and used
+the restored production helper for recovery. All creation/accounting/result
+barriers, tool-effect barriers, Stop, shutdown and update cases passed. Reopen
+sent no requests; Resume sent only a parent request, without replaying child
+requests or tool effects. Native recovery tests additionally SIGKILL only their
+own fixture helper and open a child preview before all three parent-entry paths.
+
+Reproduction commands (all use the required build root):
+
+```bash
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-subagents
+export TMPDIR="$PI_BUILD_ROOT/xcode-tmp/"
+swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests" \
+  --filter 'SubagentRecoveryTests|SubagentCoordinatorTests|SubagentAccountingTests|SubagentAdmissionTests|SubagentPermissionTests|SubagentJournalTests|PausedFamilyCompactionTests|ContinueRunTests|ContractTests|HostDispatchTests|SessionSettlementTests|CostLimitTests|CaptureDrainTests|HostServiceTests'
+classes=(SubagentOrganizationTests SubagentDiscoveryTests SubagentDeletionTests SubagentMetadataTests SubagentCaptureTests SubagentInspectorTests OrganizationBatchTests SessionOrganizationTests SidebarFlatTopicsTests SidebarMultiSelectionTests TopicSidebarPresentationTests TopicStorageTests TopicSessionDragTests WorkspaceConcurrencyTests WorkspaceDurabilityTests WorkspaceLoadingTests WorkspaceRefreshLifecycleTests CostLimitTests CostLimitOpeningTests)
+args=()
+for class in "${classes[@]}"; do args+=("-only-testing:PiAppTests/$class"); done
+scripts/test-macos.sh "${args[@]}" \
+  'PRODUCT_BUNDLE_IDENTIFIER=com.belloware.SubagentValidation.$(PRODUCT_MODULE_NAME)'
+# Each of the four serial classes above gets its own test-macos invocation.
+python3 scripts/test-subagent-crashes.py "$PI_BUILD_ROOT/bundle/Helpers/pi-native-host"
+```
+
+No full native lane or gallery was rerun in this round; earlier results remain
+evidence for their recorded revisions. No open owner questions remain from this
+review. Work stays on `dev/subagents`; no merge or push to `dev/next` or `main`.
+
 ## Round-3 review — 2026-10-14
 
 Started from `9e20f62b`; fetching `origin/dev/subagents` confirmed the same
