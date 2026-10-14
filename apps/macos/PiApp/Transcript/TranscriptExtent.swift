@@ -31,13 +31,15 @@ struct HistoryExtent: Equatable {
     var rowHeight: CGFloat?
     /// How many rows that height was measured over.
     var rowHeightSample = 0
+    /// The first message of the window that supplied the sample.
+    var rowHeightFirstID: String?
     /// The row width it was measured at.
     var rowHeightWidth: CGFloat?
 
     /// A page that replaces the window: what was known of the old one may
     /// belong to another timeline.
     func reset(_ page: ConversationHistoryPage) {
-        positions = [:]; total = nil
+        positions = [:]; total = nil; rowHeightFirstID = nil
         // A page with nothing before or after it is the whole timeline, said
         // or not (a chat just made is authoritatively empty).
         if page.start == nil, page.older == nil, page.newer == nil {

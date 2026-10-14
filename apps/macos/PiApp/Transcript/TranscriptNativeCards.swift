@@ -363,6 +363,7 @@ enum TranscriptCardFaces {
     enum Style { case diff, numbered }
     let style: Style
     private(set) var lines: [Line] = []
+    private(set) var textRevision = 0
     private var environment = TranscriptRowEnvironment()
     private var heights: [(width: CGFloat, rows: [CGFloat])] = []
     @MainActor private final class Row {
@@ -390,6 +391,7 @@ enum TranscriptCardFaces {
     private var gap: CGFloat { style == .diff ? 8 : 12 }
     func update(_ lines: [Line], environment: TranscriptRowEnvironment) {
         let geometry = self.environment.hasSameGeometry(as: environment)
+        if lines.map(\.text) != self.lines.map(\.text) { textRevision += 1 }
         if lines.map(\.text) != self.lines.map(\.text) || lines.map(\.mark) != self.lines.map(\.mark) || !geometry { heights.removeAll() }
         self.lines = lines
         self.environment = environment

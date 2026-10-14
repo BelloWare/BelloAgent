@@ -32,6 +32,103 @@ final class TranscriptRevealTests: XCTestCase {
         return row.frame.minY - chat.clipY
     }
 
+    @MainActor func testAFailedMarkedRevealCannotReturnWhenAnOrdinaryPageLoadsItsMessage() async throws {
+        let chat = try await chat(turns: 40)
+        chat.view.presentation.olderTask?.cancel(); chat.view.presentation.newerTask?.cancel()
+        try await eventually("Edge reads stopped") { !chat.view.olderPage.loading && !chat.view.newerPage.loading }
+        let target = "a1b", reader = chat.model.history, path = try XCTUnwrap(chat.chat.path)
+        let source = try await reader.window(path: path, around: target)
+        let message = try XCTUnwrap(try ConversationHistoryPage(source).messages.first { $0.id == target })
+        XCTAssertFalse(chat.view.messages.contains { $0.id == target })
+        chat.model.historyWindowLoader = { _, cursor, newer, around in
+            if around == target { throw HostError.failure("Temporary fixture failure") }
+            return try ConversationHistoryPage(await reader.window(path: path, cursor: cursor, newer: newer, around: around))
+        }
+        let shown = await chat.model.revealInTranscript(sessionID: chat.chat.id, messageID: target,
+                                                       mark: .range((message.text as NSString).range(of: "parser")))
+        XCTAssertFalse(shown)
+        XCTAssertNotNil(chat.view.revealFailure)
+        XCTAssertNil(chat.view.revealRead)
+        XCTAssertNil(chat.view.reveal, "A failed marked request must end with its read")
+        // The Back to bottom action abandons a reveal before following the
+        // latest row; ordinary paging must never revive the failed mark.
+        chat.view.abandonReveal()
+        try XCTUnwrap(chat.page).jumpToLatest()
+        for _ in 0..<12 where !chat.view.messages.contains(where: { $0.id == target }) {
+            guard await chat.model.loadEarlierPage(sessionID: chat.chat.id) else { break }
+            chat.draw()
+        }
+        XCTAssertTrue(chat.view.messages.contains { $0.id == target }, "An ordinary history read loads the old target")
+        let document = try XCTUnwrap(chat.document)
+        try await eventually("The ordinary page was not presented") { chat.draw(); return document.row(drawing: target) != nil }
+        for _ in 0..<10 { chat.draw(); try await Task.sleep(for: .milliseconds(16)) }
+        XCTAssertNil(document.highlights.focus, "The failed reveal must not mark or scroll to a message that arrives later")
+        XCTAssertEqual(chat.clipY, chat.highest, accuracy: 1, "The reader remains at the bottom they chose")
+    }
+
+    @MainActor func testNavigationAfterAMarkedReadFinishesCancelsItsQueuedMark() async throws {
+        for end in [false, true] {
+            let chat = try await chat(turns: 40)
+            let pane = try XCTUnwrap(LongChatScroll.views(NativeTranscriptPane.self, in: chat.pane).first)
+            chat.view.presentation.olderTask?.cancel(); chat.view.presentation.newerTask?.cancel()
+            try await eventually("Edge reads stopped") { !chat.view.olderPage.loading && !chat.view.newerPage.loading }
+            XCTAssertFalse(chat.view.messages.contains { $0.id == "a1b" })
+            let shown = await chat.model.revealInTranscript(sessionID: chat.chat.id, messageID: "a1b",
+                mark: .excerpt("The parser in module 1", highlight: NSRange(location: 4, length: 6)))
+            XCTAssertTrue(shown)
+            XCTAssertNil(chat.view.revealRead, "The history read has finished")
+            XCTAssertNotNil(chat.view.reveal, "Its mark is still waiting for presentation")
+            XCTAssertNil(pane.document.highlights.focus, "The queued pane refresh has not consumed the mark")
+            // Do not yield between completing the read and the newer input.
+            // Both the gesture path and End must cancel the unpresented mark.
+            if end { pane.scrollView.scrollToEndOfDocument(nil) }
+            else { chat.gestureStep(80) }
+            XCTAssertNil(chat.view.reveal, end ? "End cancels the queued mark" : "Scrolling cancels the queued mark")
+            pane.refresh()
+            XCTAssertNil(pane.document.highlights.focus, "A queued refresh must not revive the cancelled mark")
+            XCTAssertFalse(pane.document.focusPending, "The earlier reveal must not reclaim scrolling")
+            if end {
+                try await eventually("End never reached the latest page") {
+                    chat.draw(); return chat.view.historyState == .ready && !chat.view.browsingHistory && !pane.page.landingPending
+                }
+                XCTAssertEqual(chat.clipY, chat.highest, accuracy: 1, "The reader stays at the end they chose")
+            }
+            chat.close()
+        }
+    }
+
+    @MainActor func testRevealAndHomeOfferReloadWhenTheJournalWasReplaced() async throws {
+        for home in [false, true] {
+            let chat = try await chat()
+            chat.view.presentation.olderTask?.cancel(); chat.view.presentation.newerTask?.cancel()
+            try await eventually("Edge reads stopped") { !chat.view.olderPage.loading && !chat.view.newerPage.loading }
+            let before = chat.view.messages, source = chat.view.presentation.identity?.incarnation
+            XCTAssertFalse(before.contains { $0.id == "a1b" })
+            let path = try XCTUnwrap(chat.chat.path)
+            // All message IDs survive; the source file's identity does not.
+            try LongChatScroll.journal(turns: 120).write(to: URL(fileURLWithPath: path), options: .atomic)
+            let shown = home ? await chat.model.revealStartOfChat(sessionID: chat.chat.id)
+                : await chat.model.revealInTranscript(sessionID: chat.chat.id, messageID: "a1b")
+            XCTAssertFalse(shown, home ? "Home" : "Reveal")
+            XCTAssertEqual(chat.view.messages.map(\.id), before.map(\.id), "The held window stays readable until Reload")
+            XCTAssertEqual(chat.view.presentation.identity?.incarnation, source)
+            XCTAssertEqual(chat.view.newerPage.error, WorkspaceModel.branchChangedElsewhere)
+            chat.close()
+        }
+    }
+
+    @MainActor func testRevealAndHomeValidateTheHelperBoundaryDuringJournalHandoff() async throws {
+        let chat = try await chat(turns: 30)
+        let lineage = try XCTUnwrap(chat.view.presentation.identity?.lineage)
+        for start in [false, true] {
+            do {
+                _ = try await chat.model.readConversationWindow(chat.chat, cursor: nil, around: start ? nil : "a1b", start: start,
+                    validating: ConversationCursor(incarnation: "helper:fixture", lineage: lineage, entry: "missing"))
+                XCTFail("A missing handoff boundary must offer Reload")
+            } catch { XCTAssertTrue(WorkspaceModel.isSourceChange(error), "\(error)") }
+        }
+    }
+
     @MainActor func testRevealingAMessageOutsideTheWindowReadsItInAndLandsOnIt() async throws {
         let chat = try await chat()
         XCTAssertFalse(chat.view.messages.contains { $0.id == "a10b" }, "The message starts outside the window")

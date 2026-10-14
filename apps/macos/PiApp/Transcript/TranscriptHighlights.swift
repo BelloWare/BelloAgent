@@ -9,6 +9,38 @@ import AppKit
 /// for them. They are applied again to a row's text whenever the row is
 /// mounted, so a row that let go of its tree and built it again is marked
 /// like any other.
+@MainActor enum TranscriptHighlightSearch { static var scans = 0 }
+
+/// One text storage owns one revision. Attribute-only edits (including syntax
+/// colour and Find marks) do not invalidate the character matches.
+@MainActor final class TranscriptTextMatches: NSObject {
+    private weak var storage: NSTextStorage?
+    private(set) var revision = 0
+    private var matches: [TranscriptMatchQuery: [NSRange]] = [:]
+    init(_ storage: NSTextStorage) {
+        self.storage = storage
+        super.init()
+        NotificationCenter.default.addObserver(self, selector: #selector(edited), name: NSTextStorage.didProcessEditingNotification, object: storage)
+    }
+    @objc private func edited() {
+        guard storage?.editedMask.contains(.editedCharacters) == true else { return }
+        revision += 1; matches.removeAll(keepingCapacity: true)
+    }
+    func ranges(_ query: TranscriptMatchQuery) -> [NSRange] {
+        if let found = matches[query] { return found }
+        let found = TranscriptNativeDocument.ranges(of: query.needle, in: (storage?.string ?? "") as NSString, flexible: query.flexible)
+        // At most the Find query and its focused excerpt; no query history.
+        if matches.count >= 2 { matches.removeAll(keepingCapacity: true) }
+        matches[query] = found
+        return found
+    }
+}
+struct TranscriptMatchQuery: Hashable { var needle: String; var flexible = false }
+@MainActor final class TranscriptLineMatches {
+    var revision = -1
+    var matches: [TranscriptMatchQuery: [[NSRange]]] = [:]
+}
+
 struct TranscriptHighlights: Equatable {
     /// Marked wherever it occurs, ignoring case. Empty marks nothing.
     var query = ""
@@ -66,6 +98,23 @@ extension TranscriptItem {
 }
 
 extension TranscriptNativeDocument {
+    func matchCache(for storage: NSTextStorage) -> TranscriptTextMatches {
+        if let known = textMatches.object(forKey: storage) { return known }
+        let made = TranscriptTextMatches(storage)
+        textMatches.setObject(made, forKey: storage)
+        return made
+    }
+    private func matches(in lines: TranscriptCardLines, query: TranscriptMatchQuery) -> [[NSRange]] {
+        let cache = lineMatches.object(forKey: lines) ?? TranscriptLineMatches()
+        lineMatches.setObject(cache, forKey: lines)
+        if cache.revision != lines.textRevision { cache.revision = lines.textRevision; cache.matches.removeAll(keepingCapacity: true) }
+        if let known = cache.matches[query] { return known }
+        let found = lines.lines.map { Self.ranges(of: query.needle, in: $0.text as NSString, flexible: query.flexible) }
+        if cache.matches.count >= 2 { cache.matches.removeAll(keepingCapacity: true) }
+        cache.matches[query] = found
+        return found
+    }
+
     /// Every text view in `view`, in reading order.
     static func textViews(in view: NSView) -> [NSTextView] {
         var found: [NSTextView] = []
@@ -166,7 +215,8 @@ extension TranscriptNativeDocument {
     }
     /// The ranges of `needle` in `text`, ignoring case.
     static func ranges(of needle: String, in text: NSString, flexible: Bool = false) -> [NSRange] {
-        transcriptRanges(of: needle, in: text, flexible: flexible)
+        TranscriptHighlightSearch.scans += 1
+        return transcriptRanges(of: needle, in: text, flexible: flexible)
     }
 
     /// The rows that draw message `id`, in reading order: one, or several
@@ -234,11 +284,12 @@ extension TranscriptNativeDocument {
                     if let call = focus.scopeCall, Self.card(holding: unit)?.tool?.id != call || (!focus.scopeInput && Self.isToolInput(unit)) { continue }
                     if focus.proseOnly, Self.card(holding: unit) != nil || ["Reasoning", "Summary"].contains(unit.accessibilityLabel() ?? "") { continue }
                     if let lines = unit as? TranscriptCardLines {
+                        let found = matches(in: lines, query: .init(needle: focus.needle, flexible: focus.flexibleSpace))
                         for (line, content) in lines.lines.enumerated() {
-                            for range in Self.ranges(of: focus.needle, in: content.text as NSString, flexible: focus.flexibleSpace) { ranges.append((lines.builtText(at: line), range, lines, line, content.text)) }
+                            for range in found[line] { ranges.append((lines.builtText(at: line), range, lines, line, content.text)) }
                         }
-                    } else if let text = unit as? NSTextView {
-                        for range in Self.ranges(of: focus.needle, in: (text.textStorage?.string ?? "") as NSString, flexible: focus.flexibleSpace) { ranges.append((text, range, nil, 0, text.textStorage?.string ?? "")) }
+                    } else if let text = unit as? NSTextView, let storage = text.textStorage {
+                        for range in matchCache(for: storage).ranges(.init(needle: focus.needle, flexible: focus.flexibleSpace)) { ranges.append((text, range, nil, 0, text.textStorage?.string ?? "")) }
                     }
                 }
                 focusRowCounts[ObjectIdentifier(row)] = ranges.count
@@ -303,17 +354,18 @@ extension TranscriptNativeDocument {
             let focused = focusText === text
             let stamp = highlightGeneration * 2 + (focused ? 1 : 0)
             guard let manager = text.layoutManager, let storage = text.textStorage else { continue }
-            if markedText.object(forKey: text)?.intValue == stamp, storage.length == markedLength.object(forKey: text)?.intValue { continue }
+            let cache = matchCache(for: storage)
+            if markedText.object(forKey: text)?.intValue == stamp, cache.revision == markedRevision.object(forKey: text)?.intValue { continue }
             let whole = NSRange(location: 0, length: storage.length)
             manager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: whole)
-            for range in Self.ranges(of: highlights.query, in: storage.string as NSString) {
+            for range in cache.ranges(.init(needle: highlights.query)) {
                 manager.addTemporaryAttribute(.backgroundColor, value: TranscriptHighlights.matchColor, forCharacterRange: range)
             }
             if focused, NSMaxRange(focusRange) <= storage.length {
                 manager.addTemporaryAttribute(.backgroundColor, value: TranscriptHighlights.focusColor, forCharacterRange: focusRange)
             }
             markedText.setObject(NSNumber(value: stamp), forKey: text)
-            markedLength.setObject(NSNumber(value: storage.length), forKey: text)
+            markedRevision.setObject(NSNumber(value: cache.revision), forKey: text)
         }
     }
     /// Works out where the focused place is now, and marks every row on
@@ -333,7 +385,7 @@ extension TranscriptNativeDocument {
             reportedFocus = focus.serial
             onFocusResolved?(focus.record ?? focus.messageID, focus.needle, resolution.rendered)
         }
-        for row in retainedRows where row.superview === self { markHighlights(in: row) }
+        for row in subviews.compactMap({ $0 as? TranscriptRowContainer }) { markHighlights(in: row) }
     }
 
     /// Brings the focused place into view if a request for it is pending: a

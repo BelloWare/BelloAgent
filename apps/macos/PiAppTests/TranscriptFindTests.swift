@@ -27,6 +27,142 @@ final class TranscriptFindTests: XCTestCase {
         return found.lowercased() == query.lowercased() && clip.bounds.contains(CGPoint(x: clip.bounds.midX, y: rect.midY)) && colour == TranscriptHighlights.focusColor
     }
 
+    @MainActor func testMatchRangesTrackCharacterEditsButNotColourEdits() {
+        let storage = NSTextStorage(string: "parser PARSER")
+        let document = TranscriptNativeDocument(page: TranscriptPage())
+        let cache = document.matchCache(for: storage), query = TranscriptMatchQuery(needle: "parser")
+        XCTAssertEqual(cache.ranges(query).map(\.location), [0, 7])
+        let before = TranscriptHighlightSearch.scans
+        storage.addAttribute(.foregroundColor, value: NSColor.red, range: NSRange(location: 0, length: storage.length))
+        XCTAssertEqual(cache.ranges(query).count, 2)
+        XCTAssertEqual(TranscriptHighlightSearch.scans, before)
+        storage.replaceCharacters(in: NSRange(location: 0, length: 6), with: "------")
+        XCTAssertTrue(document.matchCache(for: storage) === cache, "Character edits keep the storage's revision cache")
+        XCTAssertEqual(cache.ranges(query).map(\.location), [7])
+        XCTAssertEqual(TranscriptHighlightSearch.scans, before + 1)
+        storage.append(NSAttributedString(string: " parser"))
+        XCTAssertTrue(document.matchCache(for: storage) === cache, "Appending text must not create another observer")
+        XCTAssertEqual(cache.ranges(query).map(\.location), [7, 14])
+        XCTAssertEqual(document.textMatches.count, 1)
+    }
+
+    @MainActor func testFindMarksFollowTextEditsWithoutCreatingMoreStorageCaches() async throws {
+        let session = SessionDisplay(id: "find-streaming-cache")
+        session.messages = [TranscriptMessage(id: "reply", role: "assistant", text: "parser starting", state: "streaming")]
+        let stage = TranscriptStressTestCase.Stage(session)
+        defer { stage.close() }
+        await stage.settle()
+        let document = stage.document, row = try XCTUnwrap(document.row(drawing: "reply"))
+        let text = try XCTUnwrap(TranscriptNativeDocument.textViews(in: row).first { $0.string == "parser starting" })
+        let storage = try XCTUnwrap(text.textStorage), manager = try XCTUnwrap(text.layoutManager)
+        document.highlights = TranscriptHighlights(query: "parser")
+        let cache = document.matchCache(for: storage), count = document.textMatches.count
+        func markedCharacters() -> [Int] {
+            (0..<storage.length).filter {
+                manager.temporaryAttributes(atCharacterIndex: $0, effectiveRange: nil)[.backgroundColor] as? NSColor == TranscriptHighlights.matchColor
+            }
+        }
+        XCTAssertEqual(markedCharacters(), Array(0..<6))
+        // The same native storage receives new reply text while Find's query
+        // and highlight generation stay unchanged, including equal-length edits.
+        let edits: [(String, [Int])] = [
+            ("plain then parser", Array(11..<17)),
+            ("parser plus parser", Array(0..<6) + Array(12..<18)),
+            ("------ plus parser", Array(12..<18)),
+            ("all gone", []),
+            ("returned parser", Array(9..<15))
+        ]
+        for (index, edit) in edits.enumerated() {
+            storage.replaceCharacters(in: NSRange(location: 0, length: storage.length), with: edit.0)
+            document.markHighlights(in: row)
+            XCTAssertEqual(markedCharacters(), edit.1, "Find marks after edit \(index + 1)")
+            XCTAssertTrue(document.matchCache(for: storage) === cache, "The same storage keeps the same revision owner")
+            XCTAssertEqual(document.textMatches.count, count, "Each edit must reuse the existing cache and observer")
+        }
+        print("FIND-CACHE edits=\(edits.count) before=\(count) after=\(document.textMatches.count)")
+    }
+
+    @MainActor func testScrollingAResolvedFindDoesNotSearchUnchangedTextAgain() async throws {
+        let chat = try await chat(turns: 10)
+        let pane = try pane(chat)
+        chat.model.findInFocusedConversation(.show, in: chat.window)
+        try await eventually("Find bar") { chat.draw(); return pane.findBar != nil }
+        let bar = try XCTUnwrap(pane.findBar)
+        bar.field.text = "parser"; bar.field.onChange?("parser")
+        try await eventually("Resolved focus", timeout: .seconds(20)) {
+            chat.draw(); return !pane.find.searching && focusShown(chat, query: "parser")
+        }
+        let document = try XCTUnwrap(chat.document), clip = try XCTUnwrap(chat.scroll?.contentView)
+        let origin = clip.bounds.origin
+        document.markMountedRows()
+        let before = TranscriptHighlightSearch.scans
+        for step in 0..<100 {
+            clip.setBoundsOrigin(NSPoint(x: origin.x, y: origin.y + (step.isMultiple(of: 2) ? 0.01 : 0)))
+            document.markMountedRows()
+        }
+        let searches = TranscriptHighlightSearch.scans - before
+        print("SCROLL-12 repeated-scroll searches=\(searches)")
+        XCTAssertEqual(searches, 0, "Scrolling unchanged text must reuse its match ranges")
+        XCTAssertTrue(focusShown(chat, query: "parser"))
+    }
+
+    @MainActor func testFindInAnExpandedWrappedDiffKeepsTheCardOnScreen() async throws {
+        let needle = "the unique expanded diff match"
+        let content = (0..<400).map { index in
+            index == 300 ? needle : "line \(index) " + String(repeating: "wrapped source text ", count: 30)
+        }.joined(separator: "\n")
+        let input = try JSONSerialization.data(withJSONObject: ["path": "Fixture.txt", "oldText": "", "newText": content])
+        let tool = ToolView(id: "edit", name: "edit", state: "completed", input: String(decoding: input, as: UTF8.self),
+                            output: "applied", durationMs: 12, truncated: false, path: "Fixture.txt")
+        let session = SessionDisplay(id: "find-expanded-diff")
+        var reply = TranscriptMessage(id: "reply", role: "assistant", text: "Done.", at: 1_299, turn: "question")
+        reply.tools = [tool]
+        // Leave room on both sides so neither document edge masks a bad jump.
+        let history = TranscriptStressTestCase.history(turns: 60)
+        session.messages = Array(history.prefix(60)) + [
+            TranscriptMessage(id: "question", role: "user", text: "Make the edit.", at: 1_298, turn: "question"), reply
+        ] + Array(history.suffix(60))
+        let stage = TranscriptStressTestCase.Stage(session, width: 520)
+        defer { stage.close() }
+        await stage.settleUntilExact()
+        let row = try XCTUnwrap(stage.workRow)
+        stage.readerScroll(to: row.frame.minY)
+        row.toggleDisclosure(try XCTUnwrap(stage.workPart(row))); stage.draw()
+        row.toggleDisclosure(.tool(ToolOccurrence.key("reply", "edit"))); stage.draw()
+        let card = try XCTUnwrap(LongChatScroll.views(TranscriptNativeDiffCard.self, in: row).first)
+        card.setExpanded(true); stage.draw()
+        let inner = try XCTUnwrap(LongChatScroll.views(TranscriptCappedLines.self, in: card).first)
+        let document = stage.document, clip = stage.scroll.contentView
+        stage.readerScroll(to: inner.convert(inner.bounds, to: document).minY - clip.bounds.height / 3)
+        let target = try XCTUnwrap(inner.lines.lines.firstIndex { $0.text == needle })
+        XCTAssertNil(inner.lines.builtText(at: target), "Find must start with an unbuilt line")
+        document.highlights = TranscriptHighlights(query: needle, focus: .init(
+            messageID: "reply", needle: needle, occurrence: 0, serial: 1, fromFind: true, scopeCall: "edit", scopeInput: true))
+        XCTAssertEqual(document.resolveFocus()?.line?.index, target)
+        let targetBefore = try XCTUnwrap(inner.lines.lineRect(at: target)), before = clip.bounds.minY
+        let measurementsBefore = TranscriptCardLines.rowsMeasured
+        document.revealFocusIfPending()
+        let measured = try XCTUnwrap(inner.lines.lineRect(at: target))
+        let travel = abs(clip.bounds.minY - before), measurements = TranscriptCardLines.rowsMeasured - measurementsBefore
+        print("FIND-DIFF line-shift=\(measured.minY - targetBefore.minY) outer-travel=\(travel) measured=\(measurements)")
+        XCTAssertEqual(measured, targetBefore, "Scrolling to a match must keep its measured coordinates stable")
+        XCTAssertEqual(measurements, 0, "Scrolling reuses the geometry measured when the diff was expanded")
+        XCTAssertLessThan(travel, clip.bounds.height, "Measuring an inner diff must not send the transcript away from its card")
+        XCTAssertTrue(row.superview === document, "The first Find step must keep the card mounted for its retry")
+        try await eventually("Find never marked the expanded diff match") {
+            stage.draw()
+            return !document.focusPending && document.focusText?.string == needle
+        }
+        let text = try XCTUnwrap(document.focusText), manager = try XCTUnwrap(text.layoutManager)
+        let container = try XCTUnwrap(text.textContainer)
+        var glyphRect = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: document.focusRange, actualCharacterRange: nil), in: container)
+        glyphRect.origin.x += text.textContainerOrigin.x; glyphRect.origin.y += text.textContainerOrigin.y
+        XCTAssertTrue(inner.contentView.bounds.contains(text.convert(glyphRect, to: inner.contentView)), "The match is visible inside the diff")
+        XCTAssertTrue(clip.bounds.contains(text.convert(glyphRect, to: clip)), "The match is visible in the transcript")
+        XCTAssertEqual(manager.temporaryAttributes(atCharacterIndex: document.focusRange.location, effectiveRange: nil)[.backgroundColor] as? NSColor,
+                       TranscriptHighlights.focusColor)
+    }
+
     @MainActor func testFindStepsThroughMatchesAcrossTheWholeChat() async throws {
         let chat = try await chat()
         let pane = try pane(chat)

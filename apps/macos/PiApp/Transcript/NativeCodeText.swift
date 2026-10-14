@@ -18,6 +18,7 @@ import AppKit
     /// Where the highlighter last stood in a neutral lexical state, as a byte
     /// offset into the code and a UTF-16 offset into the text storage.
     private var checkpoint = (utf8: 0, utf16: 0)
+    private var jsonStringEscape: Bool?
     private(set) var highlightedScalarVisits = 0
     private(set) var lastAttributeRange = NSRange(location: 0, length: 0)
     convenience init() { self.init(frame: .zero, textContainer: nil) }
@@ -71,14 +72,19 @@ import AppKit
         var dirtyStart = append ? previousLength : 0
         if let name = language, let grammar = SyntaxHighlighter.language(named: name),
            !append || source.utf8.count < SyntaxHighlighter.limit {
-            let resume = append ? checkpoint : (utf8: 0, utf16: 0)
+            let continuingString = append && grammar == .json && jsonStringEscape != nil
+            let resume = continuingString ? (utf8: source.utf8.count, utf16: previousLength)
+                : append ? checkpoint : (utf8: 0, utf16: 0)
             let tail: String = next.withUTF8Bytes { bytes in
                 // The colourable part ends at the limit, on a scalar boundary.
                 var bound = min(bytes.count, SyntaxHighlighter.limit)
                 while bound > 0, bound < bytes.count, bytes[bound] & 0xC0 == 0x80 { bound -= 1 }
                 return String(decoding: UnsafeBufferPointer(rebasing: bytes[min(resume.utf8, bound)..<bound]), as: UTF8.self)
             }
-            let scan = SyntaxHighlighter.scan(tail, language: grammar)
+            let scan = continuingString
+                ? SyntaxHighlighter.continueJSONString(tail, escaped: jsonStringEscape ?? false)
+                : SyntaxHighlighter.scan(tail, language: grammar)
+            jsonStringEscape = scan.jsonStringEscape
             // Where each of the tail's scalars begins, in the storage and in the code.
             var utf16 = [resume.utf16], utf8 = [resume.utf8]
             utf16.reserveCapacity(tail.utf8.count + 1); utf8.reserveCapacity(tail.utf8.count + 1)
@@ -102,9 +108,9 @@ import AppKit
                 }
                 storage.addAttribute(.foregroundColor, value: color, range: range)
             }
-            if let last = scan.checkpoints.last(where: { $0 < utf16.count - 1 }) { checkpoint = (utf8[last], utf16[last]) }
+            if let last = scan.checkpoints.last(where: { $0 < utf16.count - 1 || (continuingString && $0 == utf16.count - 1) }) { checkpoint = (utf8[last], utf16[last]) }
             else { checkpoint = resume }
-        } else if !append { checkpoint = (0, 0) }
+        } else if !append { checkpoint = (0, 0); jsonStringEscape = nil }
         lastAttributeRange = NSRange(location: dirtyStart, length: storage.length - dirtyStart)
         storage.endEditing()
         source = next; self.language = language; pointSize = size; self.environment = environment

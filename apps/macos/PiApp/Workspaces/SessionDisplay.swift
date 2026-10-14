@@ -113,18 +113,19 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The page read for where the reader dragged or scrolled to, in rows the
     /// window does not hold (`WorkspaceModel.jumpToHistoryPosition`).
     var jumpRead: Int?
+    var jumpTask: Task<Void, Never>?
     var jumpWanted: (position: Int, offset: Double)?
     /// The reader went somewhere else (a reveal, Back to bottom, Latest, back
     /// into the rows the window holds): a page read for where they were
     /// does not land.
-    func abandonJump() { jumpRead = nil; jumpWanted = nil; jumpRetry = nil; jumpReading = nil; jumpOffset = nil; jumpFailedAt = nil; jumpUnreadable = 0 }
+    func abandonJump() { jumpTask?.cancel(); jumpTask = nil; jumpRead = nil; jumpWanted = nil; jumpRetry = nil; jumpReading = nil; jumpOffset = nil; jumpFailedAt = nil; jumpUnreadable = 0 }
     /// Where the reader is now within the row being read for.
     var jumpOffset: Double?
     /// The position the read under way is for.
     var jumpReading: Int?
     /// Position reads in a row that found the journal unreadable as it was.
     var jumpUnreadable = 0
-    /// The timeline whose positions were last read for want of any
+    /// The generation and timeline last asked for missing positions
     /// (`WorkspaceModel.reacquireHistoryPositions`).
     var positionsReadFor: String?
     /// A read that failed, to be tried again where the reader still is.
@@ -149,10 +150,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// Why the last reveal's read failed, for whoever asked for it.
     var revealFailure: String?
     /// The reader went somewhere else (a key, Back to bottom, Latest, their
-    /// own scroll): a reveal still reading its page is let go of, with the
-    /// place it would mark, so a page read in later does not take them there.
+    /// own scroll): a reveal still reading its page or waiting for presentation
+    /// is let go of, so a queued refresh cannot take them back to its mark.
     func abandonReveal() {
-        guard revealRead != nil else { return }
+        guard revealRead != nil || reveal != nil else { return }
         revealRead = nil
         reveal = nil
     }
