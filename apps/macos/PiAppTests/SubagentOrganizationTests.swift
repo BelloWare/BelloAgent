@@ -31,6 +31,26 @@ final class SubagentOrganizationTests: XCTestCase {
             }
         }
     }
+    @MainActor func testDisclosureFaceKeepsItsIndentWhenChildSelectionChangesTheCounts() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        let state = SubagentGroupState(parentID: "chat-parent", count: 4, active: 2, queued: 0, expanded: true, indent: 42)
+        let group = SidebarSubagentGroupView(model: model, state: state)
+        let button = try XCTUnwrap(group.subviews.first as? PiKit.Button)
+        for width in [220.0, 300.0, 600.0] {
+            group.frame = CGRect(x: 0, y: 0, width: width, height: 28)
+            var leading: CGFloat?
+            for active in [2, 0, 2] {
+                var next = state; next.active = active; group.update(next); group.layoutSubtreeIfNeeded()
+                // Pi buttons center their face. Measure its leading edge,
+                // excluding the fixed padding shared by every label.
+                let x = button.frame.minX + (button.bounds.width - button.intrinsicContentSize.width) / 2
+                if let leading { XCTAssertEqual(x, leading, accuracy: 0.5, "Changing status must not move the group chevron") }
+                leading = x
+                XCTAssertEqual(x, state.indent, accuracy: 0.5)
+            }
+        }
+    }
     @MainActor func testChildrenStartFoldedApartFromSidesInTopicsAndFlatAndSearchRevealsThem() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)

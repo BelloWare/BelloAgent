@@ -3,6 +3,75 @@ import XCTest
 @testable import PiApp
 
 final class SubagentDeletionTests: XCTestCase {
+    @MainActor func testSavedForkAndKeptSideFamiliesDeleteTheirJournalsAndSidecars() async throws {
+        for prefix in ["fork_", "side_"] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+            try await model.traces.configure(quota: nil, bodyRetention: 86_400, metricRetention: 86_400)
+            model.chats.remove(at: 1)
+            let family = try SubagentDiscoveryTests.family(model)
+            let old = URL(fileURLWithPath: try XCTUnwrap(model.chats[0].path))
+            let journal = old.deletingLastPathComponent().appendingPathComponent(prefix + old.lastPathComponent)
+            try FileManager.default.moveItem(at: old, to: journal); model.chats[0].path = journal.path
+            let parent = model.chats[0], store = try XCTUnwrap(model.store)
+            try await store.putChats(model.chats)
+            let files = [journal, family.path] + [".meta", ".stream"].map { URL(fileURLWithPath: journal.path + $0) }
+            for file in files.dropFirst(2) { try Data("fixture".utf8).write(to: file) }
+            model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at: url) } }
+            do { try await model.deleteSubagentFamily(parent) } catch { XCTFail("\(prefix) deletion failed: \(error)"); continue }
+            XCTAssertTrue(files.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+            XCTAssertNil(model.record(parent.id))
+            let pending = try await store.pendingFamilyDeletions()
+            XCTAssertTrue(pending.isEmpty)
+        }
+    }
+
+    @MainActor func testInvalidOwnerFilenameIsRejectedBeforeAnyDeletionIntentOrCleanup() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.traces.configure(quota: nil, bodyRetention: 86_400, metricRetention: 86_400)
+        model.chats.remove(at: 1)
+        let family = try SubagentDiscoveryTests.family(model)
+        let old = URL(fileURLWithPath: try XCTUnwrap(model.chats[0].path))
+        let foreign = old.deletingLastPathComponent().appendingPathComponent("fork_another-chat.jsonl")
+        try FileManager.default.moveItem(at: old, to: foreign); model.chats[0].path = foreign.path
+        let parent = model.chats[0], store = try XCTUnwrap(model.store)
+        try await store.putChats(model.chats)
+        var recycled: [URL] = []
+        model.familyFileRecycler = { recycled += $0 }
+        do { try await model.deleteSubagentFamily(parent); XCTFail("An unrelated owner filename was accepted") } catch { }
+        let intents = try await store.pendingFamilyDeletions()
+        let tombstone = try await store.get(String.self, kind: "session-deleted", id: parent.id)
+        XCTAssertTrue(intents.isEmpty); XCTAssertNil(tombstone)
+        XCTAssertTrue(recycled.isEmpty); XCTAssertFalse(model.deletingFamilies.contains(parent.id))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: family.path.path))
+        try await store.put(parent, kind: "chat", id: parent.id)
+    }
+
+    @MainActor func testPendingOwnerDeletionAcceptsLegacyNamesButChildDeletionKeepsUUIDNames() async throws {
+        for child in [false, true] {
+            for prefix in ["fork_", "side_"] {
+                let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+                try await model.traces.configure(quota: nil, bodyRetention: 86_400, metricRetention: 86_400)
+                let directory = try model.subagentDirectory("pane-project")
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let id = UUID().uuidString, path = directory.appendingPathComponent(prefix + id + ".jsonl")
+                try Data("fixture".utf8).write(to: path)
+                let store = try XCTUnwrap(model.store)
+                let record = SessionDeletionRecord(id: id, ownerID: child ? "chat-parent" : id, workspaceID: "pane-project", path: path.path)
+                let owner = SessionDeletionRecord(id: record.ownerID, ownerID: record.ownerID, workspaceID: record.workspaceID, path: nil)
+                try await store.beginFamilyDeletion(child ? [owner, record] : [record])
+                model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at: url) } }
+                await model.resumeFamilyDeletions()
+                let pending = try await store.pendingFamilyDeletions()
+                XCTAssertEqual(FileManager.default.fileExists(atPath: path.path), child)
+                XCTAssertEqual(pending.isEmpty, !child)
+                XCTAssertEqual(model.error != nil, child)
+            }
+        }
+    }
+
     @MainActor func testDeleteFindsAnUnregisteredChildAndPreventsRediscoveryAndStaleWrites() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)

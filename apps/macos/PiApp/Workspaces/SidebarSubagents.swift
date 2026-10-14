@@ -61,14 +61,16 @@ extension WorkspaceModel {
     func entryHeight(width: CGFloat) -> CGFloat { 28 }
     override func layout() {
         super.layout()
-        button.frame = CGRect(x: state.indent, y: 0, width: max(0, bounds.width - state.indent), height: 28)
-        // Pi buttons center their label and symbol together. Keep that whole
-        // face in bounds; the full counts remain in the tooltip and AX label.
+        let available = max(0, bounds.width - state.indent)
+        // Size the centered Pi face to its contents so the chevron stays at
+        // the same indent when counts/status change. Keep the whole face in
+        // bounds; full counts remain in the tooltip and AX label.
         let noun = state.count == 1 ? "sub-agent" : "sub-agents"
         let compact = state.count.formatted(.number.notation(.compactName))
         for title in [state.label, "\(state.count) \(noun)", "\(compact) \(noun)", compact] {
             button.title = title
-            if button.intrinsicContentSize.width <= button.bounds.width { break }
+            if button.intrinsicContentSize.width <= available { break }
         }
+        button.frame = CGRect(x: state.indent, y: 0, width: min(available, button.intrinsicContentSize.width), height: 28)
     }
 }

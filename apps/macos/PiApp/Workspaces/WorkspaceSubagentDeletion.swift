@@ -17,6 +17,11 @@ extension WorkspaceModel {
         var durable = false
         defer { if !durable { deletingFamilies.remove(parent.id) } }
         let directory = try subagentDirectory(parent.workspaceID)
+        let parentPath = parent.path ?? directory.appendingPathComponent(parent.id + ".jsonl").path
+        let owner = SessionDeletionRecord(id: parent.id, ownerID: parent.id, workspaceID: parent.workspaceID, path: parentPath)
+        // Reject unsupported paths before detaching the runtime or committing
+        // tombstones, which intentionally prevent this chat from reopening.
+        _ = try familyDeletionJournal(owner)
         if let host = hosts[parent.workspaceID] {
             // The helper knows queued/settling children which metadata may
             // never have seen. It refuses to unload an unsettled owner.
@@ -27,13 +32,10 @@ extension WorkspaceModel {
         // Read after the runtime is detached: no last-millisecond delegation
         // can escape the manifest. App opens are blocked during this operation.
         var plans: [DiscoveredSubagent] = []
-        let parentPath = parent.path ?? directory.appendingPathComponent(parent.id + ".jsonl").path
         if FileManager.default.fileExists(atPath: parentPath) {
-            let path = parentPath
-            guard URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path == directory.path else { throw StoreError.invalidRecord }
-            plans = try await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: parent.id)
+            plans = try await history.subagentPlans(path: URL(fileURLWithPath: parentPath), ownerID: parent.id)
         }
-        var members = [SessionDeletionRecord(id: parent.id, ownerID: parent.id, workspaceID: parent.workspaceID, path: parentPath)]
+        var members = [owner]
         var known: Set<String> = [parent.id]
         for plan in plans where known.insert(plan.header.link.childSessionID).inserted {
             let id = plan.header.link.childSessionID
@@ -48,6 +50,7 @@ extension WorkspaceModel {
             members.append(SessionDeletionRecord(id: child.id, ownerID: parent.id, workspaceID: parent.workspaceID, path: child.path))
         }
         for member in members where member.id != parent.id {
+            _ = try familyDeletionJournal(member)
             if let host = hosts[parent.workspaceID], host.isReady { _ = try await host.request("session.forget", sessionID: member.id) }
             opened.remove(member.id)
         }
@@ -69,6 +72,17 @@ extension WorkspaceModel {
         } catch { self.error = "Family deletion is incomplete and will be retried. " + error.localizedDescription }
     }
 
+    private func familyDeletionJournal(_ member: SessionDeletionRecord) throws -> URL? {
+        guard let path = member.path else { return nil }
+        let directory = try subagentDirectory(member.workspaceID), journal = URL(fileURLWithPath: path)
+        // Durable forks and kept sides use the helper's existing names. Only
+        // owners accept those aliases; managed children always use their UUID.
+        let names = member.id == member.ownerID ? [member.id + ".jsonl", "fork_" + member.id + ".jsonl", "side_" + member.id + ".jsonl"] : [member.id + ".jsonl"]
+        guard journal.resolvingSymlinksInPath().deletingLastPathComponent().path == directory.path,
+              names.contains(journal.lastPathComponent) else { throw StoreError.invalidRecord }
+        return journal
+    }
+
     private func finishFamilyDeletion(_ members: [SessionDeletionRecord]) async throws {
         guard let store, let owner = members.first?.ownerID else { return }
         deletingFamilies.insert(owner)
@@ -77,13 +91,11 @@ extension WorkspaceModel {
         for member in members.sorted(by: { ($0.id == owner ? 1 : 0, $0.id) < ($1.id == owner ? 1 : 0, $1.id) }) {
             guard member.ownerID == owner, try await store.get(String.self, kind: "session-deleted", id: member.id) == owner else { throw StoreError.invalidRecord }
             let directory = try subagentDirectory(member.workspaceID)
+            let journal = try familyDeletionJournal(member)
             try removeRetiredCaptureSpools(sessionID: member.id)
             try await traces.clear(sessionID: member.id)
             try await traces.forgetSubagentRelationships(sessionID: member.id, workspaceID: member.workspaceID)
-            if let path = member.path {
-                let journal = URL(fileURLWithPath: path)
-                guard journal.resolvingSymlinksInPath().deletingLastPathComponent().path == directory.path,
-                      journal.lastPathComponent == member.id + ".jsonl" else { throw StoreError.invalidRecord }
+            if let journal {
                 let names = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
                 let files = names.filter { $0 == journal.lastPathComponent || $0 == journal.lastPathComponent + ".meta" || $0.hasPrefix(journal.lastPathComponent + ".stream") }
                     .sorted().map { directory.appendingPathComponent($0) }

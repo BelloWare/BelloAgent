@@ -14,17 +14,21 @@ extension AgentSession {
         guard familyBudgetEnabled || isSubagent else { return nil }
         guard let owner = isSubagent ? budgetOwner : self else { throw AgentError("managed_subagent", "The parent must own this child's requests") }
         let sourceGeneration = stopCount
+        // Manual compaction may summarize an idle, paused parent without
+        // releasing its follow-ups. This permission belongs to this request;
+        // a later Stop still revokes it through the generation and permit.
+        let allowsPausedQueue = !isSubagent && purpose == "compaction" && compactionState["reason"].text == "manual"
         let scope = RequestScope(sourceSessionID: id, budgetOwnerSessionID: isSubagent ? subagents.origin!.link.budgetOwnerSessionID : id,
                                  turnID: turnID, executionID: activeTaskPresentation?.executionID ?? displayEpoch, purpose: purpose,
                                  ownerGeneration: isSubagent ? budgetOwnerGeneration : stopCount, delegation: subagents.origin?.link)
         return RequestLifecycle(scope: scope, admitAttempt: { [weak self, weak owner] attempt in
             guard let self, let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }
-            let permit = try await owner.admitAttempt(scope: scope, attemptID: attempt)
+            let permit = try await owner.admitAttempt(scope: scope, attemptID: attempt, allowsPausedQueue: allowsPausedQueue)
             await self.attachRequestPermit(permit, generation: sourceGeneration)
             return permit
         }, willDispatch: { [weak owner] attempt in
             guard let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }
-            try await owner.dispatchAttempt(scope: scope, attemptID: attempt)
+            try await owner.dispatchAttempt(scope: scope, attemptID: attempt, allowsPausedQueue: allowsPausedQueue)
         }, settleAttempt: { [weak self, weak owner] settlement in
             guard let self, let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }
             try await self.settleFamilyAttempt(settlement, owner: owner)
@@ -43,9 +47,9 @@ extension AgentSession {
                   activeTaskPresentation?.executionID == link.parentExecutionID else { throw AttemptAccounting.damaged() }
         } else if scope.sourceSessionID != id { throw AttemptAccounting.damaged() }
     }
-    func admitAttempt(scope: RequestScope, attemptID: String) throws -> RequestPermit {
+    func admitAttempt(scope: RequestScope, attemptID: String, allowsPausedQueue: Bool = false) throws -> RequestPermit {
         try validateRequestOwner(scope)
-        guard !closed, !queuePaused, scope.ownerGeneration == stopCount else { throw CancellationError() }
+        guard !closed, !queuePaused || allowsPausedQueue, scope.ownerGeneration == stopCount else { throw CancellationError() }
         try Task.checkCancellation(); try enforceCostLimit()
         guard accounting.attempts[attemptID] == nil else { throw AttemptAccounting.damaged() }
         var admission: JSON = ["attemptId":JSON(attemptID), "sourceSessionId":JSON(scope.sourceSessionID), "budgetOwnerSessionId":JSON(id),
@@ -56,8 +60,8 @@ extension AgentSession {
         let permit = RequestPermit(attemptID); requestPermits[attemptID] = permit
         return permit
     }
-    func dispatchAttempt(scope: RequestScope, attemptID: String) throws {
-        guard !closed, !queuePaused, scope.ownerGeneration == stopCount, let permit = requestPermits[attemptID] else { throw CancellationError() }
+    func dispatchAttempt(scope: RequestScope, attemptID: String, allowsPausedQueue: Bool = false) throws {
+        guard !closed, !queuePaused || allowsPausedQueue, scope.ownerGeneration == stopCount, let permit = requestPermits[attemptID] else { throw CancellationError() }
         try permit.check(); try enforceCostLimit()
         guard var record = accounting.attempts[attemptID]?.admission, record["scope"] == (try subagentJSON(scope)) else { throw AttemptAccounting.damaged() }
         record["state"] = "dispatched"; record["accountingRevision"] = JSON(accounting.revision + 1)

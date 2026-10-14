@@ -1294,6 +1294,10 @@ Future implementation follows the repository’s commit/push workflow. This desi
 
 ## Implementation notes
 
+- Round-3 review: deletion validates owner paths before detaching the helper or saving tombstones. Owners accept the existing `<id>.jsonl`, `fork_<id>.jsonl` and `side_<id>.jsonl` names inside the project's session directory; managed children retain their strict UUID filename. The same validation handles durable deletion retries, including intents written before this correction.
+- Round-3 review: an explicit manual compaction request may use a paused owner's family accounting without resuming queued follow-ups. This is a request-local allowance, limited to the independent owner's manual summary and its retries; Stop generation, permit cancellation, closed sessions and cost limits are still checked at admission and dispatch. Ordinary requests and automatic summaries cannot use it.
+- Round-3 gallery review: the sub-agent disclosure button sizes to its Pi face within the available width. Its chevron stays at the same indentation as progress counts change between the parent and child scenes; selected-child reveal still leaves the saved fold unchanged.
+
 - Post-audit review: opening a managed viewer reads the helper's inherited capture mode and does not send `debug.mode`. Sidebar child selection uses the same validated live-runtime opening path as a parent card. A selected child temporarily reveals its group; leaving it restores the saved disclosure state without writing a preference.
 - Post-audit review: parent topic moves pass only independently selected roots to the metadata transaction, which discovers and moves their managed descendants atomically. Child-only moves remain prohibited.
 - Post-audit review: cancellation during delegation preflight settles all already-journaled assistant calls as not executed before ending the turn. Resume therefore works without reopening and never replays those calls.
