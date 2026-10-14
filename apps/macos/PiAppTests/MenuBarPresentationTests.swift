@@ -145,11 +145,9 @@ final class MenuBarPresentationTests: XCTestCase {
         let row = try XCTUnwrap(live.runningRows.first)
         XCTAssertEqual(row.startedUptimeMs,10_000)
         XCTAssertEqual(row.elapsed(atUptimeMs:15_000), 5_000)
-        // Reported output after the first over the request's decode span (450
-        // tokens in 300 ms — a span under 250 ms is one burst, not a rate), the settled
-        // rate every other caption quotes: never visible bytes, and never
-        // output over the whole two-second round trip.
-        XCTAssertEqual(row.latestRate, 1_500, "Use reported output including hidden reasoning, not visible bytes")
+        // All 451 tokens over 100 ms TTFT + 300 ms span; the later terminal
+        // does not extend the window and visible bytes are not a token count.
+        XCTAssertEqual(row.latestRate, 451 / 0.4, "Use reported output including hidden reasoning, not visible bytes")
         XCTAssertEqual(row.costUSD, 0.0123)
         view.runStatus = "retrying"
         view.observeRetry(["retry": .object(["attempt": .number(4), "of": .number(6), "reason": .string("Temporary failure")])])

@@ -41,8 +41,8 @@ public actor TraceStore {
         }
     }
     private var traces:[String:Trace]=[:], order:[String]=[], modes:[String:String]=[:]
-    /// A decode span shorter than this is a reply delivered in one burst, not
-    /// a measured generation: it contributes no tokens-per-second rate.
+    /// Minimum request-to-last-output duration (TTFT + decode span). Keep the
+    /// wire name for compatibility and the 250 ms floor in sync with the app.
     public static let minimumDecodeSpanMs = 250.0
     /// Body bytes the helper holds: every request's until the app has saved
     /// it, and a session-memory chat's for good (they are its only copy).
@@ -388,28 +388,31 @@ public actor TraceStore {
             guard let start, let end, start.isFinite, end.isFinite, end >= start, (end-start).isFinite else { return .null }; return JSON(end-start)
         }
         let output=t.usage["output"].double
-        // The decode span, which the stream duration reports and the rate
-        // divides by: first output → last output (the latest non-empty delta
-        // or output item completion). It exists once the model's terminal event
-        // was observed. An attempt that stamped no last output ends at that
-        // terminal, the only end it has; the archive projects `stream_ms` by
-        // the same rule, so the Inspector, the report and the ledger agree.
+        // Preserve the raw first-to-last-output span. Legacy traces without a
+        // last-output stamp retain the model terminal as their only end.
         let decode = span(t.firstContent, t.completed.map { t.lastContent ?? $0 })
-        // The settled decode rate, the standard decode speed (LLMPerf, vLLM's
-        // TPOT): the reported output tokens after the first (N − 1, reasoning
-        // included) over that span. Over it the first token is already out, so
-        // only N − 1 arrive in it, and the terminal event carries none. Only
-        // the gateway's completed usage is a token count; one token has no
-        // decode speed, and a span shorter than the floor is no measurement.
+        let ttft = span(t.dispatch, t.firstContent)
+        // Output speed includes the wait for the first token and counts all
+        // reported output (including hidden reasoning). A held terminal/usage
+        // event after the last output does not extend the measured window.
+        // Keep the wire keys for compatibility; the floor now covers TTFT + span.
         var decodeRate: JSON = .null
-        if t.outcome == "completed", t.modelOutcome == "completed", let decodeMS = decode.double, decodeMS >= Self.minimumDecodeSpanMs,
-           let output, output.isFinite, output >= 2, ((output - 1) / (decodeMS / 1000)).isFinite { decodeRate = JSON((output - 1) / (decodeMS / 1000)) }
-        return ["observedTTFTms":span(t.dispatch,t.firstContent), "firstTextMs":span(t.dispatch,t.firstText),
+        if t.outcome == "completed", t.modelOutcome == "completed",
+           let decodeMS = decode.double, let ttftMS = ttft.double,
+           let output, output.isFinite, output >= 1 {
+            let duration = ttftMS + decodeMS
+            if duration.isFinite, duration >= Self.minimumDecodeSpanMs {
+                let rate = output / (duration / 1000)
+                if rate.isFinite { decodeRate = JSON(rate) }
+            }
+        }
+        return ["observedTTFTms":ttft, "firstTextMs":span(t.dispatch,t.firstText),
                 "streamDurationMs":decode, "httpDurationMs":span(t.dispatch,t.eof),
                 "decodeTokensPerSecond":decodeRate, "minimumDecodeSpanMs":JSON(Self.minimumDecodeSpanMs),
                 "inputIncludingCache":t.usage["inputIncludingCache"],"completeness":t.modelOutcome=="completed" ? "complete":"partial",
-                "rateSource":"Gateway-reported output tokens after the first (N − 1, reasoning included) / first output → last output token (the model terminal when no last output was stamped); completed attempts with N ≥ 2 over at least minimumDecodeSpanMs","liveTokenRate":.null]
+                "rateSource":"Gateway-reported output tokens / time from sending the request to the last output token (time to first token included; hidden reasoning included; the model terminal when no last output was stamped); completed attempts with N ≥ 1 over at least minimumDecodeSpanMs total duration","liveTokenRate":.null]
     }
+
     /// An attempt's metadata. `messageIDs: false` leaves out the context and
     /// output id lists: the recorder is sent those as `links` packets, and a
     /// session snapshot's `latestAttempt` (4 Hz while busy, and every idle

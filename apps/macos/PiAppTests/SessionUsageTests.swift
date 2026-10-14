@@ -211,15 +211,14 @@ final class SessionUsageTests: SessionUsageTestCase {
         XCTAssertEqual(blanks, 0)
     }
 
-    /// The caption under the per-request charts quoted output over the whole
-    /// request time, while the chart above it plots the settled decode rate.
+    /// Captions and charts use the same output speed, including TTFT.
     func testRequestCaptionQuotesTheRateTheChartPlots() {
         let sample = SessionTimingSample(id: "r", wall: until, ttftMilliseconds: 2_000, streamingMilliseconds: 3_000, outputTokens: 300, costUSD: 0.01, requestMilliseconds: 5_000)
         let caption = SessionUsagePresentation.requestCaption(index: 1, sample: sample)
         let plotted = SessionTimingMetric.rate.label(SessionTimingMetric.rate.value(in: sample))
-        XCTAssertEqual(plotted, "100 tok/s")
+        XCTAssertEqual(plotted, "60 tok/s")
         XCTAssertTrue(caption.contains(plotted), caption)
-        XCTAssertFalse(caption.contains("60 tok/s"), caption)
+        XCTAssertFalse(caption.contains("100 tok/s"), caption)
     }
 
     @MainActor func testRetentionShrinkingCurrentPageReturnsToFirstPage() async throws {
@@ -272,13 +271,11 @@ final class SessionUsageTests: SessionUsageTestCase {
         let work: [String: WireValue] = ["sessionModelMs": .number(72_000), "sessionToolMs": .number(14_300), "modelMs": .number(4_200), "toolMs": .number(300)]
         let timing = SessionInfoTiming(history: history, work: work)
         XCTAssertEqual(timing.latestTTFT, 250); XCTAssertEqual(timing.medianTTFT, 325, "The median skips the request without a measurement"); XCTAssertEqual(timing.ttftSamples, 2)
-        // The rates are settled: the 499 tokens after the first over a 750 ms
-        // decode span, and 199 + 499 tokens over the 2.35 s the two measurable
-        // requests decoded for. The request that reported no decode span is
-        // left out of both.
+        // All 500 tokens over one second; the group is 700 tokens over
+        // three seconds. The request with missing timings contributes nothing.
         XCTAssertEqual(timing.latestDurationMs, 1_000)
-        XCTAssertEqual(timing.latestRate.map { ($0 * 100).rounded() / 100 }, 665.33)
-        XCTAssertEqual(timing.averageRate.map { ($0 * 10).rounded() / 10 }, 297.0)
+        XCTAssertEqual(timing.latestRate.map { ($0 * 100).rounded() / 100 }, 500)
+        XCTAssertEqual(timing.averageRate.map { ($0 * 10).rounded() / 10 }, 233.3)
         XCTAssertEqual(timing.sessionModelMs, 72_000); XCTAssertEqual(timing.sessionToolMs, 14_300); XCTAssertEqual(timing.turnModelMs, 4_200); XCTAssertEqual(timing.turnToolMs, 300)
         XCTAssertEqual(timing.firstTokenCaption, "median 325 ms · 2 measured · last request 1.0s")
         XCTAssertEqual(timing.modelCaption, "last turn 4.2s"); XCTAssertEqual(timing.toolCaption, "last turn 0.3s")

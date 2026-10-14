@@ -1022,13 +1022,16 @@ however many replies each holds. Archiving a chat never switches the sidebar to 
 archive is opened deliberately, and archiving the selected chat moves on to the
 nearest active chat in its project. Projects open and are
 created without a trust confirmation, and no Trusted badge or "Editing tools"
-notice is shown; read-only and tool-less chats keep their footer notice. Historical TPS is summed reported output divided
-by summed dispatch-to-model-completion time for completed, retained, dispatched
-attempts with valid usage/timing. Since 0.1.52 a typed `request_ms` projection
-stores model completion minus dispatch independently of first visible content.
-Retained metadata is reprojected on migration, and expiry clears this field.
-TTFT/streaming observations remain independently nullable. Include first-token
-latency and zero stream spans when total duration is positive. Reported output
+notice is shown; read-only and tool-less chats keep their footer notice.
+Historical TPS is summed reported output divided by summed request-to-last-output
+time for completed, retained, dispatched attempts with valid usage/timing.
+Each duration is raw TTFT plus the first-to-last-output span, excluding a
+trailing terminal/usage event wait. Both timings must be finite and nonnegative,
+their sum at least 250 ms, and reported output at least one token. A zero stream
+span can count when TTFT brings the total to the floor. Groups use one division
+of these sums. Queries recompute from raw timings and output, never old rates.
+The independent `request_ms` projection retains dispatch-to-model-completion
+time for other timing figures. Reported output
 already includes reasoning: never add that subset again or count streamed bytes.
 Rates and sample counts are calculated overall and per requested/resolved model
 group. The sidebar, footer and usage views show the actual latest completion and
@@ -1036,8 +1039,8 @@ a duration-weighted average. A new in-progress request leaves that latest value
 steady; a completed request missing usage/duration is explicitly unavailable.
 Numeric layout stays stable and local transitions follow the app motion policy.
 Activity protocol version 2 retains phase/model/tool/queue status and removes
-byte-derived token-rate fields. This is request-average throughput, not server
-decode speed or a fabricated instantaneous rate.
+byte-derived token-rate fields. The settled output speed includes first-token
+latency and uses completed requests only.
 
 The strict local gateway validates method/path, model, API-specific headers and
 body fields, token limits, tool schemas/call IDs/results, native-versus-portable

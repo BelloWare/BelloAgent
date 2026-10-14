@@ -43,13 +43,13 @@ struct SessionTimingSample: Sendable, Equatable, Identifiable {
         self.turn = turn.flatMap { $0.isEmpty ? nil : $0 }; self.purpose = purpose.flatMap { $0.isEmpty ? nil : $0 }
     }
 
-    /// The settled rate of this one request: its output tokens after the first
-    /// over its decode span (first to last output). Nil unless it completed
-    /// with two or more tokens over a span past the floor.
+    /// All output tokens over TTFT + first-to-last-output span. The terminal
+    /// event wait is excluded; only completed requests with valid timings,
+    /// at least one token and a total duration at the floor or above count.
     var settledTokensPerSecond: Double? {
         guard outcome == "completed" else { return nil }
         var fold = SettledThroughput()
-        fold.add(decodeMilliseconds: streamingMilliseconds, outputTokens: outputTokens)
+        fold.add(ttftMilliseconds: ttftMilliseconds, decodeMilliseconds: streamingMilliseconds, outputTokens: outputTokens)
         return fold.tokensPerSecond
     }
     /// Input that was not served from cache, only when both halves were reported.
@@ -112,7 +112,7 @@ struct SessionTimingHistory: Sendable, Equatable {
     /// actually lists, so the table and its footnote cannot disagree.
     var settledThroughput: SettledThroughput {
         var fold = SettledThroughput()
-        for sample in samples { fold.add(decodeMilliseconds: sample.streamingMilliseconds, outputTokens: sample.outputTokens) }
+        for sample in samples { fold.add(ttftMilliseconds: sample.ttftMilliseconds, decodeMilliseconds: sample.outcome == "completed" ? sample.streamingMilliseconds : nil, outputTokens: sample.outputTokens) }
         return fold
     }
 
@@ -133,7 +133,7 @@ enum SessionTimingMetric: String, CaseIterable {
     var title: String {
         switch self {
         case .ttft: "Time to first token"
-        case .rate: "Output tokens per second (decode)"
+        case .rate: "Output tokens per second"
         case .output: "Output tokens per request"
         case .cost: "Reported cost per request"
         }

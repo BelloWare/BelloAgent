@@ -2,7 +2,7 @@ import AppKit
 
 /// The usage panel's chart as a chart value, as Swift Charts drew it:
 /// requests or cost as rounded columns over each slice, tokens as plain
-/// columns, the decode rate as points, and the selected slice's rule.
+/// columns, the output speed as points, and the selected slice's rule.
 enum MenuBarUsageChartSpec {
     static func make(buckets: [MenuBarBucket], metric: MenuBarChartMetric, domain: ClosedRange<Date>, selected: MenuBarBucket?) -> PiChart.Spec {
         var marks: [PiChart.Mark] = []

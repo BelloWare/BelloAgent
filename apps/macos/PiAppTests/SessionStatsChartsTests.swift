@@ -67,7 +67,7 @@ enum SessionStatsFixture {
         }
         var decode = SettledThroughput(requests: samples.count)
         for sample in samples where sample.outcome == "completed" {
-            var one = SettledThroughput(); one.add(decodeMilliseconds: sample.streamingMilliseconds, outputTokens: sample.outputTokens)
+            var one = SettledThroughput(); one.add(ttftMilliseconds: sample.ttftMilliseconds, decodeMilliseconds: sample.streamingMilliseconds, outputTokens: sample.outputTokens)
             decode.decodeMilliseconds += one.decodeMilliseconds; decode.outputTokens += one.outputTokens; decode.samples += one.samples
         }
         totals.decodeMilliseconds = decode.decodeMilliseconds; totals.decodeOutputTokens = decode.outputTokens; totals.decodeSamples = decode.samples
@@ -447,7 +447,7 @@ final class SessionStatsChartsTests: XCTestCase {
         let pill = SessionStatsPresentation(gateway: inputs.gateway, work: inputs.work)
         XCTAssertEqual(time.hero.map(\.id), ["turns", "steps", "speed"])
         XCTAssertEqual(time.hero.map(\.value), ["\(pill.turns)", "\(pill.steps)", pill.throughput.label ?? "—"])
-        XCTAssertEqual(time.hero[2].caption, "17/18 requests measured", "The decode speed says what it covers")
+        XCTAssertEqual(time.hero[2].caption, "17/18 requests measured", "The output speed says what it covers")
         XCTAssertTrue(time.hero[2].partial)
         XCTAssertEqual(time.details.map(\.id), ["calls", "ai", "tools", "ttft"])
         XCTAssertEqual(time.details[0].value, "15", "Three tool calls in each of the five turns")

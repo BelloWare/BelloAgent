@@ -1,10 +1,9 @@
 import XCTest
 @testable import PiAgentCore
 
-/// The one rate the helper publishes for an attempt, `metrics.decodeTokensPerSecond`:
-/// the gateway-reported output tokens after the first over first → last
-/// output, for a completed attempt only, and never from anything but reported
-/// usage. `metrics.streamDurationMs` is the same span.
+/// The helper's output speed counts all reported tokens over dispatch → last
+/// output, including TTFT and excluding the terminal/HTTP tail. Raw TTFT and
+/// streamDurationMs remain separate observations.
 final class RequestRateTests: XCTestCase {
     /// One attempt on the store's own clock: output opens at `first`, the last
     /// output arrives at `last`, and the terminal event at `terminal`.
@@ -46,12 +45,12 @@ final class RequestRateTests: XCTestCase {
         XCTAssertTrue(pending["metrics"]["decodeTokensPerSecond"].isNull, "Terminal bytes alone do not establish a completed attempt")
         await traces.finish(id, outcome: "completed", modelOutcome: "completed")
         let completed = await traces.latest("hidden")
-        XCTAssertEqual(completed["metrics"]["decodeTokensPerSecond"].double, 299.5,
-                       "The 599 reported tokens after the first over the 2 s the reasoning item was open: reasoning is already included, and neither the held terminal nor the HTTP tail is decode time")
+        XCTAssertEqual(completed["metrics"]["decodeTokensPerSecond"].double, 240,
+                       "600 reported tokens over 2.5 s including TTFT; terminal and HTTP tails are excluded")
         XCTAssertEqual(completed["metrics"]["streamDurationMs"].double, 2_000)
         XCTAssertTrue(completed["metrics"]["firstTextMs"].isNull, "No visible text was observed")
         XCTAssertEqual(completed["metrics"]["observedTTFTms"].double, 500, "The hidden reasoning's item is the first output")
-        XCTAssertNil(completed["metrics"].map["outputTokensPerSecond"], "No round-trip rate is published beside the decode rate")
+        XCTAssertNil(completed["metrics"].map["outputTokensPerSecond"], "The compatible wire key still publishes only one settled rate")
     }
 
     func testVisibleBodyLengthCannotSubstituteForMissingUsage() async throws {
@@ -71,14 +70,14 @@ final class RequestRateTests: XCTestCase {
         XCTAssertTrue(reasoningOnly["metrics"]["decodeTokensPerSecond"].isNull, "A reasoning subset cannot substitute for an absent output total")
         let zeroOutput = try await metadata(usage: ["output": 0])
         XCTAssertEqual(zeroOutput["usage"]["output"].double, 0, "Reported zero output remains distinct from missing usage")
-        XCTAssertTrue(zeroOutput["metrics"]["decodeTokensPerSecond"].isNull, "and with no token after a first it has no decode speed")
+        XCTAssertTrue(zeroOutput["metrics"]["decodeTokensPerSecond"].isNull, "zero output has no measured output speed")
         let measured = try await metadata()
-        XCTAssertEqual(measured["metrics"]["decodeTokensPerSecond"].double, 300, "The control: 600 tokens after the first over 2 s")
+        XCTAssertEqual(measured["metrics"]["decodeTokensPerSecond"].double, 601 / 2.5, "All 601 output tokens over TTFT + span")
     }
 
     func testRateRequiresAFiniteDecodeSpanFromFirstToLastOutput() async throws {
         let boundaries: [(Double?, Double?)] = [
-            (nil, 3_000), (1_000, 1_000), (2_000, 1_000),
+            (nil, 3_000), (2_000, 1_000),
             (.infinity, 3_000), (.nan, 3_000),
             (-Double.greatestFiniteMagnitude, Double.greatestFiniteMagnitude),
             (0, Double.leastNonzeroMagnitude)
@@ -88,11 +87,11 @@ final class RequestRateTests: XCTestCase {
             XCTAssertTrue(value["metrics"]["decodeTokensPerSecond"].isNull, "Invalid decode boundaries must not produce a rate: \(String(describing: first)), \(String(describing: last))")
         }
         // A last output never stamped (or not a time) leaves the terminal as
-        // the only end: 600 tokens after the first over first output → 3.5 s.
+        // the only end: all 601 tokens over dispatch → 3.5 s.
         for last in [nil, Double.infinity, Double.nan] {
             let value = try await metadata(last: last)
             XCTAssertEqual(value["metrics"]["streamDurationMs"].double, 2_500, String(describing: last))
-            XCTAssertEqual(value["metrics"]["decodeTokensPerSecond"].double, 240, String(describing: last))
+            XCTAssertEqual(value["metrics"]["decodeTokensPerSecond"].double, 601 / 3.0, String(describing: last))
         }
         // No terminal event observed: no span at all, whatever arrived.
         let open = try await metadata(terminal: nil)
@@ -102,7 +101,7 @@ final class RequestRateTests: XCTestCase {
 
     func testFailedCancelledTruncatedAndUnfinishedAttemptsDoNotPublishRates() async throws {
         let control = try await metadata()
-        XCTAssertEqual(control["metrics"]["decodeTokensPerSecond"].double, 300, "The same timings and usage, completed, do")
+        XCTAssertEqual(control["metrics"]["decodeTokensPerSecond"].double, 601 / 2.5, "The same timings and usage, completed, do")
         for (outcome, modelOutcome) in [("running", "pending"), ("failed", "failed"), ("cancelled", "interrupted"),
                                         ("truncated", "truncated"), ("failed", "completed"), ("completed", "interrupted")] {
             let value = try await metadata(outcome: outcome, modelOutcome: modelOutcome)
@@ -116,5 +115,23 @@ final class RequestRateTests: XCTestCase {
             let value = try await metadata(usage: ["output": JSON(output)], first: 1_000, last: 1_250)
             XCTAssertTrue(value["metrics"]["decodeTokensPerSecond"].isNull, String(describing: output))
         }
+    }
+}
+
+extension RequestRateTests {
+    func testOutputSpeedIncludesTTFTAndFloorsTheWholeDuration() async throws {
+        let regular = try await metadata()
+        XCTAssertEqual(regular["metrics"]["decodeTokensPerSecond"].double, 601 / 2.5)
+        XCTAssertEqual(regular["metrics"]["observedTTFTms"].double, 500)
+        for (wait, span, tokens, expected): (Double, Double, Double, Double?) in [
+            (250, 0, 1, 4), (200, 50, 10, 40), (0, 250, 2, 8), (200, 49, 100, nil)
+        ] {
+            let value = try await metadata(usage: ["output": JSON(tokens)], dispatch: 0, first: wait, last: wait + span, terminal: 9_000)
+            XCTAssertEqual(value["metrics"]["decodeTokensPerSecond"].double, expected)
+            XCTAssertEqual(value["metrics"]["minimumDecodeSpanMs"].double, 250)
+        }
+        let missing = try await metadata(dispatch: nil)
+        XCTAssertTrue(missing["metrics"]["decodeTokensPerSecond"].isNull)
+        XCTAssertTrue(regular["metrics"]["rateSource"].text?.contains("time to first token included") == true)
     }
 }
