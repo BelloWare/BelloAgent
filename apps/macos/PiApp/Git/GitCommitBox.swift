@@ -40,7 +40,7 @@ import GitView
         case .checkedFiles where !content:
             hint = "Tick the files to commit. Their whole working-tree state is committed, not only staged hunks."
         case .stagedChanges where !content:
-            hint = "Nothing is staged. Stage changes, or commit checked files instead."
+            hint = "Nothing is staged. Stage files or hunks, or choose Checked files for whole working-tree content."
         case _ where inputs.amend && !inputs.hasHead:
             hint = "There is no commit to amend yet."
         default:
@@ -73,7 +73,7 @@ import GitView
     init(controller: GitController, inputs: Inputs, discard: @escaping @MainActor ([GitStatusEntry]) -> Void,
          operation: (@MainActor (GitController.RepositoryContext?, Bool) -> Void)? = nil) {
         self.controller = controller; self.discard = discard; self.operation = operation
-        scopeTabs = PiKit.Tabs(selection: inputs.scope, items: [(GitCommitScope.checkedFiles, "Checked files"), (.stagedChanges, "Staged changes")],
+        scopeTabs = PiKit.Tabs(selection: inputs.scope, items: [(GitCommitScope.stagedChanges, "Staged changes"), (.checkedFiles, "Checked files")],
                                accessibilityName: "Commit scope") { [controller] in controller.commitScope = $0 }
         super.init(frame: .zero)
         // The SwiftUI tabs here had their animations switched off: the choice moves at once.
@@ -112,7 +112,7 @@ import GitView
         discardAll.onPress = { [controller, discard] in guard controller.accepts(next.context) else { return }; discard(next.rows) }
         commit.onPress = { [controller, operation] in guard controller.accepts(next.context) else { return }; operation?(next.context, false) }
         check.onPress = { [controller] in
-            guard controller.accepts(next.context), let request = controller.commitRequest(context: next.context) else { return }
+            guard controller.accepts(next.context), let request = controller.commitRequest(context: next.context, forPreflight: true) else { return }
             Task { _ = await controller.checkCommit(request) }
         }
         check.isEnabled = !next.busy && !next.loading && !next.checking

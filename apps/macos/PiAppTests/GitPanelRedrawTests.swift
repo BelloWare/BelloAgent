@@ -122,6 +122,8 @@ final class GitPanelRedrawTests: GitPanelTestCase {
         let root = try fixture("git-typing-measures")
         addTeardownBlock { try? FileManager.default.removeItem(at: root) }
         let controller = GitController(roots: [root.path])
+        // Exercise the whole-file hint whose first keystroke changes height.
+        controller.commitScope = .checkedFiles
         let window = host(GitPanelView(controller: controller))
         defer { window.contentView = nil; window.close() }
         try await eventually("the complete first read") {

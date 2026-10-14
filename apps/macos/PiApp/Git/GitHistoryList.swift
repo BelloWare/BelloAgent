@@ -118,7 +118,9 @@ import GitView
     private func show(_ next: GitHistoryState.Reading) {
         reading = next
         let repository = inputs?.repository
-        let ownsReading = inputs?.ready == true && next.snapshot?.root == repository?.root
+        // Hiding disables actions, but keeps this repository's scroll document.
+        // Dropping its rows while suspended would clamp the reader to the top.
+        let ownsReading = repository != nil && next.snapshot?.root == repository?.root
         let commits = ownsReading ? next.commits : [], ids = commits.map(\.hash)
         let changedQuery = previousQuery != next.query
         previousQuery = next.query

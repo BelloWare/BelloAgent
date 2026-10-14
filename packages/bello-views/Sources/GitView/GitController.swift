@@ -174,8 +174,9 @@ import AppKit
     /// What Commit takes: the checked files, or the index as staged. Chosen by
     /// the reader and never switched by the checked set: unticking every file
     /// is not consent to commit the index.
-    /// Owner decision pending: flip this one constant to change the initial scope.
-    public static let defaultCommitScope: GitCommitScope = .checkedFiles
+    /// New/reopened panels start with the index. Explicit choices stay live
+    /// across refreshes and actions; this setting has no persisted legacy value.
+    public static let defaultCommitScope: GitCommitScope = .stagedChanges
     @Published public var commitScope: GitCommitScope = GitController.defaultCommitScope { didSet { if commitScope != oldValue { clearPreflight() } } }
     @Published public var signOff = false { didSet { if signOff != oldValue { clearPreflight() } } }
     @Published public private(set) var preflight: GitCommitPreflight?
@@ -200,6 +201,8 @@ import AppKit
     }
     @Published public private(set) var branches: [String] = []
     @Published public private(set) var stashes: [GitStashEntry] = []
+    public let history: GitHistoryState
+    @Published public var historyOptions = GitHistoryOptions() { didSet { if historyOptions != oldValue { startHistoryReload() } } }
     @Published public var logFilter = GitLogFilter() { didSet { if logFilter != oldValue { startHistoryReload() } } }
     @Published public var detailFile: String? {
         didSet {
@@ -320,7 +323,8 @@ import AppKit
     private static let commitCacheLimit = 24
 
     public init(roots: [String], service: GitService = .shared) {
-        self.service = service; self.roots = roots; self.root = roots.first
+        self.service = service; self.history = GitHistoryState(service: service)
+        self.roots = roots; self.root = roots.first
     }
     /// A panel that went away without saying so still leaves nothing running:
     /// the reads are cancelled here, and the watch's stream belongs to a box
@@ -356,11 +360,12 @@ import AppKit
     /// Refreshes without waiting, replacing any refresh already in flight so
     /// its git processes stop instead of racing the new one.
     public func startRefresh() { automaticRefresh = nil; automaticChangePending = false; refreshTask?.cancel(); refreshTask = Task { await refresh() } }
-    private func startHistoryReload() { historyTask?.cancel(); historyTask = Task { await reloadHistory() } }
+    private func startHistoryReload() { history.cancel(); historyTask?.cancel(); historyTask = Task { await reloadHistory() } }
     /// Stops every read this panel started. Hiding the panel stops them
     /// (`setShown`), so no `git show` keeps computing a patch for a panel
     /// nobody can see.
     public func stop() {
+        history.cancel()
         clearPreflight()
         generation += 1
         pendingAmendPrefill = nil
@@ -392,6 +397,7 @@ import AppKit
         selectedDiffStale = false; panel = .changes
         splitDiff = false; wholeDiffShown = nil; commitFilesShown = GitController.commitFilesStep
         logFilter = GitLogFilter()
+        historyOptions = GitHistoryOptions(); history.reset()
         // Last: the resets above may have started reads of their own. A write
         // still running, whose refresh would read everything again, reads
         // nothing until a panel opens over this controller.
@@ -658,44 +664,32 @@ import AppKit
     private func reloadHistory(generation: Int? = nil, automatic: Bool = false) async {
         guard let repositoryRoot, !closed, !suspended else { return }
         let generation = generation ?? self.generation
-        // A read nobody asked for keeps the pages the reader has read: it
-        // used to cut a history paged back to its fifth page to its first on
-        // every save, and the reader's place with it.
-        let limit = automatic ? max(50, commits.count) : 50
-        do {
-            let commits = try await service.log(in: repositoryRoot, limit: limit, path: logFilter.path, filter: logFilter)
-            guard current(generation) else { return }
-            historyReading += 1; pageTask?.cancel(); pageTask = nil
-            publish(\.commits, commits); publish(\.historyExhausted, commits.count < limit)
-            // A commit pushed off the first page by newer ones is still the
-            // commit the reader is reading; only a filter change drops it.
-            if !automatic, let selectedCommit, selectedCommit.hash != pinnedCommit, !commits.contains(where: { $0.hash == selectedCommit.hash }) { clearHistorySelection() }
-        // A read replaced by a newer one is not something to tell the reader
-        // about: typing in the filter cancels one on every keystroke.
-        } catch is CancellationError {
-        } catch { if current(generation) { notice = error.localizedDescription } }
+        let query = GitHistoryQuery(filter: logFilter, options: historyOptions)
+        guard await history.reload(in: repositoryRoot, query: query, preservingCount: automatic),
+              current(generation), !closed, !suspended, self.repositoryRoot == repositoryRoot,
+              query == GitHistoryQuery(filter: logFilter, options: historyOptions) else { return }
+        let reading = history.reading
+        historyReading += 1; pageTask?.cancel(); pageTask = nil
+        publish(\.commits, reading.commits); publish(\.historyExhausted, reading.next == nil)
+        if !automatic, let selectedCommit, selectedCommit.hash != pinnedCommit,
+           !reading.commits.contains(where: { $0.hash == selectedCommit.hash }) { clearHistorySelection() }
     }
 
     public func loadMoreHistory() async {
-        guard let repositoryRoot, !historyExhausted, !closed, !suspended else { return }
-        let reading = historyReading, skip = commits.count, filter = logFilter
-        pageTask?.cancel()
-        let task = Task { [service] in
-            do {
-                let more = try await service.log(in: repositoryRoot, limit: 50, skip: skip, path: filter.path, filter: filter)
-                // A page for a history read again since, or for a panel hidden
-                // or let go of meanwhile, is not added to what it shows now.
-                guard !Task.isCancelled, reading == historyReading, !closed, !suspended, self.repositoryRoot == repositoryRoot, logFilter == filter else { return }
-                // A set, not a scan of every page already loaded: paging through a
-                // long history was quadratic in the commits on screen.
-                let known = Set(commits.map(\.hash))
-                commits += more.filter { !known.contains($0.hash) }
-                historyExhausted = more.count < 50
-            } catch is CancellationError {
-            } catch { if reading == historyReading, !closed, !suspended { notice = error.localizedDescription } }
-        }
-        pageTask = task
-        await task.value
+        guard let repositoryRoot, !closed, !suspended,
+              history.reading.snapshot?.root == repositoryRoot else { return }
+        guard await history.loadMore(), !closed, !suspended, self.repositoryRoot == repositoryRoot else { return }
+        publish(\.commits, history.reading.commits)
+        publish(\.historyExhausted, history.reading.next == nil)
+    }
+
+    /// Exact hash navigation is a pin, never a row inserted into a query.
+    public func openHistoryCommit(_ commit: GitCommit) {
+        guard !closed, !suspended, acceptsRepository(repositoryIdentity) else { return }
+        // A same-hash choice is still newer than an in-flight blame reveal.
+        historyChoices += 1; revealTokens += 1
+        panel = .history; revealTarget = nil; pinnedCommit = commit.hash
+        selectedCommit = commit; detailFile = nil
     }
 
     private func resumeAmendPrefill() {
@@ -769,7 +763,9 @@ import AppKit
     }
     /// Freeze exactly what the user is about to commit. A question keeps this
     /// value; it never reads a newer HEAD, scope or draft as consent to that one.
-    public func commitRequest(context: RepositoryContext?, reword: Bool = false, scope: GitCommitScope? = nil) -> GitCommitRequest? {
+    /// Check may inspect an empty scope to report conflicts; commit actions
+    /// still require content, and submission repeats the service's guards.
+    public func commitRequest(context: RepositoryContext?, reword: Bool = false, scope: GitCommitScope? = nil, forPreflight: Bool = false) -> GitCommitRequest? {
         guard let root = actionRoot(context), let context, !busy else { return nil }
         let scope = scope ?? commitScope
         let kind: GitCommitRequest.Kind = reword ? .reword : amend ? .amend : .commit
@@ -781,12 +777,12 @@ import AppKit
         let content: GitCommitContent?
         if reword { content = nil }
         else if scope == .stagedChanges {
-            guard !staged.isEmpty else { notice = "Nothing to commit: nothing is staged."; return nil }
+            guard forPreflight || !staged.isEmpty else { notice = "Nothing to commit: nothing is staged."; return nil }
             content = .staged
         } else {
             let rows = status.entries.filter { checked.contains($0.path) }
             let paths = GitService.paths(rows.map(\.path), renames: rows, for: .commit, held: allPaths.subtracting(checked))
-            guard !paths.isEmpty else { notice = "Tick the files to commit."; return nil }
+            guard forPreflight || !paths.isEmpty else { notice = "Tick the files to commit."; return nil }
             content = .files(paths: paths, staging: rows.filter(\.untracked).map(\.path))
         }
         return GitCommitRequest(context: context, root: root, kind: kind, target: target, content: content,

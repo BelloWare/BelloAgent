@@ -58,6 +58,51 @@ final class GitSafetyTests: XCTestCase {
         XCTAssertTrue(status.entries.contains { $0.path == "[a].txt" && $0.untracked })
     }
 
+    @MainActor func testTheDefaultCommitTakesOnlyStagedBytes() async throws {
+        try seed(); try write("file.txt", "staged\n"); try git(["add", "file.txt"])
+        try write("file.txt", "later work\n"); try write("new.txt", "untracked\n")
+        let controller = try await read(); defer { controller.letGo() }
+        XCTAssertEqual(controller.commitScope, .stagedChanges)
+        controller.commitMessage = "Stage review"
+        await controller.commitInScope()
+        XCTAssertEqual(try git(["show", "HEAD:file.txt"]), "staged\n")
+        XCTAssertEqual(try git(["ls-tree", "--name-only", "HEAD"]), "file.txt\n")
+        XCTAssertEqual(try bytes("file.txt"), Data("later work\n".utf8))
+        XCTAssertEqual(try bytes("new.txt"), Data("untracked\n".utf8))
+        XCTAssertEqual(controller.commitScope, .stagedChanges)
+    }
+
+    @MainActor func testAnEmptyIndexNeverSwitchesToCheckedFiles() async throws {
+        try seed(); try write("file.txt", "working\n")
+        let controller = try await read(); defer { controller.letGo() }
+        let head = try git(["rev-parse", "HEAD"]), index = try git(["ls-files", "-s"])
+        controller.commitMessage = "Keep the draft"
+        XCTAssertFalse(controller.checked.isEmpty)
+        await controller.commitInScope()
+        XCTAssertEqual(try git(["rev-parse", "HEAD"]), head)
+        XCTAssertEqual(try git(["ls-files", "-s"]), index)
+        XCTAssertEqual(try bytes("file.txt"), Data("working\n".utf8))
+        XCTAssertEqual(controller.commitMessage, "Keep the draft")
+        XCTAssertEqual(controller.commitScope, .stagedChanges)
+    }
+
+    @MainActor func testAnExplicitCheckedChoiceSurvivesReadsAndStagingUntilClosed() async throws {
+        try seed(); try write("file.txt", "working\n")
+        let controller = try await read(); defer { controller.letGo() }
+        controller.commitScope = .checkedFiles
+        await controller.refresh()
+        await controller.stage(["file.txt"])
+        XCTAssertEqual(controller.commitScope, .checkedFiles)
+        await controller.unstage(["file.txt"])
+        XCTAssertEqual(controller.commitScope, .checkedFiles)
+        controller.commitMessage = "Explicit whole file"
+        await controller.commitInScope()
+        XCTAssertEqual(try git(["show", "HEAD:file.txt"]), "working\n")
+        XCTAssertEqual(controller.commitScope, .checkedFiles)
+        controller.letGo()
+        XCTAssertEqual(controller.commitScope, .stagedChanges)
+    }
+
     func testUnmergedEntriesAreConflictsAndNeverStagedOrUntracked() async throws {
         try conflict(); try write("untracked.txt", "untracked\n")
         let status = try await GitService().status(in: root.path)
@@ -73,7 +118,7 @@ final class GitSafetyTests: XCTestCase {
     @MainActor func testAmendRefusesTheHeadThatChangedAfterThePanelReadIt() async throws {
         try seed(); try write("file.txt", "reviewed work\n")
         let controller = try await read(); defer { controller.letGo() }
-        controller.amend = true; controller.commitMessage = "Reviewed amend"
+        controller.commitScope = .checkedFiles; controller.amend = true; controller.commitMessage = "Reviewed amend"
         try git(["commit", "--allow-empty", "-qm", "Made elsewhere"])
         let head = try git(["rev-parse", "HEAD"]), index = try git(["ls-files", "-s"]), work = try bytes("file.txt")
         await controller.commitInScope()
@@ -87,7 +132,7 @@ final class GitSafetyTests: XCTestCase {
     @MainActor func testAmendRefusesAnotherBranchEvenWhenItNamesTheSameHead() async throws {
         try seed(); try write("file.txt", "reviewed work\n")
         let controller = try await read(); defer { controller.letGo() }
-        controller.amend = true; controller.commitMessage = "Reviewed amend"
+        controller.commitScope = .checkedFiles; controller.amend = true; controller.commitMessage = "Reviewed amend"
         try git(["checkout", "-qb", "elsewhere"])
         let head = try git(["rev-parse", "HEAD"]), index = try git(["ls-files", "-s"]), work = try bytes("file.txt")
         await controller.commitInScope()

@@ -4,10 +4,30 @@ import AppKit
 @testable import GitView
 
 final class GitOperationSafetyTests: GitPanelTestCase {
+    @MainActor func testTheDefaultStagedScopeCanCheckConflictsWithoutStagedContent() async throws {
+        let fixture = try GitSafetyRepository(); defer { fixture.remove() }
+        try fixture.conflict()
+        let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+        let panel = GitPanelView(controller: controller), window = host(panel)
+        defer { window.close() }
+        try await eventually("read conflicts") { controller.isShown && controller.statusRead && !controller.loading }
+        XCTAssertEqual(controller.commitScope, .stagedChanges)
+        XCTAssertTrue(controller.staged.isEmpty)
+        panel.refresh()
+        let before = try fixture.snapshot()
+        let check = try XCTUnwrap(Self.views(PlainTextButton.self, in: panel).first { $0.accessibilityIdentifier() == "git-preflight-check" })
+        check.onPress?()
+        try await eventually("check the conflicted index") { controller.preflight != nil || !controller.notice.isEmpty }
+        XCTAssertEqual(controller.preflight?.conflicts, 1)
+        XCTAssertEqual(try fixture.snapshot(), before)
+        XCTAssertEqual(controller.commitScope, .stagedChanges)
+    }
+
     @MainActor func testAmendAsksAboutTheReviewedTargetAndCancelKeepsEverything() async throws {
         let fixture = try GitSafetyRepository(); defer { fixture.remove() }
         try fixture.seed(); try fixture.write("file.txt", "working\n")
         let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+        controller.commitScope = .checkedFiles
         try await eventually("read status") { controller.statusRead && !controller.loading }
         controller.amend = true; controller.commitMessage = "Amended message"
         let questions = PiQuestion()
@@ -50,6 +70,7 @@ final class GitOperationSafetyTests: GitPanelTestCase {
             let firstTop = try first.git(["rev-parse", "--show-toplevel"]).trimmingCharacters(in: .newlines)
             let secondTop = try second.git(["rev-parse", "--show-toplevel"]).trimmingCharacters(in: .newlines)
             let controller = GitController(roots: [first.root.path, second.root.path]); defer { controller.letGo() }
+            controller.commitScope = .checkedFiles
             try await eventually("read first") { controller.statusRead && !controller.loading }
             controller.amend = true; controller.commitMessage = "First repository message"
             let questions = PiQuestion(), place = GitPanelPlace()
@@ -85,6 +106,7 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         let fixture = try GitSafetyRepository(); defer { fixture.remove() }
         try fixture.seed(); try fixture.write("file.txt", "work\n")
         let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+        controller.commitScope = .checkedFiles
         try await eventually("read status") { controller.statusRead && !controller.loading }
         controller.amend = true; controller.commitMessage = "Keep this draft"
         let request = try XCTUnwrap(controller.commitRequest(context: controller.repositoryContext))
@@ -102,6 +124,7 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         let fixture = try GitSafetyRepository(); defer { fixture.remove() }
         try fixture.seed(); try fixture.write("file.txt", "work with spaces  \n")
         let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+        controller.commitScope = .checkedFiles
         try await eventually("read status") { controller.statusRead && !controller.loading }
         controller.commitMessage = "Keep me"; controller.signOff = true
         let request = try XCTUnwrap(controller.commitRequest(context: controller.repositoryContext))
@@ -123,10 +146,11 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         let fixture = try GitSafetyRepository(); defer { fixture.remove() }
         try fixture.seed()
         let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+        controller.commitScope = .checkedFiles
         controller.setShown(true)
         try await eventually("read sign-off repository") { controller.statusRead && !controller.loading }
         controller.signOff = true
-        controller.commitScope = .stagedChanges
+        controller.commitScope = .checkedFiles
         controller.setShown(false)
         XCTAssertTrue(controller.signOff, "Changing tabs retains the active commit choices")
         controller.setShown(true)
@@ -146,6 +170,7 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         let fixture = try GitSafetyRepository(); defer { fixture.remove() }
         try fixture.seed(); try fixture.write("file.txt", "staged\n"); try fixture.git(["add", "file.txt"]); try fixture.write("file.txt", "working\n")
         let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+        controller.commitScope = .checkedFiles
         try await eventually("read status") { controller.statusRead && !controller.loading }
         controller.commitMessage = "Reworded explicitly"
         let questions = PiQuestion(), place = GitPanelPlace()
@@ -170,6 +195,7 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         let fixture = try GitSafetyRepository(); defer { fixture.remove() }
         try fixture.seed(); try fixture.write("file.txt", "work\n")
         let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+        controller.commitScope = .checkedFiles
         try await eventually("read") { controller.statusRead && !controller.loading }
         controller.amend = true; controller.commitMessage = "Keep me"
         let questions = PiQuestion(), place = GitPanelPlace()
@@ -197,6 +223,7 @@ final class GitOperationSafetyTests: GitPanelTestCase {
             let fixture = try GitSafetyRepository(); defer { fixture.remove() }
             try fixture.seed(); try fixture.write("file.txt", "working\n")
             let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+            controller.commitScope = .checkedFiles
             try await eventually("read") { controller.statusRead && !controller.loading }
             controller.amend = true; controller.commitMessage = "Keep me"
             let place = GitPanelPlace(), questions = PiQuestion()
@@ -226,6 +253,7 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         let fixture = try GitSafetyRepository(); defer { fixture.remove() }
         try fixture.seed(); try fixture.write("file.txt", "today\n")
         let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+        controller.commitScope = .checkedFiles
         try await eventually("read") { controller.statusRead && !controller.loading && !controller.commits.isEmpty }
         var opened: [(String, Int)] = []
         let panel = GitPanelView(controller: controller, openFile: { opened.append(($0, $1)) }), window = host(panel)
@@ -249,6 +277,7 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         let fixture = try GitSafetyRepository(); defer { fixture.remove() }
         try fixture.seed(); try fixture.write("file.txt", "work\n")
         let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
+        controller.commitScope = .checkedFiles
         try await eventually("read") { controller.statusRead && !controller.loading }
         controller.commitMessage = "Before"; controller.checked = ["file.txt"]
         try fixture.write(".gitattributes", "file.txt filter=hold\n")

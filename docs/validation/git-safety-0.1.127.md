@@ -1,6 +1,6 @@
 # Git safety — 0.1.127, stream 1
 
-Branch: `dev/a127-git-safety`. Worktree: `wt-git-safety`. Validation date: 2026-10-14. Build root: `/Users/admin/Library/Caches/BelloSwiftWork/build-git-safety`. This is a stream validation record, not a release gate or an integration result.
+Branch: `dev/a127-git-safety`. Worktree: `wt-git-safety`. Validation date: 2026-10-14. Build root: `/Users/admin/Library/Caches/BelloSwiftWork/build-git-safety`. This is the initial stream validation record, not a release gate. The subsequent owner decision, merges and integrated History validation are recorded in [the follow-up](git-safety-integration-0.1.127.md).
 
 ## Behavior and decisions
 
@@ -8,7 +8,7 @@ Branch: `dev/a127-git-safety`. Worktree: `wt-git-safety`. Validation date: 2026-
 - Unstage in an unborn repository removes only selected, literal index paths with `rm --cached`; working bytes and unrelated staged blobs survive. The fallback first verifies a symbolic branch with no existing ref, so an unreadable established HEAD is not treated as an empty tree.
 - Amend and Reword ask a Pi question showing the repository, full reviewed HEAD, branch, message and content scope. Cancel is the Return default, Escape cancels, and duplicate answers cannot dispatch twice. A hidden/moved panel cancels preparation or an unanswered question. An already authorized write may finish.
 - Frozen requests retain repository generation, message, amend choice, checked paths, scope and Sign off. Submission checks these again after preflight. Service checks bind rewrites to the reviewed HEAD and branch, including another check after amend preparation. Reword keeps its existing hook, tree-preservation and compare-and-swap behavior.
-- Checked files remains today's default; `GitController.defaultCommitScope` controls initialization and reset. Checked files takes whole working-tree content; staged scope takes exactly the index. No fallback or automatic scope switch was added.
+- At the initial stream commit, Checked files remained today's default; `GitController.defaultCommitScope` controls initialization and reset. Checked files takes whole working-tree content; staged scope takes exactly the index. No fallback or automatic scope switch was added.
 - Sign off is optional. Native commits use Git's sign-off behavior; reword adds the configured committer trailer before message hooks. Hooks stay enabled, and a refused operation retains the draft and Sign off choice. Changing tabs preserves the choice; closing the panel resets it.
 - Check reads conflicts and selected-scope whitespace on the Git service actor, with cancellation and generation checks. Conflict checks block commits. Whitespace and advisory Git diagnostics are bounded and require confirmation. The whitespace rules remain Git's configured rules. In particular, `safecrlf=warn` remains advisory rather than becoming a fatal application policy.
 - A historical diff offers **Open Working File** at line 1 of today's file. Historical line context menus do not offer an inaccurate working-file line jump. Immutable revision tabs are outside this stream.

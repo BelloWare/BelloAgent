@@ -40,7 +40,7 @@ import GitView
     private let changesList: GitChangesList
     private let changesRule = HairlineView()
     private let commitBox: GitCommitBox
-    private let history: GitHistoryList
+    private let history: GitHistoryBrowser
     private let splitRule = HairlineView()
     private let detail: GitPanelDetail
     private let probe = GitPanelProbe()
@@ -67,7 +67,9 @@ import GitView
         changesList = GitChangesList(controller: controller, discard: discard, observeFileRow: observeFileRow)
         commitBox = GitCommitBox(controller: controller, inputs: GitCommitBox.Inputs(controller), discard: discard,
                                  operation: { context, reword in place.requestCommit(controller, context: context, reword: reword, questions: questions) })
-        history = GitHistoryList(controller: controller)
+        history = GitHistoryBrowser(controller: controller, state: controller.history,
+            options: { controller.historyOptions }, setOptions: { controller.historyOptions = $0 },
+            openExact: { controller.openHistoryCommit($0) }, loadMore: { await controller.loadMoreHistory() })
         detail = GitPanelDetail(controller: controller, openFile: openFile)
         super.init(frame: .zero)
         wantsLayer = true
@@ -80,8 +82,11 @@ import GitView
         // and watches only while it is, and a discard question the panel has
         // up goes down, unanswered, when the panel goes or moves.
         place.probe = probe
-        probe.shown = { [controller, place] shown in
+        probe.shown = { [weak self, controller, place] shown in
             controller.setShown(shown)
+            // A quiet re-show may publish no changed repository values.
+            // Controls must still receive their new readiness state.
+            self?.scheduleRefresh()
             if !shown { place.cancelQuestion() }
         }
         probe.moved = { [place] in place.cancelQuestion() }
@@ -146,7 +151,7 @@ import GitView
             changesList.apply(GitChangesList.Inputs(controller))
             commitBox.apply(GitCommitBox.Inputs(controller))
         } else {
-            history.apply(GitHistoryList.Inputs(controller))
+            history.apply(GitHistoryBrowser.Inputs(controller, options: controller.historyOptions))
         }
         detail.apply(GitPanelDetail.Inputs(controller))
     }
@@ -1363,7 +1368,7 @@ enum GitPanelSplit {
         workingFile.isHidden = path == nil || openWorkingFile == nil
         workingFile.onPress = { [weak self] in if let path { self?.openWorkingFile?(path) } }
         subject.text = detail.commit.subject
-        meta.set("\(detail.commit.author) · \(detail.commit.date.formatted(date: .abbreviated, time: .shortened)) · \(detail.commit.hash)")
+        meta.set("\(detail.commit.author) · Committed \(detail.commit.date.formatted(date: .abbreviated, time: .shortened)) (local time) · \(detail.commit.hash)")
         hasBody = detail.message.contains("\n")
         if hasBody {
             body.set(detail.message.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).dropFirst().joined(separator: "\n")

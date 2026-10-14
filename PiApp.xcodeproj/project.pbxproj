@@ -111,6 +111,7 @@
 		14913DC64CD79BE01760C454 /* NativeComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2916E66A89662304989C664 /* NativeComposer.swift */; };
 		149A9DDC96E51C1DDC4ADB07 /* MonitorRateChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = A27E4E2EC2ED5ADA7205F8CA /* MonitorRateChart.swift */; };
 		149BA4DFBE602DD98942D085 /* TurnInfoPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2180C84AC00A0CF2634F4EC /* TurnInfoPresentation.swift */; };
+		14A539A57745C50ECFA899ED /* GitIntegratedHistoryGalleryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B36E89E16E76C2800114ED2F /* GitIntegratedHistoryGalleryTests.swift */; };
 		14A7493C689CD09B5FA5A12C /* TranscriptRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3468E4CAEB0A91FEEB7A92F4 /* TranscriptRows.swift */; };
 		14AC568BEF9E7359C6040396 /* SendBookkeepingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D05C9DF9860A4AD0D385FE94 /* SendBookkeepingTests.swift */; };
 		14D84550E066ACED8D7C0C58 /* DashboardWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2186842A13CBCABC200E1FB3 /* DashboardWindow.swift */; };
@@ -494,6 +495,7 @@
 		62519332BD431AEB4BFB4FCE /* PiChartLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6599BC3C12985AE6E7D3DAA6 /* PiChartLayout.swift */; };
 		633CA00F87B98EC3554D877A /* GatewayAccounting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D032F1A3FFEA8A35451E518 /* GatewayAccounting.swift */; };
 		63F4C39BC81AE4F21A6A2FD4 /* NativeMarkdownSurfaceStreamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69466F66E2437F3843F98A6A /* NativeMarkdownSurfaceStreamingTests.swift */; };
+		645D5C83C40244BD7F9CF3B5 /* GitIntegratedHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14A22F20AC14A480F1E78755 /* GitIntegratedHistoryTests.swift */; };
 		64638C2311DD6E4418DC3DB5 /* TerminalPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B97A6C5ECFB3E0EE7C2B8CCF /* TerminalPanel.swift */; };
 		64A10C62424EC36F7E6606F8 /* ReportPageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B640CB5874643AC443BB149 /* ReportPageTests.swift */; };
 		64B9634585AAE2EC76A655DC /* ComposerBarLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = C792828E792086EBEDDFD376 /* ComposerBarLayout.swift */; };
@@ -1350,6 +1352,7 @@
 		140B60F5B0D16BEF363E8C4E /* TranscriptNativeCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptNativeCards.swift; sourceTree = "<group>"; };
 		141C962FEF53DD228FF9E9F5 /* SmoothPaneAndKeyboardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmoothPaneAndKeyboardTests.swift; sourceTree = "<group>"; };
 		149EE0F0F4D7C9B9649EC194 /* TranscriptViewEqualityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptViewEqualityTests.swift; sourceTree = "<group>"; };
+		14A22F20AC14A480F1E78755 /* GitIntegratedHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitIntegratedHistoryTests.swift; sourceTree = "<group>"; };
 		14A3BA6843E8C1AB70186841 /* ConversationQuestionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationQuestionTests.swift; sourceTree = "<group>"; };
 		14BCE9E21651B39FBEABDECD /* ContextAndSkillPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContextAndSkillPolicyTests.swift; sourceTree = "<group>"; };
 		14C2F0B8A80C2CF849B2F1CD /* WorkspaceResume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceResume.swift; sourceTree = "<group>"; };
@@ -1894,6 +1897,7 @@
 		B2934B82FB7C759FA05F03C0 /* WorkspaceActivityOrder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceActivityOrder.swift; sourceTree = "<group>"; };
 		B2BE228F715CAEB2644C8FD0 /* WorkspaceConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceConfiguration.swift; sourceTree = "<group>"; };
 		B2C2882724D20ED912E073B6 /* TitleGenerationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TitleGenerationTests.swift; sourceTree = "<group>"; };
+		B36E89E16E76C2800114ED2F /* GitIntegratedHistoryGalleryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitIntegratedHistoryGalleryTests.swift; sourceTree = "<group>"; };
 		B390B250F975CE90CAD677A4 /* OnboardingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingTests.swift; sourceTree = "<group>"; };
 		B3921B40B1C151EEDA7086F6 /* TranscriptIdleSchedulerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptIdleSchedulerTests.swift; sourceTree = "<group>"; };
 		B3AA388909085AC950CF397C /* TranscriptNativeUserParts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptNativeUserParts.swift; sourceTree = "<group>"; };
@@ -2923,6 +2927,8 @@
 				182ABF51541B57266065FE42 /* GitHistoryGalleryTests.swift */,
 				F726222FB15F51276C5EA3F6 /* GitHunkGalleryTests.swift */,
 				9D88260DE3894F9C1922B3B8 /* GitHunkReviewTests.swift */,
+				B36E89E16E76C2800114ED2F /* GitIntegratedHistoryGalleryTests.swift */,
+				14A22F20AC14A480F1E78755 /* GitIntegratedHistoryTests.swift */,
 				1951FC198B3917C46CB3D6CA /* GitOperationSafetyTests.swift */,
 				4C5DE44471B409F1EEA6225E /* GitPanelAuditTests.swift */,
 				A72F85E8A46CB44E5A0F3BC1 /* GitPanelDiffCaptureTests.swift */,
@@ -4348,6 +4354,8 @@
 				96B220BA52A8001B62673192 /* GitHistoryGalleryTests.swift in Sources */,
 				AF8E7D8180164BB4275C7B96 /* GitHunkGalleryTests.swift in Sources */,
 				AAC783606EF5D582E7619DBE /* GitHunkReviewTests.swift in Sources */,
+				14A539A57745C50ECFA899ED /* GitIntegratedHistoryGalleryTests.swift in Sources */,
+				645D5C83C40244BD7F9CF3B5 /* GitIntegratedHistoryTests.swift in Sources */,
 				B133BD2F6F817497D9224DA2 /* GitOperationSafetyTests.swift in Sources */,
 				F9DD166AC353C727E5A8ED9C /* GitPanelAuditTests.swift in Sources */,
 				170B22566C299F63B7CF4C6F /* GitPanelDiffCaptureTests.swift in Sources */,

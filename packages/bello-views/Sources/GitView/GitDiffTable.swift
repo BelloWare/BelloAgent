@@ -343,6 +343,8 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
         private var wrapped: [CGFloat?] = []
         private var heightWidth: CGFloat = -1
         private var pending: State?
+        private var pendingReveal: State?
+        private var revealScheduled = false
         private var topHeightKey: AnyHashable?
         /// A new diff was named: it is shown from its top once its rows are built.
         private var freshDiff = false
@@ -381,13 +383,14 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
         func close() {
             cancelWrapGeometry()
             NotificationCenter.default.removeObserver(self)
-            topView = nil; moreView = nil
+            topView = nil; moreView = nil; pendingReveal = nil
         }
 
         @objc private func scrolled() { if let table { table.window?.invalidateCursorRects(for: table) } }
 
         func schedule(_ next: State) {
             pending = next
+            pendingReveal = nil
             table?.needsLayout = true
         }
 
@@ -397,6 +400,29 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             guard let table, table.bounds.width > 0 else { return }
             if let next = pending { pending = nil; apply(next) }
             else if table.bounds.width != measuredWidth { widthChanged() }
+        }
+
+        /// Finish the table and hosted heading's layout before positioning a
+        /// line. A scrollbar can change the width during that first layout;
+        /// consuming the reveal there clamps it to the old document height.
+        func layoutDidHappen() {
+            guard pendingReveal != nil, !revealScheduled else { return }
+            revealScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard self.pendingReveal != nil, let table = self.table, table.bounds.width > 0,
+                      (table.enclosingScrollView?.contentView.bounds.height ?? 0) > 0 else { self.revealScheduled = false; return }
+                // One coalesced turn after the enclosing layout, including
+                // a width change that AppKit made during its last pass.
+                table.needsLayout = true
+                table.layoutSubtreeIfNeeded()
+                self.revealScheduled = false
+                guard let next = self.pendingReveal, self.pending == nil, table.bounds.width > 0,
+                      let clip = table.enclosingScrollView?.contentView, clip.bounds.height > 0 else { return }
+                guard table.bounds.width == self.measuredWidth else { self.layoutDidHappen(); return }
+                self.pendingReveal = nil
+                self.revealIfReady(next)
+            }
         }
 
         /// Shows a state: the hosted heading always, the rows again only when
@@ -477,7 +503,7 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             if controlsChanged, !rebuild {
                 table.reloadData(forRowIndexes: IndexSet(rows.indices.filter { rows[$0].kind == .hunk }), columnIndexes: IndexSet(integer: 0))
             }
-            revealIfReady(next)
+            pendingReveal = next.reveal != nil && !next.loading ? next : nil
         }
 
         /// Brings the line asked for into view and selects it, once its diff
@@ -1049,6 +1075,7 @@ final class GitDiffTableView: NSTableView {
     override func layout() {
         coordinator?.layoutWillHappen()
         super.layout()
+        coordinator?.layoutDidHappen()
     }
 
     // MARK: Selection

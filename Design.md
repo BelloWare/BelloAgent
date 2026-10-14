@@ -788,15 +788,21 @@ and a stash menu (stash everything including untracked files, pop a listed
 stash). The changelist shows staged and unstaged files with status badges and
 a checkbox per file and per section; Commit explicitly selects checked files'
 whole working-tree state or staged index content, with no empty-selection
-fallback. Checked files remains the default (`GitController.defaultCommitScope`).
+fallback. Staged changes is the default (`GitController.defaultCommitScope`).
+An explicit choice stays live through refreshes and actions; commit scope has
+no saved per-repository preference, so new panels use the staged default.
 Amend folds the selected content into HEAD and prefills its message; Discard, per file or for everything,
 always confirms first because git keeps no copy. The diff pane renders hunk
 headers, old/new line numbers and tinted rows, unified or side-by-side
-(removed and added blocks paired line by line), with wrap. History filters by
-message text or hash prefix and by author, optionally across all branches,
-marks commits with their branch and tag badges, and a commit's file chips
-narrow its diff to one file. Reads never touch the index; every write is an
-explicit action.
+(removed and added blocks paired line by line), with wrap. History searches
+literal message text and author, with searchable branches/tags, all branches,
+file history that follows renames, and inclusive committed-date filters in
+UTC. Removable chips name each active filter. Hash opens an exact commit
+outside those filters without changing them; blame navigation stays pinned.
+Pages retain their original branch tips, and keyboard selection crosses pages.
+Rows show committed dates in UTC; detail dates are explicitly local time.
+Commit file chips narrow the diff to one file. Reads never touch the index;
+every write is an explicit action.
 
 In 0.1.127, Amend and Reword retain the reviewed repository, full HEAD hash,
 branch, message and scope in a Pi question. Cancel is the Return default and
@@ -805,7 +811,7 @@ the service checks HEAD and branch again before rewriting. Native amend still
 has an external-Git race after the final check; it is not an atomic transaction.
 Reword retains its existing tree-preserving hooks and compare-and-swap update.
 Sign off is optional and uses the configured Git committer identity. Check
-reads conflicts and selected-scope whitespace off the main thread, cancels
+reads conflicts even with an empty index, and selected-scope whitespace off the main thread, cancels
 superseded reads and retains bounded diagnostics. Conflicts block commit;
 whitespace and advisory Git warnings require review. Failures keep the draft.
 Unmerged rows have a red conflict badge, and unborn Unstage removes only

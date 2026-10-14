@@ -8,19 +8,21 @@ final class GitSafetyGalleryTests: GitPanelTestCase {
     @MainActor func testGitSafetyScenes() async throws {
         let folder = testEnvironment("PI_APP_GIT_SAFETY_GALLERY").map(URL.init(fileURLWithPath:))
         if let folder { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
-        for scene in ["conflict", "amend-target", "preflight-failure", "commit-box"] {
+        for scene in ["conflict", "amend-target", "preflight-failure", "commit-box", "checked-files"] {
             let fixture = try GitSafetyRepository(); defer { fixture.remove() }
             if scene == "conflict" { try fixture.conflict() }
             else {
                 try fixture.seed()
                 try fixture.write("file.txt", scene == "preflight-failure" ? "review this line  \n" : "reviewed content\n")
+                if scene != "checked-files" { try fixture.git(["add", "file.txt"]) }
             }
             let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
             try await eventually("read gallery repository") { controller.statusRead && !controller.loading }
             controller.commitMessage = "Keep the reviewed changes together"
             controller.amend = scene == "amend-target"
             controller.signOff = scene == "commit-box"
-            controller.selection = .init(path: "file.txt", staged: false)
+            if scene == "checked-files" { controller.commitScope = .checkedFiles }
+            controller.selection = .init(path: "file.txt", staged: scene != "conflict" && scene != "checked-files")
             let place = GitPanelPlace(), questions = PiQuestion()
             let panel = GitPanelView(controller: controller, place: place, questions: questions, project: "Review fixture")
             let window = host(panel)
@@ -30,7 +32,7 @@ final class GitSafetyGalleryTests: GitPanelTestCase {
                 for size in [NSSize(width: 1180, height: 780), NSSize(width: 920, height: 600), NSSize(width: 700, height: 640), NSSize(width: 310, height: 600)] {
                     window.appearance = NSAppearance(named: appearance); window.setContentSize(size)
                     controller.commitMessage = size.width == 700 ? "Keep the reviewed changes together\n\nOne\nTwo\nThree" : "Keep the reviewed changes together"
-                    if let request = controller.commitRequest(context: controller.repositoryContext) { _ = await controller.checkCommit(request) }
+                    if let request = controller.commitRequest(context: controller.repositoryContext, forPreflight: true) { _ = await controller.checkCommit(request) }
                     panel.refresh(); panel.layoutSubtreeIfNeeded(); window.displayIfNeeded()
                     let box = try XCTUnwrap(GitOperationSafetyTests.views(GitCommitBox.self, in: panel).first)
                     box.layoutSubtreeIfNeeded()

@@ -58,3 +58,7 @@ Images: `/Users/admin/Library/Caches/BelloSwiftWork/build-git-history/gallery/{f
 
 - Stream 1 applies/adapts the handoff patch to its controller/panel changes; preserves file-history entry points and pinned blame navigation; repeats relevant controller/panel regressions on the merged implementation.
 - Branch comparisons remain the next increment, per the agreed plan.
+
+## Integration follow-up
+
+Stream 1 merged this branch and adapted the handoff patch in its owned controller, service and panel. See [the integrated validation record](git-safety-integration-0.1.127.md) for live-panel coverage, staged-default behavior, galleries and the direct-file-history label API. The results above describe the original module delivery.

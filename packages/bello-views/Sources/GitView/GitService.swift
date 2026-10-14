@@ -400,7 +400,7 @@ public actor GitService {
     }
 
     func log(in root: String, limit: Int = 50, skip: Int = 0, path: String? = nil, filter: GitLogFilter = GitLogFilter()) async throws -> [GitCommit] {
-        var arguments = ["log", "--format=%H%x00%h%x00%an%x00%aI%x00%s%x00%P%x00%D%x1e", "-n", String(limit), "--skip", String(skip)]
+        var arguments = ["log", "--format=%H%x00%h%x00%an%x00%cI%x00%s%x00%P%x00%D%x1e", "-n", String(limit), "--skip", String(skip)]
         if filter.allBranches { arguments.append("--all") }
         let text = filter.text.trimmingCharacters(in: .whitespaces), author = filter.author.trimmingCharacters(in: .whitespaces)
         if !text.isEmpty { arguments += ["-i", "--grep=" + text] }
@@ -418,7 +418,7 @@ public actor GitService {
         var commits = Self.parseLog(output.text)
         // A hex filter is also tried as a hash prefix, on the first page only.
         if skip == 0, text.count >= 4, text.count <= 40, text.allSatisfy(\.isHexDigit), !commits.contains(where: { $0.hash.hasPrefix(text.lowercased()) }) {
-            let byHash = try await run(["log", "--format=%H%x00%h%x00%an%x00%aI%x00%s%x00%P%x00%D%x1e", "-n", "1", text + "^{commit}", "--"] + Self.literal(path.map { [$0] } ?? []), in: root)
+            let byHash = try await run(["log", "--format=%H%x00%h%x00%an%x00%cI%x00%s%x00%P%x00%D%x1e", "-n", "1", text + "^{commit}", "--"] + Self.literal(path.map { [$0] } ?? []), in: root)
             if byHash.status == 0, let match = Self.parseLog(byHash.text).first {
                 var show = filter.allBranches
                 if !show { show = (try? await run(["merge-base", "--is-ancestor", match.hash, "HEAD"], in: root))?.status == 0 }
@@ -899,7 +899,7 @@ public actor GitService {
     /// One commit by its full id, for a commit not in the history read.
     func commit(_ hash: String, in root: String) async throws -> GitCommit? {
         guard hash.count == 40, hash.allSatisfy(\.isHexDigit) else { return nil }
-        let output = try await run(["log", "--format=%H%x00%h%x00%an%x00%aI%x00%s%x00%P%x00%D%x1e", "-n", "1", hash, "--"], in: root)
+        let output = try await run(["log", "--format=%H%x00%h%x00%an%x00%cI%x00%s%x00%P%x00%D%x1e", "-n", "1", hash, "--"], in: root)
         guard output.status == 0 else { return nil }
         return Self.parseLog(output.text).first
     }
