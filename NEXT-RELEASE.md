@@ -2,6 +2,10 @@
 
 **Released 2026-10-14:** 0.1.126 (build 130, tag `v0.1.126`) is the latest release; record `docs/validation/Bello-Agent-0.1.126-2026-10-14.md`.
 
+## 0.1.127
+
+- [x] Whole-hunk staging (`dev/a127-git-hunks`, stream 2): tracked text changes get Stage/Unstage hunk, Previous/Next Change, scoped F7/Shift-F7 and Space, plus explicit Review Staged Changes after staging. Raw-byte application under Git's index lock preserves unrelated staging and working files; unsupported cases retain whole-file actions with a reason. Commit scope/default is unchanged. [Validation and handoff](docs/validation/git-hunks-0.1.127.md).
+
 ## 0.1.126
 
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.
