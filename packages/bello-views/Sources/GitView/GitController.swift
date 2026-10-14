@@ -746,6 +746,19 @@ import AppKit
             throw error
         }
     }
+    /// Retarget a matching History filter before the write's normal refresh.
+    public func renameBranch(_ branch: GitBranchReference, to name: String, repository identity: RepositoryIdentity) async throws {
+        try await performRepositoryWrite(repository: identity) { [service, weak self] root in
+            let reference = try await service.renameBranch(branch, to: name, in: root)
+            await self?.retargetRenamedBranch(branch.ref, to: reference, repository: identity)
+        }
+    }
+    private func retargetRenamedBranch(_ old: String, to reference: String, repository identity: RepositoryIdentity) {
+        // A hidden panel may be resolving another folder in this repository.
+        // Retarget its retained snapshot; a different repository retires it.
+        guard !closed, repositoryIdentity == identity, repositoryRoot == identity.root, logFilter.reference == old else { return }
+        logFilter.reference = reference
+    }
     public func reportRepositoryResult(_ message: String, repository identity: RepositoryIdentity) {
         guard acceptsRepository(identity) else { return }
         notice = message

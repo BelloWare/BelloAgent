@@ -152,7 +152,7 @@ import GitView
                 do {
                     view.busy = true
                     if rename, let branch {
-                        try await controller.performRepositoryWrite(repository: identity) { [service] root in try await service.renameBranch(branch, to: name, in: root) }
+                        try await controller.renameBranch(branch, to: name, repository: identity)
                     } else if let branch, let head {
                         let result = try await controller.performRepositoryWrite(repository: identity) { [service] root in
                             try await service.checkoutBranch(branch, from: head, newName: name, in: root)

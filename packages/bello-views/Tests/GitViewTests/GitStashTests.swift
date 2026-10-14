@@ -2,6 +2,60 @@ import XCTest
 @testable import GitView
 
 final class GitStashTests: XCTestCase {
+    func testStashSelectorIsRecheckedAfterListFingerprintRead() async throws {
+        let f = try BranchFixture(); defer { f.close() }
+        for number in 1...2 {
+            try f.write("f.txt", "saved \(number)\n")
+            _ = try await f.service.createStash(message: "Saved \(number)", includeUntracked: false, keepIndex: false, in: f.path)
+        }
+        let list = try await f.service.stashRecords(in: f.path), before = try f.snapshot()
+        let service = f.service, root = f.path
+        do {
+            try await service.dropReviewedStash(list[0], in: root, beforeVerification: {
+                _ = try await service.branchCommand(["stash", "store", "-m", "Arrived after review", list[1].oid], in: root)
+            })
+            XCTFail("A selector that moved after the fingerprint read must be refused")
+        } catch { XCTAssertTrue(error.localizedDescription.contains("stash list changed")) }
+        let after = try await service.stashRecords(in: root)
+        XCTAssertEqual(after.map(\.oid), [list[1].oid, list[0].oid, list[1].oid])
+        XCTAssertEqual(after.map(\.message), ["Arrived after review", "Saved 2", "Saved 1"])
+        XCTAssertEqual(try f.snapshot(), before)
+    }
+    func testChangedStashListWithSameSelectedOIDRequiresFreshReview() async throws {
+        let f = try BranchFixture(); defer { f.close() }
+        for number in 1...2 {
+            try f.write("f.txt", "saved \(number)\n")
+            _ = try await f.service.createStash(message: "Saved \(number)", includeUntracked: false, keepIndex: false, in: f.path)
+        }
+        let reviewed = try await f.service.stashRecords(in: f.path)
+        try f.git(["stash", "drop", reviewed[1].selector])
+        let before = try f.snapshot(), log = try Data(contentsOf: f.root.appendingPathComponent(".git/logs/refs/stash"))
+        XCTAssertEqual(try f.git(["rev-parse", reviewed[0].selector]).trimmingCharacters(in: .newlines), reviewed[0].oid)
+        do { try await f.service.dropStash(reviewed[0], in: f.path); XCTFail("A changed list needs a fresh review even when the selected OID matches") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("stash list changed")) }
+        let after = try await f.service.stashRecords(in: f.path)
+        XCTAssertEqual(after.map(\.oid), [reviewed[0].oid])
+        XCTAssertEqual(try Data(contentsOf: f.root.appendingPathComponent(".git/logs/refs/stash")), log)
+        XCTAssertEqual(try f.snapshot(), before)
+    }
+    func testDroppingFinalPackedStashRemovesEveryReference() async throws {
+        for prune in [false, true] {
+            let f = try BranchFixture(); defer { f.close() }
+            try f.write("f.txt", "packed stash\n")
+            _ = try await f.service.createStash(message: "Packed", includeUntracked: false, keepIndex: false, in: f.path)
+            let records = try await f.service.stashRecords(in: f.path), stash = try XCTUnwrap(records.first)
+            try f.git(["pack-refs", "--all"] + (prune ? [] : ["--no-prune"]))
+            XCTAssertTrue(try String(contentsOf: f.root.appendingPathComponent(".git/packed-refs"), encoding: .utf8).contains(stash.oid + " refs/stash"))
+            let before = try f.snapshot()
+            do { try await f.service.dropStash(stash, in: f.path) }
+            catch { XCTFail("Native drop must handle packed and loose stash refs: \(error)") }
+            XCTAssertEqual(try f.gitStatus(["rev-parse", "--verify", "refs/stash"]), 128)
+            let remaining = try await f.service.stashRecords(in: f.path)
+            XCTAssertTrue(remaining.isEmpty)
+            XCTAssertEqual(try f.git(["show", stash.oid + ":f.txt"]), "packed stash\n")
+            XCTAssertEqual(try f.snapshot(), before)
+        }
+    }
     func testNewStashOptionsKeepIndexAndIncludeUntrackedAndPreviewBoth() async throws {
         let f = try BranchFixture(); defer { f.close() }
         try f.write("f.txt", "staged\n"); try f.git(["add", "f.txt"]); try f.write("f.txt", "working\n"); try f.write("[new].txt", "untracked\n")
@@ -131,7 +185,7 @@ final class GitStashTests: XCTestCase {
         let list = try await f.service.stashRecords(in: f.path)
         let directory = f.path + "/.git", marker = Data("new lock owner".utf8)
         let paths = [directory + "/refs/stash.lock", directory + "/logs/refs/stash.lock"]
-        try GitStashStore.drop(list[0], in: directory, afterPublication: {
+        try await f.service.dropReviewedStash(list[0], in: f.path, afterPublication: {
             for path in paths { try marker.write(to: URL(fileURLWithPath: path), options: .withoutOverwriting) }
         })
         for path in paths { XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), marker) }
@@ -180,7 +234,7 @@ final class GitStashTests: XCTestCase {
         XCTAssertEqual(Data(result.dropFirst(41).dropLast()), originalTail)
     }
 
-    func testStashLockAndPackedRefRefuseRemovalIntact() async throws {
+    func testStashLockRefusesRemovalIntact() async throws {
         let f = try BranchFixture(); defer { f.close() }
         try f.write("f.txt", "work\n"); _ = try await f.service.createStash(message: "Keep", includeUntracked: false, keepIndex: false, in: f.path)
         let stashList = try await f.service.stashRecords(in: f.path)
@@ -189,15 +243,12 @@ final class GitStashTests: XCTestCase {
         try Data("fixture lock".utf8).write(to: lock)
         do { try await f.service.dropStash(stash, in: f.path); XCTFail("lock") } catch {}
         XCTAssertEqual(try Data(contentsOf: lock), Data("fixture lock".utf8))
-        try FileManager.default.removeItem(at: lock)
-        try f.git(["pack-refs", "--all"])
-        do { try await f.service.dropStash(stash, in: f.path); XCTFail("packed") } catch {}
         let list = try await f.service.stashRecords(in: f.path)
         XCTAssertEqual(list.map(\.oid), [stash.oid])
     }
     func testDropPreservesSharedRepositoryRefAndReflogPermissions() async throws {
         let f = try BranchFixture(); defer { f.close() }
-        try f.git(["config", "core.sharedRepository", "group"])
+        try f.git(["config", "core.sharedRepository", "0660"])
         for number in 1...2 {
             try f.write("f.txt", "saved \(number)\n")
             _ = try await f.service.createStash(message: "Saved \(number)", includeUntracked: false, keepIndex: false, in: f.path)

@@ -90,7 +90,7 @@ extension GitService {
     public func applyStash(_ stash: GitStashRecord, pop: Bool = false, in root: String) async throws -> GitStashApplyResult {
         try validStashOID(stash)
         // Apply the immutable commit, never a moving stash@{n}. A failed apply
-        // (conflicts included) does not even enter the removal transaction.
+        // (conflicts included) does not even attempt removal.
         let output = try await run(["stash", "apply", "--index", stash.oid], in: root, environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"])
         let detail = [output.text, output.stderr].filter { !$0.isEmpty }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         guard output.status == 0 else { return GitStashApplyResult(applied: false, removed: false, message: "Git could not apply the stash cleanly. The stash was kept.\n" + detail) }
@@ -104,9 +104,31 @@ extension GitService {
     }
 
     public func dropStash(_ stash: GitStashRecord, in root: String) async throws {
+        try await dropReviewedStash(stash, in: root)
+    }
+    func dropReviewedStash(_ stash: GitStashRecord, in root: String,
+                           beforeVerification: (@Sendable () async throws -> Void)? = nil,
+                           afterPublication: (@Sendable () async throws -> Void)? = nil) async throws {
         try validStashOID(stash)
+        guard stash.selector.hasPrefix("stash@{"), stash.selector.hasSuffix("}"),
+              !stash.selector.dropFirst(7).dropLast().isEmpty,
+              stash.selector.dropFirst(7).dropLast().allSatisfy({ $0 >= "0" && $0 <= "9" }) else {
+            throw GitFailure(message: "Choose the stash again.")
+        }
         let directory = try await stashDirectory(in: root)
+        // The fingerprint also distinguishes identical OIDs at different
+        // reflog positions. Git owns all ref/reflog writes and their locks.
+        guard Self.stashFingerprint(try GitStashStore.readLog(in: directory)) == stash.logFingerprint else {
+            throw GitFailure(message: "The stash list changed. Refresh and choose the stash again.")
+        }
+        try await beforeVerification?()
+        let selected = try await run(["rev-parse", "--verify", "--end-of-options", stash.selector], in: root,
+                                     environment: ["GIT_NO_LAZY_FETCH": "1", "GIT_NO_REPLACE_OBJECTS": "1"])
+        guard selected.status == 0, selected.text.trimmingCharacters(in: .newlines) == stash.oid else {
+            throw GitFailure(message: "The stash list changed. Refresh and choose the stash again.")
+        }
         try Task.checkCancellation()
-        try GitStashStore.drop(stash, in: directory)
+        _ = try await branchCommand(["stash", "drop", "--", stash.selector], in: root)
+        try await afterPublication?()
     }
 }

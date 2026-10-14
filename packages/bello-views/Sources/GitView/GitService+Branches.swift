@@ -174,11 +174,12 @@ extension GitService {
         return try await checkoutBranch(obstruction.branch, from: obstruction.head, newName: obstruction.newName, in: root)
     }
 
-    public func renameBranch(_ branch: GitBranchReference, to name: String, in root: String) async throws {
+    @discardableResult public func renameBranch(_ branch: GitBranchReference, to name: String, in root: String) async throws -> String {
         guard branch.remote == nil else { throw GitFailure(message: "Only local branches can be renamed.") }
         let name = try await branchName(name, in: root)
         try await requireBranch(branch, in: root)
         _ = try await branchCommand(["branch", "-m", "--", branch.name, name], in: root)
+        return "refs/heads/" + name
     }
 
     public func compareBranch(_ branch: GitBranchReference, in root: String, skip: Int = 0) async throws -> GitBranchComparison {
@@ -216,51 +217,19 @@ extension GitService {
     @discardableResult public func deleteBranch(_ review: GitBranchDeletion, allowUnmerged: Bool = false, in root: String) async throws -> String {
         try await deleteReviewedBranch(review, allowUnmerged: allowUnmerged, in: root)
     }
-    /// An optional publication-boundary hook supports real-worktree race tests.
+    /// An optional deletion-boundary hook supports real-worktree race tests.
     @discardableResult func deleteReviewedBranch(_ review: GitBranchDeletion, allowUnmerged: Bool, in root: String,
-                              beforeHeadCollection: (@Sendable () async throws -> Void)? = nil,
-                              beforePublication: (@Sendable () async throws -> Void)? = nil) async throws -> String {
+                              beforeDeletion: (@Sendable () async throws -> Void)? = nil) async throws -> String {
         try await requireNotCheckedOut(review.branch, in: root)
-        try await requireBranch(review.branch, head: review.head, in: root)
         guard review.unmergedCount == 0 || allowUnmerged else { throw GitFailure(message: "This branch has commits not merged into the reviewed HEAD. Explicitly confirm their removal first.") }
-        // Verify HEAD and delete in the SAME ref transaction. Git locks HEAD,
-        // its referent and the target. If HEAD became the target, duplicate ref
-        // updates fail instead of deleting a newly current branch. The expected
-        // target OID also protects commits made after the confirmation.
-        try await beforeHeadCollection?()
-        let heads = try await deletionHeadVerifications(reviewedHead: review.head, in: root)
-        try await beforePublication?()
-        let commands = "start\n" + heads.map { "verify \($0.0) \($0.1)\n" }.joined()
-            + "delete \(review.branch.ref) \(review.branch.oid)\nprepare\ncommit\n"
-        _ = try await branchCommand(["update-ref", "--stdin"], in: root, input: Data(commands.utf8))
-        let warning = await removeDeletedBranchConfiguration(review.branch, in: root)
-        return "Deleted branch \(review.branch.name)." + (warning.map { " " + $0 } ?? "")
-    }
-    private func deletionHeadVerifications(reviewedHead: GitBranchHead, in root: String) async throws -> [(String, String)] {
-        let common = try await branchCommand(["rev-parse", "--path-format=absolute", "--git-common-dir"], in: root).text.trimmingCharacters(in: .newlines)
-        let current = try await branchCommand(["rev-parse", "--path-format=absolute", "--git-dir"], in: root).text.trimmingCharacters(in: .newlines)
-        var aliases: [String] = []
-        if current != common { aliases.append("main-worktree/HEAD") }
-        let directory = common + "/worktrees"
-        if FileManager.default.fileExists(atPath: directory) {
-            let names = try FileManager.default.contentsOfDirectory(atPath: directory)
-            guard names.count <= 1024 else { throw GitFailure(message: "Too many linked worktrees to safely delete a branch here.") }
-            for name in names where current != directory + "/" + name {
-                guard !name.contains(where: { $0.isWhitespace || $0 == "/" }) else { throw GitFailure(message: "An unfamiliar worktree prevents branch deletion.") }
-                aliases.append("worktrees/" + name + "/HEAD")
-            }
-        }
-        // Never replace the reviewed current HEAD with a newer read here.
-        // Otherwise an old 'merged' decision could authorize an unmerged delete.
-        var results: [(String, String)] = [("HEAD", reviewedHead.oid)]
-        for alias in aliases {
-            // Detached HEADs are included. Unborn, unavailable or locked
-            // worktrees fail closed rather than omit a protection.
-            let oid = try await branchCommand(["rev-parse", "--verify", alias], in: root).text.trimmingCharacters(in: .newlines)
-            guard [40, 64].contains(oid.count), oid.allSatisfy(\.isHexDigit) else { throw GitFailure(message: "A worktree HEAD could not be verified. Nothing was deleted.") }
-            results.append((alias, oid))
-        }
-        return results
+        try await beforeDeletion?()
+        try await requireBranch(review.branch, head: review.head, in: root)
+        // Native branch deletion also protects branches reserved by rebase or
+        // bisect in detached worktrees and removes the branch configuration.
+        // Only the separately confirmed unmerged case may use -D.
+        let force = review.unmergedCount > 0 && allowUnmerged
+        _ = try await branchCommand(["branch", force ? "-D" : "-d", "--", review.branch.name], in: root)
+        return "Deleted branch \(review.branch.name)."
     }
 
 }

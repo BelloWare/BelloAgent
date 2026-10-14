@@ -74,6 +74,46 @@ final class GitBranchesTests: XCTestCase {
         do { _ = try await f.service.reviewBranchDeletion(branch, in: f.path); XCTFail("linked worktree") } catch {}
         XCTAssertEqual(try f.git(["rev-parse", branch.ref]).trimmed, branch.oid)
     }
+    func testCannotDeleteBranchReservedByRebaseInAnyWorktree() async throws {
+        for linked in [false, true] { try await checkOperationReservation("rebase", linked: linked) }
+    }
+    func testCannotDeleteBranchReservedByBisectInAnyWorktree() async throws {
+        for linked in [false, true] { try await checkOperationReservation("bisect", linked: linked) }
+    }
+    private func checkOperationReservation(_ operation: String, linked: Bool) async throws {
+        let f = try BranchFixture(); defer { f.close() }
+        _ = try await f.divergedBranch()
+        if operation == "rebase" {
+            try f.write("f.txt", "main conflict\n"); try f.commit("Main conflict")
+        } else {
+            try f.git(["switch", "topic"]); try f.write("f.txt", "second topic\n")
+            try f.commit("Second topic"); try f.git(["switch", "main"])
+        }
+        let worktree = linked ? f.folder.appendingPathComponent("linked").path : f.path
+        if linked { try f.git(["worktree", "add", worktree, "topic"]) }
+        else { try f.git(["switch", "topic"]) }
+        if operation == "rebase" {
+            XCTAssertEqual(try f.gitStatus(["-C", worktree, "rebase", "main"]), 1, "The conflicting rebase must pause")
+        } else { try f.git(["-C", worktree, "bisect", "start", "topic", "main"]) }
+        XCTAssertNotEqual(try f.gitStatus(["-C", worktree, "symbolic-ref", "HEAD"]), 0)
+        let branch = try await f.branch("topic"), review = try await f.service.reviewBranchDeletion(branch, in: f.path)
+        XCTAssertGreaterThan(review.unmergedCount, 0)
+        let before = try f.snapshot(), index = try f.git(["-C", worktree, "ls-files", "--stage"])
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: worktree + "/f.txt"))
+        let reservation = try f.git(["-C", worktree, "rev-parse", "--path-format=absolute", "--git-path",
+                                     operation == "rebase" ? "rebase-merge/head-name" : "BISECT_START"]).trimmed
+        let reserved = try Data(contentsOf: URL(fileURLWithPath: reservation))
+        XCTAssertNotEqual(try f.gitStatus(["branch", "-D", "topic"]), 0, "Native Git recognizes this operation reservation")
+        do {
+            try await f.service.deleteBranch(review, allowUnmerged: true, in: f.path)
+            XCTFail("Even explicit unmerged consent cannot remove a branch reserved by \(operation)")
+        } catch {}
+        XCTAssertEqual(try? f.git(["rev-parse", branch.ref]).trimmed, branch.oid)
+        XCTAssertEqual(try f.snapshot(), before)
+        XCTAssertEqual(try f.git(["-C", worktree, "ls-files", "--stage"]), index)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: worktree + "/f.txt")), bytes)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: reservation)), reserved)
+    }
     func testLinkedWorktreeSwitchAtPublicationCannotDeleteItsNewCurrentBranch() async throws {
         let f = try BranchFixture(); defer { f.close() }
         try f.git(["branch", "target"]); try f.git(["branch", "other"])
@@ -82,10 +122,10 @@ final class GitBranchesTests: XCTestCase {
         let branch = try await f.branch("target"), review = try await f.service.reviewBranchDeletion(branch, in: f.path)
         let service = f.service
         do {
-            try await service.deleteReviewedBranch(review, allowUnmerged: false, in: f.path, beforePublication: {
+            try await service.deleteReviewedBranch(review, allowUnmerged: false, in: f.path, beforeDeletion: {
                 try await service.checkout("target", in: linked)
             })
-            XCTFail("The transaction must protect every registered worktree HEAD")
+            XCTFail("Native deletion must protect every registered worktree HEAD")
         } catch {}
         XCTAssertEqual(try f.git(["rev-parse", "target"]).trimmed, branch.oid)
         XCTAssertEqual(try f.git(["-C", linked, "symbolic-ref", "HEAD"]).trimmed, branch.ref)
@@ -103,7 +143,7 @@ final class GitBranchesTests: XCTestCase {
         do { try await f.service.deleteBranch(review, allowUnmerged: true, in: f.path); XCTFail("moved") } catch {}
         XCTAssertEqual(try f.git(["rev-parse", "topic"]), tip)
     }
-    func testHEADMovingDuringLockCollectionCannotReuseMergedConsent() async throws {
+    func testHEADMovingBeforeNativeDeletionCannotReuseMergedConsent() async throws {
         let f = try BranchFixture(); defer { f.close() }
         try f.git(["branch", "base"])
         let branch = try await f.divergedBranch()
@@ -112,7 +152,7 @@ final class GitBranchesTests: XCTestCase {
         XCTAssertEqual(review.unmergedCount, 0)
         let service = f.service, root = f.path
         do {
-            try await service.deleteReviewedBranch(review, allowUnmerged: false, in: root, beforeHeadCollection: {
+            try await service.deleteReviewedBranch(review, allowUnmerged: false, in: root, beforeDeletion: {
                 try await service.checkout("base", in: root)
             })
             XCTFail("A merged review must stay bound to the reviewed HEAD")
