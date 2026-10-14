@@ -297,7 +297,7 @@ public actor NativeHostService {
     /// The read-only commands: a repeat runs one again, where a command that
     /// changes something is answered from the reply it was first sent
     /// (`receive`). Every `session.content.` command reads too.
-    static let readOnlyMethods: Set<String> = ["display.result.read","clock.sync","runtime.info","resources.inspect","resources.skill.read","session.status","session.snapshot","session.history","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","subagent.list","queue.read","queue.edit.status","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"]
+    static let readOnlyMethods: Set<String> = ["display.result.read","clock.sync","runtime.info","resources.inspect","resources.skill.read","session.status","session.snapshot","session.history","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","budget.attempts","subagent.list","queue.read","queue.edit.status","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"]
     static func isReadOnly(_ method: String) -> Bool { readOnlyMethods.contains(method) || method.hasPrefix("session.content.") }
     /// Runs one command. The host checks, in this order, that it is not
     /// closing, that a workspace is open, that the command names a session,
@@ -520,6 +520,12 @@ public actor NativeHostService {
         let resources=workspace.resources, nativeTools=workspace.nativeTools
         try await session.requireSubagentCommand(method)
         switch method {
+        case "budget.attempts": return try await session.budgetAttempts(after: params["after"].text)
+        case "budget.reconcile":
+            return try await withRuntimeGate {
+                try await releaseFamilyReaders(owner: id)
+                return try await session.reconcileCapturedAccounting(params["evidence"].list)
+            }
         case "subagent.list":
             let cursor = try boundedInt(params["cursor"], maximum: Int.max), limit = try boundedInt(params["limit"], fallback: 100, maximum: 256)
             let coordinator = subagentCoordinator ?? SubagentCoordinator()

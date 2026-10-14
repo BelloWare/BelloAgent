@@ -12,6 +12,8 @@ public struct ToolCall: Sendable {
     public let arguments: JSON
     /// Helper-owned MCP configuration ceiling; never parsed from model arguments.
     var mcpPolicy: JSON?
+    /// Physical owner supplied by the session, never model-controlled arguments.
+    var outputSessionID: String?
     public init(id: String, name: String, arguments: JSON) { self.id=id; self.name=name; self.arguments=arguments }
 }
 public struct ModelTerminalOutcome: Sendable {

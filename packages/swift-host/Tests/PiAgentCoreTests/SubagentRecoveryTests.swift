@@ -2,6 +2,82 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentRecoveryTests: XCTestCase {
+    func testCapturedTerminalCostRepairsOwnerAndMirrorExactlyOnceBeforeResume() async throws {
+        let fixture = try RecoveryFixture(); defer { fixture.remove() }
+        try fixture.write(childStatus: .running, admission: "dispatched")
+        do {
+            let journal = try SessionJournal(url: fixture.root.appendingPathComponent("parent.jsonl"), id: "parent", cwd: fixture.root, binding: nil, create: false)
+            try journal.append(["type":"custom", "customType":JSON(JournalRecordKind.cost), "data":["usd":0.9,"reported":1,"unreported":0,"source":"family-adoption"]])
+        }
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd":JSON(fixture.root.path),"directory":JSON(fixture.root.path)])
+        _ = try await host.command("session.open", sessionID: "parent", params: ["profile":fixture.profile.raw,"apiKey":"fixture","costLimit":["usd":1],"path":JSON(fixture.root.appendingPathComponent("parent.jsonl").path)])
+        do {
+            let attempts = try await host.command("budget.attempts", sessionID: "parent", params: [:])
+            XCTAssertEqual(attempts["attemptIds"].list.compactMap(\.text), ["physical"])
+            let evidence: JSON = ["attemptId":"physical", "sessionId":"child", "turnId":"turn", "purpose":"turn", "outcome":"completed",
+                "requestScope":try subagentJSON(fixture.scope), "gateway":["cost":["status":"reported","usd":0.2]], "usage":["inputIncludingCache":20,"output":5]]
+            for _ in 0..<2 { _ = try await host.command("budget.reconcile", sessionID: "parent", params: ["evidence":.array([evidence])]) }
+            let loaded = await host.loadedSession("parent"), parent = try XCTUnwrap(loaded), spend = await parent.spend
+            XCTAssertEqual(spend.usd, 1.1, accuracy: 0.000001); XCTAssertEqual(spend.reported, 2); XCTAssertEqual(spend.unreported, 0)
+            _ = try await host.command("run.continue", sessionID: "parent", params: [:], commandID: "resume")
+            try await eventually { !(await parent.isRunning) }
+            let state = await parent.snapshot()
+            XCTAssertEqual(state["errorCode"].text, "cost_limit", "Resume must stop before dispatch against the repaired total")
+            let child = try fixture.openChild(), mirrored = await child.spend
+            XCTAssertEqual(mirrored.usd, 0.2); XCTAssertEqual(mirrored.reported, 1)
+            await child.close()
+            var foreign = evidence; foreign["sessionId"] = "other"
+            do { _ = try await host.command("budget.reconcile", sessionID: "parent", params: ["evidence":.array([foreign])]); XCTFail("Foreign evidence accepted") } catch { }
+        } catch { XCTFail("Retained terminal capture cannot reconcile the ledger: \(error)") }
+        await host.shutdown()
+        let restored = try fixture.open(), spend = await restored.spend
+        XCTAssertEqual(spend.usd, 1.1, accuracy: 0.000001)
+        await restored.close()
+    }
+
+    func testCapturedEvidenceCannotImportUnregisteredForeignOrUndispatchedCharges() async throws {
+        for kind in ["unregistered", "source", "turn", "owner", "scope", "running", "admitted", "unknown"] {
+            let fixture = try RecoveryFixture(); defer { fixture.remove() }
+            try fixture.write(childStatus: .running, admission: kind == "admitted" ? "admitted" : "dispatched")
+            let parent = try fixture.open()
+            var evidence: JSON = ["attemptId":"physical", "sessionId":"child", "turnId":"turn", "purpose":"turn", "outcome":"completed",
+                "requestScope":try subagentJSON(fixture.scope), "gateway":["cost":["status":"reported","usd":0.2]]]
+            switch kind {
+            case "unregistered": evidence["attemptId"] = "other"
+            case "source": evidence["sessionId"] = "other"
+            case "turn": evidence["turnId"] = "other"
+            case "owner": evidence["requestScope"]["budgetOwnerSessionID"] = "other"
+            case "scope": evidence["requestScope"]["executionID"] = "other"
+            case "running": evidence["outcome"] = "running"
+            case "unknown": evidence["gateway"]["cost"] = ["status":"unreported"]
+            default: break
+            }
+            do { _ = try await parent.reconcileCapturedAccounting([evidence]); XCTAssertEqual(kind, "unknown", "Invalid evidence was accepted: " + kind) }
+            catch { XCTAssertNotEqual(kind, "unknown") }
+            let spend = await parent.spend
+            XCTAssertEqual(spend.usd, 0); XCTAssertEqual(spend.unreported, kind == "admitted" ? 0 : 1)
+            await parent.close()
+        }
+    }
+
+    func testFailedCapturedCostMirrorKeepsTheOwnerChargeAndRepairsOnReopen() async throws {
+        let fixture = try RecoveryFixture(); defer { fixture.remove() }
+        try fixture.write(childStatus: .running, admission: "dispatched")
+        let parent = try fixture.open(), locked = try fixture.openChild()
+        let evidence: JSON = ["attemptId":"physical", "sessionId":"child", "turnId":"turn", "purpose":"turn", "outcome":"completed",
+            "requestScope":try subagentJSON(fixture.scope), "gateway":["cost":["status":"reported","usd":0.2]]]
+        do { _ = try await parent.reconcileCapturedAccounting([evidence]); XCTFail("An unavailable mirror cannot report successful settlement") } catch { }
+        let charged = await parent.spend, failure = await parent.accountingFailure
+        XCTAssertEqual(charged.usd, 0.2); XCTAssertNotNil(failure)
+        await parent.close(); await locked.close()
+        let restored = try fixture.open(), repaired = try fixture.openChild()
+        let ownerSpend = await restored.spend, childSpend = await repaired.spend
+        XCTAssertEqual(ownerSpend.usd, 0.2); XCTAssertEqual(ownerSpend.reported, 1)
+        XCTAssertEqual(childSpend.usd, 0.2); XCTAssertEqual(childSpend.reported, 1)
+        await restored.close(); await repaired.close()
+    }
+
     func testParentOpenReleasesEveryRestoredFamilyReaderAndInvalidatesTheViewers() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let profile = try fixtureProfile(), frames = RecoveryUnloadFrames()
@@ -79,6 +155,23 @@ final class SubagentRecoveryTests: XCTestCase {
             let spend = await parent.spend
             XCTAssertEqual(spend.unreported, stage == "dispatched" ? 1 : 0, stage)
             await parent.close()
+        }
+    }
+
+    func testMissingExecutedChildBlocksRecoveryButNeverDispatchedChildDoesNot() async throws {
+        for state in ["admitted", "dispatched"] {
+            let fixture = try RecoveryFixture(); defer { fixture.remove() }
+            try fixture.write(childStatus: .running, admission: state)
+            try FileManager.default.removeItem(at: fixture.root.appendingPathComponent("child.jsonl"))
+            if state == "dispatched" {
+                XCTAssertThrowsError(try fixture.open()) { XCTAssertEqual(($0 as? AgentError)?.code, "subagent_recovery") }
+                let records = try String(contentsOf: fixture.root.appendingPathComponent("parent.jsonl"), encoding: .utf8)
+                XCTAssertTrue(records.contains("toolCall"), "Saved history remains inspectable")
+            } else {
+                let parent = try fixture.open(), result = await parent.history.first { $0.toolName == "subagent" }
+                XCTAssertEqual(result?.nativeSubagent?["status"].text, "not_executed")
+                await parent.close()
+            }
         }
     }
 
@@ -209,6 +302,7 @@ private struct RecoveryFixture {
     let root: URL, profile: Profile
     let plan = SubagentPlan(origin: subagentFixtureOrigin(), task: "task", resultMessageID: "result")
     init() throws { root = try temporaryDirectory(); profile = try fixtureProfile() }
+    var scope: RequestScope { RequestScope(sourceSessionID: "child", budgetOwnerSessionID: "parent", turnID: "turn", executionID: "child-run", purpose: "turn", ownerGeneration: 0, delegation: plan.origin.link) }
     func remove() { try? FileManager.default.removeItem(at: root) }
     func write(plan hasPlan: Bool = true, childStatus: SubagentStatus? = nil, terminal: SubagentToolResult? = nil,
                admission: String? = nil, ownerCost: Bool = false, childCost: Bool = false, damage: String? = nil, oldResult: Bool = false) throws {
@@ -220,7 +314,7 @@ private struct RecoveryFixture {
         assistant.id = "reply"; assistant.turn = "turn"
         try parent.append(["type":"message", "message":assistant.pi], id: assistant.id)
         if hasPlan { try parent.append(["type":"custom","customType":JSON(JournalRecordKind.subagentCall),"data":try subagentJSON(plan)]) }
-        if let admission { var record = admissionRecord("physical"); record["state"] = JSON(admission)
+        if let admission { var record = admissionRecord("physical"); record["state"] = JSON(admission); record["scope"] = try subagentJSON(scope)
             try parent.append(["type":"custom","customType":JSON(JournalRecordKind.budgetAttempt),"data":record]) }
         let cost = costRecord("physical", usd: 0.75, revision: 2)
         if ownerCost { try parent.append(["type":"custom","customType":JSON(JournalRecordKind.cost),"data":cost]) }

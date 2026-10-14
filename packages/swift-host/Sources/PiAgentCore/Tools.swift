@@ -285,7 +285,7 @@ public actor NativeTools: ToolExecuting {
         case "bash":
             let command=try required(p["command"],"command",maximum:262144), timeout=try boundedInt(p["timeout"],fallback:120,maximum:600)
             guard timeout > 0 else { throw AgentError("tool_arguments", "Timeout must be positive") }
-            return try await ShellRun(command:command,cwd:cwd,outputDirectory:outputs,onUpdate:onUpdate).run(timeoutSeconds:timeout)
+            return try await ShellRun(command:command,cwd:cwd,outputDirectory:try call.outputSessionID.map { try ToolOutputOwnership.directory(root: outputs, sessionID: $0, create: true) } ?? outputs,onUpdate:onUpdate).run(timeoutSeconds:timeout)
         case "write", "edit":
             // Off the actor, like reads: edits and writes run at the same
             // time as each other and as every other call (owner, 2026-10-08).

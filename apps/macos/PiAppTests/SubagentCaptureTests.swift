@@ -33,6 +33,44 @@ final class SubagentCaptureTests: XCTestCase {
         try await archive.begin(value, workspace: workspace); try await archive.finish(value)
     }
 
+    func testBudgetEvidenceUsesRegisteredIDsOwnerWorkspaceAndRetainedTerminalMetadata() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = try await archive(root)
+        var ids: [String] = [], expected: String?
+        for (session, owner, workspace, outcome) in [("child", "parent", "workspace", "completed"), ("foreign", "parent", "foreign", "completed"), ("other", "other-parent", "workspace", "completed"), ("live", "parent", "workspace", "running")] {
+            var value = try metadata(session, cost: 0.2, owner: owner)
+            value["outcome"] = .string(outcome); value["requestHeaders"] = .object(["fixture":.string("private")])
+            let id = try XCTUnwrap(value["attemptId"]?.string); ids.append(id)
+            if session == "child" { expected = id }
+            try await save(value, to: archive, workspace: workspace)
+        }
+        let evidence = try await archive.budgetEvidence(attempts: ids, owner: "parent", workspace: "workspace")
+        XCTAssertEqual(evidence.compactMap { $0.object?["attemptId"]?.string }, [try XCTUnwrap(expected)])
+        XCTAssertNil(evidence.first?.object?["requestHeaders"])
+        let absent = try await archive.budgetEvidence(attempts: ["not-registered"], owner: "parent", workspace: "workspace")
+        XCTAssertTrue(absent.isEmpty)
+        try await archive.close()
+    }
+
+    func testFamilyOutputSpeedIncludesEachPhysicalAttemptsTTFTExactlyOnce() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = try await archive(root)
+        for (session, owner, ttft, span) in [("parent", nil, 1_000.0, 1_000.0), ("child", "parent", 3_000.0, 1_000.0)] as [(String, String?, Double, Double)] {
+            var value = try metadata(session, cost: 0.1, owner: owner)
+            value["modelOutcome"] = .string("completed")
+            value["timings"] = .object(["dispatch":.number(100),"firstContent":.number(100 + ttft),"lastContent":.number(100 + ttft + span),"modelComplete":.number(100 + ttft + span + 500)])
+            value["usage"] = .object(["output":.number(60)])
+            try await save(value, to: archive)
+        }
+        let parent = try await archive.gatewayAccounting(sessionID: "parent", workspaceID: "workspace", messages: [])
+        XCTAssertEqual(parent.session.decodeMilliseconds, 6_000); XCTAssertEqual(parent.session.decodeOutputTokens, 120)
+        let inspector = try await archive.sessionMetrics(sessionID: "parent", workspaceID: "workspace", until: Date(timeIntervalSince1970: 2001), includeFamily: true)
+        XCTAssertEqual(inspector.gateway.decodeMilliseconds, 6_000)
+        let child = try await archive.gatewayAccounting(sessionID: "child", workspaceID: "workspace", messages: [])
+        XCTAssertEqual(child.session.decodeMilliseconds, 4_000)
+        try await archive.close()
+    }
+
     @MainActor func testCaptureControlsUseTheParentPreference() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
