@@ -345,8 +345,26 @@ final class WebhookTests: XCTestCase {
         XCTAssertEqual(saved?.webhookOff, true, "The switch is saved with the chat")
         XCTAssertFalse(live.model.sendsWebhook(live.chat.id))
         await live.send("second message")
-        await live.waitUntil("The second run never finished") { !live.session.busy && live.session.messages.contains { $0.text.contains("Fixture reply: second message") } }
-        try await Task.sleep(for: .seconds(2))
+        do {
+            try await eventually("the second run finishes and its reply is displayed", timeout: .seconds(60), poll: .milliseconds(50)) {
+                live.draw()
+                return !live.session.busy && live.session.messages.contains { $0.text.contains("Fixture reply: second message") }
+            }
+        } catch {
+            // Separate a slow helper from a lost native publication if this
+            // full-lane failure recurs; app state alone cannot distinguish it.
+            let host = try XCTUnwrap(live.model.hosts[live.chat.workspaceID])
+            let snapshot = try await host.request("session.snapshot", sessionID: live.chat.id)
+            let captures = try await live.gatewayRecords()
+            XCTFail("Second run: helper=\(snapshot.pretty), app=\(live.session.state), snapshotInFlight=\(live.session.snapshotInFlight), dirty=\(live.session.dirty), sequence=\(live.session.lastSequence), gatewayRequests=\(captures.count)")
+            throw error
+        }
+        // Completion observes the off switch before publishing idle. Join
+        // that publication and any earlier webhook instead of sleeping and
+        // hoping a duplicate send would have arrived inside that window.
+        try await eventually("final snapshots and webhook deliveries are drained", timeout: .seconds(60)) {
+            !live.session.snapshotInFlight && live.model.webhookTasks.isEmpty
+        }
         XCTAssertEqual(receiver.requests.count, 1, "A chat with its webhook off sends none")
         closed = true; await live.close()
     }

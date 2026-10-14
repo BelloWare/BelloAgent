@@ -62,6 +62,14 @@ final class DraftWriteEvents: @unchecked Sendable {
 }
 
 actor MetadataStore {
+    /// Input records can hold an edited message, its displaced draft and a
+    /// queued rewrite. Each supported 256 KiB text can expand sixfold in JSON
+    /// (control characters), with room left for image and skill descriptors.
+    /// This is desktop input storage, independent of request capture.
+    static let inputRecordByteLimit = 8 * 1024 * 1024
+    private static func recordByteLimit(_ kind: String) -> Int {
+        kind == "draft" || kind.hasPrefix("pending:") ? inputRecordByteLimit : 524_288
+    }
     nonisolated let draftWrites = DraftWriteEvents()
     /// Draft writes so far, and those of a transaction not yet committed.
     private var draftSequence = 0
@@ -144,13 +152,14 @@ actor MetadataStore {
         } else { savedRevision = try revision ?? reserveRevision(kind: kind, id: id) }
         let data: Data
         if kind == "chat", var chat = value as? ChatRecord {
+            guard try get(String.self, kind: "session-deleted", id: id) == nil else { throw StoreError.invalidRecord }
             // A chat's record is written from many places at once; what an
             // older copy may not take back is in `ChatRecordMerge.swift`.
             if let previous = try get(ChatRecord.self, kind: kind, id: id) { chat = chat.merged(over: previous, releasingTitleClaim: releasingTitleClaim) }
             if let topicID = chat.topicID { chat = chat.fitting(topic: try get(TopicRecord.self, kind: TopicRecord.recordKind, id: topicID)) }
             data = try JSONEncoder().encode(chat)
         } else { data = try JSONEncoder().encode(value) }
-        guard data.count <= 524_288 else { throw StoreError.invalidRecord }
+        guard data.count <= Self.recordByteLimit(kind) else { throw StoreError.invalidRecord }
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, "INSERT INTO records VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET value=excluded.value,revision=excluded.revision WHERE excluded.revision>=records.revision", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         defer { sqlite3_finalize(statement) }
@@ -163,13 +172,39 @@ actor MetadataStore {
         if kind == "draft", let draft = value as? DraftRecord { noteDraftWrite(id, draft.holdsUnsentDraft) }
         if kind.hasPrefix("receipt:") { try prune(kind: kind, keeping: 128) }
     }
+    /// Update only the cost choice from the latest durable chat. The revision
+    /// also protects it from unrelated writes holding an older chat copy.
+    func updateChatCostLimit(id: String, limit: CostLimit?) throws -> ChatRecord {
+        guard var chat = try get(ChatRecord.self, kind: "chat", id: id), limit?.isValid != false else { throw StoreError.invalidRecord }
+        let revision = try reserveRevision(kind: "chat", id: id)
+        chat.costLimit = limit; chat.costLimitRevision = revision
+        try put(chat, kind: "chat", id: id, revision: revision)
+        return chat
+    }
     /// Freeze the previous sidebar order once when upgrading older records.
     /// Later metadata writes (renaming, opening or changing a model) cannot move
     /// a chat unexpectedly. This only migrates desktop metadata, never journals.
     func loadChats(profiles: [ProfileRecord] = []) throws -> [ChatRecord] {
         let database = try ready()
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, "SELECT value,revision FROM records WHERE kind='chat' ORDER BY revision DESC,id ASC LIMIT 10000", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        // Preserve the ordinary-chat window. Managed children are durable
+        // members of a family, not competing roots: they must neither evict
+        // their owner nor disappear behind this unrelated desktop limit.
+        let query = """
+            WITH chats AS (
+                SELECT value,revision,id,CASE WHEN length(value)>524288 THEN NULL WHEN json_valid(CAST(value AS TEXT))
+                    THEN json_type(CAST(value AS TEXT),'$.delegation') ELSE NULL END AS delegation
+                FROM records WHERE kind='chat'
+            ), roots AS (
+                SELECT value,revision,id FROM chats WHERE delegation IS NOT 'object'
+                ORDER BY revision DESC,id ASC LIMIT 10000
+            )
+            SELECT value,revision FROM (
+                SELECT value,revision,id FROM roots UNION ALL
+                SELECT value,revision,id FROM chats WHERE delegation='object'
+            ) ORDER BY revision DESC,id ASC
+            """
+        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         var values: [(ChatRecord, Int64)] = []
         do {
             defer { sqlite3_finalize(statement) }
@@ -230,11 +265,20 @@ actor MetadataStore {
         let started = ProcessInfo.processInfo.systemUptime
         let result = try transaction {
             var result = ChatOrganizationBatch(), seen: Set<String> = []
+            var family: Set<String> = []
+            if case .archived = change {
+                let owners = try ids.compactMap { try get(ChatRecord.self, kind: "chat", id: $0) }.filter { !$0.isSubagent }
+                let projects = Dictionary(owners.map { ($0.id, $0.workspaceID) }, uniquingKeysWith: { first, _ in first })
+                for row in try organizationRows() {
+                    if let link = row.delegation, link.valid, link.childSessionID == row.id,
+                       projects[link.budgetOwnerSessionID] == row.workspaceID { family.insert(row.id) }
+                }
+            }
             var patches: [ChatRecord] = []
-            for id in ids where seen.insert(id).inserted {
+            for id in ids + family.sorted() where seen.insert(id).inserted {
                 do {
                     guard let original = try get(ChatRecord.self, kind: "chat", id: id) else { result.missing.insert(id); continue }
-                    guard original.id == id else { result.rejected.insert(id); continue }
+                    guard original.id == id, !original.isSubagent || family.contains(id) else { result.rejected.insert(id); continue }
                     var chat = original
                     try changeOrganization(&chat, change: change, now: now)
                     if chat == original { result.unchanged.insert(id) }
@@ -328,7 +372,7 @@ actor MetadataStore {
             var selected: [String: ChatRecord] = [:]
             for id in ids.sorted() {
                 guard let chat = try get(ChatRecord.self, kind: "chat", id: id), chat.workspaceID == workspaceID,
-                      !chat.isUtilityChat else { throw StoreError.invalidRecord }
+                      !chat.isUtilityChat, !chat.isSubagent else { throw StoreError.invalidRecord }
                 selected[id] = chat
             }
             // A kept side can commit just before its UI row is published.
@@ -403,6 +447,7 @@ actor MetadataStore {
     /// database on every drop, which is most of what a drag costs.
     private struct OrganizationRow: Decodable {
         var id: String; var workspaceID: String; var topicID: String?; var parentSessionID: String?
+        var delegation: SubagentLink?
         var backgroundTask: String?; var connectionTest: Bool?
         var pinnedAt: Date?; var archivedAt: Date?
         var isBackgroundTask: Bool { backgroundTask != nil }
@@ -443,7 +488,7 @@ actor MetadataStore {
         var result = sqlite3_step(statement)
         while result == SQLITE_ROW {
             let size = Int(sqlite3_column_bytes(statement, 0))
-            guard size <= 524_288, let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
+            guard size <= Self.recordByteLimit(kind), let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
             if let value = try? JSONDecoder().decode(type, from: Data(bytes: bytes, count: size)) { values.append(value) }
             result = sqlite3_step(statement)
         }
@@ -461,7 +506,7 @@ actor MetadataStore {
         if result == SQLITE_DONE { return nil }
         guard result == SQLITE_ROW else { throw StoreError.unavailable }
         let size = Int(sqlite3_column_bytes(statement, 0))
-        guard size <= 524_288, let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
+        guard size <= Self.recordByteLimit(kind), let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
         if type == ChatRecord.self { decodedChats += 1 }
         return try JSONDecoder().decode(type, from: Data(bytes: bytes, count: size))
     }
@@ -625,6 +670,77 @@ actor MetadataStore {
 
     /// Several chat records in one transaction, each written as `put` writes
     /// it: launch settling every background request a quit left, at once.
+    /// Rebase discovery on the owner's latest durable organization in one
+    /// actor turn. A delayed scan cannot restore a deleted or moved family.
+    func beginFamilyDeletion(_ members: [SessionDeletionRecord]) throws {
+        try transaction {
+            guard let owner = members.first?.ownerID, members.contains(where: { $0.id == owner }),
+                  Set(members.map(\.id)).count == members.count, Set(members.map(\.workspaceID)).count == 1,
+                  members.allSatisfy({ $0.ownerID == owner && ($0.id == owner || UUID(uuidString: $0.id) != nil) }) else { throw StoreError.invalidRecord }
+            for member in members {
+                try put(owner, kind: "session-deleted", id: member.id)
+                try put(member, kind: SessionDeletionRecord.kind, id: member.id)
+            }
+        }
+    }
+
+    /// Recovery must see the complete durable manifest, including families
+    /// larger than the generic metadata listing's desktop window. A damaged
+    /// intent fails closed instead of silently leaving a member behind.
+    func pendingFamilyDeletions() throws -> [SessionDeletionRecord] {
+        let database = try ready()
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "SELECT value FROM records WHERE kind=? ORDER BY id", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, SessionDeletionRecord.kind, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        var values: [SessionDeletionRecord] = [], result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            let size = Int(sqlite3_column_bytes(statement, 0))
+            guard size <= Self.recordByteLimit(SessionDeletionRecord.kind), let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
+            values.append(try JSONDecoder().decode(SessionDeletionRecord.self, from: Data(bytes: bytes, count: size)))
+            result = sqlite3_step(statement)
+        }
+        guard result == SQLITE_DONE else { throw StoreError.unavailable }
+        return values
+    }
+
+    func registerSubagent(_ found: DiscoveredSubagent, workspaceID: String) throws -> ChatRecord? {
+        let header = found.header, link = header.link
+        guard link.valid, try get(String.self, kind: "session-deleted", id: link.childSessionID) == nil,
+              try get(String.self, kind: "session-deleted", id: link.budgetOwnerSessionID) == nil else { return nil }
+        let parent = try get(ChatRecord.self, kind: "chat", id: link.budgetOwnerSessionID)
+        let validParent = parent.flatMap { $0.workspaceID == workspaceID && !$0.isSubagent && !$0.imported ? $0 : nil }
+        let issue = found.issue ?? (validParent == nil ? "The parent chat is unavailable. This saved sub-agent is view-only." : nil)
+        let old = try get(ChatRecord.self, kind: "chat", id: link.childSessionID)
+        // Directory discovery and live opening can spell the same validated
+        // journal differently (/var and /private/var on macOS). Compare file
+        // identity canonically without accepting a different journal or origin.
+        let path = URL(fileURLWithPath: found.path).resolvingSymlinksInPath().path
+        if let old { guard old.workspaceID == workspaceID, old.delegation == nil || old.delegation == link,
+            old.path.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }) == path else { throw StoreError.invalidRecord } }
+        var child = old ?? ChatRecord(id: link.childSessionID, workspaceID: workspaceID, title: header.description, path: found.path,
+            profileID: validParent?.profileID ?? "", toolMode: header.readOnly ? ChatRecord.readOnlyTools : ChatRecord.editingTools,
+            model: header.model.model, thinkingLevel: header.model.thinkingLevel, contextWindow: header.model.contextWindow,
+            maxOutputTokens: header.model.maxOutputTokens, modelOutputLimit: header.model.modelOutputLimit,
+            parentSessionID: issue == nil ? link.budgetOwnerSessionID : nil, delegation: link)
+        // Older desktop encoders drop unknown fields. The validated child
+        // header and reciprocal parent plan rebuild an absent identity; a
+        // conflicting identity or a different file still fails above.
+        child.delegation = link
+        child.path = path
+        // Small metadata preview; the complete task remains in the owner's
+        // journal and the ordinary child's user message once it starts.
+        if !found.task.isEmpty { child.delegationTask = String(found.task.prefix(4096)) }
+        child.delegationIssue = issue ?? old?.delegationIssue
+        if child.delegationIssue != nil { child.parentSessionID = nil }
+        if let parent = validParent, child.delegationIssue == nil {
+            child.archivedAt = parent.archivedAt; child.topicID = parent.topicID; child.pinnedAt = nil
+            child.parentSessionID = parent.id
+        }
+        if child != old { try put(child, kind: "chat", id: child.id) }
+        return child
+    }
+
     func putChats(_ records: [ChatRecord]) throws {
         let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
@@ -754,8 +870,14 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     /// Saved side conversations keep their parent relationship across restarts.
     /// Independent forks and ordinary chats have no parent.
     var parentSessionID: String?
+    /// Managed task identity. Unlike a side, this chat has no independent input.
+    var delegation: SubagentLink?
+    var delegationTask: String?
+    var delegationIssue: String?
+    var isSubagent: Bool { delegation != nil }
     /// This chat's own cost limit; nil runs it under the Settings default.
     var costLimit: CostLimit?
+    var costLimitRevision: Int64?
     /// True when this chat sends no webhook when it finishes; nil follows Settings.
     var webhookOff: Bool?
     /// When the chat's connection last changed (`WorkspaceConnectionSwitch.swift`):
@@ -845,6 +967,10 @@ extension ChatRecord {
         backgroundTaskOutcome = try c.decodeIfPresent(String.self, forKey: .backgroundTaskOutcome); backgroundTaskResult = try c.decodeIfPresent(String.self, forKey: .backgroundTaskResult)
         organizationRevision = try c.decodeIfPresent(Int64.self, forKey: .organizationRevision); topicID = try c.decodeIfPresent(String.self, forKey: .topicID)
         parentSessionID = try c.decodeIfPresent(String.self, forKey: .parentSessionID); costLimit = try c.decodeIfPresent(CostLimit.self, forKey: .costLimit)
+        delegation = try c.decodeIfPresent(SubagentLink.self, forKey: .delegation)
+        delegationTask = try c.decodeIfPresent(String.self, forKey: .delegationTask)
+        delegationIssue = try c.decodeIfPresent(String.self, forKey: .delegationIssue)
+        costLimitRevision = try c.decodeIfPresent(Int64.self, forKey: .costLimitRevision)
         webhookOff = try c.decodeIfPresent(Bool.self, forKey: .webhookOff); connectionRevision = try c.decodeIfPresent(Int64.self, forKey: .connectionRevision)
         journalRebind = try c.decodeIfPresent(Bool.self, forKey: .journalRebind)
     }

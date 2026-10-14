@@ -26,7 +26,7 @@ enum MenuBarPeriod: String, CaseIterable, Identifiable, Hashable, Sendable {
 }
 
 /// One time slice of the status-bar charts: requests, reported cost and the
-/// settled decode rate (`gateway.settledThroughput`) of the attempts
+/// settled output speed (`gateway.settledThroughput`) of the attempts
 /// dispatched inside it.
 struct MenuBarBucket: Sendable, Identifiable, Equatable {
     let id: Int
@@ -105,18 +105,19 @@ struct UsageSnapshotKey: Hashable, Sendable {
     let sessionID: String?
     let workspaceID: String?
     var from: Date? = nil
+    var includeFamily = false
 }
 
 extension PayloadArchive {
     func menuBarMetrics(period: MenuBarPeriod, until: Date = Date(), offset: Int = 0, from: Date? = nil, workspaceID: String? = nil) async throws -> MenuBarSnapshot {
         try await readUsageMetrics(period: period, until: until, offset: offset, workspaceID: workspaceID, from: from)
     }
-    func sessionMetrics(sessionID: String, workspaceID: String, until: Date = Date(), offset: Int = 0) async throws -> MenuBarSnapshot {
+    func sessionMetrics(sessionID: String, workspaceID: String, until: Date = Date(), offset: Int = 0, includeFamily: Bool = false) async throws -> MenuBarSnapshot {
         guard [sessionID, workspaceID].allSatisfy({ !$0.isEmpty && $0.utf8.count <= 128 && !$0.utf8.contains(where: { $0 < 32 || $0 == 127 }) }) else { throw CaptureFailure.unavailable }
-        return try await readUsageMetrics(period: .retained, until: until, offset: offset, sessionID: sessionID, workspaceID: workspaceID)
+        return try await readUsageMetrics(period: .retained, until: until, offset: offset, sessionID: sessionID, workspaceID: workspaceID, includeFamily: includeFamily)
     }
-    private func readUsageMetrics(period: MenuBarPeriod, until: Date, offset: Int, sessionID: String? = nil, workspaceID: String? = nil, from: Date? = nil) async throws -> MenuBarSnapshot {
-        let key = UsageSnapshotKey(period: period, sessionID: sessionID, workspaceID: workspaceID, from: from)
+    private func readUsageMetrics(period: MenuBarPeriod, until: Date, offset: Int, sessionID: String? = nil, workspaceID: String? = nil, from: Date? = nil, includeFamily: Bool = false) async throws -> MenuBarSnapshot {
+        let key = UsageSnapshotKey(period: period, sessionID: sessionID, workspaceID: workspaceID, from: from, includeFamily: includeFamily)
         let generation = usageReadGeneration
         let previous = usageSnapshots[key]
         // Pages reuse a recent summary/chart observation. The normal refresh
@@ -124,7 +125,7 @@ extension PayloadArchive {
         let cached = offset > 0 ? previous.flatMap { until.timeIntervalSince($0.until) >= 0 && until.timeIntervalSince($0.until) < 10 ? $0 : nil } : nil
         let value = try await dashboardReader().run(consumer: sessionID == nil ? "menuUsage" : "sessionUsage") {
             try $0.usageMetrics(period: period, until: cached?.until ?? until, offset: offset,
-                               sessionID: sessionID, workspaceID: workspaceID, cached: cached, includeLatency: sessionID != nil, from: from)
+                               sessionID: sessionID, workspaceID: workspaceID, cached: cached, includeLatency: sessionID != nil, from: from, includeFamily: includeFamily)
         }
         try Task.checkCancellation()
         guard generation == usageReadGeneration else { throw CancellationError() }
@@ -138,7 +139,7 @@ extension PayloadArchive {
 }
 
 extension DashboardQueryEngine {
-    func usageMetrics(period: MenuBarPeriod, until: Date, offset: Int, sessionID: String? = nil, workspaceID: String? = nil, cached: MenuBarSnapshot? = nil, includeLatency: Bool = false, from override: Date? = nil) throws -> MenuBarSnapshot {
+    func usageMetrics(period: MenuBarPeriod, until: Date, offset: Int, sessionID: String? = nil, workspaceID: String? = nil, cached: MenuBarSnapshot? = nil, includeLatency: Bool = false, from override: Date? = nil, includeFamily: Bool = false) throws -> MenuBarSnapshot {
         guard until.timeIntervalSince1970.isFinite, until.timeIntervalSince1970 >= 0,
               (0...100_000).contains(offset), offset % MenuBarSnapshot.pageSize == 0 else { throw CaptureFailure.unavailable }
         try Task.checkCancellation()
@@ -146,7 +147,11 @@ extension DashboardQueryEngine {
         var timeAndIdentity = "wall<?"
         var values: [CaptureSQLValue] = [.real(until.timeIntervalSince1970)]
         if let start = override ?? period.start(until: until) { timeAndIdentity += " AND wall>=?"; values.append(.real(start.timeIntervalSince1970)) }
-        if let sessionID { timeAndIdentity += " AND session=?"; values.append(.text(sessionID)) }
+        if let sessionID {
+            timeAndIdentity += includeFamily ? " AND (session=? OR budget_owner=?)" : " AND session=?"
+            values.append(.text(sessionID))
+            if includeFamily { values.append(.text(sessionID)) }
+        }
         if let workspaceID { timeAndIdentity += " AND workspace=?"; values.append(.text(workspaceID)) }
         let scope = "metrics_retained=1 AND " + timeAndIdentity
         let selected = scope + " AND dispatch IS NOT NULL"

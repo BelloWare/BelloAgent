@@ -103,8 +103,11 @@ struct FileTextMetrics {
 @MainActor enum FileTextRenderCount {
     /// Pieces of text set by CoreText.
     private(set) static var pieces = 0
-    static func reset() { pieces = 0 }
+    private(set) static var syntaxInvalidations = 0
+    private(set) static var syntaxInvalidatedArea: CGFloat = 0
+    static func reset() { pieces = 0; syntaxInvalidations = 0; syntaxInvalidatedArea = 0 }
     static func built() { pieces &+= 1 }
+    static func invalidatedSyntax(_ rect: NSRect) { syntaxInvalidations &+= 1; syntaxInvalidatedArea += rect.width * rect.height }
 }
 
 /// How a file's text looks: its font and its line numbers', the height of a
@@ -417,7 +420,12 @@ public struct FileTextStyle {
 /// The text view. Its frame is the whole document; it draws what is asked of it.
 @MainActor public final class FileTextView: NSView {
     public var syntax: ((Int, Range<Int>, String) -> [FileTextColorRun])? { didSet { layouts = [:]; needsDisplay = true } }
-    public func invalidateSyntax(inLine line: Int) { layouts[line] = nil; needsDisplay = true }
+    public func invalidateSyntax(inLine line: Int) {
+        layouts[line] = nil
+        let drawn = visibleRect.union(preparedContentRect)
+        let dirty = NSRect(x: drawn.minX, y: top(ofLine: line), width: drawn.width, height: lineHeight).intersection(drawn)
+        if !dirty.isNull, !dirty.isEmpty { FileTextRenderCount.invalidatedSyntax(dirty); setNeedsDisplay(dirty) }
+    }
     public private(set) var source: FileTextSource = FileTextLines("")
     /// What accessibility calls the text: "Contents of Main.swift".
     public private(set) var name = ""

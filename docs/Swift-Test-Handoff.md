@@ -1,5 +1,42 @@
 # Native Swift — test and continuation handoff
 
+## Test host isolation (0.1.126)
+
+The `PiApp` scheme tests in **PiAppTestHost** (`Bello Agent Tests.app`, module
+`PiApp`), with bundle/defaults identity `com.belloware.PiAppTests.Host`. This is
+true in Debug and Release, including Xcode Test, `xcodebuild test`,
+`build-for-testing`, clones and `.xctestrun` performance runs. The shipping
+`PiApp` target, used by `release.sh`, retains its original identity and settings.
+
+The test action supplies `CFFIXED_USER_HOME=$(PROJECT_TEMP_DIR)/PiAppTests-Home`
+for Foundation's Application Support, Caches and home-relative resource paths.
+This is **not sufficient defaults isolation by itself**: macOS's `cfprefsd`
+can still use the account's preferences folder. The separate bundle ID keeps
+standard defaults in the test domain, including window frame autosaves and
+gallery sidebar changes. Never point a test's explicit defaults suite at
+`com.belloware.PiApp`.
+
+`TestIsolationGuard.m` is compiled into both host and test bundle, and runs
+before Swift main / XCTest discovery. It rejects the shipping domain even
+with a fixed home, requires the test host and a separate resolved data home,
+and rejects aliases into the account's storage. It inspects identity,
+environment and paths only; no real defaults are read or written by the guard.
+The test host also rejects Keychain access before Security APIs, including
+signed tests; inject `VaultStorage` fixtures. App updater startup is compiled
+out of test-host and launch-fixture builds.
+
+The same test-only constructor redirects AppKit's general, drag, find, font
+and ruler pasteboards to per-process private names. Tests may copy/paste
+generated content without reading or replacing the desktop clipboard;
+explicitly named fixture pasteboards continue to work. Window focus remains
+shared, so focus and UI gallery classes still belong in the serial lane.
+
+Shell entry points need no extra environment setup. Rebuild old test products:
+`perf-transcript.sh` checks stored `.xctestrun` products before launching them.
+Keep only the latest result bundle for each class, with full text logs for
+earlier runs. `TestHostIsolationTests` writes the test defaults domain and
+therefore runs alone in the serial lane.
+
 ## Test lanes
 
 The native suite runs in two lanes, and `scripts/verify-release.sh` runs

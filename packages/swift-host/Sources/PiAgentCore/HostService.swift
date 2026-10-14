@@ -8,8 +8,12 @@ import Glibc
 /// What the helper says of itself in its ready frame, `runtime.info` and
 /// `--version`, and the protocol's frame limit, which both sides keep.
 public enum HostProtocol {
-    /// The largest frame either side writes, without its newline: 1 MiB.
+    /// The largest helper reply/event, without its newline: 1 MiB.
     public static let frameBytes = 1_048_576
+    /// Two supported 256 KiB texts, each expanding at most sixfold in JSON,
+    /// plus 1 MiB for the command envelope. This validates framing; submission
+    /// validation still owns the text limit. Keep HostTransport in sync.
+    public static let commandFrameBytes = 2 * 262_144 * 6 + 1_048_576
     public static let engineVersion = "1.0.0"
     /// The pi release whose behaviour the helper follows.
     public static let piBehaviorReference = "0.85.1"
@@ -30,12 +34,12 @@ public struct NDJSONDecoder {
     public mutating func feed(_ bytes: Data) throws -> [JSON] {
         buffer.append(bytes); var result:[JSON]=[]
         while let nl=buffer.firstIndex(of:10) {
-            guard nl > 0, nl <= HostProtocol.frameBytes else { throw AgentError("invalid_frame", "Protocol frame exceeds limit or is empty") }
+            guard nl > 0, nl <= HostProtocol.commandFrameBytes else { throw AgentError("invalid_frame", "Protocol frame exceeds limit or is empty") }
             let data=Data(buffer[..<nl]); buffer.removeSubrange(...nl)
             guard String(data:data,encoding:.utf8) != nil else { throw AgentError("invalid_frame", "Protocol frame is not UTF-8") }
             let value=try JSON.parse(data); guard value.isObject else { throw AgentError("invalid_frame", "Protocol frame must be an object") }; result.append(value)
         }
-        guard buffer.count <= HostProtocol.frameBytes else { throw AgentError("invalid_frame", "Protocol frame exceeds 1 MiB") }; return result
+        guard buffer.count <= HostProtocol.commandFrameBytes else { throw AgentError("invalid_frame", "Protocol command frame exceeds limit") }; return result
     }
     public func finish() throws { if !buffer.isEmpty { throw AgentError("invalid_frame", "Incomplete protocol frame at EOF") } }
 }
@@ -46,6 +50,7 @@ public actor NativeHostService {
     public let epoch=UUID().uuidString
     private let output: @Sendable (HostOutput)->Void
     private var hello=false, closing=false, quiesced=false, opening=false
+    private var shutdownTask: Task<Void, Never>?
     private var displayTransfers = DisplayResultTransfers()
     private var allowsDisplayTransfers = false
     /// Set by a reader whose hello says it shows the `unknown` tool card state.
@@ -53,15 +58,21 @@ public actor NativeHostService {
     private var cwd: URL?, roots: [URL]=[], directory: URL?, resources: Resources?, mcp: MCPManager?, nativeTools: NativeTools?
     private let traces: TraceStore, capture: CaptureDelivery
     private let runtimeGate=AsyncGate()
+    private var subagentCoordinator: SubagentCoordinator?
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
+    private var subagentReaders: Set<String> = []
     /// Journals being slimmed (`JournalSlimming`), by session: an open of one waits for it.
     private var slimming:[String:Task<JournalSlimming.Outcome,Error>]=[:]
     private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:HostOutput]=[:], replyOrder:[String]=[]
     private var mutationLedger = MutationLedger()
+    private var cancellableReads: [String: String] = [:]
+    static let cancellableReadMethods: Set<String> = ["session.history", "session.version.page"]
     private var dirty:[String:Int]=[:], flushTask:Task<Void,Never>?
     /// The app's retry setting (pi's settings.retry), for every chat of every
     /// connection: sent with `workspace.open` and by `retry.configure`.
     private var retrySettings = PiProviderRules.RetrySettings()
+    /// Test seam for a Stop overtaking capability discovery or skill freezing.
+    var beforeSubmissionPreflight: (@Sendable () async -> Void)?
     public init(output: @escaping @Sendable (HostOutput)->Void) {
         self.output=output
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
@@ -81,7 +92,6 @@ public actor NativeHostService {
     }
     private func emit(_ frame: JSON) { output(.frame(frame)) }
     public func receive(_ frame: JSON) {
-        guard !closing else { return }
         if frame["kind"].text == "capture.ack" {
             guard hello, frame["v"].int == 1, frame["hostEpoch"].text == epoch, let id = frame["transferId"].text, id.utf8.count <= 128 else { return }
             // Detached on purpose: `receive` is synchronous on this actor, and
@@ -90,10 +100,20 @@ public actor NativeHostService {
             // that is waiting on this packet until its own deadline.
             Task { await capture.acknowledge(id, accepted: frame["accepted"].flag == true) }; return
         }
+        if frame["kind"].text == "read.cancel" {
+            guard hello, frame["v"].int == 1, frame["hostEpoch"].text == epoch,
+                  let id = frame["requestId"].text, let token = frame["readToken"].text,
+                  cancellableReads[id] == token else { return }
+            tasks[id]?.cancel()
+            return // Only the original reply, after unwind, releases capacity.
+        }
+        guard !closing else { return }
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
             hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true; unknownToolOutcomes = frame["unknownToolOutcomes"].flag == true
-            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold","run-continue"]]); return
+            var ready: JSON = ["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes),"commandFrameBytes":JSON(HostProtocol.commandFrameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold","run-continue","read-cancel"]]
+            ready["capabilities"] = .array(ready["capabilities"].list + SubagentPolicy.capabilities.map { JSON($0) })
+            emit(ready); return
         }
         let id=frame["commandId"].text ?? ""
         guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }
@@ -116,10 +136,21 @@ public actor NativeHostService {
             mutationLedger.record(id, fingerprint: fingerprint)
         }
         fingerprints[id]=fingerprint
+        if Self.cancellableReadMethods.contains(method), let token = frame["readToken"].text, !token.isEmpty, token.utf8.count <= 128 {
+            cancellableReads[id] = token
+        }
         tasks[id]=Task { [weak self] in
             guard let self else { return }
-            do { let result=try await self.command(method,sessionID:frame["sessionId"].text,params:frame["params"].isNull ? [:] : frame["params"],commandID:id); await self.finish(id,.success(result),retain:!readOnly) }
-            catch { await self.finish(id,.failure(error as? AgentError ?? AgentError("command_failed", "Command failed: \(error.localizedDescription)")),retain:!readOnly) }
+            do {
+                if Self.cancellableReadMethods.contains(method) { try Task.checkCancellation() }
+                let result = try await self.command(method,sessionID:frame["sessionId"].text,params:frame["params"].isNull ? [:] : frame["params"],commandID:id)
+                if Self.cancellableReadMethods.contains(method) { try Task.checkCancellation() }
+                await self.finish(id,.success(result),retain:!readOnly)
+            } catch {
+                let failure = error is CancellationError && Self.cancellableReadMethods.contains(method) ? AgentError("command_cancelled", "The superseded read was cancelled")
+                    : error as? AgentError ?? AgentError("command_failed", "Command failed: \(error.localizedDescription)")
+                await self.finish(id,.failure(failure),retain:!readOnly)
+            }
         }
     }
     /// The reply frame for one command. `error` and `result` carry the same
@@ -159,6 +190,7 @@ public actor NativeHostService {
     private func finish(_ id:String,_ result:Result<JSON,AgentError>,retain:Bool) {
         let frame = Self.boundedReply(epoch: epoch, id, result, transfer: allowsDisplayTransfers ? { try self.displayTransfers.insert($0) } : nil)
         tasks.removeValue(forKey:id)
+        cancellableReads.removeValue(forKey: id)
         if retain {
             replies[id]=frame; replyOrder.append(id)
             while replyOrder.count > 512 { let old=replyOrder.removeFirst(); replies.removeValue(forKey:old); fingerprints.removeValue(forKey:old) }
@@ -194,12 +226,74 @@ public actor NativeHostService {
     /// whole journal. (A side starts from its parent's context instead.)
     private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, prepared: JournalReplayConsumer? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
         guard let cwd, let directory else { throw AgentError("workspace_required", "Open a workspace first") }
+        try await releaseFamilyReaders(owner: id)
         let client=ProviderClient(traces:traces), traces=traces, outcomes=unknownToolOutcomes, changed=notification()
         let session = try await Task.detached(priority:.userInitiated) {
             try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
         }.value
         await adoptRetrySettings(session)
+        if let origin = await session.subagents.origin {
+            try await traces.inheritCapturePolicy(child: id, owner: origin.link.budgetOwnerSessionID)
+        }
+        if SubagentPolicy.enabled {
+            if subagentCoordinator == nil {
+                subagentCoordinator = SubagentCoordinator(register: { [weak self] child, profile, key, parent in
+                    guard let self else { throw AgentError("workspace_closed", "The helper is closing") }
+                    try await self.registerSubagent(child, profile: profile, apiKey: key, parent: parent)
+                }, settled: { [weak self] child in
+                    await self?.releaseSubagent(child)
+                }, openSteering: { [weak self] environment, plan in
+                    guard let self else { throw AgentError("workspace_closed", "Helper closed") }
+                    return try await self.openAgentChild(environment,plan)
+                })
+            }
+            if let subagentCoordinator { await session.enableSubagents(subagentCoordinator) }
+        }
         return session
+    }
+    /// Called under the runtime gate before every cold session construction.
+    /// Recovery writes child journals, so all restored readers of this owner
+    /// must detach first. The gate prevents a concurrent preview repinning one;
+    /// unloadIfIdle keeps live queued/running/settling children protected.
+    private func releaseFamilyReaders(owner: String) async throws {
+        for id in subagentReaders.sorted() {
+            guard let child = sessions[id], await child.subagents.origin?.link.budgetOwnerSessionID == owner else { continue }
+            guard await child.unloadIfIdle() else { throw AgentError("session_busy", "A managed child is still settling. Wait before reopening its parent.") }
+            sessions.removeValue(forKey: id); profiles.removeValue(forKey: id); subagentReaders.remove(id)
+            dirty.removeValue(forKey: id)
+            emit(["v":1, "kind":"event", "hostEpoch":JSON(epoch), "sessionId":JSON(id), "seq":JSON(await child.sequence), "type":"session.unloaded", "payload":[:]])
+        }
+    }
+    private func registerSubagent(_ child: AgentSession, profile: Profile, apiKey: String, parent: AgentSession) async throws {
+        let childID = child.id, ownerID = parent.id, childDirectory = child.directory, childCwd = child.cwd
+        guard !closing, !quiesced, sessions[ownerID] === parent, directory == childDirectory, cwd == childCwd, sessions[childID] == nil else {
+            throw AgentError("subagent_scope", "The child no longer belongs to this open workspace and parent")
+        }
+        sessions[childID] = child; profiles[childID] = (profile, apiKey)
+        await adoptRetrySettings(child)
+    }
+    private func openAgentChild(_ environment: SubagentEnvironment, _ plan: SubagentPlan) async throws -> AgentSession {
+        try await withRuntimeGate {
+            let id = plan.origin.link.childSessionID
+            if let old = sessions[id] {
+                guard await old.unloadIfIdle() else { throw AgentError("session_busy", "Child is still settling") }
+                sessions.removeValue(forKey:id); profiles.removeValue(forKey:id)
+            }
+            let child = try AgentSteeringCoordinator.makeChild(environment,plan)
+            do { try await registerSubagent(child,profile:await child.profile,apiKey:environment.apiKey,parent:environment.parent) }
+            catch { await child.close(); throw error }
+            return child
+        }
+    }
+    private func releaseSubagent(_ child: AgentSession) async {
+        // Serialize with explicit opens: either the viewer pins this runtime,
+        // or it reopens the durable journal after eviction. A late callback
+        // from an old runtime cannot unload its replacement.
+        try? await withRuntimeGate {
+            let id = child.id
+            guard sessions[id] === child, !subagentReaders.contains(id), await child.unloadIfIdle() else { return }
+            sessions.removeValue(forKey: id); profiles.removeValue(forKey: id)
+        }
     }
     /// Hands a session the latest retry setting. Called once it is made and
     /// again once it is in `sessions`: a `retry.configure` that ran in between
@@ -219,7 +313,7 @@ public actor NativeHostService {
     /// The read-only commands: a repeat runs one again, where a command that
     /// changes something is answered from the reply it was first sent
     /// (`receive`). Every `session.content.` command reads too.
-    static let readOnlyMethods: Set<String> = ["display.result.read","clock.sync","runtime.info","resources.inspect","resources.skill.read","session.status","session.snapshot","session.history","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","queue.read","queue.edit.status","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"]
+    static let readOnlyMethods: Set<String> = ["display.result.read","clock.sync","runtime.info","resources.inspect","resources.skill.read","session.status","session.snapshot","session.history","session.versions","session.version.page","session.message.read","session.edit.prepare","session.tool.input","budget.attempts","subagent.list","queue.read","queue.edit.status","session.events","session.event-page","context.info","context.preview","context.preview.read","context.preview.clear","mcp.list","mcp.describe","debug.list","debug.body","debug.attempt","debug.raw-events","session.portable.preview","session.import.inspect"]
     static func isReadOnly(_ method: String) -> Bool { readOnlyMethods.contains(method) || method.hasPrefix("session.content.") }
     /// Runs one command. The host checks, in this order, that it is not
     /// closing, that a workspace is open, that the command names a session,
@@ -278,6 +372,10 @@ public actor NativeHostService {
             let extra=Array(requestedRoots.dropFirst())
             let manager=MCPManager(cwd:requested,roots:extra,outcomeMarker:state.appendingPathComponent(".mcp-outcome-unknown.json"))
             try await manager.configure(params["mcp"].isNull ? ["servers":[:]] : params["mcp"])
+            // Retire the unreleased spool experiment without reading or replaying
+            // its plaintext files, including begins for captures since cleared.
+            let retiredCapture = state.appendingPathComponent(".capture-outbox")
+            if FileManager.default.fileExists(atPath: retiredCapture.path) { try FileManager.default.removeItem(at: retiredCapture) }
             if params["captureProtocol"].int == 1 { await capture.enable() }
             cwd=requested; roots=requestedRoots; directory=state; mcp=manager
             if let retry { retrySettings = retry }
@@ -340,11 +438,7 @@ public actor NativeHostService {
             // `debug.mode` round trip before its first turn. The reply names
             // the mode it applied; without one the app sends `debug.mode` itself.
             let captureMode=params["captureMode"].text
-            if let captureMode { _=try await traces.command("debug.mode",session:id,params:["mode":JSON(captureMode)]) }
-            func withMode(_ snapshot:JSON)->JSON {
-                guard let captureMode, case .object(var fields)=snapshot else { return snapshot }
-                fields["captureMode"]=JSON(captureMode); return .object(fields)
-            }
+            if let captureMode, !["off", "memory", "persist"].contains(captureMode) { throw AgentError("invalid_mode", "Choose off, memory or persist") }
             // A journal being slimmed is opened once its copy has taken its place, or not.
             if let slim=slimming[id] { _=await slim.result }
             // The snapshot is taken once the gate is free again.
@@ -356,6 +450,7 @@ public actor NativeHostService {
                     if let requested=params["profile"]["id"].text, let loaded=profiles[id]?.0.id, requested != loaded {
                         throw AgentError("session_conflict", "This chat is open on another connection. Close it before opening it on this one.")
                     }
+                    if await existing.isSubagent { subagentReaders.insert(id) }
                     if let costLimit { await existing.setCostLimit(costLimit) }
                     return existing
                 }
@@ -370,12 +465,19 @@ public actor NativeHostService {
                 let tools: any ToolExecuting = titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools
                 let session=try await makeSession(id,profile:profile,apiKey:key,readOnly:titleTask || mode == "read-only",resources:sessionResources,tools:tools,resumePath:params["path"].text,titleTask:titleTask,utilityPurpose:utility)
                 sessions[id]=session; profiles[id]=(profile,key); await adoptRetrySettings(session)
+                if await session.isSubagent { subagentReaders.insert(id) }
                 if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
                 if let costLimit { await session.setCostLimit(costLimit) }
                 if let costSeed { await session.adoptSpendSeed(costSeed) }
                 return session
             }
-            return withMode(await session.snapshot())
+            if !params["subagentModels"].isNull { try await session.configureSubagentModels(JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data())) }
+            if let captureMode, !(await session.isSubagent) {
+                _ = try await traces.command("debug.mode", session:id, params:["mode":JSON(captureMode)])
+            }
+            var snapshot = await session.snapshot()
+            snapshot["captureMode"] = JSON(await traces.mode(id))
+            return snapshot
         case "session.rebind":
             // A saved chat moved to another connection: its journal is bound
             // to the new one before the app says the chat is there, so the
@@ -417,9 +519,11 @@ public actor NativeHostService {
         if method.hasPrefix("debug.") { return try await traces.command(method,session:id,params:params) }
         switch method {
         case "session.forget":
-            if let existing=sessions[id] {
-                guard await existing.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
-                sessions.removeValue(forKey:id);profiles.removeValue(forKey:id)
+            try await withRuntimeGate {
+                if let existing=sessions[id] {
+                    guard await existing.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
+                    sessions.removeValue(forKey:id);profiles.removeValue(forKey:id); subagentReaders.remove(id)
+                }
             }
             _=try await traces.command("debug.clear",session:id,params:[:]); return ["accepted":true]
         default: return nil
@@ -430,8 +534,31 @@ public actor NativeHostService {
     /// refuse a quiesced workspace themselves.
     private func sessionCommand(_ method:String, id:String, session:AgentSession, params:JSON, in workspace:OpenWorkspace) async throws -> JSON? {
         let resources=workspace.resources, nativeTools=workspace.nativeTools
+        try await session.requireSubagentCommand(method)
         switch method {
-        case "turn.stop": await session.stop(); return ["accepted":true]
+        case "budget.attempts": return try await session.budgetAttempts(after: params["after"].text)
+        case "budget.reconcile":
+            return try await withRuntimeGate {
+                try await releaseFamilyReaders(owner: id)
+                return try await session.reconcileCapturedAccounting(params["evidence"].list)
+            }
+        case "subagent.list":
+            let cursor = try boundedInt(params["cursor"], maximum: Int.max), limit = try boundedInt(params["limit"], fallback: 100, maximum: 256)
+            let coordinator = subagentCoordinator ?? SubagentCoordinator()
+            return await coordinator.list(parent: session, cursor: cursor, limit: limit)
+        case "subagent.stop":
+            if let coordinator = await session.agentCoordinator, await session.subagents.family != nil {
+                let target = AgentTurnTarget(childID:try required(params["childId"],"child id"),turn:try boundedInt(params["turn"],fallback:0,maximum:Int.max))
+                try await coordinator.stop(parent:session,target:target,human:true); return ["accepted":true]
+            }
+            guard let subagentCoordinator else { throw AgentError("subagent_scope", "No managed delegation belongs to this parent") }
+            try await subagentCoordinator.stop(owner: id, delegationID: required(params["delegationId"], "delegation id")); return ["accepted":true]
+        case "turn.stop":
+            if let origin = await session.subagents.origin, let owner = sessions[origin.link.budgetOwnerSessionID],
+               let coordinator = await owner.agentCoordinator, let turn = await owner.agentState().latest(id) {
+                try await coordinator.stop(parent:owner,target:turn.target,human:true)
+            }
+            await session.stop(); return ["accepted":true]
         case "session.status":
             var statusParams = params; statusParams["includeMessages"] = false
             return await session.snapshot(statusParams)
@@ -499,12 +626,18 @@ public actor NativeHostService {
         let resources=workspace.resources, mcp=workspace.mcp, nativeTools=workspace.nativeTools
         switch method {
         case "turn.submit", "turn.steer", "turn.edit":
+            let admittedAt = await session.stopCount
+            await beforeSubmissionPreflight?()
             let text=params["text"].text ?? "", tools=await nativeTools.capabilityIDs(readOnly:session.readOnly)
             let selected=try await resources.freeze(params["skills"].list,text:text,tools:tools)
             let overrides=try Self.turnOverrides(params)
-            let input=Submission(commandID:commandID,turnID:try identity(params["clientTurnId"]),text:text,attachments:params["attachments"].list,skills:selected,model:overrides.model,thinkingLevel:overrides.thinkingLevel,contextWindow:overrides.contextWindow,maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit,input:overrides.input)
-            if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(params["messageId"]),input:input,expectedTimeline:params["editSourceTimeline"].text,expectedTextDigest:params["editSourceTextDigest"].text) }
-            return try await session.submit(input,steer:method == "turn.steer")
+            var input=Submission(commandID:commandID,turnID:try identity(params["clientTurnId"]),text:text,attachments:params["attachments"].list,skills:selected,model:overrides.model,thinkingLevel:overrides.thinkingLevel,contextWindow:overrides.contextWindow,maxOutputTokens:overrides.maxOutputTokens,modelOutputLimit:overrides.modelOutputLimit,input:overrides.input)
+            if !params["subagentModels"].isNull {
+                input.subagentModels = try JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data())
+                try await session.configureSubagentModels(input.subagentModels ?? [])
+            }
+            if method == "turn.edit" { return try await session.edit(fromMessageID:try identity(params["messageId"]),input:input,expectedTimeline:params["editSourceTimeline"].text,expectedTextDigest:params["editSourceTextDigest"].text,admittedAt:admittedAt) }
+            return try await session.submit(input,steer:method == "turn.steer",admittedAt:admittedAt)
         case "queue.remove": try await session.removeQueued(required(params["turnId"],"turn id")); return ["accepted":true]
         case "queue.reorder":
             let order=try params["turnIds"].list.map { try required($0,"turn id") }
@@ -528,6 +661,10 @@ public actor NativeHostService {
             // only after the complete result is saved and synced locally.
             return try await mcp.perform(args,readOnly:session.readOnly,retainedBy:"inspector:\(epoch):\(commandID)")
         case "session.configure":
+            if !params["subagentModels"].isNull {
+                try await session.configureSubagentModels(JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data()))
+                if params["profile"].isNull && params["costLimit"].isNull { return ["accepted":true,"applied":true] }
+            }
             // The chat's cost limit applies at once, also to a running session:
             // its next model request is checked against it. A configure that
             // carries only the limit leaves the connection as it is.
@@ -544,8 +681,12 @@ public actor NativeHostService {
             if let costLimit { await session.setCostLimit(costLimit) }
             return ["accepted":true,"applied":JSON(applied)]
         case "session.close":
-            guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
-            sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); return ["accepted":true]
+            return try await withRuntimeGate {
+                guard sessions[id] === session else { throw AgentError(AgentErrorCode.sessionMissing, "Session runtime is not loaded") }
+                guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
+                sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); subagentReaders.remove(id)
+                return ["accepted":true]
+            }
         default: return nil
         }
     }
@@ -600,6 +741,7 @@ public actor NativeHostService {
     /// next open still resumes from it.
     private static func rebind(url: URL, id: String, directory: URL, to target: Profile, from previous: Profile?, check: Bool) throws -> JSON {
         let journal=try SessionJournal(url:url,id:id,cwd:directory,binding:nil,create:false,checkpoint:JournalCheckpoint.read(for:url))
+        guard journal.markerKind != JournalRecordKind.childMarker else { throw AgentError("managed_subagent", "A managed child cannot move connections") }
         let before=journal.binding ?? .null
         if check {
             var replies=0
@@ -721,9 +863,30 @@ public actor NativeHostService {
         return ["path":JSON(file.path),"sessionId":header["id"],"nativeReplay":false,"damaged":false,"text":JSON(retained),"draft":JSON(retained),"truncated":JSON(retained.utf8.count<text.utf8.count || messages.count>40),"provenance":["sourcePath":JSON(file.path),"sourceSHA256":JSON(digest),"portable":true],"notice":"Portable text only, active branch and latest compaction. Opaque reasoning, executable state and permissions are not transferred. Original unchanged. Review before sending.","sha256":JSON(digest)]
     }
     public func shutdown() async {
-        // Acknowledgments are dropped from here on (see `receive`): a capture
-        // must not hold a stopped run's partial reply and final state.
-        closing=true; await capture.close(); flushTask?.cancel(); for t in tasks.values { t.cancel() }
-        for s in sessions.values { await s.stop() }; for s in sessions.values { await s.close() }; await mcp?.close(); sessions.removeAll(); profiles.removeAll(); flush()
+        if let shutdownTask { await shutdownTask.value; return }
+        closing = true
+        let task = Task { await self.drainAndClose() }
+        shutdownTask = task
+        await task.value
+    }
+    private func drainAndClose() async {
+        // Start with shutdown, not after producer cancellation. Leave room for
+        // normal exit before the app's unchanged 3.5 s SIGTERM / 5 s SIGKILL.
+        let deadline = Task { [traces, capture] in
+            do { try await Task.sleep(for: .milliseconds(3250)) } catch { return }
+            let pending = await traces.stopCaptureDelivery()
+            await capture.close()
+            if pending.packets > 0 {
+                try? FileHandle.standardError.write(contentsOf: Data("Capture shutdown deadline: \(pending.packets) undelivered packets, \(pending.bytes) bytes (raw bodies plus encoded metadata); retained captures are incomplete\n".utf8))
+            }
+        }
+        flushTask?.cancel(); for t in tasks.values { t.cancel() }
+        for s in sessions.values { await s.stop() }
+        await subagentCoordinator?.drain()
+        for s in sessions.values { await s.close() }
+        await mcp?.close(); sessions.removeAll(); profiles.removeAll(); subagentReaders.removeAll(); flush()
+        await traces.delivered()
+        deadline.cancel()
+        await capture.close()
     }
 }

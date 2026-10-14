@@ -147,6 +147,40 @@ final class NativeCodeTextTests: XCTestCase {
         }
     }
 
+    @MainActor func testJSONStringContinuationMatchesCanonicalEscapesAndUnicode() {
+        var code = "{\"key\":\"" + String(repeating: "a", count: 8_192)
+        let view = TranscriptCodeTextView()
+        view.update(source: code, language: "json", size: 12.5, environment: .init())
+        view.setSelectedRange(NSRange(location: 10, length: 4))
+        for fragment in ["\\", "\"", "🦋", "\\", "\\", "\"", ", \"next\": \"", "x", "\"", ", \"n\": 1.25e-3}"] {
+            code += fragment
+            view.update(source: code, language: "json", size: 12.5, environment: .init())
+            let canonical = TranscriptCodeTextView()
+            canonical.update(source: code, language: "json", size: 12.5, environment: .init())
+            XCTAssertEqual(view.textStorage, canonical.textStorage, "After fragment \(fragment)")
+            XCTAssertEqual(view.selectedRange(), NSRange(location: 10, length: 4))
+        }
+    }
+
+    @MainActor func testAnUnfinishedJSONStringScansOnlyItsAppendedScalars() {
+        let view = TranscriptCodeTextView()
+        var code = "{\"output\":\"" + String(repeating: "a", count: 8_192)
+        view.update(source: code, language: "json", size: 12.5, environment: .init())
+        let before = view.highlightedScalarVisits
+        for _ in 0..<100 {
+            code += String(repeating: "b", count: 64)
+            view.update(source: code, language: "json", size: 12.5, environment: .init())
+        }
+        let visits = view.highlightedScalarVisits - before
+        print("SCROLL-16 appended=6400 highlighted-scalar-visits=\(visits)")
+        XCTAssertLessThanOrEqual(visits, 6_500, "An unfinished token must not rescan its 8–15 KB prefix")
+        code += "\", \"count\": 12}"
+        view.update(source: code, language: "json", size: 12.5, environment: .init())
+        let canonical = TranscriptCodeTextView()
+        canonical.update(source: code, language: "json", size: 12.5, environment: .init())
+        XCTAssertEqual(view.textStorage, canonical.textStorage)
+    }
+
     /// A token appended to a coloured fence is coloured from the scanner's
     /// last checkpoint on. Nothing before that checkpoint is visited again —
     /// not to scan it, and not to work out where its characters sit — so an

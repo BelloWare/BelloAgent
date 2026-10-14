@@ -44,6 +44,16 @@ struct MessageVersionStore: Sendable {
         guard let start = starts[id] else { return nil }
         return timelines[start.timeline][start.offset...]
     }
+    /// The nearest version whose saved tail contains this history position.
+    /// Excluding a group lets a nested edit find the ancestor that hid it.
+    func containingVersion(at position: Int, excluding: Set<String> = []) -> String? {
+        for (index, rows) in timelines.enumerated() {
+            guard let offset = rows.firstIndex(of: position) else { continue }
+            if let start = starts.filter({ !excluding.contains($0.key) && $0.value.timeline == index && $0.value.offset <= offset })
+                .max(by: { $0.value.offset < $1.value.offset }) { return start.key }
+        }
+        return nil
+    }
 }
 
 extension AgentSession {
@@ -86,6 +96,7 @@ extension AgentSession {
     /// edited message's, in the order each was first edited.
     public func messageVersions(_ params: JSON) async throws -> JSON {
         try await loadFullHistory()
+        if !params["containing"].isNull { return try versionContaining(identity(params["containing"])) }
         if params["messageId"].isNull {
             return ["groups": .array(versions.ledger.edited.suffix(256).map(versionList))]
         }
@@ -95,20 +106,56 @@ extension AgentSession {
         var result = versionList(ids); result["messageId"] = JSON(id)
         return result
     }
+    /// Locate an exact issuing row, including when an earlier turn's edit
+    /// hid it. The anchor is on today's timeline; a nested version can have
+    /// no live member of its own. No branch or journal is changed.
+    private func versionContaining(_ id: String) throws -> JSON {
+        guard let position = history.firstIndex(where: { $0.id == id }) else { throw AgentError("message_missing", "Message is not retained") }
+        let shown = Set(visible.map(\.id))
+        if shown.contains(id) { return ["messageId": JSON(id), "versions": []] }
+        guard let version = versions.containingVersion(at: position), let ids = versions.ledger.versions(of: version),
+              let index = ids.firstIndex(of: version) else { throw AgentError("version_missing", "That message's earlier version is not retained.") }
+        var ancestors = ids, visited: Set<String> = []
+        while true {
+            if let anchor = ancestors.first(where: { shown.contains($0) }) {
+                var result = versionList(ids)
+                result["messageId"] = JSON(id); result["anchor"] = JSON(anchor); result["selected"] = JSON(index + 1)
+                return result
+            }
+            visited.formUnion(ancestors)
+            guard let latest = ancestors.last, let at = history.firstIndex(where: { $0.id == latest }),
+                  let outer = versions.containingVersion(at: at, excluding: visited),
+                  let group = versions.ledger.versions(of: outer), !visited.contains(outer) else {
+                throw AgentError("version_missing", "That version has no retained anchor in the current chat.")
+            }
+            ancestors = group
+        }
+    }
     /// `session.version.page`: a version's rows from `offset` on, in the
     /// transcript's own row format, each with the request attempts it came
     /// from. Byte-bounded like a history window; `next` continues it.
     public func versionPage(_ params: JSON) async throws -> JSON {
+        try Task.checkCancellation()
         try await loadFullHistory()
+        try Task.checkCancellation()
         let id = try identity(params["messageId"])
         guard let ids = versions.ledger.versions(of: id), let index = ids.firstIndex(of: id) else {
             throw AgentError("version_missing", "That message has no earlier versions.")
         }
         guard let rows = versionRows(id) else { throw AgentError("version_missing", "That version's rows are not retained.") }
-        let offset = try boundedInt(params["offset"], maximum: 1_000_000)
+        let offset: Int
+        if !params["around"].isNull {
+            let target = try identity(params["around"])
+            guard let found = rows.firstIndex(where: { $0.id == target }) else { throw AgentError("message_missing", "That message is not in this version.") }
+            // Start at the linked row so a preceding large reply cannot push
+            // it outside this byte-bounded page.
+            offset = found
+        } else { offset = try boundedInt(params["offset"], maximum: 1_000_000) }
         guard offset <= rows.count else { throw AgentError("invalid_range", "The version page starts past its last row.") }
         var page: [JSON] = [], bytes = HistoryWindowPolicy.metadataAllowance, end = offset
         for message in rows[offset...] {
+            historyPageStep?("version")
+            try Task.checkCancellation()
             // A version reads as it was: nested edits show no switcher of their own.
             var row = boundedDisplayRow(displayMessage(message)).removing(["versions"])
             if let attempts = message.requestAttemptIDs, !attempts.isEmpty { row["requestAttemptIDs"] = .array(attempts.map { JSON($0) }) }
@@ -120,6 +167,7 @@ extension AgentSession {
         let keys = Set(shown.compactMap { message in message.taskExecutionID.map { TaskPresentationRecord.identity(message.taskRootID ?? "", $0) } })
         let sources = Set(shown.map(\.id))
         let tasks = (try? JSON.parse(JSONEncoder().encode(recentTaskPresentations.filter { keys.contains($0.key) || $0.anchorSourceID.map(sources.contains) == true }))) ?? []
+        try Task.checkCancellation()
         return ["messageId": JSON(id), "version": JSON(index + 1), "count": JSON(ids.count), "live": JSON(visible.contains { $0.id == id }),
                 "messages": .array(page), "start": JSON(offset), "end": JSON(end), "total": JSON(rows.count),
                 "next": end < rows.count ? JSON(end) : .null, "taskRecords": tasks]

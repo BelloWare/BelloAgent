@@ -49,7 +49,9 @@ import AppKit
         }
         if shownRow?.id != row.id { events = false; eventBody = nil; eventKey = nil; eventRoute = nil; eventHost = nil; forceHeader = true }
         let position = inspector.index.position(of: row.id)
-        let headerIdentity = [position.map { "\($0.index):\($0.count)" } ?? "", inspector.summaryLabel(row.id) ?? "", inspector.index.kind(of: row.id), inspector.workspace?.canForkFromReply(inspector.scope.sessionID) == true ? "fork" : ""].joined(separator: "|")
+        let childLinks = inspector.groups.filter { $0.summary.link.parentAttemptID == row.id }.map(\.id).joined(separator: ",")
+        let agentLinks = inspector.coordination(for: row)
+        let headerIdentity = [String(describing: agentLinks), childLinks, position.map { "\($0.index):\($0.count)" } ?? "", inspector.summaryLabel(row.id) ?? "", inspector.index.kind(of: row.id), inspector.workspace?.canForkFromReply(request.sessionID) == true ? "fork" : ""].joined(separator: "|")
         if forceHeader || shownRow != row || shownMetadata != request.metadata || shownHeaderIdentity != headerIdentity {
             header?.removeFromSuperview(); header = buildHeader(row); addSubview(header!)
             shownRow = row; shownMetadata = request.metadata; shownHeaderIdentity = headerIdentity; forceHeader = false
@@ -82,7 +84,8 @@ import AppKit
         let title = position.map { "Request \($0.index) of \($0.count)" } ?? "Request"
         let turn = inspector.index.turn(containing: row.id)
         var context = [row.route.label]
-        if let turn, !turn.isOther { context.append("Turn \(turn.number)") }
+        if let childTurn = row.childTurn { context.append("Sub-agent turn \(childTurn)") }
+        else if let turn, !turn.isOther { context.append("Turn \(turn.number)") }
         if row.wall > 0 { context.append(Date(timeIntervalSince1970: row.wall).formatted(date: .omitted, time: .standard)) }
         let kind = PiKit.Badge(text: inspector.summaryLabel(row.id).map { "compaction · " + $0 } ?? inspector.index.kind(of: row.id), tone: .neutral)
         kind.setAccessibilityIdentifier("inspector-request-kind")
@@ -97,7 +100,7 @@ import AppKit
         next.setAccessibilityIdentifier("inspector-next-request")
         next.isEnabled = inspector.index.adjacent(to: row.id, step: 1) != nil
         var actions: [NSView] = [previous, next, InspectorShowInChat { [weak inspector] in inspector?.showInChat() }]
-        if row.purpose == "turn", !row.running, inspector.workspace?.canForkFromReply(inspector.scope.sessionID) == true { actions.append(InspectorForkFromHere { [weak inspector] in inspector?.forkFromRequest(row.id) }) }
+        if row.purpose == "turn", row.delegationID == nil, !row.running, inspector.workspace?.canForkFromReply(request.sessionID) == true { actions.append(InspectorForkFromHere { [weak inspector] in inspector?.forkFromRequest(row.id) }) }
         let heading = InspectorPageHeader(title, subtitle: context.joined(separator: " · "), badges: badges, actions: actions)
         var metrics: [ShellItem] = [.view(InspectorFigureStrip(figures: row.figures), .fill)]
         if row.source != .record {
@@ -105,6 +108,36 @@ import AppKit
             metrics.append(.view(disclosure("Model evidence", open: evidence) { [weak self] in self?.evidence.toggle(); self?.invalidateHeader() }))
         }
         var views: [NSView] = [heading, inspectorRow(metrics, spacing: 12, alignment: .firstBaseline)]
+        var links: [NSView] = []
+        let agentLinks = inspector.coordination(for: row)
+        if !agentLinks.isEmpty { links.append(inspector.coordinationMenu(agentLinks)) }
+        if let parent = row.parentSessionID {
+            if let attempt = row.parentAttemptID {
+                links.append(PiKit.Button("Parent request", symbol: "arrow.turn.up.left", style: .ghost) { [weak inspector] in
+                    guard let inspector else { return }
+                    if parent == inspector.scope.sessionID { inspector.focus(.request(attempt)) }
+                    else { inspector.workspace?.openInspector(session: parent, focus: .request(attempt)) }
+                })
+            }
+            if row.parentAssistantID != nil {
+                links.append(PiKit.Button("Originating tool", symbol: "arrow.up.left", style: .ghost) { [weak inspector] in
+                    inspector?.showOriginatingTool(row)
+                })
+            }
+            if let delegation = row.delegationID {
+                links.append(PiKit.Button("Sub-agent details", style: .ghost) { [weak inspector] in
+                    guard let inspector else { return }
+                    if parent == inspector.scope.sessionID { inspector.focus(.subagent(delegation)) }
+                    else { inspector.workspace?.openInspector(session: parent, focus: .subagent(delegation)) }
+                })
+            }
+        } else {
+            let children = inspector.groups.filter { $0.summary.link.parentAttemptID == row.id }
+            if let first = children.first {
+                links.append(PiKit.Button("\(children.count) sub-agents", symbol: "person.2", style: .ghost) { [weak inspector] in inspector?.focus(.subagent(first.id)) })
+            }
+        }
+        if !links.isEmpty { views.append(inspectorRow(links.map { .view($0) }, spacing: 8)) }
         if more { views.append(moreDetails(row)) }
         if evidence {
             if let evidenceReports { evidenceReports.update(attempt: request.metadata) }
@@ -134,6 +167,8 @@ import AppKit
         if let decode = row.decode { rows.append(("Generation", SessionStatsFormat.duration(decode) + " first to last token")) }
         if let http = DurationObservation.valid(metrics["httpDurationMs"]?.number) ?? row.http { rows.append(("Whole request", MetricFormat.detailedDuration(http))) }
         rows.append(("Purpose", row.purpose))
+        if let turn = row.childTurn { rows.append(("Child turn", String(turn))) }
+        if let execution = row.parentExecutionID { rows.append(("Parent run", execution)) }
         if !row.api.isEmpty { rows.append(("API", row.api)) }
         if let url = request.metadata["url"]?.string { rows.append(("Endpoint", (request.metadata["method"]?.string ?? "POST") + " " + (URL(string: url)?.path ?? url))) }
         rows.append(("Attempt", row.id))
@@ -198,7 +233,7 @@ import AppKit
             let route = InspectorBodyRoute.resolve(row: row, kind: "response", metadata: request.metadata, hasWorkspace: inspector.workspace != nil)
             if eventKey != key {
                 eventKey = key; eventRoute = route
-                eventBody = CapturedBodyView(source: route.source(inspector: inspector, request: request, row: row, kind: "response"), sessionID: inspector.scope.sessionID, attemptID: row.id, kind: "response", retained: route == .archive, initialFormat: .json, growingBytes: request.growingBytes)
+                eventBody = CapturedBodyView(source: route.source(inspector: inspector, request: request, row: row, kind: "response"), sessionID: request.sessionID, attemptID: row.id, kind: "response", retained: route == .archive, initialFormat: .json, growingBytes: request.growingBytes)
             } else if eventRoute != route {
                 eventRoute = route
                 eventBody?.update(source: route.source(inspector: inspector, request: request, row: row, kind: "response"), retained: route == .archive)

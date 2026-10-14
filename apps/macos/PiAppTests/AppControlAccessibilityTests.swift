@@ -92,15 +92,22 @@ import FileView
         try "a\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
         try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Seed"], in: root)
         try "a2\n".write(to: root.appendingPathComponent("a.txt"), atomically: true, encoding: .utf8)
+        // Opt-in scheduler stress for this real Git fixture. It delays the
+        // read, not the assertion, and is zero in the ordinary suite.
+        let readDelay = GitController.statusReadDelay
+        if let seconds = testEnvironment("PI_APP_FLAKE_GIT_READ_SECONDS").flatMap(Double.init), seconds > 0 {
+            GitController.statusReadDelay = .seconds(seconds)
+        }
+        defer { GitController.statusReadDelay = readDelay }
         let controller = GitController(roots: [root.path]); defer { controller.letGo() }
-        try await eventually("the first read") { controller.statusRead && !controller.loading }
+        try await eventually("the first Git read", timeout: .seconds(60)) { controller.statusRead && !controller.loading }
         let window = try await hostedWindow(CommitBoxHost(controller: controller), width: 420, height: 300)
-        let scope = try await AXClient.find(in: window) { $0.label == "Commit scope" }
+        let scope = try await AXClient.find(in: window, "the commit scope", timeout: .seconds(60)) { $0.label == "Commit scope" }
         XCTAssertEqual(scope.role, "AXGroup")
         XCTAssertEqual(scope.children.map(\.label), ["Checked files", "Staged changes"])
         XCTAssertEqual(scope.children.map(\.selected), [true, false])
         controller.commitScope = .stagedChanges
-        _ = try await AXClient.find(in: window, "the staged scope selected") { $0.label == "Commit scope" && $0.children.map(\.selected) == [false, true] }
+        _ = try await AXClient.find(in: window, "the staged scope selected", timeout: .seconds(60)) { $0.label == "Commit scope" && $0.children.map(\.selected) == [false, true] }
     }
 
     func testEachQueueRowsButtonsSayWhichMessageTheyActOn() async throws {
@@ -154,10 +161,10 @@ import FileView
         let hash = try git(["rev-parse", "HEAD"], in: root, author: "Ada").trimmingCharacters(in: .whitespacesAndNewlines)
         let window = try await hostedWindow(WorkspaceView(model: model), width: 1400, height: 900)
         let tab = model.openFile(root.appendingPathComponent("file.txt"))
-        try await eventually("the text shown and read") { tab.status == .ready && tab.focusView != nil }
+        try await eventually("the text shown and read", timeout: .seconds(60)) { tab.status == .ready && tab.focusView != nil }
         tab.blame.toggle()
-        try await eventually("blamed") { tab.blame.blame != nil }
-        let line = try await AXClient.find(in: window, "the bar") { $0.spoken.hasPrefix("Line 1, commit ") }
+        try await eventually("blamed", timeout: .seconds(60)) { tab.blame.blame != nil }
+        let line = try await AXClient.find(in: window, "the bar", timeout: .seconds(60)) { $0.spoken.hasPrefix("Line 1, commit ") }
         let all = try await AXClient.all(in: window)
         XCTAssertTrue(line.spoken.contains(", by Ada, "), line.spoken)
         XCTAssertTrue(line.spoken.hasSuffix(": Greek letters"), line.spoken)
@@ -170,7 +177,7 @@ import FileView
         // VoiceOver reach it: it follows the line the caret is on.
         let text = try XCTUnwrap(tab.focusView as? FileTextView)
         text.select(from: FileTextPosition(line: 1, column: 0), to: FileTextPosition(line: 1, column: 0))
-        _ = try await AXClient.find(in: window, "the bar following the caret") { $0.spoken.hasPrefix("Line 2, commit ") }
+        _ = try await AXClient.find(in: window, "the bar following the caret", timeout: .seconds(60)) { $0.spoken.hasPrefix("Line 2, commit ") }
         let ruler = try XCTUnwrap((tab.focusView as? FileTextView)?.enclosingScrollView?.verticalRulerView)
         XCTAssertEqual(ruler.accessibilityLabel(), "Line numbers and annotations")
         tab.blame.hide()

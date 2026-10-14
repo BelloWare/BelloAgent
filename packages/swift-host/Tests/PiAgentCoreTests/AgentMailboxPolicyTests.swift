@@ -1,0 +1,36 @@
+import XCTest
+@testable import PiAgentCore
+
+final class AgentMailboxPolicyTests: XCTestCase {
+    func operation(_ index: Int, author: String = "subagent", at: Double = 100) -> AgentOperation {
+        let message = AgentFamilyMessage(id:"message-\(index)",sequence:index+1,childID:"child",turn:1,author:author,kind:"note",text:"Useful discovery",task:"Task",epoch:"epoch")
+        var op = AgentOperation(key:.init(parentSessionID:author == "parent" ? "parent" : "child",assistantMessageID:"a\(index)",toolCallID:"c\(index)"),digest:"d",receipt:["accepted":true],message:message,epoch:"epoch")
+        op.acceptedAt = at; return op
+    }
+    func testDurableBurstRateAndPendingReportBounds() throws {
+        var state = AgentFamilyState(ownerID:"parent")
+        for i in 0..<2 { let op = operation(i); try AgentMailboxPolicy.validate(op,state:state); try state.operation(op) }
+        XCTAssertThrowsError(try AgentMailboxPolicy.validate(operation(2,at:109),state:state)) { XCTAssertEqual(($0 as? AgentError)?.code,"subagent_rate_limited") }
+        let third = operation(2,at:110); try AgentMailboxPolicy.validate(third,state:state); try state.operation(third)
+        let fourth = operation(3,at:120); try AgentMailboxPolicy.validate(fourth,state:state); try state.operation(fourth)
+        let restored = try JSONDecoder().decode(AgentFamilyState.self,from:subagentJSON(state).data())
+        XCTAssertThrowsError(try AgentMailboxPolicy.validate(operation(4,at:1000),state:restored)) { XCTAssertEqual(($0 as? AgentError)?.code,"subagent_mailbox_full") }
+        XCTAssertEqual(restored.messages.count,4,"No accepted message was dropped to make room")
+    }
+    func testTwoWayMessagesShareFiniteEpochAllowance() throws {
+        var state = AgentFamilyState(ownerID:"parent")
+        for i in 0..<32 {
+            var op = operation(i,author:i % 2 == 0 ? "parent" : "subagent",at:Double(100+i*10))
+            op.message?.disposition = "delivered"
+            try AgentMailboxPolicy.validate(op,state:state); try state.operation(op)
+        }
+        XCTAssertThrowsError(try AgentMailboxPolicy.validate(operation(33,author:"parent",at:1000),state:state)) { XCTAssertEqual(($0 as? AgentError)?.code,"coordination_limit") }
+        var next = operation(34,at:1000); next.epoch = "new-real-user-task"; next.message?.epoch = next.epoch
+        XCTAssertNoThrow(try AgentMailboxPolicy.validate(next,state:state))
+    }
+    func testClockGoingBackwardsDoesNotRefillBucket() throws {
+        let accepted = [operation(0,at:100),operation(1,at:100)]
+        XCTAssertEqual(AgentMailboxPolicy.tokens(accepted,at:99,burst:2,refill:0.1),0)
+        XCTAssertEqual(AgentMailboxPolicy.tokens(accepted,at:105,burst:2,refill:0.1),0.5)
+    }
+}

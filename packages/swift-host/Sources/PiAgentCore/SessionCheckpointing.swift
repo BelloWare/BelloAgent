@@ -40,8 +40,8 @@ extension AgentSession {
     /// context, in its `helper` field, for an open that resumes from it to
     /// take over (`replay`). The receipts are added where they are known.
     static func checkpointHelper(spend: SessionSpend, spendTracked: Bool, failedCompactionFingerprint: String?, contextRecovery: JSON,
-                                 compactionState: JSON, parentInfo: JSON, presentationOrdinal: Int) -> JSON {
-        ["spend": spend.record, "spendTracked": JSON(spendTracked), "failedCompactionFingerprint": failedCompactionFingerprint.map { JSON($0) } ?? .null,
+                                 compactionState: JSON, parentInfo: JSON, presentationOrdinal: Int, subagents: SubagentJournalState = SubagentJournalState(), accounting: AttemptAccounting = AttemptAccounting()) -> JSON {
+        ["accounting": (try? subagentJSON(accounting)) ?? .null, "subagents": (try? subagentJSON(subagents)) ?? .null, "spend": spend.record, "spendTracked": JSON(spendTracked), "failedCompactionFingerprint": failedCompactionFingerprint.map { JSON($0) } ?? .null,
          "contextRecovery": contextRecovery, "compactionState": compactionState, "parentInfo": parentInfo, "presentationOrdinal": JSON(presentationOrdinal)]
     }
     /// A compaction's progress row once the compaction's record is in the
@@ -54,7 +54,10 @@ extension AgentSession {
     /// The rows and context a checkpoint names, and the run state it points
     /// at, read from the journal; nil when any record is not what it recorded.
     static func loadCheckpoint(_ checkpoint: JournalCheckpoint, url: URL) -> (rows: [ChatMessage], context: [ChatMessage], state: JSON?, stateLine: Data?)? {
-        guard let file = try? FileHandle(forReadingFrom: url) else { return nil }
+        guard let saved = try? JSON.parse(Data(checkpoint.helper.utf8)),
+              (try? JSONDecoder().decode(SubagentJournalState.self, from: saved["subagents"].data())) != nil,
+              (try? JSONDecoder().decode(AttemptAccounting.self, from: saved["accounting"].data())) != nil,
+              let file = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? file.close() }
         var rows: [ChatMessage] = []
         rows.reserveCapacity(checkpoint.rows.count)
@@ -218,7 +221,7 @@ extension AgentSession {
         // receipts it stands for are not known until a whole list is written.
         guard let last, !journaledCommandsUncertain else { return }
         var helper = Self.checkpointHelper(spend: spend, spendTracked: spendTracked, failedCompactionFingerprint: failedCompactionFingerprint,
-                                           contextRecovery: contextRecovery, compactionState: compactionState, parentInfo: parentInfo, presentationOrdinal: presentationOrdinal)
+                                           contextRecovery: contextRecovery, compactionState: compactionState, parentInfo: parentInfo, presentationOrdinal: presentationOrdinal, subagents: subagents, accounting: accounting)
         helper["commands"] = .array(journaledCommands)
         let state = liveStateSource.map { (line: $0.line, offset: $0.offset, key: $0.key) }
         guard var checkpoint = Self.checkpoint(sessionID: id, header: journal.headerCheck, marker: journal.markerCheck, last: last.line, at: last.offset, lastID: last.id,

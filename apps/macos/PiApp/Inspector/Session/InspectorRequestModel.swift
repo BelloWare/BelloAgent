@@ -32,7 +32,8 @@ enum InspectorLoad<Value> {
     @Published private(set) var response: InspectorLoad<ResponseDocument> = .idle
     /// Bytes of the response the document on screen was built from.
     @Published private(set) var responseBytes = 0
-    /// Retained bytes the latest metadata poll reported for a response still being written.
+    /// Retained bytes last reported, including the final capture. Completion
+    /// stops polling, but must not hide Load latest from a partial document.
     @Published private(set) var growingBytes: Int?
     /// The metadata record as formatted JSON, for Raw; formatted off the main actor.
     @Published private(set) var metadataText = ""
@@ -44,7 +45,8 @@ enum InspectorLoad<Value> {
     enum RawPart: String, CaseIterable, Sendable { case request, response, headers, metadata, links, events }
 
     let archive: PayloadArchive
-    let sessionID: String
+    private let ownerSessionID: String
+    var sessionID: String { row?.sessionID ?? ownerSessionID }
     weak var workspace: WorkspaceModel?
     let cache: InspectorDocumentCache
     private(set) var predecessor: InspectorRequestRow?
@@ -61,13 +63,15 @@ enum InspectorLoad<Value> {
     var metadataOverride: ((InspectorRequestRow) async throws -> [String: WireValue])?
 
     init(archive: PayloadArchive, sessionID: String, workspace: WorkspaceModel?, cache: InspectorDocumentCache = .shared) {
-        self.archive = archive; self.sessionID = sessionID; self.workspace = workspace; self.cache = cache
+        self.archive = archive; self.ownerSessionID = sessionID; self.workspace = workspace; self.cache = cache
     }
     deinit { bodyTask?.cancel(); metadataTask?.cancel() }
 
     /// Shows a request. The same request keeps its documents and gets the
     /// newer row; another one starts over.
     func open(_ row: InspectorRequestRow, predecessor: InspectorRequestRow?, previousLabel: String?) {
+        let predecessor = predecessor.flatMap { $0.sessionID == row.sessionID ? $0 : nil }
+        let previousLabel = predecessor == nil ? nil : previousLabel
         if self.row?.id != row.id {
             cancel()
             self.row = row; self.predecessor = predecessor; self.previousLabel = previousLabel
@@ -150,7 +154,7 @@ enum InspectorLoad<Value> {
                     }
                     self.metadataLoaded = true; self.metadataFailure = nil
                     let running = ["running", "streaming"].contains(value["outcome"]?.string ?? "")
-                    let grown = running ? value["response"]?.object?["retainedBytes"]?.nonnegativeInteger : nil
+                    let grown = value["response"]?.object?["retainedBytes"]?.nonnegativeInteger
                     if grown != self.growingBytes { self.growingBytes = grown }
                     if self.bodyTask == nil { self.loadVisibleTab() }
                     // Only a request still running is read again, and only its metadata.
@@ -338,7 +342,7 @@ enum InspectorLoad<Value> {
     static func sources(_ row: InspectorRequestRow, archive: PayloadArchive, workspace: WorkspaceModel?, sessionID: String) -> [CapturedBodySource] {
         var sources: [CapturedBodySource] = []
         if row.source != .live { sources.append(.archive(archive, attemptID: row.id, kind: "request")) }
-        if let workspace { sources.append(.live(workspace, sessionID: sessionID, attemptID: row.id, kind: "request")) }
+        if let workspace { sources.append(.live(workspace, sessionID: row.sessionID ?? sessionID, attemptID: row.id, kind: "request")) }
         return sources
     }
 

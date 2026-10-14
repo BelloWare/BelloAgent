@@ -5,6 +5,32 @@ import XCTest
 /// events from a gateway. Both must survive arriving one byte at a time and
 /// must never invent a frame the sender did not finish.
 final class FrameParsingTests: XCTestCase {
+    func testMaximalJSONEscapedSubmissionSurvivesWholeAndSplitInputFrames() throws {
+        let text = String(repeating: "\u{001b}", count: 256 * 1024)
+        let frame: JSON = ["v": 1, "kind": "command", "hostEpoch": "fixture", "commandId": "edit", "sessionId": "s", "method": "turn.edit",
+                           "params": ["text": JSON(text), "draft": ["text": JSON(text)], "clientTurnId": "t", "messageId": "m"]]
+        var bytes = try frame.data()
+        XCTAssertGreaterThan(bytes.count, 3 * 1024 * 1024, "Each source byte expands to six JSON bytes, twice for an edit envelope")
+        print("SUBMISSION sourceBytes=\(text.utf8.count) encodedFrameBytes=\(bytes.count)")
+        bytes.append(10)
+        for pageSize in [bytes.count, 16_384] {
+            var decoder = NDJSONDecoder(), decoded: [JSON] = []
+            for offset in stride(from: 0, to: bytes.count, by: pageSize) {
+                decoded += try decoder.feed(bytes.subdata(in: offset..<min(offset + pageSize, bytes.count)))
+            }
+            try decoder.finish()
+            XCTAssertEqual(decoded, [frame])
+        }
+    }
+
+    func testCommandFramingStillRejectsOversizedAndUnterminatedInput() throws {
+        for terminated in [false, true] {
+            var decoder = NDJSONDecoder(), bytes = Data(repeating: 32, count: HostProtocol.commandFrameBytes + 1)
+            if terminated { bytes.append(10) }
+            XCTAssertThrowsError(try decoder.feed(bytes))
+        }
+    }
+
     func testNDJSONSplitEveryByteAndTruncatedTail() throws {
         let source=Data("{\"text\":\"中文🙂\"}\n{\"a\":1}\n".utf8)
         var decoder=NDJSONDecoder(),result:[JSON]=[]

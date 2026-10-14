@@ -71,7 +71,13 @@ extension AgentSession {
         let snapshot: ResourceSnapshot
         if active, let appliedSnapshot { snapshot = appliedSnapshot }
         else { snapshot = try await resources.resolve() }
-        let definitions = await sessionDefinitions()
+        var previewModels: [SubagentModelGrant]?
+        if !active, canDelegate, !params["subagentModels"].isNull {
+            let grants = try JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data())
+            try validateSubagentModels(grants)
+            previewModels = grants
+        }
+        let definitions = await sessionDefinitions(subagentModels: previewModels)
         let draft = params["text"].text ?? ""
         guard draft.utf8.count <= 256 * 1024 else { throw AgentError("message_limit", "Draft exceeds the supported submission limit") }
         var messages = active && runStatus == .waitingTool ? boundary : context
@@ -89,7 +95,7 @@ extension AgentSession {
             let currentResources = try await resources.resolve()
             guard currentResources.revision == snapshot.revision else { throw AgentError("context_changed", "Instruction or skill sources changed. Refresh the context preview.") }
         }
-        let finalDefinitions=await sessionDefinitions()
+        let finalDefinitions=await sessionDefinitions(subagentModels: previewModels)
         guard startingMutation == contextMutation, active == (runTask != nil), startingProfile == turnProfile.raw,
               startingResources == appliedSnapshot?.revision,
               definitions == finalDefinitions, !closed else { throw AgentError("context_changed", "The conversation changed. Refresh the context preview.") }

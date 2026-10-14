@@ -54,7 +54,7 @@ extension AgentSession {
             defer { let ms=requestMs ?? (nowMS()-start); turnModelMs += ms; cumulativeModelMs=ObservedDuration.adding(cumulativeModelMs,ms) }
             do {
                 let reply=try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,
-                    sessionID:id,cacheSessionID:promptCacheSessionID,turnID:currentTurnID,purpose:"compaction",
+                    sessionID:id,cacheSessionID:promptCacheSessionID,turnID:currentTurnID,purpose:"compaction",lifecycle:try await requestLifecycle(turnID:currentTurnID,purpose:"compaction"),
                     onObservation:{ [weak self] in await self?.compactionObservation($0) },onDelta:{ [weak self] in await self?.compactionDelta($0) })
                 requestMs=nowMS()-start
                 return try await received(reply,cap:profile.maxOutput,revision:revision,originalProfile:originalProfile)

@@ -56,12 +56,12 @@ struct MonitorRateSeries: Equatable {
     static func built() { builds &+= 1 }
 }
 
-/// The request-average series: the app's settled decode rate of the
+/// The request-average series: the app's settled output speed of the
 /// completed requests in each retained bucket, plotted at its middle.
 enum MonitorRateAverage {
     static func rate(_ bucket: MenuBarBucket) -> Double? { bucket.gateway.settledThroughput.tokensPerSecond }
     static func middle(_ bucket: MenuBarBucket) -> Date { bucket.start.addingTimeInterval(bucket.end.timeIntervalSince(bucket.start) / 2) }
-    static let explanation = "Output tokens after the first ÷ time from the first generated token to the last (hidden reasoning included), over the completed requests in each interval; replies under \(SettledThroughput.floorLabel) of generation are left out."
+    static let explanation = SettledThroughput.explanation + " Each interval combines its completed requests."
 }
 
 /// The output-rate chart of the monitor and the report: per model a stacked
@@ -232,7 +232,7 @@ enum MonitorRateAverage {
         if let hover {
             if metric == .average, let bucket = buckets.first(where: { hover >= $0.start && hover < $0.end }) {
                 let rate = bucket.gateway.settledThroughput
-                return "\(hover.formatted(date: .omitted, time: .shortened)) · \(menuBarRate(rate.tokensPerSecond)) tok/s decode · \(rate.samples) measured requests"
+                return "\(hover.formatted(date: .omitted, time: .shortened)) · \(menuBarRate(rate.tokensPerSecond)) tok/s output · \(rate.samples) measured requests"
             }
             if metric == .live, let point = series.points.min(by: { abs($0.date.timeIntervalSince(hover)) < abs($1.date.timeIntervalSince(hover)) }),
                abs(point.date.timeIntervalSince(hover)) <= max(1, domain.upperBound.timeIntervalSince(domain.lowerBound) / 120) {

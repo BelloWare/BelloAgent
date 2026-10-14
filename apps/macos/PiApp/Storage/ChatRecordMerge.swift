@@ -31,8 +31,18 @@ extension ChatRecord {
         var chat = self
         if (previous.organizationRevision ?? 0) > (chat.organizationRevision ?? 0) { chat.applyOrganization(from: previous) }
         if (previous.connectionRevision ?? 0) > (chat.connectionRevision ?? 0) { chat.applyConnection(from: previous) }
+        if (previous.costLimitRevision ?? 0) > (chat.costLimitRevision ?? 0) {
+            chat.costLimit = previous.costLimit; chat.costLimitRevision = previous.costLimitRevision
+        }
         if chat.sidebarOrder == nil { chat.sidebarOrder = previous.sidebarOrder }
         if chat.parentSessionID == nil { chat.parentSessionID = previous.parentSessionID }
+        // Origin is immutable; an older update cannot erase or reassign it.
+        if let delegation = previous.delegation {
+            chat.delegation = delegation
+            if chat.delegationTask == nil { chat.delegationTask = previous.delegationTask }
+            if chat.delegationIssue == nil { chat.delegationIssue = previous.delegationIssue }
+            chat.parentSessionID = chat.delegationIssue == nil ? delegation.call.parentSessionID : nil
+        }
         if let held = previous.lastActivityAt, held > (chat.lastActivityAt ?? .min) { chat.lastActivityAt = held }
         if chat.titleTaskSessionID == nil, !releasingTitleClaim { chat.titleTaskSessionID = previous.titleTaskSessionID }
         if previous.isBackgroundTask {

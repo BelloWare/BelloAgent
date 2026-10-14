@@ -4,6 +4,7 @@ import Combine
 struct SessionUsageScope: Hashable, Sendable {
     let sessionID: String
     let workspaceID: String
+    var includeFamily = false
 }
 
 typealias SessionUsageLoader = @MainActor (SessionUsageScope, Date, Int) async throws -> MenuBarSnapshot
@@ -146,7 +147,7 @@ enum SessionUsagePresentation {
     }
     /// The line under the per-request charts for the request the pointer is
     /// on. Each figure is the one its chart plots: the rate is the settled
-    /// decode rate, not output over the whole request.
+    /// output speed, including TTFT and excluding a trailing terminal wait.
     static func requestCaption(index: Int, sample: SessionTimingSample) -> String { caption("Request \(index)", sample) }
     /// The line for the request under the pointer, else for the latest
     /// request, as the timing popover reads it. Empty only with no requests.
@@ -157,7 +158,7 @@ enum SessionUsagePresentation {
     private static func caption(_ title: String, _ sample: SessionTimingSample) -> String {
         func figure(_ metric: SessionTimingMetric) -> String { metric.label(metric.value(in: sample)) }
         let when = sample.wall.formatted(date: .abbreviated, time: .standard)
-        let parts: [String] = [title, when, figure(.ttft) + " TTFT", figure(.rate) + " decode", figure(.output) + " out", figure(.cost)]
+        let parts: [String] = [title, when, figure(.ttft) + " TTFT", figure(.rate) + " output speed", figure(.output) + " out", figure(.cost)]
         return parts.joined(separator: " · ")
     }
 }

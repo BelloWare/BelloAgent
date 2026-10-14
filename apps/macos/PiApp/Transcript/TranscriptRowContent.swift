@@ -45,6 +45,7 @@ struct TranscriptRowInputs {
     static var reference: ((TranscriptRowInputs) -> NSView & TranscriptRowContent)?
     static func content(for item: TranscriptItem, inputs: TranscriptRowInputs) -> NSView & TranscriptRowContent {
         if let reference { return reference(inputs) }
+        if TranscriptNativeAgentRow.draws(item) { return TranscriptNativeAgentRow(inputs: inputs) }
         if TranscriptNativeUserRow.draws(item) { return TranscriptNativeUserRow(inputs: inputs) }
         if TranscriptNativeReplyRow.draws(item) { return TranscriptNativeReplyRow(inputs: inputs) }
         if TranscriptNativeFailureRow.draws(item) { return TranscriptNativeFailureRow(inputs: inputs) }

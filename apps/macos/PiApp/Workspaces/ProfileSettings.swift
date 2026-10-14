@@ -28,6 +28,9 @@ import Combine
     private var builtKey: StructureKey?
     private var observations: [AnyCancellable] = []
     private var refreshScheduled = false
+    private var controllerChanged = true
+    private var shownInputs: ModelInputs?
+    private var pageHeight: (width: CGFloat, height: CGFloat)?
     private var loadTask: Task<Void, Never>?
 
     init(model: WorkspaceModel, controller: ConnectionSettingsController, windowChrome: Bool, dismiss: @escaping () -> Void) {
@@ -49,7 +52,9 @@ import Combine
         scroll.documentView = page
         for view in [sections, sectionsRule, scroll] as [NSView] { body.addSubview(view) }
         addSubview(sheet)
-        observations.append(controller.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() })
+        observations.append(controller.objectWillChange.sink { [weak self] _ in
+            self?.controllerChanged = true; self?.scheduleRefresh()
+        })
         observations.append(model.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() })
         observations.append(model.modelCatalog.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() })
         refresh()
@@ -57,7 +62,7 @@ import Combine
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
     override var intrinsicContentSize: NSSize { NSSize(width: 880, height: 780) }
-    func contentSizeChanged() { needsLayout = true; page.needsLayout = true }
+    func contentSizeChanged() { pageHeight = nil; needsLayout = true; page.needsLayout = true }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -71,7 +76,6 @@ import Combine
     }
 
     private func scheduleRefresh() {
-        needsLayout = true
         guard !refreshScheduled else { return }
         refreshScheduled = true
         DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { if self?.refreshScheduled == true { self?.refresh() } } }
@@ -79,10 +83,32 @@ import Combine
 
     // MARK: Refresh
 
+    /// Workspace publications also carry streaming, selection and accounting
+    /// changes. Only these model values can change the Settings presentation.
+    private struct ModelInputs: Equatable {
+        var section: SettingsSection
+        var profiles: [ProfileRecord]
+        var catalogSource: ProfileRecord
+        var listing: ModelCatalog.Entry
+        var configured: Bool
+        var installing: Bool
+        var enabled: Bool
+        var deletionSummary: String?
+    }
+    private var modelInputs: ModelInputs {
+        ModelInputs(section: model.settingsSection, profiles: model.profiles, catalogSource: model.catalogProfile(for: controller.draft.profile),
+                    listing: controller.listingEntry, configured: model.configurationLoaded, installing: model.installPreparing,
+                    enabled: inheritedEnabled, deletionSummary: controller.confirmingDelete ? controller.deletionSummary : nil)
+    }
+
     private var lastSection: SettingsSection?
     private var lastProfileID: String?
     func refresh() {
         refreshScheduled = false
+        let inputs = modelInputs
+        guard controllerChanged || inputs != shownInputs else { return }
+        controllerChanged = false; shownInputs = inputs
+        pageHeight = nil
         let section = model.settingsSection
         if let lastSection, lastSection != section { controller.confirmingTest = false; controller.confirmingDelete = false }
         if let lastProfileID, lastProfileID != controller.draft.profile.id { controller.confirmingTest = false }
@@ -156,7 +182,9 @@ import Combine
         // which takes its width from the page.
         for _ in 0..<2 {
             let width = scroll.contentView.bounds.width
-            let height = page.height(forWidth: width)
+            let height: CGFloat
+            if let cached = pageHeight, cached.width == width { height = cached.height }
+            else { height = page.height(forWidth: width); pageHeight = (width, height) }
             page.frame = CGRect(x: 0, y: 0, width: width, height: max(height, scroll.contentView.bounds.height))
             scroll.tile()
             if scroll.contentView.bounds.width == width { break }

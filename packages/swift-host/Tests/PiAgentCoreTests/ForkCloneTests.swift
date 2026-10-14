@@ -355,8 +355,14 @@ final class ForkCloneTests: XCTestCase {
         XCTAssertEqual(texts.last, "answer four")
         // Made from a chat opened from its metadata file: its receipts are
         // that file's (`assertAsItsReplay`); every other part is its replay's.
-        let stored = try XCTUnwrap(JournalCheckpoint.read(for: fixture))
-        var expected = read.captured; expected?.tasks = stored.tasks
+        // This published fixture predates the accounting/delegation index.
+        // Its checkpoint is deliberately ignored; the journal still replays
+        // identically, and a new derived checkpoint adds only those indexes.
+        XCTAssertNil(JournalCheckpoint.read(for: fixture))
+        let stored = try JSONDecoder().decode(JournalCheckpoint.self, from: Data(contentsOf: URL(fileURLWithPath: fixture.path + ".meta")))
+        var expected = read.captured; expected?.tasks = stored.tasks; expected?.version = stored.version
+        let legacyHelper = try JSON.parse(Data(XCTUnwrap(expected?.helper).utf8)).removing(["subagents", "accounting"]).encoded()
+        expected?.helper = legacyHelper
         XCTAssertEqual(stored, expected, "its metadata file is its replay's, but for the receipts")
         let shown = Set(read.visible.map(\.id))
         XCTAssertEqual(stored.tasks.filter { $0.lastSourceID.map(shown.contains) ?? false }, read.recentTaskPresentations.filter { $0.lastSourceID.map(shown.contains) ?? false },

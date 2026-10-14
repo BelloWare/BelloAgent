@@ -90,7 +90,7 @@ enum SessionStatsChartSpecs {
     /// Rows get thinner as they get more numerous.
     static func timelinePitch(_ count: Int) -> CGFloat { count <= 6 ? 16 : count <= 12 ? 12 : count <= 20 ? 9 : 6 }
 
-    /// Each measured request's decode rate against the session's average.
+    /// Each measured request's output speed against the session's average.
     static func speed(_ speed: SessionSpeedSeries) -> PiChart.Spec {
         var marks: [PiChart.Mark] = []
         if let average = speed.average {

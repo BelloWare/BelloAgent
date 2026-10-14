@@ -8,6 +8,7 @@ public actor TraceStore {
     /// and inspector results are immutable values. A reference prevents dictionary
     /// lookups from copying the growing Data and event-array storage on every chunk.
     private final class Trace {
+        let scope: RequestScope?
         var id: String, session: String, turn: String, api: String, url: String, purpose: String, mode: String
         var wallTime=isoNow(), dispatch:Double?, firstContent:Double?, firstText:Double?, completed:Double?, eof:Double?
         /// When the last output token arrived: the latest non-empty delta or
@@ -35,14 +36,15 @@ public actor TraceStore {
         var savedToLog = false
         var responseMasker = CaptureCredentials.ResponseMasker(CaptureCredentials(headers: [:], configuredNames: []))
         var responseCaptureBytes = 0, responseCredentialRedactions = 0
-        init(id: String, session: String, turn: String, api: String, url: String, purpose: String, mode: String) {
+        init(id: String, session: String, turn: String, api: String, url: String, purpose: String, mode: String, scope: RequestScope?) {
+            self.scope = scope
             self.id = id; self.session = session; self.turn = turn; self.api = api
             self.url = url; self.purpose = purpose; self.mode = mode
         }
     }
     private var traces:[String:Trace]=[:], order:[String]=[], modes:[String:String]=[:]
-    /// A decode span shorter than this is a reply delivered in one burst, not
-    /// a measured generation: it contributes no tokens-per-second rate.
+    /// Minimum request-to-last-output duration (TTFT + decode span). Keep the
+    /// wire name for compatibility and the 250 ms floor in sync with the app.
     public static let minimumDecodeSpanMs = 250.0
     /// Body bytes the helper holds: every request's until the app has saved
     /// it, and a session-memory chat's for good (they are its only copy).
@@ -50,10 +52,16 @@ public actor TraceStore {
     private var retainedBytes = 0
     private let sink: @Sendable (JSON) async -> Bool
     public init(sink: @escaping @Sendable (JSON) async -> Bool = { _ in true }) { self.sink = sink }
-    public func mode(_ session:String)->String { modes[session] ?? "memory" }
-    public func begin(session:String, turn:String, profile:Profile, purpose:String, body:Data, headers:[String:String], messageIDs: [String] = []) async ->String {
-        let id=UUID().uuidString, mode=mode(session)
-        let t=Trace(id:id,session:session,turn:turn,api:profile.api,url:profile.endpoint.absoluteString,purpose:purpose,mode:mode)
+    private var captureOwners: [String: String] = [:]
+    func inheritCapturePolicy(child: String, owner: String) throws {
+        guard child != owner, captureOwners[owner] == nil,
+              captureOwners[child] == nil || captureOwners[child] == owner else { throw AgentError("subagent_scope", "Invalid capture owner") }
+        captureOwners[child] = owner; modes.removeValue(forKey: child)
+    }
+    public func mode(_ session:String)->String { modes[captureOwners[session] ?? session] ?? "memory" }
+    public func begin(session:String, turn:String, profile:Profile, purpose:String, body:Data, headers:[String:String], messageIDs: [String] = [], attemptID: String = UUID().uuidString, scope: RequestScope? = nil) async ->String {
+        let id=attemptID, mode=mode(session)
+        let t=Trace(id:id,session:session,turn:turn,api:profile.api,url:profile.endpoint.absoluteString,purpose:purpose,mode:mode,scope:scope)
         t.credentials = CaptureCredentials(headers: headers, configuredNames: Set(profile.raw["headers"].map.keys))
         t.responseMasker = CaptureCredentials.ResponseMasker(t.credentials)
         let captured = t.credentials.requestBody(body)
@@ -86,9 +94,10 @@ public actor TraceStore {
             // it, up to 32 KiB, when nothing else of the request was queued
             // after it: while the app is busy, a stream's small chunks go as
             // one page instead of one acknowledgment each.
-            if let index = openPages[id], index >= outboxHead, index < outbox.count, var waiting = outbox[index].page,
+            if let index = openPages[id], index >= outboxHead, index < outbox.count, var waiting = outbox[index]?.page,
                waiting.body == kind, waiting.offset + waiting.bytes.count == offset + start, waiting.bytes.count + page.count <= 32_768 {
-                waiting.bytes.append(page); outbox[index].page = waiting
+                waiting.bytes.append(page); outbox[index]?.page = waiting
+                outbox[index]?.byteCount += page.count; pendingBytes += page.count
             } else {
                 post(.null, attempt: id, stage: .bytes, page: Page(body: kind, offset: offset + start, bytes: page))
             }
@@ -229,7 +238,7 @@ public actor TraceStore {
 
     /// What a rejected packet means for its request's later packets.
     private enum Stage { case begin, update, links, bytes, masking, events, operation, finish }
-    private struct Outgoing { let packet: JSON; let attempt: String; let stage: Stage; var page: Page? }
+    private struct Outgoing { let packet: JSON; let attempt: String; let stage: Stage; var page: Page?; var byteCount: Int }
     /// A body page's bytes stay raw until sent, so a later page can join it.
     private struct Page { let body: String, offset: Int; var bytes: Data }
     private struct Delivery { var refused = false, bytesStopped = false, linksStopped = false, eventsStopped = false }
@@ -237,28 +246,49 @@ public actor TraceStore {
     /// them, each after the app confirmed the one before. Neither a model
     /// request nor its stream waits on this queue: a slow app delays its log,
     /// never the chat, and nothing is dropped for being slow.
-    private var outbox: [Outgoing] = [], outboxHead = 0, draining = false
+    private var outbox: [Outgoing?] = [], outboxHead = 0, draining = false
     /// Each request's last queued packet, when it is a body page: the page a
     /// following chunk of the same body may join.
     private var openPages: [String: Int] = [:]
     private var deliveries: [String: Delivery] = [:]
     private var idle: [CheckedContinuation<Void, Never>] = []
+    private var deliveryStopped = false
+    // Includes the packet in flight. Updated when pages coalesce and packets
+    // settle, so the shutdown deadline never scans a potentially large queue.
+    private var pendingPackets = 0, pendingBytes = 0
+    private var pendingAttempts: [String: Int] = [:]
+    private var clearWaiters: [(Set<String>, CheckedContinuation<Void, Never>)] = []
+    /// The grace period ended. The owner closes the transport immediately
+    /// after this; no queued terminal record may falsely complete a prefix.
+    func stopCaptureDelivery() -> (packets: Int, bytes: Int) {
+        deliveryStopped = true
+        return (pendingPackets, pendingBytes)
+    }
     private func post(_ packet: JSON, attempt: String, stage: Stage, page: Page? = nil) {
-        outbox.append(Outgoing(packet: packet, attempt: attempt, stage: stage, page: page))
+        guard !deliveryStopped else { return }
+        // Raw body bytes; encoded JSON bytes for metadata, links and events.
+        let bytes = page?.bytes.count ?? ((try? packet.data().count) ?? 0)
+        pendingPackets += 1; pendingBytes += bytes; pendingAttempts[attempt, default: 0] += 1
+        outbox.append(Outgoing(packet: packet, attempt: attempt, stage: stage, page: page, byteCount: bytes))
         if page != nil { openPages[attempt] = outbox.count - 1 } else { openPages.removeValue(forKey: attempt) }
         guard !draining else { return }
         draining = true
         Task { await self.drain() }
     }
     /// Returns once every packet queued so far has been answered. Nothing in
-    /// a chat waits on this; tests read the log after it.
+    /// a model request waits on this; shutdown drains after stopping producers.
     func delivered() async {
         guard draining else { return }
         await withCheckedContinuation { idle.append($0) }
     }
     private func drain() async {
         while outboxHead < outbox.count {
-            let item = outbox[outboxHead]; outboxHead += 1
+            guard !deliveryStopped else { break }
+            let item = outbox[outboxHead]!
+            // Release consumed slots immediately, including a cleared chat's
+            // bytes while another chat still has a large queue behind it.
+            outbox[outboxHead] = nil; outboxHead += 1
+            defer { settled(item) }
             if outboxHead >= 256, outboxHead * 2 >= outbox.count {
                 outbox.removeFirst(outboxHead)
                 openPages = openPages.compactMapValues { $0 >= outboxHead ? $0 - outboxHead : nil }; outboxHead = 0
@@ -273,8 +303,24 @@ public actor TraceStore {
             recorded(item.stage, accepted: accepted, attempt: item.attempt)
         }
         outbox.removeAll(); outboxHead = 0; draining = false; openPages.removeAll()
+        pendingPackets = 0; pendingBytes = 0; pendingAttempts.removeAll()
+        resumeClears()
         let waiting = idle; idle.removeAll()
         for waiter in waiting { waiter.resume() }
+    }
+    private func settled(_ item: Outgoing) {
+        pendingPackets -= 1; pendingBytes -= item.byteCount
+        if let count = pendingAttempts[item.attempt], count > 1 { pendingAttempts[item.attempt] = count - 1 }
+        else { pendingAttempts.removeValue(forKey: item.attempt) }
+        resumeClears()
+    }
+    private func resumeClears() {
+        var waiting: [(Set<String>, CheckedContinuation<Void, Never>)] = []
+        for (ids, continuation) in clearWaiters {
+            if ids.contains(where: { pendingAttempts[$0] != nil }) { waiting.append((ids, continuation)) }
+            else { continuation.resume() }
+        }
+        clearWaiters = waiting
     }
     private func recorded(_ stage: Stage, accepted: Bool, attempt id: String) {
         var delivery = deliveries[id] ?? Delivery()
@@ -350,34 +396,37 @@ public actor TraceStore {
             guard let start, let end, start.isFinite, end.isFinite, end >= start, (end-start).isFinite else { return .null }; return JSON(end-start)
         }
         let output=t.usage["output"].double
-        // The decode span, which the stream duration reports and the rate
-        // divides by: first output → last output (the latest non-empty delta
-        // or output item completion). It exists once the model's terminal event
-        // was observed. An attempt that stamped no last output ends at that
-        // terminal, the only end it has; the archive projects `stream_ms` by
-        // the same rule, so the Inspector, the report and the ledger agree.
+        // Preserve the raw first-to-last-output span. Legacy traces without a
+        // last-output stamp retain the model terminal as their only end.
         let decode = span(t.firstContent, t.completed.map { t.lastContent ?? $0 })
-        // The settled decode rate, the standard decode speed (LLMPerf, vLLM's
-        // TPOT): the reported output tokens after the first (N − 1, reasoning
-        // included) over that span. Over it the first token is already out, so
-        // only N − 1 arrive in it, and the terminal event carries none. Only
-        // the gateway's completed usage is a token count; one token has no
-        // decode speed, and a span shorter than the floor is no measurement.
+        let ttft = span(t.dispatch, t.firstContent)
+        // Output speed includes the wait for the first token and counts all
+        // reported output (including hidden reasoning). A held terminal/usage
+        // event after the last output does not extend the measured window.
+        // Keep the wire keys for compatibility; the floor now covers TTFT + span.
         var decodeRate: JSON = .null
-        if t.outcome == "completed", t.modelOutcome == "completed", let decodeMS = decode.double, decodeMS >= Self.minimumDecodeSpanMs,
-           let output, output.isFinite, output >= 2, ((output - 1) / (decodeMS / 1000)).isFinite { decodeRate = JSON((output - 1) / (decodeMS / 1000)) }
-        return ["observedTTFTms":span(t.dispatch,t.firstContent), "firstTextMs":span(t.dispatch,t.firstText),
+        if t.outcome == "completed", t.modelOutcome == "completed",
+           let decodeMS = decode.double, let ttftMS = ttft.double,
+           let output, output.isFinite, output >= 1 {
+            let duration = ttftMS + decodeMS
+            if duration.isFinite, duration >= Self.minimumDecodeSpanMs {
+                let rate = output / (duration / 1000)
+                if rate.isFinite { decodeRate = JSON(rate) }
+            }
+        }
+        return ["observedTTFTms":ttft, "firstTextMs":span(t.dispatch,t.firstText),
                 "streamDurationMs":decode, "httpDurationMs":span(t.dispatch,t.eof),
                 "decodeTokensPerSecond":decodeRate, "minimumDecodeSpanMs":JSON(Self.minimumDecodeSpanMs),
                 "inputIncludingCache":t.usage["inputIncludingCache"],"completeness":t.modelOutcome=="completed" ? "complete":"partial",
-                "rateSource":"Gateway-reported output tokens after the first (N − 1, reasoning included) / first output → last output token (the model terminal when no last output was stamped); completed attempts with N ≥ 2 over at least minimumDecodeSpanMs","liveTokenRate":.null]
+                "rateSource":"Gateway-reported output tokens / time from sending the request to the last output token (time to first token included; hidden reasoning included; the model terminal when no last output was stamped); completed attempts with N ≥ 1 over at least minimumDecodeSpanMs total duration","liveTokenRate":.null]
     }
+
     /// An attempt's metadata. `messageIDs: false` leaves out the context and
     /// output id lists: the recorder is sent those as `links` packets, and a
     /// session snapshot's `latestAttempt` (4 Hz while busy, and every idle
     /// poll) never reads them, while at 1,000 messages they were ~39 KB.
     private func metadata(_ t:Trace, messageIDs:Bool = true)->JSON {
-        var value:JSON = ["attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
+        var value:JSON = ["requestScope":t.scope.flatMap { try? subagentJSON($0) } ?? .null,"attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
          "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":t.gateway?.json ?? .null,"operation":t.operation,
          "identity":t.credentials.metadata(t.identity?.json ?? .null),"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
          "rawEventsOmitted":0,"eventIndexPersistenceError":JSON(t.eventIndexError),
@@ -389,16 +438,23 @@ public actor TraceStore {
         return value
     }
     public func latest(_ session:String)->JSON { guard let id=order.last(where:{traces[$0]?.session==session}),let t=traces[id] else { return .null }; return metadata(t, messageIDs:false) }
-    public func command(_ method:String, session:String, params p:JSON) throws -> JSON {
+    public func command(_ method:String, session:String, params p:JSON) async throws -> JSON {
         let boundary:JSON="Application HTTP boundary after serialization and HTTP decoding, not TLS packets. Gateway upstream traffic is unavailable. Authentication headers are masked; long request tokens retain only their last four characters, and short tokens, cookies and secret response headers are fully masked. Known credential literals in request bodies are labeled SHA-256 fingerprints; response credential echoes are replaced by same-length asterisks. Body transformations are explicit byte-exactness exceptions. Other captured bytes remain untransformed and sensitive."
         if method=="debug.mode" {
+            guard captureOwners[session] == nil else { throw AgentError("managed_subagent", "Sub-agent capture follows its parent") }
             guard let mode=p["mode"].text,["off","memory","persist"].contains(mode) else { throw AgentError("invalid_mode","Choose off, memory or persist") }
             // The native UI owns explicit trace-file export/persistence.
             modes[session]=mode; return ["mode":JSON(mode),"appliesTo":"future attempts; existing captures are cleared separately"]
         }
         if method=="debug.clear" {
             guard !traces.values.contains(where:{$0.session==session && $0.outcome=="running"}) else { throw AgentError("capture_busy", "Stop the active request before clearing body captures") }
-            let ids=Set(order.filter{traces[$0]?.session==session}); ids.forEach { if let old = traces.removeValue(forKey: $0) { retainedBytes -= old.request.count + old.response.count }; deliveries.removeValue(forKey: $0) }; order.removeAll{ids.contains($0)}; return ["cleared":true]
+            let ids=Set(order.filter{traces[$0]?.session==session})
+            // A queued begin/body can still reach the app after the run ends.
+            // Settle this chat's packets before native clear removes its files.
+            if ids.contains(where: { pendingAttempts[$0] != nil }) {
+                await withCheckedContinuation { clearWaiters.append((ids, $0)) }
+            }
+            ids.forEach { if let old = traces.removeValue(forKey: $0) { retainedBytes -= old.request.count + old.response.count }; deliveries.removeValue(forKey: $0) }; order.removeAll{ids.contains($0)}; return ["cleared":true]
         }
         if method=="debug.list" {
             let all=order.reversed().compactMap{traces[$0]}.filter{$0.session==session}, offset=try boundedInt(p["offset"],maximum:Int.max)

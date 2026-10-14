@@ -743,7 +743,7 @@ fileprivate struct RefMonitorChartCaption: View {
         if let hover = hover.date {
             if metric == .average, let bucket = buckets.first(where: { hover >= $0.start && hover < $0.end }) {
                 let rate = bucket.gateway.settledThroughput
-                return "\(hover.formatted(date: .omitted, time: .shortened)) · \(menuBarRate(rate.tokensPerSecond)) tok/s decode · \(rate.samples) measured requests"
+                return "\(hover.formatted(date: .omitted, time: .shortened)) · \(menuBarRate(rate.tokensPerSecond)) tok/s output · \(rate.samples) measured requests"
             }
             if metric == .live, let point = series.points.min(by: { abs($0.date.timeIntervalSince(hover)) < abs($1.date.timeIntervalSince(hover)) }),
                abs(point.date.timeIntervalSince(hover)) <= max(1, domain.upperBound.timeIntervalSince(domain.lowerBound) / 120) {

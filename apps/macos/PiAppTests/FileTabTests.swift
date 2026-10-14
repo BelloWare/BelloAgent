@@ -8,6 +8,77 @@ import PDFKit
 /// any, missing with the reason otherwise, or when the file is gone; one tab
 /// a file whichever path reached it; and nothing read before it is shown.
 final class FileTabTests: XCTestCase {
+    @MainActor func testRepeatedNotificationsDoNotRestartAReplacementStillBeingRead() async throws {
+        try await heldReplacement(replaceAgain: false)
+    }
+
+    @MainActor func testASecondSaveDuringAReplacementReadIsFollowedAfterThatRead() async throws {
+        try await heldReplacement(replaceAgain: true)
+    }
+
+    @MainActor private func heldReplacement(replaceAgain: Bool) async throws {
+        let url = try file("slow-follow.txt", Data("original".utf8))
+        let tab = FileTab(url: url, projectID: nil)
+        tab.didShow()
+        defer { tab.willClose() }
+        let original = try XCTUnwrap(tab.document)
+        try await eventually("the original is read and watched", timeout: .seconds(60)) { original.status == .ready && tab.isWatching }
+        let gate = FollowReadGate()
+        addTeardownBlock { await gate.release() }
+        tab.followReadOptions.beforeChunk = { offset in if offset == 0 { await gate.wait() } }
+        try Data("replacement".utf8).write(to: url, options: .atomic)
+        try await eventually("the replacement has entered its real reader", timeout: .seconds(60), until: { await gate.reads > 0 })
+        // Showing an already visible tab asks the same followChange that a
+        // vnode notification does. Join that check while indexing is held,
+        // so a restart cannot hide behind a fast, tiny replacement file.
+        if replaceAgain { try Data("newest replacement".utf8).write(to: url, options: .atomic) }
+        tab.didShow()
+        await tab.followTask?.value
+        await gate.release()
+        try await eventually("the held replacement finishes", timeout: .seconds(60)) { tab.document !== original && tab.status == .ready }
+        let reads = await gate.reads
+        XCTAssertEqual(reads, replaceAgain ? 2 : 1, "Only a changed target needs another read")
+        let document = try XCTUnwrap(tab.document)
+        let contents = await document.snapshot(limit: 1_024)
+        XCTAssertEqual(contents, Data((replaceAgain ? "newest replacement" : "replacement").utf8))
+    }
+
+    @MainActor func testSiblingActivityDoesNotStarveDeletionAndRecreation() async throws {
+        let url = try file("followed.txt", Data("original".utf8))
+        let sibling = url.deletingLastPathComponent().appendingPathComponent("busy-sibling.txt")
+        let tab = FileTab(url: url, projectID: nil)
+        tab.didShow()
+        defer { tab.willClose() }
+        let original = try XCTUnwrap(tab.document)
+        try await eventually("the original is read and watched", timeout: .seconds(60)) {
+            original.status == .ready && tab.isWatching
+        }
+        // Atomic saves next door keep the watched parent active. They must
+        // not require a quiet directory before this file can make progress.
+        let noise = Task.detached {
+            while !Task.isCancelled {
+                try Data("unrelated".utf8).write(to: sibling, options: .atomic)
+                try await Task.sleep(for: .milliseconds(5))
+            }
+        }
+        addTeardownBlock {
+            noise.cancel()
+            do { try await noise.value } catch is CancellationError {} catch { XCTFail("Sibling writer failed: \(error)") }
+        }
+        try await eventually("the sibling writer is active", timeout: .seconds(60)) {
+            FileManager.default.fileExists(atPath: sibling.path)
+        }
+        try FileManager.default.removeItem(at: url)
+        try await eventually("deletion is shown while sibling saves continue", timeout: .seconds(60)) { tab.missingReason != nil }
+        try Data("recreated".utf8).write(to: url, options: .atomic)
+        try await eventually("recreation is read while sibling saves continue", timeout: .seconds(60)) {
+            tab.missingReason == nil && tab.document !== original && tab.status == .ready
+        }
+        let document = try XCTUnwrap(tab.document)
+        let contents = await document.snapshot(limit: 1_024)
+        XCTAssertEqual(contents, Data("recreated".utf8))
+    }
+
     @MainActor func testLiveFollowDoesNotReadASymlinkReplacementUnderTheOriginalTrust() async throws {
         let url = try file("trusted.txt", Data("original".utf8)), secret = try file("private.txt", Data("private replacement".utf8))
         let tab = FileTab(url: url, projectID: nil)
@@ -253,4 +324,16 @@ final class FileTabTests: XCTestCase {
         try await eventually("known") { tab.status == .binary }
         XCTAssertNil(tab.missingReason)
     }
+}
+
+private actor FollowReadGate {
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+    private(set) var reads = 0
+    func wait() async {
+        reads += 1
+        guard !released else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+    func release() { released = true; let pending = waiters; waiters = []; pending.forEach { $0.resume() } }
 }

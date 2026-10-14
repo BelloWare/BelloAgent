@@ -42,7 +42,7 @@ import GitView
     var canGoBack: Bool { returnTab?.container != nil }
     /// The navigation to a blamed line under way: one at a time, cancelled
     /// by the next and when the tab closes.
-    private var navigation: Task<Void, Never>?
+    private(set) var navigation: Task<Void, Never>?
     func navigate(_ work: @escaping @MainActor () async -> Bool) {
         navigation?.cancel()
         navigation = Task { @MainActor in _ = await work() }

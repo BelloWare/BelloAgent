@@ -45,7 +45,7 @@ import Combine
     /// The whole prompt, in the card, read from the chat's journal.
     private func showPrompt(_ id: String) {
         guard let workspace = inspector.workspace else { return }
-        let sessionID = inspector.scope.sessionID
+        let sessionID = turn?.requests.first?.sessionID ?? inspector.scope.sessionID
         prompt.show {
             var text = "", offset = 0, total = 0
             repeat {

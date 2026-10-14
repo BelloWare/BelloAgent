@@ -519,6 +519,7 @@ typealias InspectorWholeText = @Sendable () throws -> String
             let built = owner.built ?? []
             let placed = built.contains(where: { $0.isText })
             let revealing = built.contains { if case .reveal = $0.kind { return true } else { return false } }
+            let itemAnchor = visibleItemAnchor(in: outline)
             // The line at the top of the view stays at the top when the text
             // under it is laid out again.
             let anchor = previous.flatMap { readingAnchor(owner, previous: $0, in: outline) }
@@ -532,11 +533,29 @@ typealias InspectorWholeText = @Sendable () throws -> String
                 }
             }
             if let anchor { restore(anchor, owner: owner, in: outline) }
+            else if let itemAnchor {
+                let row = outline.row(forItem: itemAnchor.node)
+                if row >= 0 { scroll(outline, to: outline.rect(ofRow: row).minY + itemAnchor.offset) }
+            }
             refreshLinks(of: owner)
             if keyboardPath == path, !placed {
                 keyboardPath = nil
                 select(owner, link: { if case .less = $0.kind { return true } else { return false } }, in: outline)
             }
+        }
+
+        /// The reader may have scrolled past the item whose worker finished.
+        /// Keep the item at the viewport's top, including an offset into its
+        /// children. Its owner survives replacing preview rows with full text.
+        private func visibleItemAnchor(in outline: NSOutlineView) -> (node: Node, offset: CGFloat)? {
+            guard let clip = outline.enclosingScrollView?.contentView else { return nil }
+            let rows = outline.rows(in: clip.bounds)
+            guard rows.location != NSNotFound, rows.length > 0,
+                  let visible = outline.item(atRow: rows.location) as? Node else { return nil }
+            let node = owner(of: visible, in: outline) ?? visible
+            let row = outline.row(forItem: node)
+            guard row >= 0 else { return nil }
+            return (node, clip.bounds.minY - outline.rect(ofRow: row).minY)
         }
 
         /// A new set of rows for an item or section, the scroll position kept.

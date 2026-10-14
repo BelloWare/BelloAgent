@@ -33,7 +33,7 @@ extension WorkspaceModel {
     /// Command-click. The first Command-click extends the row that is already
     /// open, so the marks start from what the reader was looking at.
     func toggleSessionMark(_ id: String) {
-        guard record(id) != nil else { return }
+        guard record(id).map({ !$0.isSubagent }) == true else { return }
         var marks = markedSessionIDs.isEmpty ? Set([focusedSessionID ?? selectedID].compactMap { $0 }) : markedSessionIDs
         var anchor = sessionMarkAnchorID
         if marks.contains(id) { marks.remove(id) } else if marks.count < Self.markedSessionLimit { marks.insert(id); anchor = id }
@@ -44,7 +44,7 @@ extension WorkspaceModel {
     /// sidebar lists them. Rows inside a collapsed side or a folded page are in
     /// that order too, so the count says how many chats the action will touch.
     func extendSessionMarks(to id: String) {
-        guard record(id) != nil else { return }
+        guard record(id).map({ !$0.isSubagent }) == true else { return }
         let order = sidebarChatOrder
         guard let anchor = sessionMarkAnchorID ?? focusedSessionID ?? selectedID,
               anchor != id, let from = order.firstIndex(of: anchor), let to = order.firstIndex(of: id) else {
@@ -67,7 +67,7 @@ extension WorkspaceModel {
     }
 
     private func applyMarks(_ marks: Set<String>, anchor: String?) {
-        let valid = marks.filter { record($0) != nil }
+        let valid = marks.filter { record($0).map { !$0.isSubagent } == true }
         if let anchor, valid.isEmpty || valid.contains(anchor) { sessionMarkAnchorID = anchor }
         else if sessionMarkAnchorID.map({ !valid.contains($0) }) ?? true { sessionMarkAnchorID = valid.sorted().first }
         // One mark on the chat that is already open is an ordinary selection.
@@ -78,6 +78,7 @@ extension WorkspaceModel {
     /// row is marked, otherwise just that row. Background tasks and connection
     /// tests never travel, exactly as the menu refuses to move them.
     func dragSessionIDs(for id: String, in projectID: String) -> [String] {
+        guard record(id)?.isSubagent != true else { return [] }
         guard markedSessionIDs.contains(id) else { return [id] }
         let ids = markedChats.filter { $0.workspaceID == projectID && !$0.isUtilityChat }.map(\.id)
         return ids.contains(id) ? ids : [id]

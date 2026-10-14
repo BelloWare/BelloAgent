@@ -9,6 +9,8 @@ struct JournalReplay: Sendable {
     var history: [ChatMessage] = [], visible: [ChatMessage] = [], context: [ChatMessage] = []
     var versions = MessageVersionStore()
     var spend = SessionSpend(), spendTracked = false
+    var subagents = SubagentJournalState()
+    var accounting = AttemptAccounting()
     var assistantMessageCount = 0, latestAssistantMessageID: String?
     var pendingRequestLinks: [String: [String]] = [:]
     var recentTaskPresentations: [TaskPresentationRecord] = []
@@ -94,6 +96,9 @@ struct JournalReplayConsumer {
         r.assistantMessageCount=checkpoint.assistantMessageCount; r.latestAssistantMessageID=checkpoint.latestAssistantMessageID
         r.versions.ledger=checkpoint.versions; r.recentTaskPresentations=checkpoint.tasks
         let saved=(try? JSON.parse(Data(checkpoint.helper.utf8))) ?? [:]
+        r.subagents = (try? JSONDecoder().decode(SubagentJournalState.self, from: saved["subagents"].data())) ?? SubagentJournalState()
+        r.subagents.retarget(id)
+        r.accounting = (try? JSONDecoder().decode(AttemptAccounting.self, from: saved["accounting"].data())) ?? AttemptAccounting()
         r.spend.add(record: saved["spend"]); r.spendTracked=saved["spendTracked"].flag == true
         r.failedCompactionFingerprint=saved["failedCompactionFingerprint"].text
         r.contextRecovery=saved["contextRecovery"]; r.compactionState=saved["compactionState"]; r.parentInfo=saved["parentInfo"]
@@ -113,6 +118,18 @@ struct JournalReplayConsumer {
             return
         }
         let item=try JSON.parse(line)
+        try r.subagents.consume(item, sessionID: id)
+        if item["customType"].text == JournalRecordKind.subagentCall,
+           item["data"]["origin"]["link"]["call"]["parentSessionID"].text == id,
+           !item["data"]["adoptionSeed"].isNull {
+            try r.accounting.consume(kind: JournalRecordKind.cost, data: item["data"]["adoptionSeed"], spend: &r.spend)
+            r.spendTracked = true
+        }
+        if item["customType"].text == JournalRecordKind.agentOperation,
+           item["ownerID"].text == id, !item["data"]["plan"]["adoptionSeed"].isNull {
+            try r.accounting.consume(kind:JournalRecordKind.cost,data:item["data"]["plan"]["adoptionSeed"],spend:&r.spend)
+            r.spendTracked = true
+        }
         if item["customType"].text == JournalRecordKind.rebind {
             // Named already when the checkpoint resumed from lists it.
             if !rebinds.contains(where: { $0.offset == lineStart }) {
@@ -123,9 +140,8 @@ struct JournalReplayConsumer {
             r.captured?.rebinds = rebinds
             return
         }
-        if item["customType"].text == SessionSpend.recordType {
-            if item["data"][SessionSpend.resetKey].flag == true { r.spend = SessionSpend() }
-            r.spend.add(record: item["data"]); r.spendTracked = true; return
+        if let kind = item["customType"].text, [JournalRecordKind.budgetAttempt, JournalRecordKind.cost, JournalRecordKind.costUpdate].contains(kind) {
+            try r.accounting.consume(kind: kind, data: item["data"], spend: &r.spend); r.spendTracked = true; return
         }
         if item["type"].text == "message" {
             let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); r.history.append(message); if !["execution","requestLedger"].contains(message.kind ?? "") { r.context.append(message) }; r.visible.append(message)
@@ -204,7 +220,7 @@ struct JournalReplayConsumer {
         // resume from: the metadata file records what it takes to.
         if ["compaction", "branch"].contains(item["type"].text ?? "") || item["customType"].text == JournalRecordKind.context {
             let helper=AgentSession.checkpointHelper(spend:r.spend,spendTracked:r.spendTracked,failedCompactionFingerprint:r.failedCompactionFingerprint,
-                                                     contextRecovery:r.contextRecovery,compactionState:r.compactionState,parentInfo:r.parentInfo,presentationOrdinal:ordinalMax)
+                                                     contextRecovery:r.contextRecovery,compactionState:r.compactionState,parentInfo:r.parentInfo,presentationOrdinal:ordinalMax,subagents:r.subagents,accounting:r.accounting)
             r.captured=AgentSession.checkpoint(sessionID:id,header:header,marker:marker,last:line,at:lineStart,lastID:try identity(item["id"]),
                                                visible:r.visible,context:r.context,spans:r.rowSpans,state:stateSource,assistantMessageCount:r.assistantMessageCount,
                                                latestAssistantMessageID:r.latestAssistantMessageID,versions:r.versions.ledger,tasks:r.recentTaskPresentations,helper:helper,
@@ -230,7 +246,7 @@ struct JournalReplayConsumer {
     /// This replay as a clone's (`SessionJournal.clone`): the same records, at
     /// the same places, in the journal of session `id`, whose header is
     /// `header`. The checkpoints it takes from here on are the clone's.
-    mutating func retarget(id: String, header: JournalCheckpoint.Check?) { self.id = id; self.header = header }
+    mutating func retarget(id: String, header: JournalCheckpoint.Check?) { self.id = id; self.header = header; r.subagents.retarget(id) }
     /// The connection changes a cloned journal kept (`SessionJournal.clone`):
     /// those before where the clone ends.
     mutating func retarget(rebinds: [JournalCheckpoint.Check]) {

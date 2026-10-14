@@ -27,12 +27,12 @@ struct TranscriptRowAction: Identifiable {
     /// itself rather than through pills that only a pointer can reveal. A
     /// message still being sent can only be copied.
     static func all(_ message: TranscriptMessage, _ actions: TranscriptActions, forks: Bool = false,
-                    source: ReplySourceToggle? = nil) -> [TranscriptRowAction] {
+                    source: ReplySourceToggle? = nil, allowsEditing: Bool = true) -> [TranscriptRowAction] {
         let id = message.id
         let copy = TranscriptRowAction(name: "Copy") { actions.copyMessage(id) }
         if message.isSending { return [copy] }
         var all: [TranscriptRowAction] = []
-        let editable = TranscriptMessageRows.editable(message)
+        let editable = allowsEditing && TranscriptMessageRows.editable(message)
         if editable { all.append(TranscriptRowAction(name: "Edit") { actions.edit(id) }) }
         all.append(copy)
         if let source { all.append(TranscriptRowAction(name: ReplySource.title(raw: source.raw), perform: source.toggle)) }

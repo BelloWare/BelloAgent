@@ -36,15 +36,19 @@ struct SidebarChatEntry: Identifiable {
     private var groupedProjects: Set<String> = []
     private var entryLists: [EntryKey: [SidebarChatEntry]] = [:]
     private var chatOrder: [String]?
+    private var managedByOwner: [String: [ChatRecord]]?
     /// How many of these answers were actually computed rather than reused.
     /// A sidebar pass must not grow this with the number of rows it draws.
     private(set) var computations = 0
 
     func invalidate() {
         PerformanceProbe.shared.count("sidebarIndexInvalidations")
-        chatsByID = nil; sidesByID = nil; projectGroups = nil; chatOrder = nil
+        chatsByID = nil; sidesByID = nil; projectGroups = nil; chatOrder = nil; managedByOwner = nil
         if !entryLists.isEmpty { entryLists.removeAll(keepingCapacity: true) }
-        if !groupChats.isEmpty { groupChats.removeAll(keepingCapacity: true); groupedProjects.removeAll(keepingCapacity: true) }
+        if !groupChats.isEmpty { groupChats.removeAll(keepingCapacity: true) }
+        // An empty project was grouped too, even though it has no buckets.
+        // Its first chat must cause that empty answer to be rebuilt.
+        groupedProjects.removeAll(keepingCapacity: true)
     }
     /// Every group of a project in one pass over that project's chats. Asking
     /// per group filtered the whole workspace once per topic, per archive
@@ -86,6 +90,12 @@ struct SidebarChatEntry: Identifiable {
         computations += 1
         let value = build(); chatOrder = value; return value
     }
+    func subagents(of owner: String, in chats: [ChatRecord]) -> [ChatRecord] {
+        if managedByOwner == nil {
+            managedByOwner = Dictionary(grouping: chats.filter { $0.isSubagent && $0.delegationIssue == nil }, by: { $0.delegation!.budgetOwnerSessionID })
+        }
+        return managedByOwner?[owner] ?? []
+    }
 }
 
 extension WorkspaceModel {
@@ -107,6 +117,7 @@ extension WorkspaceModel {
                         SidebarSessionPresentation
                             .filtered(sidebarEntries(in: project.id, topicID: topicID, archived: archived, collapsed: []), by: query,
                                       contentMatches: query.isEmpty ? [] : sidebarContentMatches)
+                            .filter { !$0.chat.isSubagent || !query.isEmpty || $0.chat.delegationIssue != nil || $0.chat.delegation.map { record($0.budgetOwnerSessionID) == nil || subagentGroupExpanded($0.budgetOwnerSessionID) } == true }
                             .map(\.chat.id)
                     }
                 }
@@ -117,6 +128,7 @@ extension WorkspaceModel {
                         SidebarSessionPresentation
                             .filtered(sidebarFlatEntries(in: project.id, archived: archived, collapsed: []), by: query,
                                       contentMatches: query.isEmpty ? [] : sidebarFlatMatches(in: project.id, query: query))
+                            .filter { !$0.chat.isSubagent || !query.isEmpty || $0.chat.delegationIssue != nil || $0.chat.delegation.map { record($0.budgetOwnerSessionID) == nil || subagentGroupExpanded($0.budgetOwnerSessionID) } == true }
                             .map(\.chat.id)
                     }
                 }
@@ -216,14 +228,18 @@ extension WorkspaceModel {
             if !chat.isPinned, let parent = chat.parentSessionID, parent != chat.id, byID[parent] != nil { children[parent, default: []].append(chat) }
             else { roots.append(chat) }
         }
+        for owner in children.keys {
+            let all = children[owner] ?? []
+            children[owner] = all.filter(\.isSubagent) + all.filter { !$0.isSubagent }
+        }
         var result: [SidebarChatEntry] = [], visited: Set<String> = []
         func appendTree(_ root: ChatRecord) {
             var stack = [(root, 0, true)]
             while let (chat, depth, shown) = stack.popLast() {
                 guard visited.insert(chat.id).inserted else { continue }
                 let descendants = children[chat.id] ?? []
-                if shown { result.append(SidebarChatEntry(chat: chat, depth: depth, hasChildren: !descendants.isEmpty)) }
-                for child in descendants.reversed() { stack.append((child, depth + 1, shown && !collapsed.contains(chat.id))) }
+                if shown { result.append(SidebarChatEntry(chat: chat, depth: depth, hasChildren: descendants.contains { !$0.isSubagent })) }
+                for child in descendants.reversed() { stack.append((child, depth + 1, shown && (child.isSubagent || !collapsed.contains(chat.id)))) }
             }
         }
         // A family is as recent as its newest member: a side that just
@@ -248,7 +264,7 @@ extension WorkspaceModel {
     /// The rename sheet: an editable title plus mini-model suggestions.
     func renameSession(_ id: String) { presentRename(id) }
     func presentRename(_ id: String) {
-        guard !installPreparing, let item = chats.first(where: { $0.id == id }), !item.isBackgroundTask else { return }
+        guard !installPreparing, let item = chats.first(where: { $0.id == id }), !item.isSubagent, !item.isBackgroundTask else { return }
         renameTarget = RenameTarget(id: id)
     }
 
@@ -273,7 +289,7 @@ extension WorkspaceModel {
     }
 
     private func changeSessionOrganization(_ id: String, change: ChatOrganizationChange) async throws {
-        guard record(id) != nil else { throw HostError.failure("This saved chat is unavailable.") }
+        guard let item = record(id), !item.isSubagent else { throw HostError.failure("This saved chat is unavailable.") }
         let result = try await enqueueOrganization([id], change: change).value
         if result.rejected.contains(id) { throw StoreError.invalidRecord }
     }

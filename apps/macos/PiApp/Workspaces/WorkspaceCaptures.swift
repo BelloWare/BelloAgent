@@ -7,8 +7,10 @@ extension WorkspaceModel {
     func capturePreference(sessionID: String) async throws -> CapturePreference {
         if isEphemeral(sessionID) { return CapturePreference(mode: displays[sessionID]?.captureMode ?? "memory", since: "") }
         try await ensureConfiguration()
-        return CapturePreference(mode: configuration.capture.sessionModes[sessionID] ?? configuration.capture.defaultMode,
-                                 since: configuration.capture.sessionSince[sessionID] ?? "")
+        let owner = record(sessionID)?.delegation?.budgetOwnerSessionID ?? sessionID
+        guard owner == sessionID || record(owner)?.workspaceID == record(sessionID)?.workspaceID else { throw StoreError.invalidRecord }
+        return CapturePreference(mode: configuration.capture.sessionModes[owner] ?? configuration.capture.defaultMode,
+                                 since: configuration.capture.sessionSince[owner] ?? "")
     }
     func removeDeletedCapturePreference(sessionID: String) async throws {
         // Do not reset a retained chat's explicit opt-out if another part of
@@ -22,6 +24,7 @@ extension WorkspaceModel {
         }
     }
     func setCaptureMode(_ mode: String, sessionID: String) async throws {
+        guard record(sessionID)?.delegation == nil else { throw HostError.failure("Sub-agent capture follows its parent.") }
         if isEphemeral(sessionID) {
             guard mode != "persist" else { throw HostError.failure("Keep the side as a separate chat before enabling persistent capture.") }
             _ = try await debugRequest("debug.mode", sessionID: sessionID, params: ["mode": .string(mode)]); displays[sessionID]?.captureMode = mode; return
@@ -33,10 +36,22 @@ extension WorkspaceModel {
     }
     func clearCaptures(sessionID: String) async throws {
         guard displays[sessionID]?.hasWork != true else { throw HostError.failure("Stop active work before clearing capture bodies.") }
-        if let item = record(sessionID), hosts[item.workspaceID]?.isReady == true { _ = try await debugRequest("debug.clear", sessionID: sessionID) }
+        if let item = record(sessionID), let host = hosts[item.workspaceID] {
+            if host.isReady { _ = try await debugRequest("debug.clear", sessionID: sessionID) }
+            else { try await host.settleCaptureIfStopping() }
+        }
         let previous = try await capturePreference(sessionID: sessionID)
-        if previous.mode == "persist" { try await setCaptureMode("persist", sessionID: sessionID) }
+        if previous.mode == "persist", record(sessionID)?.delegation == nil { try await setCaptureMode("persist", sessionID: sessionID) }
+        try removeRetiredCaptureSpools(sessionID: sessionID)
         try await traces.clear(sessionID: sessionID)
+    }
+    /// The removed, unreleased capture spool is never a recovery source.
+    /// Also retire it when clearing/deleting with this project's helper stopped.
+    func removeRetiredCaptureSpools(sessionID: String) throws {
+        guard let item = record(sessionID) else { return }
+        let retired = root.appendingPathComponent("Workspaces").appendingPathComponent(item.workspaceID)
+            .appendingPathComponent("Sessions/.capture-outbox")
+        if FileManager.default.fileExists(atPath: retired.path) { try FileManager.default.removeItem(at: retired) }
     }
     func persistAttempt(sessionID: String, attemptID: String, destination: URL) async throws -> URL {
         let metadata = try await debugRequest("debug.attempt", sessionID: sessionID, params: ["attemptId": .string(attemptID)])

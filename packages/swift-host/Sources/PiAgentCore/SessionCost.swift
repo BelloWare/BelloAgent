@@ -32,8 +32,6 @@ struct SessionSpend: Sendable, Equatable {
     var record: JSON { ["usd": JSON(usd), "reported": JSON(reported), "unreported": JSON(unreported)] }
 }
 
-/// The last identities seen, oldest forgotten first: a bounded guard against
-/// counting one attempt twice, whatever a long chat's attempt count.
 struct BoundedIdentitySet: Sendable {
     let limit: Int
     private var order: [String] = [], members = Set<String>()
@@ -105,9 +103,11 @@ extension AgentSession {
     /// request on, also to a run that is going: a request already sent is
     /// never cut, and nothing else about the run changes.
     public func setCostLimit(_ usd: Double?) {
+        guard !isSubagent else { return }
         guard costLimitUSD != usd else { return }
         costLimitUSD = usd
         event("cost.limit", costSnapshot)
+        stopFamilyAtLimit()
     }
     /// Adopts the spend the app counted for this chat before its journal
     /// recorded costs, once: a journal that records them never takes another.
@@ -123,8 +123,12 @@ extension AgentSession {
     /// request that reported none. Every attempt of this session passes
     /// here, whatever its purpose, before its request returns or throws.
     func countAttempt(_ observation: RequestObservation) {
+        guard !familyBudgetEnabled, !isSubagent else { return }
         let outcome = observation.monitoring["outcome"].text
-        guard let outcome, outcome != "running", !closed, countedAttempts.insert(observation.attemptID) else { return }
+        // Closing refuses new work, but the admitted run can still receive
+        // its terminal charge while cancellation settles. close() keeps the
+        // journal attached until that run has returned.
+        guard let outcome, outcome != "running", !closed || runTask != nil, countedAttempts.insert(observation.attemptID) else { return }
         let cost = observation.monitoring["gateway"]["cost"]
         var data: JSON = ["attemptId": JSON(observation.attemptID), "purpose": JSON(observation.purpose), "outcome": JSON(outcome)]
         if cost["status"].text == "reported", let usd = cost["usd"].double, usd.isFinite, usd >= 0 {
@@ -144,6 +148,7 @@ extension AgentSession {
     /// so they cannot bring a chat to its limit.
     var costLimitReached: Bool { costLimitUSD.map { spend.usd >= $0 } ?? false }
     func enforceCostLimit() throws {
+        if let accountingFailure { throw accountingFailure }
         guard let limit = costLimitUSD, spend.usd >= limit else { return }
         throw AgentError(Self.costLimitCode, "This chat reached its \(Self.costText(limit)) cost limit (\(Self.costText(spend.usd)) spent). Raise the limit to continue.")
     }
@@ -151,7 +156,7 @@ extension AgentSession {
     var costSnapshot: JSON {
         ["limitUSD": costLimitUSD.map { JSON($0) } ?? .null, "spentUSD": JSON(spend.usd),
          "reportedRequests": JSON(spend.reported), "unreportedRequests": JSON(spend.unreported),
-         "reached": JSON(costLimitReached)]
+         "reached": JSON(costLimitReached), "accountingRevision":JSON(accounting.revision), "familyUsage":familyUsage]
     }
     /// A kept side's journal starts with the spend its unkept runtime counted.
     func carriedSpendRecord() -> JSON {

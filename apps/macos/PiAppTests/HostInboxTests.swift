@@ -2,6 +2,30 @@ import XCTest
 @testable import PiApp
 
 final class HostInboxTests: XCTestCase {
+    @MainActor func testEveryChangedSessionSurvivesAStalledMainActor() async {
+        for count in [97, 40] {
+            var delivered: [TransportEvent] = []
+            let drained = expectation(description: "All session invalidations delivered")
+            let inbox = HostInbox { delivered += $0; drained.fulfill() }
+            // Forty sessions changing once per helper flush over a busy frame
+            // used to fill the control budget after the first 32 identities.
+            for sequence in 0..<10 {
+                for index in 0..<count {
+                    inbox.enqueue(.frame(["kind": .string("event"), "type": .string("session.changed"),
+                                          "sessionId": .string("session-\(index)"), "seq": .number(Double(sequence))]))
+                }
+            }
+            await fulfillment(of: [drained], timeout: 5)
+            let frames = delivered.compactMap { event -> [String: WireValue]? in
+                guard case .frame(let frame) = event else { XCTFail("Presentation pressure must not terminate the helper"); return nil }
+                return frame
+            }
+            XCTAssertEqual(Set(frames.compactMap { $0["sessionId"]?.string }), Set((0..<count).map { "session-\($0)" }))
+            XCTAssertEqual(frames.count, count)
+            XCTAssertTrue(frames.allSatisfy { $0["seq"]?.number == 9 })
+        }
+    }
+
     @MainActor func testTwentyLegalSnapshotRepliesSurviveABusyMainActor() async {
         var delivered: [TransportEvent] = []
         let inbox = HostInbox { delivered += $0 }

@@ -13,6 +13,9 @@ final class HostSupervisor: ObservableObject {
     @Published private(set) var isReady = false
     @Published var isBusy = false
     private(set) var epoch: String?
+    private(set) var supportsReadCancellation = false
+    private static let cancellableReads: Set<String> = ["session.history", "session.version.page"]
+    private var dispatchedReads: [String: (cancellation: HostCommandCancellation, frame: [String: WireValue])] = [:]
     var onEvent: (([String: WireValue]) -> Void)?
     var onLoss: (() -> Void)?
     private var transport: HostTransport?
@@ -33,11 +36,23 @@ final class HostSupervisor: ObservableObject {
     }
     private var queuedRequests: [QueuedRequest] = []
     private var readyWaiters: [CheckedContinuation<Void, Error>] = []
-    /// Connections waiting for a stopping helper to exit.
-    private var exitWaiters: [CheckedContinuation<Void, Never>] = []
-    private func resumeExitWaiters() { let waiters = exitWaiters; exitWaiters.removeAll(); for waiter in waiters { waiter.resume() } }
+    /// Connections waiting for a stopping helper to exit. Each is told at the
+    /// exit whether it may start the next helper: not while `shutdownAndWait`
+    /// is waiting for that exit.
+    private var exitWaiters: [CheckedContinuation<Bool, Never>] = []
+    private func resumeExitWaiters() {
+        let waiters = exitWaiters, replace = stopsAwaited == 0
+        exitWaiters.removeAll(); for waiter in waiters { waiter.resume(returning: replace) }
+    }
+    /// Callers inside `shutdownAndWait`. While one waits, no connection starts
+    /// a helper: a context preview or prewarm that asked for this project in
+    /// that window used to wait for the exit and start a fresh helper at once,
+    /// so the stop never saw its helper gone and failed after six seconds,
+    /// leaving the new helper running through an update or a folder change.
+    private var stopsAwaited = 0
     private var handshakeWatchdog: Task<Void, Never>?
     private var closing = false
+    private var lossReported = false
     private(set) var clockOffset = 0.0
     private let commandSender: (@MainActor ([String: WireValue]) -> Void)?
     private let acknowledgmentTimeout: Duration?
@@ -55,6 +70,7 @@ final class HostSupervisor: ObservableObject {
 
     func connect(cwd: URL, state: URL, runtime: RuntimePreferences = RuntimePreferences(), capture: (@Sendable ([String: WireValue]) async throws -> Void)? = nil) async throws {
         if isReady { return }
+        guard stopsAwaited == 0 else { throw HostError.failure("Project host is stopping") }
         if closing {
             // The app stops idle helpers on its own. Sending the next message
             // inside that window must start a fresh helper, not report that the
@@ -66,10 +82,11 @@ final class HostSupervisor: ObservableObject {
             let backstop = Task { [weak self] in
                 try? await Task.sleep(for: .seconds(8)); self?.resumeExitWaiters()
             }
-            await withCheckedContinuation { exitWaiters.append($0) }
+            let replace = await withCheckedContinuation { exitWaiters.append($0) }
             backstop.cancel()
             try Task.checkCancellation()
             if isReady { return }
+            guard replace, stopsAwaited == 0 else { throw HostError.failure("Project host is stopping") }
             guard !closing else { throw HostError.failure("The previous project host did not exit. Try again.") }
         }
         if transport == nil {
@@ -85,7 +102,7 @@ final class HostSupervisor: ObservableObject {
                   manifest.engine == "swift", manifest.engineVersion == "1.0.0", manifest.protocolMajor == 1 else {
                 ownership = nil; throw HostError.failure("The native host or its manifest is missing or incompatible. Reinstall this build.")
             }
-            let connectionID = UUID(); self.connectionID = connectionID
+            let connectionID = UUID(); self.connectionID = connectionID; lossReported = false
             let inbox = HostInbox { [weak self] events in
                 for event in events { self?.receive(event, connectionID: connectionID) }
             }
@@ -143,6 +160,7 @@ final class HostSupervisor: ObservableObject {
                 guard !Task.isCancelled, !cancellation.isCancelled else { continuation.resume(throwing: CancellationError()); return }
                 var frame: [String: WireValue] = ["v": .number(1), "kind": .string("command"), "hostEpoch": .string(epoch), "commandId": .string(commandID), "method": .string(method), "params": .object(params)]
                 if let sessionID { frame["sessionId"] = .string(sessionID) }
+                if Self.cancellableReads.contains(method), supportsReadCancellation { frame["readToken"] = .string(UUID().uuidString) }
                 let request = QueuedRequest(id: commandID, method: method, cancellation: cancellation, frame: frame, continuation: continuation)
                 // Stop must reach a running command even when every normal
                 // slot is occupied. Other bursts wait FIFO for helper capacity.
@@ -164,6 +182,7 @@ final class HostSupervisor: ObservableObject {
         guard !request.cancellation.isCancelled else { request.continuation.resume(throwing: CancellationError()); return }
         outstandingCommands.insert(request.id)
         replies[request.id] = request.continuation
+        if Self.cancellableReads.contains(request.method) { dispatchedReads[request.id] = (request.cancellation, request.frame) }
         if let commandSender { commandSender(request.frame) } else { transport?.send(request.frame) }
         // Queueing time is not an uncertain dispatched outcome. Start this
         // deadline only when the command has entered its transport slot.
@@ -176,8 +195,19 @@ final class HostSupervisor: ObservableObject {
         }
     }
     private func cancelQueuedRequest(_ id: String, cancellation: HostCommandCancellation) {
-        guard let index = queuedRequests.firstIndex(where: { $0.id == id && $0.cancellation === cancellation }) else { return }
-        queuedRequests.remove(at: index).continuation.resume(throwing: CancellationError())
+        if let index = queuedRequests.firstIndex(where: { $0.id == id && $0.cancellation === cancellation }) {
+            queuedRequests.remove(at: index).continuation.resume(throwing: CancellationError())
+            return
+        }
+        guard let read = dispatchedReads[id], read.cancellation === cancellation else { return }
+        // The caller may leave immediately. Its physical slot stays occupied
+        // until the original reply arrives, including if a helper ignores cancel.
+        replies.removeValue(forKey: id)?.resume(throwing: CancellationError())
+        replyTimeouts.removeValue(forKey: id)?.cancel()
+        guard isReady, !closing, let token = read.frame["readToken"] else { return }
+        let cancel: [String: WireValue] = ["v": .number(1), "kind": .string("read.cancel"),
+            "hostEpoch": read.frame["hostEpoch"] ?? .null, "requestId": .string(id), "readToken": token]
+        if let commandSender { commandSender(cancel) } else { transport?.send(cancel) }
     }
     func shutdown() {
         closing = true; isReady = false
@@ -198,7 +228,13 @@ final class HostSupervisor: ObservableObject {
         }
         PerformanceProbe.shared.observe("clockCalibrationUncertaintyMs", milliseconds: best / 2)
     }
+    /// Even after readiness ends, the stopping transport may own a begin or
+    /// body page. Clear/delete must wait for its archive barrier before purging.
+    func settleCaptureIfStopping() async throws {
+        if closing { try await shutdownAndWait() }
+    }
     func shutdownAndWait() async throws {
+        stopsAwaited += 1; defer { stopsAwaited -= 1 }
         shutdown()
         for _ in 0..<300 { if transport == nil { return }; try await Task.sleep(for: .milliseconds(20)) }
         throw HostError.failure("The project host did not exit. Update installation was cancelled.")
@@ -209,10 +245,12 @@ final class HostSupervisor: ObservableObject {
         let error = HostError.failure(message)
         for waiter in readyWaiters { waiter.resume(throwing: error) }; readyWaiters.removeAll()
         for reply in replies.values { reply.resume(throwing: error) }; replies.removeAll()
-        outstandingCommands.removeAll()
+        outstandingCommands.removeAll(); dispatchedReads.removeAll(); supportsReadCancellation = false
         for request in queuedRequests { request.continuation.resume(throwing: error) }; queuedRequests.removeAll()
         for timeout in replyTimeouts.values { timeout.cancel() }; replyTimeouts.removeAll()
-        onLoss?()
+        // Pipe failure and process exit are independent callbacks for one
+        // connection. The workspace must settle that loss only once.
+        if !lossReported { lossReported = true; onLoss?() }
     }
     // Reads and process exit arrive from independent callbacks. A late event
     // from a retired pipe must never resurrect it or close its replacement.
@@ -236,6 +274,7 @@ final class HostSupervisor: ObservableObject {
                       Set(["responses", "mcp", "steering", "transport-capture"]).isSubset(of: capabilities),
                       let hostEpoch = frame["hostEpoch"]?.string else { fail("Packaged native runtime version or capability mismatch"); shutdown(); return }
                 epoch = hostEpoch; isReady = true; status = "Ready · Swift"
+                supportsReadCancellation = capabilities.contains("read-cancel")
                 handshakeWatchdog?.cancel(); handshakeWatchdog = nil
                 for waiter in readyWaiters { waiter.resume() }; readyWaiters.removeAll(); return
             }
@@ -244,7 +283,9 @@ final class HostSupervisor: ObservableObject {
                 defer { dispatchQueuedRequests() }
                 replyTimeouts.removeValue(forKey: id)?.cancel()
                 let continuation = replies.removeValue(forKey: id)
-                if frame["ok"] == .bool(true) { continuation?.resume(returning: frame["result"] ?? .object([:])) }
+                let read = dispatchedReads.removeValue(forKey: id)
+                if read?.cancellation.isCancelled == true { continuation?.resume(throwing: CancellationError()) }
+                else if frame["ok"] == .bool(true) { continuation?.resume(returning: frame["result"] ?? .object([:])) }
                 else { continuation?.resume(throwing: HostError.rejected(frame["result"]?.object?["code"]?.string ?? "unknown", frame["result"]?.object?["message"]?.string ?? "Host command failed")) }
             } else { onEvent?(frame) }
         }

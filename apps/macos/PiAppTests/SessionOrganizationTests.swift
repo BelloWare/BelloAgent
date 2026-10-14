@@ -198,28 +198,27 @@ final class SessionOrganizationTests: XCTestCase {
         // A session average (100 tok/s) the latest-request slot must never fall back on.
         let history = SessionTimingHistory(samples: [completed], historicalSettledThroughput: SettledThroughput(decodeMilliseconds: 10_000, outputTokens: 1_000, samples: 2, requests: 2))
         var row = ChatRowStats(totals: nil, timing: history)
-        // The latest request's own rate: the 301 tokens after its first over 2.403 s.
-        XCTAssertEqual(row.rateLabel, "Latest 125 tok/s")
+        // All 302 output tokens over TTFT + span = 2.603 s.
+        XCTAssertEqual(row.rateLabel, "Latest 116 tok/s")
         for version in [1.0, 2.0] {
             for state in ["running", "compacting", "queued", "stopping", "paused", "error", "idle"] {
                 for bytesRate in [0.0, 9999, -1, Double.infinity, Double.nan] {
                     let activity: [String: WireValue] = ["version": .number(version), "phase": .string("model"), "modelActive": .bool(true),
                         "estimatedOutputTokensPerSecond": .number(bytesRate), "outputBytes": .number(4_000_000)]
                     row.updateActivity(state: state, loading: false, activity: activity)
-                    XCTAssertEqual(row.rateLabel, "Latest 125 tok/s", "Activity, old telemetry and visible text never replace reported request usage")
+                    XCTAssertEqual(row.rateLabel, "Latest 116 tok/s", "Activity, old telemetry and visible text never replace reported request usage")
                     if state == "running" { XCTAssertTrue(row.generating) }
                 }
             }
         }
         row.updateActivity(state: "running", loading: false, activity: ["version": .number(2), "phase": .string("tool")])
-        XCTAssertEqual(row.state, "tool"); XCTAssertEqual(row.rateLabel, "Latest 125 tok/s")
+        XCTAssertEqual(row.state, "tool"); XCTAssertEqual(row.rateLabel, "Latest 116 tok/s")
         row.timing?.samples.append(SessionTimingSample(id: "missing", wall: Date(), ttftMilliseconds: 100, streamingMilliseconds: 900, outputTokens: nil, requestMilliseconds: 1_000))
         XCTAssertNil(row.rateLabel, "A new completed request without usage must not borrow an older rate or the average, nor say usage is unavailable")
         row.timing = SessionTimingHistory()
         XCTAssertNil(row.rateLabel, "A chat without a completed request shows no rate")
         // A buffered route that never emits a first-content event has no
-        // decode span, so it has no settled rate — the sidebar says so rather
-        // than dividing by the whole round trip and calling that decode speed.
+        // decode span, so the sidebar leaves the rate unmeasured.
         let buffered = SessionTimingSample(id: "hidden-reasoning", wall: Date(), ttftMilliseconds: nil,
                                            streamingMilliseconds: nil, outputTokens: 302, requestMilliseconds: 2_403)
         row.timing = SessionTimingHistory(samples: [buffered])

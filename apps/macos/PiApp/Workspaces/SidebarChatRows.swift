@@ -360,16 +360,32 @@ struct ChatRowStats: Equatable {
         // The row says its topic to VoiceOver; the capsule is only its picture.
         topicTag.setAccessibilityElement(false)
         for view in [icon, row1, metrics, subtitle] as [NSView] { addSubview(view) }
+        bindActions()
+        confirm.setAccessibilityIdentifier("confirmArchive")
+        archiveButton.wantsLayer = true
+        chevron.wantsLayer = true
+    }
+    /// Every embedded control keeps the binding that installed its action,
+    /// including the confirmation's purely visual Archive/Keep transitions.
+    func bindActions(to binding: PiKit.ActionBinding? = nil) {
+        let token = binding?.capture()
         archiveButton.onPress = { [weak self] in
+            guard token?.isCurrent != false else { return }
             guard let self, let content = self.content else { return }
             if content.archived { self.archive() } else { self.setConfirming(true) }
         }
-        confirm.onPress = { [weak self] in self?.setConfirming(false); self?.archive() }
-        confirm.setAccessibilityIdentifier("confirmArchive")
-        keep.onPress = { [weak self] in self?.setConfirming(false) }
-        chevron.onPress = { [weak self] in self?.toggle() }
-        archiveButton.wantsLayer = true
-        chevron.wantsLayer = true
+        confirm.onPress = { [weak self] in
+            guard token?.isCurrent != false else { return }
+            self?.setConfirming(false); self?.archive()
+        }
+        keep.onPress = { [weak self] in
+            guard token?.isCurrent != false else { return }
+            self?.setConfirming(false)
+        }
+        chevron.onPress = { [weak self] in
+            guard token?.isCurrent != false else { return }
+            self?.toggle()
+        }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
@@ -378,6 +394,15 @@ struct ChatRowStats: Equatable {
     var controlFrames: [CGRect] {
         guard !controls.isHidden else { return [] }
         return [controls.convert(controls.bounds, to: self)]
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        hovering = false; confirming = false
+        // A different chat should not animate from the old title or keep its
+        // Archive confirmation, even if the pointer never exited the old row.
+        content = nil
+        spinner?.removeFromSuperview(); spinner = nil
     }
 
     func update(_ new: Content) {

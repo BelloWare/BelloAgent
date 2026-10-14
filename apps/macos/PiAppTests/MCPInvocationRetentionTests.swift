@@ -18,10 +18,9 @@ import XCTest
         model.hosts[project.id] = host; model.boundHostConnections[project.id] = host.connectionID
         return (model, host, commands, model.root.appendingPathComponent("Workspaces/project/MCPResults"))
     }
-    private func wait(_ condition: () -> Bool) async throws {
-        for _ in 0..<2_000 { if condition() { return }; try await Task.sleep(for: .milliseconds(1)) }
-        XCTFail("The Inspector request did not reach its retention boundary")
-        throw HostError.failure("Fixture timed out")
+    private func wait(_ what: String = "The Inspector request reached its retention boundary",
+                      file: StaticString = #filePath, line: UInt = #line, _ condition: @MainActor () -> Bool) async throws {
+        try await eventually(what, timeout: .seconds(60), file: file, line: line, condition)
     }
     private func reply(_ frame: [String: WireValue], on host: HostSupervisor, result: WireValue) throws {
         host.receive(.frame(["v": .number(1), "kind": .string("reply"), "hostEpoch": .string(try XCTUnwrap(host.epoch)),
@@ -32,7 +31,8 @@ import XCTest
         let (model, host, commands, folder) = try await fixture()
         var done = false
         let request = Task { defer { done = true }; return try await model.resourceRequest("mcp.invoke", params: ["server": .string("fixture"), "tool": .string("echo"), "arguments": .object([:])], sessionID: "chat") }
-        try await wait { commands.frames.count == 1 }
+        defer { request.cancel() }
+        try await wait("The Inspector invocation was dispatched") { commands.frames.count == 1 }
         let call = commands.frames[0], id = try XCTUnwrap(call["commandId"]?.string)
         let file = folder.appendingPathComponent(id + ".json")
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
@@ -72,9 +72,10 @@ import XCTest
         try Data("not a directory".utf8).write(to: folder)
         var done = false
         let request = Task { defer { done = true }; return try await model.resourceRequest("mcp.invoke", params: ["server": .string("fixture"), "tool": .string("echo"), "arguments": .object([:])], sessionID: "chat") }
-        try await wait { commands.frames.count == 1 }
+        defer { request.cancel() }
+        try await wait("The Inspector invocation was dispatched") { commands.frames.count == 1 }
         try reply(commands.frames[0], on: host, result: .object(["content": .array([])]))
-        try await wait { done || commands.frames.count == 2 }
+        try await wait("The failed save reported lost retention to the helper") { done || commands.frames.count == 2 }
         if commands.frames.count == 2 {
             let ack = commands.frames[1]
             XCTAssertEqual(ack["method"]?.string, "mcp.resultRetained")
@@ -89,7 +90,8 @@ import XCTest
         let (model, host, commands, folder) = try await fixture()
         var done = false
         let request = Task { defer { done = true }; return try await model.resourceRequest("mcp.invoke", params: ["server": .string("fixture"), "tool": .string("echo"), "arguments": .object([:])], sessionID: "chat") }
-        try await wait { commands.frames.count == 1 }
+        defer { request.cancel() }
+        try await wait("The Inspector invocation was dispatched") { commands.frames.count == 1 }
         request.cancel()
         let result: WireValue = .object(["content": .array([])])
         try reply(commands.frames[0], on: host, result: result)
@@ -107,7 +109,8 @@ import XCTest
         let (model, host, commands, folder) = try await fixture()
         var done = false
         let request = Task { defer { done = true }; return try await model.resourceRequest("mcp.invoke", params: ["server": .string("fixture"), "tool": .string("echo"), "arguments": .object([:])], sessionID: "chat") }
-        try await wait { commands.frames.count == 1 }
+        defer { request.cancel() }
+        try await wait("The Inspector invocation was dispatched") { commands.frames.count == 1 }
         try reply(commands.frames[0], on: host, result: .object(["_displayTransfer": .number(1), "id": .string(UUID().uuidString), "bytes": .number(10)]))
         try await wait { commands.frames.count == 2 }
         try reply(commands.frames[1], on: host, result: .object(["offset": .number(0), "totalBytes": .number(10), "data": .string("not base64"), "next": .null]))

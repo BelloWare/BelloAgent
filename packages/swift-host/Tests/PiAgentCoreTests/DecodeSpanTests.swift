@@ -1,15 +1,9 @@
 import XCTest
 @testable import PiAgentCore
 
-/// The decode span a settled tokens-per-second rate divides by, and what it
-/// divides. The standard decode speed (LLMPerf, vLLM's TPOT): the tokens after
-/// the first, N − 1, over the time from the first generated token to the last.
-/// A reasoning model's reported output includes its hidden reasoning, so the
-/// span starts when the model started generating (its first output item), not
-/// at the first visible token; it ends when the last token arrived (the last
-/// delta or output item completion), not at the response's terminal event,
-/// which carries no token and which a gateway can hold back while it computes
-/// usage and cost. A reply delivered in one burst has no measurable span.
+/// Output speed uses all reported tokens over dispatch → last output. The
+/// raw decode span still covers hidden reasoning and excludes a held terminal;
+/// TTFT is added before applying the minimum duration and dividing.
 final class DecodeSpanTests: XCTestCase {
     /// "reasoner": hidden reasoning for 0.8 s (the reasoning item opens at
     /// once), then a visible reply, and the terminal event 0.06 s later: 860
@@ -99,14 +93,14 @@ server.serve_forever()
         let firstContent = try XCTUnwrap(timings["firstContent"].double), lastContent = try XCTUnwrap(timings["lastContent"].double)
         let complete = try XCTUnwrap(timings["modelComplete"].double)
         let dispatch = try XCTUnwrap(timings["dispatch"].double), firstText = try XCTUnwrap(timings["firstText"].double)
-        // The settled rate: the 859 tokens after the first over first → last output.
-        let settled = 859 / ((lastContent - firstContent) / 1000)
+        // Every output token over dispatch → last output, including TTFT.
+        let settled = 860 / ((lastContent - dispatch) / 1000)
         print("PERF decode-span reasoning spanMs=\(Int(lastContent - firstContent)) settledTokPerSec=\(Int(settled)) ttftMs=\(Int(firstContent - dispatch)) firstTextMs=\(Int(firstText - dispatch))")
         // Both ends are stamped when the events arrive, so delivery jitter can
         // take a few milliseconds off the fixture's 0.8 s; what matters is that the
         // span covers the hidden reasoning (~800 ms), not only the visible text (~60 ms).
         XCTAssertGreaterThanOrEqual(lastContent - firstContent, 760, "the span covers the 0.8 s of hidden reasoning the output count includes")
-        XCTAssertLessThan(settled, 1_100, "859 tokens over ~0.8 s, not over the instant of visible text (~14,000 tok/s)")
+        XCTAssertLessThan(settled, 1_100, "860 tokens over ~0.9 s, not over the instant of visible text (~14,000 tok/s)")
         XCTAssertEqual(metrics["decodeTokensPerSecond"].double ?? 0, settled, accuracy: 0.5)
         XCTAssertEqual(metrics["streamDurationMs"].double ?? 0, lastContent - firstContent, accuracy: 0.001, "the stream duration is the decode span")
         XCTAssertLessThan(lastContent, complete)
@@ -114,20 +108,20 @@ server.serve_forever()
         XCTAssertEqual(metrics["minimumDecodeSpanMs"].double, 250)
     }
 
-    func testABurstDeliveredReplyReportsNoDecodeRate() async throws {
+    func testABurstDeliveredReplyBelowTheTotalDurationFloorReportsNoRate() async throws {
         let results = try await attempts(["burst"])
         let metadata = try XCTUnwrap(results["burst"])
         let timings = metadata["timings"], metrics = metadata["metrics"]
-        let span = try XCTUnwrap(timings["lastContent"].double) - (try XCTUnwrap(timings["firstContent"].double))
-        print("PERF decode-span burst spanMs=\(span)")
+        let span = try XCTUnwrap(timings["lastContent"].double) - (try XCTUnwrap(timings["dispatch"].double))
+        print("PERF output-duration burst spanMs=\(span)")
         XCTAssertLessThan(span, 250, "one write delivers the whole reply")
         XCTAssertTrue(metrics["decodeTokensPerSecond"].isNull, "below the minimum span a request contributes no rate, never 100,000 tok/s")
         XCTAssertEqual(metrics["minimumDecodeSpanMs"].double, 250, "the minimum travels with the timings, for readers that fold their own rate")
     }
 
     /// The gateway holds `response.completed` two seconds after the last token.
-    /// 101 tokens generated over one second decode at (101 − 1) / 1 s = 100
-    /// tok/s; dividing all 101 by first output → terminal read 101 / 3 s = 33.7.
+    /// All 101 tokens use TTFT + one second of generation; the held terminal
+    /// must not dilute this rate.
     func testTheDecodeSpanEndsAtTheLastTokenNotAtAHeldTerminalEvent() async throws {
         let results = try await attempts(["tail", "tail-hidden", "tail-single", "tail-short"])
         let tail = try XCTUnwrap(results["tail"])
@@ -136,16 +130,17 @@ server.serve_forever()
         let first = try XCTUnwrap(timings["firstContent"].double), last = try XCTUnwrap(timings["lastContent"].double)
         let complete = try XCTUnwrap(timings["modelComplete"].double)
         let rate = try XCTUnwrap(metrics["decodeTokensPerSecond"].double)
-        let diluted = 101 / ((complete - first) / 1000)
+        let dispatch = try XCTUnwrap(timings["dispatch"].double)
+        let diluted = 101 / ((complete - dispatch) / 1000)
         print("PERF decode-span held-terminal spanMs=\(Int(last - first)) tailMs=\(Int(complete - last)) decodeTokPerSec=\(String(format: "%.1f", rate)) dividedToTerminal=\(String(format: "%.1f", diluted))")
         // Sleeps only overrun: the span is the scripted second plus scheduling.
         XCTAssertGreaterThanOrEqual(last - first, 950, "first output item → last delta is the one second the model generated for")
         XCTAssertLessThan(last - first, 1_500)
         XCTAssertGreaterThanOrEqual(complete - last, 1_900, "the held terminal is two seconds after the last token")
-        XCTAssertEqual(rate, 100 / ((last - first) / 1000), accuracy: 1e-9, "N − 1 tokens over first → last output")
-        XCTAssertGreaterThan(rate, 66); XCTAssertLessThanOrEqual(rate, 106, "≈ 100 tok/s, however late the terminal")
-        XCTAssertLessThan(diluted, 40, "the old figure, all output over first output → terminal, read about 33.7 tok/s")
-        XCTAssertEqual(metrics["streamDurationMs"].double ?? 0, last - first, accuracy: 0.001, "the stream duration is the span the rate divides by, not → the held terminal")
+        XCTAssertEqual(rate, 101 / ((last - dispatch) / 1000), accuracy: 1e-9, "All tokens over dispatch → last output")
+        XCTAssertGreaterThan(rate, 55); XCTAssertLessThanOrEqual(rate, 106, "TTFT included, however late the terminal")
+        XCTAssertLessThan(diluted, 40, "A held terminal would dilute the output speed")
+        XCTAssertEqual(metrics["streamDurationMs"].double ?? 0, last - first, accuracy: 0.001, "The raw stream span excludes the held terminal")
 
         // An output item's completion is a token boundary too: hidden
         // reasoning with no delta at all ends when its item completes.
@@ -154,27 +149,27 @@ server.serve_forever()
         XCTAssertGreaterThanOrEqual(hiddenLast - hiddenFirst, 950, "the reasoning item's completion ends the span")
         XCTAssertLessThan(hiddenLast - hiddenFirst, 1_500)
         XCTAssertLessThan(hiddenLast, try XCTUnwrap(hidden["timings"]["modelComplete"].double) - 1_900)
-        XCTAssertEqual(try XCTUnwrap(hidden["metrics"]["decodeTokensPerSecond"].double), 100 / ((hiddenLast - hiddenFirst) / 1000), accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(hidden["metrics"]["decodeTokensPerSecond"].double), 101 / ((hiddenLast - (try XCTUnwrap(hidden["timings"]["dispatch"].double))) / 1000), accuracy: 1e-9)
 
-        // One output token has no tokens after the first: no decode speed.
+        // A single reported output token is inside the measured window.
         let single = try XCTUnwrap(results["tail-single"])
         XCTAssertEqual(single["usage"]["output"].int, 1)
         XCTAssertNotNil(single["timings"]["lastContent"].double)
-        XCTAssertTrue(single["metrics"]["decodeTokensPerSecond"].isNull, "N = 1 is no rate, not 1 token over the span")
+        XCTAssertEqual(try XCTUnwrap(single["metrics"]["decodeTokensPerSecond"].double), 1 / ((try XCTUnwrap(single["timings"]["lastContent"].double) - (try XCTUnwrap(single["timings"]["dispatch"].double))) / 1000), accuracy: 1e-9)
 
-        // A tenth of a second of generation is below the measurement floor,
+        // TTFT plus a tenth of a second of generation is below the floor,
         // however long the gateway then holds the terminal.
         let short = try XCTUnwrap(results["tail-short"])
-        let shortSpan = try XCTUnwrap(short["timings"]["lastContent"].double) - (short["timings"]["firstContent"].double ?? 0)
+        let shortSpan = try XCTUnwrap(short["timings"]["lastContent"].double) - (short["timings"]["dispatch"].double ?? 0)
         XCTAssertLessThan(shortSpan, 250); XCTAssertGreaterThanOrEqual(shortSpan, 90)
         XCTAssertGreaterThan((short["timings"]["modelComplete"].double ?? 0) - (short["timings"]["firstContent"].double ?? 0), 2_000)
-        XCTAssertTrue(short["metrics"]["decodeTokensPerSecond"].isNull, "a 100 ms span is below the floor; the held terminal does not lengthen it")
+        XCTAssertTrue(short["metrics"]["decodeTokensPerSecond"].isNull, "The total duration is below the floor; the held terminal does not lengthen it")
     }
 
     /// The same definition on the trace store's own clock, where every stamp
     /// is exact: output opens at 1 s, the last delta is at 2 s, the terminal
     /// arrives at 4 s.
-    func testTheTraceStoreDividesTheTokensAfterTheFirstByFirstToLastOutput() async throws {
+    func testTheTraceStoreDividesAllOutputByDispatchToLastOutput() async throws {
         func metrics(output: JSON, stamps: [Double], terminal: Double = 4_000, outcome: String = "completed") async throws -> JSON {
             let traces = TraceStore()
             let id = await traces.begin(session: "decode", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data(), headers: [:])
@@ -189,9 +184,9 @@ server.serve_forever()
         XCTAssertEqual(measured["timings"]["firstContent"].double, 1_000)
         XCTAssertEqual(measured["timings"]["lastContent"].double, 2_000)
         XCTAssertEqual(measured["timings"]["modelComplete"].double, 4_000)
-        XCTAssertEqual(measured["metrics"]["decodeTokensPerSecond"].double, 100, "(101 − 1) tokens over 1 s, never 101 over 3 s")
-        XCTAssertEqual(measured["metrics"]["streamDurationMs"].double, 1_000, "the stream duration is the span the rate divides by")
-        XCTAssertNil(measured["metrics"].map["outputTokensPerSecond"], "no round-trip rate is published")
+        XCTAssertEqual(measured["metrics"]["decodeTokensPerSecond"].double, 101 / 1.5, "All 101 tokens over 500 ms TTFT + 1 s span")
+        XCTAssertEqual(measured["metrics"]["streamDurationMs"].double, 1_000, "The stream duration remains first-to-last output")
+        XCTAssertNil(measured["metrics"].map["outputTokensPerSecond"], "Only one settled rate is published")
         XCTAssertEqual(measured["metrics"]["observedTTFTms"].double, 500, "time to first token is unchanged: dispatch → first output")
         func rate(output: JSON, stamps: [Double], outcome: String = "completed") async throws -> Double? {
             try await metrics(output: output, stamps: stamps, outcome: outcome)["metrics"]["decodeTokensPerSecond"].double
@@ -199,11 +194,11 @@ server.serve_forever()
         let two = try await rate(output: 2, stamps: [1_000, 2_000]), one = try await rate(output: 1, stamps: [1_000, 2_000])
         let none = try await rate(output: 0, stamps: [1_000, 2_000]), brief = try await rate(output: 101, stamps: [1_000, 1_100])
         let floor = try await rate(output: 101, stamps: [1_000, 1_250]), cancelled = try await rate(output: 101, stamps: [1_000, 2_000], outcome: "cancelled")
-        XCTAssertEqual(two, 1, "two tokens: one after the first, over one second")
-        XCTAssertNil(one, "one token has no decode speed")
+        XCTAssertEqual(two, 2 / 1.5, "All tokens, including the first")
+        XCTAssertEqual(one, 1 / 1.5)
         XCTAssertNil(none)
-        XCTAssertNil(brief, "100 ms is below the floor, whatever the terminal")
-        XCTAssertEqual(floor, 400, "the floor itself is a measurement")
+        XCTAssertEqual(brief, 101 / 0.6, "TTFT brings the total past the floor")
+        XCTAssertEqual(floor, 101 / 0.75)
         XCTAssertNil(cancelled, "only a completed request has a rate")
 
         // An attempt that stamped no last output (an item opened, then only
@@ -216,7 +211,7 @@ server.serve_forever()
         let unstamped = await traces.latest("unstamped")
         XCTAssertTrue(unstamped["timings"]["lastContent"].isNull)
         XCTAssertEqual(unstamped["metrics"]["streamDurationMs"].double, 3_000)
-        XCTAssertEqual(try XCTUnwrap(unstamped["metrics"]["decodeTokensPerSecond"].double), 100.0 / 3, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(unstamped["metrics"]["decodeTokensPerSecond"].double), 101 / 3.5, accuracy: 1e-9)
         // A stream cut before its terminal event has no span, however much arrived.
         let cut = TraceStore()
         let cutID = await cut.begin(session: "cut", turn: "t", profile: try fixtureProfile(), purpose: "turn", body: Data(), headers: [:])

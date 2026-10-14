@@ -11,7 +11,10 @@ extension WorkspaceModel {
     /// The limit every chat without its own runs under.
     var defaultCostLimit: CostLimit { configuration.defaultChatCostLimit }
     /// The limit a chat runs under: its own, else the Settings default.
-    func costLimit(for item: ChatRecord) -> CostLimit { item.costLimit ?? defaultCostLimit }
+    func costLimit(for item: ChatRecord) -> CostLimit {
+        if let owner = item.delegation?.budgetOwnerSessionID, let parent = record(owner), !parent.isSubagent { return parent.costLimit ?? defaultCostLimit }
+        return item.costLimit ?? defaultCostLimit
+    }
     func costLimit(for id: String) -> CostLimit { record(id).map(costLimit(for:)) ?? defaultCostLimit }
 
     /// The chat's reading with its current limit and what its helper last
@@ -30,21 +33,45 @@ extension WorkspaceModel {
     /// choice is saved with the chat and reaches its helper session at once:
     /// the next model request is checked against it, in a run that is going too.
     func setCostLimit(_ limit: CostLimit?, for id: String) async throws {
+        guard record(id)?.isSubagent != true else { throw HostError.failure("This sub-agent uses its parent chat’s cost limit. Change the limit in the parent.") }
         if let limit, !limit.isValid { throw HostError.failure("Enter an amount in US dollars above $0.00, up to $1,000,000.00.") }
+        // An editor can choose again before the previous write finishes.
+        // Compare with the saved value only after that choice settles, so
+        // choosing A → B → A does not mistake the last A for a no-op.
+        let previous = costLimitWrites[id]?.task, token = UUID()
+        let task = Task { [weak self] in
+            _ = await previous?.result
+            guard let self else { return }
+            try await self.persistCostLimit(limit, for: id)
+        }
+        costLimitWrites[id] = (token, task)
+        defer { if costLimitWrites[id]?.token == token { costLimitWrites[id] = nil } }
+        try await task.value
+        // Only persistence is serialized: a slow helper acknowledgement
+        // must not hold up the next choice's save or publication.
+        await sendCostLimit(id)
+    }
+    private func persistCostLimit(_ limit: CostLimit?, for id: String) async throws {
         if let index = chats.firstIndex(where: { $0.id == id }) {
             if chats[index].costLimit != limit {
-                chats[index].costLimit = limit
                 // A chat not yet sent has no record; its first message writes it, limit included.
-                if !pendingChatIDs.contains(id) {
+                if pendingChatIDs.contains(id) { chats[index].costLimit = limit }
+                else {
                     guard let store else { throw StoreError.unavailable }
-                    try await store.put(chats[index], kind: "chat", id: id)
+                    let saved = try await store.updateChatCostLimit(id: id, limit: limit)
+                    // Re-find after the await: chats can be reordered, renamed
+                    // or removed while the write is in flight.
+                    if let current = chats.firstIndex(where: { $0.id == id }),
+                       (chats[current].costLimitRevision ?? 0) < (saved.costLimitRevision ?? 0) {
+                        chats[current].costLimit = saved.costLimit
+                        chats[current].costLimitRevision = saved.costLimitRevision
+                    }
                 }
             }
         } else if let side = side(id) {
             sides[side.parentID]?.costLimit = limit
         } else { throw HostError.failure("This chat is no longer available.") }
         refreshCostReading(id); displays[id]?.costLimitChanged()
-        await sendCostLimit(id)
     }
     /// Saves the Settings default. Every chat that follows it is told.
     func setDefaultCostLimit(_ limit: CostLimit) async throws {
@@ -63,7 +90,7 @@ extension WorkspaceModel {
     /// Tells a chat's loaded helper session the limit it runs under. A chat
     /// with no session loaded is told when one opens (`costLimitParams`).
     func sendCostLimit(_ id: String) async {
-        guard opened.contains(id), let item = record(id), let host = hosts[item.workspaceID], host.isReady else { return }
+        guard opened.contains(id), let item = record(id), !item.isSubagent, let host = hosts[item.workspaceID], host.isReady else { return }
         let limit = costLimit(for: item)
         displays[id]?.costLimitSent = limit
         // A failed send is not retried from here: the next change sends again,
@@ -76,12 +103,14 @@ extension WorkspaceModel {
     /// journal predates cost records, what the request log holds of its spend
     /// so far. The helper takes that figure once and records costs itself from then on.
     func costLimitParams(for item: ChatRecord) async -> [String: WireValue] {
-        var params: [String: WireValue] = ["costLimit": costLimit(for: item).wire]
+        let limit = costLimit(for: item)
+        var params: [String: WireValue] = ["costLimit": limit.wire]
         if let seed = await costSeed(for: item) { params["costSeed"] = seed }
-        displays[item.id]?.costLimitSent = costLimit(for: item)
+        displays[item.id]?.costLimitSent = limit
         return params
     }
     private func costSeed(for item: ChatRecord) async -> WireValue? {
+        if let costSeedRead { return await costSeedRead(item) }
         // A chat whose journal the helper creates records every cost from its first request.
         guard item.path != nil else { return nil }
         var totals = displays[item.id]?.footer.gateway ?? chatStats[item.id]
@@ -103,6 +132,7 @@ extension WorkspaceModel {
         reading.reportedRequests = cost["reportedRequests"]?.nonnegativeInteger ?? 0
         reading.unreportedRequests = cost["unreportedRequests"]?.nonnegativeInteger ?? 0
         view.applyCostReading(reading)
+        guard record(view.id)?.isSubagent != true else { return }
         let helper: CostLimit = cost["limitUSD"]?.number.map(CostLimit.usd) ?? .unlimited
         if helper != reading.limit, view.costLimitSent != reading.limit {
             view.costLimitSent = reading.limit
@@ -114,6 +144,7 @@ extension WorkspaceModel {
     /// The notice's two actions: open the limit editor over the button, or
     /// carry on from where the run stopped once the limit is above the spend.
     func costLimitNotice(_ action: CostLimitNoticeAction, sessionID: String, anchor: NSView?) {
+        guard record(sessionID)?.isSubagent != true else { return }
         switch action {
         case .raise:
             guard let anchor, let view = displays[sessionID] else { return }

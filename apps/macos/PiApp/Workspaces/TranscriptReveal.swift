@@ -18,6 +18,7 @@ struct TranscriptReveal: Equatable, Sendable {
     var serial: Int
     /// Asked for by the find bar, which marks its own match.
     var fromFind = false
+    var toolCallID: String? = nil
     /// How far below the viewport's top a revealed row lands.
     static let landing: Double = 24
 }
@@ -34,11 +35,11 @@ extension WorkspaceModel {
     /// show). The chat should be the selected one (or a side shown beside
     /// it): nothing is placed in a transcript nobody is showing.
     @discardableResult
-    func revealInTranscript(sessionID id: String, messageID: String, mark: TranscriptReveal.Mark? = nil, fromFind: Bool = false) async -> Bool {
+    func revealInTranscript(sessionID id: String, messageID: String, mark: TranscriptReveal.Mark? = nil, fromFind: Bool = false, toolCallID: String? = nil) async -> Bool {
         guard !Task.isCancelled, transcriptShows(id), let view = displays[id], let item = record(id) else { return false }
         revealSerial += 1
-        view.reveal = TranscriptReveal(messageID: messageID, mark: mark, serial: revealSerial, fromFind: fromFind)
-        if view.messages.contains(where: { $0.id == messageID }) {
+        view.reveal = TranscriptReveal(messageID: messageID, mark: mark, serial: revealSerial, fromFind: fromFind, toolCallID: toolCallID)
+        if view.presentedMessages.contains(where: { $0.id == messageID }) {
             land(view, on: messageID)
             return true
         }
@@ -81,7 +82,14 @@ extension WorkspaceModel {
         // The place being read already is not asked for again (layout passes
         // report where the reader is as often as they run).
         if view.jumpRead != nil {
-            if view.jumpReading == position { view.jumpWanted = nil; view.jumpOffset = offset } else { view.jumpWanted = (position, offset) }
+            if view.jumpReading == position, view.jumpTask?.isCancelled != true {
+                view.jumpWanted = nil; view.jumpOffset = offset
+            } else {
+                view.jumpWanted = (position, offset)
+                // Modern helpers stop obsolete reads at a safe point. A legacy
+                // helper retains the one-read bound and coalesces destinations.
+                if !opened.contains(id) || hosts[item.workspaceID]?.supportsReadCancellation == true { view.jumpTask?.cancel() }
+            }
             return
         }
         if let failed = view.jumpFailedAt, ProcessInfo.processInfo.systemUptime - failed < 1 { view.jumpRetry = (position, offset); return }
@@ -106,7 +114,7 @@ extension WorkspaceModel {
         }
         // Reads at the old window's edges join rows that are about to go.
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
-        Task { [weak self] in
+        view.jumpTask = Task { [weak self] in
             guard let self else { return }
             // A read that came to nothing pauses position reads for a second;
             // then the place the reader is at by then (`jumpRetry`) is read.
@@ -121,7 +129,7 @@ extension WorkspaceModel {
             }
             defer {
                 if view.jumpRead == serial {
-                    view.jumpRead = nil
+                    view.jumpRead = nil; view.jumpTask = nil
                     // Where the reader went while this page was read.
                     // (Asked for where the reader is now, even if the chat was
                     // opened again meanwhile.)
@@ -247,6 +255,8 @@ extension WorkspaceModel {
     /// nil) and adopts it in place of the window, landing on its first row.
     private func readWindow(_ item: ChatRecord, view: SessionDisplay, around: String?) async -> Bool {
         let generation = view.presentationGeneration
+        let source = view.presentation.identity
+        let boundary = view.olderPage.cursor ?? view.newerPage.cursor
         // The newest request wins: a find bar stepping through matches quickly
         // must not land on an earlier match whose read came back last.
         revealSerial += 1
@@ -260,20 +270,40 @@ extension WorkspaceModel {
         }
         // Reads at the old window's edges join rows that are about to go.
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
+        var landed = false
+        defer {
+            if view.revealRead == serial {
+                view.revealRead = nil
+                // A failed read must not leave a mark that ordinary paging
+                // could land on later. A newer request owns its own cleanup.
+                if !landed { view.reveal = nil }
+            }
+        }
+        func changedSource() {
+            view.newerPage = .init(cursor: nil, loading: false, error: Self.branchChangedElsewhere)
+            view.browsingHistory = true; view.revealFailure = Self.branchChangedElsewhere
+        }
         do {
-            var page = try await readConversationWindow(item, cursor: nil, around: around, start: around == nil)
+            var page = try await readConversationWindow(item, cursor: nil, around: around, start: around == nil, validating: boundary)
             guard current() else { return false }
+            if let source, page.lineage != source.lineage || (page.incarnation != source.incarnation && page.incarnation.hasPrefix("file:") == source.incarnation.hasPrefix("file:")) {
+                changedSource(); return false
+            }
             page.messages = await withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
             guard current(), let first = around ?? page.messages.first?.id else { return false }
             // The chat's start lands at the very top, its inset above the first row.
             adoptInitialHistory(page, into: view, around: first, landing: around == nil ? Double(TranscriptMetrics.pageTopInset) : TranscriptReveal.landing)
             view.browsingHistory = page.newer != nil
             anchorChanged(view)
+            landed = true
             return true
         } catch {
             // Said to whoever asked (the find bar shows it), not at the
             // window's earlier edge, whose Retry reads a different page.
-            if !(error is CancellationError), current() { view.revealFailure = error.localizedDescription }
+            if !(error is CancellationError), current() {
+                if Self.isSourceChange(error) { changedSource() }
+                else { view.revealFailure = error.localizedDescription }
+            }
             return false
         }
     }

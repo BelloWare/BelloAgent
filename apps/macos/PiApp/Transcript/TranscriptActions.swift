@@ -34,13 +34,17 @@ struct TranscriptActions {
     /// read or changed. Nil where files cannot be opened.
     var openFile: ((String, ClosedRange<Int>?) -> Void)? = nil
     var resolveReplyFile: (@MainActor (String) async -> ReplyFileLocation?)? = nil
+    var openSubagent: ((SubagentTarget) -> Void)? = nil
+    var inspectSubagent: ((SubagentTarget) -> Void)? = nil
+    var stopSubagent: ((SubagentTarget) -> Void)? = nil
+    var openAgentSource: ((AgentMessageReference) -> Void)? = nil
     /// Which of the optional actions are offered. A pane makes its actions
     /// afresh each time it is drawn, and every one of them reaches the chat
     /// through the model and the session it was made for; what can differ
     /// between two sets made for the same session is only which are offered.
     var offered: [Bool] {
         [quoteReply != nil, inspectTurn != nil, skillPressed != nil, skillHovered != nil, costLimit != nil,
-         fork != nil, switchVersion != nil, latestVersion != nil, openFile != nil, resolveReplyFile != nil]
+         fork != nil, switchVersion != nil, latestVersion != nil, openFile != nil, resolveReplyFile != nil, openSubagent != nil, inspectSubagent != nil, stopSubagent != nil, openAgentSource != nil]
     }
 }
 
@@ -75,7 +79,11 @@ extension TranscriptActions {
             switchVersion: { source()?.switchVersion?($0, $1) },
             latestVersion: { source()?.latestVersion?() },
             openFile: { source()?.openFile?($0, $1) },
-            resolveReplyFile: { await source()?.resolveReplyFile?($0) }
+            resolveReplyFile: { await source()?.resolveReplyFile?($0) },
+            openSubagent: { source()?.openSubagent?($0) },
+            inspectSubagent: { source()?.inspectSubagent?($0) },
+            stopSubagent: { source()?.stopSubagent?($0) },
+            openAgentSource: { source()?.openAgentSource?($0) }
         )
     }
 }

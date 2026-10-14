@@ -29,8 +29,10 @@ is deferred.
 Onboarding checks the selected gateway model before opening the first chat.
 The native menu bar opens on either mouse button. Usage shows historical output
 speed, tokens, reported costs and requested/resolved model distribution; Activity
-shows running work; TPS is the decode speed: reported output tokens after the first (hidden reasoning included) divided
-by the time from the first generated token to the last; replies under 250 ms of generation are left out. Session headers and
+shows running work; TPS is output speed: all reported output tokens (hidden reasoning included) divided
+by the time from sending the request to its last output token, including TTFT and excluding a trailing terminal/usage wait.
+Completed requests need valid TTFT and output span, at least one output token, and a total duration of at least 250 ms.
+Groups divide summed output tokens by summed durations. Session headers and
 cost totals open resizable usage windows with tokens, cache and model/cost breakdowns. Unread history remains in the sidebar.
 
 **Bello Agent 0.1.57/build 61 is publicly released** at

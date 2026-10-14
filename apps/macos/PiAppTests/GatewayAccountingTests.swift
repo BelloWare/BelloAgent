@@ -38,11 +38,11 @@ final class GatewayAccountingTests: XCTestCase {
         try await archive.close()
     }
     /// Every aggregate — a turn, the session pill, the report, the menu bar
-    /// chart and its per-model rows — is Σ(N − 1) ÷ Σ(first → last output)
-    /// over the counted requests: completed, two tokens or more, a span of
+    /// chart and its per-model rows — is ΣN ÷ Σ(TTFT + first → last output span)
+    /// over the counted requests: completed, one token or more, a total duration of
     /// at least the floor. Each request's gateway held its terminal event two
     /// seconds after its last token; none of that wait is decode time.
-    func testEveryAggregateRateIsTheTokensAfterTheFirstOverFirstToLastOutput() async throws {
+    func testEveryAggregateRateIsAllOutputOverRequestToLastOutput() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 2000) })
         try await archive.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 1000)
@@ -53,21 +53,21 @@ final class GatewayAccountingTests: XCTestCase {
                                            "modelComplete": .number(2_110 + span), "httpEnd": .number(2_120 + span)])
             return metadata
         }
-        // Counted: 100 + 50 + 1 tokens after the first, over 1,000 + 500 + 250 ms.
+        // Counted: 101 + 51 + 2 + 1 tokens, over spans plus 10 ms TTFT each.
         try await save(archive, request(output: 101, span: 1_000, answer: "assistant-1"))
         try await save(archive, request(output: 51, span: 500, answer: "assistant-2"))
         try await save(archive, request(output: 2, span: 250, answer: "assistant-3"))
-        // Not counted: one token, a tenth of a second, a failure.
+        // One token counts; a 110 ms total and a failure do not.
         try await save(archive, request(output: 1, span: 1_000, answer: "assistant-4"))
         try await save(archive, request(output: 100, span: 100, answer: "assistant-5"))
         try await save(archive, request(output: 100, span: 1_000, outcome: "failed", answer: "assistant-6"))
-        let expected = SettledThroughput(decodeMilliseconds: 1_750, outputTokens: 151, samples: 3, requests: 6)
-        let rate = 151 / 1.75
+        let expected = SettledThroughput(decodeMilliseconds: 2_790, outputTokens: 155, samples: 4, requests: 6)
+        let rate = 155 / 2.79
         func check(_ settled: SettledThroughput, requests: Int = 6, _ scope: String) {
-            XCTAssertEqual(settled.samples, 3, scope); XCTAssertEqual(settled.requests, requests, scope)
-            XCTAssertEqual(settled.outputTokens, 151, "\(scope): the tokens after each counted request's first")
-            XCTAssertEqual(settled.decodeMilliseconds, 1_750, "\(scope): first → last output, never to the terminal")
-            XCTAssertEqual(settled.tokensPerSecond ?? 0, rate, accuracy: 1e-9, "\(scope): 151 tokens over 1.75 s")
+            XCTAssertEqual(settled.samples, 4, scope); XCTAssertEqual(settled.requests, requests, scope)
+            XCTAssertEqual(settled.outputTokens, 155, "\(scope): all counted output tokens")
+            XCTAssertEqual(settled.decodeMilliseconds, 2_790, "\(scope): dispatch → last output, excluding the held terminal")
+            XCTAssertEqual(settled.tokensPerSecond ?? 0, rate, accuracy: 1e-9, "\(scope): 155 tokens over 2.79 s")
         }
         let window = try await archive.dashboard(filter())
         check(window.gateway.settledThroughput, "report")
@@ -87,7 +87,7 @@ final class GatewayAccountingTests: XCTestCase {
         var turn = SettledThroughput()
         for message in messages { turn.add(try XCTUnwrap(accounting.messages[message.id]).settledThroughput) }
         check(turn, "turn")
-        XCTAssertEqual(try XCTUnwrap(accounting.messages["assistant-1"]).settledThroughput.tokensPerSecond, 100, "one reply: (101 − 1) tokens over one second")
+        XCTAssertEqual(try XCTUnwrap(accounting.messages["assistant-1"]).settledThroughput.tokensPerSecond, 100, "one reply: 101 tokens over 1.01 seconds")
         let history = try XCTUnwrap(accounting.timing)
         check(try XCTUnwrap(history.historicalSettledThroughput), requests: 5, "sidebar and Session info history")
         XCTAssertEqual(history.settledThroughput.tokensPerSecond ?? 0, rate, accuracy: 1e-9, "the listed requests fold to the same figure")

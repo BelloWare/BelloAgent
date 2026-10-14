@@ -29,6 +29,8 @@ _CLIENT_SPEC.loader.exec_module(native_host_client)
 CONTRACT_SPEC = importlib.util.spec_from_file_location('litellm_contract', ROOT / 'fixtures/native/litellm_contract.py')
 CONTRACT = importlib.util.module_from_spec(CONTRACT_SPEC)
 CONTRACT_SPEC.loader.exec_module(CONTRACT)
+NATIVE_TOOL_NAMES = ['read','ls','find','grep','write','edit','bash','mcp',
+                     'subagent_start','subagent_send','subagent_wait','subagent_status','subagent_stop']
 
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode()
@@ -101,6 +103,18 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             self.send_response(400); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(output); return
         if model == 'stall-mid-reply':
             self.stall_mid_reply(record); return
+        if model == 'held-for-stop':
+            # Keyboard admission tests own this lifetime: the request stays
+            # active until their real turn.stop closes it, including under
+            # parallel load. The deadline is only a failed-test backstop.
+            self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
+            try:
+                deadline = time.monotonic() + 120
+                while time.monotonic() < deadline:
+                    self.wfile.write(b': waiting for turn.stop\n\n'); self.wfile.flush(); time.sleep(.05)
+            except (BrokenPipeError, ConnectionResetError):
+                record['cancelled'] = True
+            return
         if model == 'slow':
             time.sleep(2)
         text = 'Hello 中文🙂'
@@ -255,7 +269,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         CONTRACT.validate_request('POST', self.path, dict(self.headers), body,
                                   api_key='fixture-secret', model='auto-router', max_output_tokens=4096,
                                   custom_headers={'X-Fixture-Contract': 'owner-sample-v1'}, native_items='portable',
-                                  expected_tool_names=['read','ls','find','grep','write','edit','bash','mcp'])
+                                  expected_tool_names=NATIVE_TOOL_NAMES)
         variants = {f'fixture: owner-sample {transport} {cost}': (transport, cost, False)
                     for transport in ('json', 'sse') for cost in ('null', 'paid', 'zero')}
         variants.update({f'fixture: owner-billing {transport}': (transport, 'null', True) for transport in ('json','sse')})
@@ -297,7 +311,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         CONTRACT.validate_request('POST', self.path, dict(self.headers), body, api_key='fixture-secret',
                                   model=body['model'], max_output_tokens=4096,
                                   custom_headers={'X-Fixture-Contract': 'strict-v1'}, native_items=native_policy,
-                                  expected_tool_names=['read','ls','find','grep','write','edit','bash','mcp'])
+                                  expected_tool_names=NATIVE_TOOL_NAMES)
         prompt = semantic['latest_text']
         history = body['input' if responses else 'messages']
         tool_result = history[-1].get('type') == 'function_call_output' if responses else any(block.get('type') == 'tool_result' for block in history[-1]['content'])
@@ -420,6 +434,31 @@ class Peer(native_host_client.HostPeer):
         return frame.get('result')
     def close(self):
         super().close(wait=5, join=2)
+
+class FixtureContractTests(unittest.TestCase):
+    def test_agent_status_union_accepts_each_route_and_rejects_mixed_arguments(self):
+        schema = {'oneOf': [
+            dict(type='object', properties=dict(action=dict(type='string', const='list'), cursor=dict(type='string')),
+                 required=['action'], additionalProperties=False),
+            dict(type='object', properties=dict(action=dict(type='string', const='read_result'), child_id=dict(type='string'), turn=dict(type='integer')),
+                 required=['action', 'child_id', 'turn'], additionalProperties=False)
+        ]}
+        CONTRACT.validate_schema(schema, 'subagent_status')
+        CONTRACT.validate_arguments(dict(action='list', cursor='next'), schema)
+        CONTRACT.validate_arguments(dict(action='read_result', child_id='child', turn=2), schema)
+        for arguments in [dict(action='read_result'), dict(action='list', child_id='child', turn=2),
+                          dict(action='read_result', child_id='child', turn=2, cursor='next'), dict(action='unknown')]:
+            with self.subTest(arguments=arguments), self.assertRaises(CONTRACT.FixtureContractError):
+                CONTRACT.validate_arguments(arguments, schema)
+
+    def test_schema_union_must_be_well_formed_and_match_exactly_one_branch(self):
+        branch = dict(type='object', properties=dict(action=dict(type='string')), required=['action'])
+        for schema in [{'oneOf': []}, {'oneOf': [branch, {'type': 'string'}]}]:
+            with self.subTest(schema=schema), self.assertRaises(CONTRACT.FixtureContractError):
+                CONTRACT.validate_schema(schema)
+        with self.assertRaises(CONTRACT.FixtureContractError):
+            CONTRACT.validate_arguments(dict(action='list'), {'oneOf': [branch, branch]})
+
 
 class NativeIntegration(unittest.TestCase):
     @classmethod
@@ -1191,13 +1230,18 @@ class NativeIntegration(unittest.TestCase):
                 self.assertLessEqual(t['firstContent'],t['modelComplete'])
                 # The last output token: never after the terminal event. One
                 # delta (or a JSON body) is first and last at once, so it
-                # spans nothing and has no decode rate.
+                # has a zero decode span; TTFT supplies its measured duration.
                 self.assertLessEqual(t['firstContent'],t['lastContent'])
                 self.assertLessEqual(t['lastContent'],t['modelComplete'])
                 self.assertEqual(t['lastContent'],t['firstContent'])
-                self.assertIsNone(m['decodeTokensPerSecond'])
-                # The stream duration is the span the rate divides by: first
-                # output to last, never to the terminal event.
+                duration = t['lastContent'] - t['dispatch']
+                output = attempt['usage'].get('output')
+                if duration >= m['minimumDecodeSpanMs'] and output is not None and output >= 1:
+                    self.assertAlmostEqual(m['decodeTokensPerSecond'], output / (duration / 1000))
+                else:
+                    self.assertIsNone(m['decodeTokensPerSecond'])
+                # The raw stream duration remains first output to last; TTFT
+                # is added for the rate, never the terminal wait.
                 self.assertAlmostEqual(m['streamDurationMs'],t['lastContent']-t['firstContent'])
                 self.assertNotIn('outputTokensPerSecond',m)
                 self.assertAlmostEqual(m['httpDurationMs'],t['httpEnd']-t['dispatch'])
@@ -1311,7 +1355,7 @@ class NativeIntegration(unittest.TestCase):
         self.assertTrue(all(r.get('validated') for r in Fixture.requests[before:] if r['path'] == '/v1/responses'), 'every request met the contract')
         # Keys are sorted, so the tools close both bodies: byte-equal lists.
         self.assertEqual(side_raw[side_raw.rindex(b'"tools":'):], parent_raw[parent_raw.rindex(b'"tools":'):])
-        self.assertEqual([t['name'] for t in side_body['tools']], ['read','ls','find','grep','write','edit','bash','mcp'])
+        self.assertEqual([t['name'] for t in side_body['tools']], NATIVE_TOOL_NAMES)
         self.assertEqual(side_body['input'][:len(parent_body['input'])], parent_body['input'], 'same instructions, then the parent input')
         # Then the parent's reply, the hidden note as a user message, and the question.
         added = side_body['input'][len(parent_body['input']):]

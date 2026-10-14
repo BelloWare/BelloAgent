@@ -368,7 +368,9 @@ final class CompactionSafetyTests: XCTestCase {
         XCTAssertLessThanOrEqual(shown.utf8.count,32768); XCTAssertTrue(text.hasPrefix(shown))
         XCTAssertTrue(sent.hasSuffix("]"))
         let file=URL(fileURLWithPath:String(sent[note.upperBound...].dropLast()))
-        XCTAssertEqual(file.deletingLastPathComponent().lastPathComponent,"tool-output")
+        let physicalSessionID = await s.id
+        XCTAssertEqual(file.deletingLastPathComponent().lastPathComponent,physicalSessionID)
+        XCTAssertEqual(file.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent,"tool-output")
         XCTAssertEqual(try String(contentsOf:file,encoding:.utf8),text,"The file holds the whole result")
         await s.close()
     }

@@ -23,6 +23,30 @@ private final class HostReplies: @unchecked Sendable {
 /// The host between the app and its chats: what it keeps of the replies it
 /// sent, and whether one chat opening can hold up the others.
 final class HostServiceTests: XCTestCase {
+    func testStopDuringSubmissionPreflightRejectsTheOvertakenSend() async throws {
+        for method in ["turn.submit", "turn.steer", "turn.edit"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+            let gate = SubmissionPreflightGate(), host = NativeHostService(emit: { _ in })
+            _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd": JSON(root.path), "directory": JSON(root.appendingPathComponent("state").path)])
+            _ = try await host.command("session.open", sessionID: "s", params: ["profile": try fixtureProfile().raw, "apiKey": "fixture"])
+            await host.holdSubmissionPreflight(at: gate)
+            let sending = Task { try await host.command(method, sessionID: "s", params: ["clientTurnId": "t", "text": "Stopped before admission", "messageId": "old"]) }
+            try await eventually { await gate.entered }
+            let stopped = try await host.command("turn.stop", sessionID: "s", params: [:])
+            XCTAssertEqual(stopped["accepted"].flag, true)
+            await gate.release()
+            do { _ = try await sending.value; XCTFail("Stop must reject the overtaken submission") }
+            catch let error as AgentError { XCTAssertEqual(error.code, "submission_stopped", method) }
+            let snapshot = try await host.command("session.snapshot", sessionID: "s", params: [:])
+            XCTAssertEqual(snapshot["state"].text, "paused", method)
+            XCTAssertTrue(snapshot["messages"].list.isEmpty)
+            XCTAssertEqual(snapshot["queueCount"].int, 0)
+            let requests = try await host.command("debug.list", sessionID: "s", params: [:])
+            XCTAssertTrue(requests["attempts"].list.isEmpty, "No provider attempt was admitted")
+            await host.shutdown()
+        }
+    }
+
     func testReadRepliesAreNotKeptForReplayButMutationRepliesAre() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let replies = HostReplies(), host = NativeHostService(emit: { replies.emit($0) })
@@ -242,4 +266,15 @@ final class SessionRecoverTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: sessions.appendingPathComponent("copy.jsonl").path))
         await host.shutdown()
     }
+}
+
+private actor SubmissionPreflightGate {
+    private var waiter: CheckedContinuation<Void, Never>?
+    var entered: Bool { waiter != nil }
+    func wait() async { await withCheckedContinuation { waiter = $0 } }
+    func release() { waiter?.resume(); waiter = nil }
+}
+
+private extension NativeHostService {
+    func holdSubmissionPreflight(at gate: SubmissionPreflightGate) { beforeSubmissionPreflight = { await gate.wait() } }
 }

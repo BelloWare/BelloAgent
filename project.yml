@@ -23,8 +23,8 @@ packages:
     exactVersion: 2.8.1
   BelloViews:
     path: packages/bello-views
-targets:
-  PiApp:
+targetTemplates:
+  PiApplication:
     type: application
     productName: Bello Agent
     platform: macOS
@@ -36,6 +36,9 @@ targets:
       - packages/swift-host/Sources/PiAgentCore/JournalCheckpoint.swift
       - packages/swift-host/Sources/PiAgentCore/TaskPresentation.swift
       - packages/swift-host/Sources/PiAgentCore/ResponseTimeline.swift
+      - packages/swift-host/Sources/PiAgentCore/SubagentTypes.swift
+      - packages/swift-host/Sources/PiAgentCore/RequestScope.swift
+      - packages/swift-host/Sources/PiAgentCore/ToolOutputOwnership.swift
       - path: catalogs/bello-agent.models.json
         buildPhase: resources
     postBuildScripts:
@@ -61,12 +64,27 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/../Frameworks"
+targets:
+  PiApp:
+    templates: [PiApplication]
+  # Test actions (including Release build-for-testing) never launch the
+  # shipping app or use its preferences identity. Keep its module for @testable.
+  PiAppTestHost:
+    templates: [PiApplication]
+    productName: Bello Agent Tests
+    sources: [apps/macos/TestSupport/TestIsolationGuard.m]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.belloware.PiAppTests.Host
+        PRODUCT_NAME: Bello Agent Tests
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: [$(inherited), PI_TEST_HOST]
+        ENABLE_TESTABILITY: YES
   PiAppTests:
     type: bundle.unit-test
     platform: macOS
-    sources: [apps/macos/PiAppTests]
+    sources: [apps/macos/PiAppTests, apps/macos/TestSupport/TestIsolationGuard.m]
     dependencies:
-      - target: PiApp
+      - target: PiAppTestHost
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -81,8 +99,13 @@ schemes:
   PiApp:
     build:
       targets:
-        PiApp: all
+        PiApp: [run, profile, archive, analyze]
+        PiAppTestHost: [test]
     test:
       targets: [PiAppTests]
+      macroExpansion: PiAppTestHost
       environmentVariables:
         PI_APP_TESTING: "1"
+        # Recorded in .xctestrun too, so clones and test-without-building keep
+        # the same isolation without a shell wrapper or a developer's setup.
+        CFFIXED_USER_HOME: "$(PROJECT_TEMP_DIR)/PiAppTests-Home"

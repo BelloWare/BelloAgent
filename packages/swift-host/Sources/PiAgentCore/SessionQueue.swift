@@ -4,6 +4,9 @@ import Foundation
 // a submission into the conversation.
 
 extension AgentSession {
+    // A terminal run can still own its task while final request links are
+    // persisted. That task no longer has a model/tool boundary to steer.
+    var acceptsSteering: Bool { runTask != nil && state == .running }
     func commandState(_ submission: Submission, _ status: String) {
         let record: JSON=["commandId":JSON(submission.commandID),"turnId":JSON(submission.turnID),"status":JSON(status),"state":JSON(status)]
         if let i=commands.firstIndex(where:{$0["turnId"].text == submission.turnID}) { commands[i]=record } else { commands.append(record) }
@@ -27,7 +30,7 @@ extension AgentSession {
                 throw AgentError("attachment_unreadable", "An image could not be prepared for the model; select another")
             }
         }
-        if steer, runTask == nil { throw AgentError("not_running", "Steering requires an active run; send a normal message") }
+        if steer, !acceptsSteering { throw AgentError("not_running", "Steering requires an active run; send a normal message") }
         // A message sent to a chat at its cost limit is refused where it was
         // typed, with the same words as a run stopped there, also when earlier
         // messages wait: nothing can run until the limit is raised. One sent
@@ -39,12 +42,27 @@ extension AgentSession {
     /// Stop (or a failure) left messages waiting: a new one joins them, after
     /// them, and nothing is sent until Resume.
     var pausedWithPending: Bool { runTask == nil && queuePaused && (!queue.isEmpty || !steering.isEmpty) }
-    public func submit(_ input: Submission, steer: Bool) throws -> JSON {
+    func checkSubmissionStop(_ admittedAt: Int?) throws {
+        guard admittedAt == nil || admittedAt == stopCount else {
+            throw AgentError("submission_stopped", "The chat was stopped while preparing this message. Send it again when ready.")
+        }
+    }
+    public func submit(_ input: Submission, steer: Bool, admittedAt: Int? = nil) throws -> JSON {
+        try requireIndependentSession()
+        try requireAgentExecution()
+        return try submitManaged(input, steer: steer, admittedAt: admittedAt)
+    }
+    /// Only the coordinator submits a managed child's initial task.
+    func submitManaged(_ input: Submission, steer: Bool, admittedAt: Int? = nil) throws -> JSON {
+        // The comparison and admission share this actor turn: Stop cannot
+        // slip between the final preflight check and launching the run.
+        try checkSubmissionStop(admittedAt)
         try validate(input,steer:steer)
         let paused = pausedWithPending
         if steer { steering.append(input) } else { queue.append(input) }; commandState(input,"queued")
         do { try persistState() } catch { if steer { steering.removeLast() } else { queue.removeLast() }; commands.removeAll{$0["turnId"].text == input.turnID}; throw error }
         event(steer ? "steering.queued" : "queue.changed")
+        if steer, let coordinator = agentCoordinator { let owner = id; Task { await coordinator.wake(owner) } }
         let held = queueEdit != nil
         let queued=runTask != nil || paused || held
         if runTask == nil, !paused, !held { queuePaused=false; launch() }
@@ -93,7 +111,7 @@ extension AgentSession {
     /// current run after its tool batch instead of waiting for the run to end.
     public func steerQueued(_ turnID: String) throws {
         guard let index=queue.firstIndex(where:{$0.turnID == turnID}) else { throw AgentError("queue_missing", "Queued message is no longer pending") }
-        guard runTask != nil else { throw AgentError("not_running", "Steering requires an active run; the message stays queued") }
+        guard acceptsSteering else { throw AgentError("not_running", "Steering requires an active run; the message stays queued") }
         guard queueEdit == nil else { throw Self.editHeldError }
         let item=queue[index], oldQ=queue, oldS=steering
         queue.remove(at:index); steering.append(item)
@@ -127,6 +145,7 @@ extension AgentSession {
     /// The partial reply of the failed attempt stays in the transcript as what
     /// arrived but is never replayed. Queued follow-ups go on after the turn.
     public func retryRun(overrides: JSON = [:]) throws {
+        try requireIndependentSession()
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
         guard state == .error || state == .paused, let last=history.last(where: { $0.replayEligible }), last.role != "assistant" else {
             throw AgentError(AgentErrorCode.nothingToRetry, "There is no failed request to retry; send a new message instead")
@@ -141,6 +160,7 @@ extension AgentSession {
         activeSubmission=submission; retrying=true; queuePaused=false; errorMessage=nil; errorCode=nil; try persistState(); launch()
     }
     func deliver(_ submission: Submission, lane: String = "follow-up", newTask: Bool = true) async throws {
+        turnSubagentModels = submission.subagentModels ?? subagentModelGrants
         let turn = try profile.overriding(submission)
         // Steering delivered at a Resume's start takes the run over: the
         // continuation's command is done, its receipt says so.
@@ -157,12 +177,17 @@ extension AgentSession {
         var message=ChatMessage(role:"user",content:(expanded.isEmpty && !images.isEmpty ? [] : [textBlock(expanded)])+images); message.displayText=submission.text; message.id=submission.turnID; message.turn=submission.turnID
         message.contextNote=pendingContextNote()
         message.userInput = ["version":1,"attachments":.array(submission.attachments.map { $0.removing(["data"]) }),"skills":.array(submission.skills.map(\.recorded))]
+        if let lease = agentLease {
+            message.userInput = nil
+            message.nativeAgentDelivery = ["version":1,"author":"parent","childId":JSON(id),"turn":JSON(lease.turn),"eventIds":[JSON(lease.inputID)],"task":JSON(subagents.origin?.description ?? "")]
+        }
         message.taskRootID=newTask ? submission.turnID : taskRootID
         message.taskExecutionID=activeTaskPresentation?.executionID
         message.inputLane=lane
         var overrides: JSON=[:]; if let model=submission.model { overrides["modelOverride"]=JSON(model) }; if let level=submission.thinkingLevel { overrides["thinkingLevel"]=JSON(level) }
         if let capacity=submission.contextWindow { overrides["contextWindow"]=JSON(capacity) }; if let output=submission.maxOutputTokens { overrides["maxOutputTokens"]=JSON(output) }; if let limit=submission.modelOutputLimit { overrides["modelOutputLimit"]=JSON(limit) }
         try append(message,record:overrides)
+        if newTask { try startAgentEpoch() }
         // The conversation holds it now; the saved state no longer needs to.
         if delivering?.submission.turnID == submission.turnID { delivering=nil }
         taskRootID=message.taskRootID; boundary=context; currentTurnID=submission.turnID; activeSubmission=submission; retrySubmission=nil; commandState(submission,"delivered"); try persistState(active:true); event("message_end")

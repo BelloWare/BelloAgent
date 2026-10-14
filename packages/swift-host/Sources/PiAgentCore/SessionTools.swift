@@ -9,6 +9,7 @@ import Foundation
 struct ToolHistoryIndex {
     var owners: [String: String] = [:]
     var results: [String: [String: Int]] = [:]
+    private(set) var resultCount = 0
     init(_ messages: [ChatMessage] = []) {
         for (index, message) in messages.enumerated() { append(message, at: index) }
     }
@@ -18,6 +19,7 @@ struct ToolHistoryIndex {
                 if let id = call["id"].text { owners[id] = message.id }
             }
         } else if message.role == "toolResult", let id = message.toolCallId, let owner = owners[id] {
+            if results[owner]?[id] == nil { resultCount += 1 }
             results[owner, default: [:]][id] = index
         }
     }
@@ -38,7 +40,7 @@ extension AgentSession {
     /// may have left effects behind, so its outcome is unknown.
     static let rejectionCodes: Set<String> = ["tool_arguments", "invalid_params", "invalid_range", "invalid_identity", "tool_unavailable", "read_only",
         "edit_match", "file_unavailable", "not_regular_file", "file_too_large", "binary_file", "missing_path", "tool_output", "missing_executable", "tool_busy",
-        "mcp_arguments", "mcp_tool", "mcp_server", "mcp_config", "mcp_version", "mcp_schema", "mcp_cursor", "mcp_outcome_unknown", "mcp_rejected", "mcp_session_expired", "mcp_unavailable"]
+        "mcp_arguments", "mcp_policy", "mcp_tool", "mcp_server", "mcp_config", "mcp_version", "mcp_schema", "mcp_cursor", "mcp_outcome_unknown", "mcp_rejected", "mcp_session_expired", "mcp_unavailable"]
     static func isRejection(_ error: Error) -> Bool { (error as? AgentError).map { rejectionCodes.contains($0.code) } ?? false }
     /// The state a tool card shows for a recorded outcome: `unknown` when the
     /// call was interrupted or failed after it began (effects may exist),
@@ -61,9 +63,33 @@ extension AgentSession {
     }
     /// The tools a request offers: the session's own, as pi offers its tools,
     /// except that a read-only side offers its parent's (SessionSide.swift).
-    func sessionDefinitions() async -> [ToolDefinition] { await tools.definitions(readOnly:offersReadOnlyTools) }
+    func sessionDefinitions(subagentModels: [SubagentModelGrant]? = nil) async -> [ToolDefinition] {
+        var definitions = await tools.definitions(readOnly: offersReadOnlyTools)
+        // A running turn keeps its grant. Idle previews describe the next
+        // request, including after reopening before any turn has run.
+        if agentCoordinator != nil, isSubagent || canDelegate {
+            definitions += SubagentSteeringContract.definitions(child:isSubagent,models:runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants)
+        } else if canDelegate { definitions.append(SubagentSpec.definition(models: runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants)) }
+        return definitions
+    }
     func invokeTool(_ call: ToolCall) async throws -> JSON {
-        let prepared=await piPrepared(call)
+        if SubagentSteeringContract.names.contains(call.name) {
+            guard agentCoordinator != nil, let result = agentPreparedResults[call.id] else { throw AgentError("tool_unavailable", "Agent control was not admitted") }
+            if result["isError"].flag != true, call.name == "subagent_wait" || call.name == "subagent_start" && call.arguments["mode"].text == "wait",
+               let coordinator = agentCoordinator, let text = result["content"].list.first?["text"].text {
+                let receipt = try JSON.parse(Data(text.utf8))
+                let waited = try await coordinator.wait(receipt,args:call.arguments,parent:self)
+                var wire = result; var combined = receipt; combined["wait"] = waited
+                wire["content"] = [textBlock(combined.encoded())]; return wire
+            }
+            return result
+        }
+        if call.name == "subagent" {
+            guard agentCoordinator == nil, canDelegate, let coordinator = subagentCoordinator, let assistant = toolHistory.owners[call.id] else { throw AgentError("tool_unavailable", "Sub-agent delegation is unavailable here") }
+            return await coordinator.result(SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call.id)).wire
+        }
+        var prepared=await piPrepared(call)
+        prepared.outputSessionID = id
         let update: @Sendable (JSON) async -> Void = { [weak self] update in await self?.toolUpdate(call.id,update) }
         // Stopped while its arguments were prepared: it never began.
         try Task.checkCancellation()
@@ -118,8 +144,8 @@ extension AgentSession {
         // theirs and name the file that holds the rest. Ours do the same, so
         // this cut is for a tool that returns more (an MCP server): the text
         // is saved whole, and pi's note names the file the model can read.
-        if text.utf8.count > 65536 {
-            let folder=directory.appendingPathComponent("tool-output"); try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+        if text.utf8.count > 65536 && !((call.name == "subagent" && canDelegate || SubagentSteeringContract.names.contains(call.name) && agentCoordinator != nil) && !result["nativeSubagent"].isNull) && call.name != "subagent_status" {
+            let folder = try ToolOutputOwnership.directory(root: directory.appendingPathComponent("tool-output"), sessionID: id, create: true)
             let file=folder.appendingPathComponent(UUID().uuidString+".txt"), bytes=Data(text.utf8)
             guard bytes.count <= 16*1024*1024 else { throw AgentError("tool_output_limit", "Tool result exceeds 16 MiB; remote effects may have completed") }
             try bytes.write(to:file); try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:file.path)
@@ -130,6 +156,11 @@ extension AgentSession {
         // The card names each image the model receives beside the text.
         let shown=images.isEmpty ? text : ([text]+images.map(describe)).filter { !$0.isEmpty }.joined(separator:"\n")
         if !images.isEmpty { message.displayText=shown }
+        if SubagentSteeringContract.names.contains(call.name), let reserved = result["nativeResultMessageId"].text { message.id = reserved }
+        if (call.name == "subagent" && canDelegate || SubagentSteeringContract.names.contains(call.name) && agentCoordinator != nil), !result["nativeSubagent"].isNull {
+            message.nativeSubagent = result["nativeSubagent"]
+            if let id = result["nativeResultMessageId"].text { message.id = id }
+        }
         message.requestAttemptIDs=currentAttemptIDs
         let durationMs=started.map { nowMS()-$0 }
         if countsTime, let durationMs { turnToolMs += durationMs; cumulativeToolMs = ObservedDuration.adding(cumulativeToolMs, durationMs) }
@@ -139,7 +170,7 @@ extension AgentSession {
         // says: kept only then.
         for key in ["line","lastLine"] where !stats[key].isNull { message.toolStats?[key]=stats[key] }
         let outcome = uncertain || (state == .cancelled && started != nil) ? "unknown" : started == nil ? "not_executed" : state.rawValue
-        message.toolStats?["outcome"]=JSON(outcome)
+        message.toolStats?["outcome"]=message.nativeSubagent?["effects"] ?? JSON(outcome)
         if appendNow { try append(message, observedAt: observedAt) }
         // A batch's card that retired while its call ran stays retired.
         guard appendNow || toolStates[call.id] != nil else { return (message, observedAt) }
@@ -147,6 +178,7 @@ extension AgentSession {
         let fields=toolInputFields(call.arguments), keptOutput=shown
         let inputTruncated=fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false
         var card:[String:JSON]=["id":JSON(call.id),"name":JSON(call.name),"state":JSON(reportsUnknownToolOutcomes ? Self.cardState(outcome:outcome,isError:message.isError) : state.rawValue),"output":JSON(keptOutput),"durationMs":durationMs.map { JSON($0) } ?? .null,"truncated":JSON(inputTruncated || keptOutput.utf8.count < text.utf8.count),"path":stats["path"],"added":stats["added"],"removed":stats["removed"]]
+        if let metadata = message.nativeSubagent { card["nativeSubagent"] = metadata }
         for key in ["line","lastLine"] where !stats[key].isNull { card[key]=stats[key] }
         setToolState(call.id,merging(.object(card),fields))
         recordDisplayChange(toolStateOwners[call.id], at: observedAt)
@@ -180,10 +212,40 @@ extension AgentSession {
             recordDisplayChange(toolStateOwners[call.id], at: displayClock())
             event("tool_execution_queued")
         }
+        agentPreparedResults = [:]
+        if let coordinator = agentCoordinator {
+            for call in calls where SubagentSteeringContract.names.contains(call.name) {
+                do {
+                    let key = try agentToolKey(call)
+                    let receipt = try await (isSubagent ? coordinator.report(call,key:key,child:self) : coordinator.prepare(call,key:key,parent:self))
+                    agentPreparedResults[call.id] = agentToolWire(receipt,key:key)
+                } catch {
+                    if let accepted = await acceptedAgentToolResult(call,stopped:true) { agentPreparedResults[call.id] = accepted; continue }
+                    let failure = (error as? AgentError) ?? AgentError("subagent_interrupted", "Agent control interrupted")
+                    let envelope: JSON = ["version":3,"accepted":false,"error":["code":JSON(failure.code),"message":JSON(failure.message)]]
+                    agentPreparedResults[call.id] = resultText(envelope.encoded(),error:true)
+                }
+            }
+        }
+        var preflightCancelled = false
+        if agentCoordinator == nil, canDelegate, let coordinator = subagentCoordinator, calls.contains(where: { $0.name == "subagent" }) {
+            do {
+                let environment = try await delegationEnvironment()
+                let planned = calls.filter { $0.name == "subagent" }.compactMap { call -> (SubagentCallKey, ToolCall)? in
+                    guard let assistant = toolHistory.owners[call.id] else { return nil }
+                    return (SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call.id), call)
+                }
+                await coordinator.prepare(planned, environment: environment)
+            } catch is CancellationError {
+                // The assistant's calls are already durable. Settle every one
+                // before ending the turn, so Resume never needs reopen repair.
+                preflightCancelled = true
+            }
+        }
         let began=nowMS()
         var outcomes=[ToolOutcome?](repeating: nil, count: calls.count)
         await withTaskGroup(of: ToolOutcome.self) { group in
-            for (index, call) in calls.enumerated() { group.addTask { [self] in await runToolCall(call, index: index) } }
+            for (index, call) in calls.enumerated() { group.addTask { [self, preflightCancelled] in await runToolCall(call, index: index, cancelledBeforeInvocation: preflightCancelled) } }
             for await outcome in group { outcomes[outcome.index]=outcome }
         }
         let wall=nowMS()-began
@@ -193,10 +255,17 @@ extension AgentSession {
             for outcome in finished { try append(outcome.message, observedAt: outcome.observedAt) }
             // An MCP call may have changed something outside the project:
             // its result is on disk before its outcome marker goes.
-            if !invoked.isEmpty { try journal?.synchronize() }
+            if !invoked.isEmpty || finished.contains(where: { $0.message.nativeSubagent != nil }) { try journal?.synchronize() }
         } catch {
             if !invoked.isEmpty { await tools.resultsRetained(invoked.map { calls[$0.index].id }, retained:false) }
             throw error
+        }
+        if let coordinator = subagentCoordinator {
+            let keys = finished.filter { $0.message.toolName == "subagent" }.compactMap { outcome -> SubagentCallKey? in
+                guard let call = outcome.message.toolCallId, let assistant = toolHistory.owners[call] else { return nil }
+                return SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call)
+            }
+            await coordinator.consumed(keys)
         }
         if !invoked.isEmpty {
             let lost=invoked.filter { !$0.recorded }.map { calls[$0.index].id }, kept=invoked.filter(\.recorded).map { calls[$0.index].id }
@@ -207,8 +276,9 @@ extension AgentSession {
     }
 
     /// Runs one call of a batch and ends its card; the row waits for the batch.
-    func runToolCall(_ call: ToolCall, index: Int) async -> ToolOutcome {
+    func runToolCall(_ call: ToolCall, index: Int, cancelledBeforeInvocation: Bool = false) async -> ToolOutcome {
         let start=nowMS()
+        let accepted = await acceptedAgentToolResult(call,stopped:true)
         func outcome(_ result: JSON, started: Double?, state: ToolRunState, uncertain: Bool = false, cancelled: Bool = false, mcpResult: Bool = false) -> ToolOutcome {
             if let recorded=try? recordTool(call,result:result,started:started,state:state,uncertain:uncertain,appendNow:false,countsTime:false) {
                 return ToolOutcome(index:index,message:recorded.message,observedAt:recorded.observedAt,cancelled:cancelled,mcpResult:mcpResult)
@@ -216,15 +286,37 @@ extension AgentSession {
             // A result too large to retain still leaves a row in its place.
             var message=ChatMessage(role:"toolResult",content:[textBlock("Tool result could not be recorded; inspect its effects before retrying.")])
             message.toolCallId=call.id; message.toolName=call.name; message.isError=true
-            return ToolOutcome(index:index,message:message,observedAt:displayClock(),cancelled:cancelled,mcpResult:mcpResult,recorded:false)
+            if let accepted {
+                message.content = accepted["content"].list; message.isError = false
+                message.id = accepted["nativeResultMessageId"].text!
+                if !accepted["nativeSubagent"].isNull { message.nativeSubagent = accepted["nativeSubagent"] }
+            }
+            message.requestAttemptIDs=currentAttemptIDs
+            let observedAt=displayClock(), duration=started.map { nowMS()-$0 }
+            let outcome=accepted != nil ? "completed" : started == nil ? "not_executed" : uncertain || Self.isEditing(call) ? "unknown" : "failed"
+            message.toolStats=["durationMs":duration.map { JSON($0) } ?? .null,"outcome":JSON(outcome)]
+            // Offloading can fail before recordTool reaches its card update.
+            // Retire the live invocation with the same outcome as its fallback
+            // row, without trying to write the unavailable result again.
+            if var card=toolStates[call.id] {
+                card["state"]=JSON(reportsUnknownToolOutcomes ? Self.cardState(outcome:outcome,isError:true) : "failed")
+                card["output"]=JSON(message.text); card["durationMs"]=duration.map { JSON($0) } ?? .null
+                setToolState(call.id,card); recordDisplayChange(toolStateOwners[call.id],at:observedAt)
+                event("tool_execution_end")
+            }
+            return ToolOutcome(index:index,message:message,observedAt:observedAt,cancelled:cancelled,mcpResult:mcpResult,recorded:false)
         }
-        if Task.isCancelled { return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:.cancelled, cancelled:true) }
+        if cancelledBeforeInvocation || Task.isCancelled && !(call.name == "subagent" && canDelegate) {
+            if let accepted { return outcome(accepted,started:start,state:.completed,cancelled:true) }
+            return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:.cancelled, cancelled:true)
+        }
         do {
             let result=try await invokeTool(call)
             return outcome(result, started:start, state:result["isError"].flag == true ? .failed : .completed,
                            mcpResult:call.name == "mcp" && call.arguments["action"].text == "invoke")
         } catch {
             let cancelled=Task.isCancelled || error is CancellationError
+            if let accepted = await acceptedAgentToolResult(call,stopped:true) { return outcome(accepted,started:start,state:.completed,cancelled:cancelled) }
             // A call stopped before its tool was entered never ran.
             let entered=toolInvocationsBegan.contains(call.id)
             let text=cancelled ? (entered ? "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay." : "Not executed: cancelled before invocation") : (error as? AgentError)?.message ?? "Tool failed; inspect its effects before retrying."

@@ -24,7 +24,7 @@ extension WorkspaceModel {
     /// run besides (`session_busy`), so a double click, or Resume racing a
     /// Send, never starts two runs.
     func resumeRun(sessionID: String? = nil) {
-        guard !installPreparing, let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isBackgroundTask,
+        guard !installPreparing, let id = sessionID ?? focusedSessionID ?? selectedID, let item = record(id), !item.isSubagent, !item.isBackgroundTask,
               let view = displays[id] else { return }
         guard !item.isArchived else { view.notice = Self.archivedNotice; return }
         guard !view.resuming, !view.busy, !view.loading else { return }

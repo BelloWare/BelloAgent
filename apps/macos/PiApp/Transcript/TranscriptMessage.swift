@@ -15,6 +15,10 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
     var inputTruncated: Bool? = nil
     /// The size of the whole request, whatever arrived inline.
     var inputBytes: Int? = nil
+    var subagent: SubagentSummary? = nil
+    var nativeSubagent: WireValue? = nil
+    var agentDeliveryState: String? = nil
+    var agentHeldByUser: Bool? = nil
 }
 struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     var id: String; var role: String; var text: String
@@ -26,6 +30,7 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// context compaction) or "branch" (edit-and-resend point). `detail` carries
     /// its human-readable caption. History projection leaves both nil.
     var kind: String? = nil
+    var nativeAgentDelivery: WireValue? = nil
     var detail: String? = nil
     /// Milliseconds since 1970 when the host appended the message.
     var at: Double? = nil
@@ -95,6 +100,8 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         result.presentationSourceID = message["nativePresentationSourceID"]?.string
         result.operationID = message["nativeOperationID"]?.string ?? message["nativeCompaction"]?.object?["operationId"]?.string
         result.kind = message["nativeKind"]?.string
+        result.nativeAgentDelivery = message["nativeAgentDelivery"].flatMap { $0 == .null ? nil : $0 }
+        if result.nativeAgentDelivery != nil { result.kind = "agent_message" }
         if role == "toolResult" {
             // With how the call ended, as the helper describes the row.
             let outcome = message["nativeToolStats"]?.object?["outcome"]?.string ?? (message["isError"]?.bool == true ? "failed" : "recorded")
@@ -206,6 +213,7 @@ struct ToolResultRecord: Sendable, Equatable {
     /// "not_executed" or "unknown". Journals from before it recorded one
     /// leave it nil.
     var outcome: String? = nil
+    var nativeSubagent: WireValue? = nil
     /// The card this record reads as — the helper's own reading of a saved
     /// result (`AgentSession.cardState`): the recorded outcome decides, and a
     /// journal without one keeps its isError reading. A call stopped while it
@@ -230,7 +238,7 @@ struct ToolResultRecord: Sendable, Equatable {
         return (call, ToolResultRecord(output: output, isError: message["isError"]?.bool ?? false,
                                        durationMs: stats["durationMs"]?.number, path: stats["path"]?.string,
                                        added: whole(stats["added"]), removed: whole(stats["removed"]), line: whole(stats["line"]), lastLine: whole(stats["lastLine"]),
-                                       outcome: stats["outcome"]?.string))
+                                       outcome: stats["outcome"]?.string, nativeSubagent: message["nativeSubagent"]))
     }
 }
 
@@ -263,6 +271,7 @@ extension TranscriptMessage {
                 card.durationMs = result.durationMs
                 card.path = result.path; card.added = result.added; card.removed = result.removed
                 card.line = result.line; card.lastLine = result.lastLine
+                card.nativeSubagent = result.nativeSubagent
                 return card
             }
         }
@@ -312,6 +321,8 @@ extension TranscriptMessage {
         row.truncated = try optionalBool(fields["truncated"])
         row.stopReason = try optionalString(fields["stopReason"])
         row.kind = try optionalString(fields["kind"])
+        row.nativeAgentDelivery = fields["nativeAgentDelivery"].flatMap { $0 == .null ? nil : $0 }
+        if row.nativeAgentDelivery != nil { row.kind = "agent_message" }
         row.detail = try optionalString(fields["detail"])
         row.at = try optionalDouble(fields["at"])
         row.turn = try optionalString(fields["turn"])
@@ -378,7 +389,9 @@ extension TranscriptMessage {
                         durationMs: try optionalDouble(fields["durationMs"]), truncated: try bool(fields["truncated"]),
                         path: try optionalString(fields["path"]), added: try optionalInt(fields["added"]), removed: try optionalInt(fields["removed"]),
                         line: try optionalInt(fields["line"]), lastLine: try optionalInt(fields["lastLine"]),
-                        inputTruncated: try optionalBool(fields["inputTruncated"]), inputBytes: try optionalInt(fields["inputBytes"]))
+                        inputTruncated: try optionalBool(fields["inputTruncated"]), inputBytes: try optionalInt(fields["inputBytes"]),
+                        subagent: try fields["subagent"].flatMap { $0 == .null ? nil : try JSONDecoder().decode(SubagentSummary.self, from: JSONEncoder().encode($0)) },
+                        nativeSubagent: fields["nativeSubagent"].flatMap { $0 == .null ? nil : $0 })
     }
     // A key that is absent and a key that is null both read as nothing, which
     // is what Codable's decodeIfPresent does; a key of another type declines.

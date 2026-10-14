@@ -302,6 +302,57 @@ final class TranscriptNativeWorkBehaviourTests: XCTestCase {
         XCTAssertLessThan(TranscriptCardLines.rowsMeasured - before, 60, "one streamed delta measured \(TranscriptCardLines.rowsMeasured - before) rows")
     }
 
+    /// Asking for a changed card's capped height must not move a line the
+    /// reader already has on screen. The changed last line leaves every
+    /// height above the reader unchanged.
+    @MainActor func testMeasuringAChangedDiffKeepsTheReadingLineInPlace() throws {
+        var rows = (0..<400).map { DiffRow(kind: .added, text: "line \($0) " + String(repeating: "wrapped text ", count: 30)) }
+        func content() -> TranscriptToolRow.Card {
+            let request = TranscriptActivity.EditRequest(before: "", after: rows.map(\.text).joined(separator: "\n"), mode: "write",
+                rows: rows, hiddenRows: 0, complete: true, tooLarge: false, lines: rows.count)
+            return .diff(request, path: "Fixture.txt", outcome: .running, added: rows.count, removed: 0)
+        }
+        let view = TranscriptNativeDiffCard()
+        view.update(content(), link: nil, environment: .init())
+        view.setExpanded(true)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 520, height: 400), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.contentView = nil; window.close() }
+        window.contentView = TranscriptNativeRowParityTests.ParityCanvas(frame: CGRect(x: 0, y: 0, width: 520, height: 400))
+        window.contentView?.addSubview(view)
+        func place() {
+            view.frame = CGRect(x: 0, y: 0, width: 520, height: view.height(width: 520))
+            view.layoutSubtreeIfNeeded()
+        }
+        place()
+        let scroll = try XCTUnwrap(views(TranscriptCappedLines.self, in: view).first)
+        scroll.scrollerStyle = .overlay
+        scroll.tile()
+        let readingLine = 200
+        let target = try XCTUnwrap(scroll.lines.lineRect(at: readingLine))
+        scroll.contentView.setBoundsOrigin(CGPoint(x: 0, y: target.minY + 3))
+        scroll.lines.mountVisibleRows()
+        func offset() throws -> CGFloat {
+            try XCTUnwrap(scroll.lines.lineRect(at: readingLine)).minY - scroll.contentView.bounds.minY
+        }
+        let before = try offset()
+        XCTAssertEqual(before, -3, accuracy: 0.5)
+        XCTAssertNotNil(scroll.lines.builtText(at: readingLine))
+        rows[rows.count - 1] = DiffRow(kind: .added, text: rows[rows.count - 1].text + " updated")
+        view.update(content(), link: nil, environment: .init())
+        let refreshed = try offset()
+        // configureLines has already refreshed the visible geometry; plan
+        // requests its capped height next, before the next layout.
+        _ = scroll.height(width: scroll.contentView.bounds.width)
+        let probed = try offset()
+        place()
+        let after = try offset()
+        print("DIFF-HEIGHT reading-offset before=\(before) refreshed=\(refreshed) probed=\(probed) after=\(after) jump=\(after - before)")
+        XCTAssertEqual(refreshed, before, accuracy: 0.5, "Updating a later line must keep the reading line in place")
+        XCTAssertEqual(probed, before, accuracy: 0.5, "A height probe must not change already-placed line coordinates")
+        XCTAssertEqual(after, before, accuracy: 0.5, "Layout must retain the reader's position after a height probe")
+    }
+
     /// An open card that moves without scrolling (a card above it closed)
     /// builds the lines that came into view.
     @MainActor func testAMovedCardBuildsTheLinesNowInView() throws {

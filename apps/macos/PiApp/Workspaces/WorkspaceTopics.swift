@@ -85,6 +85,7 @@ extension WorkspaceModel {
         }.value
     }
     private func performMoveSessions(_ ids: [String], in projectID: String, toTopic topicID: String?) async throws {
+        for id in ids where record(id)?.isSubagent == false { await reconcileSubagents(parentID: id) }
         try requireTopicProject(projectID)
         guard !ids.isEmpty, ids.count <= 10_000 else { throw HostError.failure("Choose sessions to move.") }
         if let topicID, !topics.contains(where: { $0.id == topicID && $0.workspaceID == projectID }) {
@@ -92,7 +93,7 @@ extension WorkspaceModel {
         }
         let chosen = Set(ids)
         guard chosen.allSatisfy({ id in
-            chats.contains { $0.id == id && $0.workspaceID == projectID && !$0.isUtilityChat }
+            chats.contains { $0.id == id && $0.workspaceID == projectID && !$0.isUtilityChat && !$0.isSubagent }
         }) else { throw HostError.failure("Sessions can only move between topics in their own project.") }
         guard let store else { throw StoreError.unavailable }
         let knownChatIDs = Set(chats.map(\.id))
@@ -103,7 +104,9 @@ extension WorkspaceModel {
         // An explicit move makes an otherwise empty chat durable, just as a
         // rename does. Side placeholders remain lazy until their first send.
         for id in storedIDs.sorted() { try await materializeChat(id) }
-        let saved = try await store.moveChatsToTopic(ids: storedIDs, workspaceID: projectID, topicID: topicID)
+        // The transaction follows durable descendants itself. Only roots
+        // chosen by the reader are subject to the independent-move guard.
+        let saved = try await store.moveChatsToTopic(ids: chosen, workspaceID: projectID, topicID: topicID)
         applyTopicMemberships(saved, includingNewChildrenNotIn: knownChatIDs)
         let currentBranches = topicBranchIDs(chosen, in: projectID)
         for parentID in Array(sides.keys) {

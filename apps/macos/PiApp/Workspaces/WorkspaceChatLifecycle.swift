@@ -87,8 +87,8 @@ extension WorkspaceModel {
         guard pendingChatIDs.contains(id) else { return false }
         guard let view = displays[id] else { return true }
         // A first message on its way has left the composer empty; the chat
-        // is anything but empty.
-        return !view.loading && view.sendingRows.isEmpty
+        // is anything but empty. An image being imported also owns this draft.
+        return !view.loading && view.sendingRows.isEmpty && view.imageImports == 0
             && view.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && view.attachments.isEmpty && view.skills.isEmpty
     }
     func createOnboardingChat() async throws {
@@ -176,36 +176,50 @@ extension WorkspaceModel {
     func deleteChat() { deleteChat(selectedID) }
     /// Deletes any chat by id, so archived chats can go straight from the sidebar.
     func deleteChat(_ id: String?) {
-        guard let id, let item = record(id) else { return }
+        guard let id, let item = record(id), !item.isSubagent else { return }
         if pendingChatIDs.contains(id) { discardPendingChat(id); return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
         if sides[id] != nil { error = "Close the side panel before deleting its parent."; return }
         if side(id) != nil { error = "Close this side panel before deleting its chat."; return }
         guard displays[id]?.hasWork != true, displays[id]?.loading != true else { error = "Stop work and remove queued submissions before deleting this chat"; return }
-        let question = ChatQuestion(title: item.isArchived ? "Delete the archived chat “\(item.title)”?" : "Delete this chat?",
-                                    detail: item.imported ? "Remove its app index and draft. The imported original stays in place." : "Move its managed conversation file to Trash and remove its draft and current memory traces, and locally retained traces.",
-                                    action: "Delete Chat")
-        if !questions.ask(question, about: item.id, destructive: true, answered: { [weak self] confirmed in
-            guard let self, confirmed, self.record(item.id) != nil else { return }
-            self.performDelete(item, store: store)
-        }) { error = PiQuestion.busyNotice }
+        Task {
+            do {
+                var managed = Set(subagentChildren(of: item.id).map(\.id))
+                if !item.imported {
+                    let directory = try subagentDirectory(item.workspaceID)
+                    let path = item.path ?? directory.appendingPathComponent(item.id + ".jsonl").path
+                    if FileManager.default.fileExists(atPath: path) {
+                        guard URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path == directory.path else { throw StoreError.invalidRecord }
+                        let plans = try await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: item.id)
+                        managed.formUnion(plans.map { $0.header.link.childSessionID })
+                    }
+                }
+                guard record(item.id) != nil else { return }
+                let count = managed.count
+                let question = ChatQuestion(title: item.isArchived ? "Delete the archived chat “\(item.title)”?" : "Delete this chat?",
+                    detail: (item.imported ? "Remove its app index and draft. The imported original stays in place." : "Move its managed conversation files to Trash and remove its draft and retained trace bodies.")
+                        + (count > 0 ? " Includes \(count) managed sub-agent\(count == 1 ? "" : "s")." : ""), action: "Delete Chat")
+                if !questions.ask(question, about: item.id, destructive: true, answered: { [weak self] confirmed in
+                    guard let self, confirmed, self.record(item.id) != nil else { return }
+                    self.performDelete(item, store: store)
+                }) { error = PiQuestion.busyNotice }
+            } catch { self.error = "Chat deletion could not be prepared. " + error.localizedDescription }
+        }
     }
+
     private func performDelete(_ item: ChatRecord, store: MetadataStore) {
         Task { do {
-            if let host = hosts[item.workspaceID], host.isReady { _ = try await host.request("session.forget", sessionID: item.id) }
-            opened.remove(item.id)
-            try await traces.clear(sessionID: item.id)
-            if !item.imported, let path = item.path, FileManager.default.fileExists(atPath: path) {
-                // A reply the helper was streaming when it died waits beside
-                // the journal (`.stream`, or `.stream-unrestored-…` when it
-                // could not be added back); it goes with it.
-                let journal = URL(fileURLWithPath: path), prefix = journal.lastPathComponent + ".stream"
-                let beside = (try? FileManager.default.contentsOfDirectory(atPath: journal.deletingLastPathComponent().path)) ?? []
-                let files = [journal] + beside.filter { $0.hasPrefix(prefix) }.sorted().map { journal.deletingLastPathComponent().appendingPathComponent($0) }
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                    NSWorkspace.shared.recycle(files) { _, error in if let error { continuation.resume(throwing: error) } else { continuation.resume() } }
-                }
+            // The confirmation's count is only a preview: a running reply
+            // may accept its first delegation while the sheet is open.
+            // Every owned journal takes the same unload-and-rescan barrier.
+            if !item.imported { try await deleteSubagentFamily(item); return }
+            if let host = hosts[item.workspaceID] {
+                if host.isReady { _ = try await host.request("session.forget", sessionID: item.id) }
+                else { try await host.settleCaptureIfStopping() }
             }
+            opened.remove(item.id)
+            try removeRetiredCaptureSpools(sessionID: item.id)
+            try await traces.clear(sessionID: item.id)
             forgetReadState(item.id); forgetRunHold(item.id)
             for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: item.id) }
             contextReadings.removeValue(forKey: item.id)

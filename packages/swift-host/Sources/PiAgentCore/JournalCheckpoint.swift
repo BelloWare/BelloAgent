@@ -14,7 +14,7 @@ import CryptoKit
 /// The helper, which owns the journal, writes it; the helper and the app's
 /// history reader read it. Plain JSON.
 struct JournalCheckpoint: Codable, Equatable, Sendable {
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     /// A record the checkpoint relies on, as it was written.
     struct Check: Codable, Equatable, Sendable {
@@ -89,6 +89,24 @@ struct JournalCheckpoint: Codable, Equatable, Sendable {
         }
     }
     static func remove(for journal: URL) { try? FileManager.default.removeItem(at: url(for: journal)) }
+
+    static func isTemporary(_ name: String, for journal: URL) -> Bool {
+        let prefix = "." + journal.lastPathComponent + ".meta."
+        guard name.hasPrefix(prefix) else { return false }
+        let suffix = String(name.dropFirst(prefix.count))
+        return UUID(uuidString: suffix)?.uuidString == suffix.uppercased()
+    }
+
+    /// The caller owns the journal's writer lock. Only our exact temporary
+    /// names and regular files qualify; another journal or symlink is untouched.
+    static func removeTemporaries(for journal: URL) throws {
+        let directory = journal.deletingLastPathComponent()
+        for name in try FileManager.default.contentsOfDirectory(atPath: directory.path) where isTemporary(name, for: journal) {
+            let file = directory.appendingPathComponent(name)
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            if values.isRegularFile == true, values.isSymbolicLink != true { try FileManager.default.removeItem(at: file) }
+        }
+    }
 
     /// The bytes of a checked record, if the journal still holds exactly them
     /// there, followed by its newline.

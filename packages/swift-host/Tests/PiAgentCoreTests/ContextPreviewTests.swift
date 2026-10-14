@@ -2,6 +2,31 @@ import XCTest
 @testable import PiAgentCore
 
 final class ContextPreviewTests: XCTestCase {
+    func testDelegationPreviewUsesPickerSelectionWithoutChangingGrantedModels() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let session = try AgentSession(id: "preview", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+            readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore())
+        await session.enableSubagents(SubagentCoordinator())
+        let current = SubagentModelGrant(model: "current"), selected = SubagentModelGrant(model: "selected")
+        try await session.configureSubagentModels([current])
+        let storedPath = await session.path
+        let path = try XCTUnwrap(storedPath), before = try Data(contentsOf: URL(fileURLWithPath: path))
+        let preview = try await session.prepareContext(["subagentModels":try subagentJSON([selected])])
+        let page = try await session.readPreparedContext(["revision":preview["revision"], "section":"tools"])
+        let definitions = try JSON.parse(Data(page["text"].text!.utf8))
+        XCTAssertEqual(definitions.list.first { $0["name"].text == "subagent_start" }?["parameters"]["properties"]["model"]["enum"].list.compactMap(\.text), [selected.model])
+        let grants = await session.subagentModelGrants
+        XCTAssertEqual(grants, [current], "A read-only preview cannot grant a selected model to execution")
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), before)
+        do { _ = try await session.prepareContext(["subagentModels":try subagentJSON([selected, selected])]); XCTFail("Duplicate model selection was accepted") }
+        catch { XCTAssertEqual((error as? AgentError)?.code, "subagent_model") }
+        let currentPreview = try await session.prepareContext([:])
+        try await session.configureSubagentModels([selected])
+        do { _ = try await session.readPreparedContext(["revision":currentPreview["revision"], "section":"tools"]); XCTFail("A changed grant retained its old preview") }
+        catch { XCTAssertEqual((error as? AgentError)?.code, "context_preview_expired") }
+        await session.close()
+    }
+
     func testPreviewUsesDispatchInputsIncludingDraftWithoutSendingOrChangingJournal() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         try Data("Follow the fixture instructions.".utf8).write(to:root.appendingPathComponent("AGENTS.md"))

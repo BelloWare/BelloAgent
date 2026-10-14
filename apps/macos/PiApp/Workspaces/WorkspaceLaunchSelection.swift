@@ -163,7 +163,7 @@ extension WorkspaceModel {
     /// chat's side. `select` reopens it.
     func rememberedSide(of parentID: String) -> ChatRecord? {
         guard let id = selectionMemory.sides[parentID], let child = chatRecord(id),
-              child.parentSessionID == parentID, !child.imported else { return nil }
+              child.parentSessionID == parentID, !child.isSubagent, !child.imported else { return nil }
         return child
     }
 
@@ -237,7 +237,7 @@ extension WorkspaceModel {
         if remembered?.sidesPanelPinned == true { sidesPanelPinned = true }
         selectionMemory.savedRevision = remembered?.revision ?? 0
         selectionMemory.sides = (remembered?.shownSides ?? [:]).filter { parent, side in
-            chatRecord(parent) != nil && chatRecord(side).map { $0.parentSessionID == parent && !$0.imported } == true
+            chatRecord(parent) != nil && chatRecord(side).map { $0.parentSessionID == parent && !$0.isSubagent && !$0.imported } == true
         }
     }
 

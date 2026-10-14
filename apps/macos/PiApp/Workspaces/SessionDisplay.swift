@@ -80,6 +80,16 @@ struct TranscriptVersionView: Equatable, Sendable {
 }
 
 @MainActor final class SessionDisplay: ObservableObject {
+    var subagentsRevision: String?
+    var isManagedSubagent = false
+    @Published var subagentStatus: SubagentStatus?
+    @Published var subagentTurn: Int?
+    var agentCoordination: [String: AgentCoordinationEntry] = [:] { didSet { if agentCoordination != oldValue { publishTranscript() } } }
+    @Published var heldAgentChildren: Set<String> = [] { didSet { if heldAgentChildren != oldValue { publishTranscript() } } }
+    var childSummaries: [String: SubagentSummary] = [:] { didSet { if childSummaries != oldValue { publishTranscript() } } }
+    @Published var familyWaiting = false { didSet { if familyWaiting != oldValue { publishTranscript() } } }
+    @Published var agentInboxPending = 0 { didSet { if agentInboxPending != oldValue { publishTranscript() } } }
+    @Published var delegatedTask: String?
     /// Committed activity only: text, draft, selection and context rendering do not enter this stream.
     let activityChanges = PassthroughSubject<Void, Never>()
     let id: String
@@ -109,18 +119,19 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The page read for where the reader dragged or scrolled to, in rows the
     /// window does not hold (`WorkspaceModel.jumpToHistoryPosition`).
     var jumpRead: Int?
+    var jumpTask: Task<Void, Never>?
     var jumpWanted: (position: Int, offset: Double)?
     /// The reader went somewhere else (a reveal, Back to bottom, Latest, back
     /// into the rows the window holds): a page read for where they were
     /// does not land.
-    func abandonJump() { jumpRead = nil; jumpWanted = nil; jumpRetry = nil; jumpReading = nil; jumpOffset = nil; jumpFailedAt = nil; jumpUnreadable = 0 }
+    func abandonJump() { jumpTask?.cancel(); jumpTask = nil; jumpRead = nil; jumpWanted = nil; jumpRetry = nil; jumpReading = nil; jumpOffset = nil; jumpFailedAt = nil; jumpUnreadable = 0 }
     /// Where the reader is now within the row being read for.
     var jumpOffset: Double?
     /// The position the read under way is for.
     var jumpReading: Int?
     /// Position reads in a row that found the journal unreadable as it was.
     var jumpUnreadable = 0
-    /// The timeline whose positions were last read for want of any
+    /// The generation and timeline last asked for missing positions
     /// (`WorkspaceModel.reacquireHistoryPositions`).
     var positionsReadFor: String?
     /// A read that failed, to be tried again where the reader still is.
@@ -145,10 +156,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// Why the last reveal's read failed, for whoever asked for it.
     var revealFailure: String?
     /// The reader went somewhere else (a key, Back to bottom, Latest, their
-    /// own scroll): a reveal still reading its page is let go of, with the
-    /// place it would mark, so a page read in later does not take them there.
+    /// own scroll): a reveal still reading its page or waiting for presentation
+    /// is let go of, so a queued refresh cannot take them back to its mark.
     func abandonReveal() {
-        guard revealRead != nil else { return }
+        guard revealRead != nil || reveal != nil else { return }
         revealRead = nil
         reveal = nil
     }
@@ -240,13 +251,25 @@ struct TranscriptVersionView: Equatable, Sendable {
             let latest = Self.hidingBranchMarkers(messages)
             if let at = latest.firstIndex(where: { $0.id == version.latestID }) { return Array(latest[..<at]) + version.presented }
         }
-        var rows = Self.hidingBranchMarkers(messages)
+        var rows = Self.hidingBranchMarkers(messages).map(presentAgentState)
+        if isManagedSubagent, messages.isEmpty, let delegatedTask, !delegatedTask.isEmpty {
+            rows.append(parentAuthoredTask(TranscriptMessage(id: "subagent-task:" + id, role: "user", text: delegatedTask)))
+        }
+        if isManagedSubagent, let index = rows.firstIndex(where: { $0.role == "user" }), rows[index].nativeAgentDelivery == nil {
+            rows[index] = parentAuthoredTask(rows[index])
+        }
+        if familyWaiting && busy { rows.append(TranscriptMessage(id: "family-wait:" + id, role: "system", text: "Waiting for sub-agents", kind: "notice")) }
+        else if agentInboxPending > 0 && !busy { rows.append(TranscriptMessage(id: "family-pending:" + id, role: "system", text: "Pending for parent Resume · \(agentInboxPending) agent message\(agentInboxPending == 1 ? "" : "s")", kind: "notice")) }
         for row in sendingRows where !messages.reversed().contains(where: { $0.id == row.id }) { rows.append(row) }
         if let retryNotice { rows.append(TranscriptMessage(id: "notice:retry:" + id, role: "system", text: retryNotice, kind: "notice")) }
         if let failureMessage {
             let paused = queuePaused && !queue.isEmpty
             var row = TranscriptMessage(id: "failure:run:" + id, role: "system", text: failureMessage, kind: "failure",
                                         detail: paused ? "Queued follow-ups are paused. Resume when you’re ready." : nil)
+            if failureCode == "coordination_limit" {
+                row.failureCode = resuming ? Self.pausedResumingCode : "coordination_limit"
+                row.detail = "Accepted messages are saved. Resume opens a new coordination allowance; completed work is not replayed."
+            }
             if failureCode == Self.skillUpdatedCode {
                 // The queued message's skill was pinned to its current
                 // version: the notice says so and offers the run's Resume,
@@ -400,6 +423,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     let toolInputs = TranscriptToolInputs()
     var draft: String { get { composerDraft.text } set { if composerDraft.text != newValue { composerDraft.text = newValue } } }
     @Published var attachments: [AttachmentRecord] = []
+    /// Imports register before conversion or inspection yields. Send is
+    /// disabled until all finish; completing an import never submits.
+    @Published var imageImports = 0
     @Published var skills: [SkillChip] = []
     @Published var directCommand = false
     @Published var completionVisible = false
@@ -431,7 +457,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The chat's journal ends in a record cut off mid-write: its complete
     /// records are shown read-only and Recover Copy is offered instead of the composer.
     @Published var damagedTail = false
-    var canResumeQueue: Bool { !busy && (!queue.isEmpty || queuePaused || runState.holdsQueue) }
+    var canResumeQueue: Bool { !isManagedSubagent && !busy && (!queue.isEmpty || queuePaused || runState.holdsQueue) }
     /// Whether the helper would run the model on Resume (`run.continue`): the
     /// chat's context ends with something the model has not answered — a user
     /// message, or tool results a stop cut off. Nil until a snapshot says
@@ -443,10 +469,17 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var resuming = false { didSet { if resuming != oldValue { publishTranscript() } } }
     /// The chat's run stopped before it finished (Stop, a quit, a restart or
     /// an update paused it) and Resume would go on with it.
-    var offersResume: Bool { showsPausedRun && !resuming }
+    var offersResume: Bool { !isManagedSubagent && showsPausedRun && !resuming }
     /// The Paused row is drawn: while a Resume is on its way it stays, without its button.
     var showsPausedRun: Bool { !busy && !loading && runState.holdsQueue && continuable != false && queueEditHold == nil }
     func observeRunState(_ snapshot: [String: WireValue]) {
+        beginTranscriptBatch(); defer { endTranscriptBatch() }
+        let waiting = snapshot["familyWaiting"]?.bool ?? false
+        if familyWaiting != waiting { familyWaiting = waiting }
+        let pending = snapshot["agentInboxPending"]?.nonnegativeInteger ?? 0
+        if agentInboxPending != pending { agentInboxPending = pending }
+        let childTurn = snapshot["subagentTurn"]?.nonnegativeInteger
+        if subagentTurn != childTurn { subagentTurn = childTurn }
         let rawState = snapshot["state"]?.string ?? "idle", run = snapshot["runStatus"]?.string ?? rawState
         // Older helpers reported failed runs as paused. Keep the run's outcome
         // separate from whether its remaining follow-ups require Resume.
@@ -807,7 +840,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     init(id: String) {
         self.id = id
     }
-    var busy: Bool { runState.isBusy }
+    var busy: Bool { runState.isBusy || familyWaiting && !queuePaused && !runState.holdsQueue && runState != .error }
     /// A Resume on its way counts from the press: the chat keeps its display
     /// and helper session while its continuation starts.
     var hasWork: Bool { busy || resuming || queueCount > 0 }

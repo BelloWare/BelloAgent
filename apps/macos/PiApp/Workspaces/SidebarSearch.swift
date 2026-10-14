@@ -41,6 +41,7 @@ import Combine
     private var settleTask: Task<Void, Never>?
     private var watches: [AnyCancellable] = []
     private(set) var indexing = false
+    private var initialPassComplete = false
     private var stopped = false
     /// Sidebar opens so far (`beginSidebarOpen`).
     var openings = 0
@@ -50,6 +51,8 @@ import Combine
     private(set) var answeredQueries = 0
     private(set) var lastPass = ChatSearchIndex.Pass()
     private(set) var passes = 0
+    /// Test seam: hold a cold pass while the typed query reads the empty index.
+    var beforeReconcile: (@Sendable () async -> Void)?
 
     init(model: WorkspaceModel) {
         self.model = model
@@ -144,9 +147,10 @@ import Combine
         do { found = try await reader.search(text) } catch { return }
         guard !Task.isCancelled, text == query, !stopped else { return }
         answeredQueries += 1
-        // The first answer to what the reader typed is theirs, whoever asked it.
+        // An answer from the cold index may be empty or partial. The typed
+        // query still owns the answer when that first pass finishes.
         let background = background && !answerTyped
-        answerTyped = false
+        if initialPassComplete { answerTyped = false }
         if background, let model, !model.sidebarOrderHolds.isEmpty {
             heldHits = found == hits ? nil : found
             return
@@ -216,7 +220,9 @@ import Combine
         return model.chats.compactMap { chat in
             guard let path = chat.path, !chat.isBackgroundTask, model.side(chat.id)?.kept != false,
                   !model.pendingChatIDs.contains(chat.id) else { return nil }
-            return ChatSearchSource(id: chat.id, path: path, rebuildsOnChange: chat.imported)
+            return ChatSearchSource(id: chat.id, path: path, rebuildsOnChange: chat.imported,
+                                    delegation: chat.delegationIssue == nil ? chat.delegation : nil,
+                                    parentJournal: chat.delegation.flatMap { model.record($0.budgetOwnerSessionID)?.path })
         }
     }
 
@@ -226,9 +232,10 @@ import Combine
         // Until launch has listed the saved chats, an empty list is not a
         // list of none: pruning against it would empty the index.
         guard !model.launching, model.store != nil else { scheduleReconcile(); return }
-        let sources = sources(), index = index
+        let sources = sources(), index = index, beforeReconcile = beforeReconcile
         let worker = Task.detached(priority: .utility) {
-            await index.reconcile(sources) { [weak self] in await self?.indexChanged() }
+            await beforeReconcile?()
+            return await index.reconcile(sources) { [weak self] in await self?.indexChanged() }
         }
         self.worker = worker
         reconcileTask = Task { [weak self] in
@@ -236,7 +243,11 @@ import Combine
             guard let self else { return }
             self.reconcileTask = nil; self.worker = nil
             self.lastPass = pass; self.passes += 1; self.lastPassEnded = .now
-            if pass.changed { self.indexChanged(throttled: false) }
+            let firstPass = !self.initialPassComplete
+            self.initialPassComplete = true
+            // Even an unchanged empty pass completes the typed answer, so
+            // later background matches respect a pointer/menu order hold.
+            if pass.changed || firstPass { self.indexChanged(throttled: false) }
             if self.reconcileAgain { self.reconcileAgain = false; self.runReconcile() }
         }
     }
@@ -302,7 +313,7 @@ extension WorkspaceModel {
     }
     /// Whether a chat is listed by the filter: its title, or its messages.
     func sidebarMatches(_ chat: ChatRecord, query: String) -> Bool {
-        chat.title.localizedCaseInsensitiveContains(query) || sidebarSearchHit(chat.id) != nil
+        chat.title.localizedCaseInsensitiveContains(query) || chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || sidebarSearchHit(chat.id) != nil
     }
     /// After a chat the filter listed opened, its match is shown — unless
     /// the reader has opened something else meanwhile (`opening` is what
@@ -315,7 +326,13 @@ extension WorkspaceModel {
               (focusedSessionID ?? selectedID) == chatID, sidebarSearch.hit(for: chatID)?.messageID == hit.messageID else { return }
         // Cancelled by the next keystroke or open while it loads the page
         // around the match: the reveal stops at its next check.
-        let reveal = Task { await SidebarSearchReveal.reveal(self, chatID: chatID, messageID: hit.messageID, mark: .excerpt(hit.excerpt, highlight: hit.highlight)) }
+        let reveal = Task {
+            var messageID = hit.messageID
+            if messageID == "subagent-task:" + chatID, let path = record(chatID)?.path,
+               let first = try? await history.read(path: path, start: true).messages.first(where: { $0.role == "user" }) { messageID = first.id }
+            guard !Task.isCancelled else { return }
+            await SidebarSearchReveal.reveal(self, chatID: chatID, messageID: messageID, mark: .excerpt(hit.excerpt, highlight: hit.highlight))
+        }
         sidebarSearch.revealing = reveal
         await withTaskCancellationHandler { await reveal.value } onCancel: { reveal.cancel() }
     }

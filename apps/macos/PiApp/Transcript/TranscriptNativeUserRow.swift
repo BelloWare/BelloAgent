@@ -108,7 +108,7 @@ import AppKit
         setAccessibilityLabel("\(message.role) message")
         // A row its turn's fold has emptied draws nothing and says nothing.
         setAccessibilityElement(!inputs.disclosure.foldedAway)
-        setAccessibilityCustomActions(TranscriptRowAction.all(message, inputs.actions, forks: inputs.environment.forks)
+        setAccessibilityCustomActions(TranscriptRowAction.all(message, inputs.actions, forks: inputs.environment.forks, allowsEditing: !inputs.environment.managedChild)
             .map { action in NSAccessibilityCustomAction(name: action.name) { [weak self] in
                 // A row in a pane that takes no input acts on nothing, as its pills do.
                 guard self?.inputs.environment.isEnabled == true else { return false }
@@ -171,7 +171,7 @@ import AppKit
         if message.isSending { clock.speak("Sending", identifier: "messageSending") }
         else { clock.speak(clock.text.isEmpty ? nil : "Sent at \(clock.text)") }
         let wanted = hovering && !message.isSending
-            ? TranscriptRowPills.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: nil) : []
+            ? TranscriptRowPills.pills(message, actions: inputs.actions, forks: inputs.environment.forks, source: nil, allowsEditing: !inputs.environment.managedChild) : []
         band.show(wanted, enabled: inputs.environment.isEnabled)
     }
 

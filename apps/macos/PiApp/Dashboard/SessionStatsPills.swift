@@ -16,9 +16,10 @@ struct SessionStatsPresentation: Equatable {
     /// The chat's spend against its cost limit. Without one the cost reads
     /// as the request log has it, as it always did.
     var cost: SessionCostReading?
+    var showsTurns: Bool
 
-    init(gateway: GatewayTotals, work: WorkSplit?, cost: SessionCostReading? = nil) {
-        self.gateway = gateway; self.work = work; self.cost = cost
+    init(gateway: GatewayTotals, work: WorkSplit?, cost: SessionCostReading? = nil, showsTurns: Bool = true) {
+        self.gateway = gateway; self.work = work; self.cost = cost; self.showsTurns = showsTurns
     }
 
     /// Distinct turns these requests belong to. A title or suggestion request
@@ -32,7 +33,7 @@ struct SessionStatsPresentation: Equatable {
     private static func plural(_ n: Int, _ one: String, _ many: String) -> String { "\(n) \(n == 1 ? one : many)" }
 
     var countsLabel: String {
-        Self.plural(turns, "turn", "turns") + " " + Self.plural(steps, "step", "steps")
+        (showsTurns ? Self.plural(turns, "turn", "turns") + " " : "") + Self.plural(steps, "step", "steps")
     }
     var throughput: SettledThroughput { gateway.settledThroughput }
     var latency: SettledLatency { gateway.settledLatency }

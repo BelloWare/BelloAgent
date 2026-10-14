@@ -3,6 +3,83 @@ import Darwin
 @testable import PiApp
 
 final class HostSupervisorTests: XCTestCase {
+    @MainActor func testTransportFailureAndProcessExitReportOneLossPerConnection() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let host = HostSupervisor(); defer { host.shutdown() }
+        var losses = 0; host.onLoss = { losses += 1 }
+        for expected in 1...2 {
+            try await host.connect(cwd: root, state: root.appendingPathComponent("state"))
+            host.receive(.failed("Generated transport failure. No command was replayed."), connectionID: try XCTUnwrap(host.connectionID))
+            try await host.shutdownAndWait()
+            XCTAssertEqual(losses, expected, "Transport failure and exit belong to the same retired connection")
+            XCTAssertNil(host.connectionID)
+        }
+    }
+
+    @MainActor func testDispatchedPagesCancelWithoutReleasingAnUnacknowledgedSlot() async throws {
+        for method in ["session.history", "session.version.page"] {
+            let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+            var sent: [[String: WireValue]] = []
+            let host = HostSupervisor(commandSender: { sent.append($0) }); defer { host.shutdown() }
+            try await host.connect(cwd: root, state: root.appendingPathComponent("state"))
+            let connection = try XCTUnwrap(host.connectionID), epoch = try XCTUnwrap(host.epoch)
+            var cancelled = false
+            let page = Task {
+                do { _ = try await host.request(method, commandID: "page"); XCTFail("A superseded page must throw cancellation") }
+                catch { cancelled = error is CancellationError }
+            }
+            for _ in 0..<1000 where sent.isEmpty { await Task.yield() }
+            let active = (0..<31).map { index in Task { try await host.request("runtime.info", commandID: "active-\(index)") } }
+            for _ in 0..<1000 where sent.count < 32 { await Task.yield() }
+            page.cancel()
+            for _ in 0..<1000 where !cancelled { await Task.yield() }
+            XCTAssertTrue(cancelled, "Cancellation must finish the caller before a helper reply")
+            let cancel = sent.first { $0["kind"]?.string == "read.cancel" }
+            XCTAssertEqual(cancel?["requestId"]?.string, "page")
+            XCTAssertEqual(cancel?["hostEpoch"]?.string, epoch)
+            XCTAssertNotNil(cancel?["readToken"]?.string)
+            XCTAssertEqual(cancel?["readToken"], sent.first?["readToken"])
+            let newest = Task { try await host.request(method, commandID: "newest") }
+            for _ in 0..<1000 where host.queuedCommandCount == 0 { await Task.yield() }
+            XCTAssertFalse(sent.contains { $0["commandId"]?.string == "newest" }, "Even an ignored cancel must preserve the helper's 32-slot bound")
+            host.receive(reply("page", epoch: epoch), connectionID: connection)
+            for _ in 0..<1000 where !sent.contains(where: { $0["commandId"]?.string == "newest" }) { await Task.yield() }
+            XCTAssertEqual(sent.last?["commandId"]?.string, "newest")
+            host.receive(reply("newest", epoch: epoch), connectionID: connection)
+            _ = try await newest.value
+            await page.value
+            for index in 0..<31 { host.receive(reply("active-\(index)", epoch: epoch), connectionID: connection) }
+            for task in active { _ = try await task.value }
+            try await host.shutdownAndWait()
+        }
+    }
+
+    @MainActor func testLegacyHelperAndSameTurnPageReplyRemainCompatible() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        var sent: [[String: WireValue]] = []
+        let host = HostSupervisor(commandSender: { sent.append($0) }); defer { host.shutdown() }
+        try await host.connect(cwd: root, state: root.appendingPathComponent("state"))
+        let connection = try XCTUnwrap(host.connectionID), epoch = try XCTUnwrap(host.epoch)
+        // A legacy ready frame deliberately omits the optional capability.
+        host.receive(.frame(["v": .number(1), "kind": .string("ready"), "major": .number(1),
+            "engine": .string("swift"), "engineVersion": .string("1.0.0"), "hostEpoch": .string(epoch),
+            "capabilities": .array(["responses", "mcp", "steering", "transport-capture"].map(WireValue.string))]), connectionID: connection)
+        let old = Task { try await host.request("session.history", commandID: "reused") }
+        for _ in 0..<1000 where sent.isEmpty { await Task.yield() }
+        old.cancel()
+        // The synchronous cancellation mark must win before its queued cleanup.
+        host.receive(reply("reused", epoch: epoch), connectionID: connection)
+        do { _ = try await old.value; XCTFail("A cancelled page was returned by a same-turn reply") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        let fresh = Task { try await host.request("session.history", commandID: "reused") }
+        for _ in 0..<1000 where sent.count < 2 { await Task.yield() }
+        XCTAssertEqual(sent.count, 2, "A legacy helper receives only ordinary commands")
+        host.receive(reply("reused", epoch: epoch), connectionID: connection)
+        _ = try await fresh.value
+        XCTAssertTrue(host.isReady)
+        try await host.shutdownAndWait()
+    }
+
     @MainActor func testQueuedCancellationWinsOverSameTurnReplyAndStopBypassesFullQueue() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         var sent: [[String: WireValue]] = []
@@ -84,6 +161,40 @@ final class HostSupervisorTests: XCTestCase {
         try await neverStarted.shutdownAndWait()
     }
 
+    /// A connection asked for while `shutdownAndWait` stops the helper (the
+    /// automatic context preview of a chat whose composer just mounted, a
+    /// prewarm) waited for the exit and started the next helper at once: the
+    /// stop never saw its helper gone, failed after six seconds ("did not
+    /// exit"), and left a fresh helper running. Such a connection now fails,
+    /// the stop returns as soon as the helper exits, and a connection after
+    /// the stop starts a helper as before.
+    @MainActor func testConnectionDuringShutdownAndWaitDoesNotReplaceTheStoppingHelper() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let state = root.appendingPathComponent("state")
+        let host = HostSupervisor(); defer { host.shutdown() }
+        try await host.connect(cwd: root, state: state)
+        let stopping = try XCTUnwrap(host.helperProcessIdentifier)
+        let started = ContinuousClock.now
+        let stop = Task { try await host.shutdownAndWait() }
+        // The stop starts first; the connection then finds the helper
+        // closing while the stop waits for its exit.
+        await Task.yield()
+        let waiting = Task { try await host.connect(cwd: root, state: state) }
+        await Task.yield()
+        try await stop.value
+        let elapsed = ContinuousClock.now - started
+        XCTAssertLessThan(elapsed, .seconds(1), "an idle helper must exit at once when its input closes")
+        do { try await waiting.value; XCTFail("a connection asked for during the stop must not start a helper") }
+        catch { XCTAssertEqual(error.localizedDescription, "Project host is stopping") }
+        XCTAssertNil(host.helperProcessIdentifier, "no helper may be running after shutdownAndWait")
+        XCTAssertFalse(host.isReady)
+        XCTAssertNotEqual(kill(stopping, 0), 0, "the stopped helper has exited")
+        // The stop is over: the next message starts a helper as usual.
+        try await host.connect(cwd: root, state: state)
+        XCTAssertTrue(host.isReady)
+        try await host.shutdownAndWait()
+    }
+
     /// A helper killed mid-turn: the command fails with an explicit uncertain
     /// outcome, the loss is reported once, and repeated kill/restart rounds
     /// leave no descriptors and no orphaned helper processes behind.
@@ -98,7 +209,10 @@ final class HostSupervisorTests: XCTestCase {
         let inFlight = Task { try await host.request("runtime.info", commandID: "mid-turn") }
         for pid in Self.helperProcesses() { kill(pid, SIGKILL) }
         do { _ = try await inFlight.value; XCTFail("A killed helper cannot answer") }
-        catch { XCTAssertTrue(error.localizedDescription.contains("No request was replayed"), error.localizedDescription) }
+        catch {
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("No request was replayed") || message.contains("No command was replayed"), message)
+        }
         for _ in 0..<600 where host.connectionID != nil { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertFalse(host.isReady); XCTAssertNil(host.connectionID); XCTAssertEqual(losses, 1)
 

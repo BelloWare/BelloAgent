@@ -9,6 +9,7 @@ public struct Submission: Codable, Sendable {
     /// What the turn's model takes ("text", "image") when the app's model
     /// catalog says more than the connection does; nil keeps the connection's.
     public var input: [String]? = nil
+    var subagentModels: [SubagentModelGrant]? = nil
     /// Advances when a queued edit saves new text, so a reader can tell a
     /// rewrite past the preview from the text it had. Absent before one.
     public var textRevision: Int? = nil
@@ -85,8 +86,29 @@ public actor AgentSession {
     /// as the gateway reported it; and the attempts already counted, so an
     /// attempt is never added twice. See SessionCost.swift.
     var costLimitUSD: Double?
-    var spend = SessionSpend()
     var countedAttempts = BoundedIdentitySet(limit: 512)
+    var spend = SessionSpend()
+    var subagents = SubagentJournalState()
+    var subagentChangeRevision = 0
+    var subagentModelGrants: [SubagentModelGrant] = []
+    var turnSubagentModels: [SubagentModelGrant] = []
+    var accounting = AttemptAccounting()
+    var accountingFailure: AgentError?
+    var familyBudgetEnabled = false
+    weak var budgetOwner: AgentSession?
+    var budgetOwnerGeneration = 0
+    var requestPermits: [String: RequestPermit] = [:]
+    var familyStopReason: AgentError?
+    var familyCancelled: (@Sendable (Int) -> Void)?
+    var subagentCoordinator: SubagentCoordinator?
+    var agentCoordinator: AgentSteeringCoordinator?
+    var agentLease: AgentChildTurn?
+    var agentTurnClosed = false
+    var agentPreparedResults: [String:JSON] = [:]
+    var familyWaiting = false
+    var managedCancellation: (@Sendable () -> Void)?
+    var managedProgress: (@Sendable () async -> Void)?
+    var managedProgressTask: Task<Void, Never>?
     /// Whether this journal records every attempt's cost from its start: a
     /// new chat does, and so does one with a cost record. A chat written
     /// before cost records existed takes its earlier spend from the app once.
@@ -178,6 +200,8 @@ public actor AgentSession {
     var begin: Double?, end: Double?, parentInfo: JSON = .null, ephemeral=false, keepRequested=false
     var steeringMode="one-at-a-time", followUpMode="one-at-a-time"
     var closed=false
+    /// Test seam for commands arriving during the final request-link flush.
+    var beforeFinalRequestLinks: (@Sendable () async -> Void)?
     var activeSubmission: Submission?
     /// The pending message taken from its lane for delivery, until its user
     /// record is in the journal: the saved state keeps it meanwhile, so a
@@ -269,15 +293,18 @@ public actor AgentSession {
     var historyFill: HistoryFill?
     var historyFillTokens = 0
     /// A load of the rows this chat did not load, under way (`loadOlderRows`).
-    var olderRowsLoad: Task<Void, Error>?
+    var olderRowsLoad: SharedHistoryLoad?
     /// Shared full-history read for edits and version requests.
-    var fullHistoryLoad: Task<Void, Error>?
+    var fullHistoryLoad: SharedHistoryLoad?
     /// Test seam: what a background load, or a load of older rows, waits on
     /// before each stage ("replay", "prepare", "index", "full").
     var historyFillHold: (@Sendable (String) async -> Void)?
     func holdHistoryFill(_ hold: (@Sendable (String) async -> Void)?) { historyFillHold = hold }
     /// Test seams: where each replay of the journal starts reading, and how
     /// many reads joined a load already under way.
+    // Test seam: a page has reached a row; nil in production.
+    var historyPageStep: (@Sendable (String) -> Void)?
+    func noteHistoryPageSteps(_ step: (@Sendable (String) -> Void)?) { historyPageStep = step }
     var historyReads: (@Sendable (UInt64) -> Void)?
     func noteHistoryReads(_ reads: (@Sendable (UInt64) -> Void)?) { historyReads = reads }
     var historyLoadJoins = 0
@@ -294,7 +321,7 @@ public actor AgentSession {
     }
     /// `prepared`: the replay of the journal at `resumePath`, made as a fork
     /// wrote it (`forked`); used only while it is the whole journal as it is.
-    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, resumePath: String? = nil, prepared: JournalReplayConsumer?, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
+    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, resumePath: String? = nil, prepared: JournalReplayConsumer?, subagentOrigin: SubagentOrigin? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
         self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
             history=seed; context=seed; boundary=seed; visible=seed; toolHistory=ToolHistoryIndex(seed); parentInfo=parent; ephemeral=true
@@ -305,7 +332,11 @@ public actor AgentSession {
         let url=resumePath.map(canonical) ?? directory.appendingPathComponent(id + ".jsonl")
         guard within(url,canonical(directory.path)) else { throw AgentError("session_scope", "Writable sessions must be in the app-managed directory") }
         let stored = resumePath == nil ? nil : JournalCheckpoint.read(for: url)
-        let opened=try SessionJournal(url:url,id:id,cwd:cwd,binding:profile.binding,create:resumePath == nil,checkpoint:stored,beforeAppend:beforeJournalAppend,beforeSynchronize:beforeJournalSynchronize); journal=opened
+        let opened=try SessionJournal(url:url,id:id,cwd:cwd,binding:profile.binding,create:resumePath == nil,managedChild:subagentOrigin != nil,checkpoint:stored,beforeAppend:beforeJournalAppend,beforeSynchronize:beforeJournalSynchronize); journal=opened
+        if resumePath == nil, let subagentOrigin {
+            guard subagentOrigin.link.valid, subagentOrigin.link.childSessionID == id else { throw AgentError("subagent_identity", "Invalid child origin") }
+            try opened.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":try subagentJSON(subagentOrigin)])
+        }
         // A fork's journal comes with what it replays to, made as it was
         // written (`forked`): used when it is the whole of this journal as it
         // is now, and never a replay resumed from a checkpoint.
@@ -314,7 +345,9 @@ public actor AgentSession {
         else { consumer=try Self.replayConsumer(opened, url: url, id: id, binding: profile.binding, spendTracked: resumePath == nil, resume: true) }
         let replayed=try consumer.finished(); durable=consumer
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
-        spend=replayed.spend; spendTracked=replayed.spendTracked
+        spend=replayed.spend; spendTracked=replayed.spendTracked; accounting=replayed.accounting; subagents=replayed.subagents
+        familyBudgetEnabled = !subagents.plans.isEmpty
+        guard opened.markerKind == JournalRecordKind.steeringMarker || (opened.markerKind == JournalRecordKind.childMarker) == (replayed.subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
@@ -341,7 +374,9 @@ public actor AgentSession {
             // Whether the turn is on the shown branch is read from the whole
             // timeline: a chat opened from its metadata file leaves older rows
             // unloaded, and such a row is not one an edit hid.
-            let found=PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size)
+            // An unreadable log fails this open and stays in place for a
+            // retry. No new run may overwrite a reply we could not inspect.
+            let found=try PartialReplyLog.unfinished(streamLog, journal: url, size: opened.size)
             var onBranch=true
             if let turn=found?.header.turn {
                 let loaded=visible
@@ -416,17 +451,44 @@ public actor AgentSession {
         if unrestored { errorMessage=(errorMessage.map { $0 + " " } ?? "") + "The reply that was arriving could not be added back to the chat; it is kept beside the chat's file." }
         // Never repeat a tool after a crash. Pair unresolved calls with explicit
         // unknown outcomes so future requests remain protocol-valid.
+        let delegatedResults = try SubagentRecovery.recover(state: subagents, context: context, parent: opened, owner: id,
+                                                             directory: directory, accounting: &accounting, spend: &spend)
+        try AgentFamilyRecovery.recover(state:&subagents,parent:opened,owner:id,directory:directory,accounting:&accounting,spend:&spend)
         let recoveredTools=ToolHistoryIndex(context)
         let unresolved=context.flatMap { message in
             message.content.filter { message.role == "assistant" && $0["type"].text == "toolCall" && recoveredTools.results[message.id]?[$0["id"].text ?? ""] == nil }
-                .map { (call: $0, attempts: message.requestAttemptIDs, turn: message.turn) }
+                .map { (call: $0, assistant: message.id, attempts: message.requestAttemptIDs, turn: message.turn) }
         }
         for pending in unresolved {
             let call=pending.call
             var result=ChatMessage(role:"toolResult",content:[textBlock("Interrupted before durable tool result. Outcome unknown; inspect effects. The application did not rerun this tool.")]); result.toolCallId=call["id"].text; result.toolName=call["name"].text; result.isError=true
             result.toolStats=["durationMs":.null,"outcome":"unknown"]
+            if call["name"].text == "subagent", let callID = call["id"].text {
+                let key = SubagentCallKey(parentSessionID: id, assistantMessageID: pending.assistant, toolCallID: callID)
+                let saved = delegatedResults[key] ?? SubagentToolResult(status: .notExecuted, error: AgentError("subagent_not_admitted", "The task was not admitted before interruption. It was not restarted."))
+                result.id = saved.messageID ?? result.id; result.content = [textBlock(saved.envelope.encoded())]
+                result.nativeSubagent = saved.metadata.isNull ? nil : saved.metadata; result.isError = saved.wire["isError"].flag == true
+                result.toolStats?["outcome"] = saved.metadata["effects"].isNull ? "not_executed" : saved.metadata["effects"]
+            }
+            if let name = call["name"].text, SubagentSteeringContract.names.contains(name), let callID = call["id"].text {
+                let key = SubagentCallKey(parentSessionID:id,assistantMessageID:pending.assistant,toolCallID:callID)
+                if let op = subagents.family?.operations[AgentOperation.id(key)] {
+                    var receipt = op.receipt
+                    if name == "subagent_wait" || name == "subagent_start" && call["arguments"]["mode"].text == "wait" {
+                        receipt["wait"] = ["version":3,"wake_reason":"stopped","wait_id":JSON(op.id),"target_count":JSON(op.waitTargets?.count ?? (op.turn == nil ? 0 : 1)),"inbox_pending":JSON(!(subagents.family?.pending(author:"subagent").isEmpty ?? true))]
+                    }
+                    result.id = "agent-receipt:" + op.id; result.content = [textBlock(receipt.encoded())]; result.isError = false
+                    result.toolStats?["outcome"] = "completed"
+                    if let child = op.receipt["child_id"].text,
+                       let plan = subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) {
+                        result.nativeSubagent = ["version":2,"sessionId":JSON(child),"delegationId":JSON(plan.origin.link.delegationID),"budgetOwnerSessionId":JSON(id),"parentAssistantMessageId":JSON(key.assistantMessageID),"toolCallId":JSON(callID),"turn":op.receipt["turn"],"route":op.receipt["route"],"status":"accepted","effects":"completed"]
+                    }
+                } else { result.content = [textBlock("Not accepted before interruption. No control command was replayed.")]; result.toolStats?["outcome"] = "not_executed" }
+            }
             result.requestAttemptIDs=pending.attempts; result.turn=pending.turn
-            try opened.append(["type":"message","message":result.pi],id:result.id); history.append(result); context.append(result); visible.append(result); queuePaused=true
+            try opened.append(["type":"message","message":result.pi],id:result.id)
+            try subagents.consume(["type":"message","message":result.pi], sessionID: id)
+            history.append(result); context.append(result); visible.append(result); queuePaused=true
             if let span=opened.lastAppend { rowSpans[result.id] = .init(id:result.id,kind:.message,offset:span.offset,length:span.length) }
             for attempt in result.requestAttemptIDs ?? [] { pendingRequestLinks[attempt, default: []].append(result.id) }
         }
@@ -458,6 +520,7 @@ public actor AgentSession {
     /// when the run ends, so a turn in flight never changes route or key midway.
     /// Returns whether the settings are in use already.
     public func configure(profile: Profile, apiKey: String) throws -> Bool {
+        try requireIndependentSession()
         guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
         guard profile.binding == self.profile.binding else { throw AgentError("session_conflict", "Changed API, endpoint or model requires a separately bound session") }
         guard runTask == nil else { pendingConfiguration = (profile, apiKey); event("state"); return false }
@@ -483,6 +546,7 @@ public actor AgentSession {
         sequence += 1; events.append(["seq":JSON(sequence),"type":JSON(type),"payload":payload])
         if events.count > Self.retainedEvents+Self.retainedEventSlack { events.removeFirst(events.count-Self.retainedEvents) }
         changed(id,sequence)
+        scheduleSubagentProgress()
     }
     /// Set while a retry starts, so the run answers the failed turn before it
     /// looks at queued follow-ups.
@@ -495,7 +559,32 @@ public actor AgentSession {
     var retrySubmission: Submission?
     /// Stops the run and pauses the queue. `stopCount` lets work that awaited
     /// a run winding down tell that the chat was stopped again meanwhile.
-    public func stop() { stopCount &+= 1; queuePaused=true; runTask?.cancel(); if runTask != nil { state = .stopping } else if state != .error { state = .paused }; event("state") }
-    public func unloadIfIdle() -> Bool { guard isIdle, !ephemeral else { return false }; cancelHistoryLoads(); closed=true; journal=nil; return true }
-    public func close() async { cancelHistoryLoads(); closed=true; stop(); await runTask?.value; journal=nil }
+    public func stop() {
+        let cancelledGeneration = stopCount
+        stopCount &+= 1; queuePaused=true; runTask?.cancel()
+        for permit in requestPermits.values { permit.cancel() }
+        familyCancelled?(cancelledGeneration)
+        managedCancellation?()
+        // The run may already have reached its terminal state while its
+        // final links are flushing. Nothing after that await enters the
+        // cancellation catch again, so do not turn it back into Stopping.
+        if runTask != nil, state == .running || state == .stopping { state = .stopping }
+        else if state != .error { state = .paused }
+        event("state")
+    }
+    public func unloadIfIdle() -> Bool {
+        guard isIdle, !ephemeral, managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true else { return false }
+        cancelHistoryLoads(); closed=true; journal=nil
+        if !isSubagent, let coordinator = subagentCoordinator {
+            let owner = id, runtimeID = displayEpoch
+            Task { await coordinator.release(owner: owner, runtimeID: runtimeID) }
+        }
+        return true
+    }
+    public func close() async {
+        cancelHistoryLoads(); closed=true; stop(); await runTask?.value
+        if !isSubagent { await agentCoordinator?.drain(owner:id) }
+        if !isSubagent { await subagentCoordinator?.release(owner: id, runtimeID: displayEpoch) }
+        journal=nil
+    }
 }

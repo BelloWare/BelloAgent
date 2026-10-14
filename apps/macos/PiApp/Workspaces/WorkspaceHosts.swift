@@ -37,7 +37,10 @@ extension WorkspaceModel {
         host.onEvent = { [weak self] frame in
             guard let id = frame["sessionId"]?.string else { return }
             if frame["type"]?.string == "session.changed" { self?.refresh(id) }
-            if frame["type"]?.string == "session.unloaded" { self?.opened.remove(id); self?.displays[id]?.notice = "Saved history · Host runtime unloaded"; self?.displays[id]?.captureAvailable = false }
+            if frame["type"]?.string == "session.unloaded" {
+                self?.sessionOpenings[id]?.task.cancel()
+                self?.opened.remove(id); self?.displays[id]?.notice = "Saved history · Host runtime unloaded"; self?.displays[id]?.captureAvailable = false
+            }
         }
         host.onLoss = { [weak self, weak host] in
             guard let self, let host, self.hosts[workspace.id] === host else { return }
@@ -46,6 +49,7 @@ extension WorkspaceModel {
             let retired = self.retiringHosts.remove(ObjectIdentifier(host)) != nil
             let paused = self.pausingHosts.remove(ObjectIdentifier(host)) != nil
             self.boundHostConnections.removeValue(forKey: workspace.id)
+            self.interruptSubagents(workspaceID: workspace.id)
             self.liveActivity.disconnect(workspace.id)
             self.discardLostSides(workspaceID: workspace.id)
             for chat in self.chats where chat.workspaceID == workspace.id {
@@ -162,6 +166,10 @@ extension WorkspaceModel {
         sessionClosings[id] = (token, task)
     }
     func open(_ item: ChatRecord, automaticContext: Bool = false) async throws -> HostSupervisor {
+        guard !deletingFamilies.contains(item.delegation?.budgetOwnerSessionID ?? item.id) else { throw HostError.failure("This chat is being deleted.") }
+        if try await store?.get(String.self, kind: "session-deleted", id: item.delegation?.budgetOwnerSessionID ?? item.id) != nil { throw HostError.failure("This chat is being deleted.") }
+        if let issue = item.delegationIssue { throw HostError.failure(issue) }
+        displays[item.id]?.isManagedSubagent = item.isSubagent
         // A close sent when the chat's display was let go of lands first, so
         // this open is not answered by the session being unloaded; so does a
         // move to another connection, so it is not opened on the old one.
@@ -215,7 +223,9 @@ extension WorkspaceModel {
         } else if !opened.contains(item.id) {
             var wire = profile.wire.object ?? [:]
             if let headers = credential["headers"] { wire["headers"] = headers }
+            if item.isSubagent, let model = item.model { wire["modelId"] = .string(model) }
             var params: [String: WireValue] = ["profile": .object(wire), "apiKey": .string(key), "toolMode": .string(item.toolMode)]
+            if let grants = subagentModels(for: item) { params["subagentModels"] = grants }
             if let handoff = try await store.get(WireValue.self, kind: "handoff", id: item.id) { params["handoff"] = handoff }
             // The chat's cost limit, which the helper checks before every model request.
             params.merge(await costLimitParams(for: item)) { _, limit in limit }
@@ -244,14 +254,24 @@ extension WorkspaceModel {
                             // storage failure, even though the in-memory path is known.
                             try await store.put(chats[index], kind: "chat", id: item.id)
                         }
+                        if !item.isSubagent, initial.object?["subagentsRevision"] != nil { try await reconcileCapturedBudget(item, host: host) }
                         observeAssistantOutputs(sessionID: item.id, snapshot: initial.object ?? [:])
                         observeSessionCompletion(sessionID: item.id, snapshot: initial.object ?? [:], baseline: true)
                         displays[item.id]?.observeCompaction(initial.object ?? [:])
                         displays[item.id]?.observeContext(initial.object ?? [:], baseline: true)
                         let preference = try await capturePreference(sessionID: item.id)
-                        _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(preference.mode)])
+                        // Managed readers inherit their owner's capture policy;
+                        // opening one must never issue a child policy change.
+                        if !item.isSubagent { _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(preference.mode)]) }
+                        // Recovery may have unloaded this reader after its open
+                        // reply, while path/capture persistence yielded above.
+                        try Task.checkCancellation()
                         opened.insert(item.id)
-                        displays[item.id]?.captureMode = preference.mode; displays[item.id]?.captureAvailable = true
+                        // Settings or this chat's override may have changed
+                        // while its seed or opening acknowledgement was read.
+                        if params["costLimit"] != costLimit(for: item.id).wire { await sendCostLimit(item.id) }
+                        displays[item.id]?.captureMode = item.isSubagent ? initial.object?["captureMode"]?.string ?? preference.mode : preference.mode
+                        displays[item.id]?.captureAvailable = true
                         displays[item.id]?.lastSequence = -1
                     }
                 }
