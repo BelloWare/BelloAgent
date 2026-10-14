@@ -44,8 +44,8 @@ final class AgentSteeringBoundaryTests: XCTestCase {
 
 }
 actor AgentBoundaryClient: ModelClient {
-    let reports: Bool
-    init(reports: Bool = false) { self.reports = reports }
+    let reports: Bool, starts: Int
+    init(reports: Bool = false, starts: Int = 1) { self.reports = reports; self.starts = starts }
     var parentCount = 0, childCount = 0, released = false
     var parentRequests: [[ChatMessage]] = [], childRequests: [[ChatMessage]] = []
     func release() { released = true }
@@ -57,7 +57,10 @@ actor AgentBoundaryClient: ModelClient {
         var reply: ModelReply
         if sessionID == "parent" {
             parentCount += 1; parentRequests.append(messages)
-            if parentCount == 1 { reply = agentCallReply("start","subagent_start",["task":"Child task","mode":JSON(reports ? "wait" : "background")]) }
+            if parentCount == 1 {
+                reply = ModelReply(message:ChatMessage(role:"assistant",content:[]))
+                for index in 0..<starts { let start = agentCallReply("start-\(index)","subagent_start",["task":"Child task","mode":JSON(reports ? "wait" : "background")]); reply.calls += start.calls; reply.message.content += start.message.content }
+            }
             else if reports && parentCount == 2 {
                 let event = messages.flatMap { $0.nativeAgentDelivery?["events"].list ?? [] }.first { $0["kind"].text == "question" }
                 reply = agentCallReply("send","subagent_send",["child_id":event?["child_id"] ?? "missing","message":"Use the safe path","reply_to":event?["event_id"] ?? "missing"])
@@ -107,5 +110,83 @@ extension AgentSteeringBoundaryTests {
         do { _ = try await coordinator.waitTargets(["mode":"one","targets":[["child_id":"foreign","turn":1]]],state:state,execution:"parent-e"); XCTFail("Unknown target accepted") }
         catch { XCTAssertEqual((error as? AgentError)?.code,"subagent_scope") }
         await parent.close()
+    }
+}
+
+extension AgentSteeringBoundaryTests {
+    func testChildCostLimitStopsParentInUnrelatedToolAndSettlesFamily() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let tools = AgentBudgetHoldTools(), client = AgentBudgetClient(), coordinator = AgentSteeringCoordinator()
+        await client.bind(tools)
+        let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore())
+        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        try await parent.setCostLimit(0.015)
+        _ = try await parent.submit(Submission(commandID:"command",turnID:"user",text:"Parallel work"),steer:false)
+        try await eventually { !(await parent.isRunning) }
+        let spend = await parent.spend, family = await parent.agentState(), entered = await tools.entered, calls = await client.requests
+        XCTAssertTrue(entered)
+        XCTAssertEqual(spend.usd,0.02,accuracy:0.000001)
+        XCTAssertEqual(calls,2,"No third request may pass family admission")
+        XCTAssertTrue(family.turns.values.allSatisfy { $0.status.terminal })
+        XCTAssertEqual(family.turns.count,1)
+        let code = await parent.errorCode
+        XCTAssertEqual(code,AgentSession.costLimitCode)
+        await parent.close()
+    }
+}
+actor AgentBudgetHoldTools: ToolExecuting {
+    var entered = false
+    func definitions(readOnly: Bool) -> [ToolDefinition] { [ToolDefinition("hold","fixture unrelated tool",["type":"object","properties":[:]])] }
+    func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON {
+        entered = true
+        while true { try await Task.sleep(for:.seconds(1)) }
+    }
+}
+actor AgentBudgetClient: ModelClient {
+    var tools: AgentBudgetHoldTools?, requests = 0
+    func bind(_ tools: AgentBudgetHoldTools) { self.tools = tools }
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply { throw AgentError("fixture_unscoped","Missing accounting") }
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, cacheSessionID: String, turnID: String, purpose: String, lifecycle: RequestLifecycle?, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        let attempt = UUID().uuidString
+        let permit = try await lifecycle?.admitAttempt(attempt); defer { permit?.finish() }
+        try await lifecycle?.willDispatch(attempt); requests += 1
+        var reply: ModelReply
+        if sessionID == "parent" {
+            reply = agentCallReply("start","subagent_start",["task":"Child task","mode":"background"])
+            let hold = agentCallReply("hold","hold",[:]); reply.calls += hold.calls; reply.message.content += hold.message.content
+        } else {
+            while !(await self.tools!.entered) { try await Task.sleep(for:.milliseconds(5)) }
+            reply = answer("Discovery costing the rest of the budget")
+        }
+        var observation = RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:purpose,fingerprint:"fixture",profile:profile)
+        observation.monitoring = ["outcome":"completed","gateway":["cost":["status":"reported","usd":0.01]]]
+        if let lifecycle { try await lifecycle.settleAttempt(.init(scope:lifecycle.scope,observation:observation,dispatched:true)) }
+        await onObservation(observation); reply.message.requestAttemptIDs = [attempt]; return reply
+    }
+}
+
+extension AgentSteeringBoundaryTests {
+    func testCloseDrainsSixteenActiveAndTwoQueuedTurnsWithoutDispatchingQueuedWork() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = AgentBoundaryClient(starts:18), coordinator = AgentSteeringCoordinator()
+        let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
+        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        _ = try await parent.submit(Submission(commandID:"command",turnID:"user",text:"Parallel work"),steer:false)
+        try await eventually { await client.childCount == 16 }
+        try await eventually { await parent.familyWaiting }
+        let pending = await coordinator.list(parent:parent,cursor:0,limit:100)
+        XCTAssertEqual(pending["active"].int,16)
+        XCTAssertEqual(pending["children"].list.filter { $0["status"].text == "queued" }.count,2)
+        await parent.close()
+        let family = await parent.agentState(), calls = await client.childCount
+        XCTAssertEqual(calls,16)
+        XCTAssertEqual(family.turns.values.filter { $0.status == .notExecuted }.count,2)
+        XCTAssertTrue(family.turns.values.allSatisfy { $0.status.terminal })
+        for turn in family.turns.values {
+            let reader = try JournalRecordReader(root.appendingPathComponent(turn.childID + ".jsonl"))
+            var state = SubagentJournalState()
+            while let row = try reader.next() { try state.consume(row,sessionID:turn.childID) }
+            XCTAssertEqual(state.family?.latest(turn.childID)?.status,turn.status)
+        }
     }
 }

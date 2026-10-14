@@ -85,7 +85,7 @@ extension AgentSession {
             return result
         }
         if call.name == "subagent" {
-            guard canDelegate, let coordinator = subagentCoordinator, let assistant = toolHistory.owners[call.id] else { throw AgentError("tool_unavailable", "Sub-agent delegation is unavailable here") }
+            guard agentCoordinator == nil, canDelegate, let coordinator = subagentCoordinator, let assistant = toolHistory.owners[call.id] else { throw AgentError("tool_unavailable", "Sub-agent delegation is unavailable here") }
             return await coordinator.result(SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call.id)).wire
         }
         var prepared=await piPrepared(call)
@@ -156,6 +156,7 @@ extension AgentSession {
         // The card names each image the model receives beside the text.
         let shown=images.isEmpty ? text : ([text]+images.map(describe)).filter { !$0.isEmpty }.joined(separator:"\n")
         if !images.isEmpty { message.displayText=shown }
+        if SubagentSteeringContract.names.contains(call.name), let reserved = result["nativeResultMessageId"].text { message.id = reserved }
         if (call.name == "subagent" && canDelegate || SubagentSteeringContract.names.contains(call.name) && agentCoordinator != nil), !result["nativeSubagent"].isNull {
             message.nativeSubagent = result["nativeSubagent"]
             if let id = result["nativeResultMessageId"].text { message.id = id }
@@ -218,15 +219,20 @@ extension AgentSession {
                     let key = try agentToolKey(call)
                     let receipt = try await (isSubagent ? coordinator.report(call,key:key,child:self) : coordinator.prepare(call,key:key,parent:self))
                     var wire = resultText(receipt.encoded())
+                    wire["nativeResultMessageId"] = JSON("agent-receipt:" + AgentOperation.id(key))
                     if let child = receipt["child_id"].text, let plan = subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) {
                         wire["nativeSubagent"] = ["version":2,"sessionId":JSON(child),"delegationId":JSON(plan.origin.link.delegationID),"budgetOwnerSessionId":JSON(id),"parentAssistantMessageId":JSON(key.assistantMessageID),"toolCallId":JSON(call.id),"turn":receipt["turn"],"route":receipt["route"],"status":"accepted","effects":"completed"]
                     }
                     agentPreparedResults[call.id] = wire
-                } catch { agentPreparedResults[call.id] = resultText((error as? AgentError)?.message ?? "Agent control interrupted",error:true) }
+                } catch {
+                    let failure = (error as? AgentError) ?? AgentError("subagent_interrupted", "Agent control interrupted")
+                    let envelope: JSON = ["version":3,"accepted":false,"error":["code":JSON(failure.code),"message":JSON(failure.message)]]
+                    agentPreparedResults[call.id] = resultText(envelope.encoded(),error:true)
+                }
             }
         }
         var preflightCancelled = false
-        if canDelegate, let coordinator = subagentCoordinator, calls.contains(where: { $0.name == "subagent" }) {
+        if agentCoordinator == nil, canDelegate, let coordinator = subagentCoordinator, calls.contains(where: { $0.name == "subagent" }) {
             do {
                 let environment = try await delegationEnvironment()
                 let planned = calls.filter { $0.name == "subagent" }.compactMap { call -> (SubagentCallKey, ToolCall)? in

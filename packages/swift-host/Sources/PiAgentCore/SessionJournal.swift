@@ -89,6 +89,7 @@ final class SessionJournal {
                 markerBinding=scanned.bindings.marker; markerKind=scanned.bindings.markerKind ?? JournalRecordKind.marker; rebinds=scanned.bindings.rebinds
             }
             handle=try FileHandle(forWritingTo:url); try handle.seekToEnd()
+            try? FileManager.default.removeItem(at:url.appendingPathExtension("promotion"))
         } catch { _=flock(lockFD,LOCK_UN); _=close(lockFD); throw error }
         if create {
             markerKind = managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker
@@ -186,7 +187,7 @@ final class SessionJournal {
             if offset == check.offset {
                 guard JournalCheckpoint.digest(line) == check.sha256,
                       let text = String(data:line,encoding:.utf8) else { throw SubagentRecovery.damaged() }
-                promotedLine = Data(text.replacingOccurrences(of:markerKind,with:JournalRecordKind.steeringMarker).utf8)
+                promotedLine = Data(text.replacingOccurrences(of:"\"customType\":\"" + markerKind + "\"",with:"\"customType\":\"" + JournalRecordKind.steeringMarker + "\"").utf8)
                 guard promotedLine.count == line.count, promotedLine != line else { throw SubagentRecovery.damaged() }
                 line = promotedLine; replaced = true
             }

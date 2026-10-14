@@ -46,6 +46,7 @@ extension AgentSession {
     }
     public func submit(_ input: Submission, steer: Bool, admittedAt: Int? = nil) throws -> JSON {
         try requireIndependentSession()
+        try requireAgentExecution()
         return try submitManaged(input, steer: steer, admittedAt: admittedAt)
     }
     /// Only the coordinator submits a managed child's initial task.

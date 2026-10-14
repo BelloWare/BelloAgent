@@ -280,7 +280,8 @@ public actor NativeHostService {
                 sessions.removeValue(forKey:id); profiles.removeValue(forKey:id)
             }
             let child = try AgentSteeringCoordinator.makeChild(environment,plan)
-            try await registerSubagent(child,profile:await child.profile,apiKey:environment.apiKey,parent:environment.parent)
+            do { try await registerSubagent(child,profile:await child.profile,apiKey:environment.apiKey,parent:environment.parent) }
+            catch { await child.close(); throw error }
             return child
         }
     }
@@ -552,7 +553,12 @@ public actor NativeHostService {
             }
             guard let subagentCoordinator else { throw AgentError("subagent_scope", "No managed delegation belongs to this parent") }
             try await subagentCoordinator.stop(owner: id, delegationID: required(params["delegationId"], "delegation id")); return ["accepted":true]
-        case "turn.stop": await session.stop(); return ["accepted":true]
+        case "turn.stop":
+            if let origin = await session.subagents.origin, let owner = sessions[origin.link.budgetOwnerSessionID],
+               let coordinator = await owner.agentCoordinator, let turn = await owner.agentState().latest(id) {
+                try await coordinator.stop(parent:owner,target:turn.target,human:true)
+            }
+            await session.stop(); return ["accepted":true]
         case "session.status":
             var statusParams = params; statusParams["includeMessages"] = false
             return await session.snapshot(statusParams)

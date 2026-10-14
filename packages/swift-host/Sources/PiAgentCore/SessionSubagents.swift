@@ -31,7 +31,7 @@ extension AgentSession {
         managedProgress = { [weak coordinator] in await coordinator?.progress(key) }
     }
     func scheduleSubagentProgress() {
-        guard let managedProgress, managedProgressTask == nil, subagents.terminal == nil else { return }
+        guard let managedProgress, managedProgressTask == nil, agentLease != nil ? !agentTurnClosed : subagents.terminal == nil else { return }
         managedProgressTask = Task { [weak self] in
             do { try await Task.sleep(for: .milliseconds(250)); try Task.checkCancellation() }
             catch { return }

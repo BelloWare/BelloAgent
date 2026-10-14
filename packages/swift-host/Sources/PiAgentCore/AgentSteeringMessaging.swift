@@ -61,17 +61,15 @@ extension AgentSteeringCoordinator {
             } catch { await lock.release(); throw error }
         }
     }
-    func seal(job: Job, child: AgentSession?) async throws {
+    func seal(job original: Job, child: AgentSession?) async throws {
+        var job = original; job.turn.normalizeResult()
         if jobs[job.turn.id]?.sealed == true { return }
-        if let child { try await child.saveAgentTerminal(job.turn) }
+        if let child { await child.endSubagentProgress(); try await child.saveAgentTerminal(job.turn) }
         try await job.owner.appendAgentRecord(JournalRecordKind.agentTerminal,job.turn)
         let state = await job.owner.agentState()
         let id = "result:" + job.turn.id
         if state.messages[id] == nil {
-            let text = SubagentToolResult.bounded(job.turn.result?.envelope["text"].text ?? "",bytes:8192)
-            var message = AgentFamilyMessage(id:id,sequence:state.sequence + 1,childID:job.turn.childID,turn:job.turn.turn,author:"subagent",kind:"result",text:text,task:job.plan.origin.description,epoch:job.turn.epoch)
-            message.result = job.turn.result?.envelope.removing(["text"])
-            message.result?["text_truncated"] = JSON(text.utf8.count < (job.turn.result?.envelope["text"].text?.utf8.count ?? 0))
+            let message = AgentFamilyMessage.resultEvent(job.turn,task:job.plan.origin.description,sequence:state.sequence + 1)
             try await job.owner.appendAgentRecord(JournalRecordKind.agentMessage,message)
         }
         for var pending in state.pending(author:"parent") where pending.childID == job.turn.childID && pending.turn == job.turn.turn {
@@ -121,10 +119,14 @@ extension AgentSteeringCoordinator {
         await signal(owner.id).pulse(); return true
     }
     func wait(_ receipt: JSON, args: JSON, parent: AgentSession) async throws -> JSON {
-        let start = ContinuousClock.now, timeout = args["timeout_ms"].int ?? 60000
+        let start = ContinuousClock.now
+        let configuredTimeout = args["timeout_ms"].int ?? 60000
         let targets: [AgentTurnTarget]
         let waitID = receipt["wait_id"].text ?? receipt["operation_id"].text ?? ""
         let state = await parent.agentState()
+        let acceptedAt = state.operations[waitID]?.acceptedAt ?? Date().timeIntervalSince1970
+        let priorWait = Int(min(60000,max(0,(Date().timeIntervalSince1970-acceptedAt)*1000)))
+        let timeout = max(0,configuredTimeout-priorWait)
         if let saved = state.operations[waitID]?.waitTargets { targets = saved }
         else if let child = receipt["child_id"].text, let turn = receipt["turn"].int { targets = [.init(childID:child,turn:turn)] }
         else { targets = [] }
