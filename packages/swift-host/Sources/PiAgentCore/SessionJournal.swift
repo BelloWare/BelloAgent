@@ -72,6 +72,7 @@ final class SessionJournal {
         guard lockFD >= 0 else { throw AgentError("session_lock", "Cannot create session writer lock") }
         guard flock(lockFD,LOCK_EX|LOCK_NB) == 0 else { _ = close(lockFD); throw AgentError("session_locked", "Another process owns this session") }
         do {
+            try JournalCheckpoint.removeTemporaries(for: url)
             if create {
                 let fd=open(url.path,O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW|O_CLOEXEC,0o600)
                 guard fd >= 0 else { throw AgentError("session_exists", "Session path already exists; open it explicitly") }

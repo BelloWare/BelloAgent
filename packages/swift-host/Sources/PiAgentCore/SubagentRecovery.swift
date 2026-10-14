@@ -21,16 +21,18 @@ enum SubagentRecovery {
             let link = plan.origin.link, key = link.call
             guard link.valid, link.budgetOwnerSessionID == owner else { throw damaged() }
             let alreadyPaired = state.outcomes?[id] != nil || history.results[key.assistantMessageID]?[key.toolCallID] != nil
-            // Completed, durably paired calls already crossed both settlement
-            // barriers. Interrupted/failed calls may have missing cost mirrors.
-            if alreadyPaired, state.outcomes?[id] == .completed || state.outcomes?[id] == .outputLimited { continue }
             let childID = try identity(JSON(link.childSessionID))
             let url = canonical(directory.appendingPathComponent(childID + ".jsonl").path)
             guard within(url, canonical(directory.path)) else { throw damaged() }
+            let attempts = accounting.attempts.values.filter { $0.admission?["delegationId"].text == id }
+            let exists = FileManager.default.fileExists(atPath: url.path)
+            let completed = state.outcomes?[id] == .completed || state.outcomes?[id] == .outputLimited
+            guard exists || !completed && !attempts.contains(where: { $0.admission?["state"].text == "dispatched" }) else {
+                throw AgentError("subagent_recovery", "A child journal is missing after possible execution. No delegated task was restarted; restore the journal before continuing. Saved parent history remains available.")
+            }
             var child = SubagentJournalState(), childAccounting = AttemptAccounting(), childSpend = SessionSpend()
             var writer: SessionJournal?, childBytes: UInt64 = 0
             var markerOnly = true, childMessages = Set<String>()
-            let exists = FileManager.default.fileExists(atPath: url.path)
             if exists {
                 try SessionJournal.verifyManagedChild(url: url, id: childID)
                 let reader = try JournalRecordReader(url)
@@ -73,9 +75,9 @@ enum SubagentRecovery {
                     try commit(owned.contribution == nil ? JournalRecordKind.cost : JournalRecordKind.costUpdate, value)
                 }
             }
-            let attempts = accounting.attempts.values.filter { $0.admission?["delegationId"].text == id }
+            let settledAttempts = accounting.attempts.values.filter { $0.admission?["delegationId"].text == id }
             if exists {
-                for entry in attempts {
+                for entry in settledAttempts {
                     guard let cost = entry.contribution, let attempt = cost["attemptId"].text else { continue }
                     let prior = childAccounting.attempts[attempt]?.contribution
                     if prior == nil || prior?["unreported"].int == 1 && cost["reported"].int == 1 {

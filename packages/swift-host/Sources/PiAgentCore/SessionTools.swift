@@ -88,7 +88,8 @@ extension AgentSession {
             guard canDelegate, let coordinator = subagentCoordinator, let assistant = toolHistory.owners[call.id] else { throw AgentError("tool_unavailable", "Sub-agent delegation is unavailable here") }
             return await coordinator.result(SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call.id)).wire
         }
-        let prepared=await piPrepared(call)
+        var prepared=await piPrepared(call)
+        prepared.outputSessionID = id
         let update: @Sendable (JSON) async -> Void = { [weak self] update in await self?.toolUpdate(call.id,update) }
         // Stopped while its arguments were prepared: it never began.
         try Task.checkCancellation()
@@ -144,7 +145,7 @@ extension AgentSession {
         // this cut is for a tool that returns more (an MCP server): the text
         // is saved whole, and pi's note names the file the model can read.
         if text.utf8.count > 65536 && !((call.name == "subagent" && canDelegate || SubagentSteeringContract.names.contains(call.name) && agentCoordinator != nil) && !result["nativeSubagent"].isNull) && call.name != "subagent_status" {
-            let folder=directory.appendingPathComponent("tool-output"); try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+            let folder = try ToolOutputOwnership.directory(root: directory.appendingPathComponent("tool-output"), sessionID: id, create: true)
             let file=folder.appendingPathComponent(UUID().uuidString+".txt"), bytes=Data(text.utf8)
             guard bytes.count <= 16*1024*1024 else { throw AgentError("tool_output_limit", "Tool result exceeds 16 MiB; remote effects may have completed") }
             try bytes.write(to:file); try FileManager.default.setAttributes([.posixPermissions:0o600],ofItemAtPath:file.path)

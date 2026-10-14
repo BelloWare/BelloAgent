@@ -313,3 +313,23 @@ extension PayloadArchive {
         return result
     }
 }
+
+extension PayloadArchive {
+    /// Only retained terminal evidence for the helper's registered identities.
+    /// Bodies, headers and credentials never cross this accounting channel.
+    func budgetEvidence(attempts: [String], owner: String, workspace: String) throws -> [WireValue] {
+        guard !attempts.isEmpty else { return [] }
+        guard attempts.count <= 128 else { throw CaptureFailure.unavailable }
+        try reconcile()
+        let db = try dashboardDatabase(), placeholders = attempts.map { _ in "?" }.joined(separator: ",")
+        let rows = try db.rows("SELECT metadata FROM attempts WHERE workspace=? AND budget_owner=? AND metrics_retained=1 AND dispatch IS NOT NULL AND outcome IN ('completed','truncated','failed','cancelled','interrupted') AND id IN (\(placeholders)) ORDER BY id", [.text(workspace), .text(owner)] + attempts.map(CaptureSQLValue.text))
+        return try rows.map { row in
+            guard let data = row["metadata"]?.data else { throw CaptureFailure.corrupt }
+            let value = try JSONDecoder().decode([String: WireValue].self, from: data)
+            var evidence = value.filter { ["attemptId", "sessionId", "turnId", "purpose", "outcome", "requestScope"].contains($0.key) }
+            evidence["gateway"] = .object(["cost":.object(value["gateway"]?.object?["cost"]?.object?.filter { ["status", "usd"].contains($0.key) } ?? [:])])
+            evidence["usage"] = .object(value["usage"]?.object?.filter { ["inputIncludingCache", "output", "cacheRead", "cacheWrite", "reasoning", "total"].contains($0.key) } ?? [:])
+            return .object(evidence)
+        }
+    }
+}

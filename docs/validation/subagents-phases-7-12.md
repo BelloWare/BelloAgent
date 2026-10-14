@@ -2,10 +2,117 @@
 
 Worktree `wt-subagents`, branch `dev/subagents`. Build/test artifacts use
 `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-subagents`.
-Only generated fixtures and loopback gateways; no installed app, real vault,
-preferences, Keychain or paid providers. The production switch stayed off
+Generated fixtures and loopback gateways; no installed app, real vault,
+Keychain or paid providers. Round 7 uses the isolated test host described below;
+the owner's finding that the older host wrote real preferences supersedes the
+previous rounds' preference-isolation claims. The production switch stayed off
 through phase 11 and is enabled in phase 12. This worktree has not been merged
 into `dev/next` or published as a release.
+
+## Round-7 review — 2026-10-14
+
+The **first operation, before any tests**, fetched origin and merged
+`origin/dev/next` with `--no-ff`: merge commit `34e695a8`. The merge keeps both
+SCROLL-14 `read-cancel` and sub-agent capabilities. `project.pbxproj` took ours
+then was regenerated with XcodeGen; `project.yml` retains `PiAppTestHost` and
+the shared sub-agent sources. No pre-merge test products were launched.
+Implementation commits: `2a2ca3e3` (once-per-connection host loss) and `93408f1d`
+(capture accounting, recovery and family cleanup). The tests below cover that
+final code/test tree; the validation-record commit changes documentation only.
+
+Every native run rebuilt through `scripts/test-macos.sh`, using
+`com.belloware.PiAppTests.Host`, its scratch home, private pasteboards, pre-test
+guard, and disabled Keychain/Sparkle integration. No bundle-ID override or
+named result bundle was used. The script prunes old automatic result bundles;
+text logs under `logs/review7-*` are the evidence.
+
+| Finding | Disposition and reason |
+| --- | --- |
+| Captured charges cannot repair the parent budget | **Fixed.** `budget.attempts` pages registered unresolved dispatch IDs. Cold parent opening reads retained terminal evidence for those IDs in the same workspace/owner and awaits `budget.reconcile`. Exact saved `RequestScope` and physical identity are validated; `cost-update.v1` is flushed to the owner before the child mirror. Repeated evidence is idempotent, unknown pricing remains unknown, and the repaired total stops the next request at the cost limit. A failed mirror retains the owner charge, blocks admission and is repaired on reopen. |
+| Missing executed child does not block recovery | **Fixed.** A dispatched admission or completed owner outcome requires its child journal, including an already-paired call. Missing evidence raises `subagent_recovery`; saved parent history remains inspectable. An admission that never dispatched may still recover as not executed. |
+| Family deletion leaves retained tool output | **Fixed for newly written output.** The session supplies ownership before execution: short/failed/crash-left shell logs and oversized tool results use `Sessions/tool-output/<physical-session-id>/`. Durable family cleanup recycles only its members' directories. Traversal and symlink aliases are rejected; other chats' directories remain. Older flat UUID files without ownership evidence cannot safely be attributed, so they are preserved. No released sub-agent data uses the old layout. |
+| Listing failures are treated as successful deletion | **Fixed.** Only an absent directory is tolerated. I/O/access errors preserve metadata and deletion intents for retry. Tests cover both ENOTDIR and a directory with search permission but no listing permission. |
+| Crash-left checkpoint files escape deletion | **Fixed.** Exact `.<journal>.meta.<UUID>` temporaries are removed under the existing journal writer lock and included in family deletion. A failed competing open cannot remove them; malformed/unrelated names survive. |
+| MCP discovery leaks retention entries | **Fixed.** Only `invoke` allocates a retention mapping. `list`/`describe` remain scoped but leave no mappings; throwing invocations retain the existing unknown-outcome semantics. |
+
+No review finding was rejected. The output-ownership compatibility limitation
+is recorded in the design's Implementation notes; no ownership is guessed for
+legacy flat files. Parent journal markers, capture policy/retention, grants,
+active limits, depth and the production switch are unchanged. Steering and
+background/follow-up APIs are intentionally deferred to the separate design.
+No editing lock or capture cap was added.
+
+Merge verification also pins family/child/Inspector output-speed totals to the
+common TTFT-inclusive physical-attempt calculation. Cards do not calculate a
+separate rate. Existing containing-version and around-message navigation keep
+the cancellable helper pager; `MessageVersionTests`,
+`HistoryReadCancellationTests`, `MessageVersionTranscriptTests`, and real-helper
+opening/navigation tests pass.
+
+Validation found one additional host lifecycle bug: transport failure and the
+later process-exit event notified the workspace twice. `HostSupervisor` now
+notifies once per connection and resets the guard on reconnect. This prevents
+family interruption/update handling from running twice. The killed-helper test
+accepts either existing transport error wording while still requiring an
+explicit no-replay notice.
+
+Failing-first evidence:
+
+- `review7-recovery-cleanup-red.log`: missing executed child, locked checkpoint
+  cleanup, and MCP discovery retention regressions fail before their fixes.
+- `review7-deletion-red.log`: failed directory enumeration loses the intent and
+  checkpoint temporaries survive; `review7-output-deletion-red.log` also proves
+  owned outputs were left behind.
+- `review7-capture-output-red.log`: short shell/oversized output ownership fails;
+  its initial cost fixture had the wrong limit shape, corrected before the
+  meaningful `review7-capture-red.log` run (unsupported reconciliation and the
+  unrepaired $0.90 total).
+- `review7-host-loss-red.log`: deterministic transport-failure/exit notifications
+  count 2 then 4 instead of 1 then 2 across two connections.
+
+**12 guard mutations killed by behavioral assertions:** owner charge, child
+mirror, missing executed journal, shell-output ownership, checkpoint cleanup,
+MCP discovery retention, deletion of owned output, listing-error propagation,
+deletion of checkpoint temporaries, app cold-open reconciliation, host loss
+notification, and reconnect reset. `review7-mutations.py` restores each source;
+`logs/review7-mutations.jsonl` records attempts. Compile-only/fixture/runner
+failures are not counted. The cold-open fixture now waits for durable capture
+before killing its helper. The serial runner was corrected to recognize its
+own launchd-parented test host; earlier automatic retries from that runner are
+not additional independent evidence.
+
+Restored-source validation:
+
+| Validation | Result | Text evidence under the build root |
+| --- | --- | --- |
+| Full native parallel lane, 293 classes | **2,307 passed, 35 skipped, 0 failures** (2,342 total) | `logs/review7-native-parallel-restored-final.log`, `logs/review7-native-parallel-restored-summary.json` |
+| Helper sub-agent/storage/permission and baseline classes | **129 passed, 1 optional performance test skipped**; 0 failures | `logs/review7-helper-final.log` |
+| Actual-helper crash/control matrix | **21 passed**, including Stop/shutdown/update | `logs/review7-crash-final.log`, `logs/review7-crash-build.log` |
+| SubagentOpeningTests, serial | **9 passed** | `logs/review7-SubagentOpeningTests-restored-final.log` |
+| SubagentNavigationTests, serial | **5 passed** | `logs/review7-SubagentNavigationTests-final.log` |
+| SubagentPerformanceTests, serial | **1 passed** | `logs/review7-SubagentPerformanceTests-final.log` |
+| Native CaptureDrainTests, serial | **6 passed** | `logs/review7-CaptureDrainTests-restored-final.log` |
+| HostSupervisorTests, serial | **10 passed** | `logs/review7-HostSupervisorTests-restored-final.log` |
+| TestHostIsolationTests, serial | **3 passed** | `logs/review7-TestHostIsolationTests-restored-final.log` |
+| TopicOrganizationTests, serial | **14 passed** | `logs/review7-TopicOrganizationTests-restored-final.log` |
+| ModelCatalogEndpointTests, isolated diagnostic | **19 passed** | `logs/review7-ModelCatalogEndpointTests-final.log` |
+
+The helper run includes `SessionSettlementTests`, `CostLimitTests`,
+`CaptureDrainTests`, and `HostServiceTests`. The skipped helper test is the
+opt-in `PI_SCROLL14_PERF=1` rapid-supersession measurement; its cancellation
+correctness tests pass. The first full native lane ran 2,342 tests: 2,306
+passed, 35 skipped and one model-picker screenshot fixture failed because
+`CGWindowListCreateImage` returned no image (`review7-native-parallel-final2.log`
+and its exported text summary). That unchanged 19-test class passes alone.
+The final full lane after the host-loss fix passes with no failures and no
+outside native-test overlap. It includes all eight parallel sub-agent classes
+(62 tests), both cost-limit classes, message versions and session organization.
+
+Serial classes ran one class per invocation, with native activity checked
+before and throughout each run. `logs/review7-serial-isolation.jsonl` names the
+accepted runs with empty overlap sets; helper tests/crash tests did not run
+alongside the serial native checks. Gallery scenes are unchanged because this
+round changes storage/recovery, not the view layouts.
 
 ## Round-5 review — 2026-10-14
 

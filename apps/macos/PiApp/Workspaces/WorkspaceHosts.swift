@@ -254,6 +254,7 @@ extension WorkspaceModel {
                             // storage failure, even though the in-memory path is known.
                             try await store.put(chats[index], kind: "chat", id: item.id)
                         }
+                        if !item.isSubagent, initial.object?["subagentsRevision"] != nil { try await reconcileCapturedBudget(item, host: host) }
                         observeAssistantOutputs(sessionID: item.id, snapshot: initial.object ?? [:])
                         observeSessionCompletion(sessionID: item.id, snapshot: initial.object ?? [:], baseline: true)
                         displays[item.id]?.observeCompaction(initial.object ?? [:])
