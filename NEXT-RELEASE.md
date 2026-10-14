@@ -2,6 +2,10 @@
 
 **Released 2026-10-14:** 0.1.126 (build 130, tag `v0.1.126`) is the latest release; record `docs/validation/Bello-Agent-0.1.126-2026-10-14.md`.
 
+## 0.1.127
+
+- [x] File-folder navigation (`dev/a127-file-folders`): clickable file-header breadcrumbs with lazy folder menus and collapsed ancestors; a resizable folder tree reveals the linked file and opens siblings through the existing file-tab path. Per-pane toggle/width, parent navigation outside projects, keyboard and VoiceOver labels; shared listing/tree code in `bello-views`. Viewer-only: no model access, trust, tools or capture changes. Reviews clean; 94 affected native tests, views package and mutation checks pass; twelve final gallery scenes inspected. Full parallel-lane intermittent failures and passing isolated repeats are recorded in [validation](docs/validation/file-folders-0.1.127.md).
+
 ## 0.1.126
 
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.

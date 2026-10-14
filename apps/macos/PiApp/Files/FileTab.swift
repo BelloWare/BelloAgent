@@ -35,6 +35,13 @@ enum FileProjectState: Equatable {
     private var syntax: FileSyntax?
     private var watcher: FileWatch?
     private var shown = false
+    var openNearbyFile: ((URL) -> Void)?
+    var containingFolderRoot: (() -> URL?)?
+    private var madeFolders: FileFolderNavigation?
+    var folders: FileFolderNavigation {
+        if let madeFolders { return madeFolders }
+        let value = FileFolderNavigation(tab: self); madeFolders = value; return value
+    }
     private(set) var followTask: Task<Void, Never>?
     private var following: FileView.FileDocument?
     /// The file reader's existing I/O gates allow a fixture to hold a live
@@ -61,8 +68,9 @@ enum FileProjectState: Equatable {
         startWatching()
         followChange()
         blame.resume()
+        if hasContent { (contentView.content as? FileTabContent)?.refresh() }
     }
-    override func didHide() { shown = false; stopWatching(); blame.suspend() }
+    override func didHide() { shown = false; stopWatching(); blame.suspend(); madeFolders?.suspend() }
     /// Who changed each line, while it is shown (`FileBlame`).
     let blame = FileBlame()
     var isShownNow: Bool { shown }
@@ -249,6 +257,7 @@ enum FileProjectState: Equatable {
     }
     override func willClose() {
         blame.hide()
+        madeFolders?.suspend()
         shown = false; stopWatching(); watcher = nil
         finder?.close(); finder = nil
         madeDocument?.close()

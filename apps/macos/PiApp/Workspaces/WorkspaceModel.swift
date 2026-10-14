@@ -483,6 +483,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         report.attach(self)
         observeDraftWrites()
         TranscriptKeptRows.policy = self
+        tabs.configureTab = { [weak self] tab in self?.configureFileNavigation(tab) }
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
         ChangesTab.resolveProject = { [weak self] id in self?.changesProject(id) }
         ChangesTab.openLocation = { [weak self] url, line in self?.openChangesFile(url, at: line) }
