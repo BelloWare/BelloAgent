@@ -15,7 +15,12 @@ extension WorkspaceModel {
         // A background request is listed on its own page, not the sidebar:
         // the menu bar's running requests and the report open it there.
         if item.isBackgroundTask { openBackgroundRequests(selecting: id); return }
-        if reselectOpenChat(id, item: item, revealInSidebar: revealInSidebar) { return }
+        if reselectOpenChat(id, item: item, revealInSidebar: revealInSidebar) {
+            do { try await attachManagedSubagent(item) }
+            catch is CancellationError { }
+            catch { displays[id]?.notice = error.localizedDescription }
+            return
+        }
         let (view, selection, heldRows) = prepareSelection(id, item: item, revealInSidebar: revealInSidebar, preserveArchiveSwitch: preserveArchiveSwitch,
                                                            focusesComposer: focusesComposer)
         restoreShownSide(of: id, selection: selection, reopensSide: reopensSide)
@@ -162,6 +167,8 @@ extension WorkspaceModel {
                 self.displays[id] === view && view.presentationGeneration == generation
         }
         do {
+            try await attachManagedSubagent(item)
+            guard current() else { return }
             guard try await reconcileSubmissionDraft(item, view: view, current: current) else { return }
             if let link = item.delegation {
                 view.isManagedSubagent = true; view.subagentStatus = subagentSummaries[id]?.status
@@ -274,9 +281,6 @@ extension WorkspaceModel {
         quietSidebarReveal = sidebarLineage(of: id)
         if side(id) != nil { await selectSide(id, revealInSidebar: false); return }
         guard let chat = record(id) else { return }
-        if let link = chat.delegation, chat.delegationIssue == nil, record(link.budgetOwnerSessionID) != nil {
-            await openSubagent(SubagentTarget(link)); return
-        }
         if !chat.isSubagent, chat.parentSessionID != nil, record(chat.parentSessionID ?? "") != nil, !chat.imported { await showSide(id, revealInSidebar: false) }
         else { await select(id, revealInSidebar: false) }
     }

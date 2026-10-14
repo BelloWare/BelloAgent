@@ -44,6 +44,16 @@ struct MessageVersionStore: Sendable {
         guard let start = starts[id] else { return nil }
         return timelines[start.timeline][start.offset...]
     }
+    /// The nearest version whose saved tail contains this history position.
+    /// Excluding a group lets a nested edit find the ancestor that hid it.
+    func containingVersion(at position: Int, excluding: Set<String> = []) -> String? {
+        for (index, rows) in timelines.enumerated() {
+            guard let offset = rows.firstIndex(of: position) else { continue }
+            if let start = starts.filter({ !excluding.contains($0.key) && $0.value.timeline == index && $0.value.offset <= offset })
+                .max(by: { $0.value.offset < $1.value.offset }) { return start.key }
+        }
+        return nil
+    }
 }
 
 extension AgentSession {
@@ -86,6 +96,7 @@ extension AgentSession {
     /// edited message's, in the order each was first edited.
     public func messageVersions(_ params: JSON) async throws -> JSON {
         try await loadFullHistory()
+        if !params["containing"].isNull { return try versionContaining(identity(params["containing"])) }
         if params["messageId"].isNull {
             return ["groups": .array(versions.ledger.edited.suffix(256).map(versionList))]
         }
@@ -94,6 +105,31 @@ extension AgentSession {
         guard let ids = versions.ledger.versions(of: id) else { return ["messageId": JSON(id), "count": 1, "versions": []] }
         var result = versionList(ids); result["messageId"] = JSON(id)
         return result
+    }
+    /// Locate an exact issuing row, including when an earlier turn's edit
+    /// hid it. The anchor is on today's timeline; a nested version can have
+    /// no live member of its own. No branch or journal is changed.
+    private func versionContaining(_ id: String) throws -> JSON {
+        guard let position = history.firstIndex(where: { $0.id == id }) else { throw AgentError("message_missing", "Message is not retained") }
+        let shown = Set(visible.map(\.id))
+        if shown.contains(id) { return ["messageId": JSON(id), "versions": []] }
+        guard let version = versions.containingVersion(at: position), let ids = versions.ledger.versions(of: version),
+              let index = ids.firstIndex(of: version) else { throw AgentError("version_missing", "That message's earlier version is not retained.") }
+        var ancestors = ids, visited: Set<String> = []
+        while true {
+            if let anchor = ancestors.first(where: { shown.contains($0) }) {
+                var result = versionList(ids)
+                result["messageId"] = JSON(id); result["anchor"] = JSON(anchor); result["selected"] = JSON(index + 1)
+                return result
+            }
+            visited.formUnion(ancestors)
+            guard let latest = ancestors.last, let at = history.firstIndex(where: { $0.id == latest }),
+                  let outer = versions.containingVersion(at: at, excluding: visited),
+                  let group = versions.ledger.versions(of: outer), !visited.contains(outer) else {
+                throw AgentError("version_missing", "That version has no retained anchor in the current chat.")
+            }
+            ancestors = group
+        }
     }
     /// `session.version.page`: a version's rows from `offset` on, in the
     /// transcript's own row format, each with the request attempts it came

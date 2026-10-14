@@ -633,6 +633,9 @@ import AppKit
         case .turn(let id): reveal(workspace, index.turn(id)?.requests.first?.sessionID ?? sessionID, id)
         case .request(let id):
             let sessionID = index.request(id)?.sessionID ?? sessionID
+            if let group = groups.first(where: { $0.summary.link.budgetOwnerSessionID == sessionID && $0.summary.link.parentAttemptID == id }) {
+                showSubagentParent(group.summary.link); return
+            }
             let archive = archive, fallback = index.request(id)?.turn
             Task { [weak self] in
                 let links = try? await archive.linkedMessages(attemptID: id)
@@ -649,8 +652,27 @@ import AppKit
         bringMainWindowForward()
         let target = groups.first { $0.summary.link.childSessionID == sessionID }.map { SubagentTarget($0.summary.link) }
         Task {
-            if let target, workspace.record(sessionID) == nil { await workspace.openSubagent(target) }
+            if let target { guard await workspace.openSubagent(target) else { return } }
             _ = await workspace.revealMessage(sessionID: sessionID, messageID: message)
+        }
+    }
+    /// A standalone child Inspector has no owned delegation groups. Resolve
+    /// its immutable origin from metadata or the parent's retained group,
+    /// then use the same exact-call navigation as the card and Back button.
+    func showOriginatingTool(_ row: InspectorRequestRow) {
+        guard let workspace, let parent = row.parentSessionID else { return }
+        let child = row.sessionID ?? scope.sessionID
+        Task { [weak self] in
+            guard let self else { return }
+            let groups = self.groups.isEmpty ? (try? await archive.inspectorSubagents(owner: parent, workspaceID: scope.workspaceID)) ?? [] : self.groups
+            let link = workspace.record(child)?.delegation ?? groups.first(where: { $0.id == row.delegationID })?.summary.link
+            guard !Task.isCancelled, let link, link.valid, link.childSessionID == child,
+                  link.delegationID == row.delegationID, link.call.parentSessionID == parent,
+                  link.call.assistantMessageID == row.parentAssistantID, link.call.toolCallID == row.parentToolCallID,
+                  workspace.record(parent)?.workspaceID == scope.workspaceID else {
+                focusNotice = "The originating delegation is no longer available."; return
+            }
+            showSubagentParent(link)
         }
     }
     func showSubagentParent(_ link: SubagentLink) {

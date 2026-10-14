@@ -49,6 +49,7 @@ extension WorkspaceModel {
             let retired = self.retiringHosts.remove(ObjectIdentifier(host)) != nil
             let paused = self.pausingHosts.remove(ObjectIdentifier(host)) != nil
             self.boundHostConnections.removeValue(forKey: workspace.id)
+            self.interruptSubagents(workspaceID: workspace.id)
             self.liveActivity.disconnect(workspace.id)
             self.discardLostSides(workspaceID: workspace.id)
             for chat in self.chats where chat.workspaceID == workspace.id {

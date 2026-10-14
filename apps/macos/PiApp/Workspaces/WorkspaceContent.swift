@@ -107,7 +107,7 @@ extension WorkspaceModel {
         // advances the revision once. Any additional navigation supersedes us.
         let revision = messageNavigationRevision + (changingSelection ? 1 : 0)
         // Reaching a side through its chat: the side is what is opened.
-        if changingSelection {
+        if changingSelection || item.isSubagent {
             if parentID != sessionID { await passingThrough(parentID) { await select(parentID) } } else { await select(parentID) }
         }
         guard !Task.isCancelled, revision == messageNavigationRevision, selectedID == parentID,

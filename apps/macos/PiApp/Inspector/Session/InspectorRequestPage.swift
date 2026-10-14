@@ -115,14 +115,9 @@ import AppKit
                     else { inspector.workspace?.openInspector(session: parent, focus: .request(attempt)) }
                 })
             }
-            if let assistant = row.parentAssistantID {
+            if row.parentAssistantID != nil {
                 links.append(PiKit.Button("Originating tool", symbol: "arrow.up.left", style: .ghost) { [weak inspector] in
-                    guard let workspace = inspector?.workspace else { return }
-                    Task {
-                        if let group = inspector?.groups.first(where: { $0.id == row.delegationID }) {
-                            inspector?.showSubagentParent(group.summary.link)
-                        } else { _ = await workspace.revealMessage(sessionID: parent, messageID: assistant) }
-                    }
+                    inspector?.showOriginatingTool(row)
                 })
             }
             if let delegation = row.delegationID {

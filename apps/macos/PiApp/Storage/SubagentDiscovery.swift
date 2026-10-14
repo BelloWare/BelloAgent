@@ -6,6 +6,7 @@ struct DiscoveredSubagent: Sendable {
     var task: String
     var status: SubagentStatus
     var issue: String?
+    var hasTerminalRecord = false
 }
 
 extension HistoryReader {
@@ -89,7 +90,7 @@ extension HistoryReader {
         for path in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) where path.pathExtension == "jsonl" {
             guard UUID(uuidString: path.deletingPathExtension().lastPathComponent) != nil,
                   path.resolvingSymlinksInPath().deletingLastPathComponent() == directory.resolvingSymlinksInPath() else { continue }
-            var prefix: [[String: WireValue]] = [], status: SubagentStatus = .interrupted
+            var prefix: [[String: WireValue]] = [], status: SubagentStatus = .interrupted, terminal = false
             do {
                 try subagentRecords(path) { row, line in
                     if line <= 3 { prefix.append(row) }
@@ -97,14 +98,14 @@ extension HistoryReader {
                     if row["customType"]?.string == "pi-app.subagent-terminal.v1", prefix.count == 3,
                        let data = row["data"]?.object,
                        data["delegationID"] == prefix[2]["data"]?.object?["link"]?.object?["delegationID"],
-                       let value = data["status"]?.string.flatMap(SubagentStatus.init(rawValue:)), value.terminal { status = value }
+                       let value = data["status"]?.string.flatMap(SubagentStatus.init(rawValue:)), value.terminal { status = value; terminal = true }
                     return true
                 }
                 guard prefix.count == 3, let raw = prefix[2]["data"], let header = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)) else { continue }
                 _ = try subagentHeader(path: path, directory: directory, expected: SubagentTarget(header.link))
                 let accepted = (try? plan(header.link.budgetOwnerSessionID))?[header.link.childSessionID]?.object
                 let issue = accepted?["origin"] == raw ? nil : "The parent’s matching delegation is unavailable. This saved sub-agent is view-only."
-                found.append(DiscoveredSubagent(header: header, path: path.path, task: accepted?["task"]?.string ?? "", status: status, issue: issue))
+                found.append(DiscoveredSubagent(header: header, path: path.path, task: accepted?["task"]?.string ?? "", status: status, issue: issue, hasTerminalRecord: terminal))
             } catch is CancellationError { throw CancellationError() }
             catch { continue } // Invalid headers remain untouched; helper recovery reports their exact error.
         }

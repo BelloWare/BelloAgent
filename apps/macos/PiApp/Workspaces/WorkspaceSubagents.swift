@@ -3,23 +3,40 @@ import Foundation
 extension WorkspaceModel {
     /// Cards keep original ownership even when copied into a fork. Navigation
     /// validates the reciprocal child header inside this project's directory.
-    func openSubagent(_ target: SubagentTarget) async {
+    @discardableResult func openSubagent(_ target: SubagentTarget) async -> Bool {
         let navigation = selectionRevision
         do {
             guard let parent = record(target.ownerID), store != nil else { throw HostError.failure("The parent chat is unavailable. The saved child can still be opened from search.") }
             let directory = try subagentDirectory(parent.workspaceID)
             let path = directory.appendingPathComponent(target.sessionID + ".jsonl")
             let header = try await history.subagentHeader(path: path, directory: directory, expected: target)
-            guard !isShutDown, !Task.isCancelled, selectionRevision == navigation, record(parent.id)?.workspaceID == parent.workspaceID else { return }
+            guard !isShutDown, !Task.isCancelled, selectionRevision == navigation, record(parent.id)?.workspaceID == parent.workspaceID else { return false }
             if record(target.sessionID) == nil { await reconcileSubagents(parentID: parent.id) }
             guard let child = record(target.sessionID), child.workspaceID == parent.workspaceID, child.delegation == header.link else { throw StoreError.invalidRecord }
-            guard selectionRevision == navigation else { return }
+            guard !Task.isCancelled, selectionRevision == navigation else { return false }
             await select(target.sessionID, revealInSidebar: false, reopensSide: false, focusesComposer: false)
-            if let child = record(target.sessionID), hosts[parent.workspaceID]?.isReady == true, opened.contains(parent.id) {
-                _ = try await open(child); refresh(child.id)
-            }
+            return !Task.isCancelled && selectedID == target.sessionID && page == .chats
         } catch is CancellationError { }
         catch { self.error = error.localizedDescription }
+        return false
+    }
+
+    /// Every selection route (including restoration, notifications and a
+    /// reveal of the already selected chat) attaches here before reading its
+    /// history. Cold saved children remain view-only without starting a host.
+    func attachManagedSubagent(_ item: ChatRecord) async throws {
+        guard let link = item.delegation, item.delegationIssue == nil,
+              let parent = record(link.budgetOwnerSessionID), parent.workspaceID == item.workspaceID,
+              let host = hosts[item.workspaceID], host.isReady, opened.contains(parent.id) else { return }
+        let navigation = selectionRevision, connection = host.connectionID
+        let directory = try subagentDirectory(item.workspaceID)
+        guard let path = item.path else { throw StoreError.invalidRecord }
+        _ = try await history.subagentHeader(path: URL(fileURLWithPath: path), directory: directory, expected: SubagentTarget(link))
+        guard !Task.isCancelled, selectedID == item.id, selectionRevision == navigation,
+              record(item.id)?.delegation == link, record(item.id)?.path == path,
+              hosts[item.workspaceID] === host, host.connectionID == connection, opened.contains(parent.id) else { throw CancellationError() }
+        _ = try await open(item)
+        refresh(item.id)
     }
 
     func stopSubagent(_ target: SubagentTarget, from source: String) {
@@ -60,15 +77,16 @@ extension WorkspaceModel {
         if !view.presentedMessages.contains(where: { $0.id == messageID }) {
             do {
                 let host = try await open(parent)
-                let group = try await host.request("session.versions", sessionID: parent.id, params: ["messageId":.string(link.parentTurnID)]).object ?? [:]
+                let group = try await host.request("session.versions", sessionID: parent.id, params: ["containing":.string(messageID)]).object ?? [:]
                 guard !Task.isCancelled, navigation == messageNavigationRevision, subagentParentIsShown(parent.id) else { return }
                 let ids = group["versions"]?.array?.compactMap { $0.object?["messageId"]?.string } ?? []
-                if let index = ids.firstIndex(of: link.parentTurnID), let live = group["current"]?.nonnegativeInteger,
-                   live > 0, live <= ids.count, index + 1 != live, subagentParentIsShown(parent.id) {
-                    _ = await revealInTranscript(sessionID: parent.id, messageID: ids[live - 1])
-                    showVersion(sessionID: parent.id, latestID: ids[live - 1], index: index + 1, count: ids.count, ids: ids, live: live, around: messageID)
+                if let index = group["selected"]?.nonnegativeInteger, index > 0, index <= ids.count, let anchor = group["anchor"]?.string {
+                    latestVersion(sessionID: parent.id)
+                    guard await revealInTranscript(sessionID: parent.id, messageID: anchor),
+                          !Task.isCancelled, navigation == messageNavigationRevision, subagentParentIsShown(parent.id) else { return }
+                    showVersion(sessionID: parent.id, latestID: anchor, index: index, count: ids.count, ids: ids, live: group["current"]?.nonnegativeInteger ?? 0, around: messageID)
                     await view.versionLoad?.value
-                }
+                } else { latestVersion(sessionID: parent.id) }
             } catch { view.notice = "The issuing version could not be read: " + error.localizedDescription }
         }
         guard !Task.isCancelled, navigation == messageNavigationRevision, subagentParentIsShown(parent.id) else { return }
@@ -93,14 +111,14 @@ extension WorkspaceModel {
                   record(parent.id)?.workspaceID == parent.workspaceID else { throw CancellationError() }
             for value in page["children"]?.array ?? [] {
                 let summary = try JSONDecoder().decode(SubagentSummary.self, from: JSONEncoder().encode(value))
-                try await registerListedSubagent(summary, parent: parent, task: tasks[summary.link.childSessionID] ?? "")
+                try await registerListedSubagent(summary, parent: parent, task: tasks[summary.link.childSessionID] ?? "", connection: connection)
             }
             guard let next = page["cursor"]?.nonnegativeInteger else { break }
             guard next > cursor else { throw StoreError.invalidRecord }; cursor = next
         } while true
         reconcileRunHold(parent.id)
     }
-    func registerListedSubagent(_ summary: SubagentSummary, parent: ChatRecord, task: String) async throws {
+    func registerListedSubagent(_ summary: SubagentSummary, parent: ChatRecord, task: String, connection: UUID? = nil) async throws {
         guard summary.link.budgetOwnerSessionID == parent.id else { throw StoreError.invalidRecord }
         try await traces.recordSubagent(summary, workspaceID: parent.workspaceID)
         let directory = try subagentDirectory(parent.workspaceID)
@@ -115,7 +133,7 @@ extension WorkspaceModel {
             return
         }
         let found = DiscoveredSubagent(header: header, path: path.path, task: task, status: summary.status)
-        try await registerDiscoveredSubagent(found, workspaceID: parent.workspaceID, live: summary)
+        try await registerDiscoveredSubagent(found, workspaceID: parent.workspaceID, live: summary, connection: connection)
     }
 
 }

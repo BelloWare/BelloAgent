@@ -3,6 +3,66 @@ import XCTest
 @testable import PiApp
 
 final class SubagentDiscoveryTests: XCTestCase {
+    @MainActor func testDiscoveryPublicationCannotUndoANewerTopicMoveOrArchive() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        let before = model.chats[1]
+        var moved = before; moved.topicID = "new-topic"; moved.archivedAt = Date(); moved.organizationRevision = 10
+        model.chats[1] = moved
+        // A store callback begun before the organization transaction returns
+        // after the transaction's committed patch has reached the main actor.
+        model.publishSubagentMetadata(before)
+        XCTAssertEqual(model.record(before.id)?.topicID, moved.topicID)
+        XCTAssertEqual(model.record(before.id)?.archivedAt, moved.archivedAt)
+        XCTAssertEqual(model.record(before.id)?.organizationRevision, 10)
+    }
+
+    @MainActor func testListingFromALostConnectionCannotPublishLiveProgress() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        model.chats.remove(at: 1)
+        let family = try Self.family(model)
+        try await model.store?.putChats(model.chats)
+        await model.reconcileSubagents()
+        var summary = try XCTUnwrap(model.subagentSummaries[family.child]); summary.status = .running; summary.revision = 3
+        var link = SubagentTranscriptTests.link; link.childSessionID = family.child
+        let header = try await model.history.subagentHeader(path: family.path, directory: family.path.deletingLastPathComponent(), expected: SubagentTarget(link))
+        let found = DiscoveredSubagent(header: header, path: family.path.path, task: "task", status: .running)
+        do {
+            try await model.registerDiscoveredSubagent(found, workspaceID: model.chats[0].workspaceID, live: summary, connection: UUID())
+            XCTFail("An obsolete helper callback was accepted")
+        } catch is CancellationError { }
+        XCTAssertEqual(model.subagentSummaries[family.child]?.status, .completed)
+    }
+
+    @MainActor func testRecoveryFallbackCannotReplaceListedProgressButATerminalRecordCan() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        model.chats.remove(at: 1)
+        let family = try Self.family(model), parent = model.chats[0]
+        let complete = try Data(contentsOf: family.path)
+        let rows = complete.split(separator: 10)
+        try (rows.prefix(3).map { String(decoding: $0, as: UTF8.self) }.joined(separator: "\n") + "\n").write(to: family.path, atomically: true, encoding: .utf8)
+        try await model.store?.putChats(model.chats)
+        try await model.traces.configure(quota: nil, bodyRetention: 86_400, metricRetention: 86_400)
+        var link = SubagentTranscriptTests.link; link.childSessionID = family.child
+        let header = try await model.history.subagentHeader(path: family.path, directory: family.path.deletingLastPathComponent(), expected: SubagentTarget(link))
+        for (index, status) in [SubagentStatus.queued, .running].enumerated() {
+            let summary = SubagentSummary(link: header.link, description: header.description, model: header.model.model, status: status, revision: index + 1)
+            try await model.registerListedSubagent(summary, parent: parent, task: "task")
+            model.displays[family.child] = SessionDisplay(id: family.child)
+            await model.reconcileSubagents(parentID: parent.id)
+            XCTAssertEqual(model.subagentSummaries[family.child], summary, "A disk fallback has no live status evidence")
+            XCTAssertEqual(model.displays[family.child]?.subagentStatus, status)
+        }
+        // A genuine interrupted terminal is evidence, not the no-record fallback.
+        let interrupted = String(decoding: complete, as: UTF8.self).replacingOccurrences(of: "completed", with: "interrupted")
+        try interrupted.write(to: family.path, atomically: true, encoding: .utf8)
+        await model.reconcileSubagents(parentID: parent.id)
+        XCTAssertEqual(model.subagentSummaries[family.child]?.status, .interrupted)
+        XCTAssertEqual(model.displays[family.child]?.subagentStatus, .interrupted)
+    }
+
     @MainActor func testLiveListingAndDiscoveryAcceptTheSameCanonicalChildPath() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
