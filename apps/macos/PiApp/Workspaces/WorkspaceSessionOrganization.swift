@@ -16,11 +16,11 @@ struct SidebarChatEntry: Identifiable {
 /// whenever anything these queries read changes.
 @MainActor final class SidebarIndex {
     struct EntryKey: Hashable {
-        let project: String
+        let project: String?
         let topic: String?
         let archived: Bool
         let collapsed: [String]
-        /// A flat project's one list (`topic` nil), not its root group.
+        /// The combined Flat list has no project or topic scope.
         var flat = false
     }
     /// One sidebar group of one project: its chats, filtered and sorted.
@@ -110,6 +110,14 @@ extension WorkspaceModel {
         sidebarIndex.order {
             let query = sidebarFilter.trimmingCharacters(in: .whitespacesAndNewlines)
             let archive = sidebarShowsArchived
+            if sidebarListsFlat {
+                return (archive ? [false, true] : [false]).flatMap { archived in
+                    SidebarSessionPresentation.filtered(sidebarFlatEntries(archived: archived, collapsed: []), by: query,
+                        contentMatches: query.isEmpty ? [] : sidebarFlatMatches(query: query))
+                        .filter { !$0.chat.isSubagent || !query.isEmpty || $0.chat.delegationIssue != nil || $0.chat.delegation.map { record($0.budgetOwnerSessionID) == nil || subagentGroupExpanded($0.budgetOwnerSessionID) } == true }
+                        .map(\.chat.id)
+                }
+            }
             return sidebarProjects.filter { !query.isEmpty || projectIsExpanded($0.id) }.flatMap { project -> [String] in
                 @MainActor func listed(_ topicID: String?, matching query: String) -> [String] {
                     let lists = archive ? [false, true] : [false]
@@ -117,17 +125,6 @@ extension WorkspaceModel {
                         SidebarSessionPresentation
                             .filtered(sidebarEntries(in: project.id, topicID: topicID, archived: archived, collapsed: []), by: query,
                                       contentMatches: query.isEmpty ? [] : sidebarContentMatches)
-                            .filter { !$0.chat.isSubagent || !query.isEmpty || $0.chat.delegationIssue != nil || $0.chat.delegation.map { record($0.budgetOwnerSessionID) == nil || subagentGroupExpanded($0.budgetOwnerSessionID) } == true }
-                            .map(\.chat.id)
-                    }
-                }
-                // A flat project is one list, as it is drawn.
-                if projectListsFlat(project.id) {
-                    let lists = archive ? [false, true] : [false]
-                    return lists.flatMap { archived in
-                        SidebarSessionPresentation
-                            .filtered(sidebarFlatEntries(in: project.id, archived: archived, collapsed: []), by: query,
-                                      contentMatches: query.isEmpty ? [] : sidebarFlatMatches(in: project.id, query: query))
                             .filter { !$0.chat.isSubagent || !query.isEmpty || $0.chat.delegationIssue != nil || $0.chat.delegation.map { record($0.budgetOwnerSessionID) == nil || subagentGroupExpanded($0.budgetOwnerSessionID) } == true }
                             .map(\.chat.id)
                     }
@@ -179,27 +176,28 @@ extension WorkspaceModel {
         }
     }
 
-    /// A flat project's chats, every topic together, as one sorted tree: a
-    /// side stays under its parent whichever topic either is filed in.
-    func sidebarFlatEntries(in projectID: String, archived: Bool, collapsed: Set<String>) -> [SidebarChatEntry] {
-        let key = SidebarIndex.EntryKey(project: projectID, topic: nil, archived: archived, collapsed: collapsed.sorted(), flat: true)
+    /// Every listed project's chats in one cached tree. The same family,
+    /// pinned and held-activity ordering as Topics, built once per invalidation.
+    func sidebarFlatEntries(archived: Bool, collapsed: Set<String>) -> [SidebarChatEntry] {
+        let key = SidebarIndex.EntryKey(project: nil, topic: nil, archived: archived, collapsed: collapsed.sorted(), flat: true)
         return sidebarIndex.entries(key) {
-            let groups = [nil] + topics(in: projectID).map(\.id)
-            // Each group is sorted; together they are sorted again, so a
-            // family's sides keep the order they have within one group.
-            let chats = groups.flatMap { sidebarGroupChats(in: projectID, topicID: $0, archived: archived) }.sorted { sidebarPrecedes($0, $1) }
-            return sidebarTree(chats, collapsed: collapsed)
+            let listed = Set(sidebarProjects.map(\.id))
+            let visible = chats.filter { !$0.isBackgroundTask && $0.isArchived == archived && listed.contains($0.workspaceID) }
+                .sorted { sidebarPrecedes($0, $1) }
+            return sidebarTree(visible, collapsed: collapsed)
         }
     }
-    /// What a filter lists in a flat project beyond titles: chats whose
-    /// messages match, and chats whose topic's name does, as a matching
-    /// folder listed all of its chats.
-    func sidebarFlatMatches(in projectID: String, query: String) -> Set<String> {
-        let named = Set(topics(in: projectID).filter { $0.title.localizedCaseInsensitiveContains(query) }.map(\.id))
+
+    /// Matching project/topic tags work like matching a folder in Topics.
+    /// Build lookup sets once per pass, never scan all chats for each row.
+    func sidebarFlatMatches(query: String) -> Set<String> {
+        let projects = Set(sidebarProjects.filter { $0.name.localizedCaseInsensitiveContains(query) }.map(\.id))
+        let namedTopics = Dictionary(grouping: topics.filter { $0.title.localizedCaseInsensitiveContains(query) }, by: \.workspaceID)
+            .mapValues { Set($0.map(\.id)) }
         var matches = sidebarContentMatches
-        guard !named.isEmpty else { return matches }
-        for chat in chats where chat.workspaceID == projectID {
-            if let topic = effectiveTopicID(for: chat), named.contains(topic) { matches.insert(chat.id) }
+        for chat in chats where projects.contains(chat.workspaceID)
+            || (chat.workspaceID != WorkspaceRecord.scratchID && chat.topicID.map { namedTopics[chat.workspaceID]?.contains($0) == true } == true) {
+            matches.insert(chat.id)
         }
         return matches
     }
@@ -225,7 +223,7 @@ extension WorkspaceModel {
         let byID = Dictionary(visible.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var children: [String: [ChatRecord]] = [:], roots: [ChatRecord] = []
         for chat in visible {
-            if !chat.isPinned, let parent = chat.parentSessionID, parent != chat.id, byID[parent] != nil { children[parent, default: []].append(chat) }
+            if !chat.isPinned, let parent = chat.parentSessionID, parent != chat.id, byID[parent]?.workspaceID == chat.workspaceID { children[parent, default: []].append(chat) }
             else { roots.append(chat) }
         }
         for owner in children.keys {

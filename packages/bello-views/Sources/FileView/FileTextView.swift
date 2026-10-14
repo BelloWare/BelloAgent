@@ -1,4 +1,25 @@
 import AppKit
+// References into a file, never its contents or an offset into a decoded copy.
+// Selection columns use UTF-16; viewport columns/fractions survive fonts.
+public struct FileReadingPosition: Codable, Equatable, Sendable {
+    public var topLine: Int
+    public var lineFraction: Double
+    public var horizontalColumns: Double
+    /// The line that established a wider-than-grid horizontal extent, even
+    /// after scrolling vertically away from it. A reference, never its text.
+    public var horizontalExtentLine: Int?
+    public var anchorLine: Int
+    public var anchorColumn: Int
+    public var focusLine: Int
+    public var focusColumn: Int
+    public init(topLine: Int, lineFraction: Double = 0, horizontalColumns: Double = 0, horizontalExtentLine: Int? = nil,
+                anchor: FileTextPosition, focus: FileTextPosition) {
+        self.topLine = topLine; self.lineFraction = lineFraction; self.horizontalColumns = horizontalColumns
+        self.horizontalExtentLine = horizontalExtentLine
+        anchorLine = anchor.line; anchorColumn = anchor.column
+        focusLine = focus.line; focusColumn = focus.column
+    }
+}
 
 /// The copy destination, kept injectable without involving the desktop's
 /// pasteboard service in tests of delayed reads.
@@ -460,6 +481,96 @@ public struct FileTextStyle {
     private var layoutGeneration = 0
     /// How wide the widest line drawn so far turned out to be.
     private var measuredWidth: CGFloat = 0
+    private var measuredWidthLine: Int?
+    private var restoringReading: FileReadingPosition?
+    private var horizontalRestoreScheduled = false
+    private var applyingReading = false
+    private var suspended = false
+
+    public var readingPosition: FileReadingPosition {
+        if let restoringReading { return restoringReading }
+        if let revealing {
+            let start = FileTextPosition(line: max(0, revealing.lowerBound), column: 0)
+            return FileReadingPosition(topLine: start.line, anchor: start, focus: start)
+        }
+        let origin = enclosingScrollView?.contentView.bounds.origin ?? .zero
+        let firstLine = line(at: origin.y)
+        return FileReadingPosition(topLine: firstLine, lineFraction: Double((origin.y - top(ofLine: firstLine)) / lineHeight),
+                                   horizontalColumns: Double(origin.x / metrics.advance), horizontalExtentLine: measuredWidthLine,
+                                   anchor: anchor, focus: focus)
+    }
+
+    /// Wait for the index, including a possible encoding restart, before
+    /// clamping positions. An explicit reveal or a reader's action wins.
+    public func restoreReadingPosition(_ position: FileReadingPosition) {
+        restoringReading = position
+        restoringReadingIfReady()
+    }
+    private func restoringReadingIfReady() {
+        guard !suspended, !applyingReading, source.isReading, !source.isIndexing, let saved = restoringReading else { return }
+        applyingReading = true
+        defer { applyingReading = false }
+        select(from: FileTextPosition(line: saved.anchorLine, column: saved.anchorColumn),
+               to: FileTextPosition(line: saved.focusLine, column: saved.focusColumn))
+        guard let scroll = enclosingScrollView, scroll.contentView.bounds.height > 0 else { return }
+        let firstLine = min(max(0, saved.topLine), source.lineCount - 1)
+        let fraction = saved.lineFraction.isFinite ? min(1, max(-1, saved.lineFraction)) : 0
+        // Non-grid lines may be wider than their UTF-16 length (tabs and wide
+        // glyphs). Bound hostile saved values without confusing units with
+        // display columns. Grid lines have an exact, cheap estimated width.
+        let limit = max(Double(source.longestLine), Double(FileTextMetrics.gridLine) * 4)
+        let columns = saved.horizontalColumns.isFinite ? min(limit, max(0, saved.horizontalColumns)) : 0
+        let y = min(max(0, top(ofLine: firstLine) + CGFloat(fraction) * lineHeight), max(0, frame.height - scroll.contentView.bounds.height))
+        let wantedX = CGFloat(columns) * metrics.advance
+        if wantedX > max(0, frame.width - scroll.contentView.bounds.width) {
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+            // At most one normal (<=64K-unit) line is measured, off the
+            // AppKit layout stack. Missing pages resume this on arrival.
+            if !horizontalRestoreScheduled {
+                horizontalRestoreScheduled = true
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.horizontalRestoreScheduled = false
+                    self.restoreHorizontalExtent(saved, wantedX: wantedX, y: y)
+                }
+            }
+            return
+        }
+        let x = min(wantedX, max(0, frame.width - scroll.contentView.bounds.width))
+        scroll.contentView.scroll(to: NSPoint(x: x, y: y)); scroll.reflectScrolledClipView(scroll.contentView)
+        restoringReading = nil
+    }
+
+    private func restoreHorizontalExtent(_ saved: FileReadingPosition, wantedX: CGFloat, y: CGFloat) {
+        guard !suspended, source.isReading, !source.isIndexing, restoringReading == saved,
+              let scroll = enclosingScrollView else { return }
+        let line = min(max(0, saved.horizontalExtentLine ?? saved.topLine), source.lineCount - 1)
+        // Geometry must not ask a lexer to scan all preceding offscreen text.
+        guard let layout = FileLineLayout(source: source, line: line, metrics: metrics) else { return }
+        _ = layout.pieces(from: wantedX, to: wantedX + scroll.contentView.bounds.width)
+        if layout.extent > measuredWidth { measuredWidth = layout.extent; measuredWidthLine = line }
+        applyingReading = true
+        updateFrame()
+        let x = min(wantedX, max(0, frame.width - scroll.contentView.bounds.width))
+        scroll.contentView.scroll(to: NSPoint(x: x, y: y)); scroll.reflectScrolledClipView(scroll.contentView)
+        restoringReading = nil
+        applyingReading = false
+    }
+
+    /// Discard decoded/layout/accessibility work while keeping logical state.
+    public func suspend() {
+        guard !suspended else { return }
+        let saved = readingPosition
+        suspended = true; restoringReading = saved
+        layouts = [:]; answers = []; answering = []; showing &+= 1; copies &+= 1
+        dropPending(); accessibilityHold?.release(); accessibilityHold = nil
+        readAhead = nil
+    }
+    public func resume() {
+        suspended = false
+        updateFrame(); restoringReadingIfReady(); revealIfReady()
+        needsDisplay = true
+    }
 
     public override init(frame: NSRect) {
         super.init(frame: frame)
@@ -476,23 +587,20 @@ public struct FileTextStyle {
 
     /// Shows a text from its start, with nothing selected.
     public func show(_ source: FileTextSource, name: String, preservingPosition: Bool = false) {
-        let savedAnchor = anchor, savedFocus = focus, savedEmphasis = emphasized
-        let savedOrigin = enclosingScrollView?.contentView.bounds.origin
+        let saved = readingPosition, savedEmphasis = emphasized
+        restoringReading = nil
         self.source.arrival = nil
         self.source = source; self.name = name
         pending = []
         dropPending(); accessibilityHold?.release(); accessibilityHold = nil; revealing = nil
         source.arrival = { [weak self] lines in self?.arrived(lines) }
-        layouts = [:]; layoutGeneration = source.generation; measuredWidth = 0; goalX = nil; emphasized = nil; readAhead = nil
+        layouts = [:]; layoutGeneration = source.generation; measuredWidth = 0; measuredWidthLine = nil; goalX = nil; emphasized = nil; readAhead = nil
         showing &+= 1; answers = []; answering = []
         anchor = .start; focus = .start
         updateFrame()
         if preservingPosition {
-            anchor = clamp(savedAnchor); focus = clamp(savedFocus); emphasized = savedEmphasis
-            if let savedOrigin, let scroll = enclosingScrollView {
-                scroll.contentView.scroll(to: savedOrigin)
-                scroll.reflectScrolledClipView(scroll.contentView)
-            }
+            emphasized = savedEmphasis.map { max(0, min($0.lowerBound, source.lineCount - 1))...max(0, min($0.upperBound, source.lineCount - 1)) }
+            restoreReadingPosition(saved)
         }
         needsDisplay = true; ruler?.textChanged()
         announce(.valueChanged)
@@ -518,6 +626,7 @@ public struct FileTextStyle {
 
     /// A line as set, nil while its text has not come (it is then asked for).
     func layout(_ index: Int) -> FileLineLayout? {
+        guard !suspended else { return nil }
         if layoutGeneration != source.generation { layouts = [:]; layoutGeneration = source.generation }
         if let layout = layouts[index] { return layout }
         // Lines well away from the screen are let go of before more are set.
@@ -571,8 +680,12 @@ public struct FileTextStyle {
         NotificationCenter.default.addObserver(self, selector: #selector(clipScrolled(_:)), name: NSView.boundsDidChangeNotification, object: clip)
         updateFrame()
     }
-    @objc private func clipResized(_ note: Notification) { updateFrame(); revealIfReady() }
-    @objc private func clipScrolled(_ note: Notification) { ruler?.needsDisplay = true }
+    @objc private func clipResized(_ note: Notification) { updateFrame(); restoringReadingIfReady(); revealIfReady() }
+    @objc private func clipScrolled(_ note: Notification) {
+        if !applyingReading, let type = NSApp.currentEvent?.type,
+           type == .scrollWheel || type == .leftMouseDragged || type == .leftMouseDown { restoringReading = nil }
+        ruler?.needsDisplay = true
+    }
 
     // MARK: Drawing
 
@@ -596,6 +709,7 @@ public struct FileTextStyle {
     public override func resignFirstResponder() -> Bool { if hasSelection { needsDisplay = true }; return true }
 
     public override func draw(_ dirtyRect: NSRect) {
+        guard !suspended else { return }
         guard let context = NSGraphicsContext.current?.cgContext else { return }
         #if DEBUG
         matchedColumns = [:]
@@ -657,7 +771,7 @@ public struct FileTextStyle {
             if let find, let search = find.search {
                 drawMatches(of: search, current: find.current, line: index, layout: layout, pieces: shown, top: top, dirtyRect: dirtyRect, in: context)
             }
-            if layout.extent > measuredWidth { measuredWidth = layout.extent; scheduleWidth() }
+            if layout.extent > measuredWidth { measuredWidth = layout.extent; measuredWidthLine = index; scheduleWidth() }
             guard !shown.isEmpty else { continue }
             context.saveGState()
             context.setFillColor(style.text.cgColor)
@@ -744,6 +858,7 @@ public struct FileTextStyle {
     /// Selects from `anchor` to `focus`, redrawing the lines either selection
     /// touched, and telling accessibility.
     public func select(from anchor: FileTextPosition, to focus: FileTextPosition, keepGoal: Bool = false) {
+        if !applyingReading { restoringReading = nil }
         let anchor = clamp(anchor), focus = clamp(focus)
         if !keepGoal { goalX = nil }
         guard anchor != self.anchor || focus != self.focus else { return }
@@ -760,7 +875,7 @@ public struct FileTextStyle {
         }
         ruler?.needsDisplay = true
         announce(.selectedTextChanged)
-        find?.selectionChanged()
+        if !applyingReading { find?.selectionChanged() }
         selectionDidChange?()
     }
     /// Told when the selection moves, by the keys, the pointer or a reveal:
@@ -830,6 +945,7 @@ public struct FileTextStyle {
     static let pressPoll: TimeInterval = 0.1
 
     public override func mouseDown(with event: NSEvent) {
+        restoringReading = nil
         guard let window else { return }
         window.makeFirstResponder(self)
         // A press is a new selection: keys still waiting for text are not done.
@@ -933,6 +1049,7 @@ public struct FileTextStyle {
     /// the last line if the text ends before them. Until the text is read
     /// through: read again (as Latin-1, say), they are shown again.
     public func reveal(lines: ClosedRange<Int>) {
+        restoringReading = nil
         revealing = lines; revealShown = false; revealGeneration = source.generation
         revealIfReady()
     }
@@ -941,6 +1058,7 @@ public struct FileTextStyle {
     /// left, whatever was shown or waiting to be before it (lines being
     /// revealed, keys waiting for their text).
     public func showTop() {
+        restoringReading = nil
         revealing = nil; revealShown = false; emphasized = nil
         dropPending(); deferredWord = nil
         let revision = selectionRevision
@@ -977,6 +1095,7 @@ public struct FileTextStyle {
     /// The space bar pages, as it does in a read-only page. Everything else
     /// goes through the key bindings to the commands below.
     public override func keyDown(with event: NSEvent) {
+        restoringReading = nil
         if event.keyCode == 49, event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
             event.modifierFlags.contains(.shift) ? scrollPageUp(nil) : scrollPageDown(nil)
             return
@@ -1065,11 +1184,13 @@ public struct FileTextStyle {
     /// (and set again, if they were), the view fits the text, and a movement
     /// waiting for them is done.
     func arrived(_ lines: ClosedRange<Int>) {
+        guard !suspended else { return }
         layouts = layouts.filter { !lines.contains($0.key) }
         updateFrame()
+        restoringReadingIfReady()
         revealIfReady()
         let clamped = (clamp(anchor), clamp(focus))
-        if clamped.0 != anchor || clamped.1 != focus { select(from: clamped.0, to: clamped.1) }
+        if restoringReading == nil, clamped.0 != anchor || clamped.1 != focus { select(from: clamped.0, to: clamped.1) }
         let drawn = visibleRect.union(preparedContentRect)
         let rect = NSRect(x: drawn.minX, y: top(ofLine: lines.lowerBound), width: drawn.width, height: CGFloat(lines.count) * lineHeight).intersection(drawn)
         if !rect.isNull, !rect.isEmpty { setNeedsDisplay(rect) }
@@ -1208,6 +1329,7 @@ public struct FileTextStyle {
     // Scrolling that leaves the selection where it is: Home, End, Page Up
     // and Page Down, and the space bar.
     private func scroll(by delta: CGFloat) {
+        restoringReading = nil
         guard let clip = enclosingScrollView?.contentView else { return }
         let y = max(0, min(frame.height - clip.bounds.height, clip.bounds.minY + delta))
         clip.scroll(to: NSPoint(x: clip.bounds.minX, y: y))

@@ -11,6 +11,11 @@ import PDFKit
 @MainActor final class FileTabContent: NSView, PiKit.SizeObserver {
     private weak var tab: FileTab?
     private let header: FileTabHeader
+    private let folders: FileFolderNavigation
+    private let folderResize: PiKit.ResizeHandle
+    private weak var observedPane: TabContainer?
+    private var paneWatch: AnyCancellable?
+    private var resizeStart: CGFloat?
     private let findBar: FileFindBar
     private let lineBar: FileGoToLineBar
     private let blameBar: FileBlameBar
@@ -21,11 +26,14 @@ import PDFKit
     private weak var placedScroll: NSView?
     private var observations: [AnyCancellable] = []
     private var refreshScheduled = false
+    private var mountedInWindow = false
     private enum Shown { case missing, preview, notText, text, nothing }
     private var shown = Shown.nothing
 
     init(tab: FileTab) {
         self.tab = tab
+        folders = tab.folders
+        folderResize = PiKit.ResizeHandle(orientation: .vertical, label: "Folder tree width")
         header = FileTabHeader(tab: tab)
         findBar = FileFindBar(tab: tab)
         lineBar = FileGoToLineBar(tab: tab)
@@ -35,6 +43,14 @@ import PDFKit
         super.init(frame: .zero)
         wantsLayer = true
         for view in [header, findBar, lineBar, blameBar, missing, notText] as [NSView] { addSubview(view) }
+        addSubview(folders.panel); addSubview(folderResize)
+        folderResize.changed = { [weak self] delta in
+            guard let self else { return }
+            if self.resizeStart == nil { self.resizeStart = self.folders.panel.frame.width }
+            self.folders.setWidth((self.resizeStart ?? 200) + delta)
+            self.needsLayout = true
+        }
+        folderResize.ended = { [weak self] _ in self?.resizeStart = nil }
         observations.append(tab.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() })
         observations.append(tab.blame.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() })
         refresh()
@@ -43,6 +59,17 @@ import PDFKit
     override var isFlipped: Bool { true }
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() { layer?.backgroundColor = piCGColor(.piContent) }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        // Restored tabs and unavailable-side fallbacks can mount/unmount
+        // without a TabHost selection. Balance their actual window lifetime;
+        // constructing content offscreen must not hide a newly selected tab.
+        let wasMounted = mountedInWindow
+        mountedInWindow = window != nil
+        guard let tab else { return }
+        if mountedInWindow, !tab.isShownNow { tab.didShow(); folders.refresh() }
+        else if wasMounted, !mountedInWindow, tab.isShownNow { tab.didHide() }
+    }
     func contentSizeChanged() { needsLayout = true }
 
     private func scheduleRefresh() {
@@ -55,6 +82,13 @@ import PDFKit
     func refresh() {
         refreshScheduled = false
         guard let tab else { return }
+        if observedPane !== tab.container {
+            observedPane = tab.container
+            paneWatch = tab.container?.objectWillChange.sink { [weak self] _ in self?.scheduleRefresh() }
+        }
+        folders.refresh()
+        folders.panel.isHidden = !folders.settings.shown
+        folderResize.isHidden = !folders.settings.shown
         header.refresh()
         let bars = tab.readable && tab.previewKind == nil
         findBar.setShown(bars && tab.bar == .find)
@@ -102,11 +136,16 @@ import PDFKit
         super.layout()
         let width = bounds.width
         header.frame = CGRect(x: 0, y: 0, width: width, height: 32)
+        let preferred = folders.settings.width.isFinite ? CGFloat(folders.settings.width) : 200
+        let treeWidth = folders.settings.shown ? min(max(140, preferred), max(0, width * 0.46)) : 0
+        let fileX = treeWidth > 0 ? treeWidth + 1 : 0
+        folders.panel.frame = CGRect(x: 0, y: 32, width: treeWidth, height: max(0, bounds.height - 32))
+        folderResize.frame = CGRect(x: treeWidth - 4, y: 32, width: 9, height: max(0, bounds.height - 32))
         var y: CGFloat = 32
         for bar in [findBar, lineBar, blameBar] as [NSView] where !bar.isHidden {
-            bar.frame = CGRect(x: 0, y: y, width: width, height: 36); y += 36
+            bar.frame = CGRect(x: fileX, y: y, width: max(0, width - fileX), height: 36); y += 36
         }
-        let content = CGRect(x: 0, y: y, width: width, height: max(0, bounds.height - y))
+        let content = CGRect(x: fileX, y: y, width: max(0, width - fileX), height: max(0, bounds.height - y))
         missing.frame = content; notText.frame = content; preview?.frame = content
         if let scroll = placedScroll, scroll.superview === self { scroll.frame = content }
     }
@@ -115,41 +154,39 @@ import PDFKit
 /// The file's path and state, blame, and Open in its app.
 @MainActor final class FileTabHeader: NSView {
     private weak var tab: FileTab?
-    private let project = PiKit.TextLine(PiKit.Line("", font: .systemFont(ofSize: PiKit.Font.captionSize, weight: .medium), color: .piInkSecondary))
-    private let chevron = PiKit.SymbolView(PiKit.Symbol("chevron.right", size: 8, weight: .semibold), color: .piInkTertiary)
-    private let rest = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piInkSecondary))
-    private let pathGroup = NSView()
+    private let pathGroup: FileBreadcrumbBar
+    private let folderToggle: PiKit.IconButton
     private var badge: PiKit.Badge?
     private let blameToggle: PiKit.IconButton
     private let openButton: PiKit.IconButton
     private let rule = HairlineView()
-    private var hasProject = false
 
     init(tab: FileTab) {
         self.tab = tab
+        pathGroup = FileBreadcrumbBar(tab: tab)
+        folderToggle = PiKit.IconButton(symbol: "sidebar.left", label: "Show Folder", size: 26) { [weak tab] in
+            guard let tab else { return }; tab.folders.setShown(!tab.folders.settings.shown)
+        }
         blameToggle = PiKit.IconButton(symbol: "person.text.rectangle", label: "Show Blame", size: 26) { [weak tab] in tab?.blame.toggle() }
         openButton = PiKit.IconButton(symbol: "arrow.up.forward.app", label: "Open in \(Self.appName(for: tab.url))", size: 26) { [weak tab] in
             if let url = tab?.url { NSWorkspace.shared.open(url) }
         }
         super.init(frame: .zero)
-        rest.truncation = .start
+        folderToggle.setAccessibilityIdentifier("file-folder-toggle")
         blameToggle.setAccessibilityIdentifier("file-blame-toggle")
         openButton.setAccessibilityIdentifier("file-open-in-app")
-        for view in [project, chevron, rest] as [NSView] { pathGroup.addSubview(view) }
-        pathGroup.setAccessibilityElement(true); pathGroup.setAccessibilityRole(.staticText)
-        for view in [pathGroup, blameToggle, openButton, rule] as [NSView] { addSubview(view) }
+        for view in [pathGroup, folderToggle, blameToggle, openButton, rule] as [NSView] { addSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
 
     func refresh() {
         guard let tab else { return }
-        let (name, path) = shownPath(tab)
-        hasProject = name != nil
-        project.line.text = name ?? ""; project.isHidden = name == nil; chevron.isHidden = name == nil
-        rest.line.text = path
-        pathGroup.toolTip = tab.help
-        pathGroup.setAccessibilityLabel([name, path].compactMap { $0 }.joined(separator: ", "))
+        pathGroup.refresh()
+        let foldersShown = tab.folders.settings.shown
+        folderToggle.label = foldersShown ? "Hide Folder" : "Show Folder"
+        folderToggle.tone = foldersShown ? .accent : .neutral
+        folderToggle.filled = foldersShown
         setBadge(Self.badge(tab))
         blameToggle.isHidden = !(tab.readable && tab.previewKind == nil)
         let on = tab.blame.isOn
@@ -181,18 +218,6 @@ import PDFKit
         }
     }
 
-    /// The project's name and the path within it, or the path from home.
-    private func shownPath(_ tab: FileTab) -> (String?, String) {
-        let path = tab.url.path
-        switch tab.project {
-        case .trusted(let name, let root):
-            let root = root.hasSuffix("/") ? String(root.dropLast()) : root
-            if path.hasPrefix(root + "/") { return (name, String(path.dropFirst(root.count + 1))) }
-            return (name, Self.abbreviated(path))
-        case .untrusted(let name): return (name, Self.abbreviated(path))
-        case .none, .removed: return (nil, Self.abbreviated(path))
-        }
-    }
     static func abbreviated(_ path: String) -> String {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
@@ -203,22 +228,17 @@ import PDFKit
         return FileManager.default.displayName(atPath: app.path).replacingOccurrences(of: ".app", with: "")
     }
 
-    private var pathItems: [StackLayout.Item] {
-        var items: [StackLayout.Item] = []
-        if hasProject { items.append(.fixed(project)); items.append(.fixed(chevron)) }
-        items.append(.line(rest))
-        return items
-    }
     override func layout() {
         super.layout()
-        var items: [StackLayout.Item] = [.row(pathItems, spacing: 4)]
-        if let badge { items.append(.fixed(badge)) }
-        items.append(.spacer(PiSpacing.sm))
-        if !blameToggle.isHidden { items.append(.fixed(blameToggle)) }
-        items.append(.fixed(openButton))
-        let frames = StackLayout.place(items, spacing: PiSpacing.sm, in: CGRect(x: PiSpacing.md, y: 0, width: bounds.width - PiSpacing.md * 2, height: 32), scale: piScale)
-        pathGroup.frame = frames[0]
-        StackLayout.place(pathItems, spacing: 4, in: CGRect(origin: .zero, size: frames[0].size), scale: piScale)
+        var right = bounds.width - PiSpacing.md
+        for button in [openButton, blameToggle, folderToggle] where !button.isHidden {
+            right -= 26; button.frame = CGRect(x: max(0, right), y: 3, width: 26, height: 26); right -= 4
+        }
+        if let badge {
+            let width = min(badge.intrinsicContentSize.width, max(0, right - 100))
+            right -= width; badge.frame = CGRect(x: right, y: 7, width: width, height: 18); right -= 6
+        }
+        pathGroup.frame = CGRect(x: PiSpacing.md - 5, y: 0, width: max(0, right - PiSpacing.md + 5), height: 32)
         rule.frame = CGRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 1)
     }
 }

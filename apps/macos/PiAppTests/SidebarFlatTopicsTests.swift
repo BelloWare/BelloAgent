@@ -2,450 +2,557 @@ import XCTest
 import AppKit
 @testable import PiApp
 
-/// A project can list its chats flat (owner, 2026-10-13): no topic folders,
-/// every chat of the project in one list, newest activity first, each with
-/// its topic as a small tag. The choice is the project's own, kept in its
-/// sidebar record. These fixtures never send a request or start a helper.
+/// Global Topics / Flat, on isolated desktop stores; no real configuration or helper.
 final class SidebarFlatTopicsTests: XCTestCase {
-    private func scratch() throws -> URL {
-        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("flat-topics-\(UUID().uuidString)")
+    @MainActor private func fixture() throws -> WorkspaceModel {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("flat-all-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        return root
-    }
-
-    private func chat(_ id: String, in project: String = "project", order: Int64, topic: String? = nil, parent: String? = nil,
-                      archived: Bool = false, pinned: Bool = false) -> ChatRecord {
-        var value = ChatRecord(id: id, workspaceID: project, title: "Chat " + id, path: nil, profileID: "fixture", sidebarOrder: order,
-                               parentSessionID: parent)
-        value.topicID = topic
-        if archived { value.archivedAt = Date() }
-        if pinned { value.pinnedAt = Date() }
-        return value
-    }
-
-    /// Two topics and a project root, with activity spread across them so
-    /// that the grouped and the flat orders differ; a kept side filed in
-    /// another topic than its parent; a pinned chat. A second project keeps
-    /// its topic folders throughout.
-    @MainActor private func makeModel(_ root: URL) -> WorkspaceModel {
-        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let model = makeWorkspaceModel(stateRoot: root)
         model.workspaces = [WorkspaceRecord(id: "project", path: root.appendingPathComponent("project").path, trusted: true),
                             WorkspaceRecord(id: "other", path: root.appendingPathComponent("other").path, trusted: true)]
         model.topics = [TopicRecord(id: "billing", workspaceID: "project", title: "Billing"),
                         TopicRecord(id: "research", workspaceID: "project", title: "Research"),
                         TopicRecord(id: "elsewhere", workspaceID: "other", title: "Elsewhere")]
-        model.chats = [chat("a", order: 50, topic: "billing"),
-                       chat("b", order: 40),
-                       chat("b-side", order: 70, topic: "research", parent: "b"),
-                       chat("c", order: 60, topic: "research"),
-                       chat("d", order: 10, topic: "billing"),
-                       chat("pinned", order: 1, pinned: true),
-                       chat("o1", in: "other", order: 30, topic: "elsewhere"),
-                       chat("o2", in: "other", order: 20)]
+        model.chats = [chat("a", order: 50, topic: "billing"), chat("b", order: 40),
+                       chat("b-side", order: 70, topic: "research", parent: "b"), chat("c", order: 60, topic: "research"),
+                       chat("d", order: 10, topic: "billing"), chat("pinned", order: 1, pinned: true),
+                       chat("o1", in: "other", order: 65, topic: "elsewhere"), chat("o2", in: "other", order: 20)]
         return model
     }
-
+    private func chat(_ id: String, in project: String = "project", order: Int64, topic: String? = nil,
+                      parent: String? = nil, archived: Bool = false, pinned: Bool = false) -> ChatRecord {
+        var value = ChatRecord(id: id, workspaceID: project, title: "Chat " + id, path: nil, profileID: "fixture",
+                               sidebarOrder: order, parentSessionID: parent)
+        value.topicID = topic
+        if archived { value.archivedAt = Date() }
+        if pinned { value.pinnedAt = Date() }
+        return value
+    }
+    @MainActor private func flat(_ model: WorkspaceModel, _ enabled: Bool = true) {
+        model.setSidebarFlat(enabled)
+        if enabled { model.setSidebarShownRoots("flat:all", to: 100, in: "") }
+    }
+    @MainActor private func isFlat(_ model: WorkspaceModel) -> Bool { model.sidebarListsFlat }
     @MainActor private func build(_ model: WorkspaceModel, filter: String = "", width: CGFloat = 300) -> SidebarListContents {
         SidebarListContents.build(model: model, filter: filter, sidebarWidth: width, confirmingRemove: [], removing: [], dropTarget: nil)
     }
-    /// The chat rows of one project, in list order, with their tags.
-    @MainActor private func rows(_ contents: SidebarListContents, in project: String) -> [(id: String, tag: String?, state: SidebarChatRowState)] {
-        zip(contents.entries, contents.owners).compactMap { entry, owner in
-            guard owner.project == project, case .chat(let chat, let state, _) = entry else { return nil }
-            return (chat.id, state.topicTag, state)
+    @MainActor private func rows(_ contents: SidebarListContents) -> [SidebarGroupRow] {
+        contents.entries.compactMap { if case .chat(let chat, let state, _) = $0 { return SidebarGroupRow(chat: chat, state: state) }; return nil }
+    }
+    @MainActor private func ids(_ model: WorkspaceModel, filter: String = "") -> [String] { rows(build(model, filter: filter)).map(\.id) }
+    @MainActor private func views<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
+        (view as? T).map { [$0] } ?? view.subviews.flatMap { views(type, in: $0) }
+    }
+    @MainActor private func item(_ id: String, in menu: NSMenu) -> NSMenuItem? {
+        for entry in menu.items {
+            if entry.identifier?.rawValue == id { return entry }
+            if let nested = entry.submenu, let found = item(id, in: nested) { return found }
+        }
+        return nil
+    }
+    @MainActor private func headerMenu(_ model: WorkspaceModel) throws -> NSMenu {
+        let sidebar = makeSidebar(model, width: 300, height: 900)
+        let button = try XCTUnwrap(views(PiKit.MenuControl.self, in: sidebar).first { $0.accessibilityIdentifier() == "sidebarMenu" })
+        return PiMenus.menu(button.entries())
+    }
+
+    @MainActor func testCombinedOrderingIncludesScratchAndRetainedProjectsWithoutHeaders() throws {
+        let model = try fixture()
+        model.chats += [chat("loose", in: WorkspaceRecord.scratchID, order: 55), chat("retained", in: "missing", order: 80)]
+        model.setProjectExpanded("other", expanded: false)
+        flat(model)
+        let contents = build(model)
+        XCTAssertEqual(rows(contents).map(\.id), ["pinned", "retained", "b", "b-side", "o1", "c", "loose", "a", "o2", "d"])
+        XCTAssertFalse(contents.entries.contains { if case .projectHeader = $0 { return true }; if case .topicHeader = $0 { return true }; return false })
+        XCTAssertEqual(zip(contents.entries, contents.owners).compactMap { entry, owner in
+            if case .chat(let chat, _, let project) = entry { return chat.workspaceID == owner.project && project == owner.project && owner.topic == nil }; return nil
+        }, Array(repeating: true, count: 10))
+        model.chats[model.chats.firstIndex { $0.id == "o2" }!].sidebarOrder = 95
+        XCTAssertEqual(Array(ids(model).prefix(3)), ["pinned", "o2", "retained"], "Activity crosses project boundaries")
+    }
+
+    @MainActor func testEveryRowHasItsProjectAndOwnTopicEvenWhenItsParentSharesThem() throws {
+        let model = try fixture()
+        model.chats += [chat("same-topic-side", order: 30, topic: "billing", parent: "a"),
+                        chat("loose", in: WorkspaceRecord.scratchID, order: 25), chat("retained", in: "missing", order: 15)]
+        flat(model)
+        let sidebar = makeSidebar(model, width: 340, height: 1400)
+        for row in rows(build(model)) {
+            let view = try XCTUnwrap(sidebar.list.views["chat|" + row.id] as? SidebarChatRowView)
+            let name = try XCTUnwrap(model.sidebarProjects.first { $0.id == row.chat.workspaceID }?.name)
+            XCTAssertTrue(view.row.accessibilityLabel()?.contains("project " + name) == true, row.id)
+        }
+        let tagged = Dictionary(uniqueKeysWithValues: rows(build(model)).map { ($0.id, $0.state.topicTag) })
+        XCTAssertEqual(tagged["same-topic-side"], "Billing")
+        XCTAssertEqual(tagged["o1"], "Elsewhere")
+        XCTAssertEqual(tagged["b-side"], "Research")
+        XCTAssertNil(tagged["loose"]!)
+    }
+
+    @MainActor func testRetainedTagsStayShortAndKeepTheFullGroupNameForHelpAndVoiceOver() throws {
+        let model = try fixture()
+        let missing = "missing-project-with-a-long-distinguishing-suffix"
+        model.chats.append(chat("retained", in: missing, order: 100))
+        model.sides["retained"] = SideRecord(id: "retained-side", parentID: "retained", workspaceID: missing,
+                                             profileID: "fixture", title: "Side", kept: false)
+        model.workspaces[1].path = model.root.appendingPathComponent("Retained chats · local").path
+        flat(model)
+        for width in [WindowChrome.sidebarWidth, WindowChrome.minimumSidebarWidth] {
+            let sidebar = makeSidebar(model, width: width, height: 1400)
+            let saved = try XCTUnwrap(sidebar.list.views["chat|retained"] as? SidebarChatRowView)
+            let side = try XCTUnwrap(sidebar.list.views["side|retained-side"] as? SidebarSideRowView)
+            for (body, row) in [(saved.body, saved.row), (side.body, side.row)] {
+                XCTAssertEqual(body.projectTag.text, "Retained chats")
+                XCTAssertEqual(body.projectTag.toolTip, "Project: Retained chats · " + missing)
+                XCTAssertTrue(row.accessibilityLabel()?.contains("project Retained chats · " + missing) == true)
+                body.layoutSubtreeIfNeeded()
+                XCTAssertGreaterThanOrEqual(body.projectTag.bounds.width, body.projectTag.naturalWidth,
+                                           "The short caption fits even on an indented minimum-width row")
+            }
+            let configured = try XCTUnwrap(sidebar.list.views["chat|o1"] as? SidebarChatRowView)
+            XCTAssertEqual(configured.body.projectTag.text, "Retained chats · local", "Use project availability, not a name prefix")
         }
     }
 
-    // MARK: Order and tags
-
-    @MainActor func testFlatListsEveryChatOfTheProjectNewestFirstWithItsTopicAsATag() throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        // Grouped (the default): topic folders, and no tags anywhere.
-        let grouped = build(model)
-        XCTAssertFalse(model.projectListsFlat("project"))
-        XCTAssertTrue(grouped.entries.contains { if case .topicHeader(let header) = $0 { return header.topicID == "billing" }; return false })
-        XCTAssertTrue(rows(grouped, in: "project").allSatisfy { $0.tag == nil }, "The Topics view shows no tags")
-
-        model.setProjectListsFlat("project", flat: true)
-        XCTAssertTrue(model.projectListsFlat("project"))
-        let flat = build(model)
-        let listed = rows(flat, in: "project")
-        // Pinned on top, as everywhere; then newest activity first, a family
-        // as recent as its newest member, its side under it.
-        XCTAssertEqual(listed.map(\.id), ["pinned", "b", "b-side", "c", "a", "d"])
-        XCTAssertEqual(listed.map(\.tag), [nil, nil, "Research", "Research", "Billing", "Billing"],
-                       "Each row carries its topic; a chat outside every topic carries none")
-        XCTAssertFalse(zip(flat.entries, flat.owners).contains { entry, owner in
-            guard owner.project == "project" else { return false }
-            if case .topicHeader = entry { return true }
-            return false
-        }, "No topic folders in the flat view")
-        XCTAssertTrue(flat.owners.filter { $0.project == "project" }.allSatisfy { $0.topic == nil })
-        XCTAssertEqual(listed.first { $0.id == "b-side" }?.state.indent, (listed.first { $0.id == "b" }?.state.indent ?? 0) + 14,
-                       "The side sits under its parent")
-        // The other project keeps its folders and shows no tags.
-        XCTAssertFalse(model.projectListsFlat("other"))
-        XCTAssertTrue(flat.entries.contains { if case .topicHeader(let header) = $0 { return header.topicID == "elsewhere" }; return false })
-        XCTAssertTrue(rows(flat, in: "other").allSatisfy { $0.tag == nil })
-
-        // New activity moves a chat to the top, whichever topic it is in.
-        if let index = model.chats.firstIndex(where: { $0.id == "d" }) { model.chats[index].sidebarOrder = 90 }
-        XCTAssertEqual(rows(build(model), in: "project").map(\.id), ["pinned", "d", "b", "b-side", "c", "a"])
-
-        // A side filed in its parent's topic says nothing its parent's tag does not.
-        if let index = model.chats.firstIndex(where: { $0.id == "b-side" }) { model.chats[index].topicID = nil }
-        XCTAssertNil(rows(build(model), in: "project").first { $0.id == "b-side" }?.tag)
-
-        // Back to Topics: the folders return and the tags go.
-        model.setProjectListsFlat("project", flat: false)
-        let back = build(model)
-        XCTAssertTrue(rows(back, in: "project").allSatisfy { $0.tag == nil })
-        XCTAssertTrue(back.entries.contains { if case .topicHeader(let header) = $0 { return header.topicID == "billing" }; return false })
-    }
-
-    /// The scratch area has no topics to flatten.
-    @MainActor func testNoProjectCannotBeFlattened() throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        model.chats.append(chat("loose", in: WorkspaceRecord.scratchID, order: 5))
-        model.setProjectListsFlat(WorkspaceRecord.scratchID, flat: true)
-        XCTAssertFalse(model.projectListsFlat(WorkspaceRecord.scratchID))
-        XCTAssertNil(model.projectSidebarStates[WorkspaceRecord.scratchID])
-    }
-
-    // MARK: Persistence
-
-    @MainActor func testTheChoiceIsTheProjectsOwnAndSurvivesARelaunch() async throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        model.setProjectListsFlat("project", flat: true)
-        let saved = await model.flushProjectSidebarState()
-        XCTAssertTrue(saved)
-        XCTAssertEqual(model.projectSidebarStates["project"]?.flatTopics, true)
-        XCTAssertNil(model.projectSidebarStates["other"], "Another project's view is its own")
-
-        // Relaunch: the project record comes back with the view in it.
-        model.projectSidebarStates = [:]
+    @MainActor func testGlobalChoicePersistsBothWaysAndDoesNotRewriteProjectPreferences() async throws {
+        let model = try fixture()
+        flat(model)
+        XCTAssertTrue(isFlat(model))
+        let saved = await model.flushProjectSidebarState(); XCTAssertTrue(saved)
+        XCTAssertNil(model.projectSidebarStates["project"], "The global choice is not a project preference")
+        model.sidebarViewState = SidebarViewState()
         try await model.restoreProjectSidebarStates()
-        XCTAssertTrue(model.projectListsFlat("project"))
-        XCTAssertFalse(model.projectListsFlat("other"))
-        XCTAssertEqual(rows(build(model), in: "project").map(\.id), ["pinned", "b", "b-side", "c", "a", "d"])
-
-        // Back to Topics is durable too, and leaves no key behind.
-        model.setProjectListsFlat("project", flat: false)
-        let savedAgain = await model.flushProjectSidebarState()
-        XCTAssertTrue(savedAgain)
-        model.projectSidebarStates = [:]
+        XCTAssertTrue(isFlat(model))
+        flat(model, false)
+        let savedAgain = await model.flushProjectSidebarState(); XCTAssertTrue(savedAgain)
+        model.sidebarViewState = SidebarViewState(flat: true)
         try await model.restoreProjectSidebarStates()
-        XCTAssertFalse(model.projectListsFlat("project"))
-        XCTAssertNil(model.projectSidebarStates["project"]?.flatTopics)
-        await model.store?.close()
+        XCTAssertFalse(isFlat(model))
     }
 
-    /// Records written before the flat view decode as grouped, and a flat
-    /// record round-trips.
-    func testOlderSidebarRecordsDecodeAsGrouped() throws {
+    @MainActor func testMigrationReadsAnyOldProjectIncludingAnUnlistedOneAndOnlyRunsOnce() async throws {
+        let model = try fixture()
+        let old = ProjectSidebarState(id: "removed-project", revision: 7, flatTopics: true)
+        try await model.store?.put(old, kind: "project-sidebar", id: old.id, revision: old.revision)
+        try await model.restoreProjectSidebarStates()
+        XCTAssertTrue(isFlat(model), "Migration includes records filtered out of today's listed projects")
+        let saved = await model.flushProjectSidebarState(); XCTAssertTrue(saved)
+        flat(model, false)
+        let savedAgain = await model.flushProjectSidebarState(); XCTAssertTrue(savedAgain)
+        try await model.restoreProjectSidebarStates()
+        XCTAssertFalse(isFlat(model), "An explicit Topics choice wins over legacy Flat forever")
+        let retained = try await model.store?.get(ProjectSidebarState.self, kind: "project-sidebar", id: old.id)
+        XCTAssertEqual(retained, old)
+    }
+
+    @MainActor func testMigrationDefaultsToTopicsAndOldRecordsStillDecode() async throws {
         let old = Data(#"{"id":"project","expanded":true,"archived":false,"revision":3}"#.utf8)
         let decoded = try JSONDecoder().decode(ProjectSidebarState.self, from: old)
         XCTAssertNil(decoded.flatTopics)
-        var flat = decoded; flat.flatTopics = true
-        XCTAssertEqual(try JSONDecoder().decode(ProjectSidebarState.self, from: JSONEncoder().encode(flat)).flatTopics, true)
-    }
-
-    /// The flat list pages like any group, and its page is kept with the project.
-    @MainActor func testTheFlatListPagesAndKeepsItsPageWithTheProject() async throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        model.chats += (0..<8).map { chat("many-\($0)", order: Int64(100 + $0), topic: $0.isMultiple(of: 2) ? "billing" : nil) }
-        model.setProjectListsFlat("project", flat: true)
-        let group = SidebarSessionPresentation.flatGroupID("project")
-        let contents = build(model)
-        XCTAssertTrue(contents.entries.contains { if case .pagination(let id, _, let hidden, _, _) = $0 { return id == group && hidden > 0 }; return false })
-        XCTAssertEqual(rows(contents, in: "project").filter { $0.state.indent == 14 }.count, SidebarSessionPresentation.pageSize)
-        model.setSidebarShownRoots(group, to: 15, in: "project")
-        let saved = await model.flushProjectSidebarState()
-        XCTAssertTrue(saved)
-        XCTAssertEqual(model.projectSidebarStates["project"]?.shownRoots, [group: 15])
-        model.projectSidebarStates = [:]; model.sidebarPageSizes = [:]
+        var legacy = decoded; legacy.flatTopics = true
+        XCTAssertEqual(try JSONDecoder().decode(ProjectSidebarState.self, from: JSONEncoder().encode(legacy)), legacy)
+        let model = try fixture()
+        try await model.store?.put(decoded, kind: "project-sidebar", id: decoded.id, revision: decoded.revision)
         try await model.restoreProjectSidebarStates()
+        XCTAssertFalse(isFlat(model))
+    }
+
+    @MainActor func testCombinedPaginationPersistsIndependentlyOfProjectPages() async throws {
+        let model = try fixture()
+        flat(model); model.setSidebarShownRoots("flat:all", to: SidebarSessionPresentation.pageSize, in: "")
+        XCTAssertEqual(rows(build(model)).filter { $0.state.indent == 0 }.count, SidebarSessionPresentation.pageSize)
+        let page = try XCTUnwrap(build(model).entries.first { if case .pagination = $0 { return true }; return false })
+        guard case .pagination(let group, let project, let hidden, _, _) = page else { return }
+        XCTAssertEqual(group, "flat:all"); XCTAssertEqual(hidden, 2)
+        model.setSidebarShownRoots(group, to: 15, in: project)
+        let saved = await model.flushProjectSidebarState(); XCTAssertTrue(saved)
+        model.sidebarPageSizes = [:]; try await model.restoreProjectSidebarStates()
         XCTAssertEqual(model.sidebarShownRoots(group), 15)
-        await model.store?.close()
+        XCTAssertEqual(ids(model).count, 8)
+        XCTAssertTrue(model.projectSidebarStates.values.allSatisfy { $0.shownRoots?[group] == nil })
     }
 
-    // MARK: Rows
-
-    /// Everything a row shows apart from where it sits is the same in both
-    /// views: selection, marks, unread, paused, the draft, the recency wash,
-    /// the fold.
-    @MainActor func testARowShowsTheSameStatesInBothViews() throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        // The side filed with its parent, so the family is the same in both views.
-        if let index = model.chats.firstIndex(where: { $0.id == "b-side" }) { model.chats[index].topicID = nil }
-        model.selectedID = "c"; model.selectedWorkspaceID = "project"
-        model.markedSessionIDs = ["a", "d"]
-        model.unreadStates["a"] = SessionReadState(id: "a", observedAssistantCount: 2, latestAssistantID: "m2", unreadOutputs: 1)
-        model.unreadStates["d"] = SessionReadState(id: "d", observedAssistantCount: 0, latestAssistantID: nil, markedUnread: true)
-        model.runHolds["b"] = RunHoldRecord(id: "b", state: "paused")
-        model.draftChatIDs.insert("a")
-        model.noteOpened("a"); model.noteOpened("c")
-        model.collapsedSidebarSides.insert("b")
-        func normalized(_ state: SidebarChatRowState) -> SidebarChatRowState {
-            var value = state
-            value.topicTag = nil; value.indent = 0; value.available = 0; value.draggable = false
-            return value
-        }
-        let grouped = Dictionary(uniqueKeysWithValues: rows(build(model), in: "project").map { ($0.id, $0.state) })
-        model.setProjectListsFlat("project", flat: true)
-        let flat = rows(build(model), in: "project")
-        XCTAssertFalse(flat.contains { $0.id == "b-side" }, "A folded side stays folded")
-        for row in flat {
-            let before = try XCTUnwrap(grouped[row.id], row.id)
-            XCTAssertEqual(normalized(row.state), normalized(before), row.id)
-        }
-        let byID = Dictionary(uniqueKeysWithValues: flat.map { ($0.id, $0.state) })
-        XCTAssertEqual(byID["c"]?.selected, true); XCTAssertEqual(byID["a"]?.unreadCount, 1); XCTAssertEqual(byID["d"]?.markedUnreadOnly, true)
-        XCTAssertEqual(byID["b"]?.heldRun, "paused"); XCTAssertEqual(byID["a"]?.hasDraft, true); XCTAssertEqual(byID["c"]?.recency, 0)
-        XCTAssertEqual(byID["a"]?.marked, true); XCTAssertEqual(byID["b"]?.expanded, false)
-        // There is no folder to drag a row to: flat rows are not drag sources.
-        XCTAssertTrue(flat.allSatisfy { !$0.state.draggable })
-        XCTAssertTrue(rows(build(model), in: "other").contains { $0.state.draggable }, "Grouped projects keep their drag")
-    }
-
-    /// The archive switch lists a flat project's archived chats after its
-    /// active ones, under one heading, tagged as well.
-    @MainActor func testArchivedChatsFollowTheActiveOnesInTheFlatList() throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        model.chats += [chat("old-billing", order: 200, topic: "billing", archived: true), chat("old-root", order: 5, archived: true)]
-        model.setProjectListsFlat("project", flat: true)
-        XCTAssertFalse(rows(build(model), in: "project").contains { $0.id.hasPrefix("old") })
-        model.setArchivedChatsShown(true)
+    @MainActor func testSidesAndManagedChildrenStayUnderTheirParentAndKeepFolds() throws {
+        let model = try fixture()
+        var child = chat("agent", order: 100, topic: "research", parent: "b")
+        child.delegation = SubagentLink(delegationID: "d", childSessionID: "agent", budgetOwnerSessionID: "b",
+                                       call: .init(parentSessionID: "b", assistantMessageID: "m", toolCallID: "call"), parentTurnID: "t", parentExecutionID: "e")
+        model.chats.append(child)
+        model.sides["b"] = SideRecord(id: "unsaved", parentID: "b", workspaceID: "project", profileID: "fixture", title: "Side", kept: false)
+        flat(model)
+        XCTAssertFalse(ids(model).contains("agent"))
+        model.setSubagentGroupExpanded("b", expanded: true)
         let contents = build(model)
-        let ids = zip(contents.entries, contents.owners).compactMap { entry, owner -> String? in
-            guard owner.project == "project" else { return nil }
-            switch entry {
-            case .chat(let chat, _, _): return chat.id
-            case .archiveHeading(let group, let count, _): return "heading:\(group):\(count)"
-            default: return nil
-            }
-        }
-        let heading = "heading:" + SidebarSessionPresentation.archiveGroupID(SidebarSessionPresentation.flatGroupID("project")) + ":2"
-        XCTAssertEqual(ids, ["pinned", "b", "b-side", "c", "a", "d", heading, "old-billing", "old-root"])
-        XCTAssertEqual(rows(contents, in: "project").first { $0.id == "old-billing" }?.tag, "Billing")
+        XCTAssertEqual(Array(rows(contents).map(\.id).prefix(4)), ["pinned", "b", "agent", "b-side"])
+        let family = contents.entries.map(\.id)
+        XCTAssertLessThan(try XCTUnwrap(family.firstIndex(of: "subagents|b")), try XCTUnwrap(family.firstIndex(of: "chat|agent")))
+        XCTAssertLessThan(try XCTUnwrap(family.firstIndex(of: "chat|agent")), try XCTUnwrap(family.firstIndex(of: "side|unsaved")))
+        let transient = try XCTUnwrap(contents.entries.compactMap { if case .side(let state) = $0 { return state }; return nil }.first)
+        XCTAssertEqual(transient.projectTag, "project")
+        XCTAssertEqual(rows(contents).first { $0.id == "agent" }?.state.projectTag, "project")
+        XCTAssertEqual(rows(contents).first { $0.id == "agent" }?.state.topicTag, "Research")
+        model.setSidebarSideFolded("b", folded: true)
+        XCTAssertFalse(ids(model).contains("b-side")); XCTAssertTrue(ids(model).contains("agent"))
+        XCTAssertFalse(build(model).entries.contains { $0.id == "side|unsaved" })
+        XCTAssertEqual(ids(model, filter: "b-side"), ["b", "b-side"])
     }
 
-    // MARK: Search and keyboard
-
-    @MainActor func testSearchInTheFlatViewMatchesTitlesAndTopicTags() throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        model.setProjectListsFlat("project", flat: true)
-        // A topic's name lists its chats, as a matching folder did.
-        XCTAssertEqual(rows(build(model, filter: "billing"), in: "project").map(\.id), ["a", "d"])
-        // A side's title keeps its parent listed above it.
-        XCTAssertEqual(rows(build(model, filter: "b-side"), in: "project").map(\.id), ["b", "b-side"])
-        XCTAssertEqual(rows(build(model, filter: "nothing like this"), in: "project").map(\.id), [])
-        // The keyboard and Return follow what the filter left listed.
-        model.sidebarFilter = "research"
-        XCTAssertEqual(model.sidebarChatOrder.filter { model.record($0)?.workspaceID == "project" }, ["b", "b-side", "c"])
-        model.sidebarFilter = ""
+    @MainActor func testInvalidCrossProjectParentDoesNotReparentAChat() throws {
+        let model = try fixture()
+        model.chats[model.chats.firstIndex { $0.id == "o1" }!].parentSessionID = "b"
+        flat(model)
+        let listed = rows(build(model))
+        XCTAssertEqual(listed.first { $0.id == "o1" }?.state.indent, listed.first { $0.id == "b" }?.state.indent)
     }
 
-    @MainActor func testKeyboardStepsThroughTheFlatOrder() async throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        for item in model.chats { try await model.store?.put(item, kind: "chat", id: item.id) }
-        model.setProjectListsFlat("project", flat: true)
-        let order = model.sidebarChatOrder
-        XCTAssertEqual(Array(order.prefix(6)), rows(build(model), in: "project").map(\.id), "Next and Previous Chat follow the list")
-        XCTAssertEqual(Array(order.dropFirst(6)), ["o1", "o2"], "then the grouped project's folders")
-        await model.select("c")
-        model.selectAdjacentChat(1)
-        for _ in 0..<200 where model.selectedID != "a" { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(model.selectedID, "a", "Down from c is a, the next newest, though it is in another topic")
-        model.selectAdjacentChat(-1)
-        for _ in 0..<200 where model.selectedID != "c" { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(model.selectedID, "c")
-        await model.flushProjectSidebarState(); await model.store?.close()
+    @MainActor func testRowStatesAndTopicsRoundTripStayUnchanged() throws {
+        let model = try fixture()
+        model.chats[2].topicID = nil
+        model.selectedID = "c"; model.selectedWorkspaceID = "project"; model.markedSessionIDs = ["a"]
+        model.unreadStates["a"] = SessionReadState(id: "a", observedAssistantCount: 2, latestAssistantID: "m", unreadOutputs: 1)
+        model.runHolds["b"] = RunHoldRecord(id: "b", state: "paused"); model.draftChatIDs.insert("a")
+        model.noteOpened("a"); model.noteOpened("c"); model.collapsedSidebarSides.insert("b")
+        let before = build(model)
+        flat(model)
+        let after = Dictionary(uniqueKeysWithValues: rows(build(model)).map { ($0.id, $0.state) })
+        XCTAssertEqual(after["a"]?.unreadCount, 1); XCTAssertEqual(after["a"]?.marked, true)
+        XCTAssertEqual(after["a"]?.hasDraft, true); XCTAssertEqual(after["b"]?.heldRun, "paused")
+        XCTAssertEqual(after["c"]?.recency, 0); XCTAssertEqual(after["c"]?.selected, true)
+        XCTAssertNil(after["b-side"]); XCTAssertTrue(after.values.allSatisfy { !$0.draggable })
+        flat(model, false)
+        XCTAssertEqual(build(model), before, "All Topics entries, gaps and owners are unchanged")
     }
 
-    // MARK: Moving and dropping
-
-    /// Move to Topic in a row's menu works in the flat view: the row stays
-    /// where its activity puts it and takes its new tag.
-    @MainActor func testMovingAChatToATopicFromItsMenuRetagsItsRow() async throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        // The store knows the topics as it knows the chats.
-        for topic in model.topics { _ = try await model.store?.createTopic(topic) }
-        for item in model.chats { try await model.store?.put(item, kind: "chat", id: item.id) }
-        model.setProjectListsFlat("project", flat: true)
-        let row = try XCTUnwrap(rows(build(model), in: "project").first { $0.id == "c" })
-        let record = try XCTUnwrap(model.record("c"))
-        let menu = PiMenus.menu(SidebarChatRowView.entries(model: model, chat: record, state: row.state))
-        XCTAssertTrue(PiMenus.perform("moveSessionToTopic-c-billing", in: menu))
-        for _ in 0..<200 where model.record("c")?.topicID != "billing" { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertEqual(model.record("c")?.topicID, "billing")
-        let after = rows(build(model), in: "project")
-        XCTAssertEqual(after.map(\.id), ["pinned", "b", "b-side", "c", "a", "d"], "Moving is not activity")
-        XCTAssertEqual(after.first { $0.id == "c" }?.tag, "Billing")
-        XCTAssertTrue(model.projectListsFlat("project"), "and the project stays flat")
-        // And out of every topic: the tag goes.
-        let again = PiMenus.menu(SidebarChatRowView.entries(model: model, chat: try XCTUnwrap(model.record("c")), state: row.state))
-        XCTAssertTrue(PiMenus.perform("moveSessionToTopic-c-root", in: again))
-        for _ in 0..<200 where model.record("c")?.topicID != nil { try await Task.sleep(for: .milliseconds(10)) }
-        XCTAssertNil(rows(build(model), in: "project").first { $0.id == "c" }?.tag)
-        _ = await model.flushTopicChanges(); await model.flushProjectSidebarState(); await model.store?.close()
+    @MainActor func testArchivedAndSearchAcrossProjectsKeepTagsAndAncestors() throws {
+        let model = try fixture()
+        model.chats += [chat("old-a", order: 200, topic: "billing", archived: true),
+                        chat("old-o", in: "other", order: 300, topic: "elsewhere", archived: true)]
+        flat(model)
+        XCTAssertFalse(ids(model).contains("old-a"))
+        model.setArchivedChatsShown(true)
+        XCTAssertEqual(Array(ids(model).suffix(2)), ["old-o", "old-a"])
+        XCTAssertEqual(build(model).entries.filter { if case .archiveHeading = $0 { return true }; return false }.count, 1)
+        XCTAssertEqual(ids(model, filter: "billing"), ["a", "d", "old-a"])
+        XCTAssertEqual(ids(model, filter: "other"), ["o1", "o2", "old-o"])
+        XCTAssertEqual(ids(model, filter: "b-side"), ["b", "b-side"])
+        XCTAssertEqual(ids(model, filter: "no matching text"), [])
+        model.sidebarFilter = "elsewhere"
+        XCTAssertEqual(model.sidebarChatOrder, ["o1", "old-o"])
+        XCTAssertEqual(rows(build(model, filter: "elsewhere")).map(\.state.topicTag), ["Elsewhere", "Elsewhere"])
     }
 
-    /// A flat project has no folders to drop on: a drag over it offers
-    /// nothing, where a grouped project still takes it.
-    @MainActor func testAFlatProjectOffersNoDropTarget() throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        model.setProjectListsFlat("project", flat: true)
-        let sidebar = makeSidebar(model, width: 300, height: 900)
-        let list = sidebar.list
-        for id in ["chat|a", "chat|c", "project|project"] {
-            let frame = try XCTUnwrap(list.frame(of: id), id)
-            XCTAssertNil(list.dropTarget(at: CGPoint(x: frame.midX, y: frame.midY)), id)
-        }
-        let other = try XCTUnwrap(list.frame(of: "chat|o1"))
-        XCTAssertEqual(list.dropTarget(at: CGPoint(x: other.midX, y: other.midY)), .group(projectID: "other", topicID: "elsewhere"))
-        // Nor does the gap between its rows.
-        XCTAssertNil(list.dropTarget(at: CGPoint(x: 10, y: (list.frame(of: "chat|d")?.maxY ?? 0) + 1)))
+    @MainActor func testKeyboardOrderAndRangeSelectionUseTheCombinedOrder() throws {
+        let model = try fixture(); flat(model)
+        XCTAssertEqual(model.sidebarChatOrder, ids(model))
+        model.sidebarFilter = "Chat o"
+        XCTAssertEqual(model.sidebarChatOrder, ["o1", "o2"])
     }
 
-    // MARK: The control
-
-    /// The project's "…" menu and its right-click menu switch between the two
-    /// views, with the current one checked.
-    @MainActor func testTheProjectMenuSwitchesBetweenTopicsAndFlat() throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        let sidebar = makeSidebar(model, width: 300, height: 900)
-        func header() throws -> ProjectHeaderView {
-            let entry = try XCTUnwrap(sidebar.list.views["project|project"] as? ProjectHeaderEntry)
-            return entry.header
+    @MainActor func testFlatHasNoDragSourcesOrDropTargets() throws {
+        let model = try fixture(); flat(model)
+        let sidebar = makeSidebar(model, width: 300, height: 1000)
+        XCTAssertTrue(rows(sidebar.list.contents).allSatisfy { !$0.state.draggable })
+        for id in ["chat|a", "chat|b-side", "chat|o1"] {
+            let frame = try XCTUnwrap(sidebar.list.frame(of: id))
+            XCTAssertNil(sidebar.list.dropTarget(at: CGPoint(x: frame.midX, y: frame.midY)))
+            XCTAssertNil(sidebar.list.dropTarget(at: CGPoint(x: 10, y: frame.maxY + 1)))
         }
-        func item(_ identifier: String, in menu: NSMenu) -> NSMenuItem? {
-            menu.items.first { $0.identifier?.rawValue == identifier }
-        }
-        var menu = PiMenus.menu(ProjectSidebarActions.entries(model: model, state: try header().state, expand: nil))
-        XCTAssertEqual(item("projectTopicView-topics-project", in: menu)?.state, .on)
-        XCTAssertEqual(item("projectTopicView-flat-project", in: menu)?.state, .off)
-        XCTAssertTrue(PiMenus.perform("projectTopicView-flat-project", in: menu))
-        sidebar.settle()
-        XCTAssertTrue(model.projectListsFlat("project"))
-        XCTAssertNil(sidebar.list.views["topic|billing"], "The folders are gone from the list")
-        XCTAssertNotNil(sidebar.list.views["chat|a"])
-        menu = PiMenus.menu(ProjectSidebarActions.entries(model: model, state: try header().state, expand: nil))
-        XCTAssertEqual(item("projectTopicView-flat-project", in: menu)?.state, .on)
-        XCTAssertTrue(PiMenus.perform("projectTopicView-topics-project", in: menu))
-        sidebar.settle()
-        XCTAssertFalse(model.projectListsFlat("project"))
-        XCTAssertNotNil(sidebar.list.views["topic|billing"])
-        // The scratch area has no topics, and no such choice.
-        model.chats.append(chat("loose", in: WorkspaceRecord.scratchID, order: 5)); sidebar.settle()
-        let scratchMenu = PiMenus.menu(ProjectSidebarActions.entries(model: model, state: ProjectHeaderState(projectID: WorkspaceRecord.scratchID, scratch: true), expand: nil))
-        XCTAssertNil(item("projectTopicView-flat-" + WorkspaceRecord.scratchID, in: scratchMenu))
     }
 
-    // MARK: Look
-
-    /// At the narrowest sidebar the tag gives way to the row's own buttons:
-    /// with Archive's question open, Archive and Keep stay inside the row and
-    /// the title keeps some room, the tag cut shorter or gone.
-    @MainActor func testTheTagGivesWayToTheArchiveQuestionInANarrowSidebar() throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        if let index = model.topics.firstIndex(where: { $0.id == "billing" }) {
-            model.topics[index].title = "Billing and invoicing for the enterprise plan"
-        }
-        model.setProjectListsFlat("project", flat: true)
-        let width = WindowChrome.minimumSidebarWidth
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false
-        let sidebar = makeSidebar(model, width: width, height: 700)
-        window.contentView = sidebar
-        defer { window.contentView = nil; window.close() }
-        let row = try XCTUnwrap(sidebar.list.views["chat|a"] as? SidebarChatRowView)
-        func all(_ view: NSView) -> [NSView] { view.subviews + view.subviews.flatMap { all($0) } }
-        let archive = try XCTUnwrap(all(row.body).compactMap { $0 as? PiKit.ButtonBase }.first { $0.accessibilityIdentifier() == "archiveChat" })
-        archive.performClick(nil)
-        sidebar.layoutSubtreeIfNeeded(); row.layoutSubtreeIfNeeded()
-        let confirm = try XCTUnwrap(all(row.body).compactMap { $0 as? PiKit.ButtonBase }.first { $0.accessibilityIdentifier() == "confirmArchive" })
-        XCTAssertFalse(confirm.isHidden, "The question is open")
-        let shown = all(row.body).filter { view in
-            var node: NSView? = view
-            while let current = node, current !== row.body { if current.isHidden { return false }; node = current.superview }
-            return view is PiKit.ButtonBase || view === row.body.topicTag
-        }
-        for view in shown {
-            let frame = view.convert(view.bounds, to: row.body)
-            XCTAssertLessThanOrEqual(frame.maxX, row.body.bounds.width + 0.5, "\(type(of: view)) \(view.accessibilityIdentifier()) stays inside the row")
-        }
-        let title = try XCTUnwrap(all(row.body).compactMap { $0 as? PiKit.TextLine }.first { $0.line.text.hasPrefix("Chat a") })
-        // The question takes most of the line here; the tag steps aside
-        // rather than leave the title less than its minimum.
-        XCTAssertTrue(row.body.topicTag.isHidden || title.frame.width >= ChatRowBodyView.titleMinimum - 2,
-                      "The title keeps its room: \(title.frame.width)")
-        // The question put away, the tag is back beside the title.
-        let keep = try XCTUnwrap(all(row.body).compactMap { $0 as? PiKit.IconButton }.first { $0.label == "Keep chat" })
-        keep.performClick(nil)
-        row.layoutSubtreeIfNeeded()
-        XCTAssertFalse(row.body.topicTag.isHidden, "The tag comes back once there is room")
-        // A cut title takes the width of what it shows, a little under its room.
-        XCTAssertGreaterThanOrEqual(title.frame.width, ChatRowBodyView.titleMinimum - 2)
+    @MainActor func testHeaderMenuSwitchesGloballyAndProjectMenusHaveNoViewChoice() throws {
+        let model = try fixture()
+        let project = PiMenus.menu(ProjectSidebarActions.entries(model: model, state: ProjectHeaderState(projectID: "project"), expand: nil))
+        XCTAssertFalse(project.items.contains { ["Topics", "Flat", "Show Chats"].contains($0.title) })
+        var menu = try headerMenu(model)
+        XCTAssertEqual(item("sidebarView-topics", in: menu)?.state, .on)
+        XCTAssertEqual(item("sidebarView-flat", in: menu)?.state, .off)
+        XCTAssertNotNil(item("sidebarView-topics", in: menu)?.image)
+        XCTAssertNotNil(item("sidebarView-flat", in: menu)?.image)
+        XCTAssertTrue(PiMenus.perform("sidebarView-flat", in: menu)); XCTAssertTrue(isFlat(model))
+        menu = try headerMenu(model)
+        XCTAssertEqual(item("sidebarView-flat", in: menu)?.state, .on)
+        XCTAssertNotNil(item("sidebarView-topics", in: menu)?.image)
+        XCTAssertNotNil(item("sidebarView-flat", in: menu)?.image)
+        XCTAssertTrue(PiMenus.perform("sidebarView-topics", in: menu)); XCTAssertFalse(isFlat(model))
     }
 
-    /// The tag rides in the title line without making the row any taller,
-    /// cuts itself short rather than the title in a narrow sidebar, and the
-    /// Topics view draws exactly what it drew before the switch was used.
-    @MainActor func testTheTagFitsTheRowAndTheTopicsViewIsUnchanged() throws {
-        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
-        let model = makeModel(root); defer { model.shutdown() }
-        if let index = model.topics.firstIndex(where: { $0.id == "billing" }) {
-            model.topics[index].title = "Billing and invoicing for the enterprise plan"
+    @MainActor func testProjectsSubmenuKeepsActionsAndAvailability() async throws {
+        let model = try fixture(); flat(model)
+        model.workspaces.append(WorkspaceRecord(id: "untrusted", path: "/untrusted", trusted: false))
+        model.chats.append(chat("retained", in: "missing", order: 3))
+        model.chats.append(chat("loose", in: WorkspaceRecord.scratchID, order: 2))
+        let menu = try headerMenu(model)
+        let projects = try XCTUnwrap(item("sidebarProjects", in: menu)?.submenu)
+        XCTAssertEqual(projects.items.count, model.sidebarProjects.count)
+        XCTAssertEqual(item("sidebarProjects-project-newChat", in: menu)?.isEnabled, true)
+        XCTAssertEqual(item("sidebarProjects-untrusted-newChat", in: menu)?.isEnabled, false)
+        XCTAssertEqual(item("sidebarProjects-missing-newChat", in: menu)?.isEnabled, false)
+        XCTAssertEqual(item("sidebarProjects-missing-changes", in: menu)?.isEnabled, false)
+        XCTAssertTrue(PiMenus.perform("sidebarProjects-other-changes", in: menu))
+        XCTAssertEqual(model.tabs.pane.tabs.last?.key, "other")
+        prepareNewChat(model)
+        let previous = model.selectedID
+        XCTAssertTrue(PiMenus.perform("sidebarProjects-other-newChat", in: menu))
+        let created = try await waitForNewChat(model, after: previous)
+        XCTAssertEqual(created.workspaceID, "other")
+        XCTAssertTrue(PiMenus.perform("sidebarProjects-other-newTopic", in: menu))
+        XCTAssertEqual(model.topicEditor?.projectID, "other"); model.topicEditor = nil
+        XCTAssertTrue(PiMenus.perform("sidebarProjects-other-manage", in: menu))
+        XCTAssertEqual(model.selectedWorkspaceID, "other"); XCTAssertTrue(model.showWorkspaceManager)
+        XCTAssertFalse(projects.items.flatMap { $0.submenu?.items ?? [] }.contains { $0.title.contains("Expand") || $0.title.contains("Collapse") })
+    }
+
+    @MainActor private func prepareNewChat(_ model: WorkspaceModel) {
+        var profile = ProfileRecord(); profile.id = "fixture"; profile.api = LiteLLMConfiguration.supportedAPI
+        model.profiles = [profile]; model.profileChoice = profile.id
+    }
+    @MainActor private func waitForNewChat(_ model: WorkspaceModel, after id: String?) async throws -> ChatRecord {
+        for _ in 0..<300 where model.selectedID == id || !model.workspaceChangesInFlight.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        return try XCTUnwrap(model.selectedID.flatMap(model.record))
+    }
+    @MainActor func testNewChatUsesSelectedChatsProjectBeforeSelectedWorkspace() async throws {
+        let model = try fixture(); prepareNewChat(model); flat(model)
+        model.selectedID = "o1"; model.selectedWorkspaceID = "project"
+        let sidebar = makeSidebar(model)
+        XCTAssertTrue(sidebar.newChat.isEnabled); sidebar.newChat.performClick(nil)
+        let created = try await waitForNewChat(model, after: "o1")
+        XCTAssertEqual(created.workspaceID, "other"); XCTAssertNil(created.topicID, "Top New Chat in Flat starts at the project root")
+    }
+    @MainActor func testNewChatFallsBackFromScratchAndUnavailableToSelectedThenRememberedThenFirstTrusted() async throws {
+        for fallback in ["selected", "remembered", "first"] {
+            let model = try fixture(); prepareNewChat(model); flat(model)
+            model.workspaces.insert(WorkspaceRecord(id: "untrusted", path: "/untrusted", trusted: false), at: 0)
+            model.chats.append(chat("retained", in: "missing", order: 100))
+            model.selectedID = "retained"; model.selectedWorkspaceID = fallback == "selected" ? "other" : "missing"
+            if fallback == "remembered" { model.selectionMemory.remembered = RememberedSelection(projectID: "other") }
+            model.newChat()
+            let created = try await waitForNewChat(model, after: "retained")
+            XCTAssertEqual(created.workspaceID, fallback == "first" ? "project" : "other", fallback)
         }
-        for (width, dark) in [(CGFloat(300), false), (220, true)] {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
-            window.isReleasedWhenClosed = false
-            window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            let sidebar = makeSidebar(model, width: width, height: 700)
-            window.contentView = sidebar
+        let model = try fixture(); prepareNewChat(model); flat(model)
+        model.chats.append(chat("loose", in: WorkspaceRecord.scratchID, order: 99))
+        model.selectedID = "loose"; model.selectedWorkspaceID = "other"; model.newChat()
+        let scratchCreated = try await waitForNewChat(model, after: "loose")
+        XCTAssertEqual(scratchCreated.workspaceID, "other")
+    }
+    @MainActor func testNewChatNeverUsesUntrustedUnavailableOrScratchProjects() throws {
+        let model = try fixture(); prepareNewChat(model); flat(model)
+        model.workspaces = [WorkspaceRecord(id: "untrusted", path: "/untrusted", trusted: false)]
+        model.chats.append(chat("unsafe", in: "untrusted", order: 100))
+        model.selectedID = "unsafe"; model.selectedWorkspaceID = "missing"
+        model.selectionMemory.remembered = RememberedSelection(projectID: "project")
+        let count = model.chats.count
+        XCTAssertFalse(makeSidebar(model).newChat.isEnabled)
+        model.newChat(); XCTAssertEqual(model.chats.count, count); XCTAssertTrue(model.workspaceChangesInFlight.isEmpty)
+    }
+
+    @MainActor func testTagsFitAtMinimumWidthAndTopicsPixelsSurviveTheRoundTrip() throws {
+        let model = try fixture(); model.topics[0].title = "Billing and invoicing for the enterprise plan"
+        for (width, dark) in [(CGFloat(300), false), (WindowChrome.minimumSidebarWidth, true)] {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: width, height: 1000), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            let sidebar = makeSidebar(model, width: width, height: 1000); window.contentView = sidebar
             defer { window.contentView = nil; window.close() }
-            func frame() throws -> Data {
-                sidebar.needsLayout = true; sidebar.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-                let image = try XCTUnwrap(sidebar.bitmapImageRepForCachingDisplay(in: sidebar.bounds))
-                sidebar.cacheDisplay(in: sidebar.bounds, to: image)
-                return try XCTUnwrap(image.representation(using: .png, properties: [:]))
+            func picture() throws -> Data {
+                sidebar.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                let bitmap = try XCTUnwrap(sidebar.bitmapImageRepForCachingDisplay(in: sidebar.bounds))
+                sidebar.cacheDisplay(in: sidebar.bounds, to: bitmap)
+                return try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
             }
-            let groupedPicture = try frame()
-            let groupedRow = try XCTUnwrap(sidebar.list.views["chat|a"] as? SidebarChatRowView)
-            XCTAssertTrue(groupedRow.body.topicTag.isHidden, "No tag in the Topics view")
-            let groupedHeight = groupedRow.frame.height
-
-            model.setProjectListsFlat("project", flat: true); sidebar.settle()
+            let before = try picture(); flat(model); sidebar.settle()
             let row = try XCTUnwrap(sidebar.list.views["chat|a"] as? SidebarChatRowView)
             row.layoutSubtreeIfNeeded()
-            let tag = row.body.topicTag
-            XCTAssertFalse(tag.isHidden)
-            XCTAssertEqual(tag.text, "Billing and invoicing for the enterprise plan")
-            XCTAssertEqual(row.frame.height, groupedHeight, "The tag does not make the row taller (\(width))")
-            let inBody = tag.convert(tag.bounds, to: row.body)
-            XCTAssertGreaterThanOrEqual(inBody.minY, 0); XCTAssertLessThanOrEqual(inBody.maxY, row.body.bounds.height)
-            XCTAssertLessThanOrEqual(inBody.maxX, row.body.bounds.width + 0.5, "The tag stays inside the row")
-            XCTAssertLessThan(tag.frame.width, tag.naturalWidth, "A long topic is cut short (\(width))")
-            XCTAssertLessThanOrEqual(tag.frame.width, ceil(row.body.bounds.width * 0.4) + 1, "and leaves the title most of the line")
-            XCTAssertTrue(row.row.accessibilityLabel()?.contains("topic Billing and invoicing") == true, row.row.accessibilityLabel() ?? "")
-            XCTAssertEqual((sidebar.list.views["chat|b"] as? SidebarChatRowView)?.body.topicTag.isHidden, true,
-                           "A chat outside every topic has no tag")
-
-            model.setProjectListsFlat("project", flat: false); sidebar.settle()
-            XCTAssertEqual(try frame(), groupedPicture, "Back to Topics draws what it drew before (\(width))")
+            XCTAssertFalse(row.body.topicTag.isHidden)
+            XCTAssertFalse(row.body.projectTag.isHidden)
+            XCTAssertEqual(row.body.projectTag.text, "project")
+            let projectFrame = row.body.projectTag.convert(row.body.projectTag.bounds, to: row.body)
+            XCTAssertLessThanOrEqual(projectFrame.maxX, row.body.bounds.width + 0.5)
+            let tagFrame = row.body.topicTag.convert(row.body.topicTag.bounds, to: row.body)
+            XCTAssertLessThanOrEqual(tagFrame.maxX, row.body.bounds.width + 0.5)
+            XCTAssertLessThanOrEqual(tagFrame.maxY, row.body.bounds.height + 0.5)
+            XCTAssertTrue(row.row.accessibilityLabel()?.contains("project project") == true)
+            let archive = try XCTUnwrap(views(PiKit.ButtonBase.self, in: row.body).first { $0.accessibilityIdentifier() == "archiveChat" })
+            archive.performClick(nil); row.layoutSubtreeIfNeeded()
+            XCTAssertFalse(row.body.topicTag.isHidden, "Both tags remain while Archive asks")
+            for button in views(PiKit.ButtonBase.self, in: row.body) where !button.isHidden {
+                XCTAssertLessThanOrEqual(button.convert(button.bounds, to: row.body).maxX, row.body.bounds.width + 0.5)
+            }
+            let keep = try XCTUnwrap(views(PiKit.IconButton.self, in: row.body).first { $0.label == "Keep chat" }); keep.performClick(nil)
+            flat(model, false); sidebar.settle(); XCTAssertEqual(try picture(), before)
         }
+    }
+
+    @MainActor func testNoListedProjectsKeepsTheExistingAddProjectEmptyState() throws {
+        let model = try fixture(); model.chats = []; model.workspaces = []; model.topics = []
+        flat(model)
+        XCTAssertTrue(build(model).entries.isEmpty, "The centered Add a project empty state owns this screen")
+    }
+
+    @MainActor func testEmptyCombinedListInvalidatesAndRepeatedBuildsReuseTheIndex() throws {
+        let model = try fixture(); model.chats = []; flat(model)
+        XCTAssertEqual(ids(model), [])
+        XCTAssertTrue(build(model).entries.contains {
+            if case .empty(_, "No chats yet", _) = $0 { return true }; return false
+        }, "Configured projects with no chats still explain their empty list")
+        model.chats = [chat("first", in: "other", order: 1)]
+        XCTAssertEqual(ids(model), ["first"])
+        let before = model.sidebarIndex.computations
+        for _ in 0..<20 { _ = build(model); _ = model.sidebarChatOrder }
+        XCTAssertLessThanOrEqual(model.sidebarIndex.computations - before, 2)
+        model.chats = []; XCTAssertEqual(ids(model), [])
+        model.chats = [chat("second", in: "missing", order: 2)]
+        XCTAssertEqual(ids(model), ["second"])
+    }
+    @MainActor func testMessageSearchIncludesSnippetsAcrossProjectsAndArchivedSwitch() async throws {
+        let model = try fixture(); flat(model)
+        model.chats = []
+        for (id, project, archived, order) in [("content-a", "project", false, 10), ("content-b", "other", false, 20), ("content-old", "other", true, 30)] {
+            let journal = try SearchJournal(model.root.appendingPathComponent(id + ".jsonl"), id: id)
+            try journal.message("answer-" + id, role: "assistant", "The marmalade migration is ready.")
+            var item = chat(id, in: project, order: Int64(order), archived: archived); item.path = journal.url.path
+            model.chats.append(item)
+        }
+        let sidebar = makeSidebar(model)
+        await model.sidebarSearch.reconcileNow()
+        sidebar.setFilter("marmalade"); await model.sidebarSearch.settleQuery(); sidebar.settle()
+        XCTAssertEqual(rows(sidebar.list.contents).map(\.id), ["content-b", "content-a"])
+        func snippets() -> [String] { sidebar.list.contents.entries.compactMap { if case .searchSnippet(let state) = $0 { return state.chatID }; return nil } }
+        XCTAssertEqual(snippets(), ["content-b", "content-a"])
+        model.setArchivedChatsShown(true); sidebar.settle()
+        XCTAssertEqual(snippets(), ["content-b", "content-a", "content-old"])
+        XCTAssertEqual(model.sidebarChatOrder, ["content-b", "content-a", "content-old"])
+    }
+
+    @MainActor func testMovingToTopicFromRowMenuRetagsWithoutReordering() async throws {
+        let model = try fixture(); flat(model)
+        for topic in model.topics { _ = try await model.store?.createTopic(topic) }
+        for chat in model.chats { try await model.store?.put(chat, kind: "chat", id: chat.id) }
+        let before = ids(model)
+        let row = try XCTUnwrap(rows(build(model)).first { $0.id == "c" })
+        let menu = PiMenus.menu(SidebarChatRowView.entries(model: model, chat: row.chat, state: row.state))
+        XCTAssertTrue(PiMenus.perform("moveSessionToTopic-c-billing", in: menu))
+        for _ in 0..<200 where model.record("c")?.topicID != "billing" { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(ids(model), before)
+        XCTAssertEqual(rows(build(model)).first { $0.id == "c" }?.state.topicTag, "Billing")
+        XCTAssertEqual(rows(build(model)).first { $0.id == "c" }?.state.projectTag, "project")
+        XCTAssertTrue(model.sidebarListsFlat)
+    }
+
+    @MainActor func testUnkeptFocusedSideUsesItsSelectedParentsProjectAndUntrustedSelectionFallsBack() async throws {
+        let model = try fixture(); prepareNewChat(model); flat(model)
+        model.selectedID = "o1"; model.focusedSessionID = "unsaved-side"; model.selectedWorkspaceID = "project"
+        model.newChat()
+        let created = try await waitForNewChat(model, after: "o1")
+        XCTAssertEqual(created.workspaceID, "other")
+        model.workspaces[1].trusted = false
+        model.selectedID = "o1"; model.focusedSessionID = "o1"; model.selectedWorkspaceID = "other"
+        model.newChat()
+        let fallback = try await waitForNewChat(model, after: "o1")
+        XCTAssertEqual(fallback.workspaceID, "project")
+    }
+
+    @MainActor func testRetainedChatStillOpensHistoryWithoutAHelper() async throws {
+        let model = try fixture(); flat(model)
+        let journal = try SearchJournal(model.root.appendingPathComponent("retained.jsonl"), id: "retained")
+        try journal.message("reply", role: "assistant", "Retained answer")
+        var retained = chat("retained", in: "missing", order: 99); retained.path = journal.url.path
+        model.chats.append(retained); try await model.store?.put(retained, kind: "chat", id: retained.id)
+        await model.openFromSidebar(retained.id)
+        XCTAssertEqual(model.selectedID, "retained")
+        XCTAssertEqual(model.selected?.messages.first?.text, "Retained answer")
+        XCTAssertTrue(model.hosts.isEmpty)
+        XCTAssertEqual(rows(build(model)).first { $0.id == "retained" }?.state.projectTag, "Retained chats")
+    }
+
+}
+
+private final class FlatStoreGate: @unchecked Sendable {
+    let release = DispatchSemaphore(value: 0)
+}
+private extension MetadataStore {
+    func holdFlatReads(_ gate: FlatStoreGate, held: @Sendable () -> Void) { held(); gate.release.wait() }
+}
+
+extension SidebarFlatTopicsTests {
+    @MainActor func testAChoiceAndPageMadeDuringRestoreWinOverTheLateRead() async throws {
+        let model = try fixture(); model.sidebarPageSizes = [:]
+        let store = try XCTUnwrap(model.store), gate = FlatStoreGate()
+        await withCheckedContinuation { (held: CheckedContinuation<Void, Never>) in
+            Task.detached { await store.holdFlatReads(gate) { held.resume() } }
+        }
+        let started = expectation(description: "restore reached its store read")
+        let restoring = Task { started.fulfill(); try await model.restoreProjectSidebarStates() }
+        await fulfillment(of: [started], timeout: 2)
+        model.setSidebarFlat(true)
+        model.setSidebarShownRoots("flat:all", to: 15, in: "")
+        gate.release.signal()
+        try await restoring.value
+        XCTAssertTrue(model.sidebarListsFlat)
+        XCTAssertEqual(model.sidebarShownRoots("flat:all"), 15)
+        let saved = await model.flushProjectSidebarState(); XCTAssertTrue(saved)
+        model.sidebarViewState = SidebarViewState(); model.sidebarPageSizes = [:]
+        try await model.restoreProjectSidebarStates()
+        XCTAssertTrue(model.sidebarListsFlat); XCTAssertEqual(model.sidebarShownRoots("flat:all"), 15)
+    }
+
+    @MainActor func testNewChatRechecksTrustAfterItsAsynchronousDefaultsRead() async throws {
+        let model = try fixture(); prepareNewChat(model); flat(model)
+        let saved = await model.flushProjectSidebarState(); XCTAssertTrue(saved)
+        let store = try XCTUnwrap(model.store), gate = FlatStoreGate()
+        await withCheckedContinuation { (held: CheckedContinuation<Void, Never>) in
+            Task.detached { await store.holdFlatReads(gate) { held.resume() } }
+        }
+        model.selectedID = "o1"; model.selectedWorkspaceID = "other"; model.newChat()
+        XCTAssertTrue(model.workspaceChangesInFlight.contains("other"))
+        model.workspaces.removeAll { $0.id == "other" }
+        gate.release.signal()
+        for _ in 0..<200 where !model.workspaceChangesInFlight.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.selectedID, "o1")
+        XCTAssertTrue(model.pendingChatIDs.isEmpty)
+    }
+
+    @MainActor func testChoiceBeforeRestorePreservesStoredPagesAndTheirRevisionFloor() async throws {
+        let model = try fixture()
+        let saved = SidebarViewState(flat: false, shownRoots: ["flat:all": 25], revision: Int64(Date().timeIntervalSince1970 * 1_000_000) + 1_000_000_000)
+        try await model.store?.put(saved, kind: SidebarViewState.recordKind, id: SidebarViewState.recordID, revision: saved.revision)
+        model.setSidebarFlat(true)
+        let flushed = await model.flushProjectSidebarState(); XCTAssertTrue(flushed)
+        model.sidebarViewState = SidebarViewState(); model.sidebarPageSizes = [:]
+        try await model.restoreProjectSidebarStates()
+        XCTAssertTrue(model.sidebarListsFlat)
+        XCTAssertEqual(model.sidebarShownRoots("flat:all"), 25)
+        XCTAssertGreaterThan(model.sidebarViewState.revision, saved.revision)
+    }
+
+    @MainActor func testEditsDuringAWriteKeepTheLatestModeAndBothPageCounts() async throws {
+        let model = try fixture(); let store = try XCTUnwrap(model.store)
+        let archive = SidebarSessionPresentation.archiveGroupID("flat:all")
+        let saved = SidebarViewState(flat: false, shownRoots: ["flat:all": 25, archive: 15], revision: 4)
+        try await store.put(saved, kind: SidebarViewState.recordKind, id: SidebarViewState.recordID, revision: saved.revision)
+        try await model.restoreProjectSidebarStates()
+        let gate = FlatStoreGate()
+        await withCheckedContinuation { (held: CheckedContinuation<Void, Never>) in
+            Task.detached { await store.holdFlatReads(gate) { held.resume() } }
+        }
+        model.setSidebarFlat(true); model.setSidebarShownRoots("flat:all", to: 35, in: "")
+        model.setSidebarShownRoots(archive, to: 25, in: "")
+        await Task.yield()
+        model.setSidebarFlat(false); model.setSidebarShownRoots("flat:all", to: 5, in: "")
+        model.setSidebarShownRoots(archive, to: 45, in: "")
+        gate.release.signal()
+        let flushed = await model.flushProjectSidebarState(); XCTAssertTrue(flushed)
+        model.sidebarViewState = SidebarViewState(); model.sidebarPageSizes = [:]
+        try await model.restoreProjectSidebarStates()
+        XCTAssertFalse(model.sidebarListsFlat)
+        XCTAssertNil(model.sidebarViewState.shownRoots["flat:all"])
+        XCTAssertEqual(model.sidebarShownRoots("flat:all"), 5); XCTAssertEqual(model.sidebarShownRoots(archive), 45)
+    }
+
+    @MainActor func testGlobalWriteFailureIsReportedAndIncludedInTheQuitFlush() async throws {
+        let model = try fixture(); await model.store?.close()
+        flat(model)
+        let saved = await model.flushProjectSidebarState(timeout: 0.2)
+        XCTAssertFalse(saved); XCTAssertTrue(model.dirtySidebarViewState)
+        XCTAssertTrue(model.error?.contains("Sidebar preferences could not be saved") == true)
     }
 }

@@ -134,6 +134,8 @@ actor FileSyntaxReader {
     private struct Cached { let ink: [FileSyntaxReader.Ink]; var used: Int }
     private var cache: [Int: Cached] = [:]
     private var clock = 0
+    private var suspended = false
+    private var lifetime = 0
     private weak var view: FileTextView?
     /// The most text one read for lexical state asks for, in UTF-16 units.
     static let chunkUnits = 64 << 10
@@ -144,7 +146,17 @@ actor FileSyntaxReader {
     /// A closed tab's passes stop at their next chunk.
     deinit { reader.cancel() }
 
+    func suspend() {
+        suspended = true; lifetime &+= 1
+        reader.cancel(); reader = FileSyntaxReader(); cache = [:]; pending = []
+    }
+    func resume() {
+        guard suspended else { return }
+        suspended = false
+    }
+
     func colors(line: Int, piece: Range<Int>, text: String) -> [FileTextColorRun] {
+        guard !suspended else { return [] }
         if generation != source.generation { generation = source.generation; reader.cancel(); reader = FileSyntaxReader(); cache = [:]; pending = [] }
         clock &+= 1
         if var cached = cache[line] {
@@ -165,7 +177,7 @@ actor FileSyntaxReader {
         let length = source.utf16Length(ofLine: line)
         guard length <= SyntaxHighlighter.limit, !pending.contains(line), let whole = source.text(ofLine: line, range: 0..<length) else { return [] }
         pending.insert(line)
-        let reader = reader, asked = generation, language = language, final = source.isLineFinal(line)
+        let reader = reader, asked = generation, lifetime = lifetime, language = language, final = source.isLineFinal(line)
         let load: FileSyntaxReader.Load = { [weak source] start in
             guard let source, source.generation == asked else { return nil }
             let end = source.readEnd(from: start, units: Self.chunkUnits)
@@ -177,7 +189,7 @@ actor FileSyntaxReader {
         }
         Task { [weak self] in
             let ink = await reader.tokens(line: line, text: whole, final: final, language: language, load: load)
-            guard let self, self.source.generation == asked else { return }
+            guard let self, !self.suspended, self.lifetime == lifetime, self.source.generation == asked else { return }
             self.pending.remove(line)
             self.clock &+= 1
             self.cache[line] = Cached(ink: ink, used: self.clock)

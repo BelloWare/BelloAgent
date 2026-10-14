@@ -33,7 +33,7 @@ final class PiMenuTests: XCTestCase {
         XCTAssertEqual(PiMenus.built, before + 1, "One press, one menu")
         let menu = try XCTUnwrap(shown.last)
         XCTAssertEqual(menu.items.filter { !$0.isSeparatorItem }.map(\.title),
-                       ["New Chat", "New Topic…", "Changes and History…", "Show Chats", "Topics", "Flat", "Collapse Project", "Manage Project…"])
+                       ["New Chat", "New Topic…", "Changes and History…", "Collapse Project", "Manage Project…"])
         XCTAssertTrue(PiMenus.perform("newTopic-pane-project", in: menu), "The menu's commands run as the old menu's did")
         XCTAssertEqual(model.topicEditor?.projectID, "pane-project")
         // The chat actions read the chat when they open.
@@ -53,5 +53,22 @@ final class PiMenuTests: XCTestCase {
         XCTAssertEqual(entries.count, 3)
         XCTAssertTrue(entries[1].isSeparator)
         if case .note(let text) = entries[2] { XCTAssertEqual(text, "Caption") } else { XCTFail("The caption stays") }
+    }
+
+    @MainActor func testCheckedItemsKeepTheirIconsBesideTheNativeCheckColumn() throws {
+        for checked in [false, true] {
+            let menu = PiMenus.menu([
+                .button("Topics", systemImage: "folder", checked: !checked) {},
+                .button("Flat", systemImage: "list.bullet", checked: checked) {},
+                .button("Plain choice", checked: true) {}
+            ])
+            XCTAssertEqual(menu.items.map(\.state), [checked ? .off : .on, checked ? .on : .off, .on])
+            for (item, symbol) in zip(menu.items, ["folder", "list.bullet"]) {
+                let icon = try XCTUnwrap(item.image, "Checking \(item.title) must not remove its icon")
+                XCTAssertEqual(icon.tiffRepresentation, NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.tiffRepresentation)
+                XCTAssertNil(item.view, "AppKit owns the separate state, icon and title columns")
+            }
+            XCTAssertNil(menu.items[2].image, "An iconless choice remains iconless")
+        }
     }
 }

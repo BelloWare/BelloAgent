@@ -1,0 +1,56 @@
+# File-folder navigation · 0.1.127
+
+Workstream: `dev/a127-file-folders`, from the post-0.1.126 `dev/next` tree.
+This branch is committed and pushed independently; it does not merge or push `dev/next`.
+
+## Behavior and implementation
+
+- Every file-header path component is a Pi button. Trusted projects use the containing root (including additional roots); other paths use home abbreviation or `/`. Middle components collapse into an ancestor menu. Labels retain start truncation, full-path tooltips and accessible names.
+- Folder menus use `PiMenuEntry` in the existing Pi popover surface. Nested menus load on entry and have a Back row, plus Show in Folder Tree and Reveal in Finder. Files open through `WorkspaceModel.openFile`, like chat links; new tabs stay in the originating pane/window, and existing tabs retain the host's deduplication behavior.
+- Show Folder / Hide Folder (`file-folder-toggle`) opens a resizable tree beside the existing viewer. Default off, preferred width 200 pt; settings persist per `TabContainer`, with old saved data defaulting safely. The preferred width is 140–420 pt; narrow layouts use at most 46% without overwriting it.
+- A trusted containing project root anchors the tree. Otherwise it starts at the file's parent; Up stops at home for paths under home, or `/` elsewhere. Opening the tree reveals/selects the file. Show in Folder Tree reveals the particular folder chosen in a menu. Pointer press or Return opens a file; Left/Right collapse/expand and navigate to parent/child; Up/Down use native table selection. Rows and controls have VoiceOver labels.
+- Generic breadcrumb, listing, navigation and virtualized AppKit tree code lives in `packages/bello-views/Sources/FileFinder`; Pi styling and workspace wiring live in the app. No sidebar files change.
+
+## Implementation decisions
+
+Ignored entries remain visible, dimmed, using Quick Open's ignore decisions: tracked files matching ignore patterns remain normal; untracked ignored files/folders dim. Dot names and filesystem-hidden entries dim too. `.git`, directory symlinks and special files are omitted as in Quick Open. Non-repository browsing applies inherited/global ignore rules; Git receives bounded NUL-delimited input for unusual names.
+
+Each level displays 200 entries, with Show N more expanding a retained sorted snapshot. The current file or ancestor is pinned within that cap. A separate safety ceiling of 100,000 entries / 16 MiB of names is disclosed if reached; that ceiling is not an alphabetical page of the entire directory. Folders sort before files, then by natural alphabetical name.
+
+All directory enumeration, metadata/ignore reads and Git subprocess work runs away from the main actor. Superseded/hidden/collapsed reads forward cancellation to the worker, with generation checks also rejecting successful stale completions. Already blocked filesystem syscalls cannot be forcibly interrupted; their results cannot publish after cancellation. Open/expand/Back/Up refresh listings as appropriate. No per-folder vnode watchers are retained: refreshing on opening avoids descriptor churn and notifications from unrelated busy folders.
+
+Browsing is a user-only viewer action. No listing goes to the helper, and no tool permission, project trust, capture or model access changes. Existing missing-file, binary, image/PDF and trust-revocation rules stay in `FileTab`. Browsing an untrusted tab's folder does not make its file content readable.
+
+## Evidence
+
+All fixture files and preferences are generated/isolated. Tests use the repository's separate native test-host identity, scratch defaults and private clipboard/Keychain guard. The installed app is never launched. No named result bundles are requested; text logs are the evidence.
+
+Evidence directory: `/Users/admin/Library/Caches/BelloSwiftWork/build-file-folders/evidence/`.
+
+- Failing first: `native-red.log` records the missing folder-toggle and breadcrumb buttons; `views-red.log` records the absent package contracts before implementation. Later behavioral regressions were also reproduced before their fixes: `show-folder-red.log`, `up-cancel-red.log`, `review-ui-red.log`, pointer/selection diagnosis in `single-click-red.log` / `click-diagnostic.log`, `cap-warning-red.log`, `keyboard-red.log`, `restore-pagination-ax-red.log`, and `fallback-roundtrip-red.log`.
+- Mutation checks: `mutation-selection.log` clears revealed selection and fails the reveal/selection assertion; `mutation-cancellation.log` removes forwarding to the detached reader and fails the cancellation expectation. Sources were restored in `finally`; `views-focused-final.log` passes all 13 folder-browser checks afterwards.
+- Native affected classes: `native-affected.log` passes 67 tests across ChatFileLinkTests, FileBlameTests, FileFolderTests (then 8 tests), FileTabTests, TabHostTests and TabPaneTests. `native-find-serial.log` passes all 16 FileFindTabTests alone. The expanded FileFolderTests class is now serial and passes all **19** checks alone in `native-folders-release.log`; the final file-find repeat passes 16 in `native-find-release.log`. The final mount-lifetime change also passes all 36 FileBlameTests/FileTabTests/TabPaneTests in `native-lifecycle-release.log`. These seven affected classes contain **94 passing tests** at their final sizes (7 + 10 + 19 + 16 + 16 + 10 + 16).
+- Full views package: `views-final.log`, **205 executed, 202 passed, 3 pre-existing performance skips, zero failures**. A prior `views-gate.log` run timed out in three pre-existing `FileFindTests` completion waits; the unchanged class passed all 14 checks in `views-file-find-repeat.log`, then the fresh full run passed. The final reusable-tree accessibility change is covered by native checks and `views-focused-release.log` (14 folder-browser tests, macOS 13 package build).
+- The first full native parallel lane (`native-parallel.log`, eight workers) passed 2,328, skipped 35, and failed one pre-existing `SessionMarkUnreadTests` bulk-menu-count assertion (Mark 1 as Read instead of Mark 2 as Read). `native-parallel-summary.json` preserves its failure detail before result-bundle pruning. All 11 tests in that unchanged class pass on their standalone repeat, `native-unread-repeat.log`.
+- The second eight-worker lane (`native-parallel-final.log`) likewise passed 2,328 and skipped 35, with a different failure: the unchanged `ModelCatalogEndpointTests.testLegacyPickerShowsDirectRepairAndChangesItsMountedRowsAfterSelection` received a nil window image. Its summary is `native-parallel-final-summary.json`; all 19 methods pass standalone in `native-catalog-repeat.log`.
+- The final four-worker lane (`native-parallel-release.log`, `native-parallel-release-summary.json`) completed all **2,364 tests: 2,328 passed, 35 skipped, one failed**. The unchanged `SmoothReadingPositionTests.testALongDraftKeepsThePageKeysForItself` measured conversation offset 6,427 instead of 6,444.5 (tolerance 2 pt). This fixture does not open file tabs. All five tests in the unchanged class pass standalone in `native-smooth-repeat.log`. None of the three full lanes is reported as a clean pass; the independent failures and repeats remain explicit, and their root causes are not established here.
+
+Commands use `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-file-folders scripts/test-macos.sh -only-testing:PiAppTests/<Class>`. Lanes are classified with `python3 scripts/test-lanes.py list`; serial classes run alone. Views use `swift test --package-path packages/bello-views --scratch-path /Users/admin/Library/Caches/BelloSwiftWork/build-file-folders/views`. Full native parallel lanes use the skip list from `scripts/test-lanes.py parallel`; the final run reduces workers from eight to four.
+
+## Reviews and gallery
+
+Read-only Codex reviews use `gpt-6.1-sol`, reasoning `xhigh`, as required by `NEXT-RELEASE.md`. Planning advice and the first navigation/scroll findings are in `plan-review.txt` and `review-1.txt`; subsequent keyboard/warning findings are in `review-2.txt`. The whole-change pass (`whole-change-review.txt`) caught restored-tab mounting, Return pagination focus and informational accessibility roles. The subsequent `final-review.txt` caught an unmatched hide transition when an unavailable-side fallback disappeared. Every finding has a failing-first regression and a fix. Restored file content resumes only when mounted in a window, without eagerly opening hidden restored tabs, and unmounting suspends reads/watchers; remounting refreshes siblings. The final bounded review, `lifecycle-review.txt`, reports **no findings**, including adjacent restored-content, switching and pop-out/move behavior. Its advice is to complete the remaining validation/gallery, consider explicitly awaiting watcher arming on both mounts in the round-trip test, and distinguish automated accessibility checks from a manual VoiceOver listening pass.
+
+The full `UIScreenshotTests` run (`gallery-full.log`) executed all three methods: two passed, one skipped when a pre-existing subagent-steering window capture returned no image, zero failures. It wrote 230 main-gallery captures, 92 subagent captures and 66 steering captures under `/Users/admin/Library/Caches/BelloSwiftWork/build-file-folders/gallery-file-folders/`.
+
+The twelve new captures are `24i-file-folder-tree-*`, `24j-file-folder-menu-*`, and `24k-file-folder-long-path-*`, each light/dark at normal/narrow widths. All twelve initial images were viewed. The normal tree/menu scenes were sound; visual QA caught stale window-server frames after narrow resizing/theme switches and a long-path fixture captured before reading finished. The new scene helper now explicitly lays out/displays/flushes the windows, waits for an actual visible menu window, and waits for the long-path document to be ready. These are capture-only changes; production sources are unchanged after the final native lane. The bounded `gallery-review.txt` reports **no findings**.
+
+The final `UIScreenshotTests` repeat uses `PI_APP_UI_GALLERY_TABS_ONLY=1` for the main gallery and also runs both subagent galleries. **All three methods pass, zero skips/failures**, in `gallery-final-tabs.log`. Its root is `/Users/admin/Library/Caches/BelloSwiftWork/build-file-folders/gallery-file-folders-final/`; the 34 main captures are in `screenshots/`. All twelve final feature PNGs in that directory were opened and inspected, with file hashes and dimensions in `evidence/gallery-inspection.json`:
+
+| Prefix | Inspected in light/dark, normal/narrow | Result |
+| --- | --- | --- |
+| `24i-file-folder-tree-` | Expanded path, selected file, siblings, dimmed hidden entry, header controls | Correct themes, selection and narrow truncation; no owned layout defect. |
+| `24j-file-folder-menu-` | Folder-first menu, file siblings, Show in Folder Tree / Reveal in Finder | Popup and all entries visible at both widths; no clipping or stale frames. |
+| `24k-file-folder-long-path-` | Root, ellipsis ancestors, filename and loaded file text | Collapsed paths remain legible and button-sized; both themes match. |
+
+Full-run captures and the initial visual failures remain preserved in the original root. Automated keyboard/accessibility contracts do not replace a manual VoiceOver listening pass; no manual listening pass was performed.

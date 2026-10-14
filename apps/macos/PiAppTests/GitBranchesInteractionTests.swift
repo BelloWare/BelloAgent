@@ -136,6 +136,96 @@ final class GitBranchesInteractionTests: XCTestCase {
         XCTAssertEqual(scene.controller.panel, .history)
         XCTAssertEqual(scene.controller.logFilter.reference, branch.ref)
     }
+    @MainActor func testBranchHistoryReferenceRetiresOnlyAfterSwitchingRepositories() async throws {
+        for sameNamedBranch in [false, true] {
+            let scene = try GitBranchesScene(); defer { scene.close() }
+            let other = try GitBranchesFixture(); defer { other.close() }
+            let branch = try await scene.repo.divergedBranch()
+            if sameNamedBranch { try other.git(["branch", "topic"]) }
+            try other.write("f.txt", "repository B file history\n"); try other.commit("B file history")
+            let expected = try other.git(["rev-parse", "HEAD"]).trimmingCharacters(in: .newlines)
+            let beforeA = try scene.repo.snapshot(), beforeB = try other.snapshot()
+            let folder = scene.repo.root.appendingPathComponent("subfolder")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try await scene.ready()
+            let controller = scene.controller
+            controller.showBranchHistory(branch.ref, repository: try XCTUnwrap(controller.repositoryIdentity))
+            controller.logFilter.text = "B file history"
+            controller.logFilter.author = "Branch Fixture"
+            controller.logFilter.allBranches = true
+            controller.showFileHistory("f.txt")
+            var finished = controller.refreshesFinished
+            controller.root = folder.path
+            try await eventually("same repository folder history", timeout: .seconds(30)) {
+                controller.refreshesFinished > finished && !controller.loading
+            }
+            XCTAssertEqual(controller.logFilter.reference, branch.ref, "A subfolder keeps its repository's branch filter")
+
+            finished = controller.refreshesFinished
+            controller.root = other.path
+            // FileReviewState opens the file's history immediately after
+            // selecting its repository, while the new status is still unread.
+            controller.showFileHistory("f.txt")
+            try await eventually("other repository file history", timeout: .seconds(30)) {
+                controller.refreshesFinished > finished && !controller.loading
+            }
+            XCTAssertNil(controller.logFilter.reference, "Repository A's ref cannot filter B, even if B has a same-named branch")
+            XCTAssertEqual(controller.logFilter.text, "B file history")
+            XCTAssertEqual(controller.logFilter.author, "Branch Fixture")
+            XCTAssertTrue(controller.logFilter.allBranches)
+            XCTAssertEqual(controller.logFilter.path, "f.txt")
+            XCTAssertEqual(controller.commits.map(\.hash), [expected])
+            XCTAssertEqual(controller.notice, "")
+            XCTAssertEqual(try scene.repo.snapshot(), beforeA)
+            XCTAssertEqual(try other.snapshot(), beforeB)
+        }
+    }
+    @MainActor func testBranchHistoryWaitsForTheSelectedRepositorySnapshot() async throws {
+        let scene = try GitBranchesScene(); defer { scene.close() }
+        let other = try GitBranchesFixture(); defer { other.close() }
+        let branch = try await scene.repo.divergedBranch()
+        try other.git(["switch", "-c", "topic"])
+        try other.write("f.txt", "repository B topic\n"); try other.commit("Repository B topic")
+        let destination = try await other.branch("topic")
+        try other.git(["switch", "main"])
+        let beforeA = try scene.repo.snapshot(), beforeB = try other.snapshot()
+        try await scene.ready()
+        let controller = scene.controller
+        controller.showBranchHistory(branch.ref, repository: try XCTUnwrap(controller.repositoryIdentity))
+        controller.logFilter.text = "Existing filter"
+        let oldFilter = controller.logFilter
+        var held: CheckedContinuation<Void, Never>?, shouldHold = true
+        controller.statusDidRead = {
+            if shouldHold { shouldHold = false; await withCheckedContinuation { held = $0 } }
+        }
+        defer { controller.statusDidRead = nil; held?.resume() }
+        let finished = controller.refreshesFinished
+        controller.root = other.path
+        try await eventually("destination identity before status publication", timeout: .seconds(30)) { held != nil }
+        let identity = try XCTUnwrap(controller.repositoryIdentity)
+        XCTAssertNotEqual(controller.repositoryRoot, identity.root)
+        controller.showBranchHistory(destination.ref, repository: identity)
+        XCTAssertEqual(controller.logFilter, oldFilter, "An unavailable selection cannot start a new filter against the old snapshot")
+        XCTAssertTrue(controller.notice.localizedCaseInsensitiveContains("loading"))
+        var callbacks = 0
+        controller.onShowBranchHistory = { _, _ in callbacks += 1 }
+        controller.showBranchHistory(destination.ref, repository: identity)
+        XCTAssertEqual(callbacks, 0, "The adapter also waits for a matching repository snapshot")
+        controller.onShowBranchHistory = nil
+        controller.statusDidRead = nil; held?.resume(); held = nil
+        try await eventually("destination status publication", timeout: .seconds(30)) {
+            controller.refreshesFinished > finished && !controller.loading
+        }
+        XCTAssertNil(controller.logFilter.reference)
+        controller.showBranchHistory(destination.ref, repository: identity)
+        try await eventually("retry reads the destination branch", timeout: .seconds(30)) {
+            controller.commits.contains { $0.hash == destination.oid }
+        }
+        XCTAssertEqual(controller.logFilter.reference, destination.ref)
+        XCTAssertEqual(controller.notice, "")
+        XCTAssertEqual(try scene.repo.snapshot(), beforeA)
+        XCTAssertEqual(try other.snapshot(), beforeB)
+    }
     @MainActor func testStashPreviewIncludesUntrackedAndDropQuestionCancels() async throws {
         let scene = try GitBranchesScene(); defer { scene.close() }
         try scene.repo.write("saved.txt", "saved untracked\n")

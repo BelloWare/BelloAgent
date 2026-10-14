@@ -613,7 +613,8 @@ import AppKit
         guard !repository.read || repositoryRoot != root || self.status != status || (root != nil && repository.context?.generation != repositoryGeneration) else { return true }
         if repository.read, case .repository(let owner) = messageOwner, owner != root { commitMessage = "" }
         guard current(generation), !closed, !suspended else { return false }
-        if repositoryRoot != root {
+        let changedRepository = repositoryRoot != root
+        if changedRepository {
             commitReadInterrupted = nil
             selection = nil; clearHistorySelection()
             diff = []; commits = []; branches = []; stashes = []
@@ -631,6 +632,11 @@ import AppKit
         recountChecked()
         // The snapshot's observers can stop us too. Nothing may restart the
         // watcher or a diff read after that stop.
+        guard current(generation), !closed, !suspended else { return false }
+        // A branch belongs to the confirmed repository, unlike text/author/
+        // path filters. Publish the new snapshot before changing the filter
+        // because its observer schedules a history read against that snapshot.
+        if changedRepository, logFilter.reference != nil { logFilter.reference = nil }
         guard current(generation), !closed, !suspended else { return false }
         resumeAmendPrefill()
         return true
@@ -749,6 +755,10 @@ import AppKit
     public var onShowBranchHistory: ((String, RepositoryIdentity) -> Void)?
     public func showBranchHistory(_ reference: String, repository identity: RepositoryIdentity) {
         guard acceptsRepository(identity) else { return }
+        guard repositoryRoot == identity.root else {
+            notice = "The repository was still loading. Choose Show in History again."; return
+        }
+        notice = ""
         if let onShowBranchHistory { onShowBranchHistory(reference, identity); return }
         selectedCommit = nil; logFilter = GitLogFilter(reference: reference); panel = .history
     }

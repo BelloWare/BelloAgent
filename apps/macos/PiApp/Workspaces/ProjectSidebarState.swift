@@ -19,10 +19,8 @@ struct ProjectSidebarState: Codable, Sendable, Equatable, Identifiable {
     /// How many root chats each of this project's groups shows, keyed by topic
     /// id, or by the project's own id for the chats outside every topic.
     var shownRoots: [String: Int]?
-    /// The project lists its chats flat: one list, newest activity first,
-    /// each chat's topic as a tag, no topic folders (owner, 2026-10-13).
-    /// The choice is the project's, like its disclosure; nil (the default,
-    /// and every record written before) groups the chats by topic.
+    /// Legacy per-project choice, decoded for the one-time global migration.
+    /// Preserved for older versions; no longer controls this project.
     var flatTopics: Bool?
     /// Managed groups default folded, independently of saved side folds.
     var expandedSubagents: [String]?
@@ -81,27 +79,13 @@ extension WorkspaceModel {
         }
         return groups
     }
-    /// As the sidebar shows it: what the reader saved, unless a relaunch
-    /// opened it for this launch to show the chat it reopened
-    /// (`WorkspaceLaunchSelection.swift`).
-    /// Whether the project lists its chats flat (`ProjectSidebarState.flatTopics`).
-    /// No project's chats have no topics to flatten, so it never is.
-    func projectListsFlat(_ id: String) -> Bool {
-        id != WorkspaceRecord.scratchID && projectSidebarStates[id]?.flatTopics == true
-    }
-    /// The Topics / Flat choice in a project's menu.
-    func setProjectListsFlat(_ id: String, flat: Bool) {
-        guard id != WorkspaceRecord.scratchID, sidebarProjects.contains(where: { $0.id == id }) else { return }
-        var value = projectSidebarStates[id] ?? ProjectSidebarState(id: id)
-        value.flatTopics = flat ? true : nil
-        saveProjectSidebarState(value)
-    }
     func projectIsExpanded(_ id: String) -> Bool { (projectSidebarStates[id]?.expanded ?? true) || launchReveal.projects.contains(id) }
     /// Whether the sidebar lists archived chats: the reader's switch, or, for
     /// this launch only, the archived chat a relaunch reopened.
     var sidebarShowsArchived: Bool { showArchivedSessions || launchReveal.archivedChats }
 
     func restoreProjectSidebarStates() async throws {
+        let sidebarRevision = sidebarViewState.revision
         let known = Set(sidebarProjects.map(\.id))
         let stored = try await store?.list(ProjectSidebarState.self, kind: "project-sidebar") ?? []
         projectSidebarStates = Dictionary(stored.filter { known.contains($0.id) && $0.revision >= 0 && $0.revision < Int64.max }
@@ -109,8 +93,9 @@ extension WorkspaceModel {
         // Folds and page sizes come back with the disclosure they belong to.
         collapsedSidebarSides = Set(projectSidebarStates.values.flatMap { $0.collapsedSides ?? [] })
         sidebarPageSizes = projectSidebarStates.values.reduce(into: [:]) { pages, state in
-            for (group, count) in state.shownRoots ?? [:] { pages[group] = count }
+            for (group, count) in state.shownRoots ?? [:] where !SidebarSessionPresentation.isCombinedGroup(group) { pages[group] = count }
         }
+        try await restoreSidebarViewState(legacy: stored, unlessChangedSince: sidebarRevision)
     }
 
     // MARK: Fold and page
@@ -125,7 +110,11 @@ extension WorkspaceModel {
         let stored: Int? = value == SidebarSessionPresentation.pageSize ? nil : value
         guard sidebarPageSizes[groupID] != stored else { return }
         sidebarPageSizes[groupID] = stored
-        saveSidebarPresentation(in: projectID)
+        if SidebarSessionPresentation.isCombinedGroup(groupID) {
+            sidebarViewPagesChanged.insert(groupID)
+            var next = sidebarViewState; next.shownRoots[groupID] = stored
+            saveSidebarViewState(next)
+        } else { saveSidebarPresentation(in: projectID) }
     }
     /// Folding a chat's side chats is a decision about the sidebar, and it
     /// outlives the group view, the archive switch and the launch.
@@ -144,7 +133,7 @@ extension WorkspaceModel {
         var value = projectSidebarStates[projectID] ?? ProjectSidebarState(id: projectID)
         let folded = collapsedSidebarSides.filter { record($0)?.workspaceID == projectID }.sorted()
         value.collapsedSides = folded.isEmpty ? nil : Array(folded.prefix(ProjectSidebarState.maximumPresentationEntries))
-        let groups = Set(([projectID, SidebarSessionPresentation.flatGroupID(projectID)] + topics(in: projectID).map(\.id))
+        let groups = Set(([projectID] + topics(in: projectID).map(\.id))
             .flatMap { [$0, SidebarSessionPresentation.archiveGroupID($0)] })
         let pages = sidebarPageSizes.filter { groups.contains($0.key) }
         value.shownRoots = pages.isEmpty ? nil : pages
@@ -181,7 +170,7 @@ extension WorkspaceModel {
         saveProjectSidebarState(value)
         // A flat project shows the chat without opening its folder: the
         // folder's own disclosure stays as the reader left it.
-        if !projectListsFlat(item.workspaceID), let topicID = effectiveTopicID(for: item) { setTopicExpanded(topicID, expanded: true) }
+        if !sidebarListsFlat, let topicID = effectiveTopicID(for: item) { setTopicExpanded(topicID, expanded: true) }
     }
 
     func newChat(in projectID: String) {
@@ -243,9 +232,12 @@ extension WorkspaceModel {
             for id in dirtyProjectSidebarStates where projectSidebarWrites[id] == nil && retried.insert(id).inserted {
                 scheduleProjectSidebarWrite(id)
             }
-            if projectSidebarWrites.isEmpty { return dirtyProjectSidebarStates.isEmpty }
+            if projectSidebarWrites.isEmpty {
+                if !dirtyProjectSidebarStates.isEmpty { return false }
+                break
+            }
             do { try await Task.sleep(for: .milliseconds(10)) } catch { return false }
         }
-        return true
+        return await flushSidebarViewState(timeout: max(0, deadline - ProcessInfo.processInfo.systemUptime))
     }
 }

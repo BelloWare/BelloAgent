@@ -79,3 +79,26 @@ Local rows show a secondary upstream name and ahead/behind counts on the right. 
 Failing-first evidence: `logs/polish-tracking-red.log` (one case, ten expected missing-metadata failures) and `logs/polish-ui-red.log` (one case, three expected current-value/name/icon failures). After the changes, `logs/polish-package.log` passes all 33 branch/stash package cases (19 + 14); `logs/polish-native-gallery.log` passes all eleven native cases (ten interaction + one gallery). The native additions check current-mark alignment, accessibility reuse, section spacing/style, visible counts at 280-point popup width and catalog retention across filtering and keyboard movement.
 
 All 42 regenerated PNGs in `gallery-polish/` were viewed through seven `gallery-polish-review/` contact sheets, with original-size light/dark narrow branch and search images also inspected. The divergent fixture shows `origin/topic ↑2 ↓1`; the in-sync row keeps only the upstream name. Branch/search, stash preview, New Stash, comparison and both confirmations remain readable at wide, 920×600 and narrow host sizes. Read-only gpt-6.1-sol/xhigh review of the polish reports no introduced findings.
+
+## Upstream integration — 2026-10-15
+
+Fetched `origin` and merged `origin/dev/next` at `efe431a345fe68fba24cd8381940a9fb835d68fc` into this workstream, after polish commit `2339dbb4`. Git merged the release notes and project registrations without textual conflicts; both parents' registrations remain present. The incoming file folders, global Flat sidebar and file-review continuity are preserved alongside the already merged hunk staging. This integration does not choose or override the commit default.
+
+Combined review caught a branch-filter lifetime issue when File Review opens History in another repository. A confirmed repository change now retires only the branch reference after publishing the new snapshot; same-repository subfolders retain it, and text/author/path/all-branches filters stay intact. Choosing Show in History while a different repository's status is still pending reports that the repository was loading and asks the reader to try again. The callback and fallback both wait for a matching published snapshot, and a successful retry clears that notice. This keeps the shared hook small for the History stream's adapter.
+
+Both regressions failed before their repairs: `logs/polish-integration-red.log` has five expected assertions for absent and same-named destination branches, including Git's bad-revision error and the missing destination commit. `logs/polish-early-history-red.log` has three expected assertions for premature filter/callback admission. The final tests assert actual destination commit IDs, preserved generic filters and unchanged index/worktree snapshots, including a held status read and successful retry.
+
+| Integration check | Result | Log under `logs/` |
+| --- | --- | --- |
+| Complete merged views package, before the two controller integration repairs | 265 total, 3 skipped, 0 failures | `polish-merged-package-all.log` |
+| Controller package regressions after the publication reset | 40 passed, 0 failures (`GitRepositoryStateTests`, `GitRevealTests`, `GitCommitScopeTests`) | `polish-merged-controller-package.log` |
+| Affected native branch, File Review and commit browsing classes after the publication reset | 35 total, 34 passed, 1 pre-existing benchmark skip, 0 failures | `polish-merged-native-affected.log`, `polish-merged-native-affected-summary.json` |
+| Final branch interactions, including the delayed-status admission repair | 12 passed, 0 failures | `polish-merged-native-branches.log` |
+| Serial repository-switch class, alone | 17 passed, 0 failures | `polish-merged-native-repository-switch.log` |
+| One final merged-tree full native parallel lane, four workers | 2,431 total: 2,395 passed, 36 skipped, 0 failures; exit 0 | `polish-merged-native-parallel.log`, `polish-merged-native-parallel-summary.json` |
+
+The final full-lane counts come from `xcresulttool get test-results summary`; testing took 478.4 seconds on macOS 14.8/arm64. Its command and timing/exit record are `logs/polish-merged-native-parallel-command.txt` and `logs/polish-merged-native-parallel-run.json`, with all 105 serial classes excluded. All twelve branch interaction cases and the standalone gallery passed. The 36 skips are existing optional probes/captures/benchmarks, including the incoming File Review gallery, whose separate capture environment was not enabled. No new branch/stash test is skipped. Only this validation record changed after the run.
+
+The required final read-only gpt-6.1-sol/xhigh whole-change review is clean after both integration repairs. It confirms preserved project registrations, callback composition and commit-default ownership. The existing six safety-guard mutation results above still apply; this polish and integration do not change those guards.
+
+The merged-tree full lane regenerated all 42 PNGs in `gallery-merged/`. All seven `gallery-merged-review/` contact sheets were inspected, plus original-size narrow branch and stash-preview images. The branch/search, compare, stash-preview, New Stash and delete/drop confirmation scenes remain consistent in both appearances and all three host sizes. No additional visual correction was needed after integration.

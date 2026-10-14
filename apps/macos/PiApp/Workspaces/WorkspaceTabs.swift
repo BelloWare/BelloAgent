@@ -8,9 +8,9 @@ import FileView
 extension WorkspaceModel {
     /// Opens a file in a tab of the pane (or shows the tab it is open in,
     /// wherever it is), at lines if given, as a file of a project.
-    @discardableResult func openFile(_ url: URL, lines: ClosedRange<Int>? = nil, project: String? = nil) -> FileTab {
+    @discardableResult func openFile(_ url: URL, lines: ClosedRange<Int>? = nil, project: String? = nil, in container: TabContainer? = nil) -> FileTab {
         let key = FileTab.key(for: url)
-        let tab = tabs.open(kind: FileTab.kind, key: key) { FileTab(url: url, projectID: project ?? projectID(holding: key), lines: lines) }
+        let tab = tabs.open(kind: FileTab.kind, key: key, in: container) { FileTab(url: url, projectID: project ?? projectID(holding: key), lines: lines) }
         // ⌘P's list offers it again with nothing typed.
         quickOpen.noteOpened(URL(fileURLWithPath: key), projectID: (tab as? FileTab)?.projectID ?? project ?? projectID(holding: key))
         if let file = tab as? FileTab {
@@ -19,6 +19,21 @@ extension WorkspaceModel {
             return file
         }
         return FileTab(url: url, projectID: project)
+    }
+    /// Viewer navigation uses the same opening path as chat links and checks
+    /// the destination's project afresh. Restored tabs are configured too.
+    func configureFileNavigation(_ tab: HostedTab) {
+        guard let file = tab as? FileTab else { return }
+        file.openNearbyFile = { [weak self, weak file] url in
+            guard let self, let file else { return }
+            self.openFile(url, in: file.container).showTop()
+        }
+        file.containingFolderRoot = { [weak self, weak file] in
+            guard let self, let file, let project = self.workspaces.first(where: { $0.id == file.projectID }), project.trusted else { return nil }
+            return project.roots.map { URL(fileURLWithPath: $0, isDirectory: false) }
+                .filter { root in let path = file.url.path; return path == root.path || path.hasPrefix(root.path == "/" ? "/" : root.path + "/") }
+                .max { $0.path.count < $1.path.count }
+        }
     }
     /// A file a chat's tool read or changed, from its card: the path as the
     /// host resolved it, else as the call gave it (from home, or from the
