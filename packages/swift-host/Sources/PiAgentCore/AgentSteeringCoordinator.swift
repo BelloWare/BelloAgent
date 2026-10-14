@@ -4,24 +4,25 @@ import Foundation
 /// with v2. Only runnable turns are retained here; journal state owns identity.
 actor AgentSteeringCoordinator {
     typealias Open = @Sendable (SubagentEnvironment, SubagentPlan) async throws -> AgentSession
-    private let open: Open
-    private let settled: SubagentCoordinator.Settled
-    private struct Job {
+    let open: Open
+    let settled: SubagentCoordinator.Settled
+    struct Job {
         let owner: AgentSession, environment: SubagentEnvironment, plan: SubagentPlan
         var turn: AgentChildTurn
         var child: AgentSession?
         var task: Task<Void,Never>?
-        var cancelled = false, allocated = false
+        var cancelled = false, allocated = false, sealed = false
     }
-    private var jobs: [String:Job] = [:]
-    private var queues: [String:[String]] = [:]
-    private var active: [String:Int] = [:]
-    private var gates: [String:AsyncGate] = [:]
-    private var cancelledThrough: [String:Int] = [:]
+    var jobs: [String:Job] = [:]
+    var queues: [String:[String]] = [:]
+    var active: [String:Int] = [:]
+    var gates: [String:AsyncGate] = [:]
+    var signals: [String:AgentWakeSignal] = [:]
+    var cancelledThrough: [String:Int] = [:]
     init(open: @escaping Open = { env, plan in try AgentSteeringCoordinator.makeChild(env,plan) }, settled: @escaping SubagentCoordinator.Settled = { await $0.close() }) {
         self.open = open; self.settled = settled
     }
-    private func gate(_ owner: String) -> AsyncGate {
+    func gate(_ owner: String) -> AsyncGate {
         if let gate = gates[owner] { return gate }; let gate = AsyncGate(); gates[owner] = gate; return gate
     }
     static func makeChild(_ env: SubagentEnvironment, _ plan: SubagentPlan) throws -> AgentSession {
@@ -45,7 +46,7 @@ actor AgentSteeringCoordinator {
         do { let result = try await command(call,key:key,parent:parent); await lock.release(); return result }
         catch { await lock.release(); throw error }
     }
-    private func command(_ call: ToolCall, key: SubagentCallKey, parent: AgentSession) async throws -> JSON {
+    func command(_ call: ToolCall, key: SubagentCallKey, parent: AgentSession) async throws -> JSON {
         let digest = sha256(Data((call.name + call.arguments.encoded()).utf8))
         if let receipt = try await parent.agentReceipt(key,digest:digest) { return receipt }
         if call.name == "subagent_status" { return try await status(call.arguments,parent:parent) }
@@ -101,15 +102,16 @@ actor AgentSteeringCoordinator {
             queues[parent.id,default:[]].append(turn.id); pump(parent.id)
         }
         if call.name == "subagent_stop" { await stop(owner:parent.id,target:.init(childID:call.arguments["child_id"].text!,turn:call.arguments["turn"].int!),human:false) }
+        await signal(parent.id).pulse()
         return op.receipt
     }
-    private func newTurn(child: String, number: Int, text: String, key: SubagentCallKey, env: SubagentEnvironment) -> AgentChildTurn {
+    func newTurn(child: String, number: Int, text: String, key: SubagentCallKey, env: SubagentEnvironment) -> AgentChildTurn {
         .init(childID:child,turn:number,executionID:UUID().uuidString,parentExecutionID:env.executionID,generation:env.generation,runtimeID:env.runtimeID,epoch:env.executionID,inputID:UUID().uuidString,task:text,call:key)
     }
-    private func validateReply(_ id: String?, child: String, author: String, state: AgentFamilyState) throws {
+    func validateReply(_ id: String?, child: String, author: String, state: AgentFamilyState) throws {
         if let id { guard let message = state.messages[id], message.childID == child, message.author == author else { throw AgentError("subagent_reply", "reply_to is not a message from this child/parent pair") } }
     }
-    private func pump(_ owner: String) {
+    func pump(_ owner: String) {
         while active[owner,default:0] < SubagentPolicy.maximumActiveChildren,
               let position = queues[owner]?.firstIndex(where: { candidate in
                   guard let pending = jobs[candidate] else { return true }
@@ -121,7 +123,7 @@ actor AgentSteeringCoordinator {
             job.task = Task { await self.run(id) }; jobs[id] = job
         }
     }
-    private func run(_ id: String) async {
+    func run(_ id: String) async {
         guard var job = jobs[id] else { return }
         var child: AgentSession?
         do {
@@ -146,12 +148,18 @@ actor AgentSteeringCoordinator {
             job.turn.status = child == nil ? .notExecuted : .interrupted
             job.turn.result = SubagentToolResult(plan:job.plan,status:job.turn.status,error:(error as? AgentError) ?? AgentError("subagent_interrupted", "The turn did not finish and was not restarted"),began:child != nil)
         }
+        await Task { await self.finishJob(job,child:child) }.value
+    }
+    func finishJob(_ job: Job, child: AgentSession?) async {
+        let lock = gate(job.owner.id)
         do {
-            if let child { try await child.saveAgentTerminal(job.turn) }
-            try await job.owner.appendAgentRecord(JournalRecordKind.agentTerminal,job.turn)
+            try await lock.acquire()
+            do { if jobs[job.turn.id]?.sealed != true { try await seal(job:job,child:child) }; await lock.release() }
+            catch { await lock.release(); throw error }
         } catch { await job.owner.failFamilyAccounting(error) }
-        if let child { await Task { await self.settled(child) }.value }
-        jobs.removeValue(forKey:id); active[job.owner.id,default:0] -= 1; pump(job.owner.id)
+        if let child { await settled(child) }
+        jobs.removeValue(forKey:job.turn.id); active[job.owner.id,default:0] -= 1; pump(job.owner.id)
+        await signal(job.owner.id).pulse()
     }
     func stop(owner: String, target: AgentTurnTarget, human: Bool) async {
         guard var job = jobs[target.id], job.owner.id == owner, !job.cancelled else { return }

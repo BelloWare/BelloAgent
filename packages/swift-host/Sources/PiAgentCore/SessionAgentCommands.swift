@@ -9,6 +9,11 @@ extension AgentSession {
             familyCancelled = { generation in Task { await coordinator.cancel(owner:owner,runtimeID:runtime,through:generation) } }
         }
     }
+    func startAgentEpoch() throws {
+        guard agentCoordinator != nil, !isSubagent, subagents.family != nil, let execution = activeTaskPresentation?.executionID,
+              subagents.family?.run?.epoch != execution else { return }
+        try appendAgentRecord(JournalRecordKind.familyRun,AgentFamilyRun(epoch:execution))
+    }
     func agentState() -> AgentFamilyState { subagents.family ?? AgentFamilyState(ownerID:subagents.origin?.link.budgetOwnerSessionID ?? id) }
     func agentReceipt(_ key: SubagentCallKey, digest: String) throws -> JSON? {
         guard let op = subagents.family?.operations[AgentOperation.id(key)] else { return nil }
@@ -36,6 +41,8 @@ extension AgentSession {
                   subagents.family?.latest(message.childID)?.turn == message.turn,
                   subagents.family?.latest(message.childID)?.status.terminal == false else { throw SubagentRecovery.damaged() }
         }
+        do { try AgentMailboxPolicy.validate(proposed,state:agentState()) }
+        catch { if (error as? AgentError)?.code == "coordination_limit" { familyStopReason = error as? AgentError; stop() }; throw error }
         try journal?.synchronize() // issuing assistant is durable before acceptance
         try journal?.promoteToSteering(managedChild:false)
         var op = proposed, nextAccounting = accounting, total = spend

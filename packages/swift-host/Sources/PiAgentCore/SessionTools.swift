@@ -75,6 +75,13 @@ extension AgentSession {
     func invokeTool(_ call: ToolCall) async throws -> JSON {
         if SubagentSteeringContract.names.contains(call.name) {
             guard agentCoordinator != nil, let result = agentPreparedResults[call.id] else { throw AgentError("tool_unavailable", "Agent control was not admitted") }
+            if result["isError"].flag != true, call.name == "subagent_wait" || call.name == "subagent_start" && call.arguments["mode"].text == "wait",
+               let coordinator = agentCoordinator, let text = result["content"].list.first?["text"].text {
+                let receipt = try JSON.parse(Data(text.utf8))
+                let waited = try await coordinator.wait(receipt,args:call.arguments,parent:self)
+                var wire = result; var combined = receipt; combined["wait"] = waited
+                wire["content"] = [textBlock(combined.encoded())]; return wire
+            }
             return result
         }
         if call.name == "subagent" {
@@ -207,12 +214,11 @@ extension AgentSession {
         if let coordinator = agentCoordinator {
             for call in calls where SubagentSteeringContract.names.contains(call.name) {
                 do {
-                    guard !isSubagent else { throw AgentError("tool_unavailable", "Only reports are available in a child") }
                     let key = try agentToolKey(call)
-                    let receipt = try await coordinator.prepare(call,key:key,parent:self)
+                    let receipt = try await (isSubagent ? coordinator.report(call,key:key,child:self) : coordinator.prepare(call,key:key,parent:self))
                     var wire = resultText(receipt.encoded())
                     if let child = receipt["child_id"].text, let plan = subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) {
-                        wire["nativeSubagent"] = ["version":2,"sessionId":JSON(child),"delegationId":JSON(plan.origin.link.delegationID),"budgetOwnerSessionId":JSON(id),"parentAssistantMessageId":JSON(key.assistantMessageID),"toolCallId":JSON(call.id),"turn":receipt["turn"],"route":receipt["route"],"status":"accepted"]
+                        wire["nativeSubagent"] = ["version":2,"sessionId":JSON(child),"delegationId":JSON(plan.origin.link.delegationID),"budgetOwnerSessionId":JSON(id),"parentAssistantMessageId":JSON(key.assistantMessageID),"toolCallId":JSON(call.id),"turn":receipt["turn"],"route":receipt["route"],"status":"accepted","effects":"completed"]
                     }
                     agentPreparedResults[call.id] = wire
                 } catch { agentPreparedResults[call.id] = resultText((error as? AgentError)?.message ?? "Agent control interrupted",error:true) }

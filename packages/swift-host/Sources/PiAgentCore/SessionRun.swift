@@ -132,6 +132,7 @@ extension AgentSession {
                 // request), and the context may be compacted before it.
                 let continued=continuing
                 continuing=false
+                if continued { try startAgentEpoch() }
                 // Pi's _overflowRecoveryAttempted: one compact-and-retry until a
                 // user message arrives or a reply completes.
                 var overflowRecoveryAttempted=retryFirstRequest && contextRecovery["consumed"].flag == true
@@ -145,7 +146,9 @@ extension AgentSession {
                     // Each round makes a model request. At the chat's cost
                     // limit it stops here, before pending steering is delivered.
                     try enforceCostLimit()
-                    let drained=resumingFailedRequest ? false : try await drainSteering()
+                    let humanDrained=resumingFailedRequest ? false : try await drainSteering()
+                    let agentDrained=resumingFailedRequest || agentCoordinator == nil ? false : try await agentCoordinator!.boundary(self,final:false)
+                    let drained = humanDrained || agentDrained
                     if drained { overflowRecoveryAttempted=false }
                     // A run started for pending input that delivered none (a
                     // queued edit took the hold first, or the message left)
@@ -270,6 +273,8 @@ extension AgentSession {
                     if outputLimited { event("output_limit") }
                     // A completed or output-limited answer stays in context.
                     // Compaction runs only before another pending model request.
+                    if let coordinator = agentCoordinator, try await coordinator.boundary(self,final:true) { continue }
+                    if !steering.isEmpty, queueEdit == nil { continue }
                     try finishPresentedTask(outputLimited ? "output-limited" : "completed")
                     if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
                     if !queue.isEmpty, queueEdit == nil { try enforceCostLimit() }

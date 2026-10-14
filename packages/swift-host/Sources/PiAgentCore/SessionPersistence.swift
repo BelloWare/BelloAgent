@@ -421,7 +421,7 @@ extension AgentSession {
         if message.taskExecutionID == nil { message.taskExecutionID=activeTaskPresentation?.executionID }
         if message.turn == nil, !currentTurnID.isEmpty { message.turn=currentTurnID }
         let observedAt = observedAt ?? displayClock()
-        var record: JSON=["type":"message","message":message.pi]; for (key,value) in extra.map { record[key]=value }
+        var record: JSON=["type":"message","id":JSON(message.id),"message":message.pi]; for (key,value) in extra.map { record[key]=value }
         var delegated = subagents; try delegated.consume(record, sessionID: id)
         try journal?.append(record,id:message.id,flush:journalFlushesEachRecord)
         subagents = delegated

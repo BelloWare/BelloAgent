@@ -11,6 +11,7 @@ struct AgentOperation: Codable, Sendable, Equatable {
     var message: AgentFamilyMessage?
     var waitTargets: [AgentTurnTarget]?
     var epoch: String
+    var acceptedAt: Double = Date().timeIntervalSince1970
     var id: String { Self.id(key) }
     static func id(_ key: SubagentCallKey) -> String { sha256(Data((try! subagentJSON(key)).encoded().utf8)) }
 }
@@ -34,9 +35,10 @@ struct AgentFamilyMessage: Codable, Sendable, Equatable {
     var replyTo: String?
     var disposition: String = "pending"
     var rowID: String?
+    var result: JSON? = nil
     var event: JSON {
         var v: JSON = ["event_id":JSON(id),"family_sequence":JSON(sequence),"child_id":JSON(childID),"turn":JSON(turn),"author":JSON(author),"kind":JSON(kind),"text":JSON(text),"task":JSON(task)]
-        if let replyTo { v["reply_to"] = JSON(replyTo) }; return v
+        if let replyTo { v["reply_to"] = JSON(replyTo) }; if let result { v["result"] = result }; return v
     }
 }
 struct AgentDelivery: Codable, Sendable, Equatable {
@@ -56,6 +58,7 @@ struct AgentFamilyState: Codable, Sendable, Equatable {
     var turns: [String:AgentChildTurn] = [:]
     var messages: [String:AgentFamilyMessage] = [:]
     var deliveries: [String:AgentDelivery] = [:]
+    var contextRows: [String:String] = [:]
     var run: AgentFamilyRun?
     var revision = 0
     var sequence = 0

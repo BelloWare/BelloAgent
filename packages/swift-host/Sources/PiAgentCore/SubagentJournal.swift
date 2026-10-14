@@ -32,6 +32,13 @@ struct SubagentJournalState: Codable, Sendable, Equatable {
     var family: AgentFamilyState?
 
     mutating func consume(_ record: JSON, sessionID: String) throws {
+        if record["type"].text == "message", !record["message"]["nativeAgentDelivery"].isNull,
+           let id = record["id"].text {
+            if family == nil { family = AgentFamilyState(ownerID:origin?.link.budgetOwnerSessionID ?? sessionID) }
+            let digest = sha256(Data(record["message"]["content"].encoded().utf8))
+            if let old = family?.contextRows[id], old != digest { throw damaged() }
+            family?.contextRows[id] = digest
+        }
         if record["type"].text == "message", record["message"]["role"].text == "toolResult" {
             let metadata = record["message"]["nativeSubagent"]
             if let key = metadata["delegationId"].text, let plan = plans[key],

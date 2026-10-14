@@ -58,6 +58,7 @@ extension AgentSession {
         if steer { steering.append(input) } else { queue.append(input) }; commandState(input,"queued")
         do { try persistState() } catch { if steer { steering.removeLast() } else { queue.removeLast() }; commands.removeAll{$0["turnId"].text == input.turnID}; throw error }
         event(steer ? "steering.queued" : "queue.changed")
+        if steer, let coordinator = agentCoordinator { let owner = id; Task { await coordinator.wake(owner) } }
         let held = queueEdit != nil
         let queued=runTask != nil || paused || held
         if runTask == nil, !paused, !held { queuePaused=false; launch() }
@@ -182,6 +183,7 @@ extension AgentSession {
         var overrides: JSON=[:]; if let model=submission.model { overrides["modelOverride"]=JSON(model) }; if let level=submission.thinkingLevel { overrides["thinkingLevel"]=JSON(level) }
         if let capacity=submission.contextWindow { overrides["contextWindow"]=JSON(capacity) }; if let output=submission.maxOutputTokens { overrides["maxOutputTokens"]=JSON(output) }; if let limit=submission.modelOutputLimit { overrides["modelOutputLimit"]=JSON(limit) }
         try append(message,record:overrides)
+        if newTask { try startAgentEpoch() }
         // The conversation holds it now; the saved state no longer needs to.
         if delivering?.submission.turnID == submission.turnID { delivering=nil }
         taskRootID=message.taskRootID; boundary=context; currentTurnID=submission.turnID; activeSubmission=submission; retrySubmission=nil; commandState(submission,"delivered"); try persistState(active:true); event("message_end")
