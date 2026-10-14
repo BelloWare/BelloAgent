@@ -298,27 +298,17 @@ enum MetricFormat {
     }
 }
 
-/// The model's decode speed, the standard definition (LLMPerf, vLLM's TPOT):
-/// a request's reported output tokens after the first (N − 1, hidden
-/// reasoning included) over the time from its first generated token to its
-/// last. Over that span the first token is already out, so only N − 1 arrive
-/// in it; and the response's terminal event, which a gateway can hold while it
-/// computes usage and cost, carries none. A group — a turn, a session, a route,
-/// a time slice — is one division of the sums, Σ(N − 1) ÷ Σ span, over the
-/// requests counted: completed, at least two output tokens, and a span long
-/// enough to be a measurement. Any other request contributes nothing rather
-/// than a zero, and the sample counts keep that visible.
-///
-/// This is the only throughput the app shows. It is never computed from a
-/// request still in flight, and it never includes the wait before the first
-/// token, so it reads as the model's decode speed rather than as round-trip
-/// latency.
+/// Output speed: all reported output tokens N (hidden reasoning included)
+/// divided by TTFT + first-to-last-output span, i.e. request sent → last output.
+/// A held terminal/usage event after the last output adds no time. Groups use
+/// one division of sums, ΣN / Σ(TTFT + span), over completed measured requests.
+/// Both timings must be finite and nonnegative, N ≥ 1, and the total duration
+/// must meet the floor. Other requests contribute nothing but remain counted.
 struct SettledThroughput: Equatable, Sendable, Codable {
-    /// Summed decode spans (first to last output) of the sampled requests.
+    /// Summed request-to-last-output durations, including TTFT. The internal
+    /// name is retained for callers; serialized sums use a new key below.
     var decodeMilliseconds: Double = 0
-    /// Summed output tokens after each sampled request's first (N − 1): what
-    /// the rate divides, not a token count to show. The reported output of a
-    /// request, N, is shown from its own usage, never from here.
+    /// All reported output tokens of the measured requests, reasoning included.
     var outputTokens: Double = 0
     /// Requests counted in the rate.
     var samples = 0
@@ -330,28 +320,39 @@ struct SettledThroughput: Equatable, Sendable, Codable {
         self.samples = samples; self.requests = requests
     }
 
-    /// The shortest decode span that is a measurement. A reply delivered in
-    /// one burst spans a few milliseconds from its first output to its last,
-    /// and its tokens over that read as 100,000 tok/s: below this, timestamp
-    /// jitter and batched delivery make the span meaningless. The helper
-    /// applies the same floor to the rate it reports
-    /// (`metrics.minimumDecodeSpanMs`), and so does the archive's SQL
-    /// (`GatewayAccounting.settledThroughputSQL`).
+    // Old serialized sums have no per-request raw timings and cannot be
+    // converted. Leave them unmeasured until accounting reads the raw archive.
+    private enum CodingKeys: String, CodingKey {
+        case decodeMilliseconds = "outputDurationMilliseconds"
+        case outputTokens = "measuredOutputTokens"
+        case samples = "outputSpeedSamples"
+        case requests
+    }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        decodeMilliseconds = try values.decodeIfPresent(Double.self, forKey: .decodeMilliseconds) ?? 0
+        outputTokens = try values.decodeIfPresent(Double.self, forKey: .outputTokens) ?? 0
+        samples = try values.decodeIfPresent(Int.self, forKey: .samples) ?? 0
+        requests = try values.decodeIfPresent(Int.self, forKey: .requests) ?? 0
+    }
+
+    /// Shortest total duration (TTFT + decode span) that is a measurement.
+    /// Keep this floor in sync with the helper's `metrics.minimumDecodeSpanMs`
+    /// and the archive's `PayloadArchive.settledThroughputSQL`.
     static let minimumDecodeMilliseconds: Double = 250
-    /// The floor as the explanations write it: `250 ms`.
     static let floorLabel = "\(Int(minimumDecodeMilliseconds)) ms"
 
-    /// Fold one request in: its decode span (first to last output) and its
-    /// reported output tokens, N. Either figure missing, fewer than two tokens
-    /// (one token has no tokens after it) or a span shorter than
-    /// `minimumDecodeMilliseconds` leaves the rate untouched. The request is
-    /// still counted.
-    mutating func add(decodeMilliseconds: Double?, outputTokens: Double?) {
+    /// Fold raw per-request timings and reported output. Missing/invalid
+    /// observations or a total below the floor still count as a request.
+    mutating func add(ttftMilliseconds: Double?, decodeMilliseconds: Double?, outputTokens: Double?) {
         requests += 1
-        guard let decode = DurationObservation.valid(decodeMilliseconds), decode >= Self.minimumDecodeMilliseconds,
-              let output = outputTokens, output.isFinite, output >= 2 else { return }
-        self.decodeMilliseconds += decode
-        self.outputTokens += output - 1
+        guard let ttft = DurationObservation.valid(ttftMilliseconds),
+              let decode = DurationObservation.valid(decodeMilliseconds),
+              let output = outputTokens, output.isFinite, output >= 1 else { return }
+        let duration = ttft + decode
+        guard duration.isFinite, duration >= Self.minimumDecodeMilliseconds else { return }
+        self.decodeMilliseconds += duration
+        self.outputTokens += output
         samples += 1
     }
 
@@ -361,20 +362,20 @@ struct SettledThroughput: Equatable, Sendable, Codable {
         samples += other.samples; requests += other.requests
     }
 
-    /// Nil unless the sums are a real measurement: a decode time that is
-    /// finite and positive, and an output that is not negative (or NaN). A
+    /// Nil unless the sums are a real measurement: a total duration that is
+    /// finite and positive, and an output that is positive and finite. A
     /// sum that overflowed must never read as 0 tok/s.
     var tokensPerSecond: Double? {
-        guard samples > 0, decodeMilliseconds.isFinite, decodeMilliseconds > 0, outputTokens >= 0 else { return nil }
+        guard samples > 0, decodeMilliseconds.isFinite, decodeMilliseconds > 0, outputTokens.isFinite, outputTokens >= 1 else { return nil }
         let rate = outputTokens / (decodeMilliseconds / 1_000)
         return rate.isFinite ? rate : nil
     }
-    /// `34 tok/s`, or nil when no request reported both figures.
+    /// `34 tok/s`, or nil when no request supplied a valid measured sample.
     var label: String? { tokensPerSecond.map(MetricFormat.throughput) }
     /// What the dialog says when only some requests were measurable.
     var coverage: String? { samples < requests ? "\(samples)/\(requests) requests measured" : nil }
 
-    static let explanation = "Output tokens after the first ÷ time from the first generated token to the last (hidden reasoning included); replies under \(floorLabel) of generation are left out. Not a live rate, and not round-trip latency."
+    static let explanation = "Output tokens ÷ time from sending the request to the last output token (time to first token included; hidden reasoning included). Completed requests are combined as total tokens ÷ total duration; requests with missing timing or output, no output tokens, or a duration under \(floorLabel) are left out. The wait for a trailing terminal or usage event is excluded."
 }
 
 /// A first-token latency averaged over the requests that recorded it.

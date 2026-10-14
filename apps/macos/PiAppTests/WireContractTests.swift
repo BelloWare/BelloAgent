@@ -295,20 +295,20 @@ final class WireContractTests: XCTestCase {
     /// output to its last; dividing its tokens by that read as 100,000 tok/s.
     /// A request contributes a settled rate only across 250 ms or more — the
     /// helper's `metrics.minimumDecodeSpanMs` — and still counts as a request
-    /// considered. A measured request contributes its tokens after the first.
+    /// considered. A measured request includes all tokens and its TTFT.
     func testAOneBurstReplyContributesNoSettledRateAndASecondStillDoes() async throws {
         var burst = SettledThroughput()
-        burst.add(decodeMilliseconds: 100, outputTokens: 300)
+        burst.add(ttftMilliseconds: 0, decodeMilliseconds: 100, outputTokens: 300)
         XCTAssertEqual(burst.samples, 0, "100 ms is one burst, not a measurement")
         XCTAssertEqual(burst.requests, 1, "It is still a request considered")
         XCTAssertNil(burst.tokensPerSecond)
         XCTAssertEqual(burst.coverage, "0/1 requests measured")
         var second = SettledThroughput()
-        second.add(decodeMilliseconds: 1_000, outputTokens: 301)
-        XCTAssertEqual(second.tokensPerSecond, 300, "the 300 tokens after the first over one second")
+        second.add(ttftMilliseconds: 0, decodeMilliseconds: 1_000, outputTokens: 301)
+        XCTAssertEqual(second.tokensPerSecond, 301, "all tokens over one second with zero TTFT")
         var floor = SettledThroughput()
-        floor.add(decodeMilliseconds: 250, outputTokens: 51)
-        XCTAssertEqual(floor.tokensPerSecond, 200, "The floor itself is a measurement")
+        floor.add(ttftMilliseconds: 0, decodeMilliseconds: 250, outputTokens: 51)
+        XCTAssertEqual(floor.tokensPerSecond, 204, "The floor itself is a measurement")
 
         // The archive's settled rate, which the report, the dashboard and the
         // turn figures read, applies the same floor in SQL.
@@ -331,20 +331,17 @@ final class WireContractTests: XCTestCase {
         }
         let window = try await archive.dashboard(DashboardFilter(from: Date(timeIntervalSince1970: 1900), until: Date(timeIntervalSince1970: 2001), bucketCount: 2))
         let settled = window.gateway.settledThroughput
-        XCTAssertEqual(settled.samples, 1, "Only the one-second span is a measurement")
-        XCTAssertEqual(settled.decodeMilliseconds, 1_000)
-        XCTAssertEqual(settled.tokensPerSecond, 300, "Never (300 + 300) / 1.1 s, and never 3,000 tok/s")
+        XCTAssertEqual(settled.samples, 2, "TTFT brings both total durations past the floor")
+        XCTAssertEqual(settled.decodeMilliseconds, 1_900)
+        XCTAssertEqual(settled.tokensPerSecond, 602 / 1.9, "Both requests contribute all output and total duration")
         try await archive.close()
     }
 
     // MARK: A held terminal event is not decode time
 
-    /// A gateway can hold `response.completed` while it computes usage and
-    /// cost. This reply generated its 101 tokens over one second, and the
-    /// wire gateway held the terminal event two seconds more. It decoded at
-    /// (101 − 1) / 1 s: the session pill, the sidebar's latest rate and
-    /// Session info all quote that, never 101 over the three seconds from the
-    /// first token to the terminal event.
+    /// A gateway holds its terminal event two seconds past the last output.
+    /// Every app surface and the helper must use all 101 tokens over dispatch
+    /// to last output, including TTFT and excluding that terminal wait.
     @MainActor func testAHeldTerminalEventDilutesNeitherTheSessionPillNorTheSidebarNorSessionInfo() async throws {
         let chat = try await WireChat()
         addTeardownBlock { @MainActor in await chat.close() }
@@ -364,7 +361,8 @@ final class WireContractTests: XCTestCase {
         // stops short of the two seconds the gateway held the terminal event.
         XCTAssertGreaterThanOrEqual(span, 500); XCTAssertLessThan(span, 1_900, "The model generated for one second, never the held two")
         XCTAssertGreaterThanOrEqual(terminal - last, 1_900, "The gateway held the terminal event two seconds after the last token")
-        let decode = 100 / (span / 1_000), diluted = 101 / ((terminal - first) / 1_000)
+        let dispatch = try XCTUnwrap(timings["dispatch"]?.number)
+        let decode = 101 / ((last - dispatch) / 1_000), diluted = 101 / ((terminal - dispatch) / 1_000)
         print("PERF held-terminal decodeTokPerSec=\(String(format: "%.1f", decode)) dividedToTerminal=\(String(format: "%.1f", diluted)) spanMs=\(Int(span)) heldMs=\(Int(terminal - last))")
         XCTAssertEqual(try XCTUnwrap(chat.session.metrics["metrics"]?.object?["decodeTokensPerSecond"]?.number), decode, accuracy: 1e-6,
                        "The helper's own figure for the attempt is the app's")
@@ -401,7 +399,7 @@ final class WireContractTests: XCTestCase {
 
         // On screen: the gauge pill in the chat's own pane, read off its pixels.
         let rendered = try await SessionTimingTests.recognizedText(in: chat.window)
-        XCTAssertTrue(rendered.contains(MetricFormat.throughput(decode)), "The pill quotes the decode rate. OCR: \(rendered)")
+        XCTAssertTrue(rendered.contains(MetricFormat.throughput(decode)), "The pill quotes output speed including TTFT. OCR: \(rendered)")
         XCTAssertFalse(rendered.contains(MetricFormat.throughput(diluted)), "No figure divides by the held terminal. OCR: \(rendered)")
     }
 

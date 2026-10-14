@@ -40,7 +40,7 @@ enum MonitorRateChartSpec {
             for bucket in buckets {
                 guard let rate = MonitorRateAverage.rate(bucket) else { continue }
                 marks.append(.point(x: MonitorRateAverage.middle(bucket).timeIntervalSinceReferenceDate, y: rate, color: .piBrandOrange, size: 30))
-                accessible.append(.init(label: MonitorRateAverage.middle(bucket).formatted(date: .omitted, time: .shortened), value: menuBarRate(rate) + " tok/s decode",
+                accessible.append(.init(label: MonitorRateAverage.middle(bucket).formatted(date: .omitted, time: .shortened), value: menuBarRate(rate) + " tok/s output",
                                         x: MonitorRateAverage.middle(bucket).timeIntervalSinceReferenceDate, y: rate))
             }
         }

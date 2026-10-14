@@ -73,9 +73,9 @@ final class HostTransport: @unchecked Sendable {
         }
     }
     func send(_ frame: [String: WireValue]) {
-        let counted = frame["method"]?.string != "turn.stop" && frame["kind"]?.string != "capture.ack"
+        let counted = frame["method"]?.string != "turn.stop" && frame["kind"]?.string != "capture.ack" && frame["kind"]?.string != "read.cancel"
         sendLock.lock()
-        // Capture acknowledgments and Stop already have separate admission.
+        // Capture acknowledgments, read cancellation and Stop have separate admission.
         // They must not consume the ordinary slots and reject the 32nd command.
         guard !counted || pendingCommands < 32 else { sendLock.unlock(); receive(.failed("The host command queue is full.")); return }
         if counted { pendingCommands += 1 }; sendLock.unlock()

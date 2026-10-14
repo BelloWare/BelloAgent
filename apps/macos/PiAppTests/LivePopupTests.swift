@@ -73,7 +73,7 @@ final class LivePopupTests: LivePopupTestCase {
         feed(&store, [event(3, phase: "final", output: 400, at: 2_100)], at: 2)
         XCTAssertTrue(store.active.isEmpty); XCTAssertEqual(store.completions.count, 1)
         // The completion keeps its final usage and clocks; the monitor invents
-        // no rate from them (settled speed is the archive's decode rate).
+        // no rate from them (settled speed is the archive's output speed).
         let settled = try XCTUnwrap(store.completions.first?.request)
         XCTAssertEqual(settled.output, 400); XCTAssertTrue(settled.finalOutput)
         XCTAssertEqual(settled.dispatch, 100); XCTAssertEqual(settled.complete, 2_100)
@@ -374,7 +374,7 @@ final class LiveMonitorDesignTests: LivePopupTestCase, SerialTestLane {
         var queries: [(Date?, Date)] = []
         let monitor = MenuBarMetricsController(load: { _,_,_ in throw CaptureFailure.unavailable }, scopedLoad: { period, until, _, from, _ in
             queries.append((from, until))
-            // The average decode rate the monitor quotes: 48,200 tokens over 344 s.
+            // The average output speed the monitor quotes: 48,200 tokens over 344 s.
             var totals = gateway(output: 48_200, cost: 1.24)
             totals.decodeMilliseconds = 344_000; totals.decodeOutputTokens = 48_200; totals.decodeSamples = 36
             return MenuBarSnapshot(period: period, from: from ?? period.start(until: until), until: until, counts: DashboardCounts(dispatched: 36, completed: 36), gateway: totals, workspaces: 1, sessions: 3, compactionRequests: 0, costUnreported: 0, costInvalid: 0, costConflicts: 0, models: models, modelGroups: 3, offset: 0)

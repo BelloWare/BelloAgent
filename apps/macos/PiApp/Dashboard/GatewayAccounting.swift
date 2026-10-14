@@ -290,9 +290,9 @@ struct GatewayTotals: Codable, Sendable, Equatable {
     /// Paired input/cache observations only. Optional for older snapshots.
     var uncachedInputReportedTokens: Double?
     var uncachedInputSamples: Int?
-    /// The settled throughput's sums over the requests it counts: their
-    /// decode spans (first to last output) and their output tokens after the
-    /// first (N − 1, not a token total to show). Optional for older snapshots.
+    /// Measured requests' summed TTFT + decode span and all output tokens.
+    /// Optional for older snapshots; new serialized keys prevent old sums
+    /// from being read as the new definition without per-request raw timings.
     var decodeMilliseconds: Double?
     var decodeOutputTokens: Double?
     var decodeSamples: Int?
@@ -305,10 +305,41 @@ struct GatewayTotals: Codable, Sendable, Equatable {
     /// Wall time of the latest retained request, seconds since 1970, for the sidebar's recency stamp.
     var lastActivity: Double?
 
-    /// Output tokens after the first over first → last output for this
-    /// scope, whether that is one reply, a turn or the whole session's log. A
-    /// snapshot saved before the app recorded decode time reports no samples
-    /// rather than a zero rate.
+    private enum CodingKeys: String, CodingKey {
+        case inputSplit
+        case outputSplit
+        case requests
+        case costSamples
+        case costUSD
+        case cacheHits
+        case cacheMisses
+        case cacheUnreported
+        case cacheConflicts
+        case cacheReadTokens
+        case cacheWriteTokens
+        case cacheReadSamples
+        case cacheWriteSamples
+        case expiredRecords
+        case tokens
+        case reasoningCostUSD
+        case reasoningCostSamples
+        case models
+        case missingUsage
+        case replyLog
+        case uncachedInputReportedTokens
+        case uncachedInputSamples
+        case decodeMilliseconds = "outputDurationMilliseconds"
+        case decodeOutputTokens = "measuredOutputTokens"
+        case decodeSamples = "outputSpeedSamples"
+        case ttftMilliseconds
+        case ttftSamples
+        case turnCount
+        case lastActivity
+    }
+
+    /// Output tokens over request-to-last-output duration for this scope.
+    /// Older aggregate-only snapshots remain unmeasured until refreshed from
+    /// raw archived requests; unrelated usage and TTFT figures are preserved.
     var settledThroughput: SettledThroughput {
         SettledThroughput(decodeMilliseconds: decodeMilliseconds ?? 0, outputTokens: decodeOutputTokens ?? 0,
                           samples: decodeSamples ?? 0, requests: requests)

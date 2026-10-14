@@ -135,7 +135,9 @@ extension AgentSession {
     /// transcript's own row format, each with the request attempts it came
     /// from. Byte-bounded like a history window; `next` continues it.
     public func versionPage(_ params: JSON) async throws -> JSON {
+        try Task.checkCancellation()
         try await loadFullHistory()
+        try Task.checkCancellation()
         let id = try identity(params["messageId"])
         guard let ids = versions.ledger.versions(of: id), let index = ids.firstIndex(of: id) else {
             throw AgentError("version_missing", "That message has no earlier versions.")
@@ -152,6 +154,8 @@ extension AgentSession {
         guard offset <= rows.count else { throw AgentError("invalid_range", "The version page starts past its last row.") }
         var page: [JSON] = [], bytes = HistoryWindowPolicy.metadataAllowance, end = offset
         for message in rows[offset...] {
+            historyPageStep?("version")
+            try Task.checkCancellation()
             // A version reads as it was: nested edits show no switcher of their own.
             var row = boundedDisplayRow(displayMessage(message)).removing(["versions"])
             if let attempts = message.requestAttemptIDs, !attempts.isEmpty { row["requestAttemptIDs"] = .array(attempts.map { JSON($0) }) }
@@ -163,6 +167,7 @@ extension AgentSession {
         let keys = Set(shown.compactMap { message in message.taskExecutionID.map { TaskPresentationRecord.identity(message.taskRootID ?? "", $0) } })
         let sources = Set(shown.map(\.id))
         let tasks = (try? JSON.parse(JSONEncoder().encode(recentTaskPresentations.filter { keys.contains($0.key) || $0.anchorSourceID.map(sources.contains) == true }))) ?? []
+        try Task.checkCancellation()
         return ["messageId": JSON(id), "version": JSON(index + 1), "count": JSON(ids.count), "live": JSON(visible.contains { $0.id == id }),
                 "messages": .array(page), "start": JSON(offset), "end": JSON(end), "total": JSON(rows.count),
                 "next": end < rows.count ? JSON(end) : .null, "taskRecords": tasks]

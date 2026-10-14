@@ -2,14 +2,14 @@ import AppKit
 import Combine
 
 /// The report's headline output rate and how it was measured.
-/// It is the app's settled decode rate — output tokens after the first over
-/// first to last generated token — the figure each route's row, Session info
+/// It is the app's output speed — all output tokens over request sent to
+/// last generated token (TTFT included) — the figure each route's row, Session info
 /// and the pills show.
 enum ReportThroughputTile {
     static func rate(_ snapshot: DashboardSnapshot) -> SettledThroughput { snapshot.gateway.settledThroughput }
     static func caption(_ snapshot: DashboardSnapshot) -> String {
         let rate = rate(snapshot)
-        return "decode, first to last token · \(rate.samples)/\(snapshot.gateway.requests) measured"
+        return "TTFT included · \(rate.samples)/\(snapshot.gateway.requests) measured"
     }
 }
 
@@ -945,7 +945,7 @@ enum ReportThroughputTile {
     }
     static func subtitle(_ metric: ReportChartMetric) -> String {
         switch metric {
-        case .outputRate: return "Output tokens after the first / first-to-last-token time · drag to select a range"
+        case .outputRate: return "Output tokens / request-to-last-output time (TTFT included) · drag to select a range"
         case .cost: return "Reported USD over time · drag to select a range"
         case .latency: return "p50 and p99 over time, in milliseconds · drag to select a range"
         case .cacheRatio: return "Cache hit ratio over time, % of reported · drag to select a range"

@@ -8,7 +8,7 @@
       runPostActionsOnFailure = "NO">
       <BuildActionEntries>
          <BuildActionEntry
-            buildForTesting = "YES"
+            buildForTesting = "NO"
             buildForRunning = "YES"
             buildForProfiling = "YES"
             buildForArchiving = "YES"
@@ -18,6 +18,20 @@
                BlueprintIdentifier = "42BE788F11D64D797FBD5DBA"
                BuildableName = "Bello Agent.app"
                BlueprintName = "PiApp"
+               ReferencedContainer = "container:PiApp.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "NO"
+            buildForProfiling = "NO"
+            buildForArchiving = "NO"
+            buildForAnalyzing = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "6F7EB7C8D0A93C6C6E9D0C0F"
+               BuildableName = "Bello Agent Tests.app"
+               BlueprintName = "PiAppTestHost"
                ReferencedContainer = "container:PiApp.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -32,9 +46,9 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "42BE788F11D64D797FBD5DBA"
-            BuildableName = "Bello Agent.app"
-            BlueprintName = "PiApp"
+            BlueprintIdentifier = "6F7EB7C8D0A93C6C6E9D0C0F"
+            BuildableName = "Bello Agent Tests.app"
+            BlueprintName = "PiAppTestHost"
             ReferencedContainer = "container:PiApp.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
@@ -54,6 +68,11 @@
       <CommandLineArguments>
       </CommandLineArguments>
       <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "CFFIXED_USER_HOME"
+            value = "$(PROJECT_TEMP_DIR)/PiAppTests-Home"
+            isEnabled = "YES">
+         </EnvironmentVariable>
          <EnvironmentVariable
             key = "PI_APP_TESTING"
             value = "1"

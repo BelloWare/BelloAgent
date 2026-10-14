@@ -51,8 +51,8 @@ final class HistoryExtentTests: XCTestCase {
         XCTAssertNil(chat.view.historyPositions.total)
     }
 
-    @MainActor func testANewerJournalDestinationCancelsTheObsoleteRead() async throws {
-        for destination in [80, 10] {
+    @MainActor func testANewerDestinationCancelsTheObsoleteRead() async throws {
+        for (destination, helper, legacy) in [(80, false, false), (10, false, false), (80, true, false), (10, true, false), (80, true, true)] {
             let file = try journal(turns: 40), reader = HistoryReader()
             let root = scratchRoot("position-cancellation")
             let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
@@ -62,6 +62,17 @@ final class HistoryExtentTests: XCTestCase {
             let view = SessionDisplay(id: item.id)
             model.chats = [item]; model.displays[item.id] = view; model.selectedID = item.id; model.selected = view
             model.adoptInitialHistory(try ConversationHistoryPage(await reader.window(path: file.path)), into: view)
+            if helper {
+                let host = HostSupervisor()
+                try await host.connect(cwd: root, state: root.appendingPathComponent("host"))
+                if legacy {
+                    let connection = try XCTUnwrap(host.connectionID), epoch = try XCTUnwrap(host.epoch)
+                    host.receive(.frame(["v": .number(1), "kind": .string("ready"), "major": .number(1), "engine": .string("swift"),
+                        "engineVersion": .string("1.0.0"), "hostEpoch": .string(epoch),
+                        "capabilities": .array(["responses", "mcp", "steering", "transport-capture"].map(WireValue.string))]), connectionID: connection)
+                }
+                model.hosts[item.workspaceID] = host; model.opened.insert(item.id)
+            }
             let reads = GatedReads(), marker = HistoryWindowEdge.position(0).dropLast()
             defer { reads.open = true; view.abandonJump() }
             model.historyWindowLoader = { _, cursor, newer, around in
@@ -78,6 +89,12 @@ final class HistoryExtentTests: XCTestCase {
             try await eventually("First journal read started") { reads.started == 1 }
             model.jumpToHistoryPosition(item.id, position: 80, offset: 0)
             if destination == 10 { model.jumpToHistoryPosition(item.id, position: 10, offset: 0) }
+            if legacy {
+                for _ in 0..<100 { await Task.yield() }
+                XCTAssertEqual(reads.started, 1, "A legacy helper coalesces supersession behind its one physical read")
+                XCTAssertFalse(reads.open, "The unsupported helper read stays live until its reply")
+                reads.open = true
+            }
             try await eventually("The newest destination is still waiting on the obsolete read") { reads.started >= 2 }
             XCTAssertTrue(reads.open, "The old read cooperatively observed cancellation")
             XCTAssertEqual(reads.position, destination)
