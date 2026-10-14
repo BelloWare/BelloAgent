@@ -37,14 +37,14 @@ import XCTest
     private func nativeFrames(_ panel: GitPanelView) -> [GitNarrowReferencePart: CGRect]? {
         guard let header = views(GitPanelHeader.self, in: panel).first,
               let toolbar = views(GitPanelToolbar.self, in: panel).first,
-              let history = views(GitHistoryList.self, in: panel).first,
-              let filter = views(PiKit.TextField.self, in: history).first(where: { $0.field.placeholderString == "Filter by message or hash" }),
+              let history = views(GitHistoryBrowser.self, in: panel).first,
+              let filter = views(PiKit.TextField.self, in: history).first(where: { $0.field.placeholderString == "Search commit messages" }),
               let author = views(PiKit.TextField.self, in: history).first(where: { $0.field.placeholderString == "Author" }),
               let branch = views(PiKit.MenuButton.self, in: toolbar).first(where: { $0.accessibilityIdentifier() == "git-branch-menu" }),
               let stash = views(PiKit.MenuButton.self, in: toolbar).first(where: { $0.accessibilityIdentifier() == "git-stash-menu" }),
               let remote = views(GitRemoteControls.self, in: toolbar).first,
               let tabs = views(PiKit.Tabs<GitController.Panel>.self, in: toolbar).first,
-              let firstCommit = views(GitCommitRowView.self, in: history).first(where: { $0.row.accessibilityIdentifier() == "git-commit-" + (panel.controller.commits.first?.shortHash ?? "") }),
+              let firstCommit = history.list.madeView(for: panel.controller.commits.first?.hash ?? "") as? GitHistoryRow,
               let detail = views(GitPanelDetail.self, in: panel).first else { return nil }
         // The frozen .panel is the painted stack's logical frame. Keep the
         // finite native allocation checks separate from this background extent.
@@ -100,7 +100,31 @@ import XCTest
     }
     private func assertFrames(_ actual: [GitNarrowReferencePart: CGRect], _ expected: [GitNarrowReferencePart: CGRect],
                               parts: [GitNarrowReferencePart], file: StaticString = #filePath, line: UInt = #line) throws {
-        for part in parts {
+        // The new filter browser owns its geometry. The surrounding toolbar,
+        // header, tab and allocated width retain the released contract.
+        if parts.contains(.history) {
+            let history = try XCTUnwrap(actual[.history]), old = try XCTUnwrap(expected[.history])
+            let list = try XCTUnwrap(actual[.list]), row = try XCTUnwrap(actual[.firstCommit])
+            let detail = try XCTUnwrap(actual[.detail]), oldDetail = try XCTUnwrap(expected[.detail])
+            XCTAssertEqual(history.minX, old.minX, accuracy: 0.5, file: file, line: line)
+            XCTAssertEqual(history.minY, old.minY, accuracy: 0.5, file: file, line: line)
+            XCTAssertEqual(history.width, old.width, accuracy: 0.5, file: file, line: line)
+            for field in [GitNarrowReferencePart.filter, .author] {
+                let frame = try XCTUnwrap(actual[field])
+                XCTAssertGreaterThanOrEqual(frame.minX, history.minX, file: file, line: line)
+                XCTAssertLessThanOrEqual(frame.maxX, history.maxX, file: file, line: line)
+                XCTAssertLessThanOrEqual(frame.maxY, list.minY, file: file, line: line)
+            }
+            XCTAssertGreaterThanOrEqual(row.minY, list.minY, file: file, line: line)
+            XCTAssertLessThanOrEqual(row.maxY, list.maxY, file: file, line: line)
+            XCTAssertEqual(list.maxY, history.maxY, accuracy: 0.5, file: file, line: line)
+            XCTAssertEqual(detail.minY, history.maxY + 1, accuracy: 0.5, file: file, line: line)
+            XCTAssertEqual(detail.minX, oldDetail.minX, accuracy: 0.5, file: file, line: line)
+            XCTAssertEqual(detail.width, oldDetail.width, accuracy: 0.5, file: file, line: line)
+            XCTAssertEqual(detail.maxY, oldDetail.maxY, accuracy: 0.5, file: file, line: line)
+        }
+        let changed: Set<GitNarrowReferencePart> = [.history, .filter, .author, .list, .firstCommit, .detail]
+        for part in parts where !changed.contains(part) {
             let old = try XCTUnwrap(expected[part]), new = try XCTUnwrap(actual[part])
             XCTAssertEqual(new.minX, old.minX, accuracy: 0.5, "\(part.rawValue) leading position", file: file, line: line)
             XCTAssertEqual(new.minY, old.minY, accuracy: 0.5, "\(part.rawValue) top position", file: file, line: line)

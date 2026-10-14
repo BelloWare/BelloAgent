@@ -209,6 +209,17 @@ workstream as requested. It was still
 `efe431a345fe68fba24cd8381940a9fb835d68fc`, already an ancestor, so Git reported
 `Already up to date.` No merge commit or history rewrite was needed.
 
+While the follow-up was being validated, `origin/dev/next` advanced to
+`c656d2dbe0edd2927bd43d24d715b6f290f2c8ef` with Git UI work. Before pushing,
+that new tip was fetched and merged into the workstream, preserving the fix
+commit `d0c2b638`. The sole conflict was the parallel release-note additions in
+`NEXT-RELEASE.md`; both sets of entries are retained. The merged helper package
+and `scripts` trees are identical to the tested fix commit, so the helper and
+process-level evidence below still applies. Imported Git app changes retain
+their upstream validation; no native lane was rerun for this merge.
+The bounded read-only merge review confirmed both parents were preserved and
+reported no introduced findings (`logs/retained-log-merge-review-result.txt`).
+
 `discardIncompleteReply()` now discards and releases the log only when
 `partialReplyUnsaved` is false. Current rejected text, reasoning, tools and
 ledger content are still cleared. An earlier retained file and its ownership
