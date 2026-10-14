@@ -29,13 +29,13 @@ import AppKit
     override func configure(_ card: TranscriptToolRow.Card) {
         guard case .subagent(let value) = card else { return }
         self.value = value
-        var lines = [value.label]
+        var lines: [String] = []
         if let summary = value.summary {
             lines.append("Model: " + summary.model)
             if let tools = summary.tools { lines.append(tools.isEmpty ? "Tools: none" : "Tools: " + tools.joined(separator: ", ")) }
             if let progress = summary.progress {
                 lines.append("\(progress.requests) requests · \(progress.tools) tools completed · " + TranscriptActivity.formatDuration(progress.elapsedMs))
-                lines.append(String(format: "Reported $%.6f", progress.usd) + " · \(progress.reported) reported" + (progress.unreported > 0 ? " · \(progress.unreported) cost unknown" : ""))
+                lines.append("Reported " + compactGatewayUSD(progress.usd) + " · \(progress.reported) reported" + (progress.unreported > 0 ? " · \(progress.unreported) cost unknown" : ""))
                 lines.append("Tokens: " + (progress.inputTokens.map(String.init) ?? "unknown") + " input · " + (progress.outputTokens.map(String.init) ?? "unknown") + " output")
                 if !progress.preview.isEmpty, !value.status.terminal { lines.append(progress.preview) }
             }

@@ -22,6 +22,7 @@ BUILD = Path(os.environ['PI_BUILD_ROOT'])
 
 
 def run(binary, mode):
+    completes = mode in ('complete', 'viewer')
     with tempfile.TemporaryDirectory(prefix='subagent-stream-', dir=BUILD) as folder:
         root = Path(folder)
         lock = threading.Lock()
@@ -81,12 +82,15 @@ def run(binary, mode):
         peer = HostPeer(binary, root, capture=capture)
         events = []
 
-        def command(method, params=None, session=None):
+        def command(method, params=None, session=None, expected_error=None):
             identity = peer.post(method, params, session)
             while True:
                 frame = peer.next_frame(15)
                 if frame.get('kind') == 'event': events.append(frame)
                 if frame.get('commandId') == identity:
+                    if expected_error:
+                        assert not frame['ok'] and frame['error']['code'] == expected_error, frame
+                        return frame['error']
                     assert frame['ok'], frame
                     return frame['result']
 
@@ -105,6 +109,9 @@ def run(binary, mode):
             began = time.monotonic()
             command('turn.submit', dict(clientTurnId='turn', text='Delegate four independent checks.'), 'parent')
             until(rendezvous.is_set)
+            viewed = sorted(started)[0] if mode == 'viewer' else None
+            if viewed:
+                command('session.open', dict(profile=profile, apiKey='synthetic-loopback-key'), viewed)
             admission_ms = (time.monotonic() - began) * 1000
             # Polling the parent exercises live progress projection while every
             # physical child delivers capture packets over the same transport.
@@ -117,14 +124,20 @@ def run(binary, mode):
             if mode == 'stop':
                 command('turn.stop', {}, 'parent')
                 until(lambda: command('session.status', {}, 'parent')['state'] in ['paused', 'error'])
-            elif mode == 'complete':
+            elif completes:
                 until(lambda: command('session.status', {}, 'parent')['state'] == 'idle')
                 cost = command('session.snapshot', {}, 'parent')['cost']
                 assert abs(cost['spentUSD'] - .06) < 1e-9, cost
                 assert cost['reportedRequests'] == 6 and cost['unreportedRequests'] == 0, cost
+            if mode != 'shutdown':
                 for child in started:
+                    if child == viewed:
+                        command('session.status', {}, child)
+                        command('session.close', {}, child)
+                    command('session.status', {}, child, expected_error='session_missing')
+                    command('session.open', dict(profile=profile, apiKey='synthetic-loopback-key', path=str(root/'sessions'/f'{child}.jsonl')), child)
                     local = command('session.snapshot', {}, child)['cost']
-                    assert abs(local['spentUSD'] - .01) < 1e-9, local
+                    if completes: assert abs(local['spentUSD'] - .01) < 1e-9, local
             if mode != 'shutdown':
                 family = command('subagent.list', {}, 'parent')
                 assert family['total'] == 4 and family['active'] == 0, family
@@ -138,7 +151,7 @@ def run(binary, mode):
             rows = [json.loads(line) for line in (root/'sessions/parent.jsonl').read_text().splitlines()]
             results = [row['message'] for row in rows if row.get('message', {}).get('toolName') == 'subagent']
             assert len(results) == 4, results
-            assert all(json.loads(row['content'][0]['text'])['status'] == ('completed' if mode == 'complete' else 'interrupted') for row in results)
+            assert all(json.loads(row['content'][0]['text'])['status'] == ('completed' if completes else 'interrupted') for row in results)
             begins = [packet['metadata'] for packet in packets if packet['type'] == 'begin']
             ends = [packet['metadata'] for packet in packets if packet['type'] == 'finish']
             children = [value for value in begins if value['sessionId'] != 'parent']
@@ -148,8 +161,8 @@ def run(binary, mode):
                 assert scope['budgetOwnerSessionID'] == 'parent' and scope['sourceSessionID'] == value['sessionId']
                 data = b''.join(base64.b64decode(p['bytes']) for p in packets if p['type'] == 'bytes' and p['attemptId'] == value['attemptId'] and p['body'] == 'response')
                 assert data, 'A child stream had no captured response bytes'
-                if mode == 'complete': assert data == responses[value['sessionId']], 'Concurrent capture lost bytes'
-            if mode == 'complete':
+                if completes: assert data == responses[value['sessionId']], 'Concurrent capture lost bytes'
+            if completes:
                 assert len(requests) == 6, requests
                 charges = [row['data'] for row in rows if row.get('customType') == 'pi-app.cost.v1']
                 # The initial ordinary parent request and every later physical
@@ -173,5 +186,5 @@ if __name__ == '__main__':
         spec = importlib.util.spec_from_file_location('subagent_crashes', Path(__file__).with_name('test-subagent-crashes.py'))
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
         binary = module.fixture_binary()
-    reports = [run(binary, mode) for mode in ['complete', 'stop', 'shutdown']]
+    reports = [run(binary, mode) for mode in ['complete', 'viewer', 'stop', 'shutdown']]
     (BUILD/'logs/subagent-streaming.json').write_text(json.dumps(reports, indent=2) + '\n')

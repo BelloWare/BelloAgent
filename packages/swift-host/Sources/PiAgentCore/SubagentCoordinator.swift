@@ -19,6 +19,7 @@ private actor SubagentCompletion {
 /// budget owner. A slot includes tools, retry waits, summaries and settlement.
 actor SubagentCoordinator {
     typealias Register = @Sendable (AgentSession, Profile, String, AgentSession) async throws -> Void
+    typealias Settled = @Sendable (AgentSession) async -> Void
     private struct Runtime: Sendable { let environment: SubagentEnvironment, child: AgentSession; let childGeneration: Int }
     private struct Job: Sendable {
         let plan: SubagentPlan, generation: Int, runtimeID: String
@@ -31,6 +32,7 @@ actor SubagentCoordinator {
         var progress: SubagentProgress?
     }
     private let register: Register
+    private let settled: Settled
     private var jobs: [SubagentCallKey: Job] = [:]
     private struct Rejected: Sendable { let result: SubagentToolResult, runtimeID: String }
     private var rejected: [SubagentCallKey: Rejected] = [:]
@@ -38,7 +40,9 @@ actor SubagentCoordinator {
     private var active: [String: Int] = [:]
     private var cancelledThrough: [String: Int] = [:]
     var retainedJobCount: Int { jobs.count + rejected.count }
-    init(register: @escaping Register = { _, _, _, _ in }) { self.register = register }
+    init(register: @escaping Register = { _, _, _, _ in }, settled: @escaping Settled = { _ in }) {
+        self.register = register; self.settled = settled
+    }
 
     /// Plan and create all queued children in assistant-call order before any
     /// starts. A write failure cannot leave an unobserved run behind this await.
@@ -141,9 +145,12 @@ actor SubagentCoordinator {
         let owner = current.plan.origin.link.budgetOwnerSessionID
         if current.allocated { active[owner, default: 0] -= 1 }
         await publish(key)
-        // Keep discovery and the saved answer, but release the parent, credentials
-        // and runtime graph. The host owns loaded children and normal idle unload.
+        // Release unseen runtimes after their terminal record is durable. The
+        // host keeps explicitly opened viewers attached until normal unload.
         jobs[key]?.runtime = nil
+        // Stop cancels the producer task. Cleanup still acquires the host's
+        // runtime gate and finishes before the parent consumes this result.
+        await Task { await settled(runtime.child) }.value
         await current.completion.finish(result)
         pump(owner)
     }

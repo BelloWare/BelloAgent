@@ -14,6 +14,9 @@ extension WorkspaceModel {
     func subagentChildren(of parentID: String) -> [ChatRecord] { sidebarIndex.subagents(of: parentID, in: chats) }
     func subagentGroupExpanded(_ parentID: String) -> Bool {
         guard let parent = record(parentID) else { return false }
+        // Reveal the open child without replacing the reader's saved fold.
+        if let id = focusedSessionID ?? selectedID, let child = record(id),
+           child.workspaceID == parent.workspaceID, child.delegation?.budgetOwnerSessionID == parentID { return true }
         return projectSidebarStates[parent.workspaceID]?.expandedSubagents?.contains(parentID) == true
     }
     func setSubagentGroupExpanded(_ parentID: String, expanded: Bool) {

@@ -62,6 +62,40 @@ final class SubagentOrganizationTests: XCTestCase {
         model.scheduleTitleGeneration(sourceID: child, input: "Delegated task")
         XCTAssertNil(model.titleGenerationTasks[child])
     }
+
+    @MainActor func testSelectedChildRevealsItsGroupWithoutSavingADisclosureChange() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        for flat in [false, true] {
+            model.setProjectListsFlat("pane-project", flat: flat)
+            model.selectedID = "chat-child"; model.focusedSessionID = "chat-child"
+            let states = Self.contents(model).entries.compactMap { entry -> SidebarChatRowState? in
+                if case .chat(let chat, let state, _) = entry, chat.id == "chat-child" { return state }; return nil
+            }
+            XCTAssertEqual(states.first?.selected, true)
+            XCTAssertTrue(model.subagentGroupExpanded("chat-parent"))
+            XCTAssertNotEqual(model.projectSidebarStates["pane-project"]?.expandedSubagents?.contains("chat-parent"), true)
+            model.selectedID = "chat-parent"; model.focusedSessionID = "chat-parent"
+            XCTAssertFalse(model.subagentGroupExpanded("chat-parent"))
+            XCTAssertFalse(Self.contents(model).entries.map(\.id).contains("chat|chat-child"))
+        }
+    }
+
+    @MainActor func testMovingParentMovesManagedChildrenAndOrdinarySidesTogether() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        let store = try XCTUnwrap(model.store)
+        try await store.putChats(model.chats)
+        let topic = try await model.createTopic(in: "pane-project", title: "Review")
+        try await model.moveSessions(["chat-parent"], in: "pane-project", toTopic: topic.id)
+        for id in ["chat-parent", "chat-child", "chat-side"] {
+            XCTAssertEqual(model.record(id)?.topicID, topic.id)
+            let saved = try await store.get(ChatRecord.self, kind: "chat", id: id)
+            XCTAssertEqual(saved?.topicID, topic.id)
+        }
+        XCTAssertEqual(model.record("chat-child")?.delegation, SubagentTranscriptTests.link)
+        do { try await model.moveSessions(["chat-child"], in: "pane-project", toTopic: nil); XCTFail("Independent child move accepted") } catch { }
+    }
     @MainActor func testArchiveFollowsTheOwnerButSideOrganizationStaysIndependent() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)

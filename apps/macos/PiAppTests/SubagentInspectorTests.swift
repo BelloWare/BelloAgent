@@ -168,6 +168,20 @@ final class SubagentInspectorTests: XCTestCase {
         XCTAssertEqual(model.page, .subagent("delegation-child"))
         model.setFamilyFilter(.child("foreign"))
         XCTAssertEqual(model.familyFilter, .child("child"), "A filter cannot request an unrelated session")
+        model.focus(.request(target))
+        for _ in 0..<300 where model.page != .request(target) { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.page, .request(target), "Parent request navigation must widen a child-only filter")
+        XCTAssertEqual(model.familyFilter, .family)
+        XCTAssertEqual(model.usage.scope.sessionID, "parent")
+        XCTAssertTrue(model.usage.scope.includeFamily)
+        XCTAssertNil(model.focusNotice)
+        model.setFamilyFilter(.chat)
+        let childRequest = try XCTUnwrap(child["attemptId"]?.string)
+        model.focus(.request(childRequest))
+        for _ in 0..<300 where model.page != .request(childRequest) { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.page, .request(childRequest))
+        XCTAssertEqual(model.familyFilter, .family)
+        XCTAssertTrue(model.usage.scope.includeFamily, "Linked navigation must update the usage scope as well as request rows")
         model.setVisible(false); try await archive.close()
     }
 }

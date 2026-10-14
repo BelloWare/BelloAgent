@@ -170,6 +170,9 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         tool_name = "bash" if stress_tool else "read"
         call_tool = tool_name in contract["tool_names"] and ("read fixture" in prompt.lower() or secondary_read or stress_tool) and not tool_result
         tool_arguments = {"command": "/usr/bin/python3 -u stress-output.py", "timeout": 60} if stress_tool else {"path": "SECONDARY.md" if secondary_read else "README.md"}
+        if "delegate opening fixture" in prompt.lower() and not tool_result:
+            tool_name, call_tool = "subagent", "subagent" in contract["tool_names"]
+            tool_arguments = {"task": "managed child opening fixture", "description": "Opening regression"}
         text = "Fixture reply: " + (prompt or "Tool result received.") + "\n\nUnicode: 中文🙂 café."
         if connection_test:
             text = "OK"
@@ -293,6 +296,11 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                     emit({"type": "response.content_part.added", "output_index": 0, "item_id": item_id, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": []}})
                     for chunk in chunks:
                         emit({"type": "response.output_text.delta", "output_index": 0, "item_id": item_id, "content_index": 0, "delta": chunk})
+                        if prompt.lower() == "managed child opening fixture" and chunk == chunks[0]:
+                            Path("child-streaming").touch()
+                            deadline = time.monotonic() + 30
+                            while not Path("release-child").exists() and time.monotonic() < deadline:
+                                time.sleep(0.01)
                         time.sleep(delay)
                     output = [{"type": "message", "id": "msg_" + request_id, "role": "assistant", "content": [{"type": "output_text", "text": text, "annotations": []}], "status": "completed"}]
                 emit({"type": "response.output_item.done", "output_index": 0, "item": output[0]})

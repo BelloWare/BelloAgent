@@ -255,12 +255,15 @@ extension WorkspaceModel {
                         displays[item.id]?.observeCompaction(initial.object ?? [:])
                         displays[item.id]?.observeContext(initial.object ?? [:], baseline: true)
                         let preference = try await capturePreference(sessionID: item.id)
-                        _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(preference.mode)])
+                        // Managed readers inherit their owner's capture policy;
+                        // opening one must never issue a child policy change.
+                        if !item.isSubagent { _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(preference.mode)]) }
                         opened.insert(item.id)
                         // Settings or this chat's override may have changed
                         // while its seed or opening acknowledgement was read.
                         if params["costLimit"] != costLimit(for: item.id).wire { await sendCostLimit(item.id) }
-                        displays[item.id]?.captureMode = preference.mode; displays[item.id]?.captureAvailable = true
+                        displays[item.id]?.captureMode = item.isSubagent ? initial.object?["captureMode"]?.string ?? preference.mode : preference.mode
+                        displays[item.id]?.captureAvailable = true
                         displays[item.id]?.lastSequence = -1
                     }
                 }

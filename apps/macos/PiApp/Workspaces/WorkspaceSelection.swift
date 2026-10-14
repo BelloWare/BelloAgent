@@ -274,6 +274,9 @@ extension WorkspaceModel {
         quietSidebarReveal = sidebarLineage(of: id)
         if side(id) != nil { await selectSide(id, revealInSidebar: false); return }
         guard let chat = record(id) else { return }
+        if let link = chat.delegation, chat.delegationIssue == nil, record(link.budgetOwnerSessionID) != nil {
+            await openSubagent(SubagentTarget(link)); return
+        }
         if !chat.isSubagent, chat.parentSessionID != nil, record(chat.parentSessionID ?? "") != nil, !chat.imported { await showSide(id, revealInSidebar: false) }
         else { await select(id, revealInSidebar: false) }
     }

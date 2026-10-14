@@ -16,6 +16,21 @@ final class SubagentTranscriptTests: XCTestCase {
                  output: "{\"status\":\"completed\",\"text\":\"Parser checked\",\"truncated\":false}", durationMs: 800, truncated: false)
     }
 
+    @MainActor func testRunningCardUsesSharedMoneyFormattingWithoutRepeatingItsHeader() throws {
+        var tool = Self.tool
+        tool.subagent = SubagentSummary(link: Self.link, description: "Review", model: "fixture", status: .running, revision: 1,
+            tools: ["read"], progress: .init(phase: "streaming", elapsedMs: 1000, requests: 2, tools: 1, preview: "Checking the parser",
+                usd: 0.04, reported: 2, unreported: 1, inputTokens: 100, outputTokens: 20))
+        let row = TranscriptNativeActionRow()
+        row.update(tool: tool, open: true, fetched: nil, environment: .init(), toggle: {}, openFile: nil)
+        let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptPlainTextView.self, in: row.card!).first).string
+        XCTAssertEqual(body, "Model: fixture\nTools: read\n2 requests · 1 tools completed · 1s\nReported $0.04 · 2 reported · 1 cost unknown\nTokens: 100 input · 20 output\nChecking the parser")
+        XCTAssertEqual(SessionCostReading(limit: .usd(1), spentUSD: 0.04).figure, "$0.04 of $1.00")
+        XCTAssertEqual(InspectorSubagentGroup(summary: tool.subagent!, requests: 2, cost: 0.04, costSamples: 2).detail, "Running · 2 requests · $0.04")
+        var totals = GatewayTotals(); totals.requests = 2; totals.costSamples = 2; totals.costUSD = 0.04
+        XCTAssertEqual(ChatRowStats(totals: totals).costLabel, "$0.04")
+    }
+
     func testOfflineAndFastProjectionKeepDurableChildNavigation() throws {
         let record = try XCTUnwrap(ToolResultRecord.of([
             "role":.string("toolResult"), "toolCallId":.string("call"), "content":.string(Self.tool.output), "nativeSubagent":Self.metadata

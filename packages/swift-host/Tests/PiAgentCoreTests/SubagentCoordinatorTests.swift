@@ -2,6 +2,27 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentCoordinatorTests: XCTestCase {
+    func testStopDuringDelegationPreflightSettlesEveryCallBeforeResume() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let tools = DelegationPreflightTools(), client = ScriptClient([toolReply(["subagent", "first"]), answer("Resumed without replay")])
+        let parent = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+            readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: tools, traces: TraceStore())
+        await parent.enableSubagents(SubagentCoordinator())
+        _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "task"), steer: false)
+        try await eventually { await tools.entered }
+        await parent.stop(); await tools.release()
+        try await eventually { !(await parent.isRunning) }
+        let results = await parent.history.filter { $0.role == "toolResult" }
+        XCTAssertEqual(results.map(\.toolCallId), ["call-0", "call-1"])
+        XCTAssertTrue(results.allSatisfy { $0.toolStats?["outcome"].text == "not_executed" })
+        let calls = await tools.calls, continuable = await parent.canContinue
+        XCTAssertTrue(calls.isEmpty); XCTAssertTrue(continuable)
+        _ = try await parent.continueRun(commandID: "resume")
+        try await eventually { !(await parent.isRunning) }
+        let count = await client.count, resumedCalls = await tools.calls
+        XCTAssertEqual(count, 2); XCTAssertTrue(resumedCalls.isEmpty)
+        await parent.close()
+    }
     func testModelSchemaUsesCurrentPickerGrantsWhileIdleAndFrozenGrantsDuringATurn() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = DelegationClient(count: 1), registry = DelegationRegistry()
@@ -153,12 +174,16 @@ final class SubagentCoordinatorTests: XCTestCase {
     func testParentStopSettlesRunningAndQueuedChildrenWithoutAutomaticReplay() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = DelegationClient(count: 18), registry = DelegationRegistry()
-        let coordinator = SubagentCoordinator(register: { child, _, _, _ in await registry.add(child) })
+        let coordinator = SubagentCoordinator(register: { child, _, _, _ in await registry.add(child) },
+            settled: { _ in await registry.settled(cancelled: Task.isCancelled) })
         let parent = try await makeParent(root, client: client, coordinator: coordinator)
         _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "tasks"), steer: false)
         try await eventually { await client.active == 16 }
         await parent.stop()
         try await eventually { !(await parent.isRunning) }
+        let cleanup = await registry.settlementCancellation
+        XCTAssertEqual(cleanup.count, 18)
+        XCTAssertTrue(cleanup.allSatisfy { !$0 }, "Stop must not cancel terminal runtime cleanup")
         let results = await parent.history.filter { $0.toolName == "subagent" }
         XCTAssertEqual(results.count, 18)
         let statuses = results.compactMap { (try? JSON.parse(Data($0.text.utf8)))?["status"].text }
@@ -457,9 +482,25 @@ final class SubagentCoordinatorTests: XCTestCase {
     }
 }
 
+private actor DelegationPreflightTools: ToolExecuting {
+    var entered = false, calls: [String] = []
+    private var gate: CheckedContinuation<Void, Never>?
+    func definitions(readOnly: Bool) -> [ToolDefinition] { [ToolDefinition("first", "fixture", [:])] }
+    func delegationMCPPolicy() async -> JSON? {
+        guard !entered else { return nil }
+        entered = true
+        await withCheckedContinuation { gate = $0 }
+        return nil
+    }
+    func release() { gate?.resume(); gate = nil }
+    func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON { calls.append(call.name); return resultText("fixture") }
+}
+
 private actor DelegationRegistry {
     var children: [AgentSession] = []
+    var settlementCancellation: [Bool] = []
     func add(_ child: AgentSession) { children.append(child) }
+    func settled(cancelled: Bool) { settlementCancellation.append(cancelled) }
 }
 
 private actor DelegationClient: ModelClient {

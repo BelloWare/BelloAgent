@@ -197,18 +197,25 @@ extension AgentSession {
             recordDisplayChange(toolStateOwners[call.id], at: displayClock())
             event("tool_execution_queued")
         }
+        var preflightCancelled = false
         if canDelegate, let coordinator = subagentCoordinator, calls.contains(where: { $0.name == "subagent" }) {
-            let environment = try await delegationEnvironment()
-            let planned = calls.filter { $0.name == "subagent" }.compactMap { call -> (SubagentCallKey, ToolCall)? in
-                guard let assistant = toolHistory.owners[call.id] else { return nil }
-                return (SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call.id), call)
+            do {
+                let environment = try await delegationEnvironment()
+                let planned = calls.filter { $0.name == "subagent" }.compactMap { call -> (SubagentCallKey, ToolCall)? in
+                    guard let assistant = toolHistory.owners[call.id] else { return nil }
+                    return (SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call.id), call)
+                }
+                await coordinator.prepare(planned, environment: environment)
+            } catch is CancellationError {
+                // The assistant's calls are already durable. Settle every one
+                // before ending the turn, so Resume never needs reopen repair.
+                preflightCancelled = true
             }
-            await coordinator.prepare(planned, environment: environment)
         }
         let began=nowMS()
         var outcomes=[ToolOutcome?](repeating: nil, count: calls.count)
         await withTaskGroup(of: ToolOutcome.self) { group in
-            for (index, call) in calls.enumerated() { group.addTask { [self] in await runToolCall(call, index: index) } }
+            for (index, call) in calls.enumerated() { group.addTask { [self, preflightCancelled] in await runToolCall(call, index: index, cancelledBeforeInvocation: preflightCancelled) } }
             for await outcome in group { outcomes[outcome.index]=outcome }
         }
         let wall=nowMS()-began
@@ -239,7 +246,7 @@ extension AgentSession {
     }
 
     /// Runs one call of a batch and ends its card; the row waits for the batch.
-    func runToolCall(_ call: ToolCall, index: Int) async -> ToolOutcome {
+    func runToolCall(_ call: ToolCall, index: Int, cancelledBeforeInvocation: Bool = false) async -> ToolOutcome {
         let start=nowMS()
         func outcome(_ result: JSON, started: Double?, state: ToolRunState, uncertain: Bool = false, cancelled: Bool = false, mcpResult: Bool = false) -> ToolOutcome {
             if let recorded=try? recordTool(call,result:result,started:started,state:state,uncertain:uncertain,appendNow:false,countsTime:false) {
@@ -263,7 +270,7 @@ extension AgentSession {
             }
             return ToolOutcome(index:index,message:message,observedAt:observedAt,cancelled:cancelled,mcpResult:mcpResult,recorded:false)
         }
-        if Task.isCancelled && !(call.name == "subagent" && canDelegate) { return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:.cancelled, cancelled:true) }
+        if cancelledBeforeInvocation || Task.isCancelled && !(call.name == "subagent" && canDelegate) { return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:.cancelled, cancelled:true) }
         do {
             let result=try await invokeTool(call)
             return outcome(result, started:start, state:result["isError"].flag == true ? .failed : .completed,

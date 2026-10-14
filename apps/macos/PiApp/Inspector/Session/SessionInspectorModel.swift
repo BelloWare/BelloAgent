@@ -134,6 +134,7 @@ import AppKit
     func focus(_ focus: InspectorFocus) {
         focusNotice = nil
         lookups?.cancel(); lookups = nil; lookedUpRequest = nil
+        if case .request(let id) = focus, let row = index.request(id), !includes(row) { setFamilyFilter(.family) }
         if case .subagent = focus, familyFilter == .chat { setFamilyFilter(.family) }
         // The Overview and the next request need no index; anything else
         // waits for one, or the latest request of a window just opened would
@@ -229,8 +230,11 @@ import AppKit
             self.lookups = nil
             guard self.pendingFocus == .request(id) else { return }
             if let row {
+                if !self.includes(row) {
+                    self.setFamilyFilter(.family)
+                    self.pendingFocus = .request(id)
+                }
                 self.linkedRow = row
-                if row.sessionID != scope.sessionID { self.familyFilter = .family }
                 await self.rebuildIndex()
             } else { self.resolvePending() }
         }
@@ -365,17 +369,18 @@ import AppKit
         return (page["attempts"]?.array ?? []).compactMap { $0.object.flatMap(InspectorRequestRow.live) }
     }
 
+    private func includes(_ row: InspectorRequestRow) -> Bool {
+        switch familyFilter {
+        case .family: true
+        case .chat: row.sessionID == nil || row.sessionID == scope.sessionID
+        case .child(let id): row.sessionID == id
+        }
+    }
+
     private func rebuildIndex() async {
         var read = lastRead
-        let filter = familyFilter, owner = scope.sessionID
+        let filter = familyFilter
         if let linkedRow, !read.rows.contains(where: { $0.id == linkedRow.id }) { read.rows.append(linkedRow) }
-        func includes(_ row: InspectorRequestRow) -> Bool {
-            switch filter {
-            case .family: true
-            case .chat: row.sessionID == nil || row.sessionID == owner
-            case .child(let id): row.sessionID == id
-            }
-        }
         read.rows = read.rows.filter { includes($0) }; read.live = read.live.filter { includes($0) }
         let records = filter == .chat || filter == .family ? summaries.mapValues(\.accounting.recordLines) : [:], versions = versions
         let (built, ledger) = await Task.detached(priority: .userInitiated) { () -> (InspectorIndex, SessionRequestLedger) in

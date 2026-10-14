@@ -104,7 +104,9 @@ extension WorkspaceModel {
         // An explicit move makes an otherwise empty chat durable, just as a
         // rename does. Side placeholders remain lazy until their first send.
         for id in storedIDs.sorted() { try await materializeChat(id) }
-        let saved = try await store.moveChatsToTopic(ids: storedIDs, workspaceID: projectID, topicID: topicID)
+        // The transaction follows durable descendants itself. Only roots
+        // chosen by the reader are subject to the independent-move guard.
+        let saved = try await store.moveChatsToTopic(ids: chosen, workspaceID: projectID, topicID: topicID)
         applyTopicMemberships(saved, includingNewChildrenNotIn: knownChatIDs)
         let currentBranches = topicBranchIDs(chosen, in: projectID)
         for parentID in Array(sides.keys) {

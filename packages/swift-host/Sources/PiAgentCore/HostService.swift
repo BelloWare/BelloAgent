@@ -60,6 +60,7 @@ public actor NativeHostService {
     private let runtimeGate=AsyncGate()
     private var subagentCoordinator: SubagentCoordinator?
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
+    private var subagentReaders: Set<String> = []
     /// Journals being slimmed (`JournalSlimming`), by session: an open of one waits for it.
     private var slimming:[String:Task<JournalSlimming.Outcome,Error>]=[:]
     private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:HostOutput]=[:], replyOrder:[String]=[]
@@ -217,6 +218,8 @@ public actor NativeHostService {
                 subagentCoordinator = SubagentCoordinator(register: { [weak self] child, profile, key, parent in
                     guard let self else { throw AgentError("workspace_closed", "The helper is closing") }
                     try await self.registerSubagent(child, profile: profile, apiKey: key, parent: parent)
+                }, settled: { [weak self] child in
+                    await self?.releaseSubagent(child)
                 })
             }
             if let subagentCoordinator { await session.enableSubagents(subagentCoordinator) }
@@ -230,6 +233,16 @@ public actor NativeHostService {
         }
         sessions[childID] = child; profiles[childID] = (profile, apiKey)
         await adoptRetrySettings(child)
+    }
+    private func releaseSubagent(_ child: AgentSession) async {
+        // Serialize with explicit opens: either the viewer pins this runtime,
+        // or it reopens the durable journal after eviction. A late callback
+        // from an old runtime cannot unload its replacement.
+        try? await withRuntimeGate {
+            let id = child.id
+            guard sessions[id] === child, !subagentReaders.contains(id), await child.unloadIfIdle() else { return }
+            sessions.removeValue(forKey: id); profiles.removeValue(forKey: id)
+        }
     }
     /// Hands a session the latest retry setting. Called once it is made and
     /// again once it is in `sessions`: a `retry.configure` that ran in between
@@ -386,6 +399,7 @@ public actor NativeHostService {
                     if let requested=params["profile"]["id"].text, let loaded=profiles[id]?.0.id, requested != loaded {
                         throw AgentError("session_conflict", "This chat is open on another connection. Close it before opening it on this one.")
                     }
+                    if await existing.isSubagent { subagentReaders.insert(id) }
                     if let costLimit { await existing.setCostLimit(costLimit) }
                     return existing
                 }
@@ -400,6 +414,7 @@ public actor NativeHostService {
                 let tools: any ToolExecuting = titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools
                 let session=try await makeSession(id,profile:profile,apiKey:key,readOnly:titleTask || mode == "read-only",resources:sessionResources,tools:tools,resumePath:params["path"].text,titleTask:titleTask,utilityPurpose:utility)
                 sessions[id]=session; profiles[id]=(profile,key); await adoptRetrySettings(session)
+                if await session.isSubagent { subagentReaders.insert(id) }
                 if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
                 if let costLimit { await session.setCostLimit(costLimit) }
                 if let costSeed { await session.adoptSpendSeed(costSeed) }
@@ -453,9 +468,11 @@ public actor NativeHostService {
         if method.hasPrefix("debug.") { return try await traces.command(method,session:id,params:params) }
         switch method {
         case "session.forget":
-            if let existing=sessions[id] {
-                guard await existing.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
-                sessions.removeValue(forKey:id);profiles.removeValue(forKey:id)
+            try await withRuntimeGate {
+                if let existing=sessions[id] {
+                    guard await existing.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
+                    sessions.removeValue(forKey:id);profiles.removeValue(forKey:id); subagentReaders.remove(id)
+                }
             }
             _=try await traces.command("debug.clear",session:id,params:[:]); return ["accepted":true]
         default: return nil
@@ -598,8 +615,12 @@ public actor NativeHostService {
             if let costLimit { await session.setCostLimit(costLimit) }
             return ["accepted":true,"applied":JSON(applied)]
         case "session.close":
-            guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
-            sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); return ["accepted":true]
+            return try await withRuntimeGate {
+                guard sessions[id] === session else { throw AgentError(AgentErrorCode.sessionMissing, "Session runtime is not loaded") }
+                guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
+                sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); subagentReaders.remove(id)
+                return ["accepted":true]
+            }
         default: return nil
         }
     }
@@ -797,7 +818,7 @@ public actor NativeHostService {
         for s in sessions.values { await s.stop() }
         await subagentCoordinator?.drain()
         for s in sessions.values { await s.close() }
-        await mcp?.close(); sessions.removeAll(); profiles.removeAll(); flush()
+        await mcp?.close(); sessions.removeAll(); profiles.removeAll(); subagentReaders.removeAll(); flush()
         await traces.delivered()
         deadline.cancel()
         await capture.close()
