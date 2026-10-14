@@ -435,10 +435,8 @@ import QuartzCore
         case group(projectID: String, topicID: String?)
     }
     func dropTarget(at point: CGPoint) -> DropTarget? {
-        // A flat project has no folders: nothing in it to drop on, and
-        // dropping on the project would take chats out of their topics.
-        guard let target = groupTarget(at: point), case .group(let project, _) = target, !model.projectListsFlat(project) else { return nil }
-        return target
+        guard !model.sidebarListsFlat else { return nil }
+        return groupTarget(at: point)
     }
     private func groupTarget(at point: CGPoint) -> DropTarget? {
         guard let index = frames.firstIndex(where: { $0.minY <= point.y && point.y < $0.maxY + SidebarListContents.rowSpacing }) else {

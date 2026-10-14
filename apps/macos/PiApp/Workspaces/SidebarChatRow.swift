@@ -37,8 +37,8 @@ struct SidebarChatRowState: Equatable {
     var recency: Int?
     /// The chat's saved draft holds something unsent (`WorkspaceDraftMarks.swift`).
     var hasDraft = false
-    /// The chat's topic, shown as a tag while its project lists flat; nil in
-    /// the Topics view, where the folder says it.
+    /// Tags are present only in the combined Flat list.
+    var projectTag: String?
     var topicTag: String?
     /// Identity of the loaded page, when the chat has one. A row swaps between
     /// retained billing and a live session only when this changes; the live
@@ -68,6 +68,8 @@ struct SidebarSideRowState: Equatable {
     var available: CGFloat = .infinity
     var indent: CGFloat = 0
     var recency: Int?
+    var projectTag: String?
+    var topicTag: String?
 }
 
 /// One listed chat and, when it is open, the side conversation under it.
@@ -134,40 +136,39 @@ extension WorkspaceModel {
     /// `archived`, the archived ones listed after them while the archive
     /// switch is on. Reading the model happens here, once per pass; the group
     /// views take values.
-    func sidebarGroupContents(in project: WorkspaceRecord, topicID: String?, archived: Bool, filter: String,
-                              showEmpty: Bool, showAllMatches: Bool = false, flat: Bool = false,
+    func sidebarGroupContents(in project: WorkspaceRecord?, topicID: String?, archived: Bool, filter: String,
+                              showEmpty: Bool, showAllMatches: Bool = false,
                               sidebarWidth: CGFloat, namesConnection: Bool) -> SidebarGroupContents {
-        // A flat project is one group: every chat of the project, each
-        // tagged with its topic, none of them a drag source (no folder to
-        // drop on). `topicID` is nil for it.
-        let list = flat ? SidebarSessionPresentation.flatGroupID(project.id) : topicID ?? project.id
+        // A nil project denotes the combined Flat list; row construction,
+        // folding, paging and live state are shared with Topics.
+        let flat = project == nil
+        let list = project.map { topicID ?? $0.id } ?? SidebarSessionPresentation.combinedFlatGroupID
         // The archived chats page on their own: they are a list of their own.
         let groupID = archived ? SidebarSessionPresentation.archiveGroupID(list) : list
-        let indent: CGFloat = topicID == nil ? 14 : 28
+        let indent: CGFloat = flat ? 0 : topicID == nil ? 14 : 28
         let filtering = showAllMatches || !filter.isEmpty
         // The fold is ignored while filtering, so a match cannot be stranded
         // under a folded parent; the chevron and the open side still follow it.
         let folded = collapsedSidebarSides
         func entries(archived: Bool, collapsed: Set<String>) -> [SidebarChatEntry] {
-            flat ? sidebarFlatEntries(in: project.id, archived: archived, collapsed: collapsed)
-                : sidebarEntries(in: project.id, topicID: topicID, archived: archived, collapsed: collapsed)
+            if let project { return sidebarEntries(in: project.id, topicID: topicID, archived: archived, collapsed: collapsed) }
+            return sidebarFlatEntries(archived: archived, collapsed: collapsed)
         }
         let all = SidebarSessionPresentation.filtered(
             entries(archived: archived, collapsed: filtering ? [] : folded), by: filter,
-            contentMatches: filter.isEmpty ? [] : flat ? sidebarFlatMatches(in: project.id, query: filter) : sidebarContentMatches)
+            contentMatches: filter.isEmpty ? [] : flat ? sidebarFlatMatches(query: filter) : sidebarContentMatches)
         let shown = sidebarShownRoots(groupID)
         let selection = Set([focusedSessionID, selectedID].compactMap { $0 })
         let visible = SidebarSessionPresentation.page(all, roots: shown, selected: selection, filtering: filtering)
         let hiddenRoots = filtering ? 0
             : max(0, all.reduce(0) { $0 + ($1.depth == 0 ? 1 : 0) } - visible.reduce(0) { $0 + ($1.depth == 0 ? 1 : 0) })
-        let anyMarked = hasMarkedSessions, projectDraggable = !project.isScratch && !flat
-        let topicTitles = flat ? Dictionary(topics(in: project.id).map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first }) : [:]
-        // A row's tag: its topic, unless it is a side filed with its parent,
-        // whose tag already says it.
-        func tag(_ entry: SidebarChatEntry) -> String? {
-            guard flat, let topic = effectiveTopicID(for: entry.chat) else { return nil }
-            if entry.depth > 0, let parent = entry.chat.parentSessionID.flatMap({ record($0) }), effectiveTopicID(for: parent) == topic { return nil }
-            return topicTitles[topic]
+        let anyMarked = hasMarkedSessions, projectDraggable = project?.isScratch == false
+        let projectNames = flat ? Dictionary(sidebarProjects.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }) : [:]
+        let topicTitles = flat ? Dictionary(grouping: topics, by: \.workspaceID)
+            .mapValues { Dictionary($0.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first }) } : [:]
+        func topicTag(project: String, topic: String?) -> String? {
+            guard project != WorkspaceRecord.scratchID, let topic else { return nil }
+            return topicTitles[project]?[topic]
         }
         var rows: [SidebarGroupRow] = []
         rows.reserveCapacity(visible.count)
@@ -185,7 +186,8 @@ extension WorkspaceModel {
                 heldRun: chat.isSubagent || chat.isArchived || chat.isUtilityChat ? nil : runHolds[chat.id]?.presented,
                 recency: recencyRank(chat.id),
                 hasDraft: showsDraftMark(chat.id),
-                topicTag: tag(entry),
+                projectTag: projectNames[chat.workspaceID],
+                topicTag: topicTag(project: chat.workspaceID, topic: chat.topicID),
                 liveIdentity: displays[chat.id].map(ObjectIdentifier.init),
                 hasSide: entry.hasChildren || side?.kept == false,
                 expanded: !folded.contains(chat.id),
@@ -203,7 +205,9 @@ extension WorkspaceModel {
                     liveIdentity: displays[side.id].map(ObjectIdentifier.init),
                     available: ChatRowMetrics.availableWidth(sidebar: sidebarWidth, indent: indent + 14, depth: entry.depth),
                     indent: indent + CGFloat(14 + min(entry.depth, 3) * 14),
-                    recency: recencyRank(side.id))
+                    recency: recencyRank(side.id),
+                    projectTag: projectNames[side.workspaceID],
+                    topicTag: topicTag(project: side.workspaceID, topic: side.topicID ?? chat.topicID))
             }
             rows.append(row)
         }
@@ -222,11 +226,11 @@ extension WorkspaceModel {
 
     /// A group's archived chats while the archive switch is on, or nil when
     /// the switch is off or none of them is listed.
-    func sidebarArchiveContents(in project: WorkspaceRecord, topicID: String?, includesArchive: Bool, filter: String,
-                                showAllMatches: Bool = false, flat: Bool = false, sidebarWidth: CGFloat, namesConnection: Bool) -> SidebarGroupContents? {
+    func sidebarArchiveContents(in project: WorkspaceRecord?, topicID: String?, includesArchive: Bool, filter: String,
+                                showAllMatches: Bool = false, sidebarWidth: CGFloat, namesConnection: Bool) -> SidebarGroupContents? {
         guard includesArchive else { return nil }
         let contents = sidebarGroupContents(in: project, topicID: topicID, archived: true, filter: filter, showEmpty: false,
-                                            showAllMatches: showAllMatches, flat: flat, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
+                                            showAllMatches: showAllMatches, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
         return contents.rows.isEmpty ? nil : contents
     }
 

@@ -233,7 +233,7 @@ final class UIScreenshotTests: XCTestCase {
             try await model.traces.close()
             return
         }
-        // Only the flat view of a project's topics (14f).
+        // Only the combined Flat list and header menu (14f/14g).
         if testEnvironment("PI_APP_UI_GALLERY_FLAT_TOPICS_ONLY") == "1" {
             let topic = try await model.createTopic(in: workspace.id, title: "Payments")
             try await model.moveSessions([second.id], in: workspace.id, toTopic: topic.id)
@@ -865,38 +865,66 @@ final class UIScreenshotTests: XCTestCase {
         model.setArchivedChatsShown(false); try await settle(0.8)
     }
 
-    /// 14f · A project listed flat, at 920×600: no topic folders, every chat
-    /// of the project newest first, each with its topic as a tag (a second
-    /// topic and three more chats, interleaved by activity, one unread).
-    /// Afterwards the project is grouped again, the added chats archived and
-    /// the added topic removed, so the scenes after this one are as they were.
+    /// Combined Flat across configured, scratch and retained projects, and the
+    /// real header menu. Both normal and minimum sidebar widths, both themes.
     @MainActor private func captureFlatTopicsScene(model: WorkspaceModel, window: NSWindow, gallery: URL,
                                                    appearances: [(String, NSAppearance.Name)], workspaceID: String,
                                                    profileID: String, topicID: String?) async throws {
         let size = window.contentView?.frame.size ?? NSSize(width: 1440, height: 900)
-        window.setContentSize(NSSize(width: 920, height: 600)); window.center()
+        let previousWidth = UserDefaults.standard.object(forKey: "sidebarWidth")
+        let oldPages = model.sidebarPageSizes, oldStates = model.projectSidebarStates
+        let oldHolds = model.runHolds
         let research = try await model.createTopic(in: workspaceID, title: "Research")
-        let stamps = model.chats.filter { $0.workspaceID == workspaceID && !$0.isArchived }.map { model.sidebarActivity($0) }.sorted(by: >)
-        let newest = stamps.first ?? 0, oldest = stamps.last ?? 0
-        let between = stamps.count > 1 ? (stamps[0] + stamps[1]) / 2 : newest - 5
+        let newest = model.chats.map { model.sidebarActivity($0) }.max() ?? 0
+        let other = try XCTUnwrap(model.workspaces.first { $0.id != workspaceID })
         var added: [String] = []
-        for (title, topic, stamp) in [("Ledger rounding rules", topicID, newest + 10), ("Compare queue backends", Optional(research.id), between),
-                                      ("Cache warmup plan", nil, oldest - 10)] {
-            let chat = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, sidebarOrder: stamp)
+        func add(_ title: String, project: String, topic: String?, order: Int64, parent: String? = nil) async throws -> String {
+            var chat = ChatRecord(id: UUID().uuidString, workspaceID: project, title: title, path: nil, profileID: profileID,
+                                  sidebarOrder: order, parentSessionID: parent)
+            chat.topicID = topic
             model.chats.append(chat); try await model.store?.put(chat, kind: "chat", id: chat.id)
-            if let topic { try await model.moveSessions([chat.id], in: workspaceID, toTopic: topic) }
-            added.append(chat.id)
+            added.append(chat.id); return chat.id
         }
-        model.markSessionUnread(added[0])
-        model.setProjectListsFlat(workspaceID, flat: true)
-        for (name, appearance) in appearances {
-            NSApp.appearance = NSAppearance(named: appearance); try await settle(1.2)
-            try capture(window, to: gallery.appendingPathComponent("14f-sidebar-flat-topics-\(name).png"))
+        let parent = try await add("Ledger rounding rules", project: workspaceID, topic: topicID, order: newest + 60)
+        _ = try await add("Rounding edge cases", project: workspaceID, topic: research.id, order: newest + 70, parent: parent)
+        _ = try await add("Review the typography", project: other.id, topic: nil, order: newest + 55)
+        _ = try await add("Quick connection notes", project: WorkspaceRecord.scratchID, topic: nil, order: newest + 50)
+        _ = try await add("Retained design discussion", project: "gallery-unavailable", topic: nil, order: newest + 45)
+        _ = try await add("Compare queue backends", project: workspaceID, topic: research.id, order: newest + 40)
+        model.markSessionUnread(parent)
+        model.runHolds[parent] = RunHoldRecord(id: parent, state: "paused")
+        model.setSidebarShownRoots(SidebarSessionPresentation.combinedFlatGroupID, to: 100, in: "")
+        model.setSidebarFlat(true)
+        for (widthName, width, windowSize) in [("normal", WindowChrome.sidebarWidth, NSSize(width: 1440, height: 900)),
+                                                ("narrow", WindowChrome.minimumSidebarWidth, NSSize(width: 920, height: 600))] {
+            UserDefaults.standard.set(Double(width), forKey: "sidebarWidth")
+            window.setContentSize(windowSize); window.center()
+            for (name, appearance) in appearances {
+                NSApp.appearance = NSAppearance(named: appearance); try await settle(1.0)
+                try capture(window, to: gallery.appendingPathComponent("14f-sidebar-flat-all-\(widthName)-\(name).png"))
+                let sidebar = try XCTUnwrap(window.contentView.flatMap { descendants(WorkspaceSidebarView.self, in: $0).first })
+                let menu = PiMenus.menu(sidebar.headerMenu.entries())
+                let captureState = SidebarMenuCapture(menu: menu) {
+                    try self.capture(window, to: gallery.appendingPathComponent("14g-sidebar-header-menu-\(widthName)-\(name).png"), includingOwnedPanels: true)
+                }
+                let timer = Timer(timeInterval: 0.4, repeats: false) { _ in
+                    MainActor.assumeIsolated { captureState.take() }
+                }
+                RunLoop.main.add(timer, forMode: .common)
+                menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sidebar.headerMenu.bounds.maxY + 4), in: sidebar.headerMenu)
+                timer.invalidate()
+                if let error = captureState.error { throw error }
+            }
         }
-        model.setProjectListsFlat(workspaceID, flat: false)
-        model.markSessionRead(added[0])
-        for id in added { try await model.setSessionArchived(id, archived: true) }
+        model.setSidebarFlat(false); model.markSessionRead(parent)
+        // Remove only this scene's synthetic history so later Topics scenes
+        // keep their data as well as their layout.
+        for id in added { try await model.store?.remove(kind: "chat", id: id) }
+        model.chats.removeAll { added.contains($0.id) }
+        model.runHolds = oldHolds; model.sidebarPageSizes = oldPages; model.projectSidebarStates = oldStates
         try await model.removeTopic(research.id)
+        if let previousWidth { UserDefaults.standard.set(previousWidth, forKey: "sidebarWidth") }
+        else { UserDefaults.standard.removeObject(forKey: "sidebarWidth") }
         window.setContentSize(size); window.center(); try await settle(0.8)
     }
 
@@ -2132,5 +2160,16 @@ final class UIScreenshotTests: XCTestCase {
         let representation = NSBitmapImageRep(cgImage: image)
         let png = try XCTUnwrap(representation.representation(using: .png, properties: [:]))
         try png.write(to: url, options: .atomic)
+    }
+}
+
+@MainActor private final class SidebarMenuCapture {
+    let menu: NSMenu
+    let action: () throws -> Void
+    var error: Error?
+    init(menu: NSMenu, action: @escaping () throws -> Void) { self.menu = menu; self.action = action }
+    func take() {
+        do { try action() } catch { self.error = error }
+        menu.cancelTracking()
     }
 }

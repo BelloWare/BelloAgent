@@ -2,6 +2,11 @@
 
 **Released 2026-10-14:** 0.1.126 (build 130, tag `v0.1.126`) is the latest release; record `docs/validation/Bello-Agent-0.1.126-2026-10-14.md`.
 
+## 0.1.127
+
+- [x] Global Topics / Flat sidebar (`dev/a127-flat-all`, owner: "topic or flat view should be set for all projects, and let's combine projects, if user select flat view"): one persisted choice in the sidebar header and View menus; Flat combines every listed project, No project and retained chats in the existing newest-family/pinned order, with project + topic tags and sides/sub-agents under their parent. Projects submenu keeps project actions; top New Chat chooses the selected chat's trusted available project, then workspace fallbacks. Topics layout is preserved, Flat drag stays off, and legacy per-project Flat choices migrate once. `SidebarFlatTopicsTests` now 29; failing-first, mutation, native/gallery and performance evidence: [validation record](docs/validation/sidebar-flat-all-0.1.127.md). Workstream branch only; not merged into `dev/next`.
+- [ ] Native-test follow-up from this workstream: full parallel runs each hit a different failure. The foreground-dependent unread-menu fixture is repaired. Cleanup startup and transcript reveal each timed out once, then their unchanged classes passed 18/18 and 30/30 isolated executions respectively; causes remain unconfirmed. Final full lane: 2,344 passed, one transcript-reveal failure, 35 skips. Sidebar checks and the full 408-capture gallery pass; exact evidence and limits are in the same validation record.
+
 ## 0.1.126
 
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.

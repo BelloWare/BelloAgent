@@ -55,7 +55,7 @@ final class SubagentOrganizationTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
         for flat in [false, true] {
-            model.setProjectListsFlat("pane-project", flat: flat)
+            model.setSidebarFlat(flat)
             let entries = Self.contents(model).entries.map(\.id)
             XCTAssertTrue(entries.contains("subagents|chat-parent"))
             XCTAssertFalse(entries.contains("chat|chat-child"))
@@ -87,7 +87,7 @@ final class SubagentOrganizationTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
         for flat in [false, true] {
-            model.setProjectListsFlat("pane-project", flat: flat)
+            model.setSidebarFlat(flat)
             model.selectedID = "chat-child"; model.focusedSessionID = "chat-child"
             let states = Self.contents(model).entries.compactMap { entry -> SidebarChatRowState? in
                 if case .chat(let chat, let state, _) = entry, chat.id == "chat-child" { return state }; return nil
@@ -174,7 +174,7 @@ final class SubagentOrganizationTests: XCTestCase {
         model.sides["chat-parent"] = SideRecord(id: "pending-side", parentID: "chat-parent", workspaceID: "pane-project", profileID: model.chats[0].profileID, title: "Unsaved side", pending: true)
         let flushed = await model.flushProjectSidebarState(); XCTAssertTrue(flushed)
         for flat in [false, true] {
-            model.setProjectListsFlat("pane-project", flat: flat)
+            model.setSidebarFlat(flat)
             let ids = Self.contents(model).entries.map(\.id)
             let group = try XCTUnwrap(ids.firstIndex(of: "subagents|chat-parent"))
             XCTAssertEqual(ids[group + 1], "chat|chat-child")

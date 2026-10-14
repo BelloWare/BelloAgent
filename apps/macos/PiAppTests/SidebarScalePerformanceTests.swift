@@ -94,6 +94,35 @@ final class SidebarScalePerformanceTests: XCTestCase {
         return mean
     }
 
+    @MainActor func testCombinedFlatBuildCostAndIndexReuse() throws {
+        let fixture = try fixture(); defer { fixture.teardown() }
+        let model = fixture.model
+        for flat in [false, true] {
+            model.setSidebarFlat(flat)
+            var samples: [Double] = []
+            for index in 0..<30 {
+                model.chats[7].title = "Renamed \(index)"
+                let start = ProcessInfo.processInfo.systemUptime
+                _ = SidebarListContents.build(model: model, filter: "", sidebarWidth: 280, confirmingRemove: [], removing: [], dropTarget: nil)
+                samples.append((ProcessInfo.processInfo.systemUptime - start) * 1_000)
+            }
+            samples.sort()
+            print(String(format: "PERF sidebar %@ 540 chats: cold list median %.3f ms, max %.3f ms", flat ? "Flat" : "Topics", samples[samples.count / 2], samples.last!))
+            _ = model.sidebarChatOrder
+            let computations = model.sidebarIndex.computations
+            for _ in 0..<20 {
+                _ = SidebarListContents.build(model: model, filter: "", sidebarWidth: 280, confirmingRemove: [], removing: [], dropTarget: nil)
+                _ = model.sidebarChatOrder
+            }
+            XCTAssertEqual(model.sidebarIndex.computations, computations, "Repeated frames reuse the cached tree")
+        }
+        redraw(fixture)
+        SidebarRowRenderCount.reset()
+        fixture.streaming.messages = [TranscriptMessage(id: "delta", role: "assistant", text: "A delta", state: "streaming")]
+        redraw(fixture)
+        XCTAssertLessThanOrEqual(SidebarRowRenderCount.builds, 1, "One delta does not rebuild the combined list's rows")
+    }
+
     /// What one streamed delta, one unread change and one selection change cost
     /// the sidebar with a real workspace in it.
     @MainActor func testSidebarRedrawCostPerWorkspaceEvent() throws {

@@ -626,10 +626,14 @@ final class SessionMarkUnreadTests: SessionReadStateTestCase {
             return titles(SidebarChatRowView.entries(model: model, chat: chat, state: state))
         }
         XCTAssertTrue(try rowMenu("other").contains("Mark as Unread")); XCTAssertFalse(try rowMenu("other").contains("Mark as Read"))
+        // A failure is unread only outside the selected chat. Select before
+        // marking unread, since opening a chat clears its manual mark.
+        model.selectedID = "other"; model.focusedSessionID = "other"
         model.markSessionUnread("other")
         XCTAssertTrue(try rowMenu("other").contains("Mark as Read")); XCTAssertFalse(try rowMenu("other").contains("Mark as Unread"))
         // Several rows marked: one with a failure mark only, one read, one unread.
         model.markRunFailed(sessionID: "chat")
+        XCTAssertTrue(model.unreadFailure(sessionID: "chat"), "Failure target is out of view regardless of which parallel host is active")
         let third = ChatRecord(id: "third", workspaceID: "workspace", title: "Third", path: nil, profileID: "profile")
         model.chats.append(third)
         model.observeAssistantOutputs(sessionID: "third", snapshot: snapshot(1, "t1"))
