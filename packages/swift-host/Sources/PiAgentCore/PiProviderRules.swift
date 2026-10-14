@@ -508,6 +508,14 @@ enum PiErrorText {
     static func incomplete(_ reason: String?) -> String {
         reason.map { "Response incomplete: \($0)" } ?? "Response incomplete without a provider reason"
     }
+    /// Owner-approved deviation (2026-10-15): an unexplained Responses
+    /// incomplete is transient. Keep the provider's existing displayed text;
+    /// a distinct code prevents a reason's words from deciding retryability.
+    static func incompleteFailure(_ reason: JSON) -> AgentError {
+        let code = reason.isNull || reason.text == "" ? "provider_incomplete_unexplained" : "provider_incomplete"
+        let text = incomplete(reason.text)
+        return AgentError(code, text, providerMessage: text)
+    }
 }
 
 extension AgentError {
@@ -526,7 +534,8 @@ extension AgentError {
         }
     }
     /// The same error carrying pi's text for it.
-    func carrying(_ piText: String?) -> AgentError {
-        AgentError(code, message, failure: failure, attemptID: attemptID, providerMessage: piText ?? providerMessage)
+    func carrying(_ piText: String?, discardIncompleteReply: Bool = false) -> AgentError {
+        AgentError(code, message, failure: failure, attemptID: attemptID, providerMessage: piText ?? providerMessage,
+                   discardIncompleteReply: discardIncompleteReply || self.discardIncompleteReply)
     }
 }

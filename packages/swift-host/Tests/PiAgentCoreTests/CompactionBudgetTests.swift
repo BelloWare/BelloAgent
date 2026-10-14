@@ -93,17 +93,28 @@ final class CompactionBudgetTests: XCTestCase {
         }
     }
 
-    func testRefusalEmptyToolAndUnknownIncompleteHaveDistinctErrorsWithoutRetry() async throws {
+    func testRefusalEmptyToolAndFilteredIncompleteHaveDistinctErrorsWithoutRetry() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
-        for (mode,code):(BudgetProbe.Mode,String) in [(.refusal,"compaction_refused"),(.empty,"compaction_empty_summary"),(.tool,"compaction_unexpected_tool_call"),(.filter,"provider_incomplete"),(.unknown,"provider_incomplete")] {
+        for (mode,code):(BudgetProbe.Mode,String) in [(.refusal,"compaction_refused"),(.empty,"compaction_empty_summary"),(.tool,"compaction_unexpected_tool_call"),(.filter,"provider_incomplete")] {
             let (s,c,seed)=try setup(root,mode:mode)
             try await s.compact();try await eventually { !(await s.isRunning) }
             let state=await s.snapshot(),context=await s.context,calls=await c.requests
             XCTAssertEqual(state["compaction"]["errorCode"].text,code)
             XCTAssertEqual(context.map(\.id),seed.map(\.id));XCTAssertEqual(calls.count,1)
-            if mode == .unknown { XCTAssertTrue(state["compaction"]["lastAttempt"]["outputTokens"].isNull) }
             await s.close()
         }
+    }
+
+    func testUnexplainedIncompleteExhaustsRetriesWithoutAdoptingASummaryOrInventingUsage() async throws {
+        let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
+        let (s,c,seed)=try setup(root,mode:.unknown)
+        await s.useRetrySettings(.init(maxRetries:2,baseDelayMs:1))
+        try await s.compact();try await eventually { !(await s.isRunning) }
+        let state=await s.snapshot(),context=await s.context,calls=await c.requests
+        XCTAssertEqual(state["compaction"]["errorCode"].text,"provider_incomplete_unexplained")
+        XCTAssertEqual(context.map(\.id),seed.map(\.id));XCTAssertEqual(calls.count,3)
+        XCTAssertTrue(state["compaction"]["lastAttempt"]["outputTokens"].isNull)
+        await s.close()
     }
 
     /// A compaction is one request. A history that cannot fit one beside
