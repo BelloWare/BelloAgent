@@ -18,17 +18,19 @@ extension AgentSession {
         // releasing its follow-ups. This permission belongs to this request;
         // a later Stop still revokes it through the generation and permit.
         let allowsPausedQueue = !isSubagent && purpose == "compaction" && compactionState["reason"].text == "manual"
-        let scope = RequestScope(sourceSessionID: id, budgetOwnerSessionID: isSubagent ? subagents.origin!.link.budgetOwnerSessionID : id,
+        var scope = RequestScope(sourceSessionID: id, budgetOwnerSessionID: isSubagent ? subagents.origin!.link.budgetOwnerSessionID : id,
                                  turnID: turnID, executionID: activeTaskPresentation?.executionID ?? displayEpoch, purpose: purpose,
                                  ownerGeneration: isSubagent ? budgetOwnerGeneration : stopCount, delegation: subagents.origin?.link)
-        return RequestLifecycle(scope: scope, admitAttempt: { [weak self, weak owner] attempt in
+        scope.childTurn = agentLease?.turn; scope.parentExecutionID = agentLease?.parentExecutionID
+        let admittedScope = scope
+        return RequestLifecycle(scope: admittedScope, admitAttempt: { [weak self, weak owner] attempt in
             guard let self, let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }
-            let permit = try await owner.admitAttempt(scope: scope, attemptID: attempt, allowsPausedQueue: allowsPausedQueue)
+            let permit = try await owner.admitAttempt(scope: admittedScope, attemptID: attempt, allowsPausedQueue: allowsPausedQueue)
             await self.attachRequestPermit(permit, generation: sourceGeneration)
             return permit
         }, willDispatch: { [weak owner] attempt in
             guard let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }
-            try await owner.dispatchAttempt(scope: scope, attemptID: attempt, allowsPausedQueue: allowsPausedQueue)
+            try await owner.dispatchAttempt(scope: admittedScope, attemptID: attempt, allowsPausedQueue: allowsPausedQueue)
         }, settleAttempt: { [weak self, weak owner] settlement in
             guard let self, let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }
             try await self.settleFamilyAttempt(settlement, owner: owner)
@@ -44,7 +46,11 @@ extension AgentSession {
         if let link = scope.delegation {
             guard link.valid, link.childSessionID == scope.sourceSessionID,
                   subagents.plans[link.delegationID]?.origin.link == link,
-                  activeTaskPresentation?.executionID == link.parentExecutionID else { throw AttemptAccounting.damaged() }
+                  activeTaskPresentation?.executionID == (scope.parentExecutionID ?? link.parentExecutionID) else { throw AttemptAccounting.damaged() }
+            if let number = scope.childTurn {
+                guard let turn = subagents.family?.turns[AgentTurnTarget(childID:scope.sourceSessionID,turn:number).id],
+                      !turn.status.terminal, turn.parentExecutionID == scope.parentExecutionID, turn.generation == scope.ownerGeneration else { throw AttemptAccounting.damaged() }
+            }
         } else if scope.sourceSessionID != id { throw AttemptAccounting.damaged() }
     }
     func admitAttempt(scope: RequestScope, attemptID: String, allowsPausedQueue: Bool = false) throws -> RequestPermit {

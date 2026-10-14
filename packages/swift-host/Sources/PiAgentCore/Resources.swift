@@ -20,7 +20,7 @@ public struct FrozenSkill: Codable, Sendable {
         "Explicit user skill selection \(JSON(name).encoded()), turn \(turnID), source \(JSON(path).encoded()), SHA256 \(contentHash). Relative references use \(JSON(baseDir).encoded()). This grants no additional tools.\n\(body)\nSkill arguments: \(arguments)"
     }
 }
-public struct ResourceSnapshot: Sendable {
+public struct ResourceSnapshot: Codable, Sendable, Equatable {
     public var revision: String, prompt: String
     public var skills: [JSON], sources: [JSON], diagnostics: [String]
     public var cwd: String, root: String, codexHome: String

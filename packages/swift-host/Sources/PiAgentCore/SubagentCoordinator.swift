@@ -32,6 +32,7 @@ actor SubagentCoordinator {
         let startedAt = nowMS()
         var progress: SubagentProgress?
     }
+    let steering: AgentSteeringCoordinator
     private let register: Register
     private let settled: Settled
     private let listingSnapshot: ListingSnapshot
@@ -45,7 +46,12 @@ actor SubagentCoordinator {
     private var cancelledThrough: [String: Int] = [:]
     var retainedJobCount: Int { jobs.count + rejected.count }
     init(register: @escaping Register = { _, _, _, _ in }, settled: @escaping Settled = { _ in },
-         listingSnapshot: @escaping ListingSnapshot = { await $0.subagentListingSnapshot() }) {
+         listingSnapshot: @escaping ListingSnapshot = { await $0.subagentListingSnapshot() },
+         openSteering: AgentSteeringCoordinator.Open? = nil) {
+        steering = AgentSteeringCoordinator(open:openSteering ?? { env, plan in
+            let child = try AgentSteeringCoordinator.makeChild(env,plan)
+            try await register(child,env.profile,env.apiKey,env.parent); return child
+        }, settled:settled)
         self.register = register; self.settled = settled; self.listingSnapshot = listingSnapshot
     }
 
@@ -200,6 +206,7 @@ actor SubagentCoordinator {
     /// Parent results and their order are journal-backed. The coordinator keeps
     /// only live jobs and terminal answers awaiting durable parent consumption.
     func list(parent: AgentSession, cursor: Int = 0, limit: Int = 100) async -> JSON {
+        if await parent.subagents.family != nil { return await steering.list(parent:parent,cursor:cursor,limit:limit) }
         while true {
             let before = listingRevision
             let (state, revision) = await listingSnapshot(parent), owner = parent.id
@@ -233,6 +240,7 @@ actor SubagentCoordinator {
     /// Called before the host detaches any child journal. The parent also
     /// awaits these completions through its synchronous tool batch.
     func drain() async {
+        await steering.drain()
         let pending = jobs.filter { !$0.value.status.terminal }.map { ($0.key, $0.value.completion) }
         for (key, _) in pending { await cancel(key) }
         for (_, completion) in pending { _ = await completion.wait() }

@@ -101,6 +101,11 @@ public actor AgentSession {
     var familyStopReason: AgentError?
     var familyCancelled: (@Sendable (Int) -> Void)?
     var subagentCoordinator: SubagentCoordinator?
+    var agentCoordinator: AgentSteeringCoordinator?
+    var agentLease: AgentChildTurn?
+    var agentTurnClosed = false
+    var agentPreparedResults: [String:JSON] = [:]
+    var familyWaiting = false
     var managedCancellation: (@Sendable () -> Void)?
     var managedProgress: (@Sendable () async -> Void)?
     var managedProgressTask: Task<Void, Never>?
@@ -552,7 +557,7 @@ public actor AgentSession {
         event("state")
     }
     public func unloadIfIdle() -> Bool {
-        guard isIdle, !ephemeral, managedCancellation == nil || subagents.terminal != nil else { return false }
+        guard isIdle, !ephemeral, managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true else { return false }
         cancelHistoryLoads(); closed=true; journal=nil
         if !isSubagent, let coordinator = subagentCoordinator {
             let owner = id, runtimeID = displayEpoch

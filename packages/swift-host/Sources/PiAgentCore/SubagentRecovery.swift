@@ -17,6 +17,7 @@ enum SubagentRecovery {
         }
         for id in state.callOrder ?? state.plans.keys.sorted() {
             guard let plan = state.plans[id] else { continue }
+            if state.family?.latest(plan.origin.link.childSessionID) != nil { continue }
             let link = plan.origin.link, key = link.call
             guard link.valid, link.budgetOwnerSessionID == owner else { throw damaged() }
             let alreadyPaired = state.outcomes?[id] != nil || history.results[key.assistantMessageID]?[key.toolCallID] != nil

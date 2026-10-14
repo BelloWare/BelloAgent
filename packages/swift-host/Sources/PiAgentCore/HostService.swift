@@ -242,6 +242,9 @@ public actor NativeHostService {
                     try await self.registerSubagent(child, profile: profile, apiKey: key, parent: parent)
                 }, settled: { [weak self] child in
                     await self?.releaseSubagent(child)
+                }, openSteering: { [weak self] environment, plan in
+                    guard let self else { throw AgentError("workspace_closed", "Helper closed") }
+                    return try await self.openAgentChild(environment,plan)
                 })
             }
             if let subagentCoordinator { await session.enableSubagents(subagentCoordinator) }
@@ -268,6 +271,18 @@ public actor NativeHostService {
         }
         sessions[childID] = child; profiles[childID] = (profile, apiKey)
         await adoptRetrySettings(child)
+    }
+    private func openAgentChild(_ environment: SubagentEnvironment, _ plan: SubagentPlan) async throws -> AgentSession {
+        try await withRuntimeGate {
+            let id = plan.origin.link.childSessionID
+            if let old = sessions[id] {
+                guard await old.unloadIfIdle() else { throw AgentError("session_busy", "Child is still settling") }
+                sessions.removeValue(forKey:id); profiles.removeValue(forKey:id)
+            }
+            let child = try AgentSteeringCoordinator.makeChild(environment,plan)
+            try await registerSubagent(child,profile:await child.profile,apiKey:environment.apiKey,parent:environment.parent)
+            return child
+        }
     }
     private func releaseSubagent(_ child: AgentSession) async {
         // Serialize with explicit opens: either the viewer pins this runtime,
@@ -525,6 +540,10 @@ public actor NativeHostService {
             let coordinator = subagentCoordinator ?? SubagentCoordinator()
             return await coordinator.list(parent: session, cursor: cursor, limit: limit)
         case "subagent.stop":
+            if let coordinator = await session.agentCoordinator, await session.subagents.family != nil {
+                let target = AgentTurnTarget(childID:try required(params["childId"],"child id"),turn:try boundedInt(params["turn"],fallback:0,maximum:Int.max))
+                try await coordinator.stop(parent:session,target:target,human:true); return ["accepted":true]
+            }
             guard let subagentCoordinator else { throw AgentError("subagent_scope", "No managed delegation belongs to this parent") }
             try await subagentCoordinator.stop(owner: id, delegationID: required(params["delegationId"], "delegation id")); return ["accepted":true]
         case "turn.stop": await session.stop(); return ["accepted":true]

@@ -172,6 +172,10 @@ extension AgentSession {
         var message=ChatMessage(role:"user",content:(expanded.isEmpty && !images.isEmpty ? [] : [textBlock(expanded)])+images); message.displayText=submission.text; message.id=submission.turnID; message.turn=submission.turnID
         message.contextNote=pendingContextNote()
         message.userInput = ["version":1,"attachments":.array(submission.attachments.map { $0.removing(["data"]) }),"skills":.array(submission.skills.map(\.recorded))]
+        if let lease = agentLease {
+            message.userInput = nil
+            message.nativeAgentDelivery = ["version":1,"author":"parent","childId":JSON(id),"turn":JSON(lease.turn),"eventIds":[JSON(lease.inputID)],"task":JSON(subagents.origin?.description ?? "")]
+        }
         message.taskRootID=newTask ? submission.turnID : taskRootID
         message.taskExecutionID=activeTaskPresentation?.executionID
         message.inputLane=lane

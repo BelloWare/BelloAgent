@@ -67,10 +67,16 @@ extension AgentSession {
         var definitions = await tools.definitions(readOnly: offersReadOnlyTools)
         // A running turn keeps its grant. Idle previews describe the next
         // request, including after reopening before any turn has run.
-        if canDelegate { definitions.append(SubagentSpec.definition(models: runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants)) }
+        if agentCoordinator != nil, isSubagent || canDelegate {
+            definitions += SubagentSteeringContract.definitions(child:isSubagent,models:runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants)
+        } else if canDelegate { definitions.append(SubagentSpec.definition(models: runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants)) }
         return definitions
     }
     func invokeTool(_ call: ToolCall) async throws -> JSON {
+        if SubagentSteeringContract.names.contains(call.name) {
+            guard agentCoordinator != nil, let result = agentPreparedResults[call.id] else { throw AgentError("tool_unavailable", "Agent control was not admitted") }
+            return result
+        }
         if call.name == "subagent" {
             guard canDelegate, let coordinator = subagentCoordinator, let assistant = toolHistory.owners[call.id] else { throw AgentError("tool_unavailable", "Sub-agent delegation is unavailable here") }
             return await coordinator.result(SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call.id)).wire
@@ -130,7 +136,7 @@ extension AgentSession {
         // theirs and name the file that holds the rest. Ours do the same, so
         // this cut is for a tool that returns more (an MCP server): the text
         // is saved whole, and pi's note names the file the model can read.
-        if text.utf8.count > 65536 && !(call.name == "subagent" && canDelegate && !result["nativeSubagent"].isNull) {
+        if text.utf8.count > 65536 && !((call.name == "subagent" && canDelegate || SubagentSteeringContract.names.contains(call.name) && agentCoordinator != nil) && !result["nativeSubagent"].isNull) && call.name != "subagent_status" {
             let folder=directory.appendingPathComponent("tool-output"); try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
             let file=folder.appendingPathComponent(UUID().uuidString+".txt"), bytes=Data(text.utf8)
             guard bytes.count <= 16*1024*1024 else { throw AgentError("tool_output_limit", "Tool result exceeds 16 MiB; remote effects may have completed") }
@@ -142,7 +148,7 @@ extension AgentSession {
         // The card names each image the model receives beside the text.
         let shown=images.isEmpty ? text : ([text]+images.map(describe)).filter { !$0.isEmpty }.joined(separator:"\n")
         if !images.isEmpty { message.displayText=shown }
-        if call.name == "subagent", canDelegate, !result["nativeSubagent"].isNull {
+        if (call.name == "subagent" && canDelegate || SubagentSteeringContract.names.contains(call.name) && agentCoordinator != nil), !result["nativeSubagent"].isNull {
             message.nativeSubagent = result["nativeSubagent"]
             if let id = result["nativeResultMessageId"].text { message.id = id }
         }
@@ -196,6 +202,21 @@ extension AgentSession {
             setToolState(call.id,merging(["id":JSON(call.id),"name":JSON(call.name),"state":"running","output":"","durationMs":.null,"truncated":JSON(fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false)],fields))
             recordDisplayChange(toolStateOwners[call.id], at: displayClock())
             event("tool_execution_queued")
+        }
+        agentPreparedResults = [:]
+        if let coordinator = agentCoordinator {
+            for call in calls where SubagentSteeringContract.names.contains(call.name) {
+                do {
+                    guard !isSubagent else { throw AgentError("tool_unavailable", "Only reports are available in a child") }
+                    let key = try agentToolKey(call)
+                    let receipt = try await coordinator.prepare(call,key:key,parent:self)
+                    var wire = resultText(receipt.encoded())
+                    if let child = receipt["child_id"].text, let plan = subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) {
+                        wire["nativeSubagent"] = ["version":2,"sessionId":JSON(child),"delegationId":JSON(plan.origin.link.delegationID),"budgetOwnerSessionId":JSON(id),"parentAssistantMessageId":JSON(key.assistantMessageID),"toolCallId":JSON(call.id),"turn":receipt["turn"],"route":receipt["route"],"status":"accepted"]
+                    }
+                    agentPreparedResults[call.id] = wire
+                } catch { agentPreparedResults[call.id] = resultText((error as? AgentError)?.message ?? "Agent control interrupted",error:true) }
+            }
         }
         var preflightCancelled = false
         if canDelegate, let coordinator = subagentCoordinator, calls.contains(where: { $0.name == "subagent" }) {

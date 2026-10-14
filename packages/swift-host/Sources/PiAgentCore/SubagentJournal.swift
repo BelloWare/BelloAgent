@@ -8,6 +8,7 @@ struct SubagentOrigin: Codable, Sendable, Equatable {
     var readOnly: Bool
     var resourceRevision: String
     var mcpPolicy: JSON? = nil
+    var frozenResources: ResourceSnapshot? = nil
 }
 
 struct SubagentPlan: Codable, Sendable, Equatable {
@@ -28,6 +29,7 @@ struct SubagentJournalState: Codable, Sendable, Equatable {
     var origin: SubagentOrigin?
     var status: SubagentStatus?
     var terminal: JSON?
+    var family: AgentFamilyState?
 
     mutating func consume(_ record: JSON, sessionID: String) throws {
         if record["type"].text == "message", record["message"]["role"].text == "toolResult" {
@@ -39,6 +41,18 @@ struct SubagentJournalState: Codable, Sendable, Equatable {
             }
         }
         let data = record["data"]
+        let kinds = [JournalRecordKind.agentOperation, JournalRecordKind.agentTurn, JournalRecordKind.agentTurnState, JournalRecordKind.agentTerminal, JournalRecordKind.agentMessage, JournalRecordKind.agentDelivery, JournalRecordKind.familyRun]
+        if kinds.contains(record["customType"].text ?? "") {
+            let owner = record["ownerID"].text ?? origin?.link.budgetOwnerSessionID ?? sessionID
+            guard owner == sessionID || origin?.link.budgetOwnerSessionID == owner else { return }
+            if family == nil { family = AgentFamilyState(ownerID:owner) }
+            try family?.consume(record)
+            if record["customType"].text == JournalRecordKind.agentOperation,
+               let plan = try JSONDecoder().decode(AgentOperation.self,from:data.data()).plan {
+                try consume(["type":"custom","customType":JSON(JournalRecordKind.subagentCall),"data":try subagentJSON(plan)],sessionID:sessionID)
+            }
+            return
+        }
         switch record["customType"].text {
         case JournalRecordKind.subagentCall:
             let plan = try JSONDecoder().decode(SubagentPlan.self, from: data.data())
@@ -67,6 +81,7 @@ struct SubagentJournalState: Codable, Sendable, Equatable {
     }
 
     mutating func retarget(_ sessionID: String) {
+        if family?.ownerID != sessionID, origin?.link.childSessionID != sessionID { family = nil }
         plans = plans.filter { $0.value.origin.link.call.parentSessionID == sessionID }
         callOrder = callOrder?.filter { plans[$0] != nil }; outcomes = outcomes?.filter { plans[$0.key] != nil }
         if origin?.link.childSessionID != sessionID { origin = nil; status = nil; terminal = nil }

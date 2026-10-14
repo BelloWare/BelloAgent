@@ -125,6 +125,11 @@ struct JournalReplayConsumer {
             try r.accounting.consume(kind: JournalRecordKind.cost, data: item["data"]["adoptionSeed"], spend: &r.spend)
             r.spendTracked = true
         }
+        if item["customType"].text == JournalRecordKind.agentOperation,
+           item["ownerID"].text == id, !item["data"]["plan"]["adoptionSeed"].isNull {
+            try r.accounting.consume(kind:JournalRecordKind.cost,data:item["data"]["plan"]["adoptionSeed"],spend:&r.spend)
+            r.spendTracked = true
+        }
         if item["customType"].text == JournalRecordKind.rebind {
             // Named already when the checkpoint resumed from lists it.
             if !rebinds.contains(where: { $0.offset == lineStart }) {
