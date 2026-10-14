@@ -16,6 +16,7 @@ public struct RequestScope: Codable, Sendable, Equatable {
     public var valid: Bool {
         let ids = [sourceSessionID, budgetOwnerSessionID, turnID, executionID, purpose]
         guard ownerGeneration >= 0, ids.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 512 && !$0.utf8.contains(where: { $0 < 32 || $0 == 127 }) }) else { return false }
+        if let childTurn { guard childTurn >= 1, parentExecutionID?.isEmpty == false, delegation != nil else { return false } }
         if let delegation {
             return delegation.valid && sourceSessionID == delegation.childSessionID && budgetOwnerSessionID == delegation.budgetOwnerSessionID
         }

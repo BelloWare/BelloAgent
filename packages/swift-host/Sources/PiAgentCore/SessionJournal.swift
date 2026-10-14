@@ -72,6 +72,7 @@ final class SessionJournal {
         guard lockFD >= 0 else { throw AgentError("session_lock", "Cannot create session writer lock") }
         guard flock(lockFD,LOCK_EX|LOCK_NB) == 0 else { _ = close(lockFD); throw AgentError("session_locked", "Another process owns this session") }
         do {
+            try JournalCheckpoint.removeTemporaries(for: url)
             if create {
                 let fd=open(url.path,O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW|O_CLOEXEC,0o600)
                 guard fd >= 0 else { throw AgentError("session_exists", "Session path already exists; open it explicitly") }
@@ -88,6 +89,7 @@ final class SessionJournal {
                 markerBinding=scanned.bindings.marker; markerKind=scanned.bindings.markerKind ?? JournalRecordKind.marker; rebinds=scanned.bindings.rebinds
             }
             handle=try FileHandle(forWritingTo:url); try handle.seekToEnd()
+            try? FileManager.default.removeItem(at:url.appendingPathExtension("promotion"))
         } catch { _=flock(lockFD,LOCK_UN); _=close(lockFD); throw error }
         if create {
             markerKind = managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker
@@ -185,7 +187,7 @@ final class SessionJournal {
             if offset == check.offset {
                 guard JournalCheckpoint.digest(line) == check.sha256,
                       let text = String(data:line,encoding:.utf8) else { throw SubagentRecovery.damaged() }
-                promotedLine = Data(text.replacingOccurrences(of:markerKind,with:JournalRecordKind.steeringMarker).utf8)
+                promotedLine = Data(text.replacingOccurrences(of:"\"customType\":\"" + markerKind + "\"",with:"\"customType\":\"" + JournalRecordKind.steeringMarker + "\"").utf8)
                 guard promotedLine.count == line.count, promotedLine != line else { throw SubagentRecovery.damaged() }
                 line = promotedLine; replaced = true
             }

@@ -70,3 +70,26 @@ actor AccountedAgentScript: ModelClient {
         await onObservation(observation); reply.message.requestAttemptIDs = [attempt]; return reply
     }
 }
+
+extension AgentSteeringCommandTests {
+    func testV3DoesNotExecuteHiddenV2ToolOrOfferDelegationToChild() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore())
+        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(AgentSteeringCoordinator())
+        let definitions = await parent.sessionDefinitions()
+        XCTAssertFalse(definitions.contains { $0.name == "subagent" })
+        XCTAssertTrue(Set(SubagentSteeringContract.parentNames).isSubset(of:Set(definitions.map(\.name))))
+        let call = ToolCall(id:"hidden",name:"subagent",arguments:["task":"Must not execute"])
+        _ = try await parent.agentFixtureCall(call,newTask:true)
+        try await parent.runToolBatch([call])
+        let state = await parent.subagents, results = await parent.history.filter { $0.toolCallId == "hidden" }
+        XCTAssertTrue(state.plans.isEmpty)
+        XCTAssertEqual(results.count,1); XCTAssertTrue(results[0].isError)
+        let child = try AgentSession(id:"child",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore(),prepared:nil,subagentOrigin:subagentFixtureOrigin())
+        await child.enableSubagents(SubagentCoordinator()); await child.enableAgentSteering(AgentSteeringCoordinator())
+        let offered = await child.sessionDefinitions()
+        XCTAssertTrue(offered.contains { $0.name == "subagent_report" })
+        XCTAssertFalse(offered.contains { SubagentSteeringContract.parentNames.contains($0.name) })
+        await child.close(); await parent.close()
+    }
+}

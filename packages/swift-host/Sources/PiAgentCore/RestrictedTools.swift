@@ -33,8 +33,9 @@ actor RestrictedTools: ToolExecuting {
             guard targets.allSatisfy(servers.contains) else { throw AgentError("mcp_server", "Server is outside this delegation's grant") }
             // Retention keys are physical invocations, never model call IDs
             // shared by parallel sessions. The model still sees its own ID.
-            let token = UUID().uuidString; retention[call.id] = token
-            var scoped = ToolCall(id: token, name: call.name, arguments: call.arguments); scoped.mcpPolicy = mcpPolicy
+            let token = UUID().uuidString
+            if call.arguments["action"].text == "invoke" { retention[call.id] = token }
+            var scoped = ToolCall(id: token, name: call.name, arguments: call.arguments); scoped.mcpPolicy = mcpPolicy; scoped.outputSessionID = call.outputSessionID
             let returned: JSON
             do { returned = try await base.invoke(scoped, readOnly: self.readOnly || readOnly, onUpdate: onUpdate) }
             catch {

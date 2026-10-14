@@ -1,6 +1,11 @@
 import Foundation
 
 extension AgentSession {
+    func requireAgentExecution() throws {
+        guard subagents.family == nil || agentCoordinator != nil else {
+            throw AgentError("subagent_steering_disabled", "This family requires v3 execution; viewing and export remain available")
+        }
+    }
     // Internal fixture entry as well as the sole production switch's target.
     func enableAgentSteering(_ coordinator: AgentSteeringCoordinator) {
         agentCoordinator = coordinator
@@ -21,7 +26,9 @@ extension AgentSession {
         return op.receipt
     }
     func appendAgentRecord<T: Encodable>(_ kind: String, _ data: T, owner: String? = nil) throws {
-        guard let journal, !closed else { throw AgentError("subagent_persistence", "The family journal is closed") }
+        guard let journal else { throw AgentError("subagent_persistence", "The family journal is closed") }
+        try journal.promoteToSteering(managedChild:isSubagent)
+        guard journal.markerKind == JournalRecordKind.steeringMarker else { throw AgentError("subagent_promotion", "V3 commands require a promoted journal") }
         let row: JSON = ["type":"custom","customType":JSON(kind),"ownerID":JSON(owner ?? subagents.origin?.link.budgetOwnerSessionID ?? id),"data":try subagentJSON(data)]
         var next = subagents; try next.consume(row,sessionID:id)
         try journal.append(row,flush:true); subagents = next
@@ -32,7 +39,7 @@ extension AgentSession {
             guard saved.digest == proposed.digest else { throw AgentError("subagent_operation_conflict", "Conflicting accepted call") }; return saved
         }
         guard agentCoordinator != nil, !isSubagent, !closed, !queuePaused, stopCount == generation,
-              activeTaskPresentation != nil, subagents.family?.run?.closed != true else { throw AgentError("subagent_closed", "The parent run no longer accepts agent commands") }
+              activeTaskPresentation?.executionID == proposed.epoch, subagents.family?.run?.closed != true || subagents.family?.run?.epoch != proposed.epoch else { throw AgentError("subagent_closed", "The parent run no longer accepts agent commands") }
         try Task.checkCancellation(); try enforceCostLimit()
         if proposed.key.parentSessionID == id {
             guard toolHistory.owners[proposed.key.toolCallID] == proposed.key.assistantMessageID else { throw SubagentRecovery.damaged() }
@@ -62,6 +69,7 @@ extension AgentSession {
         try appendAgentRecord(JournalRecordKind.agentTurn,turn)
         budgetOwner = owner; budgetOwnerGeneration = turn.generation
         agentLease = turn; agentTurnClosed = false; agentCoordinator = coordinator
+        managedProgress = { [weak coordinator] in await coordinator?.progress(turn.target) }
         queue.removeAll(); steering.removeAll(); queuePaused = false
         managedCancellation = { Task { await coordinator.stop(owner:owner.id,target:turn.target,human:false) } }
     }

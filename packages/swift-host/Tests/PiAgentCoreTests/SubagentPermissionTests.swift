@@ -53,6 +53,18 @@ final class SubagentPermissionTests: XCTestCase {
         XCTAssertTrue(retained.isEmpty, "A thrown invocation has no retained result; its unknown-outcome marker must stay")
     }
 
+    func testMCPDiscoveryDoesNotRetainInvocationTokens() async throws {
+        let base = PermissionTools()
+        let tools = RestrictedTools(base: base, allowed: ["mcp"], readOnly: true, capabilities: ["mcp:allowed"])
+        let ids = (0..<100).map { "discovery-\($0)" }
+        for (index, id) in ids.enumerated() {
+            _ = try await tools.invoke(ToolCall(id: id, name: "mcp", arguments: ["action":JSON(index % 2 == 0 ? "list" : "describe"), "server":"allowed"]), readOnly: true)
+        }
+        await tools.resultsRetained(ids, retained: true)
+        let retained = await base.retained
+        XCTAssertTrue(retained.isEmpty, "Discovery must not retain mappings or acknowledge invocation outcomes")
+    }
+
     func testExplicitModelMustBeGrantedButUnlistedParentCanBeInherited() throws {
         let parent = try fixtureProfile()
         XCTAssertEqual(try SubagentModelGrant.resolve(nil, parent: parent, grants: []).1.raw, parent.raw)

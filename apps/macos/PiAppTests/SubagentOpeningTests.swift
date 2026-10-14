@@ -6,6 +6,35 @@ import AppKit
 /// Real helper navigation over a generated loopback stream. The fixture's
 /// explicit barrier keeps a child active until its viewer has attached.
 final class SubagentOpeningTests: XCTestCase, SerialTestLane {
+    @MainActor func testColdParentOpenRepairsCapturedChildChargeBeforeReturningItsHost() async throws {
+        let (_, model, host, parent, target) = try await fixture()
+        var requests: [[String: WireValue]] = []
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        repeat {
+            requests = try await model.traces.list(sessionID: target.sessionID, workspaceID: parent.workspaceID)
+            if !requests.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(10))
+        } while ContinuousClock.now < deadline
+        XCTAssertFalse(requests.isEmpty, "Child capture was not durably archived")
+        let attempt = try XCTUnwrap(requests.first?["attemptId"]?.string)
+        XCTAssertEqual(kill(try XCTUnwrap(host.helperProcessIdentifier), SIGKILL), 0)
+        try await eventually("Fixture host did not exit") { host.connectionID == nil }
+        try await host.settleCaptureIfStopping()
+        // Generated retained terminal evidence, in the capture-before-journal
+        // crash window. No provider is called after the interrupted child.
+        var evidence = try await model.traces.metadata(attempt: attempt)
+        evidence["outcome"] = .string("completed")
+        evidence["gateway"] = .object(["version":.number(1),"cost":.object(["status":.string("reported"),"usd":.number(0.2)])])
+        try await model.traces.finish(evidence)
+        let reopened = try await model.open(try XCTUnwrap(model.record(parent.id)))
+        let state = try await reopened.request("session.status", sessionID: parent.id)
+        XCTAssertGreaterThanOrEqual(state.object?["cost"]?.object?["spentUSD"]?.number ?? -1, 0.2)
+        await model.openSubagent(target)
+        XCTAssertNil(model.error)
+        let child = try await reopened.request("session.status", sessionID: target.sessionID)
+        XCTAssertEqual(child.object?["cost"]?.object?["spentUSD"]?.number, 0.2)
+    }
+
     @MainActor func testLiveDiscoverySurvivesTopicMovesAndLosesAuthorityWhenTheHelperExits() async throws {
         let (_, model, host, parent, target) = try await fixture()
         let connection = try XCTUnwrap(host.connectionID)

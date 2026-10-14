@@ -12,6 +12,8 @@ actor AgentSteeringCoordinator {
         var child: AgentSession?
         var task: Task<Void,Never>?
         var cancelled = false, allocated = false, sealed = false
+        let startedAt = nowMS()
+        var progress: SubagentProgress?
     }
     var jobs: [String:Job] = [:]
     var queues: [String:[String]] = [:]
@@ -52,9 +54,7 @@ actor AgentSteeringCoordinator {
         if call.name == "subagent_status" { return try await status(call.arguments,parent:parent) }
         let env = try await parent.delegationEnvironment()
         var state = await parent.agentState()
-        if state.run?.epoch != env.executionID {
-            try await parent.appendAgentRecord(JournalRecordKind.familyRun,AgentFamilyRun(epoch:env.executionID)); state = await parent.agentState()
-        }
+        if state.run?.epoch != env.executionID { state.run = AgentFamilyRun(epoch:env.executionID) }
         var plan: SubagentPlan?, turn: AgentChildTurn?, message: AgentFamilyMessage?, targets: [AgentTurnTarget]?
         var receipt: JSON = ["version":3,"accepted":true,"operation_id":JSON(AgentOperation.id(key))]
         switch call.name {
@@ -70,7 +70,10 @@ actor AgentSteeringCoordinator {
             receipt["route"] = "start"
         case "subagent_send":
             let child = call.arguments["child_id"].text!
-            guard let savedPlan = await parent.subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }), let latest = state.latest(child) else { throw AgentError("subagent_scope", "Unknown child in this family") }
+            guard let savedPlan = await parent.subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) else { throw AgentError("subagent_scope", "Unknown child in this family") }
+            if state.latest(child) == nil { try await adoptLegacy(savedPlan,parent:parent,environment:env); state = await parent.agentState() }
+            guard let latest = state.latest(child) else { throw SubagentRecovery.damaged() }
+            if latest.status != .notExecuted, !FileManager.default.fileExists(atPath:env.directory.appendingPathComponent(child + ".jsonl").path) { throw AgentError("subagent_missing", "The saved child conversation is missing; it cannot be resumed") }
             if let expected = call.arguments["expected_turn"].int, expected != latest.turn { throw AgentError("stale_turn", "Latest child turn is \(latest.turn)") }
             guard !((state.run?.heldChildren ?? []).contains(child)), latest.status != .stopping else { throw AgentError("subagent_stopped", "Child is stopping or held by user Stop") }
             if latest.status.terminal {
@@ -98,7 +101,32 @@ actor AgentSteeringCoordinator {
         if let turn = op.turn {
             let existingPlan = await parent.subagents.plans.values.first { $0.origin.link.childSessionID == turn.childID }
             guard let plan = op.plan ?? existingPlan else { throw SubagentRecovery.damaged() }
-            jobs[turn.id] = Job(owner:parent,environment:env,plan:plan,turn:turn)
+            if turn.turn == 1 {
+                do { try publishQueuedChild(env,plan:plan,turn:turn) }
+                catch {
+                    var failed = turn; failed.status = .notExecuted
+                    failed.result = SubagentToolResult(plan:plan,status:.notExecuted,error:AgentError("subagent_persistence", "Accepted task could not publish its child journal; it was not executed")); failed.normalizeResult()
+                    try await parent.appendAgentRecord(JournalRecordKind.agentTerminal,failed)
+                    let current = await parent.agentState()
+                    try await parent.appendAgentRecord(JournalRecordKind.agentMessage,AgentFamilyMessage.resultEvent(failed,task:plan.origin.description,sequence:current.sequence + 1))
+                    return op.receipt
+                }
+            }
+            var job = Job(owner:parent,environment:env,plan:plan,turn:turn)
+            if turn.turn == 1 {
+                do {
+                    let child = try await open(env,plan); job.child = child
+                    try await child.prepareAgentTurn(turn,owner:parent,coordinator:self)
+                } catch {
+                    job.turn.status = .notExecuted
+                    job.turn.result = SubagentToolResult(plan:plan,status:.notExecuted,error:AgentError("subagent_persistence", "Accepted task could not open its child; it was not executed"))
+                    jobs[turn.id] = job
+                    // Acceptance stays durable even if publishing the runtime fails.
+                    let failed = job; jobs[turn.id]?.task = Task { await self.finishJob(failed,child:failed.child) }
+                    return op.receipt
+                }
+            }
+            jobs[turn.id] = job
             queues[parent.id,default:[]].append(turn.id); pump(parent.id)
         }
         if call.name == "subagent_stop" { await stop(owner:parent.id,target:.init(childID:call.arguments["child_id"].text!,turn:call.arguments["turn"].int!),human:false) }
@@ -129,7 +157,7 @@ actor AgentSteeringCoordinator {
         do {
             try Task.checkCancellation()
             guard job.turn.generation > cancelledThrough[job.turn.runtimeID,default:-1], !job.cancelled else { throw CancellationError() }
-            child = try await open(job.environment,job.plan)
+            if let existing = job.child { child = existing } else { child = try await open(job.environment,job.plan) }
             guard let child else { throw SubagentRecovery.damaged() }
             jobs[id]?.child = child
             guard await child.subagents.origin == job.plan.origin else { throw SubagentRecovery.damaged() }
@@ -158,14 +186,20 @@ actor AgentSteeringCoordinator {
             catch { await lock.release(); throw error }
         } catch { await job.owner.failFamilyAccounting(error) }
         if let child { await settled(child) }
-        jobs.removeValue(forKey:job.turn.id); active[job.owner.id,default:0] -= 1; pump(job.owner.id)
+        jobs.removeValue(forKey:job.turn.id); if job.allocated { active[job.owner.id,default:0] -= 1 }; pump(job.owner.id)
         await signal(job.owner.id).pulse()
     }
     func stop(owner: String, target: AgentTurnTarget, human: Bool) async {
         guard var job = jobs[target.id], job.owner.id == owner, !job.cancelled else { return }
         job.cancelled = true; job.task?.cancel(); jobs[target.id] = job
         if let child = job.child { await child.stop() }
-        if !job.allocated { queues[owner]?.removeAll { $0 == target.id }; active[owner,default:0] += 1; jobs[target.id]?.allocated = true; jobs[target.id]?.task = Task { await self.run(target.id) } }
+        if !job.allocated {
+            queues[owner]?.removeAll { $0 == target.id }
+            job.turn.status = .notExecuted
+            job.turn.result = SubagentToolResult(plan:job.plan,status:.notExecuted,error:AgentError("subagent_stopped", "Stopped before execution"))
+            let cancelled = job
+            jobs[target.id]?.task = Task { await self.finishJob(cancelled,child:cancelled.child) }
+        }
     }
     func cancel(owner: String, runtimeID: String, through: Int) async {
         cancelledThrough[runtimeID] = max(cancelledThrough[runtimeID,default:-1],through)

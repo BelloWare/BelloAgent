@@ -49,9 +49,9 @@ extension AgentSteeringCoordinator {
         let saved = await parent.subagents, state = await parent.agentState(), waiting = await parent.familyWaiting
         let plans = (saved.callOrder ?? []).compactMap { saved.plans[$0] }
         let start = min(max(0,cursor),plans.count), page = plans[start...].prefix(max(1,min(limit,256))), end = start + page.count
-        return ["revision":JSON(await parent.sequence),"total":JSON(plans.count),"active":JSON(state.turns.values.filter { !$0.status.terminal }.count),"cursor":end < plans.count ? JSON(end) : .null,"children":.array(page.compactMap { plan in
+        return ["revision":JSON(await parent.sequence),"total":JSON(plans.count),"active":JSON(active[parent.id,default:0]),"cursor":end < plans.count ? JSON(end) : .null,"children":.array(page.compactMap { plan in
             guard let turn = state.latest(plan.origin.link.childSessionID) else { return try? subagentJSON(SubagentSummary(link:plan.origin.link,description:plan.origin.description,model:plan.origin.model.model,status:saved.outcomes?[plan.origin.link.delegationID] ?? .interrupted,revision:state.revision)) }
-            return try? subagentJSON(SubagentSummary(link:plan.origin.link,description:plan.origin.description,model:plan.origin.model.model,status:turn.status,revision:state.revision,tools:plan.origin.tools,turn:turn.turn,executionID:turn.executionID,deliveryState:state.messages["result:" + turn.id]?.disposition ?? "pending",pendingMessages:state.messages.values.filter { $0.childID == turn.childID && $0.disposition == "pending" }.count,followUpsRemaining:max(0,8-state.turns.values.filter { $0.childID == turn.childID && $0.epoch == state.run?.epoch && $0.turn > 1 }.count),parentWaiting:waiting))
+            return try? subagentJSON(SubagentSummary(link:plan.origin.link,description:plan.origin.description,model:plan.origin.model.model,status:turn.status,revision:state.revision,tools:plan.origin.tools,progress:jobs[turn.id]?.progress,turn:turn.turn,executionID:turn.executionID,deliveryState:state.messages["result:" + turn.id]?.disposition ?? "pending",pendingMessages:state.messages.values.filter { $0.childID == turn.childID && $0.disposition == "pending" }.count,followUpsRemaining:max(0,8-state.turns.values.filter { $0.childID == turn.childID && $0.epoch == state.run?.epoch && $0.turn > 1 }.count),parentWaiting:waiting))
         })]
     }
 }
@@ -65,5 +65,15 @@ extension AgentSteeringCoordinator {
             try await parent.appendAgentRecord(JournalRecordKind.familyRun,run)
         }
         await stop(owner:parent.id,target:target,human:human)
+    }
+}
+
+extension AgentSteeringCoordinator {
+    func progress(_ target: AgentTurnTarget) async {
+        guard let job = jobs[target.id], !job.sealed, let child = job.child else { return }
+        let progress = await child.subagentProgress(elapsed:nowMS()-job.startedAt)
+        guard jobs[target.id]?.sealed == false else { return }
+        jobs[target.id]?.progress = progress
+        await job.owner.subagentChanged(SubagentSummary(link:job.plan.origin.link,description:job.plan.origin.description,model:job.plan.origin.model.model,status:job.turn.status,revision:await job.owner.sequence,tools:job.plan.origin.tools,progress:progress,turn:job.turn.turn,executionID:job.turn.executionID),discovery:false)
     }
 }

@@ -65,7 +65,7 @@ struct AgentFamilyState: Codable, Sendable, Equatable {
     func latest(_ child: String) -> AgentChildTurn? { turns.values.filter { $0.childID == child }.max { $0.turn < $1.turn } }
     func pending(author: String) -> [AgentFamilyMessage] { messages.values.filter { $0.author == author && $0.disposition == "pending" }.sorted { $0.sequence < $1.sequence } }
     mutating func operation(_ op: AgentOperation) throws {
-        guard op.key.parentSessionID == ownerID || op.message?.author == "subagent" else { throw SubagentRecovery.damaged() }
+        guard op.key.parentSessionID == ownerID || (op.message?.author == "subagent" && op.message?.childID == op.key.parentSessionID) else { throw SubagentRecovery.damaged() }
         if let old = operations[op.id] { guard old == op else { throw SubagentRecovery.damaged() }; return }
         if let turn = op.turn {
             guard turn.turn == (latest(turn.childID)?.turn ?? 0) + 1,
@@ -76,6 +76,7 @@ struct AgentFamilyState: Codable, Sendable, Equatable {
             guard messages[message.id] == nil, message.sequence > sequence else { throw SubagentRecovery.damaged() }
             messages[message.id] = message; sequence = message.sequence
         }
+        if op.key.parentSessionID == ownerID, run?.epoch != op.epoch { run = AgentFamilyRun(epoch:op.epoch) }
         operations[op.id] = op; revision += 1
     }
     mutating func consume(_ row: JSON) throws {
@@ -86,7 +87,8 @@ struct AgentFamilyState: Codable, Sendable, Equatable {
         case JournalRecordKind.agentTurn, JournalRecordKind.agentTurnState, JournalRecordKind.agentTerminal:
             let turn = try JSONDecoder().decode(AgentChildTurn.self,from:data.data())
             if let old = turns[turn.id] {
-                guard old.executionID == turn.executionID, !old.status.terminal || old == turn else { throw SubagentRecovery.damaged() }
+                var identity = old; identity.status = turn.status; identity.result = turn.result
+                guard identity == turn, !old.status.terminal || old == turn else { throw SubagentRecovery.damaged() }
             }
             turns[turn.id] = turn; revision += 1
         case JournalRecordKind.agentMessage:

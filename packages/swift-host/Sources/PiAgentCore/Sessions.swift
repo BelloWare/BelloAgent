@@ -347,7 +347,7 @@ public actor AgentSession {
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
         spend=replayed.spend; spendTracked=replayed.spendTracked; accounting=replayed.accounting; subagents=replayed.subagents
         familyBudgetEnabled = !subagents.plans.isEmpty
-        guard opened.markerKind == JournalRecordKind.steeringMarker || (opened.markerKind == JournalRecordKind.childMarker) == (subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
+        guard opened.markerKind == JournalRecordKind.steeringMarker || (opened.markerKind == JournalRecordKind.childMarker) == (replayed.subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
@@ -453,6 +453,7 @@ public actor AgentSession {
         // unknown outcomes so future requests remain protocol-valid.
         let delegatedResults = try SubagentRecovery.recover(state: subagents, context: context, parent: opened, owner: id,
                                                              directory: directory, accounting: &accounting, spend: &spend)
+        try AgentFamilyRecovery.recover(state:&subagents,parent:opened,owner:id,directory:directory,accounting:&accounting,spend:&spend)
         let recoveredTools=ToolHistoryIndex(context)
         let unresolved=context.flatMap { message in
             message.content.filter { message.role == "assistant" && $0["type"].text == "toolCall" && recoveredTools.results[message.id]?[$0["id"].text ?? ""] == nil }
@@ -468,6 +469,21 @@ public actor AgentSession {
                 result.id = saved.messageID ?? result.id; result.content = [textBlock(saved.envelope.encoded())]
                 result.nativeSubagent = saved.metadata.isNull ? nil : saved.metadata; result.isError = saved.wire["isError"].flag == true
                 result.toolStats?["outcome"] = saved.metadata["effects"].isNull ? "not_executed" : saved.metadata["effects"]
+            }
+            if let name = call["name"].text, SubagentSteeringContract.names.contains(name), let callID = call["id"].text {
+                let key = SubagentCallKey(parentSessionID:id,assistantMessageID:pending.assistant,toolCallID:callID)
+                if let op = subagents.family?.operations[AgentOperation.id(key)] {
+                    var receipt = op.receipt
+                    if name == "subagent_wait" || name == "subagent_start" && call["arguments"]["mode"].text == "wait" {
+                        receipt["wait"] = ["version":3,"wake_reason":"stopped","wait_id":JSON(op.id),"target_count":JSON(op.waitTargets?.count ?? (op.turn == nil ? 0 : 1)),"inbox_pending":JSON(!(subagents.family?.pending(author:"subagent").isEmpty ?? true))]
+                    }
+                    result.id = "agent-receipt:" + op.id; result.content = [textBlock(receipt.encoded())]; result.isError = false
+                    result.toolStats?["outcome"] = "completed"
+                    if let child = op.receipt["child_id"].text,
+                       let plan = subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) {
+                        result.nativeSubagent = ["version":2,"sessionId":JSON(child),"delegationId":JSON(plan.origin.link.delegationID),"budgetOwnerSessionId":JSON(id),"parentAssistantMessageId":JSON(key.assistantMessageID),"toolCallId":JSON(callID),"turn":op.receipt["turn"],"route":op.receipt["route"],"status":"accepted","effects":"completed"]
+                    }
+                } else { result.content = [textBlock("Not accepted before interruption. No control command was replayed.")]; result.toolStats?["outcome"] = "not_executed" }
             }
             result.requestAttemptIDs=pending.attempts; result.turn=pending.turn
             try opened.append(["type":"message","message":result.pi],id:result.id)
@@ -567,6 +583,7 @@ public actor AgentSession {
     }
     public func close() async {
         cancelHistoryLoads(); closed=true; stop(); await runTask?.value
+        if !isSubagent { await agentCoordinator?.drain(owner:id) }
         if !isSubagent { await subagentCoordinator?.release(owner: id, runtimeID: displayEpoch) }
         journal=nil
     }
