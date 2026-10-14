@@ -132,7 +132,7 @@ final class MenuBarMetricsTests: XCTestCase {
         XCTAssertEqual(snapshot.buckets.first?.start, until.addingTimeInterval(-86_400)); XCTAssertEqual(snapshot.buckets.last?.end, until)
         XCTAssertEqual(snapshot.buckets.reduce(0) { $0 + $1.requests }, 3, "Every dispatched attempt lands in exactly one slice")
         let first = try XCTUnwrap(snapshot.buckets.first { $0.requests > 0 })
-        XCTAssertEqual(first.id, 0); XCTAssertEqual(first.gateway.costUSD ?? 0, 0.01, accuracy: 1e-9); XCTAssertEqual(try XCTUnwrap(first.gateway.settledThroughput.tokensPerSecond), 39 / 1.99, accuracy: 1e-9, "The slice's own request: the 39 tokens after its first over its 1.99 s decode")
+        XCTAssertEqual(first.id, 0); XCTAssertEqual(first.gateway.costUSD ?? 0, 0.01, accuracy: 1e-9); XCTAssertEqual(try XCTUnwrap(first.gateway.settledThroughput.tokensPerSecond), 40 / 2.0, accuracy: 1e-9, "All 40 output tokens over its two-second request")
         XCTAssertEqual(snapshot.buckets[10].requests, 1); XCTAssertEqual(snapshot.buckets[10].gateway.costUSD ?? 0, 0.02, accuracy: 1e-9)
         let last = try XCTUnwrap(snapshot.buckets.last)
         XCTAssertEqual(last.requests, 1); XCTAssertNil(last.gateway.costUSD); XCTAssertNil(last.gateway.settledThroughput.tokensPerSecond, "A failed attempt has no completed output rate, whatever it reported")
@@ -207,7 +207,7 @@ final class MenuBarMetricsTests: XCTestCase {
         return archive
     }
 
-    func testSettledRateWeightsDecodeTimeAndCountsToolCompactionAttemptsOnce() async throws {
+    func testSettledRateWeightsTotalDurationAndCountsToolCompactionAttemptsOnce() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await configured(root)
         var first = value(usage: ["output": .number(100), "reasoning": .number(80)], generationMilliseconds: 1_000, ttftMilliseconds: 500)
@@ -218,33 +218,32 @@ final class MenuBarMetricsTests: XCTestCase {
         // A compaction that decoded for 500 ms and reported zero output.
         try await save(archive, value(model: "provider/model-b", usage: ["output": .number(0)], purpose: "compaction", generationMilliseconds: 1_000, ttftMilliseconds: 500))
 
-        // Each 100-token request contributes the 99 tokens after its first.
+        // Each request contributes all 100 tokens and its total duration.
         let snapshot = try await archive.menuBarMetrics(period: .retained, until: until)
-        XCTAssertEqual(snapshot.gateway.settledThroughput, SettledThroughput(decodeMilliseconds: 1_500, outputTokens: 198, samples: 2, requests: 3))
-        XCTAssertEqual(try XCTUnwrap(snapshot.gateway.settledThroughput.tokensPerSecond), 132, accuracy: 1e-9, "Reasoning is already included in output; repeated links/updates never add samples")
+        XCTAssertEqual(snapshot.gateway.settledThroughput, SettledThroughput(decodeMilliseconds: 4_000, outputTokens: 200, samples: 2, requests: 3))
+        XCTAssertEqual(try XCTUnwrap(snapshot.gateway.settledThroughput.tokensPerSecond), 50, accuracy: 1e-9, "Reasoning is already included in output; repeated links/updates never add samples")
         let modelA = try XCTUnwrap(snapshot.models.first { $0.resolvedModel == "provider/model-a" })
-        XCTAssertEqual(try XCTUnwrap(modelA.gateway.settledThroughput.tokensPerSecond), 198 / 1.5, accuracy: 1e-9,
-                       "Use 198 tokens over the 1.5 s the two requests decoded for; never average their own rates (198 and 99 tok/s)")
+        XCTAssertEqual(try XCTUnwrap(modelA.gateway.settledThroughput.tokensPerSecond), 200 / 4.0, accuracy: 1e-9,
+                       "Use 200 tokens over four seconds; never average per-request rates")
         XCTAssertEqual(modelA.gateway.settledThroughput.samples, 2)
         let zero = try XCTUnwrap(snapshot.models.first { $0.resolvedModel == "provider/model-b" })
         XCTAssertEqual(zero.gateway.tokens?.output, 0, "A reported zero stays a zero count, not a missing one")
-        XCTAssertNil(zero.gateway.settledThroughput.tokensPerSecond, "No output token has no decode speed, never a rate of zero"); XCTAssertEqual(zero.gateway.settledThroughput.samples, 0)
+        XCTAssertNil(zero.gateway.settledThroughput.tokensPerSecond, "No output token has no output speed, never a rate of zero"); XCTAssertEqual(zero.gateway.settledThroughput.samples, 0)
         XCTAssertEqual(snapshot.gateway.requests, 3); XCTAssertEqual(snapshot.compactionRequests, 1)
         try await archive.close()
     }
 
-    /// A buffered response arrives whole with its first content: it has no
-    /// decode span, so it adds nothing to the rate — never an infinity, and
-    /// never its output over another request's decode time.
-    func testBufferedResponsesHaveNoDecodeSpanAndNeverInflateTheRate() async throws {
+    /// A buffered response has a zero decode span, but its TTFT can supply
+    /// a valid total duration. It contributes its own tokens and time.
+    func testBufferedResponsesUseTheirTTFTWithoutInflatingTheRate() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await configured(root)
         try await save(archive, value(usage: ["output": .number(120), "reasoning": .number(100)], generationMilliseconds: 2_000, ttftMilliseconds: 2_000))
         try await save(archive, value(usage: ["output": .number(0)], generationMilliseconds: 1_000, ttftMilliseconds: 1_000))
         try await save(archive, value(usage: ["output": .number(10)], generationMilliseconds: 1_000, ttftMilliseconds: 500))
         let snapshot = try await archive.menuBarMetrics(period: .retained, until: until)
-        XCTAssertEqual(snapshot.gateway.settledThroughput, SettledThroughput(decodeMilliseconds: 500, outputTokens: 9, samples: 1, requests: 3))
-        XCTAssertEqual(snapshot.gateway.settledThroughput.tokensPerSecond, 18, "Buffered JSON and opaque reasoning cannot produce an infinite or exaggerated rate: 9 tokens after the first over 0.5 s")
+        XCTAssertEqual(snapshot.gateway.settledThroughput, SettledThroughput(decodeMilliseconds: 3_000, outputTokens: 130, samples: 2, requests: 3))
+        XCTAssertEqual(snapshot.gateway.settledThroughput.tokensPerSecond, 130 / 3.0, "120 buffered tokens over 2 s plus 10 streamed tokens over 1 s")
         XCTAssertEqual(snapshot.gateway.tokens?.output, 130, "Their output is still reported")
         XCTAssertEqual(snapshot.models.first?.gateway.settledThroughput, snapshot.gateway.settledThroughput)
         try await archive.close()
@@ -283,9 +282,9 @@ final class MenuBarMetricsTests: XCTestCase {
         }
         let reopened = try await configured(root)
         let snapshot = try await reopened.menuBarMetrics(period: .retained, until: until)
-        // Only the first request: the 99 tokens after its first over the 990 ms after it.
+        // Only the first request: 100 tokens over 1,000 ms including TTFT.
         let settled = snapshot.gateway.settledThroughput
-        XCTAssertEqual(settled.samples, 1); XCTAssertEqual(settled.decodeMilliseconds, 990); XCTAssertEqual(settled.outputTokens, 99)
+        XCTAssertEqual(settled.samples, 1); XCTAssertEqual(settled.decodeMilliseconds, 1_000); XCTAssertEqual(settled.outputTokens, 100)
         XCTAssertEqual(try XCTUnwrap(settled.tokensPerSecond), 100, accuracy: 1e-9)
         XCTAssertEqual(snapshot.counts.unobservedDispatch, 1)
         XCTAssertNil(SettledThroughput().tokensPerSecond)
@@ -309,7 +308,7 @@ final class MenuBarMetricsTests: XCTestCase {
         XCTAssertEqual(snapshot.period, .retained); XCTAssertEqual(snapshot.gateway.requests, 2)
         XCTAssertEqual(snapshot.sessions, 1); XCTAssertEqual(snapshot.workspaces, 1); XCTAssertEqual(snapshot.compactionRequests, 1)
         XCTAssertEqual(try XCTUnwrap(snapshot.gateway.costUSD), 0.3, accuracy: 1e-10)
-        XCTAssertEqual(try XCTUnwrap(snapshot.gateway.settledThroughput.tokensPerSecond), (99 + 49) / 1.98, accuracy: 1e-9,
+        XCTAssertEqual(try XCTUnwrap(snapshot.gateway.settledThroughput.tokensPerSecond), 150 / 2.0, accuracy: 1e-9,
                        "This session's two requests in this workspace; the other workspace's and session's 10,000 tokens are not in it")
         XCTAssertEqual(snapshot.gateway.settledThroughput.samples, 2)
         XCTAssertEqual(snapshot.models.first?.costShare, 1)
@@ -335,11 +334,11 @@ final class MenuBarMetricsTests: XCTestCase {
         let snapshot = try await archive.sessionMetrics(sessionID: "session", workspaceID: "workspace", until: until)
         XCTAssertEqual(snapshot.models.count, 2)
         let a = try XCTUnwrap(snapshot.models.first { $0.resolvedModel == "provider/model-a" }), b = try XCTUnwrap(snapshot.models.first { $0.resolvedModel == "provider/model-b" })
-        XCTAssertEqual(try XCTUnwrap(a.gateway.settledThroughput.tokensPerSecond), 198 / 1.96, accuracy: 1e-9, "the 99 + 99 tokens after each first over the 990 ms and 970 ms model-a decoded")
-        XCTAssertEqual(try XCTUnwrap(b.gateway.settledThroughput.tokensPerSecond), 299 / 0.95, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(a.gateway.settledThroughput.tokensPerSecond), 200 / 2.0, accuracy: 1e-9, "200 tokens over the two total one-second durations")
+        XCTAssertEqual(try XCTUnwrap(b.gateway.settledThroughput.tokensPerSecond), 300 / 1.0, accuracy: 1e-9)
         XCTAssertEqual(a.ttftP50, 10, "nearest-rank median of 10 and 30"); XCTAssertEqual(a.ttftSamples, 2)
         XCTAssertEqual(b.ttftP50, 50); XCTAssertEqual(b.ttftSamples, 1); XCTAssertEqual(b.httpP50, 1_010)
-        XCTAssertEqual(try XCTUnwrap(snapshot.gateway.settledThroughput.tokensPerSecond), 497 / 2.91, accuracy: 1e-9, "the session figure blends routes; the rows keep them apart")
+        XCTAssertEqual(try XCTUnwrap(snapshot.gateway.settledThroughput.tokensPerSecond), 500 / 3.0, accuracy: 1e-9, "the session figure blends routes; the rows keep them apart")
     }
 
     func testCostSharesUseAllPagesAndPreserveUnknownAndReportedZero() async throws {
@@ -373,7 +372,7 @@ final class MenuBarMetricsTests: XCTestCase {
         try await archive.purge(attemptID: own)
         clock.advance(11)
         let retained = try await archive.sessionMetrics(sessionID: "session", workspaceID: "workspace", until: clock.now())
-        XCTAssertEqual(try XCTUnwrap(retained.gateway.settledThroughput.tokensPerSecond), 49 / 0.99, accuracy: 1e-9); XCTAssertEqual(retained.gateway.settledThroughput.samples, 1)
+        XCTAssertEqual(try XCTUnwrap(retained.gateway.settledThroughput.tokensPerSecond), 50 / 1.0, accuracy: 1e-9); XCTAssertEqual(retained.gateway.settledThroughput.samples, 1)
         XCTAssertEqual(retained.gateway.costUSD, 0.1)
         clock.advance(101)
         let expired = try await archive.sessionMetrics(sessionID: "session", workspaceID: "workspace", until: clock.now())

@@ -158,23 +158,28 @@ Missing/invalid/conflicting costs do not become zero. A reported zero stays
 visible, but a zero or unknown total has no defined cost percentage.
 
 Status Usage shows historical output tokens per second for the selected time
-scope and each model group: the decode speed as LLMPerf and vLLM's TPOT define
-it. A request's decode span (`stream_ms`) runs from its first generated token —
-the first output item opening or non-empty delta, hidden reasoning included —
-to its last: the latest non-empty delta or output item completion
-(`timings.lastContent`). The terminal event is not the end: it carries no
-token, and a gateway can hold it while it computes usage and cost. Records
-written before the helper stamped `lastContent` (0.1.85 and earlier) keep the
-terminal event, the only end they have. Eligible samples are completed,
-retained dispatched attempts with at least two reported output tokens and a
-decode span of at least 250 ms; each contributes its tokens after the first,
-because over the span the first is already out. Compute
-sum(output_tokens − 1) / (sum(stream_ms) / 1000), not an unweighted mean or sum
-of per-request rates. Missing timing/output, one-token replies, spans under the
-floor and unfinished, failed or cancelled attempts are excluded with sample
-coverage. Reasoning is already included in output.
+scope and each model group. A request's output speed is all reported output
+(including hidden reasoning) divided by time from sending the request to its
+last output token: `output_tokens / ((ttft_ms + stream_ms) / 1000)`.
+The raw decode span (`stream_ms`) still runs from the first generated token —
+the first output item opening or non-empty delta — to its last non-empty delta
+or output item completion (`timings.lastContent`). A held terminal/usage event
+after the last output adds no time. Legacy records without a last-output stamp
+(0.1.85 and earlier) retain the terminal as their only recorded end.
 
-The session pill, the sidebar, Session info, the report and the menu bar quote
-this same figure. It excludes first-token latency and is never added to live
-byte-based estimates. Distribution reads need no raw bodies, credentials, new
-model calls or full-text search.
+Eligible samples are completed, retained dispatched requests with finite,
+nonnegative TTFT and decode span, at least one reported output token, and a
+finite total duration of at least 250 ms. A zero decode span can count when
+TTFT brings the total to the floor. The helper's compatible wire keys
+`metrics.decodeTokensPerSecond` and `metrics.minimumDecodeSpanMs` now report
+this output speed and the minimum total duration. TTFT itself is unchanged.
+
+Groups use `sum(output_tokens) / (sum(ttft_ms + stream_ms) / 1000)` over the
+eligible requests, never a mean or sum of individual rates. Missing or invalid
+observations, no output, durations below the floor, and unfinished/failed/
+cancelled attempts contribute nothing; they remain in request coverage.
+The session pill, sidebar, Session info, Inspector, report and menu bar use the
+same figure. Archive queries recalculate from raw timings and usage, ignoring
+stored old-definition rates. Serialized aggregate-only snapshots use new keys
+for the new sums; old sums stay unmeasured until refreshed from the raw archive.
+Distribution reads need no raw bodies, credentials, or model calls.

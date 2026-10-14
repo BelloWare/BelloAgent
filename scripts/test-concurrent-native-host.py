@@ -376,19 +376,21 @@ class TwentySessionIntegration(unittest.TestCase):
                 # reasoning tokens. Visible text/arguments vary by hundreds of
                 # bytes, but neither those bytes nor reasoning are added again.
                 self.assertEqual(metadata['usage']['reasoning'], 2)
-                # Decode speed: the 9 tokens after the first over first -> last
-                # output (the terminal only when no last output was stamped),
-                # and no rate below the measurement floor.
+                # Output speed: all ten tokens over dispatch -> last output,
+                # including TTFT, excluding a held terminal after last output.
+                # Legacy missing last-output stamps still use the terminal.
                 timings, metrics = metadata['timings'], metadata['metrics']
                 end = timings['lastContent'] if timings['lastContent'] is not None else timings['modelComplete']
                 self.assertLessEqual(timings['firstContent'], end)
                 self.assertLessEqual(end, timings['modelComplete'])
                 span = end - timings['firstContent']
                 self.assertAlmostEqual(metrics['streamDurationMs'], span)
-                if span >= metrics['minimumDecodeSpanMs']:
-                    self.assertAlmostEqual(metrics['decodeTokensPerSecond'], 9 / (span / 1000))
+                duration = metrics['observedTTFTms'] + span
+                self.assertAlmostEqual(duration, end - timings['dispatch'])
+                if duration >= metrics['minimumDecodeSpanMs']:
+                    self.assertAlmostEqual(metrics['decodeTokensPerSecond'], 10 / (duration / 1000))
                 else:
-                    self.assertIsNone(metrics['decodeTokensPerSecond'], 'A span below the floor is one burst, not a rate')
+                    self.assertIsNone(metrics['decodeTokensPerSecond'], 'A total duration below the floor is not a rate')
             else:
                 self.assertIsNone(metadata['metrics']['decodeTokensPerSecond'],
                                   'Failed and cancelled attempts cannot publish a completed rate')
