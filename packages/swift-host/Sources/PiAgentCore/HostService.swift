@@ -63,6 +63,8 @@ public actor NativeHostService {
     private var slimming:[String:Task<JournalSlimming.Outcome,Error>]=[:]
     private var tasks:[String:Task<Void,Never>]=[:], fingerprints:[String:String]=[:], replies:[String:HostOutput]=[:], replyOrder:[String]=[]
     private var mutationLedger = MutationLedger()
+    private var cancellableReads: [String: String] = [:]
+    static let cancellableReadMethods: Set<String> = ["session.history", "session.version.page"]
     private var dirty:[String:Int]=[:], flushTask:Task<Void,Never>?
     /// The app's retry setting (pi's settings.retry), for every chat of every
     /// connection: sent with `workspace.open` and by `retry.configure`.
@@ -96,11 +98,18 @@ public actor NativeHostService {
             // that is waiting on this packet until its own deadline.
             Task { await capture.acknowledge(id, accepted: frame["accepted"].flag == true) }; return
         }
+        if frame["kind"].text == "read.cancel" {
+            guard hello, frame["v"].int == 1, frame["hostEpoch"].text == epoch,
+                  let id = frame["requestId"].text, let token = frame["readToken"].text,
+                  cancellableReads[id] == token else { return }
+            tasks[id]?.cancel()
+            return // Only the original reply, after unwind, releases capacity.
+        }
         guard !closing else { return }
         if frame["kind"].text == "hello" {
             guard !hello, frame["v"].int == 1, frame["major"].int == 1 else { emit(["v":1,"kind":"incompatible","message":"Unsupported or repeated handshake"]); return }
             hello=true; allowsDisplayTransfers = frame["displayTransfers"].flag == true; unknownToolOutcomes = frame["unknownToolOutcomes"].flag == true
-            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes),"commandFrameBytes":JSON(HostProtocol.commandFrameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold","run-continue"]]); return
+            emit(["v":1,"kind":"ready","hostEpoch":JSON(epoch),"major":1,"minor":1,"engine":"swift","engineVersion":JSON(HostProtocol.engineVersion),"piBehaviorReference":JSON(HostProtocol.piBehaviorReference),"limits":["frameBytes":JSON(HostProtocol.frameBytes),"commandFrameBytes":JSON(HostProtocol.commandFrameBytes)],"capabilities":["runtime.info","sessions","queued-turns","steering","native-host","mcp","responses","transport-capture","workspace-roots","turn-overrides","turn.edit","session.edit.prepare","native-branch-v2","queue.edit","tool-input","queue.read","tool-outcome-unknown","receipt-revisions","tool-input-appends","session-recover","cost-limit","message-versions","fork-at-message","queue.edit-hold","run-continue","read-cancel"]]); return
         }
         let id=frame["commandId"].text ?? ""
         guard hello, frame["v"].int == 1, frame["kind"].text == "command", frame["hostEpoch"].text == epoch, !id.isEmpty, id.utf8.count <= 128, let method=frame["method"].text, frame["params"].isNull || frame["params"].isObject else { reply(id,.failure(AgentError("invalid_command", "Invalid command or stale host epoch"))); return }
@@ -123,10 +132,21 @@ public actor NativeHostService {
             mutationLedger.record(id, fingerprint: fingerprint)
         }
         fingerprints[id]=fingerprint
+        if Self.cancellableReadMethods.contains(method), let token = frame["readToken"].text, !token.isEmpty, token.utf8.count <= 128 {
+            cancellableReads[id] = token
+        }
         tasks[id]=Task { [weak self] in
             guard let self else { return }
-            do { let result=try await self.command(method,sessionID:frame["sessionId"].text,params:frame["params"].isNull ? [:] : frame["params"],commandID:id); await self.finish(id,.success(result),retain:!readOnly) }
-            catch { await self.finish(id,.failure(error as? AgentError ?? AgentError("command_failed", "Command failed: \(error.localizedDescription)")),retain:!readOnly) }
+            do {
+                if Self.cancellableReadMethods.contains(method) { try Task.checkCancellation() }
+                let result = try await self.command(method,sessionID:frame["sessionId"].text,params:frame["params"].isNull ? [:] : frame["params"],commandID:id)
+                if Self.cancellableReadMethods.contains(method) { try Task.checkCancellation() }
+                await self.finish(id,.success(result),retain:!readOnly)
+            } catch {
+                let failure = error is CancellationError && Self.cancellableReadMethods.contains(method) ? AgentError("command_cancelled", "The superseded read was cancelled")
+                    : error as? AgentError ?? AgentError("command_failed", "Command failed: \(error.localizedDescription)")
+                await self.finish(id,.failure(failure),retain:!readOnly)
+            }
         }
     }
     /// The reply frame for one command. `error` and `result` carry the same
@@ -166,6 +186,7 @@ public actor NativeHostService {
     private func finish(_ id:String,_ result:Result<JSON,AgentError>,retain:Bool) {
         let frame = Self.boundedReply(epoch: epoch, id, result, transfer: allowsDisplayTransfers ? { try self.displayTransfers.insert($0) } : nil)
         tasks.removeValue(forKey:id)
+        cancellableReads.removeValue(forKey: id)
         if retain {
             replies[id]=frame; replyOrder.append(id)
             while replyOrder.count > 512 { let old=replyOrder.removeFirst(); replies.removeValue(forKey:old); fingerprints.removeValue(forKey:old) }

@@ -6,6 +6,63 @@ class HostTransportTestCase: XCTestCase {
 }
 
 final class HostTransportTests: HostTransportTestCase {
+    @MainActor func testSupersededPagesReachTheRealHelperAndTheFinalPageStaysComplete() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("page-cancel-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let state = root.appendingPathComponent("state"), host = HostSupervisor()
+        defer { host.shutdown() }
+        var profile = ProfileRecord(); profile.modelId = "fixture"; profile.baseUrl = "http://127.0.0.1:12345/v1"
+        func connect() async throws {
+            try await host.connect(cwd: root, state: state)
+            _ = try await host.request("workspace.open", params: ["cwd": .string(root.path), "directory": .string(state.path), "mcp": .object(["servers": .object([:])])])
+        }
+        try await connect()
+        let opened = try await host.request("session.open", sessionID: "long", params: ["profile": profile.wire, "apiKey": .string("synthetic-only"), "connectionTest": .bool(true)])
+        let path = try XCTUnwrap(opened.object?["path"]?.string)
+        try await host.shutdownAndWait()
+        let original = try Data(contentsOf: URL(fileURLWithPath: path))
+        var parent = try JSONDecoder().decode(WireValue.self, from: Data(try XCTUnwrap(original.split(separator: 10).last))).object?["id"] ?? .null
+        let writer = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+        try writer.seekToEnd()
+        for index in 0..<1200 {
+            let id = "r\(index)"
+            var line = try JSONEncoder().encode(["type": WireValue.string("message"), "id": .string(id), "parentId": parent,
+                "message": .object(["role": .string(index.isMultiple(of: 20) ? "user" : "assistant"), "content": .string("Row \(index) " + String(repeating: "Synthetic saved content. ", count: 100))])])
+            line.append(10); try writer.write(contentsOf: line); parent = .string(id)
+        }
+        try writer.close()
+        try await connect()
+        XCTAssertTrue(host.supportsReadCancellation)
+        _ = try await host.request("session.open", sessionID: "long", params: ["profile": profile.wire, "apiKey": .string("synthetic-only"), "path": .string(path), "connectionTest": .bool(true)])
+        let finalParams: [String: WireValue] = ["version": .number(2), "position": .number(600)]
+        let expected = try await host.request("session.history", sessionID: "long", params: finalParams)
+        var obsolete: [Task<WireValue, Error>] = []
+        for index in 0..<24 {
+            var started = false
+            let task = Task {
+                started = true
+                return try await host.request("session.history", sessionID: "long", params: ["version": .number(2), "position": .number(Double(index * 20))])
+            }
+            while !started { await Task.yield() }
+            task.cancel(); obsolete.append(task)
+        }
+        let result = try await host.request("session.history", sessionID: "long", params: finalParams)
+        XCTAssertEqual(result, expected, "Supersession cannot alter the complete page, its ordering or identity")
+        let page = try ConversationHistoryPage(result)
+        XCTAssertEqual(page.messages.first?.id, "r600")
+        XCTAssertEqual(page.total, 1200)
+        var cancelled = 0
+        for task in obsolete {
+            // A completed reply may beat cancellation across the real pipe.
+            do { let result = try await task.value; XCTAssertFalse(try ConversationHistoryPage(result).messages.isEmpty) }
+            catch { XCTAssertTrue(error is CancellationError); cancelled += 1 }
+        }
+        XCTAssertGreaterThan(cancelled, 0)
+        XCTAssertTrue(host.isReady)
+        try await host.shutdownAndWait()
+    }
+
     @MainActor func testMaximalEscapedSubmissionsReachTheBundledHelper() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -28,7 +85,8 @@ final class HostTransportTests: HostTransportTestCase {
         try await host.shutdownAndWait()
     }
 
-    func testCaptureAcknowledgmentDoesNotConsumeAnOrdinaryCommandSlot() async throws {
+    func testControlFramesDoNotConsumeAnOrdinaryCommandSlot() async throws {
+        for kind in ["capture.ack", "read.cancel"] {
         let started = expectation(description: "Child started"), echoed = expectation(description: "Control plus 32 commands")
         echoed.expectedFulfillmentCount = 33
         let exited = expectation(description: "Child exited")
@@ -48,10 +106,11 @@ final class HostTransportTests: HostTransportTestCase {
         await fulfillment(of: [started], timeout: 2)
         // Keep the exempt control frame pending until the fixture starts
         // reading, then fill every normal slot while it is still in flight.
-        transport.send(["kind": .string("capture.ack"), "padding": .string(String(repeating: "x", count: 900_000))])
+        transport.send(["kind": .string(kind), "padding": .string(String(repeating: "x", count: 900_000))])
         for index in 0..<32 { transport.send(["method": .string("session.snapshot"), "number": .number(Double(index))]) }
         await fulfillment(of: [echoed], timeout: 5)
         transport.stop(); await fulfillment(of: [exited], timeout: 2)
+        }
     }
 
     func testBackpressuredInputStillDeliversOutputAndStopsAnUnresponsiveChild() async throws {

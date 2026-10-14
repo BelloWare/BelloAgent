@@ -4,6 +4,8 @@
 
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.
 
+- [x] SCROLL-14 helper page cancellation (`dev/a126-scroll14`, awaiting integration): superseded history/version reads cancel through the wire, journal decode and shared history loads; older helpers retain compatible coalescing. Regressions, mutation checks and generated long-chat measurements: `docs/perf/scroll14-helper-cancellation.md`.
+
 ## 0.1.126 decisions made while the owner was away (2026-10-13 night)
 
 - RL-04 (capture lost at graceful shutdown): fixed with a bounded drain. The helper keeps delivering, and the app keeps acknowledging, queued capture packets until the outbox is empty or the existing shutdown deadline arrives. A drain cut short is marked partial. A durable spool-and-replay design was built and dropped: two review rounds found data-boundary bugs in it, including cleared chats' bodies surviving on disk.
