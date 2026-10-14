@@ -46,9 +46,14 @@ import Foundation
         }
         let keep = old.snapshot?.root == root && old.query == query
         let limit = preservingCount && keep ? max(50, old.commits.count) : 50
-        var next = keep ? old : Reading()
-        next.query = query; next.loading = true; next.paging = false; next.notice = ""; next.next = nil
-        reading = next
+        // Watcher refreshes keep the displayed rows, cursor and flags until
+        // replacement data arrives. A loading tail would change geometry on
+        // every save even when the history itself has not changed.
+        if !(preservingCount && keep) {
+            var next = keep ? old : Reading()
+            next.query = query; next.loading = true; next.paging = false; next.notice = ""; next.next = nil
+            reading = next
+        }
         guard identity == token else { return false }
         let service = service
         do {
@@ -79,7 +84,7 @@ import Foundation
     }
 
     @discardableResult public func loadMore() async -> Bool {
-        guard !reading.loading, !reading.paging, let snapshot = reading.snapshot, let cursor = reading.next else { return false }
+        guard task == nil, !reading.loading, !reading.paging, let snapshot = reading.snapshot, let cursor = reading.next else { return false }
         let token = identity
         defer {
             if identity == token {
