@@ -469,15 +469,10 @@ enum GitPanelSplit {
         }
     }
     private let remote: GitRemoteControls
-    private lazy var stashMenu = PiKit.MenuButton(title: "Stash", icon: "tray.and.arrow.down", identifier: "git-stash-menu") { [weak self, controller] in
-        let context = self?.inputs?.context
-        PiMenuEntry.button("Stash Changes…", enabled: !controller.status.entries.isEmpty) { self?.showStash(context: context) }
-        if !controller.stashes.isEmpty {
-            PiMenuEntry.divider
-            for stash in controller.stashes {
-                PiMenuEntry.button("Pop \(stash.name): \(stash.subject)") { guard controller.accepts(context) else { return }; Task { await controller.popStash(stash.name, context: context) } }
-            }
-        }
+    private lazy var repositoryTools = GitRepositoryTools(controller: controller)
+    private lazy var stashMenu: PiKit.MenuButton = PiKit.MenuButton(title: "Stash", icon: "tray.and.arrow.down", identifier: "git-stash-menu") { [weak self] in
+        PiMenuEntry.button("Show Stashes…") { guard let self else { return }; self.repositoryTools.showStashes(from: self.stashMenu) }
+        PiMenuEntry.button("New Stash…") { guard let self else { return }; self.repositoryTools.showNewStash(from: self.stashMenu) }
     }
     private let panelTabs: PiKit.Tabs<GitController.Panel>
     private let notice = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piDanger))
@@ -494,6 +489,7 @@ enum GitPanelSplit {
         panelTabs = PiKit.Tabs(selection: controller.panel, items: GitController.Panel.allCases.map { ($0, $0.title) }) { [controller] in controller.panel = $0 }
         super.init(frame: .zero)
         for view in [rootLabel, branchMenu, remote, stashMenu, panelTabs, notice] as [NSView] { addSubview(view) }
+        branchMenu.onPress = { [weak self] in guard let self else { return }; repositoryTools.showBranches(from: branchMenu) }
         repositoryWatch = controller.$repositoryIdentity.sink { [weak self] in self?.repositoryChanged($0) }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
@@ -643,6 +639,11 @@ enum GitPanelSplit {
         remote.layoutForm()
     }
 
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { repositoryTools.close() }
+    }
+
     // MARK: Popovers
 
     private func showNotice(_ message: String) {
@@ -651,6 +652,9 @@ enum GitPanelSplit {
     }
     private func repositoryChanged(_ identity: GitController.RepositoryIdentity?) {
         var closed: [String] = []
+        if repositoryTools.identity != nil, repositoryTools.identity != identity {
+            repositoryTools.close(); closed.append("Branches and Stashes")
+        }
         if let branchForm, branchForm.repository != identity {
             self.branchForm = nil
             if branchPopover.isShown { branchPopover.close(); closed.append("New Branch") }
@@ -1440,6 +1444,7 @@ extension SymbolButton {
     private let allBranches = gitCheckbox(on: false, label: "Show all branches") {}
     private let allBranchesLabel = PiKit.TextLine(PiKit.Line("All branches", font: PiKit.Font.caption, color: .piInkSecondary))
     private let pathChip = GitHistoryPathChip()
+    private let branchChip = GitBranchHistoryChip()
     private let rule = HairlineView()
     let list = LazyStackView()
     private var inputs: Inputs?
@@ -1453,9 +1458,10 @@ extension SymbolButton {
         filterField.setAccessibilityIdentifier("git-history-filter")
         allBranches.onPress = { [controller] in controller.logFilter.allBranches.toggle() }
         pathChip.clear = { [controller] in controller.clearFileHistory() }
+        branchChip.clear = { [controller] in controller.logFilter.reference = nil }
         list.spacing = 2
         list.insets = NSEdgeInsets(top: PiSpacing.sm, left: PiSpacing.sm, bottom: PiSpacing.sm, right: PiSpacing.sm)
-        for view in [filterField, authorField, allBranches, allBranchesLabel, pathChip, rule, list] as [NSView] { addSubview(view) }
+        for view in [filterField, authorField, allBranches, allBranchesLabel, pathChip, branchChip, rule, list] as [NSView] { addSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
@@ -1468,6 +1474,8 @@ extension SymbolButton {
         filterField.text = next.filter.text
         authorField.text = next.filter.author
         allBranches.setTick(on: next.filter.allBranches, label: "Show all branches")
+        branchChip.reference = next.filter.reference
+        if previous?.filter.reference != next.filter.reference { needsLayout = true }
         pathChip.isHidden = next.filter.path == nil
         if let path = next.filter.path { pathChip.path = path }
         if previous?.filter.path != next.filter.path { needsLayout = true }
@@ -1526,7 +1534,7 @@ extension SymbolButton {
     /// The filters and the rule: what the side keeps however short it is.
     func fixedHeight(forWidth width: CGFloat) -> CGFloat {
         let heights = filterHeights
-        return PiSpacing.sm * 2 + heights.field + PiSpacing.xs + heights.author + (pathChip.isHidden ? 0 : PiSpacing.xs + heights.chip) + 1
+        return PiSpacing.sm * 2 + heights.field + PiSpacing.xs + heights.author + (pathChip.isHidden ? 0 : PiSpacing.xs + heights.chip) + (branchChip.isHidden ? 0 : PiSpacing.xs + 28) + 1
     }
     override func layout() {
         super.layout()
@@ -1537,6 +1545,7 @@ extension SymbolButton {
                           spacing: PiSpacing.sm, in: CGRect(x: PiSpacing.sm, y: y, width: inner, height: heights.author), scale: scale)
         y += heights.author
         if !pathChip.isHidden { y += PiSpacing.xs; pathChip.frame = CGRect(x: PiSpacing.sm, y: y, width: inner, height: heights.chip); y += heights.chip }
+        if !branchChip.isHidden { y += PiSpacing.xs; branchChip.frame = CGRect(x: PiSpacing.sm, y: y, width: inner, height: 28); y += 28 }
         y += PiSpacing.sm
         rule.frame = CGRect(x: 0, y: y, width: width, height: 1)
         list.frame = CGRect(x: 0, y: y + 1, width: width, height: max(0, bounds.height - y - 1))

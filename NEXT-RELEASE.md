@@ -4,6 +4,7 @@
 
 ## 0.1.127
 
+- [x] Branches and stash (`dev/a127-git-branches`, stream 5): searchable Recent/Local/Remote branch popup; tracking checkout, create/rename/delete with reviewed unmerged confirmation; read-only comparison and Show in History callback/filter; stash list, lazy saved-index/worktree/untracked previews, Apply/Pop/Drop and New Stash options. Native checkout protects local/ignored files; stash recovery is explicit; conflicts retain the stash. [Validation and integration handoff](docs/validation/git-branches-0.1.127.md).
 - [x] Whole-hunk staging (`dev/a127-git-hunks`, stream 2): tracked text changes get Stage/Unstage hunk, Previous/Next Change, scoped F7/Shift-F7 and Space, plus explicit Review Staged Changes after staging. Raw-byte application under Git's index lock preserves unrelated staging and working files; unsupported cases retain whole-file actions with a reason. Commit scope/default is unchanged. [Validation and handoff](docs/validation/git-hunks-0.1.127.md).
 
 ## 0.1.126

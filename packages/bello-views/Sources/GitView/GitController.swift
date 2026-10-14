@@ -724,6 +724,35 @@ import AppKit
         await refresh()
         if let failure { notice = failure }
     }
+    /// Shared admission for additive repository tools. A writer stays alive
+    /// through navigation, but its result is only published to its repository.
+    public func performRepositoryWrite<T: Sendable>(repository identity: RepositoryIdentity,
+        operation: @Sendable (String) async throws -> T) async throws -> T {
+        guard acceptsRepository(identity), !busy else { throw GitFailure(message: "The repository changed or another Git operation is running. Try again.") }
+        busy = true
+        defer { busy = false; drainMissedChange() }
+        do {
+            let result = try await operation(identity.root)
+            if sameRepositoryIdentity(identity) { await refresh() }
+            return result
+        } catch {
+            if sameRepositoryIdentity(identity) { await refresh(reporting: error.localizedDescription) }
+            throw error
+        }
+    }
+    public func reportRepositoryResult(_ message: String, repository identity: RepositoryIdentity) {
+        guard acceptsRepository(identity) else { return }
+        notice = message
+    }
+    /// The History stream can install its own query adapter here. The legacy
+    /// browser remains functional until that integration arrives.
+    public var onShowBranchHistory: ((String, RepositoryIdentity) -> Void)?
+    public func showBranchHistory(_ reference: String, repository identity: RepositoryIdentity) {
+        guard acceptsRepository(identity) else { return }
+        if let onShowBranchHistory { onShowBranchHistory(reference, identity); return }
+        selectedCommit = nil; logFilter = GitLogFilter(reference: reference); panel = .history
+    }
+
     public func checkout(_ branch: String) async { await checkout(branch, context: repositoryContext) }
     public func checkout(_ branch: String, context: RepositoryContext?) async { guard let root = actionRoot(context) else { return }; await perform("Switch") { try await service.checkout(branch, in: root) } }
     public func createBranch(_ name: String) async { await createBranch(name, context: repositoryContext) }
