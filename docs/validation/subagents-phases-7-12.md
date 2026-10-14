@@ -7,6 +7,106 @@ preferences, Keychain or paid providers. The production switch stayed off
 through phase 11 and is enabled in phase 12. This worktree has not been merged
 into `dev/next` or published as a release.
 
+## Round-3 review — 2026-10-14
+
+Started from `9e20f62b`; fetching `origin/dev/subagents` confirmed the same
+upstream tip. This includes the audit merge `f4bf746b`. Platform: macOS 14.8
+(23J21), arm64, Xcode 16.1 (16B40), Swift 6.0.2. Artifacts use
+`logs/review3-*`, `review3-*.xcresult` and `review3-gallery/subagents/` under the
+build root above.
+
+Implementation commit: `340ba34b` (`Fix family deletion and paused compaction
+regressions`). The restored-source results below cover that executable/test tree;
+the subsequent validation-record commit changes documentation only.
+
+| Finding | Disposition and reason |
+| --- | --- |
+| Saved fork/kept side deletion | **Fixed.** The helper already writes `fork_<id>.jsonl` and `side_<id>.jsonl`. Owner validation now accepts those exact names alongside `<id>.jsonl`, inside the same project directory, before detaching the runtime or writing deletion intent. Durable retries use the same validation. Managed children still require their UUID filename; the aliases do not apply to them. |
+| Manual compaction of a paused family | **Fixed.** Admission and dispatch now carry an allowance only for the independent owner's explicit manual summary, including its retries. Queued follow-ups stay paused. A later Stop still invalidates the captured generation and permit, and both accounting gates retain cost-limit checks. Ordinary requests and automatic summaries remain blocked by the pause. |
+| Group-header indentation | **Fixed.** The Pi button previously centered its label in all remaining row space. The running scene's longer label and the child scene's shorter label therefore had different leading edges despite equal row indentation. Sizing the button to its face keeps the chevron at a fixed leading edge while retaining narrow-width fallback labels, tooltip and accessibility counts. |
+
+No findings were rejected. No owner decision, capture policy or protocol/journal
+format changed. The design's Implementation notes record these corrections.
+
+Failing-first and mutation evidence:
+
+- `review3-native-red2.log`: **20 tests, 26 failures** before production fixes.
+  The deletion failures included an `invalidRecord` when a tombstoned parent
+  was written again, proving it remained blocked. The sidebar test measured
+  the Pi face's leading edge across full and shortened labels.
+- `review3-helper-red2.log`: **4 tests, 11 failures** before production fixes.
+  Both Stop and provider-failure scenarios failed to send a manual summary;
+  the admitted-permit test also exposed the paused admission failure. Earlier
+  fixture setup and test-compilation errors were corrected before these red
+  runs and are not counted as behavioral evidence.
+- **10 mutations killed**, all by behavioral test failures: owner filename
+  compatibility, owner validation before intent, strict child filenames,
+  disclosure alignment, paused admission, paused dispatch, later Stop
+  generation, cancelled permit, manual-only allowance, and preservation of
+  paused follow-ups. `logs/review3-mutations.json` records each result;
+  `review3-mutations.py` is the source-restoring harness in the build root.
+  Sources were mutated and built sequentially, restored in `finally`, and
+  rebuilt with all guards restored before final testing.
+
+Final restored-source results:
+
+| Selection | Result | Log |
+| --- | --- | --- |
+| Helper accounting, delegation, compaction and requested baselines | **97 passed**, no failures/skips | `logs/review3-helper-restored.log` |
+| Affected native classes, passed as a bash array | **84 passed**, no failures/skips | `logs/review3-native-restored.log` |
+| `TopicOrganizationTests`, alone | **14 passed** | `logs/review3-serial-TopicOrganizationTests.log` |
+| Native `CaptureDrainTests`, alone | **6 passed** | `logs/review3-serial-CaptureDrainTests.log` |
+| Sub-agent gallery, alone | **1 passed**, **92 PNGs** regenerated | `logs/review3-gallery.log` |
+
+The helper selection includes `SessionSettlementTests` **2**, `CostLimitTests`
+**11**, `CaptureDrainTests` **4**, and `HostServiceTests` **6**, plus
+`PausedFamilyCompactionTests` **4**, `SubagentAdmissionTests` **6**,
+`SubagentAccountingTests` **8**, `SubagentCoordinatorTests` **20**,
+`SubagentPermissionTests` **6**, `CompactionQueueTests` **2**,
+`CompactionReceiptTests` **1**, `CompactionSnapshotTests` **3**, and
+`CompactionSafetyTests` **24**. The new compaction regression verifies two
+summary attempts are charged, the queue remains paused after success, and a
+later Stop or cancelled permit prevents dispatch/adoption.
+
+The native selection includes `SubagentDeletionTests` **8**,
+`SubagentOrganizationTests` **12**, `SubagentDiscoveryTests` **7**,
+`SubagentMetadataTests` **6**, `OrganizationBatchTests` **9**,
+`SessionOrganizationTests` **9**, `SidebarFlatTopicsTests` **14**,
+`TopicSidebarPresentationTests` **4**, `ManualCompactionTests` **1**,
+`CostLimitTests` **13**, and `CostLimitOpeningTests` **1**.
+`python3 scripts/test-lanes.py list` determined the lanes; each serial class
+ran in its own invocation, with no other test/build running.
+
+All §13.5 gallery scenes remain present at both sizes and appearances, with a
+manifest in `review3-gallery/subagents/manifest.txt`. Visually compared the
+parent `running-expanded` and `child` scenes at 1240×800/light and
+920×600/dark: their disclosure chevrons and labels now share the same leading
+edge; the open child remains expanded and highlighted. This is a targeted
+visual review of the changed scenes, not a claim to inspect all 92 images.
+
+Commands follow this pattern (the exact selections are listed above):
+
+```bash
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-subagents
+export TMPDIR="$PI_BUILD_ROOT/xcode-tmp/"
+swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-tests" \
+  --filter 'PausedFamilyCompactionTests|SubagentAdmissionTests|SubagentAccountingTests|SubagentCoordinatorTests|SubagentPermissionTests|CompactionQueueTests|CompactionReceiptTests|CompactionSnapshotTests|CompactionSafetyTests|SessionSettlementTests|CostLimitTests|CaptureDrainTests|HostServiceTests'
+classes=(SubagentDeletionTests SubagentOrganizationTests SubagentDiscoveryTests SubagentMetadataTests OrganizationBatchTests SessionOrganizationTests SidebarFlatTopicsTests TopicSidebarPresentationTests ManualCompactionTests CostLimitTests CostLimitOpeningTests)
+args=()
+for class in "${classes[@]}"; do args+=("-only-testing:PiAppTests/$class"); done
+scripts/test-macos.sh "${args[@]}" \
+  'PRODUCT_BUNDLE_IDENTIFIER=com.belloware.SubagentValidation.$(PRODUCT_MODULE_NAME)' \
+  -resultBundlePath "$PI_BUILD_ROOT/review3-native-restored.xcresult"
+PI_APP_UI_SCREENSHOT_ROOT="$PI_BUILD_ROOT/review3-gallery" \
+TEST_RUNNER_PI_APP_UI_SCREENSHOT_ROOT="$PI_BUILD_ROOT/review3-gallery" \
+scripts/test-macos.sh -only-testing:PiAppTests/UIScreenshotTests/testRenderSubagentGallery \
+  'PRODUCT_BUNDLE_IDENTIFIER=com.belloware.SubagentValidation.$(PRODUCT_MODULE_NAME)' \
+  -resultBundlePath "$PI_BUILD_ROOT/review3-gallery.xcresult"
+```
+
+This review reran the affected suites. The full native lane, crash and streaming
+results in the previous review below remain evidence for their recorded revision.
+
 ## Review after the 0.1.126 audit merge
 
 Started from `f4bf746b`, which includes `dev/next` audit fixes `2f12977a`;
