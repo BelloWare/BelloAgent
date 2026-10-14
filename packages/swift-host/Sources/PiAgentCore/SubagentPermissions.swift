@@ -14,11 +14,16 @@ extension AgentSession {
     }
     func configureSubagentModels(_ grants: [SubagentModelGrant]) throws {
         try requireIndependentSession()
+        try validateSubagentModels(grants)
+        guard subagentModelGrants != grants else { return }
+        subagentModelGrants = grants
+        if runTask == nil { replayInputsChanged(); event("context.inputs-changed") }
+    }
+    func validateSubagentModels(_ grants: [SubagentModelGrant]) throws {
         // Validate before accepting the complete replacement. Route, headers,
         // credentials and connection identity always remain the parent's.
         guard Set(grants.map(\.model)).count == grants.count else { throw AgentError("subagent_model", "Duplicate model grant") }
         for grant in grants { _ = try grant.applying(to: profile) }
-        subagentModelGrants = grants
     }
 }
 

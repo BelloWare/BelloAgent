@@ -13,6 +13,24 @@ final class SubagentOrganizationTests: XCTestCase {
     @MainActor static func contents(_ model: WorkspaceModel, filter: String = "") -> SidebarListContents {
         SidebarListContents.build(model: model, filter: filter, sidebarWidth: 300, confirmingRemove: [], removing: [], dropTarget: nil)
     }
+    @MainActor func testNarrowDisclosureKeepsItsChevronAndCompleteAccessibleCounts() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        for count in [4, 12_000, Int.max] {
+            let state = SubagentGroupState(parentID: "chat-parent", count: count, active: 2, queued: count - 2, expanded: true, indent: 42)
+            let group = SidebarSubagentGroupView(model: model, state: state)
+            let button = try XCTUnwrap(group.subviews.first as? PiKit.Button)
+            for width in [184.0, 220.0, 264.0, 600.0, 184.0] {
+                group.frame = CGRect(x: 0, y: 0, width: width, height: 28)
+                group.needsLayout = true; group.layoutSubtreeIfNeeded()
+                XCTAssertLessThanOrEqual(button.intrinsicContentSize.width, button.bounds.width, "The centered Pi label must fit so its chevron remains visible")
+                XCTAssertFalse(button.title.isEmpty)
+                XCTAssertEqual(button.toolTip, state.label)
+                XCTAssertEqual(button.accessibilityLabel(), state.label + ", expanded")
+                if width == 600 { XCTAssertEqual(button.title, state.label) }
+            }
+        }
+    }
     @MainActor func testChildrenStartFoldedApartFromSidesInTopicsAndFlatAndSearchRevealsThem() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
@@ -78,6 +96,7 @@ final class SubagentOrganizationTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
         model.setSubagentGroupExpanded("chat-parent", expanded: true)
+        model.sides["chat-parent"] = SideRecord(id: "pending-side", parentID: "chat-parent", workspaceID: "pane-project", profileID: model.chats[0].profileID, title: "Unsaved side", pending: true)
         let flushed = await model.flushProjectSidebarState(); XCTAssertTrue(flushed)
         for flat in [false, true] {
             model.setProjectListsFlat("pane-project", flat: flat)

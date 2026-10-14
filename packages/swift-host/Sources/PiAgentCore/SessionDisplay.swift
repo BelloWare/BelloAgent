@@ -153,7 +153,16 @@ extension AgentSession {
             // The lines a read returned or a write or an edit changed, when
             // they were recorded.
             for key in ["line", "lastLine"] where !stats[key].isNull { card[key] = stats[key] }
-            if let metadata = result.nativeSubagent { card["nativeSubagent"] = metadata }
+            if let metadata = result.nativeSubagent, !metadata.isNull { card["nativeSubagent"] = metadata }
+            else if call["name"].text == "subagent",
+                    let plan = subagents.plans.values.first(where: { $0.origin.link.call == SubagentCallKey(parentSessionID: self.id, assistantMessageID: message.id, toolCallID: id) }) {
+                // An older helper may already have repaired this cut-off call.
+                // Retain its model-visible result verbatim; navigation is a
+                // local projection from this owner's durable accepted plan.
+                let status = card["state"]?.text == "unknown" ? SubagentStatus.interrupted : SubagentStatus(rawValue: card["state"]?.text ?? "") ?? .interrupted
+                let summary = SubagentSummary(link: plan.origin.link, description: plan.origin.description, model: plan.origin.model.model, status: status, revision: 0, tools: plan.origin.tools)
+                card["subagent"] = (try? subagentJSON(summary)) ?? .null
+            }
             states[id] = merging(.object(card), fields)
         }
         var row = message.view(toolStates: states)

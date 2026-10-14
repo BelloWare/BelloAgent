@@ -31,6 +31,9 @@ import AppKit
         guard familyFilter != filter else { return }
         if case .child(let id) = filter, !groups.contains(where: { $0.summary.link.childSessionID == id }) { return }
         familyFilter = filter; linkedRow = nil; pendingFocus = nil
+        let sessionID = if case .child(let id) = filter { id } else { scope.sessionID }
+        usage.setScope(.init(sessionID: sessionID, workspaceID: scope.workspaceID, includeFamily: filter == .family))
+        inputsChanged()
         if case .child(let id) = filter, let group = groups.first(where: { $0.summary.link.childSessionID == id }) { show(.subagent(group.id)) }
         else if filter == .chat { show(.overview) }
         reading?.cancel(); reading = nil; readGeneration &+= 1
@@ -110,10 +113,10 @@ import AppKit
     init(scope: SessionUsageScope, title: String, archive: PayloadArchive, workspace: WorkspaceModel?,
          usageLoader: @escaping SessionUsageLoader, cache: InspectorDocumentCache = .shared) {
         self.scope = scope; self.title = title; self.archive = archive; self.workspace = workspace
-        usage = SessionUsageController(scope: scope, load: usageLoader)
+        usage = SessionUsageController(scope: .init(sessionID: scope.sessionID, workspaceID: scope.workspaceID, includeFamily: true), load: usageLoader)
         request = InspectorRequestModel(archive: archive, sessionID: scope.sessionID, workspace: workspace, cache: cache)
         next = NextRequestModel(sessionID: scope.sessionID, workspace: workspace, cache: cache)
-        usage.$snapshot.dropFirst().sink { [weak self] _ in self?.inputsChanged() }.store(in: &observations)
+        usage.$snapshot.dropFirst().sink { [weak self] snapshot in self?.updateInputs(snapshot: snapshot) }.store(in: &observations)
         // The request on screen names its own part as soon as its body is read.
         summaryObservation = request.$conversation.sink { [weak self] load in
             guard let summary = load.value?.summary, let id = self?.request.row?.id else { return }
@@ -401,7 +404,7 @@ import AppKit
     func observe(footer: SessionMetrics, display: SessionDisplay?) {
         followed = display; followsDisplay = display != nil
         observations.removeAll()
-        usage.$snapshot.dropFirst().sink { [weak self] _ in self?.inputsChanged() }.store(in: &observations)
+        usage.$snapshot.dropFirst().sink { [weak self] snapshot in self?.updateInputs(snapshot: snapshot) }.store(in: &observations)
         footer.$gateway.dropFirst().removeDuplicates().debounce(for: .milliseconds(250), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.signature = nil; self?.read(force: false); self?.inputsChanged() }.store(in: &observations)
         footer.$turnTiming.removeDuplicates().sink { [weak self] timing in self?.work = timing; self?.inputsChanged() }.store(in: &observations)
@@ -420,17 +423,23 @@ import AppKit
         } else {
             followed = nil; followsDisplay = false
             observations.removeAll()
-            usage.$snapshot.dropFirst().sink { [weak self] _ in self?.inputsChanged() }.store(in: &observations)
+            usage.$snapshot.dropFirst().sink { [weak self] snapshot in self?.updateInputs(snapshot: snapshot) }.store(in: &observations)
+            inputsChanged()
         }
     }
 
-    private func inputsChanged() {
+    private func inputsChanged() { updateInputs(snapshot: usage.snapshot) }
+
+    private func updateInputs(snapshot: MenuBarSnapshot?) {
         var inputs = SessionStatsInputs()
-        if let display {
+        if familyFilter == .family, let display {
             inputs = SessionStatsInputs(footer: display.footer, session: display)
-        } else if let snapshot = usage.snapshot {
+        }
+        // The parent's footer includes the complete family. Filtered pages
+        // instead use their physical capture scope, including an empty scope.
+        if let snapshot, inputs.gateway.requests == 0 {
             inputs.gateway = snapshot.gateway
-            inputs.work = WorkSplit(timing: work)
+            if familyFilter == .family { inputs.work = WorkSplit(timing: work) }
         }
         if inputs != self.inputs { self.inputs = inputs; rebuildCharts() }
     }

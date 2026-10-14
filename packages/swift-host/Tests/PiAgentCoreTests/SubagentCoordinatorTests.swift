@@ -2,6 +2,39 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentCoordinatorTests: XCTestCase {
+    func testModelSchemaUsesCurrentPickerGrantsWhileIdleAndFrozenGrantsDuringATurn() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = DelegationClient(count: 1), registry = DelegationRegistry()
+        let coordinator = SubagentCoordinator(register: { child, _, _, _ in await registry.add(child) })
+        let parent = try await makeParent(root, client: client, coordinator: coordinator)
+        let first = SubagentModelGrant(model: "offered-first"), next = SubagentModelGrant(model: "offered-next")
+        func models(_ session: AgentSession) async -> [String] {
+            let definitions = await session.sessionDefinitions()
+            return definitions.first { $0.name == "subagent" }?.schema["properties"]["model"]["enum"].list.compactMap(\.text) ?? []
+        }
+        try await parent.configureSubagentModels([first])
+        let initial = await models(parent)
+        XCTAssertEqual(initial, [first.model], "The prepared first request must advertise the same schema as dispatch")
+        _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "task"), steer: false)
+        try await eventually { await client.active == 1 }
+        try await parent.configureSubagentModels([next])
+        let active = await models(parent)
+        XCTAssertEqual(active, [first.model], "A picker change cannot widen the active turn's grant")
+        await client.releaseAll()
+        try await eventually { !(await parent.isRunning) }
+        let idle = await models(parent), path = await parent.path
+        XCTAssertEqual(idle, [next.model], "An idle preview describes the next turn, not the completed turn")
+        for child in await registry.children { await child.close() }
+        await parent.close()
+        let restored = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+            readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: path)
+        await restored.enableSubagents(coordinator)
+        try await restored.configureSubagentModels([next])
+        let reopened = await models(restored)
+        XCTAssertEqual(reopened, idle, "Reopening cannot change the prepared schema or invalidate compatible usage")
+        await restored.close()
+    }
+
     func testEighteenCallsUseSixteenSlotsAndQueuedCallsAdvanceInOrder() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = DelegationClient(count: 18), registered = DelegationRegistry()
@@ -411,11 +444,10 @@ final class SubagentCoordinatorTests: XCTestCase {
         await parent.enableSubagents(coordinator)
         return parent
     }
-    func testExplicitFixtureCoordinatorOffersToolWhileProductionStaysHidden() async throws {
+    func testSessionOnlyOffersDelegationAfterCoordinatorInstallation() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let parent = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
                                       readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore())
-        XCTAssertFalse(SubagentPolicy.enabled)
         let before = await parent.sessionDefinitions()
         XCTAssertFalse(before.contains { $0.name == "subagent" })
         await parent.enableSubagents(SubagentCoordinator())

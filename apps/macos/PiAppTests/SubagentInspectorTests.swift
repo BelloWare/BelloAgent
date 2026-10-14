@@ -86,6 +86,53 @@ final class SubagentInspectorTests: XCTestCase {
         try await archive.close()
     }
 
+    @MainActor func testOverviewUsageFollowsFamilyFiltersAndIgnoresTheParentsFooterForAChild() async throws {
+        let root = root(); defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        defer { workspace.shutdown() }
+        let archive = workspace.traces
+        try await archive.configure(quota: nil, bodyRetention: 1000, metricRetention: 1000)
+        for (session, owner) in [("parent", nil), ("child", "parent"), ("sibling", "parent")] as [(String, String?)] {
+            var value = try metadata(session, owner: owner, wall: Date().timeIntervalSince1970)
+            value["timingVersion"] = .number(2); value["timings"] = .object(["dispatch":.number(100)])
+            value["gateway"] = .object(["version":.number(1), "cost":.object(["status":.string("reported"), "usd":.number(0.01)])])
+            try await archive.begin(value, workspace: "w"); try await archive.finish(value)
+        }
+        let parent = SessionDisplay(id: "parent")
+        workspace.displays["parent"] = parent
+        let model = SessionInspectorModel(scope: .init(sessionID: "parent", workspaceID: "w"), title: "Parent", archive: archive,
+                                         workspace: workspace, usageLoader: { scope, until, offset in
+            try await archive.sessionMetrics(sessionID: scope.sessionID, workspaceID: scope.workspaceID, until: until, offset: offset, includeFamily: scope.includeFamily)
+        }, cache: InspectorDocumentCache())
+        model.follow(parent); model.setVisible(true)
+        defer { model.setVisible(false) }
+        for _ in 0..<300 where model.usage.snapshot == nil || model.groups.count != 2 { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.usage.snapshot?.gateway.requests, 3)
+        XCTAssertEqual(model.inputs.gateway.requests, 3, "An empty loaded footer must fall back to the family capture totals")
+        parent.footer.gateway = GatewayTotals(requests: 20)
+        parent.footer.cost = SessionCostReading(limit: .usd(10), spentUSD: 9, reportedRequests: 20)
+        model.setFamilyFilter(.chat)
+        for _ in 0..<300 where model.usage.loading || model.usage.snapshot == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.usage.snapshot?.gateway.requests, 1)
+        XCTAssertEqual(model.inputs.gateway.requests, 1, "This chat only excludes the parent's rolled-up footer")
+        model.setFamilyFilter(.child("child"))
+        for _ in 0..<300 where model.usage.loading || model.usage.snapshot == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.usage.scope.sessionID, "child")
+        XCTAssertEqual(model.inputs.gateway.requests, 1)
+        XCTAssertEqual(model.scope.sessionID, "parent", "Inspector commands stay owned by the parent window")
+        for _ in 0..<300 where model.tokenCharts.hero.first(where: { $0.id == "cost" })?.value != SessionStatsFormat.cost(0.01) { try await Task.sleep(for: .milliseconds(10)) }
+        let overview = InspectorOverviewPage(inspector: model, compact: true)
+        overview.frame = NSRect(x: 0, y: 0, width: 680, height: 600); overview.layoutSubtreeIfNeeded()
+        let cost = try XCTUnwrap(ConversationPaneTests.views(PiKit.Figure.self, in: overview).first { $0.accessibilityIdentifier() == "inspector-figure-cost" })
+        XCTAssertEqual(cost.value, SessionStatsFormat.cost(0.01), "A child's figure must not display the parent's $9 budget spend")
+        XCTAssertFalse(cost.caption?.contains("limit") == true)
+        model.setFamilyFilter(.family)
+        for _ in 0..<300 where model.usage.loading || model.usage.snapshot == nil { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(model.usage.snapshot?.gateway.requests, 3)
+        XCTAssertEqual(model.inputs.gateway.requests, 20, "The family overview retains the parent's complete live accounting")
+        model.setVisible(false); try await archive.close(); await workspace.store?.close()
+    }
+
     @MainActor func testExplicitRequestOutsideTheNavigatorWindowCanBeOpened() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 10000) })

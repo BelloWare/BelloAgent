@@ -4,6 +4,7 @@ import Combine
 struct SessionUsageScope: Hashable, Sendable {
     let sessionID: String
     let workspaceID: String
+    var includeFamily = false
 }
 
 typealias SessionUsageLoader = @MainActor (SessionUsageScope, Date, Int) async throws -> MenuBarSnapshot

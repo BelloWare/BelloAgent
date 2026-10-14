@@ -93,7 +93,7 @@ final class SideCacheTests: XCTestCase {
             return raw.subdata(in: range.lowerBound..<raw.count)
         }
         XCTAssertEqual(try tools(first.raw), try tools(last.raw), "The side offers its parent's tools, byte for byte")
-        XCTAssertEqual(names(first.body), ["read", "ls", "find", "grep", "write", "edit", "bash", "mcp"], "An editing parent's list, editing tools included")
+        XCTAssertEqual(names(first.body), ["read", "ls", "find", "grep", "write", "edit", "bash", "mcp", "subagent"], "An editing parent's list, including delegation on the durable side")
         XCTAssertEqual(first.body["input"].list.first, last.body["input"].list.first, "The same instructions")
         XCTAssertEqual(first.body["prompt_cache_key"].text, "parent"); XCTAssertEqual(last.body["prompt_cache_key"].text, "parent")
         let prefix = last.body["input"].list

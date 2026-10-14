@@ -9,10 +9,11 @@ final class SubagentContractTests: XCTestCase {
         XCTAssertEqual(Set([a, b, c]).count, 3)
     }
 
-    func testProductionAvailabilityRemainsHidden() {
-        XCTAssertFalse(SubagentPolicy.enabled)
-        XCTAssertTrue(SubagentPolicy.capabilities.isEmpty)
+    func testProductionAvailabilityAdvertisesTheCompleteFeature() {
+        XCTAssertTrue(SubagentPolicy.enabled)
+        XCTAssertEqual(SubagentPolicy.capabilities, ["subagents-v1", "shared-budget-v1"])
         XCTAssertEqual(SubagentPolicy.maximumActiveChildren, 16)
+        XCTAssertEqual(SubagentPolicy.maximumDepth, 1)
     }
 
     func testDiscoveryCanRefreshWhileStopKeepsItsCommandReceipt() {

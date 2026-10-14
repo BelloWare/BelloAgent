@@ -135,15 +135,23 @@ struct SidebarListContents: Equatable {
     @MainActor private static func addGroup(_ group: SidebarGroupContents, projectID: String, topic: String?, model: WorkspaceModel, filtering: Bool,
                                             add: (SidebarEntry, String?) -> Void) {
         var any = false
+        var pendingSide: (owner: String, row: SidebarSideRowState)?
         if group.archived { add(.archiveHeading(groupID: group.groupID, count: group.total, indent: group.indent), topic); any = true }
         for row in group.rows {
+            if let side = pendingSide, row.chat.delegation?.budgetOwnerSessionID != side.owner {
+                add(.side(side.row), topic); pendingSide = nil
+            }
             add(.chat(chat: row.chat, state: row.state, projectID: projectID), topic); any = true
             if filtering, let hit = model.sidebarSearchHit(row.chat.id) {
                 add(.searchSnippet(SidebarSearchSnippetState(chat: row.chat, hit: hit, indent: row.state.indent)), topic)
             }
             if let state = model.subagentGroupState(parent: row.chat, indent: row.state.indent + 14, filtering: filtering) { add(.subagentGroup(state), topic) }
-            if let side = row.side { add(.side(side), topic) }
+            if let side = row.side {
+                if model.subagentGroupExpanded(row.chat.id) && !model.subagentChildren(of: row.chat.id).isEmpty { pendingSide = (row.chat.id, side) }
+                else { add(.side(side), topic) }
+            }
         }
+        if let side = pendingSide { add(.side(side.row), topic) }
         if group.paginates {
             add(.pagination(groupID: group.groupID, projectID: projectID, hiddenRoots: group.hiddenRoots, shownRoots: group.shownRoots, indent: group.indent), topic)
             any = true

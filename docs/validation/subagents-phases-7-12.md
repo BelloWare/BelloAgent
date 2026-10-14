@@ -3,7 +3,9 @@
 Worktree `wt-subagents`, branch `dev/subagents`. Build/test artifacts use
 `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-subagents`.
 Only generated fixtures and loopback gateways; no installed app, real vault,
-preferences, Keychain or paid providers. The production switch remains off.
+preferences, Keychain or paid providers. The production switch stayed off
+through phase 11 and is enabled in phase 12. This worktree has not been merged
+into `dev/next` or published as a release.
 
 ## Review fixes after phases 1–6
 
@@ -36,8 +38,8 @@ in-memory guard and best-effort cost writes; family attempts retain durable dedu
   checkpoint fixture remains unchanged; its test now verifies intentional
   fallback and compares the rebuilt checkpoint without the new derived indexes.
 - Native smoke checks (`SubagentMetadataTests`, `SubagentModelGrantTests`,
-  `WireContractTests`, all parallel lane) were started with a bash array; their
-  result will be recorded below when the merged app finishes rebuilding.
+  `WireContractTests`, all parallel lane) ran with a bash array after rebuilding
+  the merged app.
 
 - Native review smoke result: **13 passed, 1 skipped**, 14 executed
   (`subagents-review-native.log`). The skip is the opt-in per-token performance
@@ -224,3 +226,230 @@ policy, installed app, or real preferences/vault data were changed.
   preview, copied-parent provenance, a foreign symlink, archive restore,
   unregistered children, interrupted deletion across a fresh model/archive,
   late callbacks and workspace-scoped capture cleanup. Production remains off.
+
+## Phase 12 — enabled feature, compatibility and gallery
+
+- The final compatibility review found and fixed four presentation edges:
+  generic cut-off results displayed as queued; an older helper's already-saved
+  result lacked a local child navigation target; a missing child journal blocked
+  later healthy siblings from app registration; and an unsaved side split an
+  expanded sub-agent group. Model-visible older results remain unchanged.
+- Failing-first logs: `phase12-compatibility-helper-red.log` and
+  `phase12-compatibility-native-red.log`. The restored focused runs pass **10
+  helper** and **21 native** tests. The four corresponding mutations each
+  produced behavioral failures (`phase12-mutation-compatibility-and-groups.log`,
+  `phase12-mutation-old-helper-navigation.log`). Missing-file failure is an
+  unexpected thrown error; the other three guards fail explicit assertions.
+- Enablement failed first with the switch off (two assertions), then **55 helper
+  tests passed** with it on, including SessionSettlementTests, CostLimitTests,
+  CaptureDrainTests and HostServiceTests (`phase12-enable-{red,green}.log`).
+  Turning the switch off again fails both availability assertions
+  (`phase12-enable-mutation.log`); the enabled source was restored afterward.
+- `SubagentGalleryTests.swift` extends UIScreenshotTests with every §13.5 scene:
+  21 main-window states and family/child-filter Inspector states, in light/dark
+  at 920×600 and 1240×800 (**92 images**). It uses actual native Pi views,
+  generated metadata, memory credentials and local synthetic capture records.
+  Card presence, child composer suppression, Back focus and filter scope are
+  asserted. The gallery fixture and images remain under the build root; search
+  closes asynchronously, so fixture directories are not unlinked while its
+  SQLite connections are closing.
+- Gallery fixture corrections: canonical tool timelines and exact-card reveal
+  replaced legacy folded work rows; activating its window made keyboard focus
+  meaningful; child capture metadata now has matching turn lineage and seconds
+  timestamps. The failed logs are retained, including a cancellation during the
+  first expanded capture fixture. The corrected 92-image run passed
+  (`phase12-gallery-capture.log`); the final gate regenerated the gallery after
+  the switch was enabled.
+- Native measurement: 20 updates of four cards among 400 settled history rows
+  measured **52 rows / 16 Markdown blocks**, with **zero sidebar recomputations**.
+  The fixture's recorded p50/maximum update intervals were **63.34/118.08 ms**
+  (the earlier log mislabeled that 20-sample maximum as p95);
+  these include scheduled waits and drawing, not physical display frame cadence.
+  Cached child/parent switching plus two fixture settles took **1,213 ms** and
+  restored the issuing card. This is a native fixture measurement, not a disk
+  load or production-latency bound (`phase12-native-performance-final.log`).
+  The final gate repeated this class alone through `scripts/test-macos.sh`.
+- `scripts/test-subagent-streaming.py` runs four concurrent real child streams
+  through a loopback gateway. It verifies six physical attempts on completion,
+  complete response-byte capture for all four children, immutable lineage,
+  durable parent results, unchanged discovery revision during token progress,
+  and Stop/shutdown settlement. The generated enabled helper fixture passed
+  all three scenarios: peak concurrency four, Stop **31.59 ms**, graceful
+  shutdown **20.86 ms** (`phase12-streaming-fixture.log`). The final gate reran
+  it against the actual enabled bundled helper; results are below.
+- The broader gate runs in this worktree and the required build root.
+  `check-next.sh` would choose `dev/next` and another root; `verify-release.sh`
+  also batches serial classes and expects a committed generated project. Their
+  underlying checks are instead run with each serial class alone, native
+  parallel tests in eight clones, isolated helper cost measurements, remaining
+  helper/views/wire/script tests and the full screenshot gallery. Native test
+  hosts use `com.belloware.SubagentValidation.$(PRODUCT_MODULE_NAME)` so standard
+  defaults do not read or write the real app's domain. Logs are in
+  `logs/phase12-gate/`; completed gate results are below.
+- The combined review also reproduced a large-family storage defect: the
+  generic 10,000-row listing hid the parent among 10,001 children and omitted
+  two deletion intents (five failing assertions in
+  `phase12-large-family-red.log`). Managed rows now sit outside the unchanged
+  ordinary-chat window, and recovery reads the complete strict deletion
+  manifest. Four mutations catch reintroducing either family limit, removing
+  the ordinary-chat window, or silently skipping a damaged intent
+  (`phase12-mutation-{child-window,deletion-window,ordinary-window,damaged-intent}.log`).
+- The storage checks exposed an existing reflection-based round-trip fixture
+  which did not populate the three new optional managed fields. The fixture now
+  supplies them; all existing round-trip assertions are retained. The corrected
+  six-class run passed **44 tests** (`phase12-large-family-final.log`).
+- Gate isolation correction: while stopping the broad runner for this review
+  fix, its in-flight InspectorNativeParityTests overlapped the next test build.
+  Its test methods passed but the result bundle reported an import error. That
+  invocation is excluded as validation. Isolated replacement runs passed:
+  InspectorNativeParityTests **7**, ChatLoadStabilityTests **1**, and
+  ChatOpenPlacementTests **5** (`phase12-post-review-<Class>.log`), before the
+  broad runner continued. Pausing the runner inflated its recorded wall times;
+  those times are not performance measurements.
+- Re-upgrade metadata regression: saving a child through an older desktop shape
+  erased its managed identity, and discovery refused to reconstruct it (three
+  failing assertions in `phase12-desktop-downgrade-red.log`). The validated
+  reciprocal journals now restore an absent identity while preserving the old
+  title. Different paths/workspaces and conflicting identities remain refused.
+  The expanded six-class run passed **45 tests**
+  (`phase12-desktop-downgrade-green.log`).
+- Three desktop identity mutations each fail behaviorally: refusing a legacy
+  record with absent identity, omitting reconstruction, and allowing a
+  conflicting identity (`phase12-mutation-{legacy-identity,identity-rebuild,identity-conflict}.log`).
+- The first full native parallel run executed **2,310 tests**: **2,272 passed,
+  35 skipped, 3 failed**. The strict loopback gateway still required the old tool
+  list; it now requires `subagent` too, retaining exact-set validation. The
+  native fork fixture now asserts deliberate full replay when its unchanged v1
+  derived checkpoint is rejected, retaining all row/version comparisons.
+- The third failure reproduced alone in ContextReadingTests: a saved **44-token**
+  reading became a **19-token** estimate after reopening. The idle sub-agent
+  schema incorrectly used the previous turn's (initially empty) model grants.
+  Idle previews now use current picker grants; active turns keep frozen grants.
+  Preview-only picker selections are validated without changing execution
+  grants or journal bytes, and idle grant changes expire old previews.
+- Failing-first helper regressions recorded **six assertion failures** across
+  `phase12-grant-preview-red.log` and `phase12-grant-selection-red.log` (an initial
+  async-autoclosure compile error was corrected before the behavioral run).
+  The focused eight-class helper run then passed **71 tests**
+  (`phase12-grant-preview-green.log`), including all four lead-requested classes.
+- Six preview/grant mutations failed behaviorally: stale idle grants, widened
+  active grants, ignored preview selection, preview granting execution access,
+  missing selection validation and stale preview retention. The restored helper
+  run passed **71 tests** (`phase12-grant-preview-restored.log`). The six affected
+  native classes passed **23 tests** (`phase12-native-failures-restored.log`),
+  then the complete parallel lane passed **2,275 tests, 35 skipped, zero failed**
+  (`phase12-native-parallel-restored.log`).
+- Gallery review found a long running/queued label pushing the centered Pi
+  button's chevron outside a narrow sidebar. The group now chooses a fitting
+  count label, with complete counts in its tooltip and accessibility label.
+  The regression failed first with **14 assertions**
+  (`phase12-sidebar-fit-red.log`). Its nine-test green run reported an Xcode
+  result-bundle import error despite passing assertions; that invocation is
+  excluded from final validation and repeated with a dedicated scratch temporary
+  directory and explicit result bundle.
+- The sidebar mutation then produced **12 assertion failures** (after correcting
+  an unused-variable compile rejection in the mutation). The restored class
+  passed **9 tests** with a readable result bundle
+  (`phase12-sidebar-fit-final.log`, `phase12-sidebar-fit-final-summary.json`).
+  This brought phase 12 to **19 behavioral guard mutations**, before the final
+  Inspector overview correction recorded below.
+- Final native performance repetition, alone: **1 passed** with a readable
+  result bundle. Across 20 four-card updates: **52 measured rows, 16 Markdown
+  measurements, zero sidebar computations**; fixture p50/maximum intervals
+  **62.93/120.97 ms**, cached switch/reveal plus fixture settles **1,369 ms**.
+  The same fixture-only limits above apply
+  (`phase12-native-performance-current.log`,
+  `phase12-native-performance-current-summary.json`).
+
+### Completed broad validation
+
+The original broad runner retains its nonzero result: it found three native
+failures and one helper fixture failure. The fixes and valid reruns are recorded
+above and below; the original logs have not been overwritten or counted as clean.
+
+| Check | Final result | Evidence under the build root |
+|---|---|---|
+| Native parallel lane, eight test hosts | 2,275 passed, 35 opt-in skips, zero failures | `logs/phase12-native-parallel-restored.log` |
+| Native serial lane, each class alone, including the separate sub-agent performance class | 100 classes; 682 passed, 33 opt-in skips, zero failures | `logs/phase12-gate/serial-*.log`, isolated replacements described above, `logs/phase12-native-performance-current.log` |
+| Helper cost measurement class, alone | 5 passed | `logs/phase12-gate/helper-cost.log` |
+| Remaining helper suite | 748 executed: 741 passed, 6 skipped, one stale expected-tool-list failure; corrected class then 5/5 passed | `logs/phase12-gate/helper.log`, `logs/phase12-side-cache-final.log` |
+| Swift views | 188 passed, 3 skipped | `logs/phase12-gate/views.log` |
+| Wire / concurrent / acceptance loopback suites | 34 / 4 / 3 passed | `logs/phase12-gate/{wire,concurrent,acceptance}.log` |
+| Script unit tests | 72 passed | `logs/phase12-gate/python.log` |
+| Full UI gallery | Both methods passed; 311 PNGs, including 92 sub-agent scenes | `logs/phase12-gate/gallery.log`, `phase12-gallery/` |
+| Real-helper crash and control matrix | All 21 scenarios passed | `logs/phase12-crashes-final.log` |
+| Actual v0.1.125 helper downgrade | All 5 compatibility assertions passed | `logs/phase12-downgrade-final.log` |
+
+The full helper suite's sole failure was `SideCacheTests` expecting eight tools
+from a production HostService session. It now expects the enabled ninth tool;
+the other direct-session fixtures still require eight. No helper implementation
+changed after that suite. All four lead-requested baseline classes also passed
+in the final 71-test focused helper run.
+
+The enabled release helper passed all three four-child streaming scenarios
+(`logs/phase12-gate/subagent-streaming.log`, `logs/subagent-streaming.json`):
+completion produced six unique physical attempts, exact $0.06 family spend,
+$0.01 per child, and complete byte-for-byte response captures. Peak simultaneous
+child streams was four. Stop settled in **32.96 ms** and graceful shutdown in
+**10.88 ms** in this local loopback fixture; these are not provider or production
+latency guarantees.
+
+The crash matrix used generated fault-injected helper copies at 18 persistence
+barriers, followed by the actual helper for reopening. Resume issued exactly
+one parent request, with no child replay or repeated external-effect bytes.
+Stop, shutdown and update scenarios settled 16 active plus 2 queued children
+before journals closed. Downgrade accepted the v1 parent, preserved its existing
+cut-off result without replay, refused the v2 child, left its bytes unchanged,
+and enforced the marker-type gate.
+
+Final visual review covered representative small/light and dark scenes: queued
+parallel cards, child transcript/navigation, cost limit, Topics/search, long
+labels/reduced motion, and family/child Inspector. It caught the family overview
+query inconsistency below. Automated coverage renders every §13.5 scene at both
+sizes and appearances; this is not a claim of manual inspection of all 311 PNGs.
+
+### Final Inspector overview correction
+
+The final gallery showed three family requests in the navigator but one in the
+overview/model summary. Two failing-first regressions produced **14 assertion
+failures** (`logs/phase12-inspector-usage-red.log`). The additive scope argument
+was initially present but inert so the recorded red run exercised behavior,
+rather than failing to compile.
+
+Overview usage and its model-page cache now carry the family filter. Family
+queries include owner and child physical attempts within the same workspace;
+parent-only and child-only pages exclude the parent's rolled-up live footer and
+budget-spend figure. An empty loaded footer uses captured family totals. The
+snapshot subscription consumes the published value directly, avoiding Combine's
+will-set delivery reading the old snapshot. Global/project aggregates and capture
+policy are unchanged.
+
+The expanded six-class baseline passed **74 tests**. Eight mutations each failed
+behaviorally: omitting children, mixing cached scopes, losing workspace
+isolation, routing a child filter to the parent, using the family footer in a
+physical view, reading the old published snapshot, starting with a parent-only
+scope, and overriding a child's cost with parent budget spend
+(`logs/phase12-mutation-family-usage-*.log`). Phase 12 has **27 behavioral guard
+mutations** in total, with every mutated source restored before final testing.
+
+With all guards restored, the same six classes passed **74 tests**, with a
+readable result bundle (`logs/phase12-inspector-usage-restored.log` and
+`logs/phase12-inspector-usage-restored-summary.json`).
+`InspectorFrameTests` then passed **2 tests** alone, followed by
+`InspectorOverviewDocumentGeometryTests` **1 test** alone. The final contained
+query/display correction did not change helper or capture ingestion code; its
+focused suites and gallery were rerun after the broad gate rather than claiming
+that the earlier full gate tested these final lines.
+
+The final sub-agent-only gallery repetition passed **1 test**, regenerated all
+**92 images**, and asserted matching family/child overview request totals
+(`logs/phase12-subagent-gallery-final.log` and its `-summary.json`). The corrected
+family screenshot now shows **3 requests** in both navigator and overview;
+the child filter shows **1**. The small/light family Inspector, small/dark child
+Inspector, wide long-label child viewer and dark recovery-error view were
+visually rechecked after this run. All §13.5 scenes remain in the gallery.
+
+No owner decision changed and no implementation questions remain open. The
+feature is enabled on `dev/subagents` for lead review and the 0.1.126 integration;
+release signing, notarization, publication and merging into `dev/next` are not
+performed by this worktree task.

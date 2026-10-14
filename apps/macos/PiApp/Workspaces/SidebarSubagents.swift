@@ -50,10 +50,22 @@ extension WorkspaceModel {
         self.state = state
         button.title = state.label
         button.symbol = state.expanded ? "chevron.down" : "chevron.right"
+        button.toolTip = state.label
         button.setAccessibilityIdentifier("subagent-group-" + state.parentID)
         button.setAccessibilityLabel(state.label + (state.expanded ? ", expanded" : ", collapsed"))
         needsLayout = true
     }
     func entryHeight(width: CGFloat) -> CGFloat { 28 }
-    override func layout() { super.layout(); button.frame = CGRect(x: state.indent, y: 0, width: max(0, bounds.width - state.indent), height: 28) }
+    override func layout() {
+        super.layout()
+        button.frame = CGRect(x: state.indent, y: 0, width: max(0, bounds.width - state.indent), height: 28)
+        // Pi buttons center their label and symbol together. Keep that whole
+        // face in bounds; the full counts remain in the tooltip and AX label.
+        let noun = state.count == 1 ? "sub-agent" : "sub-agents"
+        let compact = state.count.formatted(.number.notation(.compactName))
+        for title in [state.label, "\(state.count) \(noun)", "\(compact) \(noun)", compact] {
+            button.title = title
+            if button.intrinsicContentSize.width <= button.bounds.width { break }
+        }
+    }
 }

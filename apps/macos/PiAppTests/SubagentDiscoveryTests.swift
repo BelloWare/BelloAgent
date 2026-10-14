@@ -114,4 +114,54 @@ final class SubagentDiscoveryTests: XCTestCase {
         XCTAssertNotNil(orphan.delegationIssue); XCTAssertNil(orphan.parentSessionID)
     }
 
+    @MainActor func testMissingChildFileDoesNotBlockOtherFamilyGroups() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.traces.configure(quota: nil, bodyRetention: 86_400, metricRetention: 86_400)
+        model.chats.remove(at: 1)
+        let family = try Self.family(model)
+        for chat in model.chats { try await model.store?.put(chat, kind: "chat", id: chat.id) }
+        let header = try await model.history.subagentHeader(path: family.path, directory: family.path.deletingLastPathComponent(), expected: SubagentTarget((try await model.history.subagentPlans(path: URL(fileURLWithPath: model.chats[0].path!), ownerID: "chat-parent"))[0].header.link))
+        var broken = header.link; broken.childSessionID = UUID().uuidString; broken.delegationID = "missing"; broken.call.toolCallID = "missing"
+        for link in [broken, header.link] {
+            let summary = SubagentSummary(link: link, description: "Saved task", model: "fixture", status: .failed, revision: 1)
+            try await model.registerListedSubagent(summary, parent: model.chats[0], task: "Review")
+        }
+        XCTAssertNotNil(model.record(family.child)); XCTAssertNil(model.record(broken.childSessionID))
+        let groups = try await model.traces.inspectorSubagents(owner: "chat-parent", workspaceID: "pane-project")
+        XCTAssertEqual(groups.count, 2, "A task whose journal could not be created still has a family Inspector group")
+    }
+
+    @MainActor func testReupgradeRebuildsIdentityErasedByOlderDesktopMetadata() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        model.chats.remove(at: 1)
+        let family = try Self.family(model)
+        for chat in model.chats { try await model.store?.put(chat, kind: "chat", id: chat.id) }
+        await model.reconcileSubagents()
+        let child = try XCTUnwrap(model.record(family.child))
+        // An older app understands the common fields, but its synthesized
+        // encoder drops the new optional identity when it saves a rename.
+        var old = try XCTUnwrap(JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(child)).object)
+        for key in ["delegation", "delegationTask", "delegationIssue"] { old.removeValue(forKey: key) }
+        old["title"] = .string("Renamed in the older app")
+        try await model.store?.put(old, kind: "chat", id: child.id)
+        let legacy = try await model.store?.get(ChatRecord.self, kind: "chat", id: child.id)
+        XCTAssertNil(legacy?.delegation)
+        model.chats = try await model.store!.loadChats()
+        await model.reconcileSubagents()
+        XCTAssertNil(model.error)
+        let restored = try XCTUnwrap(model.record(child.id))
+        XCTAssertEqual(restored.delegation, child.delegation)
+        XCTAssertEqual(restored.title, "Renamed in the older app")
+        XCTAssertTrue(restored.isSubagent)
+        var conflict = try XCTUnwrap(restored.delegation); conflict.delegationID = "different-delegation"
+        old["delegation"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(conflict))
+        try await model.store?.put(old, kind: "chat", id: child.id)
+        model.chats = try await model.store!.loadChats()
+        await model.reconcileSubagents()
+        XCTAssertNotNil(model.error, "A conflicting identity is not an older encoder dropping an unknown field")
+        XCTAssertEqual(model.record(child.id)?.delegation, conflict)
+    }
+
 }

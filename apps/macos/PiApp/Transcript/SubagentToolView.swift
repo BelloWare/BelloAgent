@@ -32,7 +32,8 @@ struct SubagentToolView: Equatable, Sendable {
         target = summary.flatMap { $0.link.valid ? SubagentTarget($0.link) : nil } ?? tool.nativeSubagent.flatMap(SubagentTarget.init(metadata:))
         task = input["task"]?.string ?? tool.input
         description = summary?.description ?? input["description"]?.string ?? String(task.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(120))
-        status = summary?.status ?? output["status"]?.string.flatMap(SubagentStatus.init(rawValue:)) ?? (tool.state == "running" ? .running : tool.state == "failed" ? .failed : .queued)
+        let savedState = tool.state == "unknown" ? SubagentStatus.interrupted : SubagentStatus(rawValue: tool.state) ?? .queued
+        status = summary?.status ?? output["status"]?.string.flatMap(SubagentStatus.init(rawValue:)) ?? savedState
         result = output["text"]?.string ?? tool.output
         error = output["error"]?.object?["message"]?.string
         truncated = output["truncated"]?.bool == true || tool.truncated

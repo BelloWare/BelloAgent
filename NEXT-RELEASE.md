@@ -4,6 +4,8 @@
 
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.
 
+- [x] Sub-agents implemented on `dev/subagents` for 0.1.126, pending lead review and merge: synchronous delegated tasks, up to 16 active children per parent chat with extra calls queued, one level deep. Children inherit effective tools and share the parent's budget and capture policy. Native cards, child transcripts, Back to Parent, family Inspector, folded sidebar groups and durable Stop/Resume recovery are included. Phase 12 enables the sole rollout switch. [Design and implementation notes](docs/design/subagents.md); [validation record](docs/validation/subagents-phases-7-12.md). This branch has not been merged into `dev/next` or published as a release.
+
 ## 0.1.126 decisions made while the owner was away (2026-10-13 night)
 
 - RL-04 (capture lost at graceful shutdown): fixed with a bounded drain. The helper keeps delivering, and the app keeps acknowledging, queued capture packets until the outbox is empty or the existing shutdown deadline arrives. A drain cut short is marked partial. A durable spool-and-replay design was built and dropped: two review rounds found data-boundary bugs in it, including cleared chats' bodies surviving on disk.

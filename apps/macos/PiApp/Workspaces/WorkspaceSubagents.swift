@@ -102,17 +102,29 @@ extension WorkspaceModel {
                   record(parent.id)?.workspaceID == parent.workspaceID else { throw CancellationError() }
             for value in page["children"]?.array ?? [] {
                 let summary = try JSONDecoder().decode(SubagentSummary.self, from: JSONEncoder().encode(value))
-                guard summary.link.budgetOwnerSessionID == parent.id else { throw StoreError.invalidRecord }
-                let directory = try subagentDirectory(parent.workspaceID)
-                let path = directory.appendingPathComponent(summary.link.childSessionID + ".jsonl")
-                let header = try await history.subagentHeader(path: path, directory: directory, expected: SubagentTarget(summary.link))
-                let found = DiscoveredSubagent(header: header, path: path.path, task: tasks[summary.link.childSessionID] ?? "", status: summary.status)
-                try await registerDiscoveredSubagent(found, workspaceID: parent.workspaceID, live: summary)
-                try await traces.recordSubagent(summary, workspaceID: parent.workspaceID)
+                try await registerListedSubagent(summary, parent: parent, task: tasks[summary.link.childSessionID] ?? "")
             }
             guard let next = page["cursor"]?.nonnegativeInteger else { break }
             guard next > cursor else { throw StoreError.invalidRecord }; cursor = next
         } while true
         reconcileRunHold(parent.id)
     }
+    func registerListedSubagent(_ summary: SubagentSummary, parent: ChatRecord, task: String) async throws {
+        guard summary.link.budgetOwnerSessionID == parent.id else { throw StoreError.invalidRecord }
+        try await traces.recordSubagent(summary, workspaceID: parent.workspaceID)
+        let directory = try subagentDirectory(parent.workspaceID)
+        let path = directory.appendingPathComponent(summary.link.childSessionID + ".jsonl")
+        let header: SubagentHeader
+        do { header = try await history.subagentHeader(path: path, directory: directory, expected: SubagentTarget(summary.link)) }
+        catch is CancellationError { throw CancellationError() }
+        catch {
+            // The accepted plan can precede child creation, or creation may
+            // fail. Keep its Inspector group without blocking healthy siblings
+            // or registering an unvalidated transcript path.
+            return
+        }
+        let found = DiscoveredSubagent(header: header, path: path.path, task: task, status: summary.status)
+        try await registerDiscoveredSubagent(found, workspaceID: parent.workspaceID, live: summary)
+    }
+
 }

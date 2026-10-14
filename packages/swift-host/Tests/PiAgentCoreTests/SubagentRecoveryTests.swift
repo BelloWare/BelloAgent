@@ -117,6 +117,11 @@ final class SubagentRecoveryTests: XCTestCase {
         try fixture.write(childStatus: .running, terminal: SubagentToolResult(plan: fixture.plan, status: .completed, text: "child complete"), oldResult: true)
         let parent = try fixture.open(), rows = await parent.history.filter { $0.toolName == "subagent" }
         XCTAssertEqual(rows.count, 1); XCTAssertEqual(rows.first?.id, "old-result"); XCTAssertEqual(rows.first?.text, "Old helper: outcome unknown")
+        let savedAssistant = await parent.history.first { $0.id == "reply" }
+        let assistant = try XCTUnwrap(savedAssistant)
+        let displayed = await parent.displayMessage(assistant)
+        XCTAssertEqual(displayed["tools"].list.first?["subagent"]["link"]["childSessionID"].text, "child")
+        XCTAssertEqual(displayed["tools"].list.first?["subagent"]["status"].text, "interrupted")
         await parent.close()
     }
 }
@@ -141,7 +146,7 @@ private struct RecoveryFixture {
         let cost = costRecord("physical", usd: 0.75, revision: 2)
         if ownerCost { try parent.append(["type":"custom","customType":JSON(JournalRecordKind.cost),"data":cost]) }
         if oldResult {
-            var result = ChatMessage(role: "toolResult", content: [textBlock("Old helper: outcome unknown")]); result.toolName = "subagent"; result.toolCallId = "call"
+            var result = ChatMessage(role: "toolResult", content: [textBlock("Old helper: outcome unknown")]); result.toolName = "subagent"; result.toolCallId = "call"; result.isError = true; result.toolStats = ["outcome":"unknown"]
             try parent.append(["type":"message","message":result.pi], id: "old-result")
         }
         try parent.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":["active":true,"queue":[],"steering":[],"commands":[]]])

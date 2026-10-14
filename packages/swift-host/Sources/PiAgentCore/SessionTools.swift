@@ -63,9 +63,11 @@ extension AgentSession {
     }
     /// The tools a request offers: the session's own, as pi offers its tools,
     /// except that a read-only side offers its parent's (SessionSide.swift).
-    func sessionDefinitions() async -> [ToolDefinition] {
+    func sessionDefinitions(subagentModels: [SubagentModelGrant]? = nil) async -> [ToolDefinition] {
         var definitions = await tools.definitions(readOnly: offersReadOnlyTools)
-        if canDelegate { definitions.append(SubagentSpec.definition(models: turnSubagentModels)) }
+        // A running turn keeps its grant. Idle previews describe the next
+        // request, including after reopening before any turn has run.
+        if canDelegate { definitions.append(SubagentSpec.definition(models: runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants)) }
         return definitions
     }
     func invokeTool(_ call: ToolCall) async throws -> JSON {

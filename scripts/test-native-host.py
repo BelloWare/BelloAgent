@@ -255,7 +255,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         CONTRACT.validate_request('POST', self.path, dict(self.headers), body,
                                   api_key='fixture-secret', model='auto-router', max_output_tokens=4096,
                                   custom_headers={'X-Fixture-Contract': 'owner-sample-v1'}, native_items='portable',
-                                  expected_tool_names=['read','ls','find','grep','write','edit','bash','mcp'])
+                                  expected_tool_names=['read','ls','find','grep','write','edit','bash','mcp','subagent'])
         variants = {f'fixture: owner-sample {transport} {cost}': (transport, cost, False)
                     for transport in ('json', 'sse') for cost in ('null', 'paid', 'zero')}
         variants.update({f'fixture: owner-billing {transport}': (transport, 'null', True) for transport in ('json','sse')})
@@ -297,7 +297,7 @@ class Fixture(http.server.BaseHTTPRequestHandler):
         CONTRACT.validate_request('POST', self.path, dict(self.headers), body, api_key='fixture-secret',
                                   model=body['model'], max_output_tokens=4096,
                                   custom_headers={'X-Fixture-Contract': 'strict-v1'}, native_items=native_policy,
-                                  expected_tool_names=['read','ls','find','grep','write','edit','bash','mcp'])
+                                  expected_tool_names=['read','ls','find','grep','write','edit','bash','mcp','subagent'])
         prompt = semantic['latest_text']
         history = body['input' if responses else 'messages']
         tool_result = history[-1].get('type') == 'function_call_output' if responses else any(block.get('type') == 'tool_result' for block in history[-1]['content'])
@@ -1311,7 +1311,7 @@ class NativeIntegration(unittest.TestCase):
         self.assertTrue(all(r.get('validated') for r in Fixture.requests[before:] if r['path'] == '/v1/responses'), 'every request met the contract')
         # Keys are sorted, so the tools close both bodies: byte-equal lists.
         self.assertEqual(side_raw[side_raw.rindex(b'"tools":'):], parent_raw[parent_raw.rindex(b'"tools":'):])
-        self.assertEqual([t['name'] for t in side_body['tools']], ['read','ls','find','grep','write','edit','bash','mcp'])
+        self.assertEqual([t['name'] for t in side_body['tools']], ['read','ls','find','grep','write','edit','bash','mcp','subagent'])
         self.assertEqual(side_body['input'][:len(parent_body['input'])], parent_body['input'], 'same instructions, then the parent input')
         # Then the parent's reply, the hidden note as a user message, and the question.
         added = side_body['input'][len(parent_body['input']):]

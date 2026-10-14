@@ -122,4 +122,11 @@ final class SubagentTranscriptTests: XCTestCase {
         XCTAssertNil(bench.model.record(view.id)?.costLimit)
     }
 
+    func testGenericCutOffToolResultsAreNeverShownAsQueued() {
+        for (state, expected) in [("unknown", SubagentStatus.interrupted), ("cancelled", .cancelled), ("completed", .completed), ("failed", .failed)] {
+            var tool = Self.tool; tool.state = state; tool.output = "Saved result from the older helper"
+            XCTAssertEqual(SubagentToolView(tool).status, expected, state)
+        }
+    }
+
 }

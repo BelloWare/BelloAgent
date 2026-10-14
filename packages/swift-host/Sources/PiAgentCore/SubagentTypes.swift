@@ -1,10 +1,10 @@
 import Foundation
 
-/// Shared by the app and helper. The sole production rollout switch stays
-/// off until the complete feature has passed its final review. Test fixtures
-/// inject availability into the helper; no preference or wire flag enables it.
+/// Shared by the app and helper. The sole production rollout switch, enabled
+/// after the complete managed-session, accounting and UI work in phase 12.
+/// No preference or wire flag can bypass this policy.
 public enum SubagentPolicy {
-    public static let enabled = false
+    public static let enabled = true
     public static let maximumActiveChildren = 16
     public static let maximumDepth = 1
     public static var capabilities: [String] { enabled ? ["subagents-v1", "shared-budget-v1"] : [] }

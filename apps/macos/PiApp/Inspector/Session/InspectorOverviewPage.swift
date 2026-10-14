@@ -73,7 +73,7 @@ import AppKit
         let heroGrid = GridView(columns: .adaptive(minimum: compact ? 120 : 150, maximum: .greatestFiniteMagnitude), spacing: PiSpacing.md, rowSpacing: 14)
         heroGrid.items = hero.map { figure in
             let view: NSView
-            if figure.id == "cost", let footer = inspector.display?.footer { view = costFigure(figure, footer: footer) }
+            if figure.id == "cost", inspector.familyFilter == .family, let footer = inspector.display?.footer { view = costFigure(figure, footer: footer) }
             else { view = PiKit.Figure(value: figure.value, title: figure.title, caption: figure.caption, partial: figure.partial, large: true) }
             view.setAccessibilityIdentifier("inspector-figure-" + figure.id); return view
         }
@@ -130,7 +130,8 @@ import AppKit
         toggle.setAccessibilityIdentifier("inspector-how-counted")
         var items: [ShellItem] = [.view(toggle, .natural)]
         if methodology {
-            let notes = inspectorColumn([SessionStatsNotes(notes: inspector.timeCharts.notes + inspector.tokenCharts.notes), inspectorText("Each dispatched request counts once, tool rounds included. Only this session's own requests count; inherited parent messages add no cost. Reasoning is part of output and of the total cost; cached input is part of input. A missing figure stays missing, never a zero.", font: PiKit.Font.micro, color: .piInkTertiary, lines: .max), inspectorText(SettledThroughput.explanation, font: PiKit.Font.micro, color: .piInkTertiary, lines: .max)], spacing: 6)
+            let scope = inspector.familyFilter == .family ? "This chat and its sub-agents count toward the parent's budget." : "Only the selected chat's own requests count; inherited messages add no cost."
+            let notes = inspectorColumn([SessionStatsNotes(notes: inspector.timeCharts.notes + inspector.tokenCharts.notes), inspectorText("Each dispatched request counts once, tool rounds included. \(scope) Reasoning is part of output and of the total cost; cached input is part of input. A missing figure stays missing, never a zero.", font: PiKit.Font.micro, color: .piInkTertiary, lines: .max), inspectorText(SettledThroughput.explanation, font: PiKit.Font.micro, color: .piInkTertiary, lines: .max)], spacing: 6)
             items.append(.view(notes, .fill, insets: NSEdgeInsets(top: 0, left: 15, bottom: 0, right: 0)))
         }
         return ShellStack(.vertical, spacing: 8, items)

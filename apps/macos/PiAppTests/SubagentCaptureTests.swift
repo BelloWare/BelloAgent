@@ -74,6 +74,31 @@ final class SubagentCaptureTests: XCTestCase {
         try await archive.close()
     }
 
+    func testInspectorUsageIncludesTheSelectedFamilyAndCachesEachScopeSeparately() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = try await archive(root), until = Date(timeIntervalSince1970: 2001)
+        for (session, owner, cost, workspace) in [("parent", nil, 0.01, "workspace"), ("child", "parent", 0.02, "workspace"), ("child", "parent", nil, "workspace"), ("unrelated", "other", 0.04, "workspace"), ("foreign", "parent", 0.5, "foreign")] as [(String, String?, Double?, String)] {
+            var value = try metadata(session, cost: cost, owner: owner, purpose: cost == nil ? "compaction" : "turn")
+            value["requestedModel"] = .string(session + "-model")
+            try await save(value, to: archive, workspace: workspace)
+        }
+        let family = try await archive.sessionMetrics(sessionID: "parent", workspaceID: "workspace", until: until, includeFamily: true)
+        XCTAssertEqual(family.gateway.requests, 3); XCTAssertEqual(family.modelGroups, 2)
+        XCTAssertEqual(family.compactionRequests, 1); XCTAssertEqual(family.costUnreported, 1)
+        XCTAssertEqual(try XCTUnwrap(family.gateway.costUSD), 0.03, accuracy: 1e-9)
+        XCTAssertEqual(family.models.first { $0.requestedAlias == "child-model" }?.gateway.requests, 2)
+        let own = try await archive.sessionMetrics(sessionID: "parent", workspaceID: "workspace", until: until)
+        XCTAssertEqual(own.gateway.requests, 1); XCTAssertEqual(own.gateway.costUSD, 0.01)
+        // Page reads reuse summaries: switching filters must not reuse a
+        // differently scoped aggregate, even when the model page is empty.
+        let familyPage = try await archive.sessionMetrics(sessionID: "parent", workspaceID: "workspace", until: until, offset: 24, includeFamily: true)
+        let ownPage = try await archive.sessionMetrics(sessionID: "parent", workspaceID: "workspace", until: until, offset: 24)
+        XCTAssertEqual(familyPage.gateway.requests, 3); XCTAssertEqual(ownPage.gateway.requests, 1)
+        let child = try await archive.sessionMetrics(sessionID: "child", workspaceID: "workspace", until: until)
+        XCTAssertEqual(child.gateway.requests, 2); XCTAssertEqual(child.costUnreported, 1)
+        try await archive.close()
+    }
+
     func testCaptureLineageCannotChangeOrDisappearAfterBegin() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await archive(root), original = try metadata("child", cost: 0.01, owner: "parent")

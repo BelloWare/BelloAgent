@@ -126,7 +126,7 @@ import Combine
         } else {
             let inspector = SessionInspectorModel(scope: scope, title: title, archive: model.traces, workspace: model,
                                                   usageLoader: { [archive = model.traces] scope, until, offset in
-                try await archive.sessionMetrics(sessionID: scope.sessionID, workspaceID: scope.workspaceID, until: until, offset: offset)
+                try await archive.sessionMetrics(sessionID: scope.sessionID, workspaceID: scope.workspaceID, until: until, offset: offset, includeFamily: scope.includeFamily)
             })
             controller = SessionInspectorWindowController(inspector: inspector)
             controller.onClose = { [weak self, weak controller] in self?.entries.removeAll { $0.controller === controller } }

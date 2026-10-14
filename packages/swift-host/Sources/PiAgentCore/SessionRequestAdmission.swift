@@ -1,7 +1,8 @@
 import Foundation
 
 extension AgentSession {
-    /// Enabled only by the hidden coordinator (or explicit in-process fixtures).
+    /// Accounting fixture seam. Production adopts the ledger atomically with
+    /// the first accepted plan in `registerDelegation`, including its spend seed.
     func enableFamilyBudget() { familyBudgetEnabled = true }
 
     func bindBudgetOwner(_ owner: AgentSession, generation: Int) throws {

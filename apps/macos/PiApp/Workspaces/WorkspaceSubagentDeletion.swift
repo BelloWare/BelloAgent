@@ -11,7 +11,7 @@ extension WorkspaceModel {
     func deleteSubagentFamily(_ parent: ChatRecord) async throws {
         guard !parent.isSubagent, !parent.imported, let store, displays[parent.id]?.hasWork != true,
               displays[parent.id]?.loading != true else { throw HostError.failure("Stop work before deleting this family.") }
-        let existing = try await store.list(SessionDeletionRecord.self, kind: SessionDeletionRecord.kind).filter { $0.ownerID == parent.id }
+        let existing = try await store.pendingFamilyDeletions().filter { $0.ownerID == parent.id }
         if !existing.isEmpty { try await finishFamilyDeletion(existing); return }
         guard deletingFamilies.insert(parent.id).inserted else { throw HostError.failure("This family is already being deleted.") }
         var durable = false
@@ -57,14 +57,14 @@ extension WorkspaceModel {
 
     func markPendingFamilyDeletions() async {
         guard let store else { return }
-        let intents = (try? await store.list(SessionDeletionRecord.self, kind: SessionDeletionRecord.kind)) ?? []
+        let intents = (try? await store.pendingFamilyDeletions()) ?? []
         deletingFamilies.formUnion(intents.map(\.ownerID))
     }
 
     func resumeFamilyDeletions() async {
         guard let store else { return }
         do {
-            let intents = try await store.list(SessionDeletionRecord.self, kind: SessionDeletionRecord.kind)
+            let intents = try await store.pendingFamilyDeletions()
             for members in Dictionary(grouping: intents, by: \.ownerID).values { try await finishFamilyDeletion(members) }
         } catch { self.error = "Family deletion is incomplete and will be retried. " + error.localizedDescription }
     }

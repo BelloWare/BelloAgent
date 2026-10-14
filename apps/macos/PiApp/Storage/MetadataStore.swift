@@ -187,7 +187,24 @@ actor MetadataStore {
     func loadChats(profiles: [ProfileRecord] = []) throws -> [ChatRecord] {
         let database = try ready()
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(database, "SELECT value,revision FROM records WHERE kind='chat' ORDER BY revision DESC,id ASC LIMIT 10000", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        // Preserve the ordinary-chat window. Managed children are durable
+        // members of a family, not competing roots: they must neither evict
+        // their owner nor disappear behind this unrelated desktop limit.
+        let query = """
+            WITH chats AS (
+                SELECT value,revision,id,CASE WHEN length(value)>524288 THEN NULL WHEN json_valid(CAST(value AS TEXT))
+                    THEN json_type(CAST(value AS TEXT),'$.delegation') ELSE NULL END AS delegation
+                FROM records WHERE kind='chat'
+            ), roots AS (
+                SELECT value,revision,id FROM chats WHERE delegation IS NOT 'object'
+                ORDER BY revision DESC,id ASC LIMIT 10000
+            )
+            SELECT value,revision FROM (
+                SELECT value,revision,id FROM roots UNION ALL
+                SELECT value,revision,id FROM chats WHERE delegation='object'
+            ) ORDER BY revision DESC,id ASC
+            """
+        guard sqlite3_prepare_v2(database, query, -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
         var values: [(ChatRecord, Int64)] = []
         do {
             defer { sqlite3_finalize(statement) }
@@ -667,6 +684,26 @@ actor MetadataStore {
         }
     }
 
+    /// Recovery must see the complete durable manifest, including families
+    /// larger than the generic metadata listing's desktop window. A damaged
+    /// intent fails closed instead of silently leaving a member behind.
+    func pendingFamilyDeletions() throws -> [SessionDeletionRecord] {
+        let database = try ready()
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "SELECT value FROM records WHERE kind=? ORDER BY id", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, SessionDeletionRecord.kind, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+        var values: [SessionDeletionRecord] = [], result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            let size = Int(sqlite3_column_bytes(statement, 0))
+            guard size <= Self.recordByteLimit(SessionDeletionRecord.kind), let bytes = sqlite3_column_blob(statement, 0) else { throw StoreError.invalidRecord }
+            values.append(try JSONDecoder().decode(SessionDeletionRecord.self, from: Data(bytes: bytes, count: size)))
+            result = sqlite3_step(statement)
+        }
+        guard result == SQLITE_DONE else { throw StoreError.unavailable }
+        return values
+    }
+
     func registerSubagent(_ found: DiscoveredSubagent, workspaceID: String) throws -> ChatRecord? {
         let header = found.header, link = header.link
         guard link.valid, try get(String.self, kind: "session-deleted", id: link.childSessionID) == nil,
@@ -675,12 +712,16 @@ actor MetadataStore {
         let validParent = parent.flatMap { $0.workspaceID == workspaceID && !$0.isSubagent && !$0.imported ? $0 : nil }
         let issue = found.issue ?? (validParent == nil ? "The parent chat is unavailable. This saved sub-agent is view-only." : nil)
         let old = try get(ChatRecord.self, kind: "chat", id: link.childSessionID)
-        if let old { guard old.workspaceID == workspaceID, old.delegation == link, old.path == found.path else { throw StoreError.invalidRecord } }
+        if let old { guard old.workspaceID == workspaceID, old.delegation == nil || old.delegation == link, old.path == found.path else { throw StoreError.invalidRecord } }
         var child = old ?? ChatRecord(id: link.childSessionID, workspaceID: workspaceID, title: header.description, path: found.path,
             profileID: validParent?.profileID ?? "", toolMode: header.readOnly ? ChatRecord.readOnlyTools : ChatRecord.editingTools,
             model: header.model.model, thinkingLevel: header.model.thinkingLevel, contextWindow: header.model.contextWindow,
             maxOutputTokens: header.model.maxOutputTokens, modelOutputLimit: header.model.modelOutputLimit,
             parentSessionID: issue == nil ? link.budgetOwnerSessionID : nil, delegation: link)
+        // Older desktop encoders drop unknown fields. The validated child
+        // header and reciprocal parent plan rebuild an absent identity; a
+        // conflicting identity or a different file still fails above.
+        child.delegation = link
         // Small metadata preview; the complete task remains in the owner's
         // journal and the ordinary child's user message once it starts.
         if !found.task.isEmpty { child.delegationTask = String(found.task.prefix(4096)) }
