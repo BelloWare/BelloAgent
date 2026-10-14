@@ -28,11 +28,11 @@ final class FileTabTests: XCTestCase {
         tab.followReadOptions.beforeChunk = { offset in if offset == 0 { await gate.wait() } }
         try Data("replacement".utf8).write(to: url, options: .atomic)
         try await eventually("the replacement has entered its real reader", timeout: .seconds(60), until: { await gate.reads > 0 })
-        // Showing an already visible tab asks the same followChange that a
-        // vnode notification does. Join that check while indexing is held,
+        // Ask the same callback as a vnode notification while the tab stays
+        // visible. Join that check while replacement indexing is held,
         // so a restart cannot hide behind a fast, tiny replacement file.
         if replaceAgain { try Data("newest replacement".utf8).write(to: url, options: .atomic) }
-        tab.didShow()
+        tab.followChange()
         await tab.followTask?.value
         await gate.release()
         try await eventually("the held replacement finishes", timeout: .seconds(60)) { tab.document !== original && tab.status == .ready }

@@ -54,6 +54,9 @@ import Combine
     /// again while hidden.
     func didShow() {}
     func didHide() {}
+    /// Native attachment also changes visibility when the chat's side appears
+    /// or disappears without a tab selection. Kinds may reconcile that here.
+    func contentVisibilityChanged(_ shown: Bool) {}
     /// Closed for good.
     func willClose() {}
     /// The projects changed (added, removed, trusted or not).
@@ -112,6 +115,10 @@ final class TabContentView: NSView {
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() { layer?.backgroundColor = piCGColor(.piContent) }
+    private func reportVisibility() { tab?.contentVisibilityChanged(window != nil && !isHiddenOrHasHiddenAncestor) }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); reportVisibility() }
+    override func viewDidHide() { super.viewDidHide(); reportVisibility() }
+    override func viewDidUnhide() { super.viewDidUnhide(); reportVisibility() }
 }
 
 extension TabHost {
@@ -211,7 +218,7 @@ extension TabHost {
         if container.activeID != tab.id { container.activeID = tab.id }
         if container.sideShown { container.sideShown = false }
         if shown !== tab { shown?.didHide(); tab.didShow() }
-        if !container.isPane { controllers[container.id]?.bringForward() }
+        if showsWindows, !container.isPane { controllers[container.id]?.bringForward() }
         save()
     }
     /// In the pane: the chat's side in place of the tabs.
@@ -410,6 +417,7 @@ extension TabHost {
             let active = saved.active.flatMap { saved.tabs.indices.contains($0) ? saved.tabs[$0] : nil }
             container.activeID = restored.first { $0.kind == active?.kind && $0.key == active?.key }?.id ?? restored.first?.id
             container.sideShown = saved.sideShown && !restored.isEmpty
+            if !container.sideShown { container.activeTab?.didShow() }
         }
         fill(pane, saved.pane)
         for entry in saved.windows {

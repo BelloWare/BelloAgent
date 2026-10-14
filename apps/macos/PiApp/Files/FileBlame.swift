@@ -55,7 +55,13 @@ import GitView
         tab?.scrollIfMade?.textView.selectionDidChange = nil
     }
     /// Hidden: no reading and no watching; shown again, read again.
-    func suspend() { token &+= 1; reading?.cancel(); reading = nil; stopWatching() }
+    func suspend() {
+        token &+= 1; reading?.cancel(); reading = nil; stopWatching()
+        // The answer identity stays valid for navigation already requested
+        // from it. Its heavy line/commit data need not stay hidden in memory.
+        if isOn { state = .reading }
+        repository = nil; path = nil
+    }
     func resume() { if isOn { read(fresh: true) } }
     /// The tab's text was read again (saved, replaced, recreated): what was
     /// said of the old text goes at once — its lines are not these.
@@ -193,7 +199,7 @@ import GitView
             // The tab still open and the blame still the one asked from,
             // then the same text, still the file on disk: nothing opened to
             // find out, and a file replaced while its tab is hidden counts.
-            guard let self, let tab, tab.container != nil, tab.readable, self.isOn, self.answer == answer, self.blame != nil,
+            guard let self, let tab, tab.container != nil, tab.readable, self.isOn, self.answer == answer,
                   let document, tab.documentIfMade === document else { return false }
             return document.isUnchanged
         }

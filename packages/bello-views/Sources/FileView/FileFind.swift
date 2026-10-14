@@ -28,6 +28,7 @@ import AppKit
     /// The view's selection as this last left it: any other is the reader's.
     private var selectionSeen: Int
     private var showing = false
+    private var suspended = false
 
     public init(view: FileTextView) {
         self.view = view
@@ -64,6 +65,7 @@ import AppKit
     public func set(query: String, matchCase: Bool) {
         guard query != self.query || matchCase != self.matchCase else { return }
         self.query = query; self.matchCase = matchCase
+        guard !suspended else { return }
         restart()
     }
     /// The view shows the file as read again: the same query, searched in
@@ -74,6 +76,7 @@ import AppKit
     /// Anything the reader does meanwhile (Next, Previous, moving the
     /// selection, a new query) wins over that check.
     public func textChanged() {
+        guard !suspended else { return }
         let previous = current ?? keeping
         stop()
         search?.cancel(); search = nil; current = nil
@@ -136,6 +139,15 @@ import AppKit
     public func resume(query: String, matchCase: Bool) {
         self.query = query; self.matchCase = matchCase
         textChanged()
+    }
+    public func suspend() {
+        suspended = true; keeping = current ?? keeping
+        stop(); search?.cancel(); search = nil; current = nil
+        onChange?()
+    }
+    public func resume() {
+        guard suspended else { return }
+        suspended = false; textChanged()
     }
     public func next() { ask(.next) }
     public func previous() { ask(.previous) }
