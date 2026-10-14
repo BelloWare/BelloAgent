@@ -35,8 +35,11 @@ enum FileProjectState: Equatable {
     private var syntax: FileSyntax?
     private var watcher: FileWatch?
     private var shown = false
-    private var followTask: Task<Void, Never>?
+    private(set) var followTask: Task<Void, Never>?
     private var following: FileView.FileDocument?
+    /// The file reader's existing I/O gates allow a fixture to hold a live
+    /// replacement without making its contents or trust checks synthetic.
+    var followReadOptions = FileView.FileDocument.Options()
     private var madePreview: FilePreview?
     var previewKind: String? { FilePreview.kind(for: url) }
     var preview: FilePreview {
@@ -50,6 +53,7 @@ enum FileProjectState: Equatable {
         return preview
     }
     private var followToken = 0
+    private var followAgain = false
     var isWatching: Bool { watcher?.isWatching == true && watcher?.isArmed == true }
 
     override func didShow() {
@@ -72,6 +76,7 @@ enum FileProjectState: Equatable {
     }
     private func stopWatching() {
         watcher?.stop(); followToken &+= 1
+        followAgain = false
         followTask?.cancel(); followTask = nil
         following?.close(); following = nil
         madePreview?.suspend()
@@ -80,13 +85,19 @@ enum FileProjectState: Equatable {
         guard shown, readable else { return }
         if previewKind != nil { madePreview?.load(); return }
         guard let old = madeDocument else { return }
+        // Folder notifications include unrelated saves. Keep an in-flight
+        // identity check/indexing pass alive, then check once more against
+        // its result so a genuine second replacement is still followed.
+        guard followTask == nil, following == nil else { followAgain = true; return }
+        followAgain = false
         followToken &+= 1
         let token = followToken
-        followTask?.cancel()
         followTask = Task { [weak self] in
-            guard await old.hasChanged(), let self, !Task.isCancelled, self.shown, self.readable, self.followToken == token else { return }
-            self.following?.close()
-            var options = FileView.FileDocument.Options(); options.requiresResolvedPath = true
+            let changed = await old.hasChanged()
+            guard let self, !Task.isCancelled, self.shown, self.readable, self.followToken == token else { return }
+            self.followTask = nil
+            guard changed else { self.drainFollowChange(); return }
+            var options = self.followReadOptions; options.requiresResolvedPath = true
             let fresh = FileView.FileDocument(url: self.url, options: options)
             self.following = fresh
             fresh.onStatusChange = { [weak self, weak fresh] status in
@@ -119,10 +130,18 @@ enum FileProjectState: Equatable {
                     self.finder?.close(); self.finder = nil
                     self.status = status; self.updateSymbol(); self.findChanged()
                     self.blame.documentChanged()
-                default: break
+                case .changed:
+                    // Indexing stopped because another save won. Let that
+                    // version go and read the path's current contents.
+                    self.following = nil; fresh.close(); self.followAgain = true
+                default: return
                 }
+                self.drainFollowChange()
             }
         }
+    }
+    private func drainFollowChange() {
+        if followAgain { followChange() }
     }
     private var target: ClosedRange<Int>?
 

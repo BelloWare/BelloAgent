@@ -213,25 +213,23 @@ final class CaptureMacIntegrationTests: XCTestCase {
             let host = try await model.open(chat)
             _ = try await host.request("turn.submit", sessionID: id, params: ["clientTurnId": .string(UUID().uuidString), "text": .string("fixture: read README.md")])
             var snapshot: [String: WireValue] = [:]
-            for _ in 0..<500 {
+            try await eventually("the \(connection.profile.modelId) tool round trip finishes", timeout: .seconds(60), until: {
                 snapshot = try await host.request("session.snapshot", sessionID: id).object ?? [:]
-                if ["idle", "paused"].contains(snapshot["state"]?.string ?? "") { break }
-                try await Task.sleep(for: .milliseconds(20))
-            }
+                return ["idle", "paused", "error"].contains(snapshot["state"]?.string ?? "")
+            })
             XCTAssertEqual(snapshot["state"]?.string, "idle", WireValue.object(snapshot).pretty)
             XCTAssertTrue(snapshot["messages"]?.array?.contains(where: { $0.object?["text"]?.string?.contains("fixture file contents") == true }) == true)
             // The log trails the chat by a moment: a run never waits for it.
             let messageIDs = try (snapshot["messages"]?.array ?? []).map { try XCTUnwrap($0.object?["id"]?.string) }
             var attempts: [[String: WireValue]] = [], unlinked = messageIDs
-            for _ in 0..<500 {
+            try await eventually("both captures complete and every retained message is linked", timeout: .seconds(60), until: {
                 attempts = try await model.traces.list(sessionID: id)
                 unlinked = []
                 for messageID in messageIDs {
                     if try await model.traces.list(sessionID: id, messageID: messageID).isEmpty { unlinked.append(messageID) }
                 }
-                if attempts.count == 2, attempts.allSatisfy({ $0["outcome"]?.string == "completed" }), unlinked.isEmpty { break }
-                try await Task.sleep(for: .milliseconds(20))
-            }
+                return attempts.count == 2 && attempts.allSatisfy({ $0["outcome"]?.string == "completed" }) && unlinked.isEmpty
+            })
             XCTAssertEqual(attempts.count, 2)
             XCTAssertTrue(attempts.allSatisfy { $0["gateway"]?.object?["cost"]?.object?["status"]?.string == "reported" })
             XCTAssertTrue(attempts.allSatisfy { $0["gateway"]?.object?["cache"]?.object?["status"]?.string == "miss" })

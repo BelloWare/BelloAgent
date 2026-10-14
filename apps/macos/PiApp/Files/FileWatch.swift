@@ -65,7 +65,10 @@ import Darwin
         }
     }
     private func event() {
-        trailing?.cancel()
+        // A busy sibling keeps the watched folder changing. Coalesce from
+        // the first event, rather than postponing this file until all of its
+        // neighbours are quiet (which might never happen).
+        guard trailing == nil else { return }
         trailing = Task { [weak self] in
             do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
             guard let self, self.isWatching else { return }

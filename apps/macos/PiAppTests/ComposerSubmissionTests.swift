@@ -155,7 +155,7 @@ final class ComposerSubmissionTests: XCTestCase {
         let handle = pipe.fileHandleForReading, greeting = await Task.detached { handle.availableData }.value
         let port = try XCTUnwrap(try JSONDecoder().decode([String: Int].self, from: greeting)["port"])
         let workspace = WorkspaceRecord(id: "keys", path: root.path, trusted: true)
-        var profile = ProfileRecord(); profile.baseUrl = "http://127.0.0.1:\(port)/v1"; profile.modelId = "slow"
+        var profile = ProfileRecord(); profile.baseUrl = "http://127.0.0.1:\(port)/v1"; profile.modelId = "held-for-stop"
         let vault = ConfigurationVault(storage: MemoryVaultStorage()), savedProfile = profile
         _ = try await vault.update(expectedRevision: 0) {
             $0.workspaces = [workspace]; $0.profiles = [.init(profile: savedProfile, apiKey: "fixture-secret")]
@@ -168,8 +168,7 @@ final class ComposerSubmissionTests: XCTestCase {
         model.selectedID = chat.id; model.selected = view
         let editor = ComposerTextView(); editor.send = { model.submitComposer(intent: $0, sessionID: chat.id) }
         func accepted() async throws {
-            for _ in 0..<200 { if !view.loading { return }; try await Task.sleep(for: .milliseconds(10)) }
-            XCTFail("Helper admission did not finish")
+            try await eventually("helper admission finishes", timeout: .seconds(60)) { !view.loading }
         }
         view.draft = "start"; key(76, .command, editor: editor); try await accepted()
         XCTAssertNil(view.sendFailure); XCTAssertEqual(view.draft, "")
@@ -185,15 +184,14 @@ final class ComposerSubmissionTests: XCTestCase {
         XCTAssertEqual(queue.filter { $0["kind"]?.string == "steering" }.count, 1)
         XCTAssertEqual(snapshot["commands"]?.array?.count, 3, "One key yields one acceptance; double presses while loading do not duplicate")
         _ = try await host.request("turn.stop", sessionID: chat.id)
-        for _ in 0..<200 {
+        try await eventually("the helper has stopped and holds pending messages", timeout: .seconds(60), until: {
             let state = try await host.request("session.snapshot", sessionID: chat.id).object ?? [:]
-            if state["state"]?.string == "paused" { break }
-            try await Task.sleep(for: .milliseconds(10))
-        }
+            return state["state"]?.string == "paused" && state["queuePaused"]?.bool == true
+        })
         // The next assertions deliberately simulate stale UI run state. Stop
         // live snapshot publication so an unrelated cancellation observation
         // cannot race those assignments or open an uncertainty-review sheet.
-        for _ in 0..<200 where view.snapshotInFlight { try await Task.sleep(for: .milliseconds(5)) }
+        try await eventually("the last live snapshot finishes before simulating stale state", timeout: .seconds(60)) { !view.snapshotInFlight }
         XCTAssertFalse(view.snapshotInFlight)
         view.snapshotInFlight = true
         defer { view.snapshotInFlight = false }

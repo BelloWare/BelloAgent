@@ -4,6 +4,9 @@ import Foundation
 // a submission into the conversation.
 
 extension AgentSession {
+    // A terminal run can still own its task while final request links are
+    // persisted. That task no longer has a model/tool boundary to steer.
+    var acceptsSteering: Bool { runTask != nil && state == .running }
     func commandState(_ submission: Submission, _ status: String) {
         let record: JSON=["commandId":JSON(submission.commandID),"turnId":JSON(submission.turnID),"status":JSON(status),"state":JSON(status)]
         if let i=commands.firstIndex(where:{$0["turnId"].text == submission.turnID}) { commands[i]=record } else { commands.append(record) }
@@ -27,7 +30,7 @@ extension AgentSession {
                 throw AgentError("attachment_unreadable", "An image could not be prepared for the model; select another")
             }
         }
-        if steer, runTask == nil { throw AgentError("not_running", "Steering requires an active run; send a normal message") }
+        if steer, !acceptsSteering { throw AgentError("not_running", "Steering requires an active run; send a normal message") }
         // A message sent to a chat at its cost limit is refused where it was
         // typed, with the same words as a run stopped there, also when earlier
         // messages wait: nothing can run until the limit is raised. One sent
@@ -108,7 +111,7 @@ extension AgentSession {
     /// current run after its tool batch instead of waiting for the run to end.
     public func steerQueued(_ turnID: String) throws {
         guard let index=queue.firstIndex(where:{$0.turnID == turnID}) else { throw AgentError("queue_missing", "Queued message is no longer pending") }
-        guard runTask != nil else { throw AgentError("not_running", "Steering requires an active run; the message stays queued") }
+        guard acceptsSteering else { throw AgentError("not_running", "Steering requires an active run; the message stays queued") }
         guard queueEdit == nil else { throw Self.editHeldError }
         let item=queue[index], oldQ=queue, oldS=steering
         queue.remove(at:index); steering.append(item)

@@ -428,6 +428,16 @@ final class SidebarSearchIndexTests: XCTestCase {
 /// The sidebar's side: content matches list chats as titles do, under the
 /// archive switch and in their projects, with a snippet that reads its chat
 /// and its match, and opening one goes to the matching message.
+private actor ColdSidebarIndexGate {
+    private var open = false
+    private var waiting: [CheckedContinuation<Void, Never>] = []
+    func wait() async {
+        if open { return }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+    func release() { open = true; waiting.forEach { $0.resume() }; waiting = [] }
+}
+
 final class SidebarSearchSidebarTests: XCTestCase {
     private func scratch() throws -> URL {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("search-sidebar-\(UUID().uuidString)")
@@ -531,11 +541,52 @@ final class SidebarSearchSidebarTests: XCTestCase {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let model = try model(root); defer { model.shutdown() }
         let view = sidebar(model)
+        let gate = ColdSidebarIndexGate(), search = model.sidebarSearch
+        addTeardownBlock { await gate.release() }
+        search.beforeReconcile = { await gate.wait() }
+        search.debounce = .zero
         model.setSidebarOrderHold(.pointer, true)
         view.setFilter("teapot")
-        await model.sidebarSearch.reconcileNow(); await model.sidebarSearch.settleQuery(); view.settle()
+        // Force the ordering that a loaded index worker used to expose:
+        // the typed query answers before the first journal is indexed.
+        await search.settleQuery(); view.settle()
+        XCTAssertEqual(search.answeredQueries, 1)
+        XCTAssertTrue(snippets(view).isEmpty)
+        await gate.release()
+        await search.reconcileNow(); await search.settleQuery(); view.settle()
         XCTAssertEqual(snippets(view).map(\.chatID), ["active"], "the typed query's answer shows while held")
+        XCTAssertNil(search.heldHits)
+        // Completing the cold answer must consume its privilege: subsequent
+        // background matches still wait behind the very same pointer hold.
+        let line = #"{"id":"other-late","parentId":"other-a39","timestamp":"2026-09-01T00:00:00Z","type":"message","message":{"role":"assistant","content":"found the teapot"}}"# + "\n"
+        let handle = try FileHandle(forWritingTo: root.appendingPathComponent("other.jsonl"))
+        try handle.seekToEnd(); try handle.write(contentsOf: Data(line.utf8)); try handle.close()
+        await search.reconcileNow(); await search.settleQuery(); view.settle()
+        XCTAssertEqual(snippets(view).map(\.chatID), ["active"])
+        XCTAssertNotNil(search.heldHits?["other"])
         model.setSidebarOrderHold(.pointer, false)
+    }
+
+    @MainActor func testAnEmptyColdPassFinishesTheTypedAnswerBeforeBackgroundMatches() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let model = try model(root); defer { model.shutdown() }
+        let chats = model.chats; model.chats = []
+        let view = sidebar(model), gate = ColdSidebarIndexGate(), search = model.sidebarSearch
+        addTeardownBlock { await gate.release() }
+        search.beforeReconcile = { await gate.wait() }; search.debounce = .zero
+        model.setSidebarOrderHold(.pointer, true)
+        view.setFilter("teapot")
+        await search.settleQuery()
+        XCTAssertEqual(search.answeredQueries, 1)
+        await gate.release()
+        await search.reconcileNow(); await search.settleQuery()
+        XCTAssertGreaterThan(search.answeredQueries, 1, "Even an unchanged cold pass must finish the typed answer")
+        model.chats = chats
+        await search.reconcileNow(); await search.settleQuery(); view.settle()
+        XCTAssertTrue(snippets(view).isEmpty)
+        XCTAssertNotNil(search.heldHits?["active"], "Later background matches wait for the pointer")
+        model.setSidebarOrderHold(.pointer, false); view.settle()
+        XCTAssertEqual(snippets(view).map(\.chatID), ["active"], "The first chats added to an empty sidebar appear after the hold ends")
     }
 
     /// Titles answer at once; content after the index does. Each snippet

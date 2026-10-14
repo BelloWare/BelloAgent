@@ -11,6 +11,22 @@ root = pathlib.Path(sys.argv[1])
 lock = threading.Lock()
 
 
+def tool_command(round_number):
+    marker = 'phase-' + str(round_number) + '-tools-observed'
+    return ('deadline=$((SECONDS+60)); while [[ ! -f ' + marker +
+            ' && $SECONDS -lt $deadline ]]; do sleep 0.01; done; test -f ' +
+            marker + ' && printf phase-tool-ok')
+
+
+def wait_for_observation(round_number, phase):
+    marker = root / ('phase-' + str(round_number) + '-' + phase + '-observed')
+    deadline = time.monotonic() + 60
+    while not marker.exists():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('The native test did not observe ' + marker.name)
+        time.sleep(.01)
+
+
 def message(text, ident):
     return {'type': 'message', 'id': ident, 'role': 'assistant', 'status': 'completed',
             'content': [{'type': 'output_text', 'text': text}]}
@@ -29,14 +45,15 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             assert self.headers['Authorization'] == 'Bearer synthetic-phase-key'
             assert body['stream'] is True and body['model'] == 'phase-fixture'
             assert 'bash' in [tool['name'] for tool in body['tools']]
-            pending, results = set(), []
+            pending, results, calls = set(), [], 0
             # Pi's system prompt leads the input; items without a type are messages.
             for item in body['input']:
                 kind = item.get('type', 'message')
                 if kind == 'function_call':
                     assert item['call_id'] not in pending
                     pending.add(item['call_id'])
-                    assert json.loads(item['arguments'])['command'] == 'sleep 0.3; printf phase-tool-ok'
+                    assert json.loads(item['arguments'])['command'] == tool_command(calls)
+                    calls += 1
                 elif kind == 'function_call_output':
                     assert item['call_id'] in pending
                     pending.remove(item['call_id']); results.append(item['output'])
@@ -48,6 +65,9 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             self.send_response(422); self.send_header('Content-Length', str(len(output)))
             self.end_headers(); self.wfile.write(output)
             return
+        # A generated-fixture marker for scheduler-stall validation. No app
+        # state is read: the harness can pause only this gateway's test host.
+        (root / ('round-' + str(round_number) + '-started')).touch()
         self.send_response(200); self.send_header('Content-Type', 'text/event-stream')
         self.send_header('x-litellm-response-cost', '0.000001')
         self.send_header('x-litellm-model-name', 'fixture-fixed'); self.end_headers()
@@ -73,13 +93,15 @@ class Gateway(http.server.BaseHTTPRequestHandler):
                 emit({'type': 'response.reasoning_summary_text.delta', 'output_index': 0, 'item_id': 'reasoning', 'summary_index': 0, 'delta': 'Checking another tool.'})
                 output.append({'type': 'reasoning', 'id': 'reasoning', 'summary': [{'type': 'summary_text', 'text': 'Checking another tool.'}]})
             if round_number < 2:
-                args = json.dumps({'command': 'sleep 0.3; printf phase-tool-ok'})
+                args = json.dumps({'command': tool_command(round_number)})
                 call = {'type': 'function_call', 'id': 'tool-' + str(round_number), 'call_id': 'reused-call', 'name': 'bash', 'arguments': args}
                 index = len(output)
                 emit({'type': 'response.output_item.added', 'output_index': index, 'item': dict(call, arguments='')})
                 for character in args:
                     emit({'type': 'response.function_call_arguments.delta', 'output_index': index, 'delta': character})
-                    time.sleep(.003)
+                # A descheduled native test must still see each phase. The
+                # fixture advances only after the actual app publication.
+                wait_for_observation(round_number, 'preparing')
                 output.append(call)
             else:
                 output.append(message('Task finished after both actual tool results.', 'prose-final'))
