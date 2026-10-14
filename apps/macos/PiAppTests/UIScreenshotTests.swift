@@ -2105,7 +2105,7 @@ final class UIScreenshotTests: XCTestCase {
     // server. The symbol is resolved dynamically so the SDK deprecation note
     // does not fail the warnings-as-errors build; ScreenCaptureKit would need
     // TCC consent.
-    @MainActor private func capture(_ window: NSWindow, to url: URL, includingOwnedPanels: Bool = false) throws {
+    @MainActor func capture(_ window: NSWindow, to url: URL, includingOwnedPanels: Bool = false) throws {
         noteCapture(url)
         typealias ListImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         guard let symbol = dlsym(dlopen(nil, RTLD_NOW), "CGWindowListCreateImage") else { throw XCTSkip("Window capture unavailable") }

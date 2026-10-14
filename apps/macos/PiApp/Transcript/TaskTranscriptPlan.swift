@@ -47,7 +47,7 @@ enum TaskTranscriptPlan {
         var groups: [String: [TranscriptMessage]] = [:], keys: [String: String] = [:]
         var root: String?
         for message in messages {
-            if message.role == "user" { root = message.taskRootID ?? message.turn ?? message.id }
+            if message.role == "user", message.nativeAgentDelivery == nil { root = message.taskRootID ?? message.turn ?? message.id }
             if root == nil, message.role == "assistant", message.kind == nil { root = message.taskRootID ?? message.turn ?? "unresolved-" + message.id }
             guard message.kind == nil, message.role != "system", let taskRoot = message.taskRootID ?? message.turn ?? root else { continue }
             let key = TaskPresentationRecord.identity(taskRoot, message.taskExecutionID ?? "unresolved")

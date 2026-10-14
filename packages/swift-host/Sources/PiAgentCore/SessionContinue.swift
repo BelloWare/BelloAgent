@@ -27,9 +27,10 @@ extension AgentSession {
     /// no queued edit holds the chat, and the context ends with something the
     /// model has not answered — a user message, or tool results (cut-off
     /// ones included). The snapshot says so, and the app offers Resume.
+    var hasPendingAgentEvents: Bool { !(subagents.family?.pending(author:"subagent").isEmpty ?? true) }
     var canContinue: Bool {
-        guard runTask == nil, !closed, queueEdit == nil, !titleTask, !isConnectionTest, let tail = continuationTail else { return false }
-        return Self.continues(from: tail)
+        guard !isSubagent, runTask == nil, !closed, queueEdit == nil, !titleTask, !isConnectionTest, let tail = continuationTail else { return false }
+        return Self.continues(from: tail) || hasPendingAgentEvents
     }
     /// A context ending in a user message, tool results, or a compaction
     /// summary (a compaction that summarized the whole tail, before the
@@ -54,6 +55,8 @@ extension AgentSession {
     /// to a helper that then restarted — finds it and runs nothing. A second
     /// Resume with a new identity while this one runs is refused as busy.
     public func continueRun(commandID: String, overrides: JSON = [:]) throws -> JSON {
+        try requireIndependentSession()
+        try requireAgentExecution()
         guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
         let receiptKey = Self.continuePrefix + commandID
         if let receipt = commands.last(where: { $0["commandId"].text == commandID }) {
@@ -62,7 +65,7 @@ extension AgentSession {
         }
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
         guard queueEdit == nil else { throw Self.editHeldError }
-        guard !titleTask, !isConnectionTest, let tail = continuationTail, Self.continues(from: tail) else {
+        guard !titleTask, !isConnectionTest, let tail = continuationTail, Self.continues(from: tail) || hasPendingAgentEvents else {
             // Pi: from an answered context (or none: a first message stopped
             // before it was delivered), continue sends what waits instead.
             // So does a chat the model is never asked to go on in by itself

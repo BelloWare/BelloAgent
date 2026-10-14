@@ -12,6 +12,7 @@ private struct NativeWorkListItem: Equatable {
 /// replaces a card's view.
 @MainActor private final class WorkListToggleRelay {
     var current: (String) -> Void = { _ in }
+    var actions = TranscriptActions()
     var openFile: ((String, ClosedRange<Int>?) -> Void)?
 }
 
@@ -62,7 +63,8 @@ private struct NativeWorkListItem: Equatable {
         let id = item.tool.id
         view.update(tool: item.tool, open: item.open, fetched: item.fetched, environment: item.environment,
                     toggle: { [weak relay] in relay?.current(id) },
-                    openFile: { [weak relay] path, lines in relay?.openFile?(path, lines) })
+                    openFile: { [weak relay] path, lines in relay?.openFile?(path, lines) },
+                    actions: .forwarding { [weak relay] in relay?.actions })
     }
     func measure(width: CGFloat) -> CGFloat {
         if let cached = sizes.last(where: { $0.width == width }) { return cached.height }
@@ -121,13 +123,18 @@ private struct NativeWorkListItem: Equatable {
     /// How many cards have a native row at all: the ones ever near the viewport, or measured.
     var builtRowCount: Int { rows.reduce(0) { $0 + ($1.built == nil ? 0 : 1) } }
     /// The card at an index, for fixtures that check what is drawn where.
+    func rectForTool(_ id: String) -> CGRect? {
+        guard let row = rows.first(where: { $0.id == id }) else { return nil }
+        return CGRect(x: row.frame.minX, y: row.frame.minY, width: row.frame.width, height: TranscriptRowChrome.height)
+    }
     func mountedRowIDs() -> [String] { rows.filter { $0.built?.superview === self }.map(\.id) }
 
     deinit { if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) } }
 
     func update(tools: [ToolView], openTools: Set<String>, fetched: [String: ToolInputDocument],
-                toggle: @escaping (String) -> Void, openFile: ((String, ClosedRange<Int>?) -> Void)? = nil, environment: TranscriptRowEnvironment) {
+                toggle: @escaping (String) -> Void, openFile: ((String, ClosedRange<Int>?) -> Void)? = nil, environment: TranscriptRowEnvironment, actions: TranscriptActions = .init()) {
         relay.current = toggle
+        relay.actions = actions
         relay.openFile = openFile
         // A changed environment changes every card, including the closed ones
         // that share one measurement. Read it before the cards take the new one.

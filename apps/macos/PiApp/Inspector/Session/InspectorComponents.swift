@@ -34,7 +34,7 @@ enum InspectorBodyRoute: Equatable {
     @MainActor func source(inspector: SessionInspectorModel, request: InspectorRequestModel, row: InspectorRequestRow, kind: String) -> CapturedBodySource {
         if let overridden = request.sourceOverride?(row, kind) { return overridden }
         if self == .live, let workspace = inspector.workspace {
-            return .live(workspace, sessionID: inspector.scope.sessionID, attemptID: row.id, kind: kind)
+            return .live(workspace, sessionID: request.sessionID, attemptID: row.id, kind: kind)
         }
         return .archive(inspector.archive, attemptID: row.id, kind: kind)
     }

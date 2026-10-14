@@ -113,6 +113,9 @@ public struct ProviderClient: ModelClient {
     /// log and the observation all name `sessionID`, the chat that sent the
     /// request and pays for it.
     public func complete(profile:Profile, apiKey:String, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, cacheSessionID:String, turnID:String, purpose:String, onObservation:@escaping @Sendable (RequestObservation) async -> Void, onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        try await complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:cacheSessionID,turnID:turnID,purpose:purpose,lifecycle:nil,onObservation:onObservation,onDelta:onDelta)
+    }
+    public func complete(profile:Profile, apiKey:String, messages:[ChatMessage], instructions:String, tools:[ToolDefinition], sessionID:String, cacheSessionID:String, turnID:String, purpose:String, lifecycle:RequestLifecycle?, onObservation:@escaping @Sendable (RequestObservation) async -> Void, onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
         try Task.checkCancellation()
         let body=try Self.requestBody(profile:profile,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:cacheSessionID,compaction:purpose == "compaction")
         let bytes=try body.data()
@@ -134,19 +137,30 @@ public struct ProviderClient: ModelClient {
             request.setValue(value.text,forHTTPHeaderField:name)
         }
         let credentials = CaptureCredentials(headers: request.allHTTPHeaderFields ?? [:], configuredNames: Set(profile.raw["headers"].map.keys))
-        let attempt=await traces.begin(session:sessionID,turn:turnID,profile:profile,purpose:purpose,body:bytes,headers:request.allHTTPHeaderFields ?? [:],messageIDs:messages.flatMap { $0.sourceMessageIDs ?? [$0.id] })
+        if let scope = lifecycle?.scope {
+            guard scope.sourceSessionID == sessionID, scope.turnID == turnID, scope.purpose == purpose else { throw AgentError("request_scope", "Request scope does not match the physical request") }
+        }
+        let attempt = UUID().uuidString
+        let permit = try await lifecycle?.admitAttempt(attempt)
+        defer { permit?.finish() }
+        _ = await traces.begin(session:sessionID,turn:turnID,profile:profile,purpose:purpose,body:bytes,headers:request.allHTTPHeaderFields ?? [:],messageIDs:messages.flatMap { $0.sourceMessageIDs ?? [$0.id] },attemptID:attempt,scope:lifecycle?.scope)
         var observation=RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:purpose,fingerprint:try RequestContextCounter.fingerprint(body,profile:profile),profile:profile)
         observation.phase="preparing"; observation.sourceEvent="capture.ready"
         await onObservation(observation)
-        let stream=HTTPStream();var parser=SSEParser(), accumulator=ProviderAccumulator(api:profile.api)
+        let stream=HTTPStream(); permit?.installCancellation { stream.cancel() }; var parser=SSEParser(), accumulator=ProviderAccumulator(api:profile.api)
         var displayEvents = ProviderDisplayEvents(api:profile.api,attempt:attempt)
         var status=0,jsonBody=false,nonSSE=Data(),receivedBytes=0
         var lastBodyAt:Double?
         var providerFailure:AgentError?
+        var didDispatch = false, captureFinished = false, settlementStarted = false
         do {
             try Task.checkCancellation()
             // Model requests share a keep-alive session per gateway and
             // credential; the correlation headers change with every request.
+            try permit?.check()
+            try await lifecycle?.willDispatch(attempt)
+            try permit?.check()
+            didDispatch = true
             let parts = stream.start(request, pool: .shared, connection: HTTPSessionPool.key(request, perRequest: Self.perRequestHeaders))
             observation.phase="awaiting"; observation.sourceEvent="dispatch"
             let dispatch = stream.observation()
@@ -242,15 +256,24 @@ public struct ProviderClient: ModelClient {
             result.message.providerBinding=try Self.replayBinding(profile); await traces.usage(attempt,result.usage)
             await traces.transport(attempt,observation:await stream.endObservation())
             await traces.finish(attempt,outcome:result.truncated ? "truncated":"completed",modelOutcome:result.truncated ? "truncated":"completed")
+            captureFinished = true
             observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
+            settlementStarted = true
+            if let lifecycle { try await lifecycle.settleAttempt(AttemptSettlement(scope: lifecycle.scope, observation: observation, dispatched: didDispatch)) }
             return result
         } catch {
             stream.cancel()
             observation.interrupt(at:nowMS())
-            let cancelled=Task.isCancelled || (error as? URLError)?.code == .cancelled
-            await traces.transport(attempt,observation:await stream.endObservation())
-            await traces.finish(attempt,outcome:cancelled ? "cancelled":"failed",modelOutcome:providerFailure != nil ? "failed":"interrupted")
-            observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
+            let cancelled=Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
+            if !captureFinished {
+                await traces.transport(attempt,observation:await stream.endObservation())
+                await traces.finish(attempt,outcome:cancelled ? "cancelled":"failed",modelOutcome:providerFailure != nil ? "failed":"interrupted")
+                observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
+            }
+            if !settlementStarted, let lifecycle {
+                try await lifecycle.settleAttempt(AttemptSettlement(scope: lifecycle.scope, observation: observation, dispatched: didDispatch))
+            }
+            if let error = error as? AgentError, error.code.hasPrefix("accounting_") { throw error }
             if cancelled { throw CancellationError() }
             if let e=error as? AgentError { throw Self.safeFailure(AgentError(e.code,e.message,failure:e.failure,attemptID:attempt,providerMessage:e.providerMessage), credentials: credentials) }
             throw AgentError("provider_transport", Self.transportGuidance(error, attempt: attempt),failure:.transientTransport,attemptID:attempt,

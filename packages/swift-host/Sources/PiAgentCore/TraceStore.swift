@@ -8,6 +8,7 @@ public actor TraceStore {
     /// and inspector results are immutable values. A reference prevents dictionary
     /// lookups from copying the growing Data and event-array storage on every chunk.
     private final class Trace {
+        let scope: RequestScope?
         var id: String, session: String, turn: String, api: String, url: String, purpose: String, mode: String
         var wallTime=isoNow(), dispatch:Double?, firstContent:Double?, firstText:Double?, completed:Double?, eof:Double?
         /// When the last output token arrived: the latest non-empty delta or
@@ -35,7 +36,8 @@ public actor TraceStore {
         var savedToLog = false
         var responseMasker = CaptureCredentials.ResponseMasker(CaptureCredentials(headers: [:], configuredNames: []))
         var responseCaptureBytes = 0, responseCredentialRedactions = 0
-        init(id: String, session: String, turn: String, api: String, url: String, purpose: String, mode: String) {
+        init(id: String, session: String, turn: String, api: String, url: String, purpose: String, mode: String, scope: RequestScope?) {
+            self.scope = scope
             self.id = id; self.session = session; self.turn = turn; self.api = api
             self.url = url; self.purpose = purpose; self.mode = mode
         }
@@ -50,10 +52,16 @@ public actor TraceStore {
     private var retainedBytes = 0
     private let sink: @Sendable (JSON) async -> Bool
     public init(sink: @escaping @Sendable (JSON) async -> Bool = { _ in true }) { self.sink = sink }
-    public func mode(_ session:String)->String { modes[session] ?? "memory" }
-    public func begin(session:String, turn:String, profile:Profile, purpose:String, body:Data, headers:[String:String], messageIDs: [String] = []) async ->String {
-        let id=UUID().uuidString, mode=mode(session)
-        let t=Trace(id:id,session:session,turn:turn,api:profile.api,url:profile.endpoint.absoluteString,purpose:purpose,mode:mode)
+    private var captureOwners: [String: String] = [:]
+    func inheritCapturePolicy(child: String, owner: String) throws {
+        guard child != owner, captureOwners[owner] == nil,
+              captureOwners[child] == nil || captureOwners[child] == owner else { throw AgentError("subagent_scope", "Invalid capture owner") }
+        captureOwners[child] = owner; modes.removeValue(forKey: child)
+    }
+    public func mode(_ session:String)->String { modes[captureOwners[session] ?? session] ?? "memory" }
+    public func begin(session:String, turn:String, profile:Profile, purpose:String, body:Data, headers:[String:String], messageIDs: [String] = [], attemptID: String = UUID().uuidString, scope: RequestScope? = nil) async ->String {
+        let id=attemptID, mode=mode(session)
+        let t=Trace(id:id,session:session,turn:turn,api:profile.api,url:profile.endpoint.absoluteString,purpose:purpose,mode:mode,scope:scope)
         t.credentials = CaptureCredentials(headers: headers, configuredNames: Set(profile.raw["headers"].map.keys))
         t.responseMasker = CaptureCredentials.ResponseMasker(t.credentials)
         let captured = t.credentials.requestBody(body)
@@ -418,7 +426,7 @@ public actor TraceStore {
     /// session snapshot's `latestAttempt` (4 Hz while busy, and every idle
     /// poll) never reads them, while at 1,000 messages they were ~39 KB.
     private func metadata(_ t:Trace, messageIDs:Bool = true)->JSON {
-        var value:JSON = ["attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
+        var value:JSON = ["requestScope":t.scope.flatMap { try? subagentJSON($0) } ?? .null,"attemptId":JSON(t.id),"sessionId":JSON(t.session),"turnId":JSON(t.turn),"api":JSON(t.api),"purpose":JSON(t.purpose),"mode":JSON(t.mode),"wallTime":JSON(t.wallTime),"method":"POST","url":JSON(t.url),"status":t.status.map { JSON($0) } ?? .null,
          "outcome":JSON(t.outcome),"modelOutcome":JSON(t.modelOutcome),"transportOutcome":JSON(t.transportOutcome),"requestHeaders":t.requestHeaders,"responseHeaders":t.headers,"usage":t.usage,"gateway":t.gateway?.json ?? .null,"operation":t.operation,
          "identity":t.credentials.metadata(t.identity?.json ?? .null),"requestedModel":JSON(t.credentials.metadataText(t.requestedModel)),"wallTimestamp":JSON(t.wallTimestamp),"persistenceError":t.persistenceError.map { JSON($0) } ?? .null,
          "rawEventsOmitted":0,"eventIndexPersistenceError":JSON(t.eventIndexError),
@@ -433,6 +441,7 @@ public actor TraceStore {
     public func command(_ method:String, session:String, params p:JSON) async throws -> JSON {
         let boundary:JSON="Application HTTP boundary after serialization and HTTP decoding, not TLS packets. Gateway upstream traffic is unavailable. Authentication headers are masked; long request tokens retain only their last four characters, and short tokens, cookies and secret response headers are fully masked. Known credential literals in request bodies are labeled SHA-256 fingerprints; response credential echoes are replaced by same-length asterisks. Body transformations are explicit byte-exactness exceptions. Other captured bytes remain untransformed and sensitive."
         if method=="debug.mode" {
+            guard captureOwners[session] == nil else { throw AgentError("managed_subagent", "Sub-agent capture follows its parent") }
             guard let mode=p["mode"].text,["off","memory","persist"].contains(mode) else { throw AgentError("invalid_mode","Choose off, memory or persist") }
             // The native UI owns explicit trace-file export/persistence.
             modes[session]=mode; return ["mode":JSON(mode),"appliesTo":"future attempts; existing captures are cleared separately"]

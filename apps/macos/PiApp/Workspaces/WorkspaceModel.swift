@@ -30,6 +30,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         didSet { menuBarProjection.dirty.formUnion(oldValue.keys); menuBarProjection.dirty.formUnion(runHolds.keys); activityChanged.send() }
     }
     var dirtyRunHolds: Set<String> = []
+    /// Changes only at delegation lifecycle boundaries, never streamed tokens.
+    var subagentReturnTargets: [String: SubagentTarget] = [:]
+    @Published var subagentSummaries: [String: SubagentSummary] = [:]
+    var deletingFamilies: Set<String> = []
+    var familyFileRecycler: (([URL]) async throws -> Void)?
     var runHoldWrites: [String: Task<Void, Never>] = [:]
     /// Launch's reading of the journals the holds name (tests wait on it).
     var runHoldVerification: Task<Void, Never>?

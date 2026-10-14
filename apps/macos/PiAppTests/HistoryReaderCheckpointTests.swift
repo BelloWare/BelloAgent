@@ -8,6 +8,18 @@ import XCTest
 /// journal no longer matches, or an edit after the checkpoint, and the whole
 /// journal is indexed as before.
 final class HistoryReaderCheckpointTests: XCTestCase {
+    func testManagedChildMarkerIsReadableAsNativeHistory() async throws {
+        let (path, _) = try journal()
+        let bytes = try String(contentsOf: path, encoding: .utf8).replacingOccurrences(of: "pi-app.native.v1", with: "pi-app.native.v2")
+        try Data(bytes.utf8).write(to: path)
+        let reader = HistoryReader()
+        let page = try await reader.read(path: path.path)
+        XCTAssertNil(page.notice)
+        XCTAssertEqual(page.messages.count, 13)
+        let safe = try await reader.allowsAutomaticContext(path: path.path, id: "chat")
+        XCTAssertTrue(safe)
+    }
+
     /// A journal as the helper writes one: sorted keys, a timestamp after the parent.
     private struct Journal {
         var data = Data(), parent: String?

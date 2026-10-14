@@ -72,6 +72,22 @@ final class JournalCheckpointTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(ordinal, fullOrdinal, "New parts keep counting up", file: file, line: line)
     }
 
+    func testCheckpointTemporariesAreRemovedOnlyByTheirJournalWriter() async throws {
+        let chat = try await chat(), journal = URL(fileURLWithPath: chat.path)
+        let held = try session(chat), directory = journal.deletingLastPathComponent()
+        let temporary = directory.appendingPathComponent("." + journal.lastPathComponent + ".meta." + UUID().uuidString)
+        let unrelated = directory.appendingPathComponent(".another.jsonl.meta." + UUID().uuidString)
+        let invalid = directory.appendingPathComponent("." + journal.lastPathComponent + ".meta.not-a-uuid")
+        for file in [temporary, unrelated, invalid] { try Data("private checkpoint fixture".utf8).write(to: file) }
+        XCTAssertThrowsError(try session(chat))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: temporary.path), "An active writer's temporary must remain")
+        await held.close()
+        let reopened = try session(chat)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.path))
+        for file in [unrelated, invalid] { XCTAssertTrue(FileManager.default.fileExists(atPath: file.path)) }
+        await reopened.close()
+    }
+
     func testAChatOpensFromItsMetadataFileAsAFullReplayWould() async throws {
         let chat = try await chat()
         let written = try XCTUnwrap(meta(chat), "The compaction wrote the file while the chat was open")

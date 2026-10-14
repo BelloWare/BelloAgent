@@ -78,11 +78,14 @@ extension PayloadArchive {
         try reconcile()
         let db = try dashboardDatabase()
         var totals: [String: GatewayTotals] = [:]
-        for row in try db.rows("SELECT session,workspace,\(Self.gatewayAggregateSQL) FROM attempts WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY workspace,session") {
+        // Each physical attempt appears once for its own chat and once for a
+        // different budget owner. Global/project dashboards still query attempts.
+        let family = "WITH family AS (SELECT attempts.*,session AS recipient FROM attempts UNION ALL SELECT attempts.*,budget_owner AS recipient FROM attempts WHERE budget_owner IS NOT NULL AND budget_owner!=session) "
+        for row in try db.rows("\(family) SELECT recipient AS session,workspace,\(Self.gatewayAggregateSQL) FROM family WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY workspace,recipient") {
             guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
             totals[workspace + "\u{0}" + session] = Self.gatewayTotals(row)
         }
-        for row in try db.rows("SELECT session,workspace,COUNT(*) AS n FROM attempts WHERE metrics_retained=0 GROUP BY workspace,session") {
+        for row in try db.rows("\(family) SELECT recipient AS session,workspace,COUNT(*) AS n FROM family WHERE metrics_retained=0 GROUP BY workspace,recipient") {
             guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
             totals[workspace + "\u{0}" + session, default: GatewayTotals()].expiredRecords = Int(row["n"]?.number ?? 0)
         }
@@ -105,12 +108,12 @@ extension PayloadArchive {
             let batch = scopes[start..<min(start + 200, scopes.count)]
             let wanted = "WITH wanted(session,workspace) AS (VALUES " + batch.map { _ in "(?,?)" }.joined(separator: ",") + ") "
             let args = batch.flatMap { [CaptureSQLValue.text($0.sessionID), .text($0.workspaceID)] }
-            let join = "FROM wanted CROSS JOIN attempts ON attempts.session=wanted.session AND attempts.workspace=wanted.workspace"
-            for row in try db.rows("\(wanted) SELECT attempts.session,attempts.workspace,\(Self.gatewayAggregateSQL) \(join) WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY attempts.workspace,attempts.session", args) {
+            let join = "FROM wanted CROSS JOIN attempts ON (attempts.session=wanted.session OR attempts.budget_owner=wanted.session) AND attempts.workspace=wanted.workspace"
+            for row in try db.rows("\(wanted) SELECT wanted.session AS session,wanted.workspace AS workspace,\(Self.gatewayAggregateSQL) \(join) WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY wanted.workspace,wanted.session", args) {
                 guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
                 totals[SessionUsageScope(sessionID: session, workspaceID: workspace)] = Self.gatewayTotals(row)
             }
-            for row in try db.rows("\(wanted) SELECT attempts.session,attempts.workspace,COUNT(*) AS n \(join) WHERE metrics_retained=0 GROUP BY attempts.workspace,attempts.session", args) {
+            for row in try db.rows("\(wanted) SELECT wanted.session AS session,wanted.workspace AS workspace,COUNT(*) AS n \(join) WHERE metrics_retained=0 GROUP BY wanted.workspace,wanted.session", args) {
                 guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
                 totals[SessionUsageScope(sessionID: session, workspaceID: workspace), default: GatewayTotals()].expiredRecords = Int(row["n"]?.number ?? 0)
             }
@@ -132,10 +135,10 @@ extension PayloadArchive {
               messages.allSatisfy({ !$0.id.isEmpty && $0.id.utf8.count <= 256 }) else { throw CaptureFailure.unavailable }
         try reconcile()
         let db = try dashboardDatabase()
-        let scope: [CaptureSQLValue] = [.text(sessionID), .text(workspaceID)]
-        let row = try db.rows("SELECT \(Self.gatewayAggregateSQL) FROM attempts WHERE session=? AND workspace=? AND metrics_retained=1 AND dispatch IS NOT NULL", scope).first ?? [:]
+        let scope: [CaptureSQLValue] = [.text(sessionID), .text(sessionID), .text(workspaceID)]
+        let row = try db.rows("SELECT \(Self.gatewayAggregateSQL) FROM attempts WHERE (session=? OR budget_owner=?) AND workspace=? AND metrics_retained=1 AND dispatch IS NOT NULL", scope).first ?? [:]
         var result = SessionGatewayAccounting(session: Self.gatewayTotals(row))
-        result.session.expiredRecords = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE session=? AND workspace=? AND metrics_retained=0", scope).first?["n"]?.number ?? 0)
+        result.session.expiredRecords = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE (session=? OR budget_owner=?) AND workspace=? AND metrics_retained=0", scope).first?["n"]?.number ?? 0)
         if includeTiming {
             result.timing = try Self.sessionTimingHistory(sessionID: sessionID, workspaceID: workspaceID, until: Date(), db: db)
         }
@@ -145,7 +148,7 @@ extension PayloadArchive {
         // Details still uses the complete message_links table, including tools
         // and later context reuse. Presentation never rewrites those links.
         // Inherited side messages may show their origin, but session totals above
-        // include only the selected session's own attempts. CROSS JOIN keeps
+        // include its family. Inline rows keep physical attribution. CROSS JOIN keeps
         // the bounded target page first: SQLite otherwise may scan all retained
         // attempts before matching the turn or output link. This order uses the
         // turn/output indexes; UNION removes duplicate attribution before summing.
@@ -308,5 +311,25 @@ extension PayloadArchive {
             }
         }
         return result
+    }
+}
+
+extension PayloadArchive {
+    /// Only retained terminal evidence for the helper's registered identities.
+    /// Bodies, headers and credentials never cross this accounting channel.
+    func budgetEvidence(attempts: [String], owner: String, workspace: String) throws -> [WireValue] {
+        guard !attempts.isEmpty else { return [] }
+        guard attempts.count <= 128 else { throw CaptureFailure.unavailable }
+        try reconcile()
+        let db = try dashboardDatabase(), placeholders = attempts.map { _ in "?" }.joined(separator: ",")
+        let rows = try db.rows("SELECT metadata FROM attempts WHERE workspace=? AND budget_owner=? AND metrics_retained=1 AND dispatch IS NOT NULL AND outcome IN ('completed','truncated','failed','cancelled','interrupted') AND id IN (\(placeholders)) ORDER BY id", [.text(workspace), .text(owner)] + attempts.map(CaptureSQLValue.text))
+        return try rows.map { row in
+            guard let data = row["metadata"]?.data else { throw CaptureFailure.corrupt }
+            let value = try JSONDecoder().decode([String: WireValue].self, from: data)
+            var evidence = value.filter { ["attemptId", "sessionId", "turnId", "purpose", "outcome", "requestScope"].contains($0.key) }
+            evidence["gateway"] = .object(["cost":.object(value["gateway"]?.object?["cost"]?.object?.filter { ["status", "usd"].contains($0.key) } ?? [:])])
+            evidence["usage"] = .object(value["usage"]?.object?.filter { ["inputIncludingCache", "output", "cacheRead", "cacheWrite", "reasoning", "total"].contains($0.key) } ?? [:])
+            return .object(evidence)
+        }
     }
 }

@@ -349,6 +349,8 @@ import QuartzCore
             return SidebarChatRowView(model: model, chat: chat, state: state, projectID: projectID, glide: glide)
         case .side(let state):
             return SidebarSideRowView(model: model, state: state, glide: glide)
+        case .subagentGroup(let state):
+            return SidebarSubagentGroupView(model: model, state: state)
         case .searchSnippet(let state):
             let view = SidebarSearchSnippetView(state: state)
             let model = self.model, id = state.chatID
@@ -382,6 +384,7 @@ import QuartzCore
         case .archiveHeading(_, let count, let indent): (view as? SidebarArchiveHeadingView)?.update(count: count, indent: indent)
         case .chat(let chat, let state, let projectID): (view as? SidebarChatRowView)?.apply(chat: chat, state: state, projectID: projectID)
         case .side(let state): (view as? SidebarSideRowView)?.apply(state)
+        case .subagentGroup(let state): (view as? SidebarSubagentGroupView)?.update(state)
         case .searchSnippet(let state): (view as? SidebarSearchSnippetView)?.apply(state)
         case .pagination(_, _, let hidden, let shown, let indent): (view as? SidebarPaginationView)?.update(hiddenRoots: hidden, shownRoots: shown, indent: indent)
         case .empty(_, let text, let indent): (view as? SidebarNoteView)?.update(text: text, leading: indent + 20)

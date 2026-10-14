@@ -4,6 +4,35 @@ import XCTest
 /// The built-in tools: what they return to the model, and what happens to a
 /// command that outlives its deadline while a child still holds the pipes.
 final class NativeToolTests: XCTestCase {
+    func testSessionOwnsShortShellAndOversizedToolOutputsBeforeRecordingResults() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let outputs = root.appendingPathComponent("tool-output"), profile = try fixtureProfile()
+        let tools = NativeTools(cwd: root, outputs: outputs, mcp: MCPManager(cwd: root))
+        let session = try AgentSession(id: "physical-session", profile: profile, apiKey: "fixture", cwd: root, directory: root, readOnly: false,
+            resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: tools, traces: TraceStore())
+        let call = ToolCall(id: "shell", name: "bash", arguments: ["command":"printf short"])
+        _ = try await session.invokeTool(call)
+        _ = try await session.recordTool(ToolCall(id: "large", name: "mcp", arguments: [:]), result: resultText(String(repeating: "x", count: 70_000)), started: 1, state: .completed)
+        let owned = outputs.appendingPathComponent("physical-session")
+        let files = (try? FileManager.default.contentsOfDirectory(at: owned, includingPropertiesForKeys: nil)) ?? []
+        XCTAssertEqual(Set(files.map(\.pathExtension)), ["log", "txt"])
+        XCTAssertEqual(files.count, 2)
+        let flat = try FileManager.default.contentsOfDirectory(at: outputs, includingPropertiesForKeys: nil)
+        XCTAssertFalse(flat.contains { ["log", "txt"].contains($0.pathExtension) }, "Even unmentioned short output needs durable ownership")
+        await session.close()
+    }
+    func testToolOutputOwnershipRejectsTraversalAndSymlinkedDirectories() throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let outputs = root.appendingPathComponent("tool-output"), foreign = root.appendingPathComponent("foreign")
+        try FileManager.default.createDirectory(at: outputs, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: foreign, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: outputs.appendingPathComponent("child"), withDestinationURL: foreign)
+        for id in ["../foreign", "child", ".", ""] { XCTAssertThrowsError(try ToolOutputOwnership.directory(root: outputs, sessionID: id, create: true)) }
+        try FileManager.default.removeItem(at: outputs)
+        try FileManager.default.createSymbolicLink(at: outputs, withDestinationURL: foreign)
+        XCTAssertThrowsError(try ToolOutputOwnership.directory(root: outputs, sessionID: "child", create: true))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: foreign.path), [])
+    }
     func testNativeShellAndFileTools() async throws {
         let root=try temporaryDirectory();defer { try? FileManager.default.removeItem(at:root) }
         let tools=NativeTools(cwd:root,outputs:root.appendingPathComponent("out"),mcp:MCPManager(cwd:root))

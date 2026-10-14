@@ -15,6 +15,8 @@ struct TranscriptRowEnvironment: Equatable {
     /// SwiftUI's own default: a locale with no identifier.
     var locale = Locale(identifier: "")
     var isEnabled = true
+    var managedChild = false
+    var sessionID: String?
     /// Whether the chat's replies offer "Fork from here" (`transcriptForks`).
     var forks = false
     /// Whether file tools' paths open their files (`transcriptOpensFiles`).

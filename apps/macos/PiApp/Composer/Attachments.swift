@@ -117,6 +117,7 @@ extension WorkspaceModel {
     /// too, and the helper accepts and sends the chat's images.
     func turnOverrides(for chat: ChatRecord, base: [String: WireValue] = [:]) -> [String: WireValue] {
         var params = TurnOverrides.params(for: chat, base: base)
+        if let grants = subagentModels(for: chat) { params["subagentModels"] = grants }
         let kinds = modelInput(for: chat)
         if kinds.contains("image"), let profile = profiles.first(where: { $0.id == chat.profileID }), !Self.declaredInput(profile).contains("image") {
             params["input"] = .array(["text", "image"].filter(kinds.contains).map(WireValue.string))

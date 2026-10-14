@@ -153,6 +153,16 @@ extension AgentSession {
             // The lines a read returned or a write or an edit changed, when
             // they were recorded.
             for key in ["line", "lastLine"] where !stats[key].isNull { card[key] = stats[key] }
+            if let metadata = result.nativeSubagent, !metadata.isNull { card["nativeSubagent"] = metadata }
+            else if call["name"].text == "subagent",
+                    let plan = subagents.plans.values.first(where: { $0.origin.link.call == SubagentCallKey(parentSessionID: self.id, assistantMessageID: message.id, toolCallID: id) }) {
+                // An older helper may already have repaired this cut-off call.
+                // Retain its model-visible result verbatim; navigation is a
+                // local projection from this owner's durable accepted plan.
+                let status = card["state"]?.text == "unknown" ? SubagentStatus.interrupted : SubagentStatus(rawValue: card["state"]?.text ?? "") ?? .interrupted
+                let summary = SubagentSummary(link: plan.origin.link, description: plan.origin.description, model: plan.origin.model.model, status: status, revision: 0, tools: plan.origin.tools)
+                card["subagent"] = (try? subagentJSON(summary)) ?? .null
+            }
             states[id] = merging(.object(card), fields)
         }
         var row = message.view(toolStates: states)
@@ -197,6 +207,15 @@ extension AgentSession {
             }
         }
         var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state.rawValue),"runStatus":JSON(runStatus.rawValue),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"cost":costSnapshot,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"continuable":JSON(canContinue),"queueEdit":queueEdit.map { $0.value } ?? .null,"queueEditRevision":JSON(queueEditRevision),"path":path.map { JSON($0) } ?? .null,"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
+        if subagents.origin != nil { value["subagentStatus"] = JSON((subagents.family?.latest(id)?.status ?? subagents.status ?? .interrupted).rawValue) }
+        if let family = subagents.family {
+            if let turn = family.latest(id) { value["subagentTurn"] = JSON(turn.turn); value["subagentDeliveryState"] = JSON(family.messages["result:" + turn.id]?.disposition ?? "pending") }
+            value["familyWaiting"] = JSON(familyWaiting)
+            value["agentInboxPending"] = JSON(family.messages.values.filter { $0.disposition == "pending" && $0.author == (isSubagent ? "parent" : "subagent") }.count)
+        }
+        if !subagents.plans.isEmpty {
+            value["subagentsRevision"] = JSON("\(displayEpoch):\(subagents.plans.count):\(subagents.outcomes?.count ?? 0):\(subagents.family?.revision ?? subagentChangeRevision)")
+        }
         // Receipts and the task presentation travel only when they changed
         // since the revision the reader sends back; a reader that sends none
         // (any reader before 0.1.85) gets both every time, as before.

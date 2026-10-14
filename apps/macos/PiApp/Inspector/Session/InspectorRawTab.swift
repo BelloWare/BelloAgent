@@ -83,7 +83,7 @@ import AppKit
             let route = InspectorBodyRoute.resolve(row: row, kind: kind, metadata: request.metadata, hasWorkspace: inspector.workspace != nil)
             if bodyKey != key {
                 bodyKey = key; bodyRoute = route
-                body = CapturedBodyView(source: route.source(inspector: inspector, request: request, row: row, kind: kind), sessionID: inspector.scope.sessionID, attemptID: row.id, kind: kind, retained: route == .archive, initialFormat: kind == "response" ? .combined : .json, searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil, onCopySource: { [weak self] in self?.copySource = $0; self?.refreshCopy() })
+                body = CapturedBodyView(source: route.source(inspector: inspector, request: request, row: row, kind: kind), sessionID: request.sessionID, attemptID: row.id, kind: kind, retained: route == .archive, initialFormat: kind == "response" ? .combined : .json, searchQuery: request.query, searchHeaders: request.metadata[kind + "Headers"]?.object ?? [:], growingBytes: kind == "response" ? request.growingBytes : nil, onCopySource: { [weak self] in self?.copySource = $0; self?.refreshCopy() })
             } else if bodyRoute != route {
                 bodyRoute = route
                 body?.update(source: route.source(inspector: inspector, request: request, row: row, kind: kind), retained: route == .archive)
@@ -139,7 +139,7 @@ import AppKit
                 // A request the log saved is read there, also while the index still shows the helper's row.
                 value = retained
             } else if let workspace = inspector.workspace {
-                value = try await workspace.debugRequest("debug.raw-events", sessionID: inspector.scope.sessionID, params: ["attemptId": .string(row.id), "offset": .number(Double(key.offset))])
+                value = try await workspace.debugRequest("debug.raw-events", sessionID: request.sessionID, params: ["attemptId": .string(row.id), "offset": .number(Double(key.offset))])
             } else { throw HostError.failure("No event index was retained for this request.") }
             try Task.checkCancellation()
             let text = await Task.detached(priority: .userInitiated) { () -> String in
@@ -173,12 +173,13 @@ import AppKit
     /// Built when the menu opens: the capture mode as it is then, and what can be exported.
     private func menuEntries() -> [PiMenuEntry] {
         guard let workspace = inspector.workspace, let row else { return [] }
-        let sessionID = inspector.scope.sessionID
+        let sessionID = request.sessionID
         let mode = workspace.displays[sessionID]?.captureMode ?? "persist"
         var modes = [("off", "Off"), ("memory", "Session memory")]
         if !workspace.isEphemeral(sessionID) { modes.append(("persist", "Persist locally")) }
         var entries: [PiMenuEntry] = [.note("Future body capture")]
-        for (value, title) in modes {
+        if row.delegationID != nil { entries = [.note("Capture policy follows the parent chat")] }
+        for (value, title) in modes where row.delegationID == nil {
             entries.append(.button(title, checked: mode == value, identifier: "inspector-capture-" + value) { Task { await self.setMode(value) } })
         }
         entries.append(.divider)
@@ -192,13 +193,13 @@ import AppKit
 
     private func setMode(_ mode: String) async {
         guard let workspace = inspector.workspace else { return }
-        do { try await workspace.setCaptureMode(mode, sessionID: inspector.scope.sessionID); notice = "" } catch { notice = error.localizedDescription }
+        do { try await workspace.setCaptureMode(mode, sessionID: request.sessionID); notice = "" } catch { notice = error.localizedDescription }
     }
 
     private func clear() async {
         guard let workspace = inspector.workspace else { return }
         guard await PiQuestion.shared.confirm("Clear this chat's capture bodies?", "Remove current memory bodies and this chat's retained payload references. Request metrics, message links, conversation history and exported copies stay.", action: "Clear", destructive: true) else { return }
-        do { try await workspace.clearCaptures(sessionID: inspector.scope.sessionID); inspector.refresh() } catch { notice = error.localizedDescription }
+        do { try await workspace.clearCaptures(sessionID: request.sessionID); inspector.refresh() } catch { notice = error.localizedDescription }
     }
 
     private func exportMetadata(_ row: InspectorRequestRow) async {
@@ -215,9 +216,9 @@ import AppKit
         do {
             let saved: URL
             if row.source != .live {
-                saved = try await inspector.archive.exportRetained(sessionID: inspector.scope.sessionID, attemptID: row.id, destination: destination)
+                saved = try await inspector.archive.exportRetained(sessionID: request.sessionID, attemptID: row.id, destination: destination)
             } else if let workspace = inspector.workspace {
-                saved = try await workspace.persistAttempt(sessionID: inspector.scope.sessionID, attemptID: row.id, destination: destination)
+                saved = try await workspace.persistAttempt(sessionID: request.sessionID, attemptID: row.id, destination: destination)
             } else { throw HostError.failure("This request's bytes are not available.") }
             notice = "Exported " + saved.path
         } catch { notice = error.localizedDescription }

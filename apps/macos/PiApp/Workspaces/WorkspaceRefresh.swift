@@ -149,6 +149,11 @@ extension WorkspaceModel {
                     chats[index].path = path; try await store?.put(chats[index], kind: "chat", id: id)
                     guard current() else { return }
                 }
+                if let revision = result["subagentsRevision"]?.string, revision != view.subagentsRevision {
+                    try await refreshSubagentGroups(parent: item, host: host, connection: connection)
+                    guard current() else { return }
+                    view.subagentsRevision = revision
+                }
                 guard try await settleSnapshotIntents(result, view: view, id: id, item: item, host: host, connection: connection, helperQueue: helperQueue) else { return }
                 updateHostActivity(workspaceID: item.workspaceID)
                 scheduleIdle(workspaceID: item.workspaceID, host: host)
@@ -199,6 +204,8 @@ extension WorkspaceModel {
     /// which the pending submissions are settled against.
     private func applySnapshotState(_ result: [String: WireValue], to view: SessionDisplay, id: String, item: ChatRecord,
                                     wantsMetrics: Bool, clockOffset: Double) -> [[String: WireValue]] {
+        view.isManagedSubagent = item.isSubagent
+        if item.isSubagent { view.subagentStatus = result["subagentStatus"]?.string.flatMap(SubagentStatus.init(rawValue:)) }
         observeAssistantOutputs(sessionID: id, snapshot: result)
         observeSessionCompletion(sessionID: id, snapshot: result)
         view.observeCompaction(result)

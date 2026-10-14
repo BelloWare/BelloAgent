@@ -32,9 +32,10 @@ struct JournalChainCheck {
 /// other *processes*, not other threads.
 final class SessionJournal {
     private(set) var url: URL
-    private let handle: FileHandle
+    private var handle: FileHandle
     private var lockFD: Int32
     private var poisoned = false
+    private var promoting = false
     var writeOutcomeUncertain: Bool { poisoned }
     private var tail: String?, bytes: UInt64
     var head: String? { tail }
@@ -54,6 +55,7 @@ final class SessionJournal {
     /// The binding the marker names, and each move to another connection
     /// after it, in order (`rebind`): the journal is bound to the last.
     private(set) var markerBinding: JSON?
+    private(set) var markerKind = JournalRecordKind.marker
     private(set) var rebinds: [Rebind] = []
     struct Rebind: Equatable { var check: JournalCheckpoint.Check; var binding: JSON }
     /// The binding every record from here on is written under.
@@ -63,7 +65,7 @@ final class SessionJournal {
     private(set) var lastAppendLine: Data?
     /// `binding`: the connection the journal must be bound to, or nil to open
     /// it bound to whichever it is (a new journal needs one).
-    init(url: URL, id: String, cwd: URL, binding: JSON?, create: Bool, checkpoint: JournalCheckpoint? = nil, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeSynchronize: @escaping @Sendable () throws -> Void = {}) throws {
+    init(url: URL, id: String, cwd: URL, binding: JSON?, create: Bool, managedChild: Bool = false, checkpoint: JournalCheckpoint? = nil, beforeAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeSynchronize: @escaping @Sendable () throws -> Void = {}) throws {
         self.url=url; self.beforeAppend=beforeAppend; self.beforeSynchronize=beforeSynchronize
         guard !create || binding != nil else { throw AgentError("invalid_params", "A new journal needs a binding") }
         try FileManager.default.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
@@ -71,6 +73,7 @@ final class SessionJournal {
         guard lockFD >= 0 else { throw AgentError("session_lock", "Cannot create session writer lock") }
         guard flock(lockFD,LOCK_EX|LOCK_NB) == 0 else { _ = close(lockFD); throw AgentError("session_locked", "Another process owns this session") }
         do {
+            try JournalCheckpoint.removeTemporaries(for: url)
             if create {
                 let fd=open(url.path,O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW|O_CLOEXEC,0o600)
                 guard fd >= 0 else { throw AgentError("session_exists", "Session path already exists; open it explicitly") }
@@ -80,16 +83,18 @@ final class SessionJournal {
             }
             if !create, let checkpoint, let resumed=Self.resume(url:url,id:id,binding:binding,from:checkpoint) {
                 tail=resumed.last; bytes=resumed.size; resumedFrom=checkpoint; headerCheck=checkpoint.header; markerCheck=checkpoint.marker
-                markerBinding=resumed.bindings.marker; rebinds=resumed.bindings.rebinds
+                markerBinding=resumed.bindings.marker; markerKind=resumed.bindings.markerKind ?? JournalRecordKind.marker; rebinds=resumed.bindings.rebinds
             } else {
                 let scanned=try Self.chain(url:url,id:id,binding:binding,requireMarker:!create)
                 tail=scanned.last; bytes=scanned.size; headerCheck=scanned.header; markerCheck=scanned.marker
-                markerBinding=scanned.bindings.marker; rebinds=scanned.bindings.rebinds
+                markerBinding=scanned.bindings.marker; markerKind=scanned.bindings.markerKind ?? JournalRecordKind.marker; rebinds=scanned.bindings.rebinds
             }
             handle=try FileHandle(forWritingTo:url); try handle.seekToEnd()
+            try? FileManager.default.removeItem(at:url.appendingPathExtension("promotion"))
         } catch { _=flock(lockFD,LOCK_UN); _=close(lockFD); throw error }
         if create {
-            try append(["type":"custom","customType":JSON(JournalRecordKind.marker),"data":["binding":binding ?? .null,"version":1]])
+            markerKind = managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker
+            try append(["type":"custom","customType":JSON(markerKind),"data":["binding":binding ?? .null,"version":JSON(managedChild ? 2 : 1)]])
             if let span=lastAppend, let line=lastAppendLine { markerCheck=JournalCheckpoint.Check(offset:span.offset,length:span.length,sha256:JournalCheckpoint.digest(line)) }
             markerBinding=binding
         }
@@ -107,6 +112,7 @@ final class SessionJournal {
     /// moved from the binding in force.
     struct Bindings {
         var marker: JSON?
+        var markerKind: String?
         var rebinds: [Rebind] = []
         var current: JSON? { rebinds.last?.binding ?? marker }
         mutating func meet(_ record: JSON, line: Data, at offset: UInt64) throws {
@@ -144,10 +150,11 @@ final class SessionJournal {
             }
             let rid=try identity(item?["id"] ?? .string(fields.id ?? ""))
             guard branch.extend(rid, parent: fields.parentID) else { throw AgentError("session_damaged", "Native journal must be a valid single branch") }
-            if marker == nil, fields.customType == JournalRecordKind.marker {
+            if JournalRecordKind.isMarker(fields.customType) {
+                guard marker == nil else { throw AgentError("session_damaged", "A native journal has exactly one format marker") }
                 marker=try item ?? JSON.parse(line)
                 markerCheck=JournalCheckpoint.Check(offset:start,length:line.count,sha256:JournalCheckpoint.digest(line))
-                bindings.marker=marker?["data"]["binding"]
+                bindings.marker=marker?["data"]["binding"]; bindings.markerKind=fields.customType
             } else if fields.customType == JournalRecordKind.rebind, marker != nil {
                 try bindings.meet(item ?? JSON.parse(line), line: line, at: start)
             }
@@ -157,6 +164,63 @@ final class SessionJournal {
         }
         return (branch.last, reader.size, headerCheck, markerCheck, bindings)
     }
+    /// One-way format promotion, under the existing writer lock. Only the marker
+    /// name changes (same byte count); origin and historical record identities,
+    /// offsets, hashes and provider context otherwise remain untouched.
+    func promoteToSteering(managedChild: Bool) throws {
+        guard !promoting else { throw AgentError("subagent_promotion_busy", "Journal promotion is in progress") }
+        guard !poisoned else { throw SubagentRecovery.damaged() }
+        if markerKind == JournalRecordKind.steeringMarker { return }
+        guard markerKind == (managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker),
+              let check = markerCheck else { throw SubagentRecovery.damaged() }
+        // Synchronous under the owning actor: no await may split this span.
+        // The explicit fence also rejects callbacks that try to append while
+        // synchronizing the source before the copy/replacement.
+        promoting = true; defer { promoting = false }
+        try synchronize()
+        let temporary = url.appendingPathExtension("promotion")
+        // A previous killed copy is uncommitted. This writer owns its cleanup.
+        _ = unlink(temporary.path)
+        let fd = open(temporary.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw AgentError("subagent_promotion", "Cannot create promotion copy") }
+        let copy = FileHandle(fileDescriptor:fd,closeOnDealloc:true)
+        defer { try? copy.close(); _ = unlink(temporary.path) }
+        let reader = try JournalRecordReader(url)
+        var replaced = false, promotedLine = Data()
+        while true {
+            let offset = reader.completeBytes
+            guard var line = try reader.nextLine() else { break }
+            if offset == check.offset {
+                guard JournalCheckpoint.digest(line) == check.sha256,
+                      let text = String(data:line,encoding:.utf8) else { throw SubagentRecovery.damaged() }
+                promotedLine = Data(text.replacingOccurrences(of:"\"customType\":\"" + markerKind + "\"",with:"\"customType\":\"" + JournalRecordKind.steeringMarker + "\"").utf8)
+                guard promotedLine.count == line.count, promotedLine != line else { throw SubagentRecovery.damaged() }
+                line = promotedLine; replaced = true
+            }
+            line.append(10); try copy.write(contentsOf:line)
+        }
+        guard replaced else { throw SubagentRecovery.damaged() }
+        try copy.synchronize()
+        guard rename(temporary.path,url.path) == 0 else { throw AgentError("subagent_promotion", "Cannot install promoted journal") }
+        do {
+            let directoryFD = open(url.deletingLastPathComponent().path,O_RDONLY | O_CLOEXEC)
+            guard directoryFD >= 0 else { throw SubagentRecovery.damaged() }
+            defer { _ = close(directoryFD) }
+            guard fsync(directoryFD) == 0 else { throw SubagentRecovery.damaged() }
+            try handle.close(); handle = try FileHandle(forWritingTo:url); try handle.seekToEnd()
+            markerKind = JournalRecordKind.steeringMarker
+            markerCheck = .init(offset:check.offset,length:check.length,sha256:JournalCheckpoint.digest(promotedLine))
+            resumedFrom = nil; JournalCheckpoint.remove(for:url)
+        } catch { poisoned = true; throw error }
+    }
+
+    /// Read-only validation before a parent consults a managed child's evidence.
+    /// This also works when an idle child viewer already holds its writer.
+    static func verifyManagedChild(url: URL, id: String) throws {
+        let checked = try chain(url: url, id: id, binding: nil, requireMarker: true)
+        guard [JournalRecordKind.childMarker, JournalRecordKind.steeringMarker].contains(checked.bindings.markerKind ?? "") else { throw SubagentRecovery.damaged() }
+    }
+
     /// The chain from a checkpoint on, when the records the checkpoint relies
     /// on are still exactly as it recorded them and nothing after it rewrites
     /// the model context (an edit or a fork boundary, which only a full replay
@@ -167,12 +231,12 @@ final class SessionJournal {
         guard let headerLine=JournalCheckpoint.verified(checkpoint.header,in:file), let header=try? JSON.parse(headerLine),
               header["type"].text == "session", header["version"].int == 3, header["id"].text == id,
               let markerLine=JournalCheckpoint.verified(checkpoint.marker,in:file), let marker=try? JSON.parse(markerLine),
-              marker["customType"].text == JournalRecordKind.marker,
+              JournalRecordKind.isMarker(marker["customType"].text),
               let lastLine=JournalCheckpoint.verified(checkpoint.last,in:file), let last=try? JSON.parse(lastLine),
               last["id"].text == checkpoint.lastID, let reader=try? JournalRecordReader(url,startingAt:checkpoint.start) else { return nil }
         // The connection changes the checkpoint names, each still as written;
         // one it does not name, met below, means reading the whole journal.
-        var bindings=Bindings(marker: marker["data"]["binding"])
+        var bindings=Bindings(marker: marker["data"]["binding"], markerKind: marker["customType"].text)
         for check in checkpoint.rebinds ?? [] {
             guard check.offset > checkpoint.marker.offset, let line=JournalCheckpoint.verified(check,in:file), let record=try? JSON.parse(line),
                   record["customType"].text == JournalRecordKind.rebind, (try? bindings.meet(record, line: line, at: check.offset)) != nil else { return nil }
@@ -189,7 +253,7 @@ final class SessionJournal {
                 if let scanned=JournalLineScan.stateTail(line) ?? JournalLineScan.fields(line), scanned.id != nil { fields=scanned }
                 else { let parsed=try JSON.parse(line); fields = .init(id:parsed["id"].text,parentID:parsed["parentId"].text,customType:parsed["customType"].text,type:parsed["type"].text) }
                 let rid=try identity(.string(fields.id ?? ""))
-                guard branch.extend(rid, parent: fields.parentID), fields.type != "branch", fields.customType != JournalRecordKind.context,
+                guard !JournalRecordKind.isMarker(fields.customType), branch.extend(rid, parent: fields.parentID), fields.type != "branch", fields.customType != JournalRecordKind.context,
                       fields.customType != JournalRecordKind.rebind || named.contains(start) else { return nil }
             }
         } catch { return nil }
@@ -201,6 +265,7 @@ final class SessionJournal {
     /// only for records a run is still producing. `synchronize` closes that
     /// window when the turn settles.
     @discardableResult func append(_ value: JSON, id: String = UUID().uuidString, flush: Bool = true) throws -> String {
+        guard !promoting else { throw AgentError("subagent_promotion_busy", "Journal promotion is in progress") }
         guard !poisoned else { throw AgentError("session_damaged", "A journal write failed; recover a copy before continuing") }
         var v=value; v["id"]=JSON(id); v["parentId"]=tail.map { JSON($0) } ?? .null; v["timestamp"]=JSON(isoNow())
         var data=try v.data(); data.append(10)
@@ -269,7 +334,7 @@ final class SessionJournal {
     func checkWhole(id: String, binding: JSON) throws {
         let scanned=try Self.chain(url:url,id:id,binding:binding,requireMarker:true)
         tail=scanned.last; bytes=scanned.size; headerCheck=scanned.header; markerCheck=scanned.marker; resumedFrom=nil
-        markerBinding=scanned.bindings.marker; rebinds=scanned.bindings.rebinds
+        markerBinding=scanned.bindings.marker; markerKind=scanned.bindings.markerKind ?? JournalRecordKind.marker; rebinds=scanned.bindings.rebinds
     }
     /// The binding a native journal is bound to now, read from the file
     /// without opening it for writing; nil for one that is not native.

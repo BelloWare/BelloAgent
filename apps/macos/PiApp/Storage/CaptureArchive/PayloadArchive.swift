@@ -94,11 +94,13 @@ actor PayloadArchive {
         try db.execute("CREATE TABLE IF NOT EXISTS archive_info(name TEXT PRIMARY KEY,value BLOB NOT NULL)")
         try db.execute("CREATE TABLE IF NOT EXISTS attempts(id TEXT PRIMARY KEY, session TEXT NOT NULL, workspace TEXT NOT NULL, turn TEXT NOT NULL, purpose TEXT NOT NULL, api TEXT NOT NULL, alias TEXT NOT NULL, model TEXT, outcome TEXT NOT NULL, wall REAL NOT NULL, updated REAL NOT NULL, metadata BLOB NOT NULL)")
         let version = try db.rows("PRAGMA user_version").first?["user_version"]?.number ?? 0
-        guard version <= 5 else { throw CaptureFailure.corrupt }
+        guard version <= 6 else { throw CaptureFailure.corrupt }
         if !(try db.rows("PRAGMA table_info(attempts)")).contains(where: { $0["name"]?.string == "metrics_retained" }) {
             try db.execute("ALTER TABLE attempts ADD COLUMN metrics_retained INTEGER NOT NULL DEFAULT 1")
         }
         try Self.prepareDashboardSchema(db, migrate: version < 4)
+        try CaptureLineage.prepare(db, migrate: version < 6)
+        try CaptureSubagents.prepare(db)
         try db.execute("CREATE INDEX IF NOT EXISTS attempts_filter ON attempts(wall,workspace,session,purpose,api,outcome)")
         try db.execute("CREATE TABLE IF NOT EXISTS bodies(attempt TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, observed INTEGER NOT NULL DEFAULT 0, length INTEGER NOT NULL DEFAULT 0, digest BLOB, PRIMARY KEY(attempt,kind))")
         try db.execute("CREATE TABLE IF NOT EXISTS chunks(scope TEXT NOT NULL, id TEXT NOT NULL, length INTEGER NOT NULL, bytes INTEGER NOT NULL, PRIMARY KEY(scope,id))")
@@ -110,7 +112,7 @@ actor PayloadArchive {
                 }
             }
             try verifyLegacyKey(db, cipher: legacyCipher)
-            try db.execute("PRAGMA user_version=5")
+            try db.execute("PRAGMA user_version=6")
         }
         try db.execute("CREATE INDEX IF NOT EXISTS refs_chunk ON refs(scope,chunk)")
         try db.execute("CREATE TABLE IF NOT EXISTS message_links(attempt TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE, message TEXT NOT NULL, role TEXT NOT NULL, PRIMARY KEY(attempt,message,role))")
@@ -147,11 +149,12 @@ actor PayloadArchive {
     /// Resolve the owner plus output links on at most two 500-row visible
     /// pages. Final metadata omits link arrays; never materialize the attempt's
     /// entire retained context or scan unrelated sessions to route its update.
-    func accountingTarget(attemptID: String, workspaceID: String, visibleMessageIDs: Set<String> = []) throws -> (sessionID: String, outputMessageIDs: Set<String>)? {
+    func accountingTarget(attemptID: String, workspaceID: String, visibleMessageIDs: Set<String> = []) throws -> (sessionID: String, budgetOwnerSessionID: String?, outputMessageIDs: Set<String>)? {
         guard UUID(uuidString: attemptID) != nil else { return nil }
         let db = try ready()
-        guard let session = try db.rows("SELECT session FROM attempts WHERE id=? AND workspace=?", [.text(attemptID), .text(workspaceID)]).first?["session"]?.string else { return nil }
-        guard !visibleMessageIDs.isEmpty else { return (session, []) }
+        guard let row = try db.rows("SELECT session,budget_owner FROM attempts WHERE id=? AND workspace=?", [.text(attemptID), .text(workspaceID)]).first, let session = row["session"]?.string else { return nil }
+        let owner = row["budget_owner"]?.string
+        guard !visibleMessageIDs.isEmpty else { return (session, owner, []) }
         // Any number of visible messages, a batch of SQL variables at a time.
         var outputs = Set<String>(), pending = Array(visibleMessageIDs)
         while !pending.isEmpty {
@@ -160,19 +163,22 @@ actor PayloadArchive {
             let rows = try db.rows("SELECT message FROM message_links INDEXED BY accounting_outputs WHERE role='output' AND attempt=? AND message IN (\(placeholders))", [.text(attemptID)] + batch.map(CaptureSQLValue.text))
             outputs.formUnion(rows.compactMap { $0["message"]?.string })
         }
-        return (session, outputs)
+        return (session, owner, outputs)
     }
     func begin(_ metadata: [String: WireValue], workspace: String) throws {
         let db = try ready()
         guard let id = metadata["attemptId"]?.string, UUID(uuidString: id) != nil,
               let session = metadata["sessionId"]?.string, !session.isEmpty, session.utf8.count <= 128,
               let turn = metadata["turnId"]?.string, turn.utf8.count <= 128, workspace.utf8.count <= 128 else { throw CaptureFailure.unavailable }
+        let lineage = try CaptureLineage.scope(metadata)
         let mode = metadata["mode"]?.string ?? "off"
         guard ["persist", "memory", "off"].contains(mode), try db.rows("SELECT id FROM attempts WHERE id=?", [.text(id)]).isEmpty else { throw CaptureFailure.sequence }
         let encoded = try JSONEncoder().encode(metadata)
         try reconcile()
         try db.transaction {
             try db.execute("INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,model,outcome,wall,updated,metadata) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [.text(id), .text(session), .text(workspace), .text(turn), .text(metadata["purpose"]?.string ?? "turn"), .text(metadata["api"]?.string ?? ""), .text(metadata["requestedModel"]?.string ?? ""), .null, .text("running"), .real(metadata["wallTimestamp"]?.number ?? now().timeIntervalSince1970), .real(now().timeIntervalSince1970), .blob(encoded)])
+            try CaptureLineage.project(lineage, id: id, db: db)
+            try CaptureSubagents.record(scope: lineage, metadata: metadata, workspace: workspace, db: db)
             for kind in ["request", "response"] {
                 try db.execute("INSERT INTO bodies(attempt,kind,state,reason,storage) VALUES(?,?,?,?,'plaintext-v2')", [.text(id), .text(kind), .text(mode == "persist" ? "recording" : "not-retained"), .text(mode == "off" ? "Capture was disabled" : mode == "memory" ? "Session-memory capture is not durable" : "")])
             }
@@ -268,6 +274,7 @@ actor PayloadArchive {
         guard let id = metadata["attemptId"]?.string else { throw CaptureFailure.unavailable }
         let db = try ready(), row = try record(id), scope = CaptureContent.scope(session: try archiveText(row, "session"))
         guard row["session"]?.string == metadata["sessionId"]?.string else { throw CaptureFailure.sequence }
+        try CaptureLineage.validate(metadata, existing: row)
         // Validate both descriptors before publishing tails or dropping either
         // writer. Off/memory captures and repeated finishes need the same bounds.
         for kind in ["request", "response"] {
@@ -317,6 +324,7 @@ actor PayloadArchive {
         guard let id = metadata["attemptId"]?.string else { throw CaptureFailure.sequence }
         let existing = try record(id)
         guard existing["session"]?.string == metadata["sessionId"]?.string else { throw CaptureFailure.sequence }
+        try CaptureLineage.validate(metadata, existing: existing)
         let encoded = try JSONEncoder().encode(metadata)
         try db.transaction {
             try db.execute("UPDATE attempts SET outcome=?,model=?,updated=?,metadata=? WHERE id=?", [.text(metadata["outcome"]?.string ?? "interrupted"), metadata["identity"]?.object?["effectiveModel"]?.string.map(CaptureSQLValue.text) ?? .null, .real(now().timeIntervalSince1970), .blob(encoded), .text(id)])
@@ -677,6 +685,7 @@ actor PayloadArchive {
             // credential transformations visible for the body's own lifetime.
             if let data = row["metadata"]?.data {
                 let previous = try JSONDecoder().decode([String: WireValue].self, from: data)
+                tombstone["requestScope"] = previous["requestScope"]
                 for kind in ["request", "response"] {
                     let annotations = (previous[kind]?.object ?? [:]).filter { ["captureBytes", "credentialRedactions", "byteExact", "transformations"].contains($0.key) }
                     if !annotations.isEmpty { tombstone[kind] = .object(annotations) }

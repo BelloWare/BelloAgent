@@ -203,6 +203,10 @@ extension AgentSession {
     /// holds it: a run that is going takes it at its next boundary; an idle
     /// chat starts one unless Stop, a failure or a reopen paused it.
     func releaseHeldInput() {
+        if !closed, queueEdit == nil, !queuePaused, let coordinator = agentCoordinator {
+            let owner = subagents.origin?.link.budgetOwnerSessionID ?? id
+            Task { await coordinator.wake(owner) }
+        }
         guard !closed, runTask == nil, queueEdit == nil, !queuePaused, state != .error, !queue.isEmpty || !steering.isEmpty else { return }
         launch()
     }

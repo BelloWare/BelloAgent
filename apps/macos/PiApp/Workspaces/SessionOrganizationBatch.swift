@@ -8,10 +8,17 @@ enum SessionOrganizationSelection {
         guard archived.contains(selected), let project = records.first(where: { $0.id == selected })?.workspaceID else { return selected }
         let candidates = records.filter { $0.workspaceID == project && (!$0.isArchived || archived.contains($0.id)) && !$0.isBackgroundTask }
             .sorted(by: ChatRecord.sidebarPrecedes)
+        var families: [String: Set<String>] = [:]
+        for record in candidates where archived.contains(record.id) {
+            if let owner = record.delegation?.budgetOwnerSessionID { families[owner, default: []].insert(record.id) }
+        }
         var available = Set(candidates.map(\.id)), cursor = 0, destination = selected
-        for id in targets where archived.contains(id) {
-            available.remove(id)
-            guard destination == id else { continue }
+        for id in targets where archived.contains(id) || families[id] != nil {
+            // Archiving a parent is one action on its whole managed family,
+            // including when its child was the selected transcript.
+            let removed = (families[id] ?? []).union([id])
+            available.subtract(removed)
+            guard removed.contains(destination) else { continue }
             while cursor < candidates.count, !available.contains(candidates[cursor].id) { cursor += 1 }
             if cursor < candidates.count { destination = candidates[cursor].id }
         }
@@ -52,6 +59,7 @@ extension WorkspaceModel {
         let task = organizationScheduler.enqueue(ids: Set(targets)) { [self] in
             guard !installPreparing, !isShutDown else { throw HostError.failure("Wait for the app update to finish before changing a chat.") }
             guard !targets.isEmpty, targets.count <= Self.markedSessionLimit, let store else { throw StoreError.invalidRecord }
+            if case .archived = change { for id in targets where record(id)?.isSubagent == false { await reconcileSubagents(parentID: id) } }
             var existing: [String] = []
             for id in targets where record(id) != nil {
                 // Pending chats retain their existing materialization/draft contract.

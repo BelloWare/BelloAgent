@@ -24,6 +24,8 @@ struct ProjectSidebarState: Codable, Sendable, Equatable, Identifiable {
     /// The choice is the project's, like its disclosure; nil (the default,
     /// and every record written before) groups the chats by topic.
     var flatTopics: Bool?
+    /// Managed groups default folded, independently of saved side folds.
+    var expandedSubagents: [String]?
 
     /// Nothing read back from the vault is trusted to be the size or shape the
     /// sidebar last wrote.
@@ -32,6 +34,7 @@ struct ProjectSidebarState: Codable, Sendable, Equatable, Identifiable {
         value.collapsedSides = collapsedSides.map { ids in
             Array(ids.filter { !$0.isEmpty && $0.utf8.count <= 512 }.prefix(Self.maximumPresentationEntries))
         }
+        value.expandedSubagents = expandedSubagents.map { Array($0.filter { !$0.isEmpty && $0.utf8.count <= 512 }.prefix(Self.maximumPresentationEntries)) }
         value.shownRoots = shownRoots.map { pages in
             Dictionary(uniqueKeysWithValues: pages
                 .filter { !$0.key.isEmpty && $0.key.utf8.count <= 512 && $0.value > 0 && $0.value <= Self.maximumShownRoots }
@@ -196,11 +199,11 @@ extension WorkspaceModel {
         createNewChat(topicID: topicID)
     }
 
-    private func saveProjectSidebarState(_ proposed: ProjectSidebarState) {
+    func saveProjectSidebarState(_ proposed: ProjectSidebarState) {
         let previous = projectSidebarStates[proposed.id] ?? ProjectSidebarState(id: proposed.id)
         guard previous.expanded != proposed.expanded
                 || previous.collapsedSides != proposed.collapsedSides || previous.shownRoots != proposed.shownRoots
-                || previous.flatTopics != proposed.flatTopics else { return }
+                || previous.flatTopics != proposed.flatTopics || previous.expandedSubagents != proposed.expandedSubagents else { return }
         var value = proposed
         value.revision = max(previous.revision + 1, Int64(Date().timeIntervalSince1970 * 1_000_000))
         projectSidebarStates[value.id] = value

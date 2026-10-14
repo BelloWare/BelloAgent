@@ -7,7 +7,7 @@ import AppKit
 extension WorkspaceModel {
     /// Snapshot the originating pane's intent synchronously, before any helper await.
     func submitComposer(intent: ComposerSubmissionIntent, sessionID: String) {
-        guard page == .chats, let view = displays[sessionID], view.draftReady, view.imageImports == 0, !view.loading, !installPreparing else { return }
+        guard page == .chats, record(sessionID)?.isSubagent != true, let view = displays[sessionID], view.draftReady, view.imageImports == 0, !view.loading, !installPreparing else { return }
         if view.queueEditingID != nil { saveQueuedEdit(sessionID: sessionID); return }
         if view.editingMessageID != nil { sendEdit(sessionID: sessionID); return }
         // Bypassing the completion list with Command-Return is not a skill grant.
@@ -35,6 +35,7 @@ extension WorkspaceModel {
     }
 
     func send(steer: Bool = false, sessionID: String? = nil) {
+        if let id = sessionID ?? focusedSessionID ?? selectedID, record(id)?.isSubagent == true { return }
         if let id = sessionID ?? focusedSessionID ?? selectedID, (displays[id]?.imageImports ?? 0) > 0 { return }
         if let id = sessionID ?? focusedSessionID ?? selectedID, draftWrites.recoveries[id] != nil || displays[id]?.draftReady == false {
             if sessionID != nil { error = "The message was not sent. Wait for the draft to finish loading or recovering, then try again." }
@@ -321,6 +322,7 @@ extension WorkspaceModel {
     }
     func action(_ method: String, params: [String: WireValue] = [:], sessionID: String? = nil) {
         guard !installPreparing, let id = sessionID ?? selectedID, let item = record(id) else { return }
+        guard !item.isSubagent || method == "turn.stop" else { return }
         // Nothing runs in an archived chat; stopping is the one command it still takes.
         guard !item.isArchived || method == "turn.stop" else { displays[id]?.notice = Self.archivedNotice; return }
         // Compact uses the same selected model/effort/limits as Send. Freeze
@@ -361,6 +363,7 @@ extension WorkspaceModel {
     /// false: they must not invent an interruption for a run they cannot see.
     func stop(sessionID: String? = nil, userInitiated: Bool = true) {
         guard let id = sessionID ?? selectedID, let item = record(id), let view = displays[id] else { return }
+        if let link = item.delegation { stopSubagent(SubagentTarget(link), from: link.budgetOwnerSessionID); return }
         // Nothing is running and nothing is queued: there is nothing to stop.
         // Asking anyway showed "Stopping" and left the chat "Paused".
         guard view.hasWork else { return }

@@ -44,7 +44,11 @@ final class ForkCloneReaderTests: XCTestCase {
             XCTAssertNil(page.notice); XCTAssertFalse(page.incompleteTail)
             XCTAssertNil(page.retainedRun, "the fork's own run state leaves no work unfinished")
         }
-        XCTAssertNotNil(partial.older, "opened from its metadata file, the rows before it are offered")
+        // This published v1 checkpoint lacks the accounting/delegation index.
+        // Both readers deliberately rebuild from the unchanged journal.
+        XCTAssertNil(JournalCheckpoint.read(for: URL(fileURLWithPath: fromMetadata)))
+        XCTAssertNil(partial.older, "the legacy checkpoint is ignored and this small journal is read in full")
+        XCTAssertEqual(partial.messages.map(\.id), full.messages.map(\.id))
         XCTAssertEqual(partial.messages.map(\.text), full.messages.suffix(partial.messages.count).map(\.text), "the rows read as a full index reads them")
         XCTAssertEqual(partial.total, full.total, "every shown row is counted")
         XCTAssertEqual(partial.assistantMessageCount, full.assistantMessageCount)

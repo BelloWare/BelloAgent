@@ -42,7 +42,7 @@ extension WorkspaceModel {
     }
     /// Whether a chat's row shows the draft marker.
     func showsDraftMark(_ id: String) -> Bool {
-        guard draftChatIDs.contains(id), let chat = record(id), !chat.isUtilityChat else { return false }
+        guard draftChatIDs.contains(id), let chat = record(id), !chat.isUtilityChat, !chat.isSubagent else { return false }
         return !isEphemeral(id) && !pendingChatIDs.contains(id)
     }
 }

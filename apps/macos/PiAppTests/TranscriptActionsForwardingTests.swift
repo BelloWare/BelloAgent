@@ -26,7 +26,11 @@ final class TranscriptActionsForwardingTests: XCTestCase {
             switchVersion: { calls.append("switchVersion \($0) \($1)") },
             latestVersion: { calls.append("latestVersion") },
             openFile: { calls.append("openFile \($0) \($1.map { "\($0.lowerBound)-\($0.upperBound)" } ?? "top")") },
-            resolveReplyFile: { calls.append("resolveReplyFile \($0)"); return ReplyFileLocation(path: "/p/a.swift", line: 3) })
+            resolveReplyFile: { calls.append("resolveReplyFile \($0)"); return ReplyFileLocation(path: "/p/a.swift", line: 3) },
+            openSubagent: { calls.append("openSubagent \($0.sessionID)") },
+            inspectSubagent: { calls.append("inspectSubagent \($0.sessionID)") },
+            stopSubagent: { calls.append("stopSubagent \($0.sessionID)") },
+            openAgentSource: { calls.append("openAgentSource \($0.childID)") })
         let relay = TranscriptActionRelay()
         relay.current = pane
         let document = relay.forwarded
@@ -41,9 +45,11 @@ final class TranscriptActionsForwardingTests: XCTestCase {
         row.openFile?("/p/a.swift", 3...5); row.openFile?("/p/b.swift", nil)
         let resolved = await row.resolveReplyFile?("a.swift:3")
         XCTAssertEqual(resolved, ReplyFileLocation(path: "/p/a.swift", line: 3))
+        let child = SubagentTarget(SubagentTranscriptTests.link)
+        row.openSubagent?(child); row.inspectSubagent?(child); row.stopSubagent?(child); row.openAgentSource?(.init(childID: "chat-child", turn: 2))
         XCTAssertEqual(calls, ["inspect m1", "edit m2", "copyMessage m3", "stop", "retry", "resume", "inspectTurn",
                                "skillPressed m4 review", "skillHovered m5 review true", "costLimit raise",
-                               "fork m6", "switchVersion m7 -1", "latestVersion", "openFile /p/a.swift 3-5", "openFile /p/b.swift top", "resolveReplyFile a.swift:3"])
+                               "fork m6", "switchVersion m7 -1", "latestVersion", "openFile /p/a.swift 3-5", "openFile /p/b.swift top", "resolveReplyFile a.swift:3", "openSubagent chat-child", "inspectSubagent chat-child", "stopSubagent chat-child", "openAgentSource chat-child"])
         XCTAssertNil(row.quoteReply, "Rows never ask for a quote; the page's selection controller does")
 
         // The rows keep the closures they were handed; the pane's newer
@@ -67,7 +73,7 @@ final class TranscriptActionsForwardingTests: XCTestCase {
     /// Fails when `TranscriptActions` gains or loses an action, so the
     /// relays cannot fall behind it.
     @MainActor func testTheRelaysForwardEveryAction() {
-        XCTAssertEqual(Mirror(reflecting: TranscriptActions()).children.count, 16,
+        XCTAssertEqual(Mirror(reflecting: TranscriptActions()).children.count, 20,
                        "TranscriptActions changed. Forward the action in `TranscriptActions.forwarding`, list it in `offered` if it is optional, and call it in testEveryActionReachesThePaneThroughBothRelays.")
     }
 }

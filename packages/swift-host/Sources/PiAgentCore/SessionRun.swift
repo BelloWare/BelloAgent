@@ -5,6 +5,8 @@ import Foundation
 
 extension AgentSession {
     func launch(compactOnly: Bool = false) {
+        turnSubagentModels = activeSubmission?.subagentModels ?? subagentModelGrants
+        if !costLimitReached, accountingFailure == nil { familyStopReason = nil }
         presentationUtility = compactOnly || titleTask
         if retrying || continuing, let root = taskRootID {
             beginPresentedTask(root)
@@ -61,7 +63,7 @@ extension AgentSession {
             let started=nowMS(); var measured=false
             defer { if !measured { modelRequestsMs += nowMS()-started } }
             do {
-                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,cacheSessionID:promptCacheSessionID,turnID:turnID,purpose:purpose,onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
+                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,cacheSessionID:promptCacheSessionID,turnID:turnID,purpose:purpose,lifecycle:try await requestLifecycle(turnID:turnID,purpose:purpose,requestMessages:messages),onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
                 modelReplyMs = nowMS()-started; modelRequestsMs += modelReplyMs; measured = true
                 return reply
             } catch let error as AgentError {
@@ -130,6 +132,7 @@ extension AgentSession {
                 // request), and the context may be compacted before it.
                 let continued=continuing
                 continuing=false
+                if continued { try startAgentEpoch() }
                 // Pi's _overflowRecoveryAttempted: one compact-and-retry until a
                 // user message arrives or a reply completes.
                 var overflowRecoveryAttempted=retryFirstRequest && contextRecovery["consumed"].flag == true
@@ -143,7 +146,9 @@ extension AgentSession {
                     // Each round makes a model request. At the chat's cost
                     // limit it stops here, before pending steering is delivered.
                     try enforceCostLimit()
-                    let drained=resumingFailedRequest ? false : try await drainSteering()
+                    let humanDrained=resumingFailedRequest ? false : try await drainSteering()
+                    let agentDrained=resumingFailedRequest || agentCoordinator == nil ? false : try await agentCoordinator!.boundary(self,final:false)
+                    let drained = humanDrained || agentDrained
                     if drained { overflowRecoveryAttempted=false }
                     // A run started for pending input that delivered none (a
                     // queued edit took the hold first, or the message left)
@@ -180,7 +185,9 @@ extension AgentSession {
                                 if let partialID { recordDisplayChange(partialID, at: displayClock()) }
                             },refresh:{
                                 // Pi retries by continuing its loop, which first delivers queued steering.
-                                guard try await drainSteering() else { return nil }
+                                let userDelivered = try await drainSteering()
+                                let agentDelivered = try await agentCoordinator?.boundary(self,final:false) ?? false
+                                guard userDelivered || agentDelivered else { return nil }
                                 overflowRecoveryAttempted=false
                                 prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                                 return (try turnProfile.dispatching(prepared.count),requestContext,prepared.instructions,prepared.definitions)
@@ -268,6 +275,8 @@ extension AgentSession {
                     if outputLimited { event("output_limit") }
                     // A completed or output-limited answer stays in context.
                     // Compaction runs only before another pending model request.
+                    if let coordinator = agentCoordinator, try await coordinator.boundary(self,final:true) { continue }
+                    if !steering.isEmpty, queueEdit == nil { continue }
                     try finishPresentedTask(outputLimited ? "output-limited" : "completed")
                     if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
                     if !queue.isEmpty, queueEdit == nil { try enforceCostLimit() }
@@ -277,7 +286,18 @@ extension AgentSession {
             }
             state = .idle; runStatus = .idle; errorMessage=nil; errorCode=nil
         } catch {
-            queuePaused=true; runStatus=Task.isCancelled || error is CancellationError ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
+            // Settling a failed family cancels this task too. Preserve the
+            // original outcome before that internal Stop, and leave ordinary
+            // chats on their existing failure path until a family is accepted.
+            let cancelled = Task.isCancelled || error is CancellationError
+            if !isSubagent, subagents.family != nil, let coordinator = agentCoordinator {
+                let owner = id, runtime = displayEpoch, generation = stopCount
+                stop()
+                await Task { await coordinator.cancel(owner:owner,runtimeID:runtime,through:generation); await coordinator.drain(owner:owner) }.value
+            }
+            let error: Error = familyStopReason ?? error
+            setFamilyWaiting(false)
+            queuePaused=true; runStatus=familyStopReason == nil && cancelled ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
             errorMessage=(error as? AgentError)?.message ?? (runStatus == .cancelled ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
             errorCode=runStatus == .failed ? (error as? AgentError)?.code : nil
             if let activeSubmission { commandState(activeSubmission,runStatus.rawValue) }

@@ -3,7 +3,9 @@ import XCTest
 @testable import FileView
 @testable import PiApp
 
-final class FileSyntaxTests: XCTestCase {
+// The shared-pass byte counts depend on concurrent requests reaching the
+// reader together. Competing test hosts change that batching window.
+final class FileSyntaxTests: XCTestCase, SerialTestLane {
     @MainActor func testScrollingUpKeepsTheNewViewportColouredWithoutRelexing() async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("syntax-lru-\(UUID().uuidString).swift")
         try String(repeating: "let value = 1\n", count: 1_400).write(to: url, atomically: true, encoding: .utf8)

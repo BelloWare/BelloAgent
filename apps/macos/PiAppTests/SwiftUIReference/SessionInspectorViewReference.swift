@@ -143,6 +143,7 @@ private struct InspectorNavigatorReference: View {
         switch page {
         case .overview: target = "overview"
         case .nextRequest: target = "next"
+        case .subagent(let id): target = "subagent:" + id
         case .turn(let id), .request(let id): target = id
         }
         // A turn of requests at a time: after SwiftUI placed the rows.
@@ -424,6 +425,7 @@ private struct InspectorPageViewReference: View {
                     .padding(.horizontal, PiSpacing.xl).padding(.top, PiSpacing.md)
             }
             switch inspector.page {
+            case .subagent: Text("Sub-agent (native AppKit page)")
             case .overview: InspectorOverviewPageReference(inspector: inspector, compact: compact)
             case .nextRequest: InspectorNextRequestPageReference(inspector: inspector, next: inspector.next, compact: compact)
             case .turn(let id): InspectorTurnPageReference(inspector: inspector, turnID: id, compact: compact)

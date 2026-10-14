@@ -18,6 +18,7 @@ struct TranscriptReveal: Equatable, Sendable {
     var serial: Int
     /// Asked for by the find bar, which marks its own match.
     var fromFind = false
+    var toolCallID: String? = nil
     /// How far below the viewport's top a revealed row lands.
     static let landing: Double = 24
 }
@@ -34,11 +35,11 @@ extension WorkspaceModel {
     /// show). The chat should be the selected one (or a side shown beside
     /// it): nothing is placed in a transcript nobody is showing.
     @discardableResult
-    func revealInTranscript(sessionID id: String, messageID: String, mark: TranscriptReveal.Mark? = nil, fromFind: Bool = false) async -> Bool {
+    func revealInTranscript(sessionID id: String, messageID: String, mark: TranscriptReveal.Mark? = nil, fromFind: Bool = false, toolCallID: String? = nil) async -> Bool {
         guard !Task.isCancelled, transcriptShows(id), let view = displays[id], let item = record(id) else { return false }
         revealSerial += 1
-        view.reveal = TranscriptReveal(messageID: messageID, mark: mark, serial: revealSerial, fromFind: fromFind)
-        if view.messages.contains(where: { $0.id == messageID }) {
+        view.reveal = TranscriptReveal(messageID: messageID, mark: mark, serial: revealSerial, fromFind: fromFind, toolCallID: toolCallID)
+        if view.presentedMessages.contains(where: { $0.id == messageID }) {
             land(view, on: messageID)
             return true
         }

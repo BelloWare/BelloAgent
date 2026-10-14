@@ -10,11 +10,17 @@ extension WorkspaceModel {
     func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveSwitch: Bool = false, reopensSide: Bool = true,
                 focusesComposer: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
+        let focusesComposer = focusesComposer && !item.isSubagent
         if revealInSidebar || preserveArchiveSwitch { quietSidebarReveal = [] }
         // A background request is listed on its own page, not the sidebar:
         // the menu bar's running requests and the report open it there.
         if item.isBackgroundTask { openBackgroundRequests(selecting: id); return }
-        if reselectOpenChat(id, item: item, revealInSidebar: revealInSidebar) { return }
+        if reselectOpenChat(id, item: item, revealInSidebar: revealInSidebar) {
+            do { try await attachManagedSubagent(item) }
+            catch is CancellationError { }
+            catch { displays[id]?.notice = error.localizedDescription }
+            return
+        }
         let (view, selection, heldRows) = prepareSelection(id, item: item, revealInSidebar: revealInSidebar, preserveArchiveSwitch: preserveArchiveSwitch,
                                                            focusesComposer: focusesComposer)
         restoreShownSide(of: id, selection: selection, reopensSide: reopensSide)
@@ -44,7 +50,7 @@ extension WorkspaceModel {
             if revealInSidebar { revealProjectChat(item) }
             // Keep the transcript idempotent while allowing an expired or
             // missing optional preview to recover after helper eviction.
-            if selected.presentation.readyAt != nil { scheduleAutomaticContext(id) }
+            if !item.isSubagent, selected.presentation.readyAt != nil { scheduleAutomaticContext(id) }
             return true
         }
         return false
@@ -143,7 +149,7 @@ extension WorkspaceModel {
         // Imports belong to this exact composer; keep it until its images
         // have arrived, even off screen.
         for other in displays.values.sorted(by: { $0.used < $1.used }) where displays.count > 8 && other.id != id && !other.hasWork && !other.loading
-            && other.imageImports == 0
+            && other.imageImports == 0 && other.id != record(id)?.delegation?.budgetOwnerSessionID
             && !(pendingChatIDs.contains(other.id) && !isPendingEmpty(other.id)) && !sides.values.contains(where: { $0.id == other.id || $0.parentID == other.id }) {
             other.presentation.cancel(); displays.removeValue(forKey: other.id)
             releaseHelperSession(other.id)
@@ -161,7 +167,25 @@ extension WorkspaceModel {
                 self.displays[id] === view && view.presentationGeneration == generation
         }
         do {
+            try await attachManagedSubagent(item)
+            guard current() else { return }
             guard try await reconcileSubmissionDraft(item, view: view, current: current) else { return }
+            let owner = item.delegation.flatMap { record($0.budgetOwnerSessionID) } ?? item
+            view.childSummaries = subagentSummaries.filter { $0.value.link.budgetOwnerSessionID == item.id }
+            if item.isSubagent || !view.childSummaries.isEmpty, let path = owner.path,
+               let state = try? await history.agentCoordination(path: URL(fileURLWithPath: path), ownerID: owner.id) {
+                guard current() else { return }; applyAgentCoordination(state, parentID: owner.id)
+            }
+            if let link = item.delegation {
+                view.isManagedSubagent = true; view.subagentStatus = subagentSummaries[id]?.status
+                view.subagentTurn = subagentSummaries[id]?.turn
+                if let issue = item.delegationIssue { view.notice = issue }
+                if let parent = record(link.budgetOwnerSessionID), parent.workspaceID == item.workspaceID, let path = parent.path,
+                   let plan = try? await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: parent.id, childID: item.id).first,
+                   plan.header.link == link {
+                    guard current() else { return }; view.delegatedTask = plan.task
+                }
+            }
             if focusesComposer { view.composerFocusRequest += 1 }
             // The chat's file can be named while its page is read: its
             // first message writes the journal, and the helper can report
@@ -231,13 +255,13 @@ extension WorkspaceModel {
     /// side, else the selected chat. Every deliberate move between chats calls
     /// this so typing can start at once; background events never do.
     func focusComposer(_ id: String? = nil) {
-        guard let target = id ?? focusedSessionID ?? selectedID else { return }
+        guard let target = id ?? focusedSessionID ?? selectedID, record(target)?.isSubagent != true else { return }
         displays[target]?.composerFocusRequest += 1
     }
     func selectSide(_ id: String, revealInSidebar: Bool = true) async {
         guard let info = side(id), displays[id] != nil else {
             // A saved child chat that is not the shown side opens in the pane.
-            if chats.contains(where: { $0.id == id && $0.parentSessionID != nil }) { await showSide(id, revealInSidebar: revealInSidebar) }
+            if chats.contains(where: { $0.id == id && !$0.isSubagent && $0.parentSessionID != nil }) { await showSide(id, revealInSidebar: revealInSidebar) }
             return
         }
         if revealInSidebar { quietSidebarReveal = [] }
@@ -264,7 +288,7 @@ extension WorkspaceModel {
         quietSidebarReveal = sidebarLineage(of: id)
         if side(id) != nil { await selectSide(id, revealInSidebar: false); return }
         guard let chat = record(id) else { return }
-        if chat.parentSessionID != nil, record(chat.parentSessionID ?? "") != nil, !chat.imported { await showSide(id, revealInSidebar: false) }
+        if !chat.isSubagent, chat.parentSessionID != nil, record(chat.parentSessionID ?? "") != nil, !chat.imported { await showSide(id, revealInSidebar: false) }
         else { await select(id, revealInSidebar: false) }
     }
 

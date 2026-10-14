@@ -1,0 +1,105 @@
+import Foundation
+
+/// Rebuildable, body-free references. The journals own acceptance/delivery;
+/// capture links prove which physical requests produced or consumed a row.
+struct AgentCoordinationEntry: Equatable, Sendable, Identifiable {
+    var id: String, childID: String, turn: Int, kind: String, author: String
+    var sourceSessionID: String, sourceMessageID: String? = nil, sourceToolCallID: String? = nil
+    var recipientID: String, recipientMessageID: String? = nil
+    var disposition: String
+    var sourceAttemptID: String? = nil, consumingAttemptID: String? = nil
+    var title: String { kind.replacingOccurrences(of: "_", with: " ").capitalized + " · turn \(turn)" }
+    var deliveryLabel: String {
+        switch disposition {
+        case "delivered": "Delivered"
+        case "not_delivered_interrupted": "Not delivered · interrupted"
+        case "held": "Pending for parent Resume"
+        default: author == "parent" ? "Queued for steering" : "Pending delivery"
+        }
+    }
+}
+struct AgentCoordination: Equatable, Sendable {
+    var entries: [AgentCoordinationEntry] = []
+    var heldChildren: Set<String> = []
+}
+
+extension HistoryReader {
+    func agentCoordination(path: URL, ownerID: String) throws -> AgentCoordination {
+        let attributes = try FileManager.default.attributesOfItem(atPath: path.path)
+        let fingerprint = [attributes[.systemFileNumber], attributes[.size], attributes[.modificationDate]].map { String(describing: $0) }.joined(separator: ":")
+        let cacheKey = ownerID + "|" + path.path
+        if let cached = agentCoordinationCache[cacheKey], cached.fingerprint == fingerprint { return cached.value }
+        var entries: [String: AgentCoordinationEntry] = [:], order: [String] = [], children: Set<String> = [], held: Set<String> = []
+        func add(_ entry: AgentCoordinationEntry) {
+            if entries[entry.id] == nil { order.append(entry.id) }
+            entries[entry.id] = entry
+        }
+        try subagentRecords(path) { row, line in
+            if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == ownerID else { throw StoreError.invalidRecord } }
+            if let plan = Self.subagentPlan(row), let raw = plan["origin"],
+               let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)), origin.link.valid,
+               origin.link.budgetOwnerSessionID == ownerID { children.insert(origin.link.childSessionID) }
+            let data = row["data"]?.object ?? [:]
+            switch row["customType"]?.string {
+            case "pi-app.agent-operation.v1":
+                guard let key = data["key"]?.object, let source = key["parentSessionID"]?.string else { break }
+                if let turn = data["turn"]?.object, let child = turn["childID"]?.string, children.contains(child), source == ownerID,
+                   let number = turn["turn"]?.nonnegativeInteger, number > 0, let input = turn["inputID"]?.string {
+                    add(.init(id: input, childID: child, turn: number, kind: number == 1 ? "task" : "follow_up", author: "parent",
+                              sourceSessionID: source, sourceMessageID: key["assistantMessageID"]?.string, sourceToolCallID: key["toolCallID"]?.string,
+                              recipientID: child, recipientMessageID: input, disposition: "pending"))
+                }
+                if let message = data["message"]?.object, let id = message["id"]?.string, let child = message["childID"]?.string,
+                   children.contains(child), let turn = message["turn"]?.nonnegativeInteger, turn > 0,
+                   let author = message["author"]?.string, (author == "parent" && source == ownerID || author == "subagent" && source == child) {
+                    add(.init(id: id, childID: child, turn: turn, kind: message["kind"]?.string ?? "note", author: author,
+                              sourceSessionID: source, sourceMessageID: key["assistantMessageID"]?.string, sourceToolCallID: key["toolCallID"]?.string,
+                              recipientID: author == "parent" ? child : ownerID, disposition: message["disposition"]?.string ?? "pending"))
+                }
+            case "pi-app.subagent-turn-terminal.v1":
+                guard let child = data["childID"]?.string, children.contains(child), let number = data["turn"]?.nonnegativeInteger else { break }
+                let id = "result:" + child + ":" + String(number)
+                add(.init(id: id, childID: child, turn: number, kind: "result", author: "subagent", sourceSessionID: child,
+                          sourceMessageID: data["result"]?.object?["metadata"]?.object?["resultRef"]?.object?["messageIds"]?.array?.first?.string,
+                          recipientID: ownerID, disposition: "pending"))
+            case "pi-app.agent-message.v1":
+                if let id = data["id"]?.string, var entry = entries[id] { entry.disposition = data["disposition"]?.string ?? entry.disposition; entries[id] = entry }
+            case "pi-app.agent-delivery.v1":
+                guard data["committed"]?.bool == true, let recipient = data["recipientID"]?.string, let rowID = data["rowID"]?.string else { break }
+                for id in data["eventIDs"]?.array?.compactMap(\.string) ?? [] {
+                    guard var entry = entries[id], entry.recipientID == recipient else { continue }
+                    entry.recipientMessageID = rowID; entry.disposition = "delivered"; entries[id] = entry
+                }
+            case "pi-app.family-run.v1": held = Set(data["heldChildren"]?.array?.compactMap(\.string) ?? [])
+            default: break
+            }
+            return true
+        }
+        let value = AgentCoordination(entries: order.compactMap { entries[$0] }, heldChildren: held.intersection(children))
+        if agentCoordinationCache.count >= 8 { agentCoordinationCache.removeAll(keepingCapacity: true) }
+        agentCoordinationCache[cacheKey] = (fingerprint, value)
+        return value
+    }
+}
+
+extension PayloadArchive {
+    func coordinationRequests(_ entries: [AgentCoordinationEntry], ownerID: String, workspaceID: String) async throws -> [AgentCoordinationEntry] {
+        guard Self.inspectorScope(ownerID, workspaceID) else { throw CaptureFailure.unavailable }
+        return try await dashboardReader().run(consumer: "inspector") { engine in
+            try entries.map { original in
+                try Task.checkCancellation()
+                var entry = original
+                func attempt(_ message: String?, role: String, session: String) throws -> String? {
+                    guard let message else { return nil }
+                    return try engine.db.rows("SELECT a.id FROM message_links l JOIN attempts a ON a.id=l.attempt WHERE l.message=? AND l.role=? AND a.session=? AND a.workspace=? AND (a.session=? OR a.budget_owner=?) ORDER BY a.wall,a.id LIMIT 1",
+                        [.text(message),.text(role),.text(session),.text(workspaceID),.text(ownerID),.text(ownerID)]).first?["id"]?.string
+                }
+                entry.sourceAttemptID = try attempt(entry.sourceMessageID, role: "output", session: entry.sourceSessionID)
+                entry.consumingAttemptID = try engine.db.rows("SELECT a.id FROM attempts a WHERE a.session=? AND a.workspace=? AND (a.session=? OR a.budget_owner=?) AND (EXISTS(SELECT 1 FROM agent_delivery_links d WHERE d.attempt=a.id AND d.event=?) OR (a.agent_delivery_ids IS NULL AND EXISTS(SELECT 1 FROM message_links l WHERE l.attempt=a.id AND l.role='context' AND l.message=?))) ORDER BY a.wall,a.id LIMIT 1",
+                    [.text(entry.recipientID),.text(workspaceID),.text(ownerID),.text(ownerID),.text(entry.id),entry.recipientMessageID.map(CaptureSQLValue.text) ?? .null]).first?["id"]?.string
+                if entry.consumingAttemptID != nil { entry.disposition = "delivered" }
+                return entry
+            }
+        }
+    }
+}

@@ -11,6 +11,7 @@ extension AgentSession {
     /// timeline drop the abandoned tail. Nothing is written unless the new
     /// submission is itself acceptable.
     public func edit(fromMessageID messageID: String, input: Submission, expectedTimeline: String? = nil, expectedTextDigest: String? = nil, admittedAt: Int? = nil) async throws -> JSON {
+        try requireIndependentSession()
         let admittedAt = admittedAt ?? stopCount
         try checkSubmissionStop(admittedAt)
         guard isIdle else { throw AgentError("session_busy", "Edit requires an idle session with empty queues") }

@@ -413,6 +413,7 @@ import QuartzCore
     struct Profile: Equatable { var id: String; var name: String }
     enum Kind: Equatable {
         case composer
+        case subagent(status: String, busy: Bool, parent: String)
         case projectUnavailable(retry: Bool)
         case backgroundTask(busy: Bool, source: String?)
         case archived
@@ -445,6 +446,14 @@ import QuartzCore
         switch kind {
         case .composer:
             view = NSView()
+        case .subagent(let status, let busy, let parent):
+            var items: [ShellItem] = [.view(shellBodySymbol("person.2", color: .piAccent)),
+                .view(shellLine(status + " · Usage charged to " + parent, font: PiKit.Font.caption, color: .piInkSecondary), .flexible)]
+            if busy { items.append(.view(PiKit.Button("Stop sub-agent", symbol: "stop.fill", style: .danger, compact: true) { [weak self] in
+                guard let self, let link = model.record(self.chatID)?.delegation else { return }
+                model.stopSubagent(SubagentTarget(link), from: link.budgetOwnerSessionID)
+            })) }
+            view = ShellStack(.horizontal, spacing: PiSpacing.sm, padding: Self.padding, items)
         case .projectUnavailable(let retry):
             let button = retry ? PiKit.Button("Retry", style: .secondary, compact: true) { model.retryConfiguration() }
                 : PiKit.Button("Configure Projects…", style: .secondary, compact: true) { model.showWorkspaceManager = true }

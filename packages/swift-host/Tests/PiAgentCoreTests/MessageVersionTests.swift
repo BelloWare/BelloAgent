@@ -34,6 +34,50 @@ final class MessageVersionTests: XCTestCase {
     }
     private func texts(_ rows: JSON) -> [String] { rows.list.map { $0["text"].text ?? "" } }
 
+    func testContainingVersionFindsALaterTurnHiddenByAnAncestorEdit() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let session = try chat.session(replies: [answer("first"), answer("delegated"), answer("replacement")])
+        try await send(session, "ancestor", "Earlier task")
+        try await send(session, "delegator", "Delegating task")
+        let snapshot = await session.snapshot()
+        let issuer = try XCTUnwrap(snapshot["messages"].list.last?["id"].text)
+        try await edit(session, "ancestor", "replacement", "Edited earlier task")
+        let saved = await session.path
+        let path = try XCTUnwrap(saved)
+        await session.close()
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        let reopened = try chat.session(resume: path)
+        let location = try await reopened.messageVersions(["containing": JSON(issuer)])
+        XCTAssertEqual(location["anchor"].text, "replacement")
+        XCTAssertEqual(location["selected"].int, 1)
+        XCTAssertEqual(location["versions"].list.map { $0["messageId"].text }, ["ancestor", "replacement"])
+        let page = try await reopened.versionPage(["messageId":"ancestor", "around":JSON(issuer)])
+        XCTAssertEqual(page["messages"].list.first?["id"].text, issuer)
+        let current = try await reopened.messageVersions(["containing":"replacement"])
+        XCTAssertTrue(current["versions"].list.isEmpty, "A live row needs only the ordinary reveal")
+        do { _ = try await reopened.messageVersions(["containing":"missing"]); XCTFail("Missing target accepted") }
+        catch { XCTAssertEqual((error as? AgentError)?.code, "message_missing") }
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), bytes)
+        await reopened.close()
+    }
+
+    func testContainingVersionAnchorsANestedOldVersionToTheVisibleAncestor() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let session = try chat.session(replies: [answer("first"), answer("delegated"), answer("edited child"), answer("edited ancestor")])
+        try await send(session, "ancestor", "Earlier task")
+        try await send(session, "delegator", "Delegating task")
+        let snapshot = await session.snapshot()
+        let issuer = try XCTUnwrap(snapshot["messages"].list.last?["id"].text)
+        try await edit(session, "delegator", "new-delegator", "Edited delegating task")
+        try await edit(session, "ancestor", "new-ancestor", "Edited ancestor")
+        let location = try await session.messageVersions(["containing": JSON(issuer)])
+        XCTAssertEqual(location["anchor"].text, "new-ancestor")
+        XCTAssertEqual(location["selected"].int, 1)
+        XCTAssertEqual(location["versions"].list.map { $0["messageId"].text }, ["delegator", "new-delegator"])
+        XCTAssertTrue(location["current"].isNull, "The containing group is itself hidden")
+        await session.close()
+    }
+
     func testOneEditLeavesTheOriginalAndItsRepliesAsVersionOne() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let session = try chat.session(replies: [attempted(answer("first answer"), "attempt-1"), attempted(answer("original answer"), "attempt-2"),
@@ -195,6 +239,11 @@ final class MessageVersionTests: XCTestCase {
         }
         XCTAssertGreaterThan(pages, 1, "three long replies do not fit one page")
         XCTAssertEqual(seen, ["first", "one f", "secon", "two f", "third", "three"])
+        let targeted = try await session.versionPage(["messageId": "a", "around": "c"])
+        XCTAssertEqual(targeted["start"].int, 4)
+        XCTAssertEqual(targeted["messages"].list.first?["id"].text, "c", "a linked card beyond the first byte-bounded page is reachable")
+        do { _ = try await session.versionPage(["messageId": "a", "around": "a2"]); XCTFail("target belongs to another version") }
+        catch let error as AgentError { XCTAssertEqual(error.code, "message_missing") }
         do { _ = try await session.versionPage(["messageId": "a", "offset": 7]); XCTFail("past the end") }
         catch let error as AgentError { XCTAssertEqual(error.code, "invalid_range") }
         do { _ = try await session.versionPage(["messageId": "b"]); XCTFail("b was never edited") }

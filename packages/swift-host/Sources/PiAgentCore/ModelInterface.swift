@@ -10,6 +10,10 @@ public struct ToolDefinition: Sendable, Equatable {
 public struct ToolCall: Sendable {
     public let id: String, name: String
     public let arguments: JSON
+    /// Helper-owned MCP configuration ceiling; never parsed from model arguments.
+    var mcpPolicy: JSON?
+    /// Physical owner supplied by the session, never model-controlled arguments.
+    var outputSessionID: String?
     public init(id: String, name: String, arguments: JSON) { self.id=id; self.name=name; self.arguments=arguments }
 }
 public struct ModelTerminalOutcome: Sendable {
@@ -31,6 +35,7 @@ public struct ModelReply: Sendable {
 }
 public enum StreamDelta: Sendable { case text(String), thinking(String), tool(String, String, String), part(ResponsePartEvent) }
 public protocol ModelClient: Sendable {
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, cacheSessionID: String, turnID: String, purpose: String, lifecycle: RequestLifecycle?, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply
     /// `cacheSessionID` names the prompt cache the request joins; `sessionID`
@@ -38,6 +43,10 @@ public protocol ModelClient: Sendable {
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, cacheSessionID: String, turnID: String, purpose: String, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply
 }
 public extension ModelClient {
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, cacheSessionID: String, turnID: String, purpose: String, lifecycle: RequestLifecycle?, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        guard lifecycle == nil else { throw AgentError("request_scope_unsupported", "This model client cannot perform accounted family requests") }
+        return try await complete(profile: profile, apiKey: apiKey, messages: messages, instructions: instructions, tools: tools, sessionID: sessionID, cacheSessionID: cacheSessionID, turnID: turnID, purpose: purpose, onObservation: onObservation, onDelta: onDelta)
+    }
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
         try await complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,turnID:turnID,purpose:purpose,onDelta:onDelta)
     }
@@ -47,6 +56,7 @@ public extension ModelClient {
     }
 }
 public protocol ToolExecuting: Sendable {
+    func delegationMCPPolicy() async -> JSON?
     func definitions(readOnly: Bool) async -> [ToolDefinition]
     func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON
     func invoke(_ call: ToolCall, readOnly: Bool, onUpdate: @escaping @Sendable (JSON) async -> Void) async throws -> JSON
@@ -56,6 +66,7 @@ public protocol ToolExecuting: Sendable {
     func resultsRetained(_ callIDs: [String], retained: Bool) async
 }
 public extension ToolExecuting {
+    func delegationMCPPolicy() async -> JSON? { nil }
     func resultsRetained(_ callIDs: [String], retained: Bool) async {}
     func invoke(_ call: ToolCall, readOnly: Bool, onUpdate: @escaping @Sendable (JSON) async -> Void) async throws -> JSON { try await invoke(call,readOnly:readOnly) }
     func capabilityIDs(readOnly: Bool) async -> [String] { await definitions(readOnly:readOnly).map(\.name) }

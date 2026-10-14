@@ -18,7 +18,9 @@ private final class RowFrameProbeView: NSView {
 /// with the system's ring, which traced whatever the row happened to be
 /// drawing: on a running call, its shimmer, so the ring changed width as the
 /// shimmer moved.
-final class TranscriptFocusTests: XCTestCase {
+// Captures window-server pixels across focus changes. Other test hosts can
+// change the window's active appearance between those captures.
+final class TranscriptFocusTests: XCTestCase, SerialTestLane {
 
     /// A finished call's row and, under it, a running call's row, in a key
     /// window. Focus starts on the first; Tab takes it to the running one.
