@@ -74,6 +74,30 @@ final class NativeApplicationTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(content.subviewsOfType(ProfileSettingsView.self).first?.frame, form.frame)
     }
 
+    @MainActor func testViewMenuSharesTheGlobalSidebarChoiceAndNewChatAvailability() throws {
+        let (model, root) = try fixture()
+        let previous = NSApp.mainMenu
+        defer { NSApp.mainMenu = previous; model.shutdown(); try? FileManager.default.removeItem(at: root) }
+        let menus = ApplicationMenus(model: model, updates: UpdateController(), workspaceWindow: { nil }, revealWorkspace: {}, showSettings: {})
+        menus.install()
+        let view = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "View" }?.submenu)
+        let choices = try XCTUnwrap(view.items.first { $0.identifier?.rawValue == "sidebarView" }?.submenu)
+        XCTAssertEqual(choices.items.map(\.title), ["Topics", "Flat"])
+        XCTAssertEqual(choices.items.map(\.state), [.on, .off])
+        XCTAssertTrue(PiMenus.perform("sidebarView-flat", in: choices))
+        XCTAssertTrue(model.sidebarListsFlat)
+        menus.menuNeedsUpdate(choices)
+        XCTAssertEqual(choices.items.map(\.state), [.off, .on])
+        model.selectedWorkspaceID = "missing"
+        let file = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu)
+        let newChat = try XCTUnwrap(file.items.first { $0.title == "New Chat" })
+        XCTAssertEqual(newChat.keyEquivalent, "n"); XCTAssertTrue(menus.validateMenuItem(newChat))
+        model.setSidebarFlat(false); menus.menuNeedsUpdate(choices)
+        XCTAssertEqual(choices.items.map(\.state), [.on, .off]); XCTAssertFalse(menus.validateMenuItem(newChat))
+        model.setSidebarFlat(true); model.workspaces[0].trusted = false
+        XCTAssertFalse(menus.validateMenuItem(newChat))
+    }
+
     @MainActor func testMenusKeepShortcutsAndConversationFocus() async throws {
         let (model, root) = try fixture()
         defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }

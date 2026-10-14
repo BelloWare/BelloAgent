@@ -109,7 +109,9 @@ enum PiMenuEntry {
             item.target = target; item.representedObject = target
             item.isEnabled = command.enabled
             item.state = command.checked ? .on : .off
-            decorate(item, systemImage: command.checked ? nil : command.systemImage, identifier: command.identifier, help: command.help)
+            // AppKit draws the checkmark in its own leading column. Keep the
+            // command's icon so checked and unchecked choices stay aligned.
+            decorate(item, systemImage: command.systemImage, identifier: command.identifier, help: command.help)
             return item
         case .submenu(let title, let systemImage, let identifier, let help, let entries):
             let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")

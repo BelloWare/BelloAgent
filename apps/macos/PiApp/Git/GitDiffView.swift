@@ -12,6 +12,33 @@ import GitView
     let table = GitDiffTable()
     private let heading = DiffHeading()
     private let more = DiffMore()
+    private(set) var hunkReview: GitHunkReview?
+    func bindHunkReview(_ controller: GitController) {
+        guard hunkReview == nil else { return }
+        let review = GitHunkReview(controller: controller)
+        hunkReview = review
+        review.changed = { [weak self] in self?.apply() }
+        review.synchronize()
+    }
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { hunkReview?.suspend() } else { hunkReview?.synchronize() }
+    }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+              let focused = window?.firstResponder as? NSView, focused === self || focused.isDescendant(of: self) else {
+            return super.performKeyEquivalent(with: event)
+        }
+        if event.keyCode == 98 {
+            table.moveToChange(forward: !event.modifierFlags.contains(.shift)); return true
+        }
+        if event.keyCode == 49, !event.modifierFlags.contains(.shift),
+           let box = focused as? PiKit.Checkbox, box.accessibilityIdentifier().hasPrefix("git-hunk-") {
+            if box.isEnabled, !event.isARepeat { box.performClick(nil) }
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
     /// Wrapped lines: the view's own, kept while it is (`@State`).
     private(set) var wrap = false
     private var shown: Shown?
@@ -28,6 +55,8 @@ import GitView
         wantsLayer = true
         addSubview(table)
         heading.wrapChanged = { [weak self] in self?.setWrap($0) }
+        heading.hunks.previous.onPress = { [weak self] in self?.table.moveToChange(forward: false) }
+        heading.hunks.next.onPress = { [weak self] in self?.table.moveToChange(forward: true) }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
@@ -48,6 +77,7 @@ import GitView
         shown = Shown(files: files, title: title, subtitle: subtitle, identity: identity, loading: loading, embedded: embedded, lead: lead,
                       leadKey: leadKey, split: split, expanded: expanded, setSplit: setSplit, setExpanded: setExpanded,
                       openFile: openFile, reveal: reveal, revealed: revealed)
+        hunkReview?.synchronize()
         apply()
     }
 
@@ -60,30 +90,36 @@ import GitView
     private func apply() {
         guard let shown else { return }
         let showAll = shown.expanded == shown.identity
-        heading.update(title: shown.title, subtitle: shown.subtitle, loading: shown.loading, empty: shown.files.isEmpty,
+        let files = hunkReview?.displayFiles(for: shown.identity) ?? shown.files
+        heading.hunks.update(hasChanges: files.contains { !$0.hunks.isEmpty }, review: hunkReview)
+        heading.update(title: shown.title, subtitle: shown.subtitle, loading: shown.loading, empty: files.isEmpty,
                        embedded: shown.embedded, lead: shown.lead, split: shown.split, wrap: wrap, setSplit: shown.setSplit)
         // Counted from what the parser already totalled, not by walking the lines again.
-        let totalRows = shown.files.reduce(0) { $0 + $1.lineCount }
+        let totalRows = files.reduce(0) { $0 + $1.lineCount }
         let hasMore = totalRows > Self.rowLimit && !showAll
         let identity = shown.identity, setExpanded = shown.setExpanded
         more.press = { setExpanded(identity) }
-        table.update(files: shown.files, split: shown.split, wrap: wrap, showAll: showAll, identity: shown.identity, top: heading,
+        table.update(files: files, split: shown.split, wrap: wrap, showAll: showAll, identity: shown.identity, top: heading,
                      topHeightKey: TopHeightKey(title: shown.title != nil, subtitle: shown.subtitle != nil, note: shown.files.isEmpty && !shown.loading,
-                                                embedded: shown.embedded, lead: shown.leadKey),
+                                                embedded: shown.embedded, lead: shown.leadKey, hunkRevision: hunkReview?.revision ?? 0),
                      loading: shown.loading, more: hasMore ? more : nil, colors: .pi, menu: GitDiffPiMenu.builder(openFile: shown.openFile),
-                     reveal: shown.reveal, revealed: shown.revealed)
+                     reveal: shown.reveal, revealed: shown.revealed,
+                     hunkControls: hunkReview.map { review in
+                         GitDiffHunkControls(key: review.revision) { [weak review] in review?.control($0) }
+                     })
     }
 
     /// What the heading's height depends on: its title and subtitle are one
     /// line each whatever they say, and the spinner is shorter than the tabs.
     private struct TopHeightKey: Hashable {
-        let title: Bool, subtitle: Bool, note: Bool, embedded: Bool, lead: AnyHashable
+        let title: Bool, subtitle: Bool, note: Bool, embedded: Bool, lead: AnyHashable, hunkRevision: Int
     }
 }
 
 /// The lead, the heading and "No textual changes.", 12 points apart: the
 /// table's first row.
 @MainActor final class DiffHeading: NSView, GitDiffAccessory {
+    let hunks = GitHunkToolbar()
     private var lead: (NSView & PiKit.WidthSizing)?
     private let title = SelectableLine("", font: PiKit.Font.heading, color: .piInk, truncation: .byTruncatingMiddle)
     private let subtitle = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.micro, color: .piInkTertiary))
@@ -101,7 +137,7 @@ import GitView
         layoutTabs.onSelect = { [weak self] in self?.setSplit?($0) }
         wrapSwitch.labelFont = PiKit.Font.micro
         wrapSwitch.onChange = { [weak self] in self?.wrapChanged?($0) }
-        for view in [title, subtitle, spinner, layoutTabs, wrapSwitch, note] as [NSView] { addSubview(view) }
+        for view in [title, subtitle, spinner, layoutTabs, wrapSwitch, note, hunks] as [NSView] { addSubview(view) }
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
@@ -161,6 +197,7 @@ import GitView
         var height: CGFloat = 0
         if let lead { height += lead.height(forWidth: width) + PiSpacing.md }
         height += headInset + StackLayout.baselineHeight(headItems(), spacing: StackLayout.system, width: width - PiSpacing.lg * 2)
+        height += PiSpacing.sm + hunks.height(forWidth: max(0, width - PiSpacing.lg * 2))
         if showsNote { height += PiSpacing.md + note.intrinsicContentSize.height }
         return height
     }
@@ -187,7 +224,10 @@ import GitView
             let size = subtitle.intrinsicContentSize
             subtitle.frame = CGRect(x: blockOrigin.minX, y: blockOrigin.minY + (hasTitle ? titleSize.height + 2 : 0), width: min(size.width, blockOrigin.width), height: size.height)
         }
-        y += rowHeight
+        y += rowHeight + PiSpacing.sm
+        let hunkHeight = hunks.height(forWidth: max(0, width - PiSpacing.lg * 2))
+        hunks.frame = CGRect(x: PiSpacing.lg, y: y, width: max(0, width - PiSpacing.lg * 2), height: hunkHeight)
+        y += hunkHeight
         if showsNote {
             let size = note.intrinsicContentSize
             note.frame = CGRect(x: PiSpacing.lg, y: y + PiSpacing.md, width: min(size.width, width - PiSpacing.lg * 2), height: size.height)

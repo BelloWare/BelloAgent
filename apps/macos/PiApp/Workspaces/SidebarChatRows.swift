@@ -292,7 +292,9 @@ struct ChatRowStats: Equatable {
         var markedUnreadOnly = false
         /// The pencil: the chat's composer holds something unsent.
         var hasDraft = false
-        /// The chat's topic, as a tag, while its project lists flat.
+        /// Project and topic tags in the combined Flat list only.
+        var projectTag: String?
+        var projectTagFullName: String?
         var topicTag: String?
         var hasSide = false
         var expanded = true
@@ -304,6 +306,7 @@ struct ChatRowStats: Equatable {
         /// unread or failed.
         var accessibilityLabel: String {
             var words = [title]
+            if let project = projectTagFullName ?? projectTag { words.append("project " + project) }
             if let topicTag { words.append("topic " + topicTag) }
             let run = RunState(rawValue: stats.state)
             if run.holdsQueue { words.append(run == .interrupted ? "paused, run interrupted" : "paused") }
@@ -330,12 +333,11 @@ struct ChatRowStats: Equatable {
     /// Something unsent waits in the chat's composer.
     let draftMark = PiKit.SymbolView(PiKit.Symbol("pencil", size: 10, weight: .semibold), color: .piInkSecondary)
     private let dot = UnreadDotView()
-    /// The chat's topic in a flat project: a quiet capsule at the line's end,
-    /// before the unread dot, so the tags of a list line up. Hidden (and
-    /// taking no room) in the Topics view.
+    /// A separate compact line keeps both tags visible at the narrowest width
+    /// without taking space from the title or its archive/fold controls.
+    let projectTag = PiKit.Badge(text: "")
     let topicTag = PiKit.Badge(text: "")
-    /// The most of the title line a tag takes: the title keeps the rest.
-    static let topicTagShare: CGFloat = 0.4
+    private let tags: ShellStack
     private let archiveButton = PiKit.IconButton(symbol: "archivebox", label: "Archive chat", size: 18)
     private let confirm = PiKit.Button("Archive", style: .primary, compact: true)
     private let keep = PiKit.IconButton(symbol: "xmark", label: "Keep chat", size: 18)
@@ -350,16 +352,18 @@ struct ChatRowStats: Equatable {
 
     override init(frame: NSRect) {
         controls = ShellStack(.horizontal, spacing: 4, [.view(archiveButton), .view(confirm), .view(keep), .view(chevron)])
-        row1 = ShellStack(.horizontal, spacing: 4, [.view(title, .flexible), .view(draftMark), .view(pin), .spacer(4), .view(topicTag), .view(dot), .view(controls)])
+        row1 = ShellStack(.horizontal, spacing: 4, [.view(title, .flexible), .view(draftMark), .view(pin), .spacer(4), .view(dot), .view(controls)])
+        tags = ShellStack(.horizontal, spacing: 4, [.view(projectTag), .view(topicTag)])
         super.init(frame: frame)
         title.truncation = .end; subtitle.truncation = .end
         pin.setAccessibilityElement(true); pin.setAccessibilityRole(.image); pin.setAccessibilityLabel("Pinned chat")
         draftMark.setAccessibilityElement(true); draftMark.setAccessibilityRole(.image); draftMark.setAccessibilityLabel("Has a draft")
         draftMark.toolTip = "Unsent draft"; draftMark.isHidden = true
-        topicTag.compact = true; topicTag.isHidden = true
-        // The row says its topic to VoiceOver; the capsule is only its picture.
-        topicTag.setAccessibilityElement(false)
-        for view in [icon, row1, metrics, subtitle] as [NSView] { addSubview(view) }
+        for tag in [projectTag, topicTag] {
+            tag.compact = true; tag.isHidden = true; tag.setAccessibilityElement(false)
+        }
+        tags.isHidden = true
+        for view in [icon, row1, metrics, subtitle, tags] as [NSView] { addSubview(view) }
         bindActions()
         confirm.setAccessibilityIdentifier("confirmArchive")
         archiveButton.wantsLayer = true
@@ -429,6 +433,10 @@ struct ChatRowStats: Equatable {
         title.line = titleLine
         pin.isHidden = !new.pinned
         draftMark.isHidden = !new.hasDraft
+        projectTag.isHidden = new.projectTag == nil
+        projectTag.text = new.projectTag ?? ""
+        projectTag.toolTip = (new.projectTagFullName ?? new.projectTag).map { "Project: " + $0 }
+        tags.isHidden = new.projectTag == nil && new.topicTag == nil
         topicTag.isHidden = new.topicTag == nil
         topicTag.text = new.topicTag ?? ""
         topicTag.toolTip = new.topicTag.map { "Topic: " + $0 }
@@ -455,7 +463,7 @@ struct ChatRowStats: Equatable {
             subtitle.line = PiKit.Line(new.subtitle, font: PiKit.Font.caption, color: .piInkTertiary)
         }
         toolTip = new.help
-        row1.relayoutAll()
+        row1.relayoutAll(); tags.relayoutAll()
         invalidateIntrinsicContentSize(); needsLayout = true
     }
     private func applyControls() {
@@ -511,30 +519,25 @@ struct ChatRowStats: Equatable {
     // MARK: Layout
 
     private var titleHeight: CGFloat { PiKit.Line("Ag", font: .systemFont(ofSize: 13), color: .black).lineHeight }
-    private func row1Height(width: CGFloat) -> CGFloat { capTopicTag(width); return row1.height(forWidth: width) }
-    /// A long topic is cut short before it crowds the title out: to its
-    /// share of the line, and to what the line has left once the title's
-    /// minimum and the line's other pieces (the pencil, the pin, the dot, the
-    /// row's buttons, wider while Archive asks) are counted. Too little left,
-    /// and the tag steps aside for the row.
-    private func capTopicTag(_ textWidth: CGFloat) {
-        guard content?.topicTag != nil else { return }
-        let others = [draftMark, pin, dot, controls].filter { !$0.isHidden }
-        // Gaps between the title, the others, the spacer and the tag, and the spacer's own four.
-        let besides = others.reduce(0) { $0 + shellNaturalSize($1).width } + 4 * CGFloat(others.count + 2) + 4
-        let cap = min((textWidth * Self.topicTagShare).rounded(.down), (textWidth - besides - Self.titleMinimum).rounded(.down))
-        let fits = cap >= Self.topicTagMinimum
-        guard topicTag.isHidden == fits || fits && topicTag.maximumWidth != cap else { return }
-        topicTag.isHidden = !fits
-        if fits { topicTag.maximumWidth = cap }
-        row1.relayoutAll()
+    private func row1Height(width: CGFloat) -> CGFloat { row1.height(forWidth: width) }
+    private func tagsHeight(width: CGFloat) -> CGFloat {
+        guard !tags.isHidden else { return 0 }
+        let room = max(0, width)
+        if !projectTag.isHidden && !topicTag.isHidden {
+            let available = max(0, room - 4)
+            let half = available / 2
+            let projectWidth = min(projectTag.naturalWidth, max(half, available - min(topicTag.naturalWidth, half)))
+            projectTag.maximumWidth = projectWidth
+            topicTag.maximumWidth = max(0, available - projectWidth)
+        } else {
+            projectTag.maximumWidth = room; topicTag.maximumWidth = room
+        }
+        tags.relayoutAll()
+        return tags.height(forWidth: room) + 3
     }
-    /// The least of the title a tag leaves, and the least of a tag worth drawing.
-    static let titleMinimum: CGFloat = 40
-    static let topicTagMinimum: CGFloat = 28
     private var secondHeight: CGFloat { metrics.isHidden ? subtitle.intrinsicContentSize.height : metrics.height(forWidth: 0) }
     func height(forWidth width: CGFloat) -> CGFloat {
-        let text = row1Height(width: max(0, width - 24)) + 2 + secondHeight
+        let text = row1Height(width: max(0, width - 24)) + 2 + secondHeight + tagsHeight(width: max(0, width - 24))
         return max(16, text)
     }
     override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: height(forWidth: bounds.width > 0 ? bounds.width : 200)) }
@@ -544,7 +547,8 @@ struct ChatRowStats: Equatable {
         let scale = piScale
         let textWidth = max(0, bounds.width - 24)
         let r1 = row1Height(width: textWidth), r2 = secondHeight
-        let total = r1 + 2 + r2
+        let tagHeight = tagsHeight(width: textWidth)
+        let total = r1 + 2 + r2 + tagHeight
         let top = PiKit.round((bounds.height - total) / 2, scale)
         let iconY = PiKit.round((bounds.height - 16) / 2, scale)
         icon.frame = CGRect(x: 0, y: iconY, width: 16, height: 16)
@@ -552,5 +556,6 @@ struct ChatRowStats: Equatable {
         row1.frame = CGRect(x: 24, y: top, width: textWidth, height: r1)
         let second: NSView = metrics.isHidden ? subtitle : metrics
         second.frame = CGRect(x: 24, y: top + r1 + 2, width: textWidth, height: r2)
+        if tagHeight > 0 { tags.frame = CGRect(x: 24, y: top + r1 + 2 + r2 + 3, width: textWidth, height: tagHeight - 3) }
     }
 }

@@ -71,6 +71,26 @@ struct SidebarListContents: Equatable {
         let query = filter.trimmingCharacters(in: .whitespacesAndNewlines)
         let names = model.sidebarConnectionCount > 1
         let archive = model.sidebarShowsArchived
+        if model.sidebarListsFlat {
+            guard !model.sidebarProjects.isEmpty else { return contents }
+            var owner = ""
+            func add(_ entry: SidebarEntry, topic: String?) {
+                if case .chat(let chat, _, _) = entry { owner = chat.workspaceID }
+                if case .archiveHeading = entry { owner = "" }
+                if case .pagination = entry { owner = "" }
+                let snippet: Bool = { if case .searchSnippet = entry { return true }; return false }()
+                contents.entries.append(entry)
+                contents.gaps.append(contents.entries.count == 1 || snippet ? 0 : rowSpacing)
+                contents.owners.append((owner, nil))
+            }
+            let archived = model.sidebarArchiveContents(in: nil, topicID: nil, includesArchive: archive, filter: query,
+                                                         sidebarWidth: sidebarWidth, namesConnection: names)
+            addGroup(model.sidebarGroupContents(in: nil, topicID: nil, archived: false, filter: query, showEmpty: archived == nil,
+                                               sidebarWidth: sidebarWidth, namesConnection: names), projectID: "", topic: nil,
+                     model: model, filtering: !query.isEmpty, add: add)
+            if let archived { addGroup(archived, projectID: "", topic: nil, model: model, filtering: !query.isEmpty, add: add) }
+            return contents
+        }
         let projects = model.sidebarProjects
         let siblings = projects.map(\.name)
         for (index, project) in projects.enumerated() {
@@ -83,12 +103,9 @@ struct SidebarListContents: Equatable {
                 contents.owners.append((record.id, topic)); gap = rowSpacing
             }
             let expanded = !query.isEmpty || model.projectIsExpanded(record.id)
-            let flat = model.projectListsFlat(record.id)
             let help: String = {
                 if record.isScratch { return "Chats outside any project, such as connection tests. Tools stay disabled here." }
                 guard project.available else { return "Project configuration unavailable. Retained chats are read-only. Project ID: " + record.id }
-                // A flat project has no folders to drop on; its rows' menus move chats.
-                if flat { return record.roots.joined(separator: "\n") + "\nChats listed newest first, each with its topic as a tag." }
                 return record.roots.joined(separator: "\n") + "\nDrop chats anywhere in this project to move them out of a topic."
             }()
             add(.projectHeader(ProjectHeaderState(
@@ -99,17 +116,6 @@ struct SidebarListContents: Equatable {
                 dropTargeted: dropTarget?.project == record.id && dropTarget?.topic == nil, help: help)))
             guard expanded else { continue }
             if !project.available { add(.projectUnavailable(projectID: record.id)) }
-            // Flat: one list for the whole project, newest first, each chat's
-            // topic as a tag; no folders, so every entry is the project's own.
-            if flat {
-                let archived = model.sidebarArchiveContents(in: record, topicID: nil, includesArchive: archive, filter: query, flat: true,
-                                                            sidebarWidth: sidebarWidth, namesConnection: names)
-                addGroup(model.sidebarGroupContents(in: record, topicID: nil, archived: false, filter: query, showEmpty: archived == nil, flat: true,
-                                                    sidebarWidth: sidebarWidth, namesConnection: names), projectID: record.id, topic: nil,
-                         model: model, filtering: !query.isEmpty, add: add)
-                if let archived { addGroup(archived, projectID: record.id, topic: nil, model: model, filtering: !query.isEmpty, add: add) }
-                continue
-            }
             let topics = visibleTopics(model: model, project: record, query: query, archive: archive)
             for topic in topics {
                 let group = model.topicGroupContents(in: record, topic: topic, includesArchive: archive, filter: query,
@@ -141,7 +147,7 @@ struct SidebarListContents: Equatable {
             if let side = pendingSide, row.chat.delegation?.budgetOwnerSessionID != side.owner {
                 add(.side(side.row), topic); pendingSide = nil
             }
-            add(.chat(chat: row.chat, state: row.state, projectID: projectID), topic); any = true
+            add(.chat(chat: row.chat, state: row.state, projectID: row.chat.workspaceID), topic); any = true
             if filtering, let hit = model.sidebarSearchHit(row.chat.id) {
                 add(.searchSnippet(SidebarSearchSnippetState(chat: row.chat, hit: hit, indent: row.state.indent)), topic)
             }

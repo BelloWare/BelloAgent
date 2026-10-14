@@ -1252,8 +1252,9 @@ enum GitPanelSplit {
         let setSplit: (Bool) -> Void = { presentation.split = $0 }
         let setExpanded: (String?) -> Void = { presentation.whole = $0 }
         if inputs.panel == .changes {
-            if let selection = inputs.selection {
+            if let selection = inputs.selection ?? changesDiff.hunkReview?.offerSelection {
                 setMode(.changes)
+                changesDiff.bindHunkReview(controller)
                 changesDiff.show(files: inputs.diff.files, title: selection.path, subtitle: selection.staged ? "Staged · index versus HEAD" : "Working tree versus index",
                                  identity: GitController.diffIdentity(path: selection.path, staged: selection.staged), loading: inputs.diffLoading,
                                  split: presentation.split, setSplit: setSplit, expanded: presentation.whole, setExpanded: setExpanded, openFile: openFile)
