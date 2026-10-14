@@ -48,6 +48,7 @@ struct AgentDelivery: Codable, Sendable, Equatable {
     var rowID: String, recipientID: String, eventIDs: [String], payload: JSON
     var committed = false
     var continuation: Bool? = nil
+    var cursor: String? = nil
 }
 struct AgentFamilyRun: Codable, Sendable, Equatable {
     var epoch: String
@@ -55,6 +56,7 @@ struct AgentFamilyRun: Codable, Sendable, Equatable {
     var heldChildren: [String] = []
     var reportContinuations = 0
     var rateTimes: [String: [Double]] = [:]
+    var deliveryCursor: String? = nil
 }
 struct AgentFamilyState: Codable, Sendable, Equatable {
     var ownerID: String
@@ -106,11 +108,14 @@ struct AgentFamilyState: Codable, Sendable, Equatable {
             let delivery = try JSONDecoder().decode(AgentDelivery.self,from:data.data())
             if let old = deliveries[delivery.rowID] {
                 guard old.recipientID == delivery.recipientID, old.eventIDs == delivery.eventIDs, old.payload == delivery.payload,
-                      old.continuation == delivery.continuation,
+                      old.continuation == delivery.continuation, old.cursor == delivery.cursor,
                       !old.committed || delivery.committed else { throw SubagentRecovery.damaged() }
-            } else if delivery.continuation == true {
-                guard delivery.recipientID == ownerID, run != nil, !delivery.committed else { throw SubagentRecovery.damaged() }
-                run?.reportContinuations += 1
+            } else {
+                if delivery.continuation == true {
+                    guard delivery.recipientID == ownerID, run != nil, !delivery.committed else { throw SubagentRecovery.damaged() }
+                    run?.reportContinuations += 1
+                }
+                if delivery.recipientID == ownerID, let cursor = delivery.cursor { run?.deliveryCursor = cursor }
             }
             deliveries[delivery.rowID] = delivery
             if delivery.committed { for id in delivery.eventIDs { messages[id]?.disposition = "delivered"; messages[id]?.rowID = delivery.rowID } }

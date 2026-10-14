@@ -8,6 +8,7 @@ the command line. Every project, effect, journal and credential is synthetic.
 """
 import argparse
 import http.server
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -212,10 +213,21 @@ def run(point, fixture, recovery):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('recovery_helper', type=Path)
-    parser.add_argument('--points', nargs='+', choices=POINTS, default=POINTS)
+    parser.add_argument('--points', nargs='+')
+    parser.add_argument('--steering', action='store_true', help='Run the v3 extension, including promotion, delivery, adoption and coordination barriers')
+    parser.add_argument('--older-helper', type=Path)
     parser.add_argument('--skip-build', action='store_true')
     parser.add_argument('--without-drain', action='store_true', help='Mutation check: remove the family settlement barrier in the generated fixture only')
     args = parser.parse_args()
-    binary = BUILD / 'subagent-crash-build/debug/pi-native-host' if args.skip_build else fixture_binary(args.without_drain)
-    for point in args.points:
-        run(point, binary, args.recovery_helper.resolve())
+    if args.steering:
+        spec = importlib.util.spec_from_file_location('steering_crashes', Path(__file__).with_name('test-subagent-steering-crashes.py'))
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        points = args.points or module.POINTS
+        if not set(points).issubset(module.POINTS): parser.error('Unknown v3 crash point')
+        binary = BUILD/'steering-crash-build/debug/pi-native-host' if args.skip_build else module.fixture_binary()
+        for point in points: module.run(point,binary,args.recovery_helper.resolve(),args.older_helper.resolve() if args.older_helper else None)
+    else:
+        points = args.points or POINTS
+        if not set(points).issubset(POINTS): parser.error('Unknown v2 crash point')
+        binary = BUILD / 'subagent-crash-build/debug/pi-native-host' if args.skip_build else fixture_binary(args.without_drain)
+        for point in points: run(point, binary, args.recovery_helper.resolve())

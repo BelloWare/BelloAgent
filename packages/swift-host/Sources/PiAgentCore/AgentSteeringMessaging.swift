@@ -96,11 +96,16 @@ extension AgentSteeringCoordinator {
         else {
             // Round robin between child heads; sequence order within each child.
             var buckets = Dictionary(grouping:pending,by: \.childID)
-            var ordered = buckets.keys.sorted { buckets[$0]!.first!.sequence < buckets[$1]!.first!.sequence }
+            let keys = buckets.keys.sorted()
+            let position = state.run?.deliveryCursor.flatMap { cursor in keys.firstIndex(where: { $0 > cursor }) } ?? 0
+            var ordered = Array(keys[position...]) + Array(keys[..<position])
             var bytes = 0
             while selected.count < 8, !ordered.isEmpty {
-                let key = ordered.removeFirst(), head = buckets[key]!.removeFirst()
-                if bytes + head.text.utf8.count <= 16384 { selected.append(head); bytes += head.text.utf8.count }
+                let key = ordered.removeFirst(), head = buckets[key]!.first!
+                // If a head cannot fit, do not pass it with a smaller later
+                // message from that child. It keeps its FIFO place next time.
+                guard bytes + head.text.utf8.count <= 16384 else { continue }
+                buckets[key]!.removeFirst(); selected.append(head); bytes += head.text.utf8.count
                 if !buckets[key]!.isEmpty { ordered.append(key) }
             }
         }
@@ -120,6 +125,7 @@ extension AgentSteeringCoordinator {
         let existing = state.deliveries.values.first { !$0.committed && $0.recipientID == recipient.id && $0.eventIDs == ids }
         var delivery = existing ?? AgentDelivery(rowID:UUID().uuidString,recipientID:recipient.id,eventIDs:ids,payload:payload)
         if existing == nil, childTurn == nil, state.run != nil, (state.run?.reportContinuations ?? 0) < 32 { delivery.continuation = true }
+        if existing == nil, childTurn == nil, state.run != nil { delivery.cursor = selected.last?.childID }
         if existing == nil { try await owner.appendAgentRecord(JournalRecordKind.agentDelivery,delivery) }
         try await recipient.appendAgentDelivery(delivery,selected:selected)
         delivery.committed = true

@@ -23,11 +23,19 @@ v2 = importlib.util.module_from_spec(spec); spec.loader.exec_module(v2)
 ROOT, BUILD = v2.ROOT, v2.BUILD
 POINTS = ['promotion-copy-synced', 'promotion-replaced'] + [kind+'-'+edge for kind in
     ['start', 'follow-up', 'steer', 'report', 'report-mirror', 'parent-row', 'child-row',
-     'delivery-commit', 'child-terminal', 'owner-terminal', 'family-fence'] for edge in ['before', 'synced']] + ['stop', 'shutdown', 'update']
+     'delivery-prepared', 'report-receipt', 'delivery-commit', 'child-terminal', 'owner-terminal', 'family-fence',
+     'legacy-snapshot'] for edge in ['before', 'synced']] + ['stop', 'shutdown', 'update']
 BARRIER = r'''
 import Foundation
 import Darwin
 enum FixtureSteeringBarrier {
+    static let clockLock = NSLock()
+    static var clockStep = 0.0
+    static func acceptedTime() -> Double {
+        guard ProcessInfo.processInfo.environment["PI_STEERING_FIXTURE_CLOCK"] == "fast" else { return Date().timeIntervalSince1970 }
+        clockLock.lock(); defer { clockLock.unlock() }; clockStep += 10
+        return Date().timeIntervalSince1970 + clockStep
+    }
     static func hit(_ point: String) {
         guard ProcessInfo.processInfo.environment["PI_STEERING_CRASH_POINT"] == point,
               let path = ProcessInfo.processInfo.environment["PI_STEERING_BARRIER_FILE"] else { return }
@@ -46,6 +54,9 @@ enum FixtureSteeringBarrier {
             hit((parent ? "parent-row-" : "child-row-") + edge)
         }
         if parent && kind == JournalRecordKind.agentDelivery && data["committed"].flag == true { hit("delivery-commit-" + edge) }
+        if parent && kind == JournalRecordKind.agentDelivery && data["committed"].flag != true { hit("delivery-prepared-" + edge) }
+        if value["message"]["toolName"].text == "subagent_report" { hit("report-receipt-" + edge) }
+        if parent && kind == JournalRecordKind.agentTurn && data["epoch"].text == "legacy" { hit("legacy-snapshot-" + edge) }
         if kind == JournalRecordKind.agentTerminal { hit((parent ? "owner-terminal-" : "child-terminal-") + edge) }
         if parent && kind == JournalRecordKind.familyRun && data["closed"].flag == true { hit("family-fence-" + edge) }
     }
@@ -62,6 +73,8 @@ def fixture_binary():
     core = source/'Sources/PiAgentCore'
     policy = core/'SubagentTypes.swift'; policy.write_text(policy.read_text().replace('public static let steeringEnabled = false','public static let steeringEnabled = true'))
     (core/'FixtureSteeringBarrier.swift').write_text(BARRIER)
+    family = core/'AgentFamilyJournal.swift'
+    family.write_text(family.read_text().replace('var acceptedAt: Double = Date().timeIntervalSince1970','var acceptedAt: Double = FixtureSteeringBarrier.acceptedTime()'))
     journal = core/'SessionJournal.swift'; text = journal.read_text()
     text = text.replace('        try beforeAppend(v)','        FixtureSteeringBarrier.record(v,url:url,edge:"before")\n        try beforeAppend(v)')
     text = text.replace('        unsynced=false; synchronizations += 1','        unsynced=false; synchronizations += 1\n        if let line = lastAppendLine { FixtureSteeringBarrier.record(try JSON.parse(line),url:url,edge:"synced") }')
@@ -81,7 +94,8 @@ def run(point, fixture, recovery, older=None):
     with tempfile.TemporaryDirectory(prefix='steering-crash-',dir=BUILD) as directory:
         root = Path(directory); sessions = root/'sessions'; sessions.mkdir()
         requests = []; resumed = threading.Event(); steer_seen = threading.Event(); release = threading.Event()
-        controlled = point in ('stop','shutdown','update')
+        controlled = point in ('stop','shutdown','update'); legacy = point.startswith('legacy-snapshot')
+        legacy_ready = threading.Event()
         def call(name, identity, arguments):
             return dict(type='function_call',id='item-'+identity,call_id=identity,name=name,arguments=json.dumps(arguments))
         class Gateway(http.server.BaseHTTPRequestHandler):
@@ -97,7 +111,12 @@ def run(point, fixture, recovery, older=None):
                             value = json.loads(block.get('text',''))
                             if isinstance(value,dict) and value.get('kind') == 'agent_events': events += value['events']
                         except (ValueError,TypeError): pass
-                if session == 'parent':
+                if legacy and not legacy_ready.is_set():
+                    output = [call('subagent','legacy-start',dict(task='Legacy conversation'))] if session == 'parent' and not outputs else []
+                elif legacy and session == 'parent' and not resumed.is_set():
+                    original_child = next(s for s,_ in requests if s != 'parent')
+                    output = [call('subagent_send','legacy-follow',dict(child_id=original_child,message='Parent follow-up',expected_turn=1))] if 'legacy-follow' not in outputs else []
+                elif session == 'parent':
                     if resumed.is_set(): output = []
                     elif not outputs: output = [call('subagent_start','start-'+str(i),dict(task='Child first task',mode='background')) for i in range(18 if controlled else 1)]
                     elif any(e['kind'] == 'question' for e in events) and 'steer' not in outputs:
@@ -140,7 +159,12 @@ def run(point, fixture, recovery, older=None):
             return peer
         peer = None
         try:
-            peer = opened(fixture,dict(os.environ,PI_STEERING_CRASH_POINT=point,PI_STEERING_BARRIER_FILE=str(root/'barrier')),resume=False)
+            if legacy:
+                peer = opened(recovery,resume=False)
+                v2.command(peer,'turn.submit',dict(clientTurnId='legacy-user',text='Complete the v2 task'),'parent')
+                v2.wait_for(lambda:v2.command(peer,'session.status',{},'parent')['state'] == 'idle')
+                peer.close(); peer = None; legacy_ready.set()
+            peer = opened(fixture,dict(os.environ,PI_STEERING_CRASH_POINT=point,PI_STEERING_BARRIER_FILE=str(root/'barrier')),resume=legacy)
             v2.command(peer,'turn.submit',dict(clientTurnId='user',text='Do the synthetic parallel task'),'parent')
             if controlled:
                 v2.wait_for(lambda:v2.command(peer,'subagent.list',{},'parent')['total'] == 18)

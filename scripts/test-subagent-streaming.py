@@ -180,11 +180,18 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('helper', type=Path)
     parser.add_argument('--fixture', action='store_true')
+    parser.add_argument('--steering', action='store_true', help='Whole-family v3 acceptance and performance')
+    parser.add_argument('--modes', nargs='+')
     options = parser.parse_args()
     binary = options.helper
+    if options.steering:
+        spec = importlib.util.spec_from_file_location('steering_streams', Path(__file__).with_name('test-subagent-steering-streaming.py'))
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        module.main(binary,fixture=options.fixture,modes=options.modes)
+        raise SystemExit(0)
     if options.fixture:
         spec = importlib.util.spec_from_file_location('subagent_crashes', Path(__file__).with_name('test-subagent-crashes.py'))
         module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
         binary = module.fixture_binary()
-    reports = [run(binary, mode) for mode in ['complete', 'viewer', 'stop', 'shutdown']]
+    reports = [run(binary, mode) for mode in options.modes or ['complete', 'viewer', 'stop', 'shutdown']]
     (BUILD/'logs/subagent-streaming.json').write_text(json.dumps(reports, indent=2) + '\n')
