@@ -218,13 +218,9 @@ extension AgentSession {
                 do {
                     let key = try agentToolKey(call)
                     let receipt = try await (isSubagent ? coordinator.report(call,key:key,child:self) : coordinator.prepare(call,key:key,parent:self))
-                    var wire = resultText(receipt.encoded())
-                    wire["nativeResultMessageId"] = JSON("agent-receipt:" + AgentOperation.id(key))
-                    if let child = receipt["child_id"].text, let plan = subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) {
-                        wire["nativeSubagent"] = ["version":2,"sessionId":JSON(child),"delegationId":JSON(plan.origin.link.delegationID),"budgetOwnerSessionId":JSON(id),"parentAssistantMessageId":JSON(key.assistantMessageID),"toolCallId":JSON(call.id),"turn":receipt["turn"],"route":receipt["route"],"status":"accepted","effects":"completed"]
-                    }
-                    agentPreparedResults[call.id] = wire
+                    agentPreparedResults[call.id] = agentToolWire(receipt,key:key)
                 } catch {
+                    if let accepted = await acceptedAgentToolResult(call,stopped:true) { agentPreparedResults[call.id] = accepted; continue }
                     let failure = (error as? AgentError) ?? AgentError("subagent_interrupted", "Agent control interrupted")
                     let envelope: JSON = ["version":3,"accepted":false,"error":["code":JSON(failure.code),"message":JSON(failure.message)]]
                     agentPreparedResults[call.id] = resultText(envelope.encoded(),error:true)
@@ -282,6 +278,7 @@ extension AgentSession {
     /// Runs one call of a batch and ends its card; the row waits for the batch.
     func runToolCall(_ call: ToolCall, index: Int, cancelledBeforeInvocation: Bool = false) async -> ToolOutcome {
         let start=nowMS()
+        let accepted = await acceptedAgentToolResult(call,stopped:true)
         func outcome(_ result: JSON, started: Double?, state: ToolRunState, uncertain: Bool = false, cancelled: Bool = false, mcpResult: Bool = false) -> ToolOutcome {
             if let recorded=try? recordTool(call,result:result,started:started,state:state,uncertain:uncertain,appendNow:false,countsTime:false) {
                 return ToolOutcome(index:index,message:recorded.message,observedAt:recorded.observedAt,cancelled:cancelled,mcpResult:mcpResult)
@@ -289,9 +286,14 @@ extension AgentSession {
             // A result too large to retain still leaves a row in its place.
             var message=ChatMessage(role:"toolResult",content:[textBlock("Tool result could not be recorded; inspect its effects before retrying.")])
             message.toolCallId=call.id; message.toolName=call.name; message.isError=true
+            if let accepted {
+                message.content = accepted["content"].list; message.isError = false
+                message.id = accepted["nativeResultMessageId"].text!
+                if !accepted["nativeSubagent"].isNull { message.nativeSubagent = accepted["nativeSubagent"] }
+            }
             message.requestAttemptIDs=currentAttemptIDs
             let observedAt=displayClock(), duration=started.map { nowMS()-$0 }
-            let outcome=started == nil ? "not_executed" : uncertain || Self.isEditing(call) ? "unknown" : "failed"
+            let outcome=accepted != nil ? "completed" : started == nil ? "not_executed" : uncertain || Self.isEditing(call) ? "unknown" : "failed"
             message.toolStats=["durationMs":duration.map { JSON($0) } ?? .null,"outcome":JSON(outcome)]
             // Offloading can fail before recordTool reaches its card update.
             // Retire the live invocation with the same outcome as its fallback
@@ -304,13 +306,17 @@ extension AgentSession {
             }
             return ToolOutcome(index:index,message:message,observedAt:observedAt,cancelled:cancelled,mcpResult:mcpResult,recorded:false)
         }
-        if cancelledBeforeInvocation || Task.isCancelled && !(call.name == "subagent" && canDelegate) { return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:.cancelled, cancelled:true) }
+        if cancelledBeforeInvocation || Task.isCancelled && !(call.name == "subagent" && canDelegate) {
+            if let accepted { return outcome(accepted,started:start,state:.completed,cancelled:true) }
+            return outcome(resultText("Not executed: cancelled before invocation",error:true), started:nil, state:.cancelled, cancelled:true)
+        }
         do {
             let result=try await invokeTool(call)
             return outcome(result, started:start, state:result["isError"].flag == true ? .failed : .completed,
                            mcpResult:call.name == "mcp" && call.arguments["action"].text == "invoke")
         } catch {
             let cancelled=Task.isCancelled || error is CancellationError
+            if let accepted = await acceptedAgentToolResult(call,stopped:true) { return outcome(accepted,started:start,state:.completed,cancelled:cancelled) }
             // A call stopped before its tool was entered never ran.
             let entered=toolInvocationsBegan.contains(call.id)
             let text=cancelled ? (entered ? "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay." : "Not executed: cancelled before invocation") : (error as? AgentError)?.message ?? "Tool failed; inspect its effects before retrying."

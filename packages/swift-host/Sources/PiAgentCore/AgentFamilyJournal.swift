@@ -26,6 +26,9 @@ struct AgentChildTurn: Codable, Sendable, Equatable {
     var call: SubagentCallKey
     var status: SubagentStatus = .queued
     var result: SubagentToolResult?
+    /// V2 did not persist the original snapshot. Freeze the current parent's
+    /// snapshot once at adoption, without rewriting immutable v2 provenance.
+    var legacyResources: ResourceSnapshot? = nil
     var target: AgentTurnTarget { .init(childID:childID,turn:turn) }
     var id: String { target.id }
 }
@@ -44,6 +47,7 @@ struct AgentFamilyMessage: Codable, Sendable, Equatable {
 struct AgentDelivery: Codable, Sendable, Equatable {
     var rowID: String, recipientID: String, eventIDs: [String], payload: JSON
     var committed = false
+    var continuation: Bool? = nil
 }
 struct AgentFamilyRun: Codable, Sendable, Equatable {
     var epoch: String
@@ -102,7 +106,11 @@ struct AgentFamilyState: Codable, Sendable, Equatable {
             let delivery = try JSONDecoder().decode(AgentDelivery.self,from:data.data())
             if let old = deliveries[delivery.rowID] {
                 guard old.recipientID == delivery.recipientID, old.eventIDs == delivery.eventIDs, old.payload == delivery.payload,
+                      old.continuation == delivery.continuation,
                       !old.committed || delivery.committed else { throw SubagentRecovery.damaged() }
+            } else if delivery.continuation == true {
+                guard delivery.recipientID == ownerID, run != nil, !delivery.committed else { throw SubagentRecovery.damaged() }
+                run?.reportContinuations += 1
             }
             deliveries[delivery.rowID] = delivery
             if delivery.committed { for id in delivery.eventIDs { messages[id]?.disposition = "delivered"; messages[id]?.rowID = delivery.rowID } }

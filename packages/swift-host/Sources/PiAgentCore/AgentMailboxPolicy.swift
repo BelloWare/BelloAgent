@@ -5,6 +5,10 @@ import Foundation
 enum AgentMailboxPolicy {
     static func validate(_ op: AgentOperation, state: AgentFamilyState) throws {
         let epoch = state.operations.values.filter { $0.epoch == op.epoch }
+        // Replacement children spend the same finite authorization as follow-ups.
+        if op.turn != nil { guard epoch.compactMap(\.turn).count < 64 else { throw cap() } }
+        if state.run?.epoch == op.epoch, (state.run?.reportContinuations ?? 0) >= 32,
+           op.turn != nil || op.message?.author == "parent" { throw cap() }
         if let turn = op.turn, turn.turn > 1 {
             let follows = epoch.compactMap(\.turn).filter { $0.turn > 1 }
             guard follows.count < 64, follows.filter({ $0.childID == turn.childID }).count < 8 else { throw cap() }

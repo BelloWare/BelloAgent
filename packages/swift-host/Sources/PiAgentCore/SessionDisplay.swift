@@ -214,7 +214,7 @@ extension AgentSession {
             value["agentInboxPending"] = JSON(family.messages.values.filter { $0.disposition == "pending" && $0.author == (isSubagent ? "parent" : "subagent") }.count)
         }
         if !subagents.plans.isEmpty {
-            value["subagentsRevision"] = JSON("\(displayEpoch):\(subagents.plans.count):\(subagents.outcomes?.count ?? 0):\(subagentChangeRevision)")
+            value["subagentsRevision"] = JSON("\(displayEpoch):\(subagents.plans.count):\(subagents.outcomes?.count ?? 0):\(subagents.family?.revision ?? subagentChangeRevision)")
         }
         // Receipts and the task presentation travel only when they changed
         // since the revision the reader sends back; a reader that sends none

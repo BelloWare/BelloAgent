@@ -20,6 +20,12 @@ extension AgentSteeringCoordinator {
         guard child.origin == plan.origin, let saved = child.terminal else { throw AgentError("subagent_unsettled", "The v2 child must settle before a follow-up") }
         let result = try JSONDecoder().decode(SubagentToolResult.self,from:saved["result"].data())
         var turn = AgentChildTurn(childID:link.childSessionID,turn:1,executionID:link.delegationID,parentExecutionID:link.parentExecutionID,generation:0,runtimeID:"legacy",epoch:"legacy",inputID:link.delegationID,task:plan.task,call:link.call,status:result.status,result:result)
+        if plan.origin.frozenResources == nil {
+            var snapshot = env.resources
+            snapshot.prompt += "\n\nLegacy child: the original v2 instruction snapshot was not saved. The parent's instructions at first v3 follow-up were adopted and frozen; earlier conversation remains intact. Existing tool and permission limits still apply."
+            snapshot.revision = sha256(Data((snapshot.revision + "legacy-v3-adoption").utf8))
+            turn.legacyResources = snapshot
+        }
         turn.normalizeResult()
         try await parent.appendAgentRecord(JournalRecordKind.agentTurn,turn)
         let state = await parent.agentState()

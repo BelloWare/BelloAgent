@@ -12,6 +12,7 @@ public struct RequestScope: Codable, Sendable, Equatable {
     public let delegation: SubagentLink?
     public var childTurn: Int? = nil
     public var parentExecutionID: String? = nil
+    public var agentDeliveryIDs: [String]? = nil
 
     public var valid: Bool {
         let ids = [sourceSessionID, budgetOwnerSessionID, turnID, executionID, purpose]
