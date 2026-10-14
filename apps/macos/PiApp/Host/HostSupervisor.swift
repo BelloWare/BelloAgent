@@ -52,6 +52,7 @@ final class HostSupervisor: ObservableObject {
     private var stopsAwaited = 0
     private var handshakeWatchdog: Task<Void, Never>?
     private var closing = false
+    private var lossReported = false
     private(set) var clockOffset = 0.0
     private let commandSender: (@MainActor ([String: WireValue]) -> Void)?
     private let acknowledgmentTimeout: Duration?
@@ -101,7 +102,7 @@ final class HostSupervisor: ObservableObject {
                   manifest.engine == "swift", manifest.engineVersion == "1.0.0", manifest.protocolMajor == 1 else {
                 ownership = nil; throw HostError.failure("The native host or its manifest is missing or incompatible. Reinstall this build.")
             }
-            let connectionID = UUID(); self.connectionID = connectionID
+            let connectionID = UUID(); self.connectionID = connectionID; lossReported = false
             let inbox = HostInbox { [weak self] events in
                 for event in events { self?.receive(event, connectionID: connectionID) }
             }
@@ -247,7 +248,9 @@ final class HostSupervisor: ObservableObject {
         outstandingCommands.removeAll(); dispatchedReads.removeAll(); supportsReadCancellation = false
         for request in queuedRequests { request.continuation.resume(throwing: error) }; queuedRequests.removeAll()
         for timeout in replyTimeouts.values { timeout.cancel() }; replyTimeouts.removeAll()
-        onLoss?()
+        // Pipe failure and process exit are independent callbacks for one
+        // connection. The workspace must settle that loss only once.
+        if !lossReported { lossReported = true; onLoss?() }
     }
     // Reads and process exit arrive from independent callbacks. A late event
     // from a retired pipe must never resurrect it or close its replacement.

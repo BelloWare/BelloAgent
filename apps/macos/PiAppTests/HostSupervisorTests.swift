@@ -3,6 +3,19 @@ import Darwin
 @testable import PiApp
 
 final class HostSupervisorTests: XCTestCase {
+    @MainActor func testTransportFailureAndProcessExitReportOneLossPerConnection() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        let host = HostSupervisor(); defer { host.shutdown() }
+        var losses = 0; host.onLoss = { losses += 1 }
+        for expected in 1...2 {
+            try await host.connect(cwd: root, state: root.appendingPathComponent("state"))
+            host.receive(.failed("Generated transport failure. No command was replayed."), connectionID: try XCTUnwrap(host.connectionID))
+            try await host.shutdownAndWait()
+            XCTAssertEqual(losses, expected, "Transport failure and exit belong to the same retired connection")
+            XCTAssertNil(host.connectionID)
+        }
+    }
+
     @MainActor func testDispatchedPagesCancelWithoutReleasingAnUnacknowledgedSlot() async throws {
         for method in ["session.history", "session.version.page"] {
             let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
@@ -196,7 +209,10 @@ final class HostSupervisorTests: XCTestCase {
         let inFlight = Task { try await host.request("runtime.info", commandID: "mid-turn") }
         for pid in Self.helperProcesses() { kill(pid, SIGKILL) }
         do { _ = try await inFlight.value; XCTFail("A killed helper cannot answer") }
-        catch { XCTAssertTrue(error.localizedDescription.contains("No request was replayed"), error.localizedDescription) }
+        catch {
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains("No request was replayed") || message.contains("No command was replayed"), message)
+        }
         for _ in 0..<600 where host.connectionID != nil { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertFalse(host.isReady); XCTAssertNil(host.connectionID); XCTAssertEqual(losses, 1)
 
