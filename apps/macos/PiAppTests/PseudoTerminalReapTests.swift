@@ -60,17 +60,19 @@ final class PseudoTerminalReapTests: XCTestCase {
 
     @MainActor private func run(notYet: Int) async throws -> (exits: [Int32], asked: Int, running: Bool) {
         let process = PseudoTerminal()
+        defer { PseudoTerminal.endForQuit([process]) }
         var asked = 0, exits: [Int32] = []
+        let reported = expectation(description: "The drained exit is reported once")
+        reported.assertForOverFulfill = true
         process.reap = { pid, status in
             asked += 1
             return asked <= notYet ? 0 : PseudoTerminal.reapNow(pid, status)
         }
-        process.onExit = { exits.append($0) }
+        process.onExit = { exits.append($0); reported.fulfill() }
         try process.start(executable: "/bin/sh", arguments: ["sh", "-c", "exit 3"], environment: ["PATH": "/usr/bin:/bin"],
                           directory: NSTemporaryDirectory(), columns: 40, rows: 10)
-        let deadline = Date().addingTimeInterval(10)
-        while Date() < deadline, exits.isEmpty { try await Task.sleep(for: .milliseconds(10)) }
-        try await Task.sleep(for: .milliseconds(100))
+        try await eventually("the child is reaped and its drained exit is delivered", timeout: .seconds(60)) { !exits.isEmpty }
+        await fulfillment(of: [reported], timeout: 60)
         return (exits, asked, process.running)
     }
 

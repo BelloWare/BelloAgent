@@ -70,10 +70,23 @@ final class FileBlameTests: XCTestCase {
     @MainActor private func blamed(_ model: WorkspaceModel, _ root: URL, window: NSWindow, hosted: NSView) async throws -> (FileTab, FileTextView) {
         let tab = model.openFile(root.appendingPathComponent("file.txt"))
         hosted.layoutSubtreeIfNeeded()
-        try await eventually("the text shown and read") { tab.focusView?.window === window && tab.status == .ready }
+        try await eventually("the text shown and read", timeout: .seconds(60)) { tab.focusView?.window === window && tab.status == .ready }
         tab.blame.toggle()
-        try await eventually("blamed") { tab.blame.blame != nil }
+        try await eventually("blamed", timeout: .seconds(60)) { tab.blame.blame != nil }
         return (tab, try XCTUnwrap(tab.focusView as? FileTextView))
+    }
+
+    /// A rejected reveal must finish before checking that it did not land.
+    /// A fixed observation window could pass while slow Git was still busy.
+    @MainActor private func finishNavigation(_ changes: ChangesTab, hosted: NSView) async throws {
+        let navigation = try XCTUnwrap(changes.navigation)
+        var finished = false
+        let observer = Task { await navigation.value; finished = true }
+        defer { observer.cancel() }
+        try await eventually("the requested reveal finishes", timeout: .seconds(60)) {
+            hosted.layoutSubtreeIfNeeded()
+            return finished
+        }
     }
 
     @MainActor func testBlameShowsEachLinesCommitAndFollowsCommitsAndSaves() async throws {
@@ -98,18 +111,18 @@ final class FileBlameTests: XCTestCase {
         var lines = try String(contentsOf: root.appendingPathComponent("file.txt"), encoding: .utf8).components(separatedBy: "\n")
         lines[5] = "changed on disk"
         try lines.joined(separator: "\n").write(to: root.appendingPathComponent("file.txt"), atomically: true, encoding: .utf8)
-        try await eventually("read again after the save") { tab.document !== old && tab.blame.blame != nil && tab.blame.entry(ofLine: 5)?.commit == nil }
+        try await eventually("read again after the save", timeout: .seconds(60)) { tab.document !== old && tab.blame.blame != nil && tab.blame.entry(ofLine: 5)?.commit == nil }
         XCTAssertEqual(tab.blame.annotation(ofLine: 5)?.text, "Not committed")
 
         // Committed elsewhere, the file itself unchanged: read again.
         try git(["commit", "-q", "-am", "Change line six"], in: root, author: "Linus")
-        try await eventually("the commit is seen") { tab.blame.entry(ofLine: 5)?.commit?.author == "Linus" }
+        try await eventually("the commit is seen", timeout: .seconds(60)) { tab.blame.entry(ofLine: 5)?.commit?.author == "Linus" }
 
         // Hidden: nothing read; shown again: read again.
         tab.didHide()
         try git(["commit", "-q", "--allow-empty", "-m", "Nothing"], in: root)
         tab.didShow()
-        try await eventually("blamed again") { tab.blame.blame != nil }
+        try await eventually("blamed again", timeout: .seconds(60)) { tab.blame.blame != nil }
 
         // No longer trusted: off, the column and what was read gone.
         let saved = FileTab.resolveProject
@@ -158,22 +171,22 @@ final class FileBlameTests: XCTestCase {
         tab.blame.openChange(ofLine: 3)
         let changes = try XCTUnwrap(model.tabs.tab(kind: ChangesTab.kind, key: "w") as? ChangesTab)
         let controller = changes.controller
-        try await eventually("the change opened") { controller.selectedCommit?.hash == first && controller.detailFile == "alpha.txt" && !controller.commitLoading }
+        try await eventually("the change opened", timeout: .seconds(60)) { controller.selectedCommit?.hash == first && controller.detailFile == "alpha.txt" && !controller.commitLoading }
         XCTAssertEqual(controller.panel, .history)
         XCTAssertEqual(controller.revealTarget?.target.line, 2)
         hosted.layoutSubtreeIfNeeded()
-        try await eventually("the line selected in the diff") {
+        try await eventually("the line selected in the diff", timeout: .seconds(60)) {
             hosted.layoutSubtreeIfNeeded()
             return self.selectedDiffText(in: hosted) == "greek letter number 1"
         }
         XCTAssertNil(controller.revealNote)
         controller.presentation.split = true
-        try await eventually("still the line, split") { hosted.layoutSubtreeIfNeeded(); return self.diffSplit(in: hosted) == true && self.selectedDiffText(in: hosted) == "greek letter number 1" }
+        try await eventually("still the line, split", timeout: .seconds(60)) { hosted.layoutSubtreeIfNeeded(); return self.diffSplit(in: hosted) == true && self.selectedDiffText(in: hosted) == "greek letter number 1" }
 
         XCTAssertTrue(changes.canGoBack)
         changes.goBack()
         hosted.layoutSubtreeIfNeeded()
-        try await eventually("the file in front again") { tab.focusView?.window === window }
+        try await eventually("the file in front again", timeout: .seconds(60)) { tab.focusView?.window === window }
         XCTAssertEqual(tab.bar, .find); XCTAssertEqual(tab.findQuery, "letter")
         XCTAssertEqual(text.selectedRange.start, selection.start); XCTAssertEqual(text.selectedRange.end, selection.end)
         model.tabs.close(tab)
@@ -200,13 +213,13 @@ final class FileBlameTests: XCTestCase {
         let changes = try XCTUnwrap(model.showChanges(in: "w"))
         hosted.layoutSubtreeIfNeeded()
         let controller = changes.controller
-        try await eventually("read") { controller.statusRead && !controller.loading }
+        try await eventually("read", timeout: .seconds(60)) { controller.statusRead && !controller.loading }
         let top = try XCTUnwrap(controller.repositoryRoot)
         // The merge commit asked for at a line its first-parent diff did not
         // add: "base" is only context there.
         let shown = await controller.revealHistory(GitHistoryTarget(commit: merge, path: "m.txt", line: 1), in: top)
         XCTAssertTrue(shown)
-        try await eventually("said") { hosted.layoutSubtreeIfNeeded(); return controller.revealNote?.contains("first parent") == true }
+        try await eventually("said", timeout: .seconds(60)) { hosted.layoutSubtreeIfNeeded(); return controller.revealNote?.contains("first parent") == true }
     }
 
     /// A line a commit replaced: two rows unified (removed, added), one row
@@ -223,14 +236,14 @@ final class FileBlameTests: XCTestCase {
         let changes = try XCTUnwrap(model.showChanges(in: "w"))
         hosted.layoutSubtreeIfNeeded()
         let controller = changes.controller
-        try await eventually("read") { controller.statusRead && !controller.loading }
+        try await eventually("read", timeout: .seconds(60)) { controller.statusRead && !controller.loading }
         let top = try XCTUnwrap(controller.repositoryRoot)
         _ = await controller.revealHistory(GitHistoryTarget(commit: commit, path: "r.txt", line: 4), in: top)
-        try await eventually("FOUR selected") { hosted.layoutSubtreeIfNeeded(); return self.selectedDiffText(in: hosted) == "FOUR" }
+        try await eventually("FOUR selected", timeout: .seconds(60)) { hosted.layoutSubtreeIfNeeded(); return self.selectedDiffText(in: hosted) == "FOUR" }
         controller.presentation.split = true
-        try await eventually("FOUR still, split") { hosted.layoutSubtreeIfNeeded(); return self.diffSplit(in: hosted) == true && self.selectedDiffText(in: hosted) == "FOUR" }
+        try await eventually("FOUR still, split", timeout: .seconds(60)) { hosted.layoutSubtreeIfNeeded(); return self.diffSplit(in: hosted) == true && self.selectedDiffText(in: hosted) == "FOUR" }
         controller.presentation.split = false
-        try await eventually("FOUR still, unified") { hosted.layoutSubtreeIfNeeded(); return self.diffSplit(in: hosted) == false && self.selectedDiffText(in: hosted) == "FOUR" }
+        try await eventually("FOUR still, unified", timeout: .seconds(60)) { hosted.layoutSubtreeIfNeeded(); return self.diffSplit(in: hosted) == false && self.selectedDiffText(in: hosted) == "FOUR" }
     }
 
     /// Whether the diff table on screen has laid its rows out side by side.
@@ -252,15 +265,15 @@ final class FileBlameTests: XCTestCase {
         let url = root.appendingPathComponent("file.txt")
         let old = tab.document
         try ("put above\n" + (try String(contentsOf: url, encoding: .utf8))).write(to: url, atomically: true, encoding: .utf8)
-        try await eventually("blamed again") { tab.document !== old && tab.blame.blame != nil && tab.blame.entry(ofLine: 0)?.commit == nil }
+        try await eventually("blamed again", timeout: .seconds(60)) { tab.document !== old && tab.blame.blame != nil && tab.blame.entry(ofLine: 0)?.commit == nil }
         XCTAssertTrue(states.contains(true), "nothing of the old text's blame shown meanwhile")
         // Written back by hand, not by git: the index and HEAD stay as they
         // are, so only the file's coming back can start the read.
         let saved = try Data(contentsOf: url)
         try FileManager.default.removeItem(at: url)
-        try await eventually("missing") { tab.missingReason != nil }
+        try await eventually("missing", timeout: .seconds(60)) { tab.missingReason != nil }
         try saved.write(to: url)
-        try await eventually("back, and blamed again") { tab.missingReason == nil && tab.blame.blame != nil && tab.blame.entry(ofLine: 1)?.commit != nil }
+        try await eventually("back, and blamed again", timeout: .seconds(60)) { tab.missingReason == nil && tab.blame.blame != nil && tab.blame.entry(ofLine: 1)?.commit != nil }
     }
 
     /// Not committed yet when blame is shown; committed elsewhere, the bytes
@@ -272,11 +285,11 @@ final class FileBlameTests: XCTestCase {
         let (window, hosted) = window(model)
         let tab = model.openFile(root.appendingPathComponent("new.txt"))
         hosted.layoutSubtreeIfNeeded()
-        try await eventually("read") { tab.focusView?.window === window && tab.status == .ready }
+        try await eventually("read", timeout: .seconds(60)) { tab.focusView?.window === window && tab.status == .ready }
         tab.blame.show()
-        try await eventually("said to have no history") { if case .unavailable = tab.blame.state { return true }; return false }
+        try await eventually("said to have no history", timeout: .seconds(60)) { if case .unavailable = tab.blame.state { return true }; return false }
         try git(["add", "new.txt"], in: root); try git(["commit", "-q", "-m", "Add new"], in: root, author: "Ada")
-        try await eventually("blamed once committed") { tab.blame.entry(ofLine: 0)?.commit?.author == "Ada" }
+        try await eventually("blamed once committed", timeout: .seconds(60)) { tab.blame.entry(ofLine: 0)?.commit?.author == "Ada" }
     }
 
     /// A target past the lines the diff parser reads: said so, not "not in
@@ -291,9 +304,9 @@ final class FileBlameTests: XCTestCase {
         let changes = try XCTUnwrap(model.showChanges(in: "w"))
         hosted.layoutSubtreeIfNeeded()
         let controller = changes.controller
-        try await eventually("read") { controller.statusRead && !controller.loading }
+        try await eventually("read", timeout: .seconds(60)) { controller.statusRead && !controller.loading }
         _ = await controller.revealHistory(GitHistoryTarget(commit: commit, path: "big.txt", line: 20_050), in: try XCTUnwrap(controller.repositoryRoot))
-        try await eventually("said") { hosted.layoutSubtreeIfNeeded(); return controller.revealNote?.contains("past the part") == true }
+        try await eventually("said", timeout: .seconds(60)) { hosted.layoutSubtreeIfNeeded(); return controller.revealNote?.contains("past the part") == true }
     }
 
     /// Changes already open but hidden behind the file: Show Change brings
@@ -304,22 +317,19 @@ final class FileBlameTests: XCTestCase {
         let (window, hosted) = window(model)
         let changes = try XCTUnwrap(model.showChanges(in: "w"))
         hosted.layoutSubtreeIfNeeded()
-        try await eventually("Changes shown") { changes.controller.isShown && !changes.controller.loading }
+        try await eventually("Changes shown", timeout: .seconds(60)) { changes.controller.isShown && !changes.controller.loading }
         let (tab, _) = try await blamed(model, root, window: window, hosted: hosted)
-        try await eventually("Changes hidden behind the file") { hosted.layoutSubtreeIfNeeded(); return changes.controller.suspended }
+        try await eventually("Changes hidden behind the file", timeout: .seconds(60)) { hosted.layoutSubtreeIfNeeded(); return changes.controller.suspended }
         tab.blame.openChange(ofLine: 3)
         hosted.layoutSubtreeIfNeeded()
-        try await eventually("landed") { hosted.layoutSubtreeIfNeeded(); return changes.controller.selectedCommit?.hash == first }
+        try await eventually("landed", timeout: .seconds(60)) { hosted.layoutSubtreeIfNeeded(); return changes.controller.selectedCommit?.hash == first }
 
         model.tabs.activate(tab)
-        try await eventually("hidden again") { hosted.layoutSubtreeIfNeeded(); return changes.controller.suspended }
-        try await eventually("blamed again, shown again") { tab.blame.blame != nil }
+        try await eventually("hidden again", timeout: .seconds(60)) { hosted.layoutSubtreeIfNeeded(); return changes.controller.suspended }
+        try await eventually("blamed again, shown again", timeout: .seconds(60)) { tab.blame.blame != nil }
         tab.blame.openChange(ofLine: 0)
         tab.blame.hide()   // the blame it was asked from is gone
-        // Long enough for it to land had it been let: Changes shown again
-        // and read, the reveal's own wait for it over.
-        let until = ProcessInfo.processInfo.systemUptime + 4
-        while ProcessInfo.processInfo.systemUptime < until { hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(50)) }
+        try await finishNavigation(changes, hosted: hosted)
         XCTAssertFalse(changes.controller.suspended, "Changes was brought forward")
         XCTAssertNotEqual(changes.controller.selectedCommit?.hash, second, "an ask whose blame is gone does not land")
     }
@@ -335,16 +345,14 @@ final class FileBlameTests: XCTestCase {
         tab.blame.openChange(ofLine: 3)
         try ("replaced\n" + (try String(contentsOf: url, encoding: .utf8))).write(to: url, atomically: true, encoding: .utf8)
         let changes = try XCTUnwrap(model.tabs.tab(kind: ChangesTab.kind, key: "w") as? ChangesTab)
-        var until = ProcessInfo.processInfo.systemUptime + 4
-        while ProcessInfo.processInfo.systemUptime < until { hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(50)) }
+        try await finishNavigation(changes, hosted: hosted)
         XCTAssertNotEqual(changes.controller.selectedCommit?.hash, first, "replaced: not landed")
 
         model.tabs.activate(tab)
-        try await eventually("blamed again") { hosted.layoutSubtreeIfNeeded(); return tab.blame.blame != nil }
+        try await eventually("blamed again", timeout: .seconds(60)) { hosted.layoutSubtreeIfNeeded(); return tab.blame.blame != nil }
         tab.blame.openChange(ofLine: 4)
         model.tabs.close(tab)
-        until = ProcessInfo.processInfo.systemUptime + 4
-        while ProcessInfo.processInfo.systemUptime < until { hosted.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(50)) }
+        try await finishNavigation(changes, hosted: hosted)
         XCTAssertNotEqual(changes.controller.selectedCommit?.hash, first, "closed: not landed")
         XCTAssertFalse(tab.hasDocument, "and nothing reopened")
     }

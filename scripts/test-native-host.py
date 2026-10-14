@@ -101,6 +101,18 @@ class Fixture(http.server.BaseHTTPRequestHandler):
             self.send_response(400); self.send_header('Content-Type', 'application/json'); self.end_headers(); self.wfile.write(output); return
         if model == 'stall-mid-reply':
             self.stall_mid_reply(record); return
+        if model == 'held-for-stop':
+            # Keyboard admission tests own this lifetime: the request stays
+            # active until their real turn.stop closes it, including under
+            # parallel load. The deadline is only a failed-test backstop.
+            self.send_response(200); self.send_header('Content-Type', 'text/event-stream'); self.end_headers()
+            try:
+                deadline = time.monotonic() + 120
+                while time.monotonic() < deadline:
+                    self.wfile.write(b': waiting for turn.stop\n\n'); self.wfile.flush(); time.sleep(.05)
+            except (BrokenPipeError, ConnectionResetError):
+                record['cancelled'] = True
+            return
         if model == 'slow':
             time.sleep(2)
         text = 'Hello 中文🙂'

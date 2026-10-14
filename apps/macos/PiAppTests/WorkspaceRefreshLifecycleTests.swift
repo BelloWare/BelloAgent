@@ -39,13 +39,8 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         return RefreshFixture(root:root,model:model,chat:chat,view:view,host:host,commands:commands)
     }
 
-    @MainActor private func wait(_ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<2_000 {
-            if condition() { return }
-            try await Task.sleep(for:.milliseconds(1))
-        }
-        XCTFail("Refresh did not reach the expected state",file:file,line:line)
-        throw HostError.failure("Timed out waiting for refresh")
+    @MainActor private func wait(_ condition: @MainActor () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
+        try await eventually("Refresh did not reach the expected state", timeout: .seconds(60), file: file, line: line, condition)
     }
 
     @MainActor private func reply(_ frame: [String: WireValue], on host: HostSupervisor,
@@ -330,16 +325,13 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         for index in 0..<8 {
             _ = try await host.request("turn.submit", sessionID: chat.id,
                 params: ["text": .string("Saved question \(index)"), "clientTurnId": .string("saved-\(index)")])
-            var finished = false
-            for _ in 0..<500 {
+            try await eventually("Fixture seed \(index) finished", timeout: .seconds(60), until: {
                 let state = try await host.request("session.status", sessionID: chat.id).object ?? [:]
-                if state["state"]?.string == "idle" { finished = true; break }
                 if state["state"]?.string == "error" {
                     throw HostError.failure("Fixture seed \(index) failed: " + (state["preflightError"]?.string ?? "missing error"))
                 }
-                try await Task.sleep(for: .milliseconds(10))
-            }
-            XCTAssertTrue(finished)
+                return state["state"]?.string == "idle"
+            })
         }
         // Retire the display and helper session to exercise real disk hydration,
         // not a retained in-memory projection from the seed requests.
@@ -350,40 +342,73 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         let view = try XCTUnwrap(model.selected)
         XCTAssertTrue(view.presentation.identity?.incarnation.hasPrefix("file:") == true)
         XCTAssertEqual(view.messages.filter { $0.role == "user" }.count, 3)
+        // A cold page's automatic earlier read can still be in flight when
+        // the viewport is ready. Hold that real read to exercise the overlap.
+        let earlierGate = HistoryReadGate()
+        addTeardownBlock { await earlierGate.release() }
+        model.historyWindowLoader = { [weak model] id, cursor, newer, around in
+            guard let model else { throw CancellationError() }
+            XCTAssertNotNil(cursor); XCTAssertFalse(newer); XCTAssertNil(around)
+            await MainActor.run { model.historyWindowLoader = nil }
+            await earlierGate.read()
+            let record = await model.record(id)
+            let item = try XCTUnwrap(record)
+            return try await model.readConversationWindow(item, cursor: cursor, newer: newer, around: around)
+        }
         let pane = TranscriptFrameBudgetTests.Pane(view, height: 1600, onReady: { _, generation in
             guard generation == view.presentationGeneration else { return }
             view.historyState = .ready; view.presentation.readyAt = PerformanceProbe.now
         }, onEarlier: { model.loadEarlier(sessionID: $0) })
         defer { pane.close() }
-        await pane.settle(turns: 30)
-        if view.messages.filter({ $0.role == "user" }).count == 3 {
-            let loaded = await model.loadEarlierPage(sessionID: chat.id); XCTAssertTrue(loaded)
+        try await eventually("The reopened viewport is ready", timeout: .seconds(60)) {
+            pane.hosted.layoutSubtreeIfNeeded(); pane.window.displayIfNeeded()
+            return view.historyState == .ready
         }
+        model.loadEarlier(sessionID: chat.id)
+        try await eventually("The earlier read is in flight", timeout: .seconds(60), until: { await earlierGate.reads > 0 })
+        // Join the owned read. A second loadEarlierPage while it is in
+        // flight correctly returns false, even though the first will succeed.
+        let earlierTask = try XCTUnwrap(view.presentation.olderTask)
+        await earlierGate.release()
+        let loaded = await earlierTask.value
+        XCTAssertTrue(loaded)
+        XCTAssertGreaterThan(view.messages.filter { $0.role == "user" }.count, 3)
         XCTAssertFalse(view.browsingHistory)
 
         for (index, text) in ["Continue the reopened chat", "Continue from the earlier window"].enumerated() {
             if index == 1 {
                 let earlierID = try XCTUnwrap(view.messages.first(where: { $0.role == "user" })?.id)
                 model.reloadHistory(chat.id, around: earlierID); await view.presentation.navigation?.value
-                await pane.settle(turns: 15)
+                try await eventually("The earlier viewport is ready", timeout: .seconds(60)) {
+                    pane.hosted.layoutSubtreeIfNeeded(); pane.window.displayIfNeeded()
+                    return view.historyState == .ready
+                }
                 XCTAssertNotNil(view.newerPage.cursor); XCTAssertTrue(view.browsingHistory)
                 // The second continuation uses fragmented Responses SSE,
                 // while the cold reopen above exercises a fast JSON reply.
                 model.chats[0].model = "route-late"
             }
-            let before = Set(view.messages.map(\.id))
             view.draft = text; model.send(sessionID: chat.id)
+            func isSubmittedReply(_ message: TranscriptMessage) -> Bool {
+                guard let submitted = view.messages.first(where: { $0.role == "user" && $0.text == text }) else { return false }
+                return message.role == "assistant" && !message.isStreaming && message.text.contains("Hello") &&
+                    (message.taskRootID ?? message.turn) == (submitted.taskRootID ?? submitted.id)
+            }
             try await wait {
                 !view.loading && !view.busy && view.messages.contains { $0.role == "user" && $0.text == text } &&
-                    view.messages.contains { $0.role == "assistant" && !before.contains($0.id) }
+                    view.messages.contains { isSubmittedReply($0) }
             }
-            await pane.settle(turns: 20)
+            try await eventually("The mounted transcript shows this submitted turn's reply", timeout: .seconds(60)) {
+                pane.hosted.layoutSubtreeIfNeeded(); pane.window.displayIfNeeded()
+                return pane.page?.snapshot?.messages.contains { isSubmittedReply($0) } == true &&
+                    pane.page?.snapshot?.messages.contains { $0.role == "user" && $0.text == text } == true
+            }
             XCTAssertNil(view.sendFailure); XCTAssertNil(view.failureMessage)
             XCTAssertEqual(model.selectedID, chat.id); XCTAssertTrue(model.selected === view)
             XCTAssertFalse(view.browsingHistory); XCTAssertNil(view.newerPage.cursor)
             XCTAssertTrue(pane.page?.snapshot?.messages.contains { $0.role == "user" && $0.text == text } == true,
                           "The mounted native transcript must show the new input without being recreated")
-            XCTAssertTrue(pane.page?.snapshot?.messages.contains { $0.role == "assistant" && !before.contains($0.id) && $0.text.contains("Hello") } == true)
+            XCTAssertTrue(pane.page?.snapshot?.messages.contains { isSubmittedReply($0) } == true)
             XCTAssertEqual(view.messages.last?.isStreaming, false)
         }
     }

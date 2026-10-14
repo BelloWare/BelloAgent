@@ -88,6 +88,23 @@ struct EventuallyTimedOut: Error, CustomStringConvertible {
     }
 }
 
+/// The same wait for a condition read from an actor or helper. Predicates
+/// must themselves use bounded operations: the deadline bounds polling,
+/// not an operation in flight. The explicit label preserves the synchronous
+/// overload for existing fixtures that forward non-Sendable predicates.
+@MainActor func eventually(_ what: String, timeout: Duration = .seconds(10), poll: Duration = .milliseconds(10),
+                           file: StaticString = #filePath, line: UInt = #line,
+                           until condition: @MainActor () async throws -> Bool) async throws {
+    let clock = ContinuousClock(), deadline = clock.now.advanced(by: timeout)
+    while !(try await condition()) {
+        guard clock.now < deadline else {
+            XCTFail(what, file: file, line: line)
+            throw EventuallyTimedOut(what: what)
+        }
+        try await Task.sleep(for: poll)
+    }
+}
+
 /// Runs `body` with the transcript's optional idle work back to back instead
 /// of one unit per frame. A long page comes up with its viewport exact and
 /// measures the rest in those units; a fixture that waits for the last of

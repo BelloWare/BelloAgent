@@ -41,6 +41,7 @@ import Combine
     private var settleTask: Task<Void, Never>?
     private var watches: [AnyCancellable] = []
     private(set) var indexing = false
+    private var initialPassComplete = false
     private var stopped = false
     /// Sidebar opens so far (`beginSidebarOpen`).
     var openings = 0
@@ -50,6 +51,8 @@ import Combine
     private(set) var answeredQueries = 0
     private(set) var lastPass = ChatSearchIndex.Pass()
     private(set) var passes = 0
+    /// Test seam: hold a cold pass while the typed query reads the empty index.
+    var beforeReconcile: (@Sendable () async -> Void)?
 
     init(model: WorkspaceModel) {
         self.model = model
@@ -144,9 +147,10 @@ import Combine
         do { found = try await reader.search(text) } catch { return }
         guard !Task.isCancelled, text == query, !stopped else { return }
         answeredQueries += 1
-        // The first answer to what the reader typed is theirs, whoever asked it.
+        // An answer from the cold index may be empty or partial. The typed
+        // query still owns the answer when that first pass finishes.
         let background = background && !answerTyped
-        answerTyped = false
+        if initialPassComplete { answerTyped = false }
         if background, let model, !model.sidebarOrderHolds.isEmpty {
             heldHits = found == hits ? nil : found
             return
@@ -226,9 +230,10 @@ import Combine
         // Until launch has listed the saved chats, an empty list is not a
         // list of none: pruning against it would empty the index.
         guard !model.launching, model.store != nil else { scheduleReconcile(); return }
-        let sources = sources(), index = index
+        let sources = sources(), index = index, beforeReconcile = beforeReconcile
         let worker = Task.detached(priority: .utility) {
-            await index.reconcile(sources) { [weak self] in await self?.indexChanged() }
+            await beforeReconcile?()
+            return await index.reconcile(sources) { [weak self] in await self?.indexChanged() }
         }
         self.worker = worker
         reconcileTask = Task { [weak self] in
@@ -236,7 +241,11 @@ import Combine
             guard let self else { return }
             self.reconcileTask = nil; self.worker = nil
             self.lastPass = pass; self.passes += 1; self.lastPassEnded = .now
-            if pass.changed { self.indexChanged(throttled: false) }
+            let firstPass = !self.initialPassComplete
+            self.initialPassComplete = true
+            // Even an unchanged empty pass completes the typed answer, so
+            // later background matches respect a pointer/menu order hold.
+            if pass.changed || firstPass { self.indexChanged(throttled: false) }
             if self.reconcileAgain { self.reconcileAgain = false; self.runReconcile() }
         }
     }
