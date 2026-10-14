@@ -6,7 +6,7 @@ public struct GitCommitTarget: Equatable, Sendable {
     public let head: String
     public let branch: String
     public init(head: String, branch: String) { self.head = head; self.branch = branch }
-    public var description: String { "\(branch == "(detached)" ? "Detached HEAD" : branch) · \(head)" }
+    public var description: String { "\(branch == "(detached)" ? "Detached HEAD" : branch) · \(head.prefix(9))" }
 }
 
 /// Bounded diagnostics, prepared off the main actor. Warnings are advisory;

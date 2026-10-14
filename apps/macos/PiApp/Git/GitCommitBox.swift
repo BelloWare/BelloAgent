@@ -45,7 +45,7 @@ import GitView
             hint = "There is no commit to amend yet."
         default:
             let what = inputs.scope == .checkedFiles
-                ? "\(inputs.checkedCount) of \(inputs.entries) files · their whole working-tree state"
+                ? "\(inputs.checkedCount) of \(inputs.entries) \(inputs.entries == 1 ? "file" : "files") · their whole working-tree state"
                 : "\(inputs.stagedCount) staged \(inputs.stagedCount == 1 ? "file" : "files") · exactly as staged; unstaged edits stay"
             hint = message.isEmpty ? what + " · write a message to commit" : what
         }

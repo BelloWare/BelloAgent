@@ -31,8 +31,8 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         try await eventually("read status") { controller.statusRead && !controller.loading }
         controller.amend = true; controller.commitMessage = "Amended message"
         let questions = PiQuestion()
-        var asked: NSAlert?, answer: ((NSApplication.ModalResponse) -> Void)?
-        questions.present = { alert, _, complete in asked = alert; answer = complete }
+        var asked: NSView?, answer: ((Bool) -> Void)?
+        questions.presentSheet = { sheet, _, complete in asked = sheet; answer = complete }
         let panel = GitPanelView(controller: controller, questions: questions), window = host(panel)
         defer { window.close() }
         try await eventually("show panel") { controller.isShown && !controller.loading }
@@ -43,13 +43,15 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         XCTAssertNotNil(asked, "Amend must ask before rewriting history")
         XCTAssertEqual(try fixture.snapshot(), before)
         if let asked {
-            XCTAssertTrue(asked.informativeText.contains(controller.status.head ?? "missing head"))
-            XCTAssertTrue(asked.informativeText.contains("main"))
-            XCTAssertTrue(asked.informativeText.contains("working-tree"))
-            XCTAssertEqual(asked.buttons.first?.keyEquivalent, "")
-            XCTAssertEqual(asked.buttons.last?.keyEquivalent, "\r")
+            let target = Self.views(PiKit.TextLine.self, in: asked).first { $0.accessibilityIdentifier() == "git-question-target" }
+            XCTAssertTrue(target?.toolTip?.contains(controller.status.head ?? "missing head") == true)
+            XCTAssertTrue(target?.line.text.contains("main") == true)
+            XCTAssertTrue(Self.views(ShellText.self, in: asked).contains { $0.text.contains("working-tree") })
+            let buttons = Self.views(PiKit.Button.self, in: asked)
+            XCTAssertEqual(buttons.first { $0.title == "Amend" }?.keyEquivalent, "")
+            XCTAssertEqual(buttons.first { $0.title == "Cancel" }?.keyEquivalent, "\r")
         }
-        answer?(.alertSecondButtonReturn)
+        answer?(false)
         XCTAssertEqual(controller.commitMessage, "Amended message")
         XCTAssertEqual(try fixture.snapshot(), before)
     }
@@ -74,8 +76,8 @@ final class GitOperationSafetyTests: GitPanelTestCase {
             try await eventually("read first") { controller.statusRead && !controller.loading }
             controller.amend = true; controller.commitMessage = "First repository message"
             let questions = PiQuestion(), place = GitPanelPlace()
-            var answer: ((NSApplication.ModalResponse) -> Void)?
-            questions.present = { _, _, complete in answer = complete }
+            var answer: ((Bool) -> Void)?
+            questions.presentSheet = { _, _, complete in answer = complete }
             let panel = GitPanelView(controller: controller, place: place, questions: questions), window = host(panel)
             defer { window.close() }
             try await eventually("show first") { controller.isShown && !controller.loading }
@@ -84,7 +86,7 @@ final class GitOperationSafetyTests: GitPanelTestCase {
             let beforeFirst = try first.snapshot(), beforeSecond = try second.snapshot()
             controller.root = second.root.path
             try await eventually("read second") { controller.repositoryRoot == secondTop && !controller.loading }
-            answer?(.alertFirstButtonReturn)
+            answer?(true)
             try await eventually("retire stale answer") { place.operation?.pending != true && !controller.busy }
             XCTAssertEqual(try first.snapshot(), beforeFirst); XCTAssertEqual(try second.snapshot(), beforeSecond)
             // Also exercise the controller's repository guard independently
@@ -174,16 +176,16 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         try await eventually("read status") { controller.statusRead && !controller.loading }
         controller.commitMessage = "Reworded explicitly"
         let questions = PiQuestion(), place = GitPanelPlace()
-        var answer: ((NSApplication.ModalResponse) -> Void)?, alert: NSAlert?
-        questions.present = { shown, _, complete in alert = shown; answer = complete }
+        var answer: ((Bool) -> Void)?, sheet: NSView?
+        questions.presentSheet = { shown, _, complete in sheet = shown; answer = complete }
         let panel = GitPanelView(controller: controller, place: place, questions: questions), window = host(panel)
         defer { window.close() }
         try await eventually("show") { controller.isShown && !controller.loading }
         let before = try fixture.snapshot(), tree = try fixture.git(["rev-parse", "HEAD^{tree}"])
         place.requestCommit(controller, context: controller.repositoryContext, reword: true, questions: questions)
         try await eventually("ask reword") { answer != nil }
-        XCTAssertTrue(alert?.informativeText.contains("Message only") == true)
-        answer?(.alertFirstButtonReturn); answer?(.alertFirstButtonReturn)
+        XCTAssertTrue(Self.views(ShellText.self, in: try XCTUnwrap(sheet)).contains { $0.text.contains("Message only") })
+        answer?(true); answer?(true)
         try await eventually("finish reword") { controller.lastCommit != nil && !controller.busy }
         let after = try fixture.snapshot()
         XCTAssertNotEqual(after[0], before[0]); XCTAssertEqual(Array(after.dropFirst()), Array(before.dropFirst()))
@@ -199,8 +201,8 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         try await eventually("read") { controller.statusRead && !controller.loading }
         controller.amend = true; controller.commitMessage = "Keep me"
         let questions = PiQuestion(), place = GitPanelPlace()
-        var answer: ((NSApplication.ModalResponse) -> Void)?
-        questions.present = { _, _, complete in answer = complete }
+        var answer: ((Bool) -> Void)?
+        questions.presentSheet = { _, _, complete in answer = complete }
         let panel = GitPanelView(controller: controller, place: place, questions: questions), window = host(panel)
         defer { window.close() }
         try await eventually("show") { controller.isShown && !controller.loading }
@@ -210,7 +212,7 @@ final class GitOperationSafetyTests: GitPanelTestCase {
         let operation = try XCTUnwrap(place.operation)
         panel.isHidden = true
         try await eventually("hide") { !controller.isShown }
-        answer?(.alertFirstButtonReturn)
+        answer?(true)
         // Join any task a late answer queued before checking the repository.
         // An immediate assertion could miss an erroneously dispatched write.
         await operation.task?.value
@@ -239,10 +241,9 @@ final class GitOperationSafetyTests: GitPanelTestCase {
                 windowNumber: sheet.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
             if code == 53 { XCTAssertTrue(sheet.performKeyEquivalent(with: event), "Escape must reach Cancel") }
             else {
-                // AppKit dispatches an ordinary Return through its default
-                // cell, not performKeyEquivalent in a non-key test window.
-                if let cell = sheet.defaultButtonCell { cell.performClick(nil) }
-                else { Self.views(NSButton.self, in: sheet.contentView!).first { $0.keyEquivalent == "\r" }?.performClick(nil) }
+                let action = try XCTUnwrap(Self.views(PiKit.Button.self, in: sheet.contentView!).first { $0.title == "Amend" })
+                XCTAssertTrue(sheet.makeFirstResponder(action))
+                XCTAssertTrue(sheet.performKeyEquivalent(with: event), "Return cancels even with the rewrite action focused")
             }
             try await eventually("cancel sheet") { !questions.asking && place.operation?.pending != true && !controller.busy }
             XCTAssertEqual(try fixture.snapshot(), before); XCTAssertEqual(controller.commitMessage, "Keep me")

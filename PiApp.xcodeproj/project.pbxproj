@@ -64,11 +64,13 @@
 		0B55BD29C2F5B49923545DD2 /* NativeCodeEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6427530A7EFDEB3F383961E5 /* NativeCodeEditor.swift */; };
 		0BA5759553B8B7C42F1D266F /* LivePopupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9B5D25B2F9CC5CDE564B1DA /* LivePopupView.swift */; };
 		0BA676A50CB38A3993CC33E1 /* HistoryOffsetIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE40976571292FBD1E23F023 /* HistoryOffsetIndex.swift */; };
+		0C0BA886AF596E8B745D3998 /* PiQuestionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53A10BF7304C6CA88FC4B76C /* PiQuestionSheet.swift */; };
 		0C115BB8FAD9E7BBAD34F4A5 /* OnboardingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B390B250F975CE90CAD677A4 /* OnboardingTests.swift */; };
 		0CF6C639F359F62D80DB1539 /* GatewayModelDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB8E9E081943F4B3E704EAB5 /* GatewayModelDiscovery.swift */; };
 		0D14CE360D1AD28E4E29F9B4 /* FileReviewStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40AB0F2FF0361A3144B7A07B /* FileReviewStateTests.swift */; };
 		0D3E1409145302770238E30C /* SidebarEntryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC6DF74DE69259C278544883 /* SidebarEntryViews.swift */; };
 		0DA6ED4830C04846579C46C4 /* ContextReading.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2B61D3617C6848A3BF6042F /* ContextReading.swift */; };
+		0DBE3380BB206A3643EB8EF9 /* GitOperationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B525741E5086CF15D0E9B0C /* GitOperationSheet.swift */; };
 		0DEA7C31BEF4F808C9092B77 /* BelloFileFinder in Frameworks */ = {isa = PBXBuildFile; productRef = 00DE8923EFBE27D8B06580D8 /* BelloFileFinder */; };
 		0E21F75B6C4E56FAB589EDE6 /* InspectorAgentCoordination.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4AABD43BBF1B7E1C47DA6F0 /* InspectorAgentCoordination.swift */; };
 		0E410EB4C96E23787F27B04B /* FiveSessionWorkspacePerformanceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BF427C296FBCF51243F2DDD /* FiveSessionWorkspacePerformanceTests.swift */; };
@@ -80,6 +82,7 @@
 		0FFE01F21D794F9645E7A0F7 /* PiChartSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = BBEBC107651B8EE15832460A /* PiChartSelection.swift */; };
 		1000CF2014D93CA4F37699E0 /* WorkspaceRunHolds.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7228E5C88390C16436003F /* WorkspaceRunHolds.swift */; };
 		100A68D08FD3D85D0A2E9D52 /* TranscriptSkillPillsReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BD3DB726BB2C8517BEA72A7 /* TranscriptSkillPillsReference.swift */; };
+		100A74A18E71D19658C2B287 /* PiQuestionSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53A10BF7304C6CA88FC4B76C /* PiQuestionSheet.swift */; };
 		101258AE7EEE39F439DC27BA /* InspectorRequestPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9BEAB770B17BE5FF86B00E6 /* InspectorRequestPage.swift */; };
 		101367E13C74EC9B8DB70571 /* FullDisplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE9E83B9C79BC9AE68298D4F /* FullDisplayTests.swift */; };
 		10A3EEF3216F809E7E558F07 /* ConversationQuestionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14A3BA6843E8C1AB70186841 /* ConversationQuestionTests.swift */; };
@@ -171,6 +174,7 @@
 		21849B3B5A1313DEAB6154D4 /* PortedViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D857FA2D4EE214D9B577EA0 /* PortedViews.swift */; };
 		21C6CD3704B066AAF8B40A16 /* Attachments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6663D82E5EC8EAC4A690C9BA /* Attachments.swift */; };
 		21F2422EF8E44489BD6F8ED1 /* InspectorArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 623A6FC9B4C5555E1E88C765 /* InspectorArchive.swift */; };
+		224D4162358D8E2B0385775B /* PiQuestionSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DFA6DFFE6DE1CC333B591BB /* PiQuestionSheetTests.swift */; };
 		225D38AA1AC1B2006D42110D /* TranscriptCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFE67D1CED3D6BB07CBD3CFE /* TranscriptCards.swift */; };
 		229D6ACC729C1B6808380756 /* ContextPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5EC6AE3B23F39EC158F6A20 /* ContextPresentation.swift */; };
 		22F1C789C7034E511C3EB01F /* ConfigurationVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = C26668D410107C283A6D4A51 /* ConfigurationVault.swift */; };
@@ -197,6 +201,7 @@
 		2663DD40B313BBBD75B896D5 /* CaptureLineage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43209C84BFE62E28DC26DA23 /* CaptureLineage.swift */; };
 		26D563743F14EE64426FA938 /* HistoryExtentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42F9127F416C7D7DFA847FE8 /* HistoryExtentTests.swift */; };
 		26E77A10289E63BF2DB348E3 /* SidebarSearchTypingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 048E3F6D10D12E8B73B7CCC2 /* SidebarSearchTypingTests.swift */; };
+		26E9C3A11787CDE938BFDE98 /* GitOperationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B525741E5086CF15D0E9B0C /* GitOperationSheet.swift */; };
 		26F97C693BEE40268C20EDA9 /* BackgroundRequests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2206D707BD5D35F95B4D6615 /* BackgroundRequests.swift */; };
 		270111454D10659F8C08CB7E /* SidePaneView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCAE9C2C4C16A0AEFD53C76B /* SidePaneView.swift */; };
 		271B6B1EA2A68A1C69630931 /* PiTextWidth.swift in Sources */ = {isa = PBXBuildFile; fileRef = E891E08703A6452E5E43BB30 /* PiTextWidth.swift */; };
@@ -1178,6 +1183,7 @@
 		EC8E874E81958353D2B9FC98 /* TranscriptRealAppStreamingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D2C713F35FEAFE0E5F62BA3 /* TranscriptRealAppStreamingTests.swift */; };
 		EC8ECC16CB64FB43F077C0B3 /* PiChartView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B51F798435D11EE39710511 /* PiChartView.swift */; };
 		EC9C33FCBB6886376B87E47D /* PiKitSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD47FB7235A584A5D0188EB9 /* PiKitSheet.swift */; };
+		ED3EB5B5627A7871DDA8003E /* GitConfirmationSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2492900587CF6DB7681BEABF /* GitConfirmationSheetTests.swift */; };
 		ED400A2EB382C647B459E0E1 /* ModelDistributionRing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 868CF26DFA4AB0D01EB98F5F /* ModelDistributionRing.swift */; };
 		ED9B0F1F09A6EF4264637ADB /* NativeWorkListSurfaceReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A8E884FDD8B6661465D484F /* NativeWorkListSurfaceReference.swift */; };
 		ED9D0C1BD2E4DFFD79DABE43 /* HistoryReader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1CE9253F98C28A3640C29995 /* HistoryReader.swift */; };
@@ -1335,6 +1341,7 @@
 		0A6F0C806844BCFEDF298064 /* QuickOpenPlacementTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickOpenPlacementTests.swift; sourceTree = "<group>"; };
 		0AC854ACC2CC0D4A1B8EC683 /* ShellComposerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellComposerTests.swift; sourceTree = "<group>"; };
 		0B162FD5C22E6A09BA9C373C /* TranscriptNativeMarkdownIslands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptNativeMarkdownIslands.swift; sourceTree = "<group>"; };
+		0B525741E5086CF15D0E9B0C /* GitOperationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitOperationSheet.swift; sourceTree = "<group>"; };
 		0BAC8A526A09FABE71F0CBEC /* SidesPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidesPanel.swift; sourceTree = "<group>"; };
 		0BBA5B183D7ADB05CC81ED8A /* JSONOutlineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONOutlineView.swift; sourceTree = "<group>"; };
 		0C0DEDC55A20BCA391C9CA7D /* SessionTimingHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionTimingHistory.swift; sourceTree = "<group>"; };
@@ -1425,6 +1432,7 @@
 		23B641F564A640CA07D7E136 /* ConversationPaneReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationPaneReference.swift; sourceTree = "<group>"; };
 		23D50C1773463F3771D5E499 /* MoneyFormatGoldenTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoneyFormatGoldenTests.swift; sourceTree = "<group>"; };
 		23E5F489DDBDA5DB597E8797 /* TranscriptRowContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptRowContainer.swift; sourceTree = "<group>"; };
+		2492900587CF6DB7681BEABF /* GitConfirmationSheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitConfirmationSheetTests.swift; sourceTree = "<group>"; };
 		24CD2840739288819BFC0414 /* RoutingAnalyticsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoutingAnalyticsView.swift; sourceTree = "<group>"; };
 		250101C153D2B49E37C553FD /* SidebarBindingActionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarBindingActionTests.swift; sourceTree = "<group>"; };
 		2562D5372903E6C6F18B9D9E /* GitOperationQuestion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitOperationQuestion.swift; sourceTree = "<group>"; };
@@ -1583,6 +1591,7 @@
 		52CC64E9A64B9442497F14AC /* ToolOutputOwnership.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolOutputOwnership.swift; sourceTree = "<group>"; };
 		5394E76AC0897496E30A69E3 /* TranscriptIdleScheduler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptIdleScheduler.swift; sourceTree = "<group>"; };
 		539EF94D9613DB8814CBA14A /* SidebarSubagents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarSubagents.swift; sourceTree = "<group>"; };
+		53A10BF7304C6CA88FC4B76C /* PiQuestionSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiQuestionSheet.swift; sourceTree = "<group>"; };
 		53DBA14C9BD4D1A8B50C250E /* UnicodePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnicodePage.swift; sourceTree = "<group>"; };
 		541CD0F3613FD5C04BBABF8B /* WorkspaceSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSidebarView.swift; sourceTree = "<group>"; };
 		543655195DE7FDEEDC94B96E /* WebhookSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebhookSettings.swift; sourceTree = "<group>"; };
@@ -1848,6 +1857,7 @@
 		9D4844F42DA3120434967351 /* TranscriptNativeChromeParityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptNativeChromeParityTests.swift; sourceTree = "<group>"; };
 		9D88260DE3894F9C1922B3B8 /* GitHunkReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHunkReviewTests.swift; sourceTree = "<group>"; };
 		9D926382BEC5C1C03B585DC7 /* PiChartTicksTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiChartTicksTests.swift; sourceTree = "<group>"; };
+		9DFA6DFFE6DE1CC333B591BB /* PiQuestionSheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiQuestionSheetTests.swift; sourceTree = "<group>"; };
 		9E23A97400EB274A90F3C271 /* WorkspaceManagerSheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceManagerSheetTests.swift; sourceTree = "<group>"; };
 		9E24161406CFEDA97C796EF4 /* PiChart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiChart.swift; sourceTree = "<group>"; };
 		9E71125DF0016D1E8C6D5A78 /* MetricFormats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetricFormats.swift; sourceTree = "<group>"; };
@@ -2275,6 +2285,7 @@
 				6BC7B7D3841AD48CEF9F2535 /* PiMenu.swift */,
 				1BD89112729344E0A365E08D /* PiPopover.swift */,
 				888997069A1C232ECDEE7863 /* PiQuestion.swift */,
+				53A10BF7304C6CA88FC4B76C /* PiQuestionSheet.swift */,
 				E891E08703A6452E5E43BB30 /* PiTextWidth.swift */,
 			);
 			path = Design;
@@ -2315,6 +2326,7 @@
 				68C26FF51F44662BBECDC4AB /* GitHunkReview.swift */,
 				7F38BF61DE8C8100C8E10022 /* GitHunkToolbar.swift */,
 				2562D5372903E6C6F18B9D9E /* GitOperationQuestion.swift */,
+				0B525741E5086CF15D0E9B0C /* GitOperationSheet.swift */,
 				CA20C0689E2BCE9F1F0D49B3 /* GitPanel.swift */,
 			);
 			path = Git;
@@ -2949,6 +2961,7 @@
 				DF00504B0932C9B06B1C6462 /* GatewayModelDiscoveryTests.swift */,
 				1320E316307CA08F0108C392 /* GitChangelistReadTests.swift */,
 				F29A8210101A570E456C7A25 /* GitCommitBrowsingTests.swift */,
+				2492900587CF6DB7681BEABF /* GitConfirmationSheetTests.swift */,
 				E154D32D179373DD711AC3EA /* GitDiffTableTests.swift */,
 				04437124F2EA5D18D9E4C4EC /* GitDiscardQuestionTests.swift */,
 				61B24102E168AAA19180DA95 /* GitHistoryFilterTests.swift */,
@@ -3066,6 +3079,7 @@
 				13F0FCDF86ECF052149B55A4 /* PiKitParity.swift */,
 				35EBC836EED5DDC09215DDFB /* PiKitParityTests.swift */,
 				B21322F80F7292E7CCCD8B63 /* PiMenuTests.swift */,
+				9DFA6DFFE6DE1CC333B591BB /* PiQuestionSheetTests.swift */,
 				D364649D2D42556361D06677 /* PiSheetCancelTests.swift */,
 				EFCD156F0A9A339BC369804C /* PiSheetWindowTests.swift */,
 				746CF8303B2935F27DB80E33 /* PlainTextCopyTests.swift */,
@@ -3569,6 +3583,7 @@
 				476B306536696404A861A977 /* GitHunkReview.swift in Sources */,
 				6DB38AE780EDACF3C38BDAAF /* GitHunkToolbar.swift in Sources */,
 				383C74099CF9B1F9F1715D88 /* GitOperationQuestion.swift in Sources */,
+				0DBE3380BB206A3643EB8EF9 /* GitOperationSheet.swift in Sources */,
 				0E75EEC2E59001D1A02772D8 /* GitPanel.swift in Sources */,
 				4236BA43C5029ED85671885C /* HistoryIndexFiles.swift in Sources */,
 				15CAF8FA567DF28B17B41EAF /* HistoryOffsetIndex.swift in Sources */,
@@ -3667,6 +3682,7 @@
 				FE9BC19D5FF800A007B7B7F0 /* PiMenu.swift in Sources */,
 				5BF11744F204FFEBB5A9F508 /* PiPopover.swift in Sources */,
 				5F9C1094AD6F5A1B476BB007 /* PiQuestion.swift in Sources */,
+				0C0BA886AF596E8B745D3998 /* PiQuestionSheet.swift in Sources */,
 				E1271AE81C620B3ABDDDAFFD /* PiSheetWindow.swift in Sources */,
 				E6FEE51DE19A496D16A19982 /* PiTextWidth.swift in Sources */,
 				21849B3B5A1313DEAB6154D4 /* PortedViews.swift in Sources */,
@@ -3971,6 +3987,7 @@
 				2BFF8F4B01E017096DCAC7ED /* GitHunkReview.swift in Sources */,
 				0159EB5979EF8D2891B8DD68 /* GitHunkToolbar.swift in Sources */,
 				52EFA77D0CDF096E7E9B39D0 /* GitOperationQuestion.swift in Sources */,
+				26E9C3A11787CDE938BFDE98 /* GitOperationSheet.swift in Sources */,
 				8F7A92C20B9AA15ABE8F9F58 /* GitPanel.swift in Sources */,
 				74C4477BEC1878D765205F10 /* HistoryIndexFiles.swift in Sources */,
 				0BA676A50CB38A3993CC33E1 /* HistoryOffsetIndex.swift in Sources */,
@@ -4069,6 +4086,7 @@
 				3515B3E8A2518C0E9DBE4EFD /* PiMenu.swift in Sources */,
 				7B98D83D794325C861B3D615 /* PiPopover.swift in Sources */,
 				DADD18D87C9FF8C9ED891539 /* PiQuestion.swift in Sources */,
+				100A74A18E71D19658C2B287 /* PiQuestionSheet.swift in Sources */,
 				186B35613FA194A2C7735682 /* PiSheetWindow.swift in Sources */,
 				271B6B1EA2A68A1C69630931 /* PiTextWidth.swift in Sources */,
 				4BE667E2BE5A428ED79A55E7 /* PortedViews.swift in Sources */,
@@ -4387,6 +4405,7 @@
 				3222F92A546DA93A4901BB52 /* GatewayModelDiscoveryTests.swift in Sources */,
 				C7E1AE1B5271B5B4AD5AB0A6 /* GitChangelistReadTests.swift in Sources */,
 				A1311ECA8875DCBFB4C4A35A /* GitCommitBrowsingTests.swift in Sources */,
+				ED3EB5B5627A7871DDA8003E /* GitConfirmationSheetTests.swift in Sources */,
 				4A8DA093185D6F125B1FE709 /* GitDetailNarrowV119Reference.swift in Sources */,
 				9B654565973E1555F7AFE5A7 /* GitDiffTableTests.swift in Sources */,
 				DBA1D0B287550C152A7143CF /* GitDiscardQuestionTests.swift in Sources */,
@@ -4537,6 +4556,7 @@
 				61705390E77E8689495CC9E6 /* PiMenuTests.swift in Sources */,
 				2A1A551968CEDBB9D86E4A09 /* PiMotion.swift in Sources */,
 				E6869ADA01155B246C47577D /* PiPopover.swift in Sources */,
+				224D4162358D8E2B0385775B /* PiQuestionSheetTests.swift in Sources */,
 				57389A1E64DF96F628D33655 /* PiSheet.swift in Sources */,
 				9A98F625C481ED75A9E100C6 /* PiSheetCancelTests.swift in Sources */,
 				A3D82C163CD1262731121F26 /* PiSheetWindowReference.swift in Sources */,

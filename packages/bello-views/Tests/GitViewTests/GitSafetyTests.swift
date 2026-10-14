@@ -3,6 +3,28 @@ import XCTest
 
 /// Generated repositories only. No inherited hooks, signing, remotes or helpers.
 final class GitSafetyTests: XCTestCase {
+    @MainActor func testConfirmationScopePluralizesFilesAndTargetUsesAShortHash() async throws {
+        try seed(); try write("file.txt", "changed\n"); try git(["add", "file.txt"])
+        let controller = try await read(); defer { controller.letGo() }
+        controller.amend = true; controller.commitMessage = "Review this message"
+        let head = try XCTUnwrap(controller.status.head)
+        for count in [1, 2] {
+            if count == 2 {
+                try write("second.txt", "another change\n"); try git(["add", "second.txt"])
+                await controller.refresh()
+            }
+            for scope in [GitCommitScope.stagedChanges, .checkedFiles] {
+                controller.commitScope = scope
+                let request = try XCTUnwrap(controller.commitRequest(context: controller.repositoryContext))
+                XCTAssertTrue(request.scopeDescription.contains(count == 1 ? "1 file ·" : "2 files ·"), request.scopeDescription)
+                XCTAssertFalse(request.scopeDescription.contains("1 files"))
+                XCTAssertEqual(request.target?.description, "main · " + String(head.prefix(9)))
+                XCTAssertEqual(request.target?.head, head, "The reviewed identity stays complete")
+            }
+        }
+        XCTAssertEqual(GitCommitTarget(head: head, branch: "(detached)").description, "Detached HEAD · " + String(head.prefix(9)))
+    }
+
     private var root: URL!
     override func setUpWithError() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent("git-safety-" + UUID().uuidString)

@@ -8,31 +8,44 @@ final class GitSafetyGalleryTests: GitPanelTestCase {
     @MainActor func testGitSafetyScenes() async throws {
         let folder = testEnvironment("PI_APP_GIT_SAFETY_GALLERY").map(URL.init(fileURLWithPath:))
         if let folder { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
-        for scene in ["conflict", "amend-target", "preflight-failure", "commit-box", "checked-files"] {
+        for scene in ["conflict", "amend-target", "amend-checked", "reword-target", "preflight-failure", "stale-target", "commit-box", "checked-files"] {
             let fixture = try GitSafetyRepository(); defer { fixture.remove() }
             if scene == "conflict" { try fixture.conflict() }
             else {
                 try fixture.seed()
+                if scene == "amend-checked" {
+                    try fixture.write("second.txt", "second base\n"); try fixture.git(["add", "second.txt"])
+                    try fixture.git(["commit", "-qm", "Two fixture files"])
+                    try fixture.write("second.txt", "second working change\n")
+                }
                 try fixture.write("file.txt", scene == "preflight-failure" ? "review this line  \n" : "reviewed content\n")
-                if scene != "checked-files" { try fixture.git(["add", "file.txt"]) }
+                if !["checked-files", "amend-checked", "stale-target"].contains(scene) { try fixture.git(["add", "file.txt"]); try fixture.write("file.txt", "later unstaged work\n") }
             }
             let controller = GitController(roots: [fixture.root.path]); defer { controller.letGo() }
             try await eventually("read gallery repository") { controller.statusRead && !controller.loading }
             controller.commitMessage = "Keep the reviewed changes together"
-            controller.amend = scene == "amend-target"
+            controller.amend = ["amend-target", "amend-checked", "stale-target"].contains(scene)
             controller.signOff = scene == "commit-box"
-            if scene == "checked-files" { controller.commitScope = .checkedFiles }
-            controller.selection = .init(path: "file.txt", staged: scene != "conflict" && scene != "checked-files")
+            if ["checked-files", "amend-checked", "stale-target"].contains(scene) { controller.commitScope = .checkedFiles }
+            controller.selection = .init(path: "file.txt", staged: !["conflict", "checked-files", "amend-checked", "stale-target"].contains(scene))
             let place = GitPanelPlace(), questions = PiQuestion()
             let panel = GitPanelView(controller: controller, place: place, questions: questions, project: "Review fixture")
             let window = host(panel)
             defer { place.cancelQuestion(); window.close() }
             try await eventually("show gallery panel") { controller.isShown && !controller.loading && !controller.diffLoading }
+            if scene == "stale-target" {
+                let request = try XCTUnwrap(controller.commitRequest(context: controller.repositoryContext))
+                try fixture.git(["commit", "--allow-empty", "-qm", "A newer target"])
+                let before = try fixture.snapshot()
+                await controller.submitCommit(request)
+                XCTAssertTrue(controller.notice.contains("changed"), controller.notice)
+                XCTAssertEqual(try fixture.snapshot(), before)
+            }
             for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 for size in [NSSize(width: 1180, height: 780), NSSize(width: 920, height: 600), NSSize(width: 700, height: 640), NSSize(width: 310, height: 600)] {
                     window.appearance = NSAppearance(named: appearance); window.setContentSize(size)
                     controller.commitMessage = size.width == 700 ? "Keep the reviewed changes together\n\nOne\nTwo\nThree" : "Keep the reviewed changes together"
-                    if let request = controller.commitRequest(context: controller.repositoryContext, forPreflight: true) { _ = await controller.checkCommit(request) }
+                    if scene != "stale-target", let request = controller.commitRequest(context: controller.repositoryContext, forPreflight: true) { _ = await controller.checkCommit(request) }
                     panel.refresh(); panel.layoutSubtreeIfNeeded(); window.displayIfNeeded()
                     let box = try XCTUnwrap(GitOperationSafetyTests.views(GitCommitBox.self, in: panel).first)
                     box.layoutSubtreeIfNeeded()
@@ -60,12 +73,23 @@ final class GitSafetyGalleryTests: GitPanelTestCase {
                     }
                     let name = "\(scene)-\(theme)-\(Int(size.width))x\(Int(size.height))"
                     if let folder { try capture(panel, to: folder.appendingPathComponent(name + ".png")) }
-                    if scene == "amend-target" {
-                        place.requestCommit(controller, context: controller.repositoryContext, reword: false, questions: questions)
+                    if ["amend-target", "amend-checked", "reword-target", "preflight-failure"].contains(scene) {
+                        place.requestCommit(controller, context: controller.repositoryContext, reword: scene == "reword-target", questions: questions)
                         try await eventually("show target sheet") { window.attachedSheet != nil }
                         let sheet = try XCTUnwrap(window.attachedSheet)
                         sheet.appearance = NSAppearance(named: appearance)
                         XCTAssertEqual(sheet.defaultButtonCell?.title, "Cancel")
+                        let content = try XCTUnwrap(sheet.contentView)
+                        content.layoutSubtreeIfNeeded()
+                        XCTAssertEqual(GitOperationSafetyTests.views(PiKit.Sheet.self, in: content).count, 1)
+                        XCTAssertLessThanOrEqual(content.bounds.width, size.width)
+                        XCTAssertLessThanOrEqual(content.bounds.height, size.height)
+                        for control in GitOperationSafetyTests.views(PiKit.Button.self, in: content) {
+                            let frame = control.convert(control.bounds, to: content)
+                            XCTAssertTrue(content.bounds.contains(frame), "Visible confirmation action: \(name), \(frame)")
+                        }
+                        let warning = try XCTUnwrap(GitOperationSafetyTests.views(ShellText.self, in: content).first { $0.accessibilityIdentifier() == "git-question-warning" })
+                        XCTAssertTrue(content.bounds.contains(warning.convert(warning.bounds, to: content)), "The warning stays beside the actions")
                         if let folder, let content = sheet.contentView { try capture(content, to: folder.appendingPathComponent(name + "-sheet.png")) }
                         place.cancelQuestion()
                         try await eventually("close target sheet") { !questions.asking && window.attachedSheet == nil }

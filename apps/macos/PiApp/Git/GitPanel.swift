@@ -50,6 +50,7 @@ import GitView
     init(controller: GitController, place: GitPanelPlace = GitPanelPlace(), questions: PiQuestion = PiQuestion(), project: String? = nil,
          openFile: ((String, Int) -> Void)? = nil, observeFileRow: (@MainActor (String, CGRect) -> Void)? = nil) {
         self.controller = controller; self.place = place; self.questions = questions; self.project = project
+        place.projectName = project
         self.openFile = openFile; self.observeFileRow = observeFileRow
         header = GitPanelHeader(controller: controller, project: project)
         toolbar = GitPanelToolbar(controller: controller)
@@ -108,7 +109,7 @@ import GitView
     /// nothing outside it does.
     func contentSizeChanged() { framesDirty = true; needsLayout = true }
     /// The project the panel shows was renamed.
-    func setProject(_ name: String) { header.setProject(name) }
+    func setProject(_ name: String) { header.setProject(name); place.projectName = name }
     /// The parts' frames must be worked out again (a part's height, or which
     /// parts show, changed); otherwise a layout pass at the same size only
     /// reads the controller.
@@ -1531,6 +1532,7 @@ struct GitDiffArray: Equatable {
 /// Where a panel is: the view of its that is in a window, read when asked,
 /// and the discard question it has up.
 @MainActor final class GitPanelPlace {
+    var projectName: String?
     /// The panel's view that is in a window (`GitPanelProbe`).
     weak var probe: NSView?
     /// The window the panel is in now.

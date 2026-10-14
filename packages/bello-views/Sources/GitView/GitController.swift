@@ -1095,7 +1095,7 @@ public struct GitCommitRequest: Equatable, Sendable {
     fileprivate let chosenScope: GitCommitScope
     public var scopeDescription: String {
         if kind == .reword { return "Message only · the commit tree, index and working files stay as they are" }
-        return scope == .checkedFiles ? "Checked files · \(checkedCount) files · whole working-tree content"
-            : "Staged changes · \(stagedCount) files · index content; unstaged edits stay"
+        return scope == .checkedFiles ? "Checked files · \(checkedCount) \(checkedCount == 1 ? "file" : "files") · whole working-tree content"
+            : "Staged changes · \(stagedCount) \(stagedCount == 1 ? "file" : "files") · index content; unstaged edits stay"
     }
 }
