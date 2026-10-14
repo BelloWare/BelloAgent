@@ -6,13 +6,17 @@ import Foundation
 extension AgentSession {
     /// An unexplained incomplete is not an assistant response, even as a
     /// display-only partial. The app projects orphan request ledgers as
-    /// replies, so persist a content-free ledger as well as dropping the log.
+    /// replies, so persist a content-free ledger and drop this attempt's log.
     func discardIncompleteReply() throws {
         partialText=""; partialThinking=""; partialTimeline=ResponseTimeline()
         // A refused journal update must not leave this attempt recoverable.
         dropStreamed()
-        try partialReplyLog?.discard()
-        partialReplyLog=nil
+        // If keepAside failed for an earlier unsaved reply, it still owns
+        // this log; logStreamed refuses to put the current attempt in it.
+        if !partialReplyUnsaved {
+            try partialReplyLog?.discard()
+            partialReplyLog=nil
+        }
         if let id=partialLedgerID, var row=history.first(where: { $0.id == id }) {
             row.responseTimeline=ResponseTimeline(); row.responseTimeline?.finish("failed")
             row.detail="Request failed"

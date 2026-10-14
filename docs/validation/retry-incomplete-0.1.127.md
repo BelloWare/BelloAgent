@@ -1,7 +1,7 @@
 # Unexplained Responses incomplete retry — 0.1.127
 
 Owner approval: 2026-10-15. Workstream: `dev/a127-retry-incomplete`, based on
-`fe431a345fe68fba24cd8381940a9fb835d68fc`. This work is not merged into
+`efe431a345fe68fba24cd8381940a9fb835d68fc`. This work is not merged into
 `dev/next`. Build products and complete console logs are under
 `/Users/admin/Library/Caches/BelloSwiftWork/build-retry-incomplete`.
 
@@ -195,3 +195,99 @@ No real provider, production credentials, release packaging/publication or
 full native lane is involved. There are no app production-code changes. No
 named `.xcresult` bundle was requested; Xcode's automatic test result bundle
 was removed after retaining the console log, matching the gate's cleanup.
+
+## Follow-up: preserve an earlier unsaved reply's recovery log
+
+An independent read-only review of `3a570601` found that incomplete cleanup
+could delete or truncate a log belonging to an earlier reply. If journaling
+that reply fails and `keepAside()` cannot rename its log, `partialReplyUnsaved`
+keeps the log for a later open. `logStreamed()` refuses to overwrite it during
+subsequent runs. The incomplete cleanup did not respect that ownership.
+
+Before this follow-up, `origin/dev/next` was fetched and merged into the
+workstream as requested. It was still
+`efe431a345fe68fba24cd8381940a9fb835d68fc`, already an ancestor, so Git reported
+`Already up to date.` No merge commit or history rewrite was needed.
+
+`discardIncompleteReply()` now discards and releases the log only when
+`partialReplyUnsaved` is false. Current rejected text, reasoning, tools and
+ledger content are still cleared. An earlier retained file and its ownership
+flag remain under the existing `removeStreamedLog()` / `keepAside()` recovery
+rules; the current attempt never entered that file.
+
+Two new `PartialReplyLogTests` cover explicit Retry and Resume. They create a
+real earlier stream, refuse its assistant journal append and make the directory
+read-only so `keepAside()` fails. A scripted client then emits an awaiting
+observation and rejected content before throwing the unexplained-incomplete
+error. Its successful automatic retry waits on an explicit gate. The tests
+check unchanged recovery bytes, path and unsaved flag after rejection and
+successful settlement; the rejected ledger is empty. They copy the actual
+journal and stream files as a crash would leave them, then reopen twice and
+require the earlier reply's original identity, full text, reasoning and timeline
+exactly once, interrupted and non-replayable, with zero model dispatches. The
+successful later reply is present once and the rejected content stays absent.
+Existing loopback `IncompleteRetryTests` retain coverage of the actual provider
+terminal and current-attempt deletion/truncation controls.
+
+- Failing first: both final gated regressions failed, 34 assertions, including
+  the retained 7,579-byte log being truncated to zero and the earlier reply
+  missing after reopen. `logs/retained-log-failing-first-gated.log`.
+- With the guard: both regressions passed. `logs/retained-log-fixed.log`.
+- Mutation: replacing the ownership guard with unconditional cleanup made both
+  regressions fail again. The source was restored before subsequent checks.
+  `logs/retained-log-mutation.log`.
+- Affected helper tests: **86 passed, zero skips or failures**.
+  `logs/retained-log-affected.log`. Classes: `PartialReplyLogTests`,
+  `IncompleteRetryTests`, `TimelineDurabilityTests`, `RetryTests`,
+  `RetryRecoveryTests`, `RetrySettingsTests`, `ContinueRunTests`,
+  `AgentSteeringRetryTests`, `CompactionGatewayTests`, `TaskPresentationTests`.
+
+The updated Release helper was rebuilt successfully
+(`logs/retained-log-bundle.log`). Process-level checks then passed:
+
+| Check | Result | Evidence under the build root |
+| --- | --- | --- |
+| Native host restart/recovery acceptance | 3/3 passed | `logs/retained-log-acceptance.log` |
+| Historical v2 subagent streaming, generated fixture | All four modes passed | `logs/retained-log-subagent-streaming.log`, `logs/retained-log-subagent-streaming.json` |
+| Current v3 subagent streaming | All eight modes passed | `logs/retained-log-subagent-steering-streaming.log`, `logs/retained-log-subagent-steering-streaming.json` |
+| Historical v2 subagent crash matrix with current Release helper recovery | 21/21 points passed | `logs/retained-log-subagent-crashes.log` |
+| Current v3 subagent crash matrix, including historical-helper refusal of v3 journals | 33/33 points passed | `logs/retained-log-subagent-steering-crashes-final.log` |
+
+The initial v3 crash invocation incorrectly passed the generated v2-mode
+fixture as `--older-helper`. That fixture still contains v3 journal support,
+so the downgrade assertion correctly failed with `Older helper accepted v3`.
+The nonzero result remains in `logs/retained-log-subagent-steering-crashes.log`
+and `logs/retained-log-check-status.json`. The corrected full run used a helper
+built from the unmodified archived package at
+`82a307c91ffc91e5733308080a51c11185ba97ff`, the historical commit documented by
+the original steering validation. Its build passed in
+`logs/retained-log-compat-build.log`. No script assertions or repository
+scripts were changed.
+
+Follow-up commands, after exporting the same `PI_BUILD_ROOT` as above:
+
+```sh
+swift test --package-path packages/swift-host --scratch-path "$PI_BUILD_ROOT/swift-verify" --filter 'PartialReplyLogTests|IncompleteRetryTests|TimelineDurabilityTests|RetryTests|RetryRecoveryTests|RetrySettingsTests|ContinueRunTests|AgentSteeringRetryTests|CompactionGatewayTests|TaskPresentationTests'
+python3 scripts/build-bundle.py
+python3 scripts/test-native-acceptance.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host"
+python3 scripts/test-subagent-streaming.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host" --fixture
+python3 scripts/test-subagent-crashes.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host" --skip-build
+python3 scripts/test-subagent-streaming.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host" --steering
+swift build --package-path "$PI_BUILD_ROOT/compat-82a307c9-source/packages/swift-host" --scratch-path "$PI_BUILD_ROOT/compat-82a307c9-build" --product pi-native-host
+python3 scripts/test-subagent-crashes.py "$PI_BUILD_ROOT/swift-host/arm64-apple-macosx/release/pi-native-host" --steering --skip-build --older-helper "$PI_BUILD_ROOT/compat-82a307c9-build/debug/pi-native-host"
+```
+
+The streaming runs generate the current v2/v3 fault-injection helpers reused
+by the crash commands. The historical package was extracted with `git archive`
+into `compat-82a307c9-source` under the build root.
+
+Read-only Codex `gpt-6.1-sol` / `xhigh` planning confirmed the minimal ownership
+guard; the final whole-follow-up review found no actionable findings and
+confirmed the recovery coverage (`logs/retained-log-plan-result.txt`,
+`logs/retained-log-review-result.txt`). Its advice to finish the process-level
+checks and record their exact results before committing is fulfilled above.
+
+This follow-up uses the same build root and only synthetic clients or loopback
+gateways. It changes no app code; no native test lane was run and no `.xcresult`
+bundle was requested for the follow-up. The full helper/native results above belong to the
+original implementation; this follow-up reran the 86 affected helper tests.
