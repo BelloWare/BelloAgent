@@ -58,11 +58,11 @@ import GitView
         let rows = rows
         list.reload(.init(count: rows.count, key: { index in
             switch rows[index] { case .heading(let text): return "section:" + text; case .branch(let branch): return "\(index):" + branch.ref }
-        }, height: { index, _ in if case .heading = rows[index] { return 27 }; return 36 }, view: { [weak self] index, existing in
+        }, height: { index, _ in if case .heading = rows[index] { return index == 0 ? 25 : 31 }; return 36 }, view: { [weak self] index, existing in
             switch rows[index] {
             case .heading(let title):
-                let label = (existing as? PiKit.TextLine) ?? PiKit.TextLine(PiKit.Line(title, font: PiKit.Font.micro, color: .piInkTertiary))
-                label.line.text = title; return label
+                let header = (existing as? GitBranchSectionHeader) ?? GitBranchSectionHeader()
+                header.show(title, first: index == 0); return header
             case .branch(let branch):
                 let row = (existing as? GitBranchPopupRow) ?? GitBranchPopupRow()
                 row.show(branch, selected: self?.selectedRef == branch.ref)
@@ -130,16 +130,83 @@ import GitView
 }
 
 @MainActor private final class GitBranchPopupRow: NSView {
-    private let label = LabelView(PiKit.Line("", font: PiKit.Font.body, color: .piInk), symbol: "arrow.triangle.branch")
+    private let content = GitBranchRowContent()
     let row: PiKit.SelectableRow
-    init() { row = PiKit.SelectableRow(content: label); super.init(frame: .zero); addSubview(row) }
+    init() { row = PiKit.SelectableRow(content: content); super.init(frame: .zero); addSubview(row) }
     required init?(coder: NSCoder) { nil }
     override var isFlipped: Bool { true }
     override func layout() { super.layout(); row.frame = bounds }
     func show(_ branch: GitBranchReference, selected: Bool) {
-        label.line.text = (branch.current ? "✓ " : "") + branch.name
-        row.selected = selected; row.toolTip = branch.ref
-        row.setAccessibilityLabel(branch.name + (branch.current ? ", current branch" : "") + (branch.remote.map { ", remote " + $0 } ?? ", local branch"))
+        content.show(branch)
+        row.selected = selected; row.toolTip = ([branch.ref, content.trackingDescription].filter { !$0.isEmpty }).joined(separator: "\n")
+        row.setAccessibilityLabel(branch.name + (branch.remote.map { ", remote " + $0 } ?? ", local branch"))
+        row.setAccessibilityValue(([branch.current ? "Current" : "", content.trackingDescription].filter { !$0.isEmpty }).joined(separator: ". "))
         row.setAccessibilityIdentifier("git-branch-" + branch.ref)
+    }
+}
+
+/// Quick Open's micro uppercase heading, with extra room between sections.
+@MainActor private final class GitBranchSectionHeader: NSView {
+    private let text = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.micro, color: .piInkTertiary, tracking: 0.4, uppercased: true))
+    private var first = false
+    init() { super.init(frame: .zero); addSubview(text); text.setAccessibilityIdentifier("git-branches-section") }
+    required init?(coder: NSCoder) { nil }
+    override var isFlipped: Bool { true }
+    func show(_ title: String, first: Bool) { text.line.text = title; self.first = first; needsLayout = true }
+    override func layout() {
+        super.layout()
+        text.frame = CGRect(x: 14, y: first ? 8 : 14, width: max(0, bounds.width - 28), height: text.intrinsicContentSize.height)
+    }
+}
+
+@MainActor private final class GitBranchRowContent: NSView {
+    private let check = PiKit.SymbolView(PiKit.Symbol("checkmark", size: 12, weight: .semibold), color: .piInk)
+    private let name = LabelView(PiKit.Line("", font: PiKit.Font.body, color: .piInk), symbol: "arrow.triangle.branch")
+    private let upstream = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piInkSecondary))
+    private let counts = PiKit.TextLine(PiKit.Line("", font: PiKit.Font.caption, color: .piInkSecondary))
+    private(set) var trackingDescription = ""
+    init() {
+        super.init(frame: .zero)
+        for view in [check, name, upstream, counts] as [NSView] { addSubview(view); view.setAccessibilityElement(false) }
+        check.setAccessibilityIdentifier("git-branch-current")
+        upstream.setAccessibilityIdentifier("git-branch-upstream"); upstream.truncation = .middle
+        counts.setAccessibilityIdentifier("git-branch-tracking-counts")
+    }
+    required init?(coder: NSCoder) { nil }
+    override var isFlipped: Bool { true }
+    override var intrinsicContentSize: NSSize { NSSize(width: NSView.noIntrinsicMetric, height: 20) }
+    func show(_ branch: GitBranchReference) {
+        check.isHidden = !branch.current; name.line.text = branch.name
+        name.symbolName = branch.remote == nil ? "arrow.triangle.branch" : "cloud"
+        upstream.line.text = branch.tracking?.upstream ?? ""
+        counts.line.text = ""; trackingDescription = ""
+        if let tracking = branch.tracking {
+            if tracking.gone {
+                counts.line.text = "gone"; trackingDescription = "Upstream \(tracking.upstream) is missing"
+            } else if let ahead = tracking.ahead, let behind = tracking.behind {
+                counts.line.text = [ahead > 0 ? "↑\(ahead)" : "", behind > 0 ? "↓\(behind)" : ""].filter { !$0.isEmpty }.joined(separator: " ")
+                trackingDescription = "Tracks \(tracking.upstream), " + (ahead == 0 && behind == 0 ? "up to date" : "\(ahead) ahead, \(behind) behind")
+            } else {
+                counts.line.text = "?"; trackingDescription = "Tracks \(tracking.upstream), counts unavailable"
+            }
+        }
+        upstream.isHidden = upstream.line.text.isEmpty; counts.isHidden = counts.line.text.isEmpty
+        needsLayout = true
+    }
+    override func layout() {
+        super.layout()
+        let width = bounds.width, height = bounds.height
+        check.frame = CGRect(x: 0, y: 0, width: 14, height: height)
+        // Reserve the check column even on unchecked rows. Keep counts visible
+        // and give the branch name priority over a long upstream name.
+        let available = max(0, width - 20)
+        let countWidth = counts.isHidden ? 0 : min(available, counts.intrinsicContentSize.width)
+        let remaining = max(0, available - countWidth - (countWidth > 0 ? 8 : 0))
+        let preferredName = min(name.intrinsicContentSize.width, max(100, remaining * 0.6))
+        let upstreamWidth = upstream.isHidden ? 0 : min(upstream.intrinsicContentSize.width, max(0, remaining - preferredName - 8))
+        name.frame = CGRect(x: 20, y: 0, width: max(0, remaining - (upstreamWidth > 0 ? upstreamWidth + 8 : 0)), height: height)
+        let textHeight = counts.intrinsicContentSize.height
+        counts.frame = CGRect(x: width - countWidth, y: (height - textHeight) / 2, width: countWidth, height: textHeight)
+        upstream.frame = CGRect(x: width - countWidth - (countWidth > 0 ? 8 : 0) - upstreamWidth, y: (height - textHeight) / 2, width: upstreamWidth, height: textHeight)
     }
 }

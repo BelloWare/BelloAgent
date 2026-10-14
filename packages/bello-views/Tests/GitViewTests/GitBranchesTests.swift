@@ -2,6 +2,44 @@ import XCTest
 @testable import GitView
 
 final class GitBranchesTests: XCTestCase {
+    func testUnfamiliarTrackingStatusNeverClaimsTheBranchIsInSync() {
+        for status in ["[future status]", "[ahead many]", "[ahead -1]", "[ahead 1, ahead 2]", "[]"] {
+            let tracking = GitBranchTracking(upstream: "origin/topic", description: status)
+            XCTAssertNil(tracking.ahead); XCTAssertNil(tracking.behind); XCTAssertFalse(tracking.gone)
+        }
+        let ahead = GitBranchTracking(upstream: "origin/topic", description: "[ahead 2]")
+        XCTAssertEqual(ahead.ahead, 2); XCTAssertEqual(ahead.behind, 0)
+    }
+
+    func testCatalogCachesTrackingCountsAndHandlesGoneAndUntrackedBranches() async throws {
+        let f = try BranchFixture(); defer { f.close() }
+        _ = try await f.divergedBranch(); try f.origin(branch: "topic")
+        try f.git(["branch", "--set-upstream-to=origin/topic", "main"])
+        try f.git(["branch", "--set-upstream-to=origin/topic", "topic"])
+        try f.git(["branch", "untracked"])
+        try f.git(["branch", "behind"]); try f.git(["branch", "--set-upstream-to=origin/topic", "behind"])
+        try f.write("one.txt", "one\n"); try f.commit("Local one")
+        try f.write("two.txt", "two\n"); try f.commit("Local two")
+        let before = try f.snapshot(), catalog = try await f.service.branchCatalog(in: f.path)
+        let main = try XCTUnwrap(catalog.branches.first { $0.name == "main" })
+        XCTAssertEqual(main.upstream, "refs/remotes/origin/topic")
+        XCTAssertEqual(main.tracking?.upstream, "origin/topic")
+        XCTAssertEqual(main.tracking?.ahead, 2); XCTAssertEqual(main.tracking?.behind, 1)
+        XCTAssertEqual(main.tracking?.gone, false)
+        XCTAssertEqual(catalog.branches.first { $0.name == "topic" }?.tracking?.ahead, 0)
+        XCTAssertEqual(catalog.branches.first { $0.name == "topic" }?.tracking?.behind, 0)
+        XCTAssertEqual(catalog.branches.first { $0.name == "behind" }?.tracking?.behind, 1)
+        XCTAssertNil(catalog.branches.first { $0.name == "untracked" }?.tracking)
+        XCTAssertNil(catalog.branches.first { $0.name == "origin/topic" }?.tracking)
+        XCTAssertEqual(try f.snapshot(), before, "Catalog reads preserve index and worktree bytes")
+        try f.git(["update-ref", "-d", "refs/remotes/origin/topic"])
+        let next = try await f.service.branchCatalog(in: f.path)
+        XCTAssertEqual(next.branches.first { $0.name == "main" }?.tracking?.gone, true)
+        XCTAssertEqual(main.tracking?.ahead, 2, "The displayed catalog keeps its own metadata snapshot")
+        XCTAssertEqual(main.tracking?.gone, false)
+        XCTAssertEqual(try f.snapshot(), before)
+    }
+
     func testCatalogListsLocalRemoteCurrentAndRecent() async throws {
         let f = try BranchFixture(); defer { f.close() }
         try f.git(["switch", "-c", "topic"]); try f.git(["switch", "main"])

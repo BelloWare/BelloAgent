@@ -4,6 +4,50 @@ import AppKit
 @testable import GitView
 
 final class GitBranchesInteractionTests: XCTestCase {
+    @MainActor func testTrackingRowsStayAlignedAndUseTheCatalogWhileFiltering() async throws {
+        let scene = try GitBranchesScene(width: 420); defer { scene.close() }
+        _ = try await scene.repo.divergedBranch(); try scene.repo.origin(branch: "topic")
+        try scene.repo.git(["branch", "--set-upstream-to=origin/topic", "main"])
+        try scene.repo.write("one.txt", "one\n"); try scene.repo.commit("Local one")
+        try scene.repo.write("two.txt", "two\n"); try scene.repo.commit("Local two")
+        try await scene.ready()
+        let view = try await scene.openBranches()
+        view.frame.size.width = 280; view.layoutSubtreeIfNeeded()
+        let sections = scene.find(PiKit.TextLine.self, in: view).filter { $0.accessibilityIdentifier() == "git-branches-section" }
+        XCTAssertEqual(Set(sections.map(\.line.text)), ["Recent", "Local", "Remote · origin"])
+        for section in sections {
+            XCTAssertTrue(section.line.uppercased); XCTAssertEqual(section.line.tracking, 0.4)
+            XCTAssertGreaterThanOrEqual(section.frame.minY, 8)
+            if section.line.text != "Recent" { XCTAssertEqual(section.frame.minY, 14) }
+        }
+        let rows = scene.find(PiKit.SelectableRow.self, in: view)
+        for row in rows {
+            let current = row.accessibilityIdentifier() == "git-branch-refs/heads/main"
+            let mark = try XCTUnwrap(scene.find(PiKit.SymbolView.self, in: row).first { $0.accessibilityIdentifier() == "git-branch-current" })
+            let name = try XCTUnwrap(scene.find(LabelView.self, in: row).first)
+            XCTAssertEqual(mark.isHidden, !current); XCTAssertEqual(mark.frame.minX, 0)
+            XCTAssertEqual(name.frame.minX, 20, "Every row reserves the same leading check column")
+            let value = row.accessibilityValue() as? String ?? ""
+            XCTAssertEqual(value.contains("Current"), current)
+            if current {
+                XCTAssertTrue(value.contains("2 ahead, 1 behind"))
+                let count = try XCTUnwrap(scene.find(PiKit.TextLine.self, in: row).first { $0.accessibilityIdentifier() == "git-branch-tracking-counts" })
+                XCTAssertEqual(count.line.text, "↑2 ↓1")
+                XCTAssertGreaterThanOrEqual(count.frame.width, count.intrinsicContentSize.width)
+                XCTAssertLessThanOrEqual(count.frame.maxX, try XCTUnwrap(count.superview).bounds.width)
+                XCTAssertLessThanOrEqual(name.frame.maxX, count.frame.minX)
+            }
+        }
+        // Retire the upstream in the fixture after opening. Keyboard, search
+        // and layout retain the already-read catalog until the next opening.
+        try scene.repo.git(["update-ref", "-d", "refs/remotes/origin/topic"])
+        view.filter("main"); view.move(1); view.layoutSubtreeIfNeeded()
+        XCTAssertEqual(view.catalog?.branches.first { $0.name == "main" }?.tracking?.ahead, 2)
+        XCTAssertEqual(view.catalog?.branches.first { $0.name == "main" }?.tracking?.gone, false)
+        let reopened = try await scene.openBranches()
+        XCTAssertEqual(reopened.catalog?.branches.first { $0.name == "main" }?.tracking?.gone, true)
+    }
+
     @MainActor func testSearchRemoteSectionsKeyboardAndAccessibleCurrentBranch() async throws {
         let scene = try GitBranchesScene(); defer { scene.close() }
         _ = try await scene.repo.divergedBranch(); try scene.repo.origin(branch: "topic")
@@ -17,8 +61,12 @@ final class GitBranchesInteractionTests: XCTestCase {
         for _ in 0..<20 { view.move(1) }
         XCTAssertEqual(view.selectedRef, "refs/remotes/origin/topic", "Recent duplicates cannot trap arrow navigation")
         view.layoutSubtreeIfNeeded()
-        let labels = scene.find(PiKit.SelectableRow.self, in: view).compactMap { $0.accessibilityLabel() }
-        XCTAssertTrue(labels.contains { $0.contains("current branch") })
+        let current = try XCTUnwrap(scene.find(PiKit.SelectableRow.self, in: view).first { $0.accessibilityIdentifier() == "git-branch-refs/heads/main" })
+        XCTAssertEqual(current.accessibilityLabel(), "main, local branch")
+        XCTAssertTrue((current.accessibilityValue() as? String)?.lowercased().contains("current") == true)
+        XCTAssertEqual(scene.find(LabelView.self, in: current).first?.line.text, "main", "The current mark is separate from the branch name")
+        let remote = try XCTUnwrap(scene.find(PiKit.SelectableRow.self, in: view).first { $0.accessibilityIdentifier() == "git-branch-refs/remotes/origin/topic" })
+        XCTAssertEqual(scene.find(LabelView.self, in: remote).first?.symbolName, "cloud")
         XCTAssertEqual(view.search.field.accessibilityLabel(), "Search local and remote branches")
         let editor = NSTextView()
         XCTAssertTrue(view.control(view.search.field, textView: editor, doCommandBy: #selector(NSResponder.cancelOperation(_:))))

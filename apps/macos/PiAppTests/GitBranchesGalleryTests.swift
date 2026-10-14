@@ -11,8 +11,11 @@ final class GitBranchesGalleryTests: XCTestCase {
         for (sizeName, width, height) in [("wide", 1180.0, 760.0), ("920", 920.0, 600.0), ("narrow", 420.0, 600.0)] {
             let scene = try GitBranchesScene(width: width, height: height); defer { scene.close() }
             let branch = try await scene.repo.divergedBranch(); try scene.repo.origin(branch: "topic")
+            try scene.repo.git(["branch", "--set-upstream-to=origin/topic", "main"])
+            try scene.repo.git(["branch", "--set-upstream-to=origin/topic", "topic"])
             try scene.repo.git(["branch", "feature/review-stash-and-checkout-behavior"])
             try scene.repo.write("main.txt", "On the current branch\n"); try scene.repo.commit("Keep keyboard selection visible in narrow panes")
+            try scene.repo.write("tracking.txt", "Ahead by two, behind by one\n"); try scene.repo.commit("Show cached tracking counts beside local branches")
             try scene.repo.write("f.txt", "Saved review changes\n"); try scene.repo.write("notes.md", "# Review notes\n\nKeep local work safe.\n")
             _ = try await scene.repo.service.createStash(message: "Review branch tools before switching", includeUntracked: true, keepIndex: false, in: scene.repo.path)
             try await scene.ready()

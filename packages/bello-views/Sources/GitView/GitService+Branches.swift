@@ -6,7 +6,34 @@ public struct GitBranchReference: Equatable, Sendable, Identifiable {
     public let current: Bool
     public let remote: String?
     public let upstream: String?
+    public let tracking: GitBranchTracking?
     public var id: String { ref }
+}
+
+public struct GitBranchTracking: Equatable, Sendable {
+    public let upstream: String
+    /// Nil when Git reports a missing upstream or an unfamiliar status.
+    public let ahead: Int?, behind: Int?
+    public let gone: Bool
+
+    init(upstream: String, description: String) {
+        self.upstream = upstream; gone = description == "[gone]"
+        let counts = Self.counts(description)
+        ahead = counts?.0; behind = counts?.1
+    }
+    private static func counts(_ value: String) -> (Int, Int)? {
+        if value.isEmpty { return (0, 0) }
+        guard value.hasPrefix("["), value.hasSuffix("]") else { return nil }
+        var counts: [String: Int] = [:]
+        for part in value.dropFirst().dropLast().split(separator: ",", omittingEmptySubsequences: false) {
+            let fields = part.split(whereSeparator: \.isWhitespace)
+            guard fields.count == 2, fields[0] == "ahead" || fields[0] == "behind",
+                  counts[String(fields[0])] == nil, let count = Int(fields[1]), count >= 0 else { return nil }
+            counts[String(fields[0])] = count
+        }
+        guard !counts.isEmpty else { return nil }
+        return (counts["ahead"] ?? 0, counts["behind"] ?? 0)
+    }
 }
 
 public struct GitBranchHead: Equatable, Sendable {
@@ -66,16 +93,19 @@ extension GitService {
 
     public func branchCatalog(in root: String) async throws -> GitBranchCatalog {
         let head = try await branchHead(in: root)
-        let output = try await branchCommand(["for-each-ref", "--sort=refname", "--format=%(refname)%00%(objectname)%00%(symref)%00%(upstream)", "refs/heads/", "refs/remotes/"], in: root)
+        // One actor-side metadata read for all refs. Tracking travels with the
+        // catalog, so filtering, keyboard selection and layout never query Git.
+        let output = try await branchCommand(["for-each-ref", "--sort=refname", "--format=%(refname)%00%(objectname)%00%(symref)%00%(upstream)%00%(upstream:short)%00%(upstream:track)", "refs/heads/", "refs/remotes/"], in: root)
         let remotes = try await branchCommand(["remote"], in: root).text.split(separator: "\n").map(String.init).sorted { $0.count > $1.count }
         let branches = output.text.split(separator: "\n").compactMap { line -> GitBranchReference? in
             let fields = line.split(separator: "\0", omittingEmptySubsequences: false).map(String.init)
-            guard fields.count == 4, fields[2].isEmpty else { return nil } // origin/HEAD is an alias, not a branch
+            guard fields.count == 6, fields[2].isEmpty else { return nil } // origin/HEAD is an alias, not a branch
             let local = fields[0].hasPrefix("refs/heads/")
             let name = String(fields[0].dropFirst(local ? 11 : 13))
             let remote = local ? nil : remotes.first { name.hasPrefix($0 + "/") } ?? name.split(separator: "/").first.map(String.init)
             return GitBranchReference(ref: fields[0], name: name, oid: fields[1], current: fields[0] == head.ref,
-                                      remote: remote, upstream: fields[3].isEmpty ? nil : fields[3])
+                                      remote: remote, upstream: fields[3].isEmpty ? nil : fields[3],
+                                      tracking: local && !fields[4].isEmpty ? GitBranchTracking(upstream: fields[4], description: fields[5]) : nil)
         }
         let log = try await run(["reflog", "show", "-n", "80", "--format=%gs", "HEAD"], in: root)
         var recent: [String] = []
