@@ -26,6 +26,9 @@ enum FileProjectState: Equatable {
     let projectID: String?
     /// What the app knows of a project, by id: set once by the app.
     static var resolveProject: (String?) -> FileProjectState = { $0 == nil ? .none : .removed }
+    static var activate: (FileTab) -> Void = { _ in }
+    static var openHistory: (FileTab) -> Void = { _ in }
+    var historyTask: Task<Void, Never>?
 
     @Published private(set) var project: FileProjectState
     @Published private(set) var status: FileView.FileDocument.Status = .indexing
@@ -35,6 +38,8 @@ enum FileProjectState: Equatable {
     private var syntax: FileSyntax?
     private var watcher: FileWatch?
     private var shown = false
+    private var suspended = false
+    private var restoredReading: FileReadingPosition?
     private(set) var followTask: Task<Void, Never>?
     private var following: FileView.FileDocument?
     /// The file reader's existing I/O gates allow a fixture to hold a live
@@ -50,6 +55,7 @@ enum FileProjectState: Equatable {
             self.status = .ready; self.updateSymbol()
         }
         madePreview = preview
+        if suspended { preview.suspend() }
         return preview
     }
     private var followToken = 0
@@ -57,12 +63,28 @@ enum FileProjectState: Equatable {
     var isWatching: Bool { watcher?.isWatching == true && watcher?.isArmed == true }
 
     override func didShow() {
-        shown = true
+        guard !shown || suspended else { return }
+        shown = true; suspended = false
+        madeDocument?.resume()
+        madeScroll?.textView.resume()
+        syntax?.resume()
+        finder?.resume()
+        madePreview?.resume()
         startWatching()
         followChange()
         blame.resume()
     }
-    override func didHide() { shown = false; stopWatching(); blame.suspend() }
+    override func didHide() {
+        guard shown || !suspended else { return }
+        shown = false; suspended = true
+        historyTask?.cancel(); historyTask = nil
+        stopWatching(); blame.suspend()
+        madeScroll?.textView.suspend()
+        finder?.suspend(); syntax?.suspend(); madeDocument?.suspend()
+    }
+    override func contentVisibilityChanged(_ shown: Bool) {
+        if shown { didShow() } else { didHide() }
+    }
     /// Who changed each line, while it is shown (`FileBlame`).
     let blame = FileBlame()
     var isShownNow: Bool { shown }
@@ -81,10 +103,14 @@ enum FileProjectState: Equatable {
         following?.close(); following = nil
         madePreview?.suspend()
     }
-    private func followChange() {
+    func followChange() {
         guard shown, readable else { return }
         if previewKind != nil { madePreview?.load(); return }
         guard let old = madeDocument else { return }
+        // A resumed initial open has no identity yet. Let its own guarded
+        // index settle before checking for replacement, instead of starting
+        // a competing open and closing the reader that just resumed.
+        guard !old.isIndexing else { followAgain = true; return }
         // Folder notifications include unrelated saves. Keep an in-flight
         // identity check/indexing pass alive, then check once more against
         // its result so a genuine second replacement is still followed.
@@ -184,7 +210,7 @@ enum FileProjectState: Equatable {
     var document: FileView.FileDocument? {
         guard readable, previewKind == nil else { return nil }
         if let madeDocument { return madeDocument }
-        var options = FileView.FileDocument.Options(); options.requiresResolvedPath = true
+        var options = documentReadOptions; options.requiresResolvedPath = true
         let document = FileView.FileDocument(url: url, options: options)
         document.onStatusChange = { [weak self, weak document] status in
             guard let self, let document, self.madeDocument === document else { return }
@@ -192,10 +218,14 @@ enum FileProjectState: Equatable {
             self.status = status
             self.updateSymbol()
             if status != .indexing { self.blame.documentChanged() }
+            if status == .changed || (status != .indexing && self.followAgain) { self.followChange() }
         }
         madeDocument = document
+        if suspended { document.suspend() }
         return document
     }
+    /// Fixture gates use the actual document reader and cancellation guards.
+    var documentReadOptions = FileView.FileDocument.Options()
     /// The text, in the view kept while the tab is open.
     var scroll: FileTextScrollView? {
         if let madeScroll { return madeScroll }
@@ -205,34 +235,50 @@ enum FileProjectState: Equatable {
         scroll.textView.show(document, name: title)
         syntax = FileSyntax(source: document, view: scroll.textView, extension: url.pathExtension)
         scroll.textView.syntax = { [weak syntax] line, range, text in syntax?.colors(line: line, piece: range, text: text) ?? [] }
+        if let restoredReading { scroll.textView.restoreReadingPosition(restoredReading); self.restoredReading = nil }
         if let target { scroll.textView.reveal(lines: target); self.target = nil }
         madeScroll = scroll
+        if suspended { scroll.textView.suspend(); syntax?.suspend() }
         return scroll
     }
     /// Shows lines of the file, set apart.
     func reveal(lines: ClosedRange<Int>) {
+        restoredReading = nil
         if let madeScroll { madeScroll.textView.reveal(lines: lines) } else { target = lines }
     }
     /// Shows the file from its start, nothing set apart, whatever was shown
     /// or asked for before.
     func showTop() {
-        target = nil
+        target = nil; restoredReading = nil
         madeScroll?.textView.showTop()
     }
 
     override func makeAppKitContent() -> NSView { FileTabContent(tab: self) }
     override var focusView: NSView? { madeScroll?.textView }
-    override func savedState() -> Data? { try? JSONEncoder().encode(Saved(project: projectID)) }
-    private struct Saved: Codable { var project: String? }
+    override func savedState() -> Data? {
+        try? JSONEncoder().encode(FileReviewState(project: projectID, reading: readable ? (madeScroll?.textView.readingPosition ?? restoredReading) : nil))
+    }
     override class func restore(key: String, state: Data?) -> HostedTab? {
-        let saved = state.flatMap { try? JSONDecoder().decode(Saved.self, from: $0) }
-        return FileTab(url: URL(fileURLWithPath: key), projectID: saved?.project)
+        let saved: FileReviewState?
+        if let state {
+            guard let decoded = try? JSONDecoder().decode(FileReviewState.self, from: state) else { return nil }
+            saved = decoded
+        } else { saved = nil }
+        let tab = FileTab(url: URL(fileURLWithPath: key), projectID: saved?.project)
+        // A saved canonical path that now redirects must be opened explicitly
+        // so the workspace checks its new project's trust boundary.
+        guard tab.key == key else { return nil }
+        if tab.readable { tab.restoredReading = saved?.reading }
+        tab.suspended = true
+        return tab
     }
     override func projectsChanged() {
         let now = Self.resolveProject(projectID)
         guard now != project else { return }
         project = now
+        historyTask?.cancel(); historyTask = nil
         if !readable {
+            restoredReading = nil; target = nil
             stopWatching()
             // Not to be read: what was read goes, and the view with it, and
             // what was known of the file: read again from the start if it
@@ -248,12 +294,35 @@ enum FileProjectState: Equatable {
         updateHelp(); updateSymbol()
     }
     override func willClose() {
+        historyTask?.cancel(); historyTask = nil
         blame.hide()
         shown = false; stopWatching(); watcher = nil
         finder?.close(); finder = nil
         madeDocument?.close()
         madeDocument = nil; madeScroll = nil; syntax = nil
         madePreview?.close(); madePreview = nil
+    }
+
+    override func menuEntries() -> [PiMenuEntry] {
+        let text = readable && previewKind == nil && status != .binary
+        return [
+            .button("Find…", systemImage: "magnifyingglass", enabled: text, identifier: "file-find", help: "Find in this file (⌘F)") { [weak self] in
+                self?.withShownContent { $0.openFind() }
+            },
+            .button("Go to Line…", systemImage: "number", enabled: text, identifier: "file-go-to-line", help: "Go to a line in this file (⌘L)") { [weak self] in
+                self?.withShownContent { $0.openGoToLine() }
+            },
+            .button("Show File History", systemImage: "clock.arrow.circlepath", enabled: project.isTrusted,
+                    identifier: "file-show-history") { [weak self] in
+                guard let self, self.readable else { return }; Self.openHistory(self)
+            }
+        ]
+    }
+    private func withShownContent(_ action: (FileTab) -> Void) {
+        guard readable else { return }
+        Self.activate(self)
+        _ = contentView
+        action(self)
     }
 
     // MARK: Find and go to line

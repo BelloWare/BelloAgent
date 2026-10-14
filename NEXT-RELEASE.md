@@ -2,6 +2,10 @@
 
 **Released 2026-10-14:** 0.1.126 (build 130, tag `v0.1.126`) is the latest release; record `docs/validation/Bello-Agent-0.1.126-2026-10-14.md`.
 
+## 0.1.127
+
+- [x] File-review continuity (`dev/a127-file-continuity`): text tabs preserve logical viewport and selection across relaunch, explicit line links win, and bounded per-project recent file references survive restart. Tab menus expose Find, Go to Line and Show File History with return to the original reader. Hidden tabs suspend indexing/search/preview work and release decoded/layout/blame/syntax caches; recent references are validated off the main thread. Validation and integration notes: [file-continuity-0.1.127](docs/validation/file-continuity-0.1.127.md).
+
 ## 0.1.126
 
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.
