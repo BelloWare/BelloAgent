@@ -66,5 +66,6 @@ done
 rm -rf "$OUT/run" "$OUT/raw/"*-prime-*.json
 defaults delete "$DOMAIN" >/dev/null 2>&1 || true
 [ "$(journals)" = "$before_journals" ] || echo "WARNING: a fixture journal changed during the run" >&2
-# Other test runs (the XCTest host is com.belloware.PiApp) also write it.
+# Stat only: the independently running installed app can still change it.
+# XCTest now uses com.belloware.PiAppTests.Host; this probe uses launchperf.
 [ "$(stat -f %m "$OWNER_PREFS" 2>/dev/null || echo none)" = "$owner_mark" ] || echo "WARNING: $OWNER_PREFS changed during the run" >&2

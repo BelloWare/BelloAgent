@@ -29,7 +29,7 @@ struct TurnAccounting: Equatable, Sendable {
         }
     }
     var requestedModels: [String] { Array(Set(modelRoutes.compactMap(\.requested))).sorted() }
-    /// Output tokens after the first over first → last generated token,
+    /// All output tokens over request sent → last generated token (TTFT included),
     /// folded over this turn's requests; only the measured ones are in it.
     var throughput = SettledThroughput()
     /// First-token latency over the same requests, for the turn-time dialog.

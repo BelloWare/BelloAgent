@@ -38,16 +38,15 @@ extension PayloadArchive {
     MAX(wall) AS last_wall
     """
 
-    /// The settled rate's population and sums, as `SettledThroughput.add`
-    /// folds them: a completed request that reported its decode span
-    /// (`stream_ms`, first to last output) over the measurement floor
-    /// (`SettledThroughput.minimumDecodeMilliseconds`) and at least two output
-    /// tokens, contributing its tokens after the first, `output_tokens-1`.
-    /// Anything else contributes nothing — never a zero.
+    /// Same population and sums as `SettledThroughput.add`: valid TTFT and
+    /// first-to-last-output span, total at least the floor, all N ≥ 1 output
+    /// tokens, completed requests only. Sums are recomputed from raw columns on
+    /// every read; a stored helper rate is never used. Check the sum for overflow too.
     static let settledThroughputSQL: String = {
         let floor = Int(SettledThroughput.minimumDecodeMilliseconds)
-        let sample = "outcome='completed' AND stream_ms>=\(floor) AND stream_ms<=1.7976931348623157e308 AND output_tokens>=2 AND output_tokens<=1.7976931348623157e308"
-        return "SUM(CASE WHEN \(sample) THEN stream_ms END) AS decode_ms,SUM(CASE WHEN \(sample) THEN output_tokens-1 END) AS decode_output_tokens,COUNT(CASE WHEN \(sample) THEN 1 END) AS decode_samples"
+        let duration = "(ttft_ms+stream_ms)"
+        let sample = "outcome='completed' AND ttft_ms>=0 AND stream_ms>=0 AND \(duration)>=\(floor) AND \(duration)<=1.7976931348623157e308 AND output_tokens>=1 AND output_tokens<=1.7976931348623157e308"
+        return "SUM(CASE WHEN \(sample) THEN \(duration) END) AS decode_ms,SUM(CASE WHEN \(sample) THEN output_tokens END) AS decode_output_tokens,COUNT(CASE WHEN \(sample) THEN 1 END) AS decode_samples"
     }()
 
     static func gatewayTotals(_ row: [String: CaptureSQLValue]) -> GatewayTotals {

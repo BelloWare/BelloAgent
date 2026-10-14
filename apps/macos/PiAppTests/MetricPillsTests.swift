@@ -165,53 +165,50 @@ final class MetricPillsTests: XCTestCase {
 
     func testTheSettledRateFoldsOnlyTheRequestsThatReportedBothHalves() {
         var fold = SettledThroughput()
-        // 35 tokens: 34 after the first, over one second.
-        fold.add(decodeMilliseconds: 1_000, outputTokens: 35)
-        fold.add(decodeMilliseconds: nil, outputTokens: 50)
-        fold.add(decodeMilliseconds: 500, outputTokens: nil)
-        fold.add(decodeMilliseconds: 0, outputTokens: 10)
-        fold.add(decodeMilliseconds: -1, outputTokens: 10)
-        fold.add(decodeMilliseconds: .infinity, outputTokens: 10)
+        // All 35 tokens over one second, including zero measured TTFT.
+        fold.add(ttftMilliseconds: 0, decodeMilliseconds: 1_000, outputTokens: 35)
+        fold.add(ttftMilliseconds: 0, decodeMilliseconds: nil, outputTokens: 50)
+        fold.add(ttftMilliseconds: 0, decodeMilliseconds: 500, outputTokens: nil)
+        fold.add(ttftMilliseconds: 0, decodeMilliseconds: 0, outputTokens: 10)
+        fold.add(ttftMilliseconds: 0, decodeMilliseconds: -1, outputTokens: 10)
+        fold.add(ttftMilliseconds: 0, decodeMilliseconds: .infinity, outputTokens: 10)
         XCTAssertEqual(fold.samples, 1)
         XCTAssertEqual(fold.requests, 6)
-        XCTAssertEqual(fold.tokensPerSecond, 34)
-        XCTAssertEqual(fold.label, "34 tok/s")
+        XCTAssertEqual(fold.tokensPerSecond, 35)
+        XCTAssertEqual(fold.label, "35 tok/s")
         XCTAssertEqual(fold.coverage, "1/6 requests measured")
 
         var second = SettledThroughput()
-        second.add(decodeMilliseconds: 1_000, outputTokens: 67)
+        second.add(ttftMilliseconds: 0, decodeMilliseconds: 1_000, outputTokens: 67)
         fold.add(second)
-        XCTAssertEqual(fold.tokensPerSecond, 50, "A group's rate is one division of the totals, never an average of rates: (34 + 66) / 2 s")
+        XCTAssertEqual(fold.tokensPerSecond, 51, "A group uses one division of sums: (35 + 67) / 2 s")
         XCTAssertEqual(fold.samples, 2); XCTAssertEqual(fold.requests, 7)
 
         var none = SettledThroughput()
-        none.add(decodeMilliseconds: nil, outputTokens: nil)
+        none.add(ttftMilliseconds: 0, decodeMilliseconds: nil, outputTokens: nil)
         XCTAssertNil(none.tokensPerSecond); XCTAssertNil(none.label)
         XCTAssertEqual(none.coverage, "0/1 requests measured")
         XCTAssertNil(SettledThroughput().coverage, "Nothing considered is not partial coverage")
     }
 
-    /// The standard decode speed (LLMPerf, vLLM's TPOT): over first token →
-    /// last token the first token is already out, so a request contributes
-    /// the N − 1 tokens that arrived in its span. One token has no speed.
-    func testTheSettledRateCountsTheTokensAfterTheFirst() {
+    func testTheSettledRateCountsAllOutputIncludingSingleTokenReplies() throws {
         var fold = SettledThroughput()
-        fold.add(decodeMilliseconds: 1_000, outputTokens: 101)
-        XCTAssertEqual(fold.tokensPerSecond, 100, "(101 − 1) tokens over one second, never 101")
-        XCTAssertEqual(fold.outputTokens, 100, "The fold holds what it divides: the tokens after each request's first")
-        fold.add(decodeMilliseconds: 2_000, outputTokens: 1)
-        fold.add(decodeMilliseconds: 2_000, outputTokens: 0)
-        XCTAssertEqual(fold.samples, 1, "One output token, or none, has no decode speed")
-        XCTAssertEqual(fold.requests, 3, "Both are still requests considered")
-        XCTAssertEqual(fold.coverage, "1/3 requests measured")
-        fold.add(decodeMilliseconds: 500, outputTokens: 51)
-        XCTAssertEqual(fold.tokensPerSecond, 100, "(100 + 50) tokens over 1.5 s: one division of the sums")
-        fold.add(decodeMilliseconds: 249, outputTokens: 1_000)
-        XCTAssertEqual(fold.samples, 2, "Below the floor a span is no measurement")
-        fold.add(decodeMilliseconds: SettledThroughput.minimumDecodeMilliseconds, outputTokens: 2)
-        XCTAssertEqual(fold.samples, 3, "Two tokens over the floor itself: one after the first, measured")
-        XCTAssertEqual(fold.outputTokens, 151)
-        XCTAssertEqual(try XCTUnwrap(fold.tokensPerSecond), 151 / 1.75, accuracy: 1e-9)
+        fold.add(ttftMilliseconds: 500, decodeMilliseconds: 1_000, outputTokens: 101)
+        XCTAssertEqual(fold.tokensPerSecond, 101 / 1.5)
+        XCTAssertEqual(fold.outputTokens, 101)
+        fold.add(ttftMilliseconds: 250, decodeMilliseconds: 0, outputTokens: 1)
+        fold.add(ttftMilliseconds: 500, decodeMilliseconds: 2_000, outputTokens: 0)
+        XCTAssertEqual(fold.samples, 2)
+        XCTAssertEqual(fold.requests, 3)
+        XCTAssertEqual(fold.coverage, "2/3 requests measured")
+        fold.add(ttftMilliseconds: 0, decodeMilliseconds: 500, outputTokens: 51)
+        XCTAssertEqual(fold.tokensPerSecond, 153 / 2.25)
+        fold.add(ttftMilliseconds: 200, decodeMilliseconds: 49, outputTokens: 1_000)
+        XCTAssertEqual(fold.samples, 3, "Below the total floor is unmeasured")
+        fold.add(ttftMilliseconds: 200, decodeMilliseconds: 50, outputTokens: 2)
+        XCTAssertEqual(fold.samples, 4)
+        XCTAssertEqual(fold.outputTokens, 155)
+        XCTAssertEqual(try XCTUnwrap(fold.tokensPerSecond), 155 / 2.5, accuracy: 1e-9)
     }
 
     func testAverageLatencyCountsOnlyTheRequestsThatRecordedIt() {
@@ -270,7 +267,7 @@ final class MetricPillsTests: XCTestCase {
 
     /// The session statistics popover leads with the four timings, larger:
     /// AI and tool time from the helper's clocks, the average first token and
-    /// the settled decode speed, each saying what it covers.
+    /// the settled output speed, each saying what it covers.
     func testSessionStatisticsPopoverLeadsWithTheFourTimings() throws {
         let time = SessionTimeCharts(inputs: SessionStatsInputs(gateway: fixtureSession(), work: fixtureWork()), history: nil)
         let figures = time.hero + time.details
@@ -420,7 +417,7 @@ final class MetricPillsTests: XCTestCase {
         let turn = TurnPillsPresentation(summary)
         XCTAssertFalse(turn.timeRows.contains { $0.name == "Output speed" })
         XCTAssertFalse(turn.timeRows.contains { $0.name == "TTFT" })
-        XCTAssertTrue(turn.timeNotes.contains { $0.contains("two or more output tokens over at least 250 ms") }, "\(turn.timeNotes)")
+        XCTAssertTrue(turn.timeNotes.contains { $0.contains("valid timing from request to last output over at least 250 ms") }, "\(turn.timeNotes)")
         XCTAssertTrue(turn.hasTimeDialog, "The clock and the model/tool split are still worth a dialog")
     }
 
@@ -461,18 +458,17 @@ final class MetricPillsTests: XCTestCase {
         XCTAssertEqual(first.outputDetail, "900 reasoning")
         XCTAssertEqual(first.ttft, "400 ms")
         XCTAssertEqual(first.generation, "1s")
-        // The row shows the request's reported output, 34; its rate divides
-        // the 33 tokens after the first by its one second of generation.
-        XCTAssertEqual(first.throughput, "33 tok/s")
+        // All 34 output tokens over 400 ms TTFT + one second of generation.
+        XCTAssertEqual(first.throughput, "24 tok/s")
         XCTAssertEqual(first.cost, "$0.0025")
         XCTAssertFalse(first.unmeasured)
         let second = ledger.rows[1]
         XCTAssertEqual(second.model, "openai-responses", "With no reported model the ledger names the API it went out on")
         XCTAssertEqual([second.output, second.ttft, second.generation, second.throughput, second.cost], ["—", "—", "—", "—", "—"])
         XCTAssertTrue(second.unmeasured)
-        XCTAssertEqual(ledger.throughput.tokensPerSecond, 33)
-        XCTAssertTrue(ledger.coverageNote.contains("33 tok/s over 1 of 2 listed requests"), ledger.coverageNote)
-        XCTAssertTrue(ledger.coverageNote.contains("1 request has no decode speed"), ledger.coverageNote)
+        XCTAssertEqual(ledger.throughput.tokensPerSecond, 34 / 1.4)
+        XCTAssertTrue(ledger.coverageNote.contains("24 tok/s over 1 of 2 listed requests"), ledger.coverageNote)
+        XCTAssertTrue(ledger.coverageNote.contains("1 request has no output speed"), ledger.coverageNote)
         XCTAssertTrue(ledger.copyText.contains("deepseek-v4-flash"))
         XCTAssertEqual(ledger.subtitle, "2 requests")
     }
@@ -483,6 +479,81 @@ final class MetricPillsTests: XCTestCase {
         let ledger = SessionRequestLedger(history: SessionTimingHistory(samples: [sample], hasOlderRequests: true, completedRequests: 40))
         XCTAssertEqual(ledger.subtitle, "Most recent 1 request")
         XCTAssertTrue(ledger.coverageNote.contains("every listed request was measured"), ledger.coverageNote)
-        XCTAssertTrue(ledger.coverageNote.hasPrefix("Session throughput 33 tok/s"), "34 tokens: 33 after the first, over one second. \(ledger.coverageNote)")
+        XCTAssertTrue(ledger.coverageNote.hasPrefix("Session throughput 24 tok/s"), "34 tokens over 1.4 seconds including TTFT. \(ledger.coverageNote)")
+    }
+}
+
+extension MetricPillsTests {
+    func testOutputSpeedIncludesTTFTCountsEveryTokenAndUsesOneDivisionOfSums() throws {
+        let a = SessionTimingSample(id: "a", wall: Date(), ttftMilliseconds: 2_000, streamingMilliseconds: 1_000, outputTokens: 101, requestMilliseconds: 9_000)
+        let b = SessionTimingSample(id: "b", wall: Date(), ttftMilliseconds: 100, streamingMilliseconds: 400, outputTokens: 49)
+        XCTAssertEqual(try XCTUnwrap(a.settledTokensPerSecond), 101 / 3.0, accuracy: 1e-9)
+        XCTAssertEqual(a.ttftMilliseconds, 2_000)
+        let group = SessionTimingHistory(samples: [a, b]).settledThroughput
+        XCTAssertEqual(group.outputTokens, 150)
+        XCTAssertEqual(group.decodeMilliseconds, 3_500)
+        XCTAssertEqual(try XCTUnwrap(group.tokensPerSecond), 150 / 3.5, accuracy: 1e-9)
+        XCTAssertEqual(SessionRequestLedger(history: SessionTimingHistory(samples: [a, b])).throughput, group)
+    }
+
+    func testOutputSpeedFloorValidityAndArchiveSQLMatchSwift() throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("output-speed-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let db = try CaptureDatabase(url: root.appendingPathComponent("rates.sqlite"))
+        try db.execute("CREATE TABLE attempts(outcome TEXT,ttft_ms REAL,stream_ms REAL,output_tokens REAL)")
+        let cases: [(Double?, Double?, Double?, String, Double?)] = [
+            (2_000, 1_000, 101, "completed", 101 / 3.0),
+            (250, 0, 1, "completed", 4), (200, 50, 10, "completed", 40),
+            (0, 250, 2, "completed", 8), (200, 49, 100, "completed", nil),
+            (nil, 1_000, 100, "completed", nil), (1_000, nil, 100, "completed", nil),
+            (-1, 1_000, 100, "completed", nil), (1_000, -1, 100, "completed", nil),
+            (.infinity, 1_000, 100, "completed", nil), (1_000, .infinity, 100, "completed", nil),
+            (.greatestFiniteMagnitude, .greatestFiniteMagnitude, 100, "completed", nil),
+            (1_000, 1_000, nil, "completed", nil), (1_000, 1_000, 0, "completed", nil),
+            (1_000, 1_000, .infinity, "completed", nil), (1_000, 1_000, 100, "failed", nil)
+        ]
+        var samples: [SessionTimingSample] = []
+        for (index, item) in cases.enumerated() {
+            let (ttft, span, output, outcome, expected) = item
+            try db.execute("INSERT INTO attempts VALUES(?,?,?,?)", [.text(outcome)] + [ttft, span, output].map { $0.map(CaptureSQLValue.real) ?? .null })
+            let sample = SessionTimingSample(id: String(index), wall: Date(), ttftMilliseconds: ttft, streamingMilliseconds: span, outputTokens: output, outcome: outcome)
+            XCTAssertEqual(sample.settledTokensPerSecond, expected, "case \(index)")
+            samples.append(sample)
+        }
+        let swift = SessionRequestLedger(history: SessionTimingHistory(samples: samples)).throughput
+        let row = try XCTUnwrap(db.rows("SELECT COUNT(*) AS requests,\(PayloadArchive.settledThroughputSQL) FROM attempts").first)
+        let sql = PayloadArchive.gatewayTotals(row).settledThroughput
+        XCTAssertEqual(sql, swift)
+        XCTAssertEqual(SessionTimingHistory(samples: samples).settledThroughput, swift)
+        XCTAssertEqual(swift.samples, 4); XCTAssertEqual(swift.requests, cases.count)
+        XCTAssertEqual(swift.outputTokens, 114); XCTAssertEqual(swift.decodeMilliseconds, 3_750)
+    }
+
+    func testOutputSpeedWordingIncludesTheWaitAndHiddenReasoning() {
+        for explanation in [SettledThroughput.explanation, SessionRatePresentation.explanation, MonitorRateAverage.explanation, MenuBarRateText.scope] {
+            XCTAssertTrue(explanation.contains("time to first token included"), explanation)
+            XCTAssertTrue(explanation.contains("hidden reasoning included"), explanation)
+            for old in ["after the first", "decode speed", "not round-trip latency"] { XCTAssertFalse(explanation.contains(old), explanation) }
+        }
+        XCTAssertFalse(SessionTimingMetric.rate.title.contains("decode"))
+        XCTAssertEqual(SessionTimeCharts.hero(GatewayTotals()).last?.title, "output speed")
+    }
+}
+
+extension MetricPillsTests {
+    func testSerializedOldDefinitionSumsCannotMixWithOutputSpeed() throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(GatewayTotals(requests: 2))) as? [String: Any])
+        json["decodeMilliseconds"] = 1_000; json["decodeOutputTokens"] = 200; json["decodeSamples"] = 2
+        let old = try JSONDecoder().decode(GatewayTotals.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(old.settledThroughput.tokensPerSecond)
+        XCTAssertEqual(old.settledThroughput.requests, 2)
+        let raw = Data(#"{"decodeMilliseconds":1000,"outputTokens":200,"samples":2,"requests":2}"#.utf8)
+        let oldSum = try JSONDecoder().decode(SettledThroughput.self, from: raw)
+        XCTAssertNil(oldSum.tokensPerSecond); XCTAssertEqual(oldSum.requests, 2)
+        let new = SessionTimingHistory(samples: [.init(id: "one", wall: Date(), ttftMilliseconds: 200, streamingMilliseconds: 50, outputTokens: 10)]).settledThroughput
+        XCTAssertEqual(try JSONDecoder().decode(SettledThroughput.self, from: JSONEncoder().encode(new)), new)
+        var combined = new; combined.add(oldSum)
+        XCTAssertEqual(combined.tokensPerSecond, 40); XCTAssertEqual(combined.requests, 3)
     }
 }

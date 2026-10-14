@@ -1191,13 +1191,18 @@ class NativeIntegration(unittest.TestCase):
                 self.assertLessEqual(t['firstContent'],t['modelComplete'])
                 # The last output token: never after the terminal event. One
                 # delta (or a JSON body) is first and last at once, so it
-                # spans nothing and has no decode rate.
+                # has a zero decode span; TTFT supplies its measured duration.
                 self.assertLessEqual(t['firstContent'],t['lastContent'])
                 self.assertLessEqual(t['lastContent'],t['modelComplete'])
                 self.assertEqual(t['lastContent'],t['firstContent'])
-                self.assertIsNone(m['decodeTokensPerSecond'])
-                # The stream duration is the span the rate divides by: first
-                # output to last, never to the terminal event.
+                duration = t['lastContent'] - t['dispatch']
+                output = attempt['usage'].get('output')
+                if duration >= m['minimumDecodeSpanMs'] and output is not None and output >= 1:
+                    self.assertAlmostEqual(m['decodeTokensPerSecond'], output / (duration / 1000))
+                else:
+                    self.assertIsNone(m['decodeTokensPerSecond'])
+                # The raw stream duration remains first output to last; TTFT
+                # is added for the rate, never the terminal wait.
                 self.assertAlmostEqual(m['streamDurationMs'],t['lastContent']-t['firstContent'])
                 self.assertNotIn('outputTokensPerSecond',m)
                 self.assertAlmostEqual(m['httpDurationMs'],t['httpEnd']-t['dispatch'])

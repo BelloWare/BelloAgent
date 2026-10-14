@@ -52,6 +52,8 @@ struct ShownRows {
     let descriptor: Int32?
     /// Rows read back so far, for a read that asks for one more than once.
     var read: [String: ChatMessage] = [:]
+    var cancellation: BlockingWorkCancellation?
+    var readStep: (@Sendable (String) -> Void)?
     var olderCount: Int { older?.shown ?? 0 }
     var count: Int { olderCount + visible.count }
     func id(_ position: Int) -> String {
@@ -83,7 +85,10 @@ struct ShownRows {
         guard let older, let descriptor else { return }
         let wanted = positions.clamped(to: 0..<older.shown).map { older.rows[$0].span }.filter { older.kept[$0.id] == nil && read[$0.id] == nil }
         guard wanted.count > 1 else { return }
-        let rows = inParallel(wanted.count) { AgentSession.storedRow(wanted[$0], descriptor: descriptor) }
+        try cancellation?.checkCancellation()
+        let rows = inParallel(wanted.count) { AgentSession.storedRow(wanted[$0], descriptor: descriptor, cancellation: cancellation, readStep: readStep) }
+        // A skipped row is cancellation, never damage or an incomplete page.
+        try cancellation?.checkCancellation()
         for (span, row) in zip(wanted, rows) {
             guard let row else { throw OlderRows.Unreadable() }
             read[span.id] = row
@@ -92,10 +97,13 @@ struct ShownRows {
     /// Lets go of the rows read back so far.
     mutating func forget() { read.removeAll(keepingCapacity: true) }
     private mutating func stored(_ entry: OlderRows.Entry) throws -> ChatMessage {
+        try cancellation?.checkCancellation()
         let id = entry.span.id
         if let kept = older?.kept[id] { return kept }
         if let held = read[id] { return held }
-        guard let descriptor, let message = AgentSession.storedRow(entry.span, descriptor: descriptor) else { throw OlderRows.Unreadable() }
+        let message = descriptor.flatMap { AgentSession.storedRow(entry.span, descriptor: $0, cancellation: cancellation, readStep: readStep) }
+        try cancellation?.checkCancellation()
+        guard let message else { throw OlderRows.Unreadable() }
         read[id] = message
         return message
     }
@@ -180,17 +188,23 @@ extension AgentSession {
     func loadFullHistory() async throws {
         try throwIfClosed()
         guard partialHistory else { return }
-        if let pending = fullHistoryLoad { historyLoadJoins += 1; return try await closedWins(pending) }
-        let load = Task { try await self.loadFullHistoryOnce() }
+        try Task.checkCancellation()
+        if let reader = fullHistoryLoad?.reader() { historyLoadJoins += 1; return try await closedWins(reader) }
+        let load = SharedHistoryLoad()
+        guard let reader = load.reader() else { throw CancellationError() }
         fullHistoryLoad = load
-        defer { fullHistoryLoad = nil; adoptHistoryFillIfIdle() }
-        try await closedWins(load)
+        load.start(Task {
+            do { try await self.loadFullHistoryOnce(); load.finish(.success(())) }
+            catch { load.finish(.failure(error)) }
+            if self.fullHistoryLoad === load { self.fullHistoryLoad = nil; self.adoptHistoryFillIfIdle() }
+        })
+        try await closedWins(reader)
     }
 
     /// Waits for a load; a close or an unload meanwhile ends the wait with
     /// `session_closed`, whatever the load ended with.
-    private func closedWins(_ load: Task<Void, Error>) async throws {
-        do { try await load.value } catch { try throwIfClosed(); throw error }
+    private func closedWins(_ reader: @Sendable () async throws -> Void) async throws {
+        do { try await reader() } catch { try throwIfClosed(); throw error }
         try throwIfClosed()
     }
 
@@ -200,10 +214,12 @@ extension AgentSession {
         defer { Discarded.release(resume?.replay.take()) }
         for _ in 0..<8 {
             try throwIfClosed()
+            try Task.checkCancellation()
             guard partialHistory else { return }
             if let fill = historyFill, let preparation = fill.preparation, let snapshot = fill.preparationSnapshot {
-                let made = await preparation.value
+                let made = try await HistoryReadWait.value(preparation)
                 guard !closed else { Discarded.release(consume made); try throwIfClosed(); return }
+                if Task.isCancelled { Discarded.release(consume made); throw CancellationError() }
                 guard partialHistory else { Discarded.release(consume made); return }
                 guard journal?.size == snapshot.size, fill.reads(journal), displayGeneration == snapshot.generation else {
                     // Retire the preparation through its ordinary completion
@@ -223,6 +239,7 @@ extension AgentSession {
             }
             let start = try await resumedReplay(&resume), replay = start.replay, source = start.source
             guard !closed else { Discarded.release(replay.take()); try throwIfClosed(); return }
+            if Task.isCancelled { Discarded.release(replay.take()); throw CancellationError() }
             guard partialHistory, let journal else { Discarded.release(replay.take()); return }
             // A replay of another file than the journal's now: a fresh one.
             guard start.reads(journal) else { Discarded.release(replay.take()); continue }
@@ -240,6 +257,7 @@ extension AgentSession {
                 }
             }
             guard !closed else { Discarded.release(consume made); try throwIfClosed(); return }
+            if Task.isCancelled { Discarded.release(consume made); throw CancellationError() }
             guard partialHistory else { Discarded.release(consume made); return }
             let current = self.journal.map { $0.size == size && JournalSource($0) == source } == true && displayGeneration == generation
             switch consume made {
@@ -271,8 +289,14 @@ extension AgentSession {
     }
 
     /// A row this chat did not load, from its record, as a replay leaves it.
-    static func storedRow(_ span: JournalCheckpoint.Row, descriptor: Int32) -> ChatMessage? {
-        guard let bytes = JournalCheckpoint.rowBytes(span, descriptor: descriptor), var message = journalRow(span, bytes: bytes) else { return nil }
+    static func storedRow(_ span: JournalCheckpoint.Row, descriptor: Int32, cancellation: BlockingWorkCancellation? = nil,
+                          readStep: (@Sendable (String) -> Void)? = nil) -> ChatMessage? {
+        do { try cancellation?.checkCancellation() } catch { return nil }
+        readStep?("stored")
+        do { try cancellation?.checkCancellation() } catch { return nil }
+        guard let bytes = JournalCheckpoint.rowBytes(span, descriptor: descriptor) else { return nil }
+        do { try cancellation?.checkCancellation() } catch { return nil }
+        guard var message = journalRow(span, bytes: bytes) else { return nil }
         _ = endWithoutReceipt(&message)
         return message
     }
@@ -287,11 +311,17 @@ extension AgentSession {
     func loadOlderRows() async throws {
         try throwIfClosed()
         // One load at a time: reads that come meanwhile wait for it.
-        if let pending = olderRowsLoad { historyLoadJoins += 1; return try await closedWins(pending) }
-        let load = Task { try await self.loadOlderRowsOnce() }
+        try Task.checkCancellation()
+        if let reader = olderRowsLoad?.reader() { historyLoadJoins += 1; return try await closedWins(reader) }
+        let load = SharedHistoryLoad()
+        guard let reader = load.reader() else { throw CancellationError() }
         olderRowsLoad = load
-        defer { olderRowsLoad = nil }
-        try await closedWins(load)
+        load.start(Task {
+            do { try await self.loadOlderRowsOnce(); load.finish(.success(())) }
+            catch { load.finish(.failure(error)) }
+            if self.olderRowsLoad === load { self.olderRowsLoad = nil }
+        })
+        try await closedWins(reader)
     }
     private func loadOlderRowsOnce() async throws {
         // A try the chat overtook leaves its replay for the next one.
@@ -299,16 +329,18 @@ extension AgentSession {
         defer { Discarded.release(resume?.replay.take()) }
         for _ in 0..<8 {
             try throwIfClosed()
+            try Task.checkCancellation()
             guard partialHistory, olderIndex == nil, journal != nil else { return }
             let start = try await resumedReplay(&resume), replay = start.replay, source = start.source
             guard !closed else { Discarded.release(replay.take()); try throwIfClosed(); return }
+            if Task.isCancelled { Discarded.release(replay.take()); throw CancellationError() }
             guard partialHistory, olderIndex == nil, let journal else { Discarded.release(replay.take()); return }
             // A replay of another file than the journal's now: a fresh one.
             guard start.reads(journal) else { Discarded.release(replay.take()); continue }
             let size = journal.size, generation = displayGeneration, url = journal.url, id = self.id
             let loadedVisible = visible.map(\.id), loadedHistory = Set(history.map(\.id)), historyCount = history.count, older = olderRows
             let live = history, liveTasks = recentTaskPresentations, hold = historyFillHold, reads = historyReads
-            let made = await Self.offActor(priority: .userInitiated) { () -> Result<OlderRowsMade, Error> in
+            let made = await Self.offActor(priority: .userInitiated) { cancellation -> Result<OlderRowsMade, Error> in
                 if let hold { await hold("index") }
                 return Result {
                     guard let start = replay.take() else { throw AgentError("history_changed", "The replay was already taken") }
@@ -316,7 +348,7 @@ extension AgentSession {
                     try Task.checkCancellation()
                     let replayed = try whole.finished()
                     try Task.checkCancellation()
-                    if let index = try Self.olderRows(replayed, url: url, loadedVisible: loadedVisible, loadedHistory: loadedHistory, historyCount: historyCount, older: older) {
+                    if let index = try Self.olderRows(replayed, url: url, loadedVisible: loadedVisible, loadedHistory: loadedHistory, historyCount: historyCount, older: older, cancellation: cancellation) {
                         return .index(index, replayed.pendingRequestLinks, replayed.recentTaskPresentations, Set(replayed.visible.map(\.id)), whole)
                     }
                     try Task.checkCancellation()
@@ -324,6 +356,7 @@ extension AgentSession {
                 }
             }
             guard !closed else { Discarded.release(consume made); try throwIfClosed(); return }
+            if Task.isCancelled { Discarded.release(consume made); throw CancellationError() }
             guard partialHistory, olderIndex == nil else { Discarded.release(consume made); return }
             let current = self.journal.map { $0.size == size && JournalSource($0) == source } == true
             switch consume made {
@@ -366,7 +399,7 @@ extension AgentSession {
     /// Where the rows a chat holding `loadedVisible` and `loadedHistory` did
     /// not load are, from a replay of its whole journal; nil when the replay
     /// does not end in those rows.
-    static func olderRows(_ replayed: JournalReplay, url: URL, loadedVisible: [String], loadedHistory: Set<String>, historyCount: Int, older: Int) throws -> OlderRows? {
+    static func olderRows(_ replayed: JournalReplay, url: URL, loadedVisible: [String], loadedHistory: Set<String>, historyCount: Int, older: Int, cancellation: BlockingWorkCancellation) throws -> OlderRows? {
         let shown = replayed.visible.count - loadedVisible.count
         guard shown == older, zip(replayed.visible[shown...], loadedVisible).allSatisfy({ $0.id == $1 }) else { return nil }
         let unloaded = replayed.history.filter { !loadedHistory.contains($0.id) }
@@ -382,12 +415,12 @@ extension AgentSession {
             index.positions[message.id] = index.rows.count
             index.rows.append(.init(span: span ?? .init(id: message.id, kind: .message, offset: 0, length: 0), user: message.role == "user"))
         }
-        for message in replayed.visible[..<shown] { add(message) }
+        for message in replayed.visible[..<shown] { try cancellation.checkCancellation(); add(message) }
         index.shown = shown
-        for message in unloaded where index.positions[message.id] == nil { add(message) }
+        for message in unloaded where index.positions[message.id] == nil { try cancellation.checkCancellation(); add(message) }
         let descriptor = file.fileDescriptor
         try Task.checkCancellation()
-        let same = inParallel(checked.count) { storedRow(checked[$0].span, descriptor: descriptor) == checked[$0].message }
+        let same = inParallel(checked.count) { storedRow(checked[$0].span, descriptor: descriptor, cancellation: cancellation) == checked[$0].message }
         try Task.checkCancellation()
         for (row, same) in zip(checked, same) where same != true { index.kept[row.message.id] = row.message }
         let tools = ToolHistoryIndex(replayed.history)

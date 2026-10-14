@@ -274,7 +274,7 @@ struct DashboardQueryEngine {
 
     static let modelGroupLimit = 64
     /// Per-route aggregates inside the window: each requested alias split by
-    /// the model the gateway served, with its own settled decode rate
+    /// the model the gateway served, with its own settled output speed
     /// (`gateway.settledThroughput`) and nearest-rank medians. Bounded to the busiest routes.
     /// A request whose served model the gateway resolved: never an alias echo.
     static let resolvedModel = "identity_status='reported' AND model IS NOT NULL AND LENGTH(TRIM(model))>0 AND model<>alias"

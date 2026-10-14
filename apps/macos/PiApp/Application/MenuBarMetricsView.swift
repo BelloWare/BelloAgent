@@ -446,30 +446,25 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
     override func layout() { super.layout(); inset.frame = bounds }
 }
 
-/// Every output rate the usage panel quotes — its chart, the caption under
-/// it, the slice under the pointer, each model row and the scope note — is
-/// the settled decode rate the rest of the app shows: the completed requests'
-/// output tokens after the first over their time from the first generated
-/// token to the last, the figure the live monitor's average chart plots.
-/// Never output over the whole dispatch-to-completion round trip, which counts
-/// the wait for the first token as if it were decoding.
+/// Every output rate the usage panel quotes uses the same division of sums:
+/// all measured output tokens / total request-to-last-output time, TTFT included.
 enum MenuBarRateText {
-    static let basis = "output tokens after the first ÷ time from the first generated token to the last"
+    static let basis = "output tokens ÷ time from sending the request to the last output token"
     static func rate(_ bucket: MenuBarBucket) -> Double? { bucket.gateway.settledThroughput.tokensPerSecond }
     static func point(_ bucket: MenuBarBucket) -> String {
         let settled = bucket.gateway.settledThroughput
-        return "\(menuBarRate(settled.tokensPerSecond)) decode tokens per second over \(settled.samples) requests"
+        return "\(menuBarRate(settled.tokensPerSecond)) output tokens per second over \(settled.samples) requests"
     }
-    static func slice(_ bucket: MenuBarBucket) -> String { "\(menuBarRate(bucket.gateway.settledThroughput.tokensPerSecond)) decode tok/s" }
+    static func slice(_ bucket: MenuBarBucket) -> String { "\(menuBarRate(bucket.gateway.settledThroughput.tokensPerSecond)) output tok/s" }
     static func caption(_ snapshot: MenuBarSnapshot) -> String {
         let settled = snapshot.gateway.settledThroughput
         return "\(menuBarRate(settled.tokensPerSecond)) tok/s over \(settled.samples) completed requests · " + basis
     }
     static func model(_ item: MenuBarModelDistribution) -> String {
         let settled = item.gateway.settledThroughput
-        return "\(menuBarRate(settled.tokensPerSecond)) decode tok/s · \(settled.samples) completed requests timed"
+        return "\(menuBarRate(settled.tokensPerSecond)) output tok/s · \(settled.samples) completed requests timed"
     }
-    static let scope = "Output tok/s is the decode rate: completed requests' output tokens after the first (hidden reasoning included) divided by their combined time from the first generated token to the last. The wait for the first token is not counted; replies under \(SettledThroughput.floorLabel) of generation and missing usage or timing are excluded."
+    static let scope = SettledThroughput.explanation
 }
 
 func menuBarRate(_ value: Double?) -> String {

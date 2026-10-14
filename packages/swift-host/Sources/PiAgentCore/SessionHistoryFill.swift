@@ -52,8 +52,9 @@ extension AgentSession {
         if let fill = historyFill {
             if fill.reads(journal) {
                 if let replay = fill.replay { return ReplayResume(replay, source: fill.source) }
-                let replay = try? await fill.task.value
+                let replay = try? await HistoryReadWait.value(fill.task)
                 try throwIfClosed()
+                try Task.checkCancellation()
                 if let replay, historyFill?.token == fill.token, fill.reads(journal) { return ReplayResume(replay, source: fill.source) }
             }
             // A load of another file than the journal's now goes; a fresh
@@ -69,6 +70,7 @@ extension AgentSession {
             return Result { try Self.replayPrefix(url: url, source: source, through: size, id: id, reads: reads) }
         }
         guard !closed else { Discarded.release(consume made); throw AgentError.sessionClosed }
+        if Task.isCancelled { Discarded.release(consume made); throw CancellationError() }
         return ReplayResume(try made.get(), source: source)
     }
 
@@ -77,6 +79,14 @@ extension AgentSession {
     static func offActor<T: Sendable>(priority: TaskPriority, _ work: @escaping @Sendable () async -> T) async -> T {
         let task = Task.detached(priority: priority, operation: work)
         return await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
+    }
+
+    /// An off-actor job that also fans out onto Dispatch lanes passes this
+    /// worker-owned token to those lanes; it never inherits a reader's token.
+    static func offActor<T: Sendable>(priority: TaskPriority, _ work: @escaping @Sendable (BlockingWorkCancellation) async -> T) async -> T {
+        let cancellation = BlockingWorkCancellation()
+        let task = Task.detached(priority: priority) { await work(cancellation) }
+        return await withTaskCancellationHandler { await task.value } onCancel: { cancellation.cancel(); task.cancel() }
     }
 
     func throwIfClosed() throws {

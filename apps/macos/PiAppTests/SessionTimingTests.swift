@@ -56,7 +56,7 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(ledger.rows.last?.status, "failed")
         XCTAssertEqual(ledger.rows.last?.throughput, "—")
         XCTAssertEqual(ledger.throughput.samples, 1)
-        XCTAssertEqual(ledger.throughput.tokensPerSecond, 123.75, "the good request's 99 tokens after the first over 800 ms; the failure adds nothing")
+        XCTAssertEqual(ledger.throughput.tokensPerSecond, 100, "100 output tokens over the one-second total; the failure adds nothing")
         try await archive.close()
     }
 
@@ -83,17 +83,15 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(history.latest?.outputTokens, 60)
         XCTAssertEqual(history.latest?.requestMilliseconds, 3_000)
         XCTAssertEqual(history.latest?.streamingMilliseconds, 1_000)
-        // The charts and the pills read the settled rate: the tokens after the
-        // first over the decode span (these records predate the last-output
-        // stamp, so it ends at the terminal event), not output over the whole
-        // dispatch-to-completion request. 99 over 0.5 s, and 59 over 1 s.
-        XCTAssertEqual(history.latest?.settledTokensPerSecond, 59)
-        XCTAssertEqual(history.points(for: .rate).map(\.value), [198, 59])
-        XCTAssertEqual(history.settledThroughput, SettledThroughput(decodeMilliseconds: 1_500, outputTokens: 158, samples: 2, requests: 2))
-        XCTAssertEqual(try XCTUnwrap(history.settledThroughput.tokensPerSecond), 158 / 1.5, accuracy: 1e-9)
-        XCTAssertEqual(history.historicalSettledThroughput, SettledThroughput(decodeMilliseconds: 1_500, outputTokens: 158, samples: 2, requests: 2))
-        XCTAssertEqual(try XCTUnwrap(history.historicalSettledThroughput?.tokensPerSecond), 158 / 1.5, accuracy: 1e-9,
-                       "Use the total tokens after each first / total decode time, without counting reasoning or repeated updates again")
+        // All output tokens over TTFT + span. These legacy records have no
+        // last-output stamp, so their only end remains the terminal event.
+        XCTAssertEqual(history.latest?.settledTokensPerSecond, 20)
+        XCTAssertEqual(history.points(for: .rate).map(\.value), [100, 20])
+        XCTAssertEqual(history.settledThroughput, SettledThroughput(decodeMilliseconds: 4_000, outputTokens: 160, samples: 2, requests: 2))
+        XCTAssertEqual(try XCTUnwrap(history.settledThroughput.tokensPerSecond), 160 / 4.0, accuracy: 1e-9)
+        XCTAssertEqual(history.historicalSettledThroughput, SettledThroughput(decodeMilliseconds: 4_000, outputTokens: 160, samples: 2, requests: 2))
+        XCTAssertEqual(try XCTUnwrap(history.historicalSettledThroughput?.tokensPerSecond), 160 / 4.0, accuracy: 1e-9,
+                       "Use all output tokens / total duration including TTFT, without counting reasoning or repeated updates again")
         XCTAssertEqual(history.completedRequests, 2)
         let sessionUsage = try await archive.sessionMetrics(sessionID: "session", workspaceID: "project", until: until)
         XCTAssertEqual(sessionUsage.gateway.settledThroughput.tokensPerSecond, history.historicalSettledThroughput?.tokensPerSecond,
@@ -124,21 +122,19 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertNil(history.latest?.outputTokens, "Missing usage stays missing: never a zero, never the previous request's figure")
         XCTAssertEqual(history.latest?.streamingMilliseconds, 800, "Its timing alone was valid; the rate still needs its tokens")
         XCTAssertNil(history.latest?.settledTokensPerSecond, "A request that reported no output tokens contributes nothing to the settled rate")
-        // A reported zero stays a zero count, and with no token after a first
-        // it has no decode speed: not a rate of zero, and not a sample.
+        // Zero output stays a reported count but contributes no rate sample.
         let reportedZero = try XCTUnwrap(history.samples.first { $0.id == zero })
         XCTAssertEqual(reportedZero.outputTokens, 0); XCTAssertNil(reportedZero.settledTokensPerSecond)
-        // 10 + 39 tokens after each first over the 1,000 + 900 ms two requests
-        // decoded for: the zero, the one with no usage and the one with no
-        // timing add nothing, not zeros.
-        XCTAssertEqual(try XCTUnwrap(history.historicalSettledThroughput?.tokensPerSecond), 49 / 1.9, accuracy: 1e-9)
+        // 11 + 40 output tokens over two total seconds; missing observations
+        // and zero output contribute nothing.
+        XCTAssertEqual(try XCTUnwrap(history.historicalSettledThroughput?.tokensPerSecond), 51 / 2.0, accuracy: 1e-9)
         XCTAssertEqual(history.historicalSettledThroughput?.samples, 2)
         XCTAssertEqual(history.completedRequests, 5, "Missing usage/timing stays visible in average coverage")
         XCTAssertEqual(history.points(for: .ttft).map(\.value), [0, 0, 100, 200])
         XCTAssertEqual(history.points(for: .rate).map(\.value).count, 2)
-        XCTAssertEqual(history.points(for: .rate).map(\.value).first, 10)
-        XCTAssertEqual(history.points(for: .rate).map(\.value).last ?? 0, 39 / 0.9, accuracy: 1e-9, "Decode time is the 900 ms after first content, not the whole 1,000 ms request")
-        XCTAssertEqual(history.settledThroughput.samples, 2, "Two of the five requests have a decode speed")
+        XCTAssertEqual(history.points(for: .rate).map(\.value).first, 11)
+        XCTAssertEqual(history.points(for: .rate).map(\.value).last ?? 0, 40, accuracy: 1e-9, "Includes the 100 ms wait for first content")
+        XCTAssertEqual(history.settledThroughput.samples, 2, "Two of the five requests have a output speed")
         XCTAssertEqual(history.settledThroughput.requests, 5)
         XCTAssertEqual(history.points(for: .rate).map(\.index), [1, 4])
         XCTAssertEqual(history.points(for: .rate).map(\.segment), [0, 2], "Missing observations are chart gaps, not synthetic connecting lines")
@@ -218,7 +214,7 @@ final class SessionTimingTests: XCTestCase {
     /// terminal event: this request generated its 101 tokens between 300 and
     /// 1,300 ms, and its gateway completed it at 3,300 ms. A record written
     /// before the helper recorded the last output keeps the terminal event,
-    /// the only end it has; its numerator is still the tokens after the first.
+    /// the only end it has; both rates now include TTFT and all tokens.
     func testTheDecodeSpanEndsAtTheLastOutputAndOlderRecordsKeepTheirTerminal() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await configured(root)
@@ -231,11 +227,11 @@ final class SessionTimingTests: XCTestCase {
             XCTAssertEqual(measured.streamingMilliseconds, 1_000, "\(when): first output → last output")
             XCTAssertEqual(measured.ttftMilliseconds, 200, "\(when): time to first token is unchanged")
             XCTAssertEqual(measured.requestMilliseconds, 3_200, "\(when): the request still runs to its terminal event")
-            XCTAssertEqual(measured.settledTokensPerSecond, 100, "\(when): (101 − 1) tokens over one second, never 101 over three")
+            XCTAssertEqual(measured.settledTokensPerSecond, 101 / 1.2, "\(when): all output over TTFT + span")
             let fallback = try XCTUnwrap(history.samples.first { $0.id == older }, when)
             XCTAssertEqual(fallback.streamingMilliseconds, 3_000, "\(when): a record with no last output keeps the terminal event as its end")
-            XCTAssertEqual(try XCTUnwrap(fallback.settledTokensPerSecond, when), 100.0 / 3, accuracy: 1e-9, "\(when): and the tokens after the first")
-            XCTAssertEqual(history.historicalSettledThroughput, SettledThroughput(decodeMilliseconds: 4_000, outputTokens: 200, samples: 2, requests: 2), when)
+            XCTAssertEqual(try XCTUnwrap(fallback.settledTokensPerSecond, when), 101 / 3.2, accuracy: 1e-9, "\(when): all output and TTFT included")
+            XCTAssertEqual(history.historicalSettledThroughput, SettledThroughput(decodeMilliseconds: 4_400, outputTokens: 202, samples: 2, requests: 2), when)
             let interrupted = try XCTUnwrap(history.ledgerSamples?.first { $0.id == cut }, when)
             XCTAssertNil(interrupted.streamingMilliseconds, "\(when): no terminal event, no span — as the helper's stream duration has none")
             XCTAssertEqual(interrupted.ttftMilliseconds, 200, "\(when): its first token is still observed")
@@ -261,14 +257,14 @@ final class SessionTimingTests: XCTestCase {
         let history = try await archive.sessionTimingHistory(sessionID: "session", workspaceID: "project", until: until)
         XCTAssertEqual(history.samples.count, 128); XCTAssertTrue(history.hasOlderRequests)
         XCTAssertEqual(history.samples.first?.outputTokens, 4); XCTAssertEqual(history.samples.last?.outputTokens, 131)
-        // Outputs 2...131 each contribute their 1...130 tokens after the first
-        // over 800 ms: 65.5 on average. Outputs 0 and 1 have no decode speed.
-        XCTAssertEqual(try XCTUnwrap(history.historicalSettledThroughput?.tokensPerSecond), 65.5 / 0.8, accuracy: 1e-9,
+        // Outputs 1...131 contribute all tokens over one second each.
+        // Only the zero-output request is unmeasured.
+        XCTAssertEqual(try XCTUnwrap(history.historicalSettledThroughput?.tokensPerSecond), 66, accuracy: 1e-9,
                        "The average includes retained requests older than the chart's 128-sample limit")
         XCTAssertEqual(history.settledThroughput.samples, 128, "while the listed requests stop at it")
         XCTAssertEqual(history.completedRequests, 132)
-        XCTAssertEqual(history.historicalSettledThroughput?.samples, 130, "every retained request with two or more output tokens")
-        XCTAssertEqual(SessionRatePresentation(history: history).average, 65.5 / 0.8)
+        XCTAssertEqual(history.historicalSettledThroughput?.samples, 131, "every retained request with at least one output token")
+        XCTAssertEqual(SessionRatePresentation(history: history).average, 66)
         for identity in ["", String(repeating: "x", count: 129), "invalid\nidentity"] {
             do { _ = try await archive.sessionTimingHistory(sessionID: identity, workspaceID: "project", until: until); XCTFail("Invalid session scope accepted") } catch { }
             do { _ = try await archive.sessionTimingHistory(sessionID: "session", workspaceID: identity, until: until); XCTFail("Invalid project scope accepted") } catch { }
@@ -295,29 +291,27 @@ final class SessionTimingTests: XCTestCase {
         try await archive.purge(attemptID: retained)
         let history = try await archive.sessionTimingHistory(sessionID: "session", workspaceID: "project", until: until)
         XCTAssertEqual(history.samples.map(\.id), [retained])
-        XCTAssertEqual(history.historicalSettledThroughput, SettledThroughput(decodeMilliseconds: 800, outputTokens: 24, samples: 1, requests: 1),
-                       "the retained request's 24 tokens after the first; the expired one adds nothing")
+        XCTAssertEqual(history.historicalSettledThroughput, SettledThroughput(decodeMilliseconds: 1_000, outputTokens: 25, samples: 1, requests: 1),
+                       "the retained request's 25 tokens; the expired one adds nothing")
         XCTAssertEqual(history.completedRequests, 1)
         try await archive.close()
     }
 
     /// Each sample keeps only valid observations, and its one rate — the
-    /// settled decode rate — exists only when both of its ends are valid.
+    /// settled output speed — exists only when both of its ends are valid.
     func testInvalidAndBufferedTimingValuesRemainHonest() {
-        // The control: 100 tokens, the 99 after the first decoded over the 800 ms after it.
-        XCTAssertEqual(sample("valid").settledTokensPerSecond, 123.75)
-        // A reported zero stays a zero count; with no token after a first,
-        // it has no decode speed, as a single token has none.
+        // The control: all 100 tokens over 200 ms TTFT + 800 ms span.
+        XCTAssertEqual(sample("valid").settledTokensPerSecond, 100)
+        // Zero output stays unmeasured; a single token counts.
         XCTAssertEqual(sample("zero-output", output: 0).outputTokens, 0, "A reported zero is kept, not a missing count")
-        XCTAssertNil(sample("zero-output", output: 0).settledTokensPerSecond, "No output has no decode speed, never a rate of zero")
-        XCTAssertNil(sample("one-token", output: 1).settledTokensPerSecond, "One token has no tokens after the first")
-        XCTAssertEqual(sample("two-tokens", output: 2).settledTokensPerSecond, 1.25, "Two tokens: one after the first, over 800 ms")
-        // A buffered response arrives whole with its first content: no decode
-        // span to divide by, so no rate — never an infinite one — while its
-        // two-second round trip stays on the sample as latency.
+        XCTAssertNil(sample("zero-output", output: 0).settledTokensPerSecond, "No output has no output speed, never a rate of zero")
+        XCTAssertEqual(sample("one-token", output: 1).settledTokensPerSecond, 1)
+        XCTAssertEqual(sample("two-tokens", output: 2).settledTokensPerSecond, 2, "Both tokens over one total second")
+        // A buffered response has a zero decode span; its TTFT supplies
+        // the measured duration, so it has a finite output speed.
         let buffered = sample("buffered", ttft: 2_000, duration: 2_000, output: 100)
         XCTAssertEqual(buffered.streamingMilliseconds, 0); XCTAssertEqual(buffered.requestMilliseconds, 2_000)
-        XCTAssertNil(buffered.settledTokensPerSecond)
+        XCTAssertEqual(buffered.settledTokensPerSecond, 50)
         let zeroDuration = sample("zero-duration", ttft: 0, duration: 0)
         XCTAssertEqual(zeroDuration.requestMilliseconds, 0); XCTAssertEqual(zeroDuration.streamingMilliseconds, 0)
         XCTAssertNil(zeroDuration.settledTokensPerSecond)
@@ -330,7 +324,7 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(negativeTokens.streamingMilliseconds, 800, "Invalid usage does not erase valid timing")
         let missingTTFT = sample("missing-ttft", ttft: nil)
         XCTAssertEqual(missingTTFT.requestMilliseconds, 1_000); XCTAssertEqual(missingTTFT.outputTokens, 100)
-        XCTAssertNil(missingTTFT.settledTokensPerSecond, "Without a first token there is no decode span: the round trip is never passed off as decode speed")
+        XCTAssertNil(missingTTFT.settledTokensPerSecond, "Missing TTFT and span cannot be replaced by terminal latency")
         let missingDuration = sample("missing-duration", duration: nil)
         XCTAssertNil(missingDuration.requestMilliseconds); XCTAssertNil(missingDuration.streamingMilliseconds)
         XCTAssertNil(missingDuration.settledTokensPerSecond)
@@ -357,8 +351,8 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertEqual(burst.streamingMilliseconds, 5); XCTAssertEqual(burst.outputTokens, 100)
         XCTAssertNil(burst.settledTokensPerSecond)
         let floor = SettledThroughput.minimumDecodeMilliseconds
-        XCTAssertEqual(try XCTUnwrap(sample("at-the-floor", ttft: 200, duration: 200 + floor, output: 100).settledTokensPerSecond), 99 / (floor / 1_000),
-                       accuracy: 1e-9, "A span of exactly the floor is a measurement")
+        XCTAssertEqual(try XCTUnwrap(sample("at-the-floor", ttft: 200, duration: floor, output: 100).settledTokensPerSecond), 100 / (floor / 1_000),
+                       accuracy: 1e-9, "A total duration exactly at the floor is measured")
     }
 
     @MainActor func testLoadedSessionTimingRefreshesAfterCompletionWithoutFocusingIt() async throws {
@@ -374,9 +368,9 @@ final class SessionTimingTests: XCTestCase {
         let previous = metadata(wall: now - 3, ttft: 100, duration: 1_000, output: 80)
         try await Self.save(model.traces, previous)
         await model.refreshAccounting(display, workspaceID: "project")
-        // The 79 tokens after the first, decoded over the 900 ms after it.
-        XCTAssertEqual(try XCTUnwrap(display.footer.timing.latest?.settledTokensPerSecond), 79 / 0.9, accuracy: 1e-9)
-        XCTAssertEqual(try XCTUnwrap(display.footer.timing.historicalSettledThroughput?.tokensPerSecond), 79 / 0.9, accuracy: 1e-9)
+        // All 80 output tokens over one total second.
+        XCTAssertEqual(try XCTUnwrap(display.footer.timing.latest?.settledTokensPerSecond), 80, accuracy: 1e-9)
+        XCTAssertEqual(try XCTUnwrap(display.footer.timing.historicalSettledThroughput?.tokensPerSecond), 80, accuracy: 1e-9)
         let id = UUID().uuidString
         let pending = metadata(id: id, wall: now - 1, outcome: "running", ttft: nil, duration: nil, output: nil)
         try await Self.save(model.traces, pending)
@@ -390,10 +384,10 @@ final class SessionTimingTests: XCTestCase {
         XCTAssertTrue(model.accountingTasks.isEmpty)
         XCTAssertEqual(display.footer.timing.latest?.id, id)
         XCTAssertEqual(display.footer.timing.latest?.ttftMilliseconds, 300)
-        // The completed request's own rate: 49 tokens after the first over its 1.7 s decode.
-        XCTAssertEqual(try XCTUnwrap(display.footer.timing.latest?.settledTokensPerSecond), 49 / 1.7, accuracy: 1e-9)
-        // 79 + 49 tokens over the 900 + 1,700 ms the two requests decoded for.
-        XCTAssertEqual(try XCTUnwrap(display.footer.timing.historicalSettledThroughput?.tokensPerSecond), 128.0 / 2.6, accuracy: 1e-9)
+        // All 50 output tokens over two total seconds.
+        XCTAssertEqual(try XCTUnwrap(display.footer.timing.latest?.settledTokensPerSecond), 25, accuracy: 1e-9)
+        // 80 + 50 output tokens over three total seconds.
+        XCTAssertEqual(try XCTUnwrap(display.footer.timing.historicalSettledThroughput?.tokensPerSecond), 130 / 3.0, accuracy: 1e-9)
         XCTAssertEqual(display.footer.timing.completedRequests, 2)
         XCTAssertEqual(model.selectedID, "other-chat")
         let reloaded = SessionDisplay(id: "session")
@@ -845,24 +839,23 @@ final class SessionTimingTests: XCTestCase {
     }
 
     /// One request has one speed. This one waited two seconds for its first
-    /// token and then decoded the 100 after it in one second: it decoded at
-    /// 100 tok/s, and its three-second round trip is latency, not speed.
+    /// token then generated for one second: all 101 tokens over three seconds.
     /// The sidebar slot, the Session Inspector's request header and the menu
     /// bar all quote that request — so all of them must quote the same figure.
     @MainActor func testEveryCaptionOfOneRequestQuotesTheSameSettledRate() async throws {
         let request = SessionTimingSample(id: "r1", wall: Date(timeIntervalSince1970: 1_790_000_000), ttftMilliseconds: 2_000,
                                           streamingMilliseconds: 1_000, outputTokens: 101, requestMilliseconds: 3_000)
         let history = SessionTimingHistory(samples: [request])
-        XCTAssertEqual(SessionTimingMetric.rate.value(in: request), 100)
-        XCTAssertEqual(history.points(for: .rate).map(\.value), [100])
-        XCTAssertEqual(SessionRatePresentation(history: history).label, "Latest 100 tok/s")
+        XCTAssertEqual(SessionTimingMetric.rate.value(in: request), 101 / 3.0)
+        XCTAssertEqual(history.points(for: .rate).map(\.value), [101 / 3.0])
+        XCTAssertEqual(SessionRatePresentation(history: history).label, "Latest 34 tok/s")
 
         // The Session Inspector's request header quotes the same request's rate.
         let row = InspectorRequestRow(id: "r1", wall: 1_790_000_000, turn: "t", purpose: "turn", api: "openai-responses", alias: "m", model: "m",
                                       outcome: "completed", output: 101, ttft: 2_000, decode: 1_000, duration: 3_000)
-        XCTAssertEqual(row.figures.first { $0.label == "Speed" }?.value, "100 tok/s",
-                       "The request's decode rate, not output over the whole round trip")
-        XCTAssertFalse(row.figures.contains { $0.value.contains("34 tok/s") || $0.value.contains("33 tok/s") })
+        XCTAssertEqual(row.figures.first { $0.label == "Speed" }?.value, "34 tok/s",
+                       "All tokens over the total duration including TTFT")
+        XCTAssertFalse(row.figures.contains { $0.value.contains("100 tok/s") })
 
         // The menu bar's row for the chat that ran it.
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
@@ -874,34 +867,30 @@ final class SessionTimingTests: XCTestCase {
         view.activity = ["phase": .string("model"), "modelActive": .bool(true)]
         view.footer.timing = history
         model.displays[view.id] = view
-        XCTAssertEqual(try XCTUnwrap(model.menuBarActivity().runningRows.first).latestRate, 100,
+        XCTAssertEqual(try XCTUnwrap(model.menuBarActivity().runningRows.first).latestRate, 101 / 3.0,
                        "The menu bar quotes the same settled rate as the sidebar and Session info")
     }
 
-    /// The menu bar's usage panel quoted output over dispatch-to-completion
-    /// time: for the request above — two seconds waiting for its first token,
-    /// one second decoding the 100 after it — 34 tok/s, where the rest of the
-    /// app says 100. Its chart, the caption under it, the slice under the
-    /// pointer, each model row and its scope note quote the decode rate now.
-    @MainActor func testTheUsagePanelQuotesTheDecodeRateOfTheSameRequest() async throws {
+    /// Every menu bar caption and chart includes TTFT in the output speed.
+    @MainActor func testTheUsagePanelQuotesTheOutputSpeedOfTheSameRequest() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = PayloadArchive(root: root, now: { Date(timeIntervalSince1970: 1_000_000) })
         try await archive.configure(quota: 1_048_576, bodyRetention: 100, metricRetention: 10_000_000)
         try await Self.save(archive, metadata(wall: 999_990, ttft: 2_000, duration: 3_000, output: 101))
         let usage = try await archive.menuBarMetrics(period: .day, until: until)
         try await archive.close()
-        XCTAssertEqual(usage.gateway.settledThroughput, SettledThroughput(decodeMilliseconds: 1_000, outputTokens: 100, samples: 1, requests: 1),
-                       "The panel's source: one completed request, 100 tokens after its first over its 1 s decode")
+        XCTAssertEqual(usage.gateway.settledThroughput, SettledThroughput(decodeMilliseconds: 3_000, outputTokens: 101, samples: 1, requests: 1),
+                       "All 101 output tokens over TTFT + span = three seconds")
         let slice = try XCTUnwrap(usage.buckets.first { $0.requests > 0 })
         let route = try XCTUnwrap(usage.models.first)
-        XCTAssertEqual(try XCTUnwrap(MenuBarRateText.rate(slice)), 100, accuracy: 1e-9, "The rate chart plots the decode rate")
-        let decode = menuBarRate(100), roundTrip = menuBarRate(101.0 / 3)
-        XCTAssertEqual(MenuBarRateText.caption(usage), "\(decode) tok/s over 1 completed requests · output tokens after the first ÷ time from the first generated token to the last")
-        XCTAssertEqual(MenuBarRateText.slice(slice), "\(decode) decode tok/s")
-        XCTAssertEqual(MenuBarRateText.point(slice), "\(decode) decode tokens per second over 1 requests")
-        XCTAssertEqual(MenuBarRateText.model(route), "\(decode) decode tok/s · 1 completed requests timed")
+        XCTAssertEqual(try XCTUnwrap(MenuBarRateText.rate(slice)), 101 / 3.0, accuracy: 1e-9, "The rate chart includes TTFT")
+        let rate = menuBarRate(101.0 / 3), oldRate = menuBarRate(100)
+        XCTAssertEqual(MenuBarRateText.caption(usage), "\(rate) tok/s over 1 completed requests · output tokens ÷ time from sending the request to the last output token")
+        XCTAssertEqual(MenuBarRateText.slice(slice), "\(rate) output tok/s")
+        XCTAssertEqual(MenuBarRateText.point(slice), "\(rate) output tokens per second over 1 requests")
+        XCTAssertEqual(MenuBarRateText.model(route), "\(rate) output tok/s · 1 completed requests timed")
         for text in [MenuBarRateText.caption(usage), MenuBarRateText.slice(slice), MenuBarRateText.point(slice), MenuBarRateText.model(route), MenuBarRateText.scope] {
-            XCTAssertFalse(text.contains(roundTrip) || text.contains("dispatch-to-completion") || text.contains("first-token latency"), text)
+            XCTAssertFalse(text.contains(oldRate) || text.contains("after the first"), text)
         }
 
         // On screen: the panel showing its rate chart, read off its pixels.
@@ -919,8 +908,8 @@ final class SessionTimingTests: XCTestCase {
         window.orderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil; window.close() }
         let rendered = try await Self.recognizedText(in: window, filename: "menu-usage-rate.jpg")
-        XCTAssertNotNil(rendered.range(of: #"100[.,]000 tok/s"#, options: .regularExpression), "The rate caption quotes the decode rate. OCR: \(rendered)")
-        XCTAssertNil(rendered.range(of: #"33[.,]667"#, options: .regularExpression), "No figure divides by the wait for the first token. OCR: \(rendered)")
+        XCTAssertNotNil(rendered.range(of: #"33[.,]667 tok/s"#, options: .regularExpression), "The rate caption includes TTFT. OCR: \(rendered)")
+        XCTAssertNil(rendered.range(of: #"100[.,]000"#, options: .regularExpression), "No figure uses the old decode-only rate. OCR: \(rendered)")
     }
 
 
@@ -976,11 +965,11 @@ final class SessionTimingTests: XCTestCase {
                 let rendered = try await renderedText(window, filename: "sidebar-metrics-\(Int(width))-\(id).jpg")
                 XCTAssertEqual(hosted.bounds.width, width + 24, accuracy: 0.5)
                 XCTAssertTrue(rendered.contains("12.34"), "Cost must remain visible at \(width)pt: \(rendered)")
-                // The 99 tokens after the first over the 800 ms decode span: 124 tok/s.
+                // All 100 tokens over TTFT + span = one second.
                 if item.output == nil {
                     XCTAssertFalse(rendered.contains("unavailable") || rendered.contains("latest"), "No measured rate leaves the slot empty at \(width)pt: \(rendered)")
                 } else {
-                    XCTAssertTrue(rendered.contains("latest 124"), "The complete rate label must remain visible at \(width)pt: \(rendered)")
+                    XCTAssertTrue(rendered.contains("latest 100"), "The complete rate label must remain visible at \(width)pt: \(rendered)")
                 }
                 if item.state != "idle" { XCTAssertTrue(rendered.contains(item.state), rendered) }
                 let height = metrics.height(forWidth: width) + 24
@@ -1052,5 +1041,30 @@ struct HostedMetricsFooter: NSViewRepresentable {
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: Holder, context: Context) -> CGSize? {
         let width = proposal.width ?? 900
         return CGSize(width: width, height: nsView.footer?.height(forWidth: width) ?? 0)
+    }
+}
+
+extension SessionTimingTests {
+    func testArchivedOldRateIsIgnoredAndRawTimingsSurviveReopen() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = try await configured(root)
+        let rawID = UUID().uuidString, rateOnlyID = UUID().uuidString
+        var raw = metadata(id: rawID, ttft: 2_000, duration: 9_000, output: 101, last: 3_000)
+        raw["metrics"] = .object(["decodeTokensPerSecond": .number(100)])
+        try await Self.save(archive, raw)
+        var rateOnly = metadata(id: rateOnlyID, ttft: nil, duration: nil, output: 10_000)
+        rateOnly["metrics"] = .object(["decodeTokensPerSecond": .number(99_999)])
+        try await Self.save(archive, rateOnly)
+        try await archive.close()
+        let reopened = try await configured(root)
+        let history = try await reopened.sessionTimingHistory(sessionID: "session", workspaceID: "project", until: until)
+        let rate = try XCTUnwrap(history.historicalSettledThroughput)
+        XCTAssertEqual(rate.samples, 1); XCTAssertEqual(rate.requests, 2)
+        XCTAssertEqual(try XCTUnwrap(rate.tokensPerSecond), 101 / 3.0, accuracy: 1e-9)
+        XCTAssertEqual(history.samples.first { $0.id == rawID }?.ttftMilliseconds, 2_000)
+        XCTAssertNil(history.samples.first { $0.id == rateOnlyID }?.settledTokensPerSecond)
+        let totals = try await reopened.sessionMetrics(sessionID: "session", workspaceID: "project", until: until)
+        XCTAssertEqual(totals.gateway.settledThroughput, rate)
+        try await reopened.close()
     }
 }
