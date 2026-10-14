@@ -408,14 +408,14 @@ import AppKit
                 toggle: @escaping () -> Void, openFile: ((String, ClosedRange<Int>?) -> Void)?, actions: TranscriptActions = .init()) {
         let model = TranscriptToolRow.model(of: tool)
         let link: (() -> Void)? = {
-            if tool.name == "subagent", let target = SubagentToolView(tool).target { return { actions.openSubagent?(target) } }
+            if SubagentToolView.isControl(tool.name), let target = SubagentToolView(tool).target { return { actions.openSubagent?(target) } }
             guard environment.opensFiles, let openFile, let file = model.file else { return nil }
             return { openFile(file.path, file.lines) }
         }()
         TranscriptAppearance.apply(environment, to: self)
         let content = TranscriptNativeWorkLine.Content(icon: model.icon, title: model.title, summary: model.summary, suffix: model.suffix,
                                                        state: model.state, expandable: true, open: open, trailing: model.trailing,
-                                                       help: model.help, linksSummary: model.linksSummary, linkLabel: tool.name == "subagent" ? "Open sub-agent" : "Open File")
+                                                       help: model.help, linksSummary: model.linksSummary, linkLabel: SubagentToolView.isControl(tool.name) ? "Open sub-agent" : "Open File")
         line.update(content, link: link, toggle: toggle, environment: environment)
         self.tool = tool; self.open = open; self.fetched = fetched; self.environment = environment
         // What a closed row opens costs nothing: it is not built at all.

@@ -28,6 +28,7 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// context compaction) or "branch" (edit-and-resend point). `detail` carries
     /// its human-readable caption. History projection leaves both nil.
     var kind: String? = nil
+    var nativeAgentDelivery: WireValue? = nil
     var detail: String? = nil
     /// Milliseconds since 1970 when the host appended the message.
     var at: Double? = nil
@@ -97,6 +98,8 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
         result.presentationSourceID = message["nativePresentationSourceID"]?.string
         result.operationID = message["nativeOperationID"]?.string ?? message["nativeCompaction"]?.object?["operationId"]?.string
         result.kind = message["nativeKind"]?.string
+        result.nativeAgentDelivery = message["nativeAgentDelivery"].flatMap { $0 == .null ? nil : $0 }
+        if result.nativeAgentDelivery != nil { result.kind = "agent_message" }
         if role == "toolResult" {
             // With how the call ended, as the helper describes the row.
             let outcome = message["nativeToolStats"]?.object?["outcome"]?.string ?? (message["isError"]?.bool == true ? "failed" : "recorded")
@@ -316,6 +319,8 @@ extension TranscriptMessage {
         row.truncated = try optionalBool(fields["truncated"])
         row.stopReason = try optionalString(fields["stopReason"])
         row.kind = try optionalString(fields["kind"])
+        row.nativeAgentDelivery = fields["nativeAgentDelivery"].flatMap { $0 == .null ? nil : $0 }
+        if row.nativeAgentDelivery != nil { row.kind = "agent_message" }
         row.detail = try optionalString(fields["detail"])
         row.at = try optionalDouble(fields["at"])
         row.turn = try optionalString(fields["turn"])

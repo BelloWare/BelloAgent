@@ -67,7 +67,7 @@ enum CaptureSubagents {
         if let bytes = try db.rows("SELECT summary FROM subagent_groups WHERE workspace=? AND (child=? OR (owner=? AND delegation=?))", [.text(workspace),.text(link.childSessionID),.text(link.budgetOwnerSessionID),.text(link.delegationID)]).first?["summary"]?.data {
             let previous = try JSONDecoder().decode(SubagentSummary.self, from: bytes)
             guard previous.link == link else { throw CaptureFailure.sequence }
-            if identityOnly || previous == summary || previous.status.terminal { return }
+            if identityOnly || previous == summary || !summary.supersedes(previous) { return }
         }
         try db.execute("INSERT INTO subagent_groups(workspace,owner,delegation,child,summary,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(workspace,owner,delegation) DO UPDATE SET summary=excluded.summary,updated=excluded.updated",
                        [.text(workspace),.text(link.budgetOwnerSessionID),.text(link.delegationID),.text(link.childSessionID),.blob(try JSONEncoder().encode(summary)),.real(Date().timeIntervalSince1970)])
@@ -97,5 +97,28 @@ extension PayloadArchive {
                 return InspectorSubagentGroup(summary: summary, requests: Int(figures["requests"]?.number ?? 0), cost: figures["cost"]?.double, costSamples: Int(figures["samples"]?.number ?? 0))
             }
         }
+    }
+}
+
+extension SubagentSummary {
+    /// Revisions order updates inside a turn. A later turn can start after an
+    /// immutable terminal, while packets from older turns cannot revive it.
+    func supersedes(_ previous: SubagentSummary) -> Bool {
+        guard link == previous.link else { return false }
+        let nextTurn = turn ?? 1, oldTurn = previous.turn ?? 1
+        if nextTurn != oldTurn { return nextTurn > oldTurn }
+        guard revision >= previous.revision else { return false }
+        return !previous.status.terminal || status.terminal
+    }
+    var presentationLabel: String {
+        guard let turn else { return status.label }
+        let state: String
+        if deliveryState == "held" { state = "Pending for parent Resume" }
+        else if parentWaiting == true && !status.terminal { state = "Waiting for sub-agent" }
+        else if status == .running { state = "Running in background" }
+        else if status.terminal && deliveryState == "delivered" { state = status == .completed ? "Delivered to parent" : status.label + " · delivered to parent" }
+        else if status.terminal && deliveryState == "pending" { state = status.label + " · pending delivery" }
+        else { state = status.label }
+        return state + " · turn \(turn)"
     }
 }

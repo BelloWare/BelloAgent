@@ -80,7 +80,7 @@ enum TranscriptToolRow {
         let outcome = TranscriptActivity.outcome(of: tool)
         let description = TranscriptActivity.describe(parts, outcome: outcome)
         let summary = summary(of: tool, object: description.object)
-        if tool.name == "subagent" {
+        if SubagentToolView.isControl(tool.name) {
             let child = SubagentToolView(tool)
             return Model(icon: "person.2", title: "Sub-agent", summary: child.description, suffix: child.label,
                          state: state(of: tool), trailing: child.summary?.progress.map { TranscriptActivity.formatDuration($0.elapsedMs) } ?? elapsed(of: tool),
@@ -106,7 +106,7 @@ enum TranscriptToolRow {
     /// card is never a fragment of JSON. `linked`: whether the row opens a file.
     nonisolated static func card(of tool: ToolView, fetched: ToolInputDocument?, model: Model, linked: Bool) -> Card {
         let shown = requested(tool, fetched: fetched)
-        if tool.name == "subagent" { return .subagent(SubagentToolView(shown)) }
+        if SubagentToolView.isControl(tool.name) { return .subagent(SubagentToolView(shown)) }
         let description = model.description, outcome = model.outcome
         let notes = [truncationNote(shown), tool.truncated ? "Preview truncated. The full result is retained in context." : nil]
             .compactMap { $0 }.joined(separator: " · ")
@@ -357,7 +357,7 @@ struct TranscriptTimelinePart {
 extension TranscriptMessage {
     /// The kinds of message a row of its own draws.
     nonisolated static let drawnKinds: Set<String> = ["execution", "toolResult", "requestInfo", "compaction", "branch", "versionBanner",
-                                                       "failure", "notice"]
+                                                       "failure", "notice", "agent_message"]
     /// Whether this message reads as a plain one: no kind, or a kind no row
     /// knows, as `MessageRowView`'s default drew it. It keeps its kind for
     /// everything else (no Edit, no Fork, no source for an unknown kind).
