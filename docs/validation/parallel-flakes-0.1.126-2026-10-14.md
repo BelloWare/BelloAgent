@@ -1,8 +1,8 @@
-# 0.1.126: six native parallel-lane flakes
+# 0.1.126: native parallel-lane flakes, rounds 1 and 2
 
 Workstream: `dev/a126-flakes`, based on `2f12977aeb330232a9dec7c6686310d1fc62e41b`. No merge to `dev/next`, lane changes, release packaging, or publication.
 
-## Findings and changes
+## Round 1 findings and changes
 
 | Test | Cause and failing-first evidence | Change |
 | --- | --- | --- |
@@ -17,19 +17,11 @@ The empty-first-pass regression exposed another **app defect**: `SidebarIndex.in
 
 All fixture roots are unique. No shared-path defect or exclusive-resource requirement was found. All six classes remain in the parallel lane.
 
-## Isolation and harness
+## Round 1 isolation limitation and historical harness
 
-All runs used generated state and loopback gateways, the worktree's test bundle and packaged helper. No installed app, real preferences, Keychain, user data, paid provider, or `xctrace --launch` was used. Original gate logs in `build-lead/verify-logs` were read only.
+The owner subsequently confirmed that the old test host shared `com.belloware.PiApp` and wrote real preferences. The previous claim here that those preferences were isolated was incorrect: manually setting a scratch home did not isolate the defaults domain. Round 1 results below are historical; do not rerun that host or its old harness. Round 2 first merged the separate test host, as described below.
 
-Every `scripts/test-macos.sh` run exported:
-
-```bash
-export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a126-flakes
-export CFFIXED_USER_HOME="$PI_BUILD_ROOT/prefs-home"
-export TEST_RUNNER_CFFIXED_USER_HOME="$PI_BUILD_ROOT/prefs-home"
-export PI_APP_SCRATCH_ROOT="$PI_BUILD_ROOT/fixtures"
-export TEST_RUNNER_PI_APP_SCRATCH_ROOT="$PI_APP_SCRATCH_ROOT"
-```
+Fixtures and gateways were generated and loopback-only. No installed app, paid provider, or `xctrace --launch` was launched. Original gate logs in `build-lead/verify-logs` were read only. The obsolete manual `CFFIXED_USER_HOME` / `TEST_RUNNER_CFFIXED_USER_HOME` workaround has been removed from the current procedure.
 
 Loaded native runs configured eight XCTest workers (`-parallel-testing-enabled YES -parallel-testing-worker-count 8`). Early experiments used `/usr/bin/yes`; stronger experiments used compiled integer arithmetic loops at `QOS_CLASS_USER_INTERACTIVE`. Workers were terminated after each run. The result-bundle summaries and test trees were exported before replacing bundles; only the latest combined `.xcresult` is retained.
 
@@ -84,23 +76,13 @@ After fixes, `fixed-corrected-classes` passed all 58 executable tests in the six
 | `StableToolPresentationTests` | 100 | 10/10 |
 | `WorkspaceRefreshLifecycleTests` | 260 | 10/10 |
 
-The additional empty-first-pass/sidebar-population and blame-bar regressions also each passed 10/10. The scheduler monitor recorded exactly ten stops and ten resumes. No stress worker or test-app process remained. Only `targeted.xcresult` remains under this build root; older bundles were removed after exporting their summaries/test trees.
+The additional empty-first-pass/sidebar-population and blame-bar regressions also each passed 10/10. The scheduler monitor recorded exactly ten stops and ten resumes. No stress worker or test-app process remained. At the end of Round 1, only `targeted.xcresult` remained under this build root; Round 2 removed it after preserving its exported summary/test tree.
 
-The final harness invocation selected the six complete classes, not only the originally failing methods:
-
-```bash
-classes=(AppControlAccessibilityTests GitCommitBrowsingTests MCPInvocationRetentionTests
-         SidebarSearchSidebarTests StableToolPresentationTests WorkspaceRefreshLifecycleTests)
-args=()
-for c in "${classes[@]}"; do args+=("-only-testing:PiAppTests/$c"); done
-bash "$PI_BUILD_ROOT/run-loaded.sh" final-cpu128-fixed 128 10 "${args[@]}"
-```
-
-The harness calls `scripts/test-macos.sh`, exports both isolated-home variables, configures eight XCTest workers, passes `-test-iterations 10`, and saves the current bundle and exported records. This invocation used `PI_FLAKE_BURNER="$PI_BUILD_ROOT/burn"`, `PI_FLAKE_RESULT=targeted`, the Git-delay variables above, and the described scheduler monitor with `STALL_LOG=final-cpu128-fixed-stalls`.
+The historical `final-cpu128-fixed` invocation selected the six complete classes, not only the originally failing methods. It used the obsolete `run-loaded.sh`, the compiled CPU worker, eight XCTest workers, ten iterations, slow Git and scheduler pauses. The current safe commands are recorded under Round 2 below; the old home-variable workaround must not be reused.
 
 `git diff --check`, Python fixture syntax parsing and the lane listing pass. No class moved to serial. Codex (gpt-6.1-sol, xhigh) reviewed the plan and successive diffs read-only, caught the initial preparing-phase ordinal mistake (also caught by the tests), and completed the whole-change double-check plus the blame-wait follow-up with no remaining code findings. Its advice to distinguish repeated executions from deduplicated methods and to keep the broader gate limitation explicit is reflected here.
 
-The broad exploratory run `baseline-full-parallel` (eight clones plus 12 workers) had 2,233 passing, 16 failing and 35 skipped tests. Besides the requested cold-sidebar target, it exposed failures in FileBlameTests, FileTabTests, ComposerSubmissionTests, PseudoTerminalReapTests, CaptureMacIntegrationTests and WebhookTests. Those additional stress failures were not changed in this workstream. This record does **not** claim a green full release gate.
+The broad exploratory run `baseline-full-parallel` (eight clones plus 12 workers) had 2,233 passing, 16 failing and 35 skipped tests. Besides the requested cold-sidebar target, it exposed failures in FileBlameTests, FileTabTests, ComposerSubmissionTests, PseudoTerminalReapTests, CaptureMacIntegrationTests and WebhookTests. Round 2 addresses those classes below. Neither round claims a complete release gate (serial, packaging and other release checks are separate).
 
 ## Changed files
 
@@ -115,3 +97,111 @@ The broad exploratory run `baseline-full-parallel` (eight clones plus 12 workers
 - `apps/macos/PiAppTests/WorkspaceRefreshLifecycleTests.swift`: actual read ownership, viewport readiness and submitted-turn reply checks.
 - `fixtures/native/tool_phases.py`: bounded per-round observation handshakes and scheduler experiment marker.
 - `NEXT-RELEASE.md` and this record: workstream status and evidence.
+
+
+## Round 2: merged isolated host and the additional stress failures
+
+Before any Round 2 test, `git fetch origin && git merge --no-ff origin/dev/next` produced merge `eefce14fcc7664d7d07e362e23ef1fdc19b2ceab` (parents `03d94103` and `3114c74c`). There were no conflicts. The old host was never tested again. Every native invocation rebuilt through the merged `scripts/test-macos.sh`; no stale `test-without-building` products were used. A leftover Round 1 `.xctestrun` naming the shipping host was rejected by `check-test-host.py` during a read-only check and deleted; it was never executed.
+
+The separate `com.belloware.PiAppTests.Host` host, scheme-owned scratch home, private pasteboards, pre-test guard and disabled Keychain/Sparkle apply to these runs. Both manually exported home variables and the old opt-in Git delay were unset. `TestHostIsolationTests` ran alone in the serial lane: **3/3 passed**, and its runtime log confirmed the test defaults identity and scratch data home. All other classes below remain parallel. Generated fixtures and loopback services only; no writes to `build-lead`.
+
+### Causes and changes
+
+| Class | Evidence and cause | Round 2 change |
+| --- | --- | --- |
+| `FileTabTests` | **Two app bugs.** FileWatch cancelled/restarted its trailing timer for every parent/grandparent event, so continuous sibling saves starved deletion. The new regression failed in the full eight-clone lane at “deletion is shown while sibling saves continue.” Once notifications were bounded, a held replacement exposed another race: `followChange` restarted the same in-flight file read on each observation (**3 reads instead of 1** under eight clones). | Coalesce notifications from their first event; keep one file identity check/indexing pass alive and queue a recheck. Retry a read whose contents actually changed. Tests cover deletion/recreation amid continuous sibling writes, one held read despite repeated notifications, and a second real save yielding exactly two reads and the newest bytes. Existing selection, scroll, symlink and trust checks remain. |
+| `ComposerSubmissionTests` | **Helper bug plus fixture timing.** `runTask` survives while final request links flush even after state becomes idle/paused/error. Steering admitted in that window was acknowledged and could clear the draft. This can explain the exploratory stale-draft failure; controlled regressions reproduce this acceptance defect, but the historical native log does not prove that exact overlap. Three held-finalization regressions failed before the guard. The keyboard fixture also relied on a two-second model reply and short/non-throwing poll loops. | Direct and queued steering require an actual running state as well as task ownership. A normal message still queues and runs after successful finalization, or remains held after Stop/error. The loopback keyboard request stays active until real `turn.stop`; admission, paused queue and snapshot drainage have throwing condition waits. |
+| `FileBlameTests` | The ten exploratory failures exhausted 10-second predicates while real file/Git reads or Changes activation were incomplete. GitStateWatch already bounds notifications and filters sibling activity; no analogous Git watcher debounce bug was found. Its file tabs also benefit from the product fixes above. | Explicit 60-second readiness predicates retain all commit/author/path/line/selection checks. The two negative reveal tests now join their owned navigation instead of sleeping four seconds and possibly asserting before slow Git finished. |
+| `PseudoTerminalReapTests` | The exploratory fallback test stopped after ten seconds with eight reap calls, before its ninth/final call and exit delivery. A further fixed 100 ms did not establish completion. | Wait for the actual drained exit with a 60-second bound; an overfulfill expectation enforces once-only reporting. Exact exit code, retry count and stopped state remain asserted, and failure teardown ends the owned child. |
+| `CaptureMacIntegrationTests` | The exploratory strict portable/pinned integration exhausted its 500-poll window while the real helper still reported running. Chat settlement and eventual capture/link persistence are separate completion boundaries. | Throwing 60-second predicates wait for terminal helper state and for both completed captures plus all message links. Idle state, record counts, plaintext durability, exact request/response bytes and headers remain asserted. |
+| `WebhookTests` | The old 172-second failure only recorded native state “running”; it did not record helper state, queue or gateway completion. The source already had a 60-second wait. **No confirmed product root cause has been established for that historical failure.** | Keep the 60-second deadline, make failure throw and capture helper/app/gateway diagnostics. Replace the two-second “no second webhook” sleep with final snapshot and tracked-delivery drainage, retaining the exact request count and payload assertions. Passing merged-tree runs are non-reproduction, not proof of a specific webhook product fix. |
+
+No shared fixture path or exclusive-resource requirement was found. No class was moved to the serial lane.
+
+### Round 2 evidence
+
+Logs, timing metadata, exported test trees and summaries live under `$PI_BUILD_ROOT/flake-logs/`. Only the latest combined `round2-latest.xcresult` is retained. Old results are deleted only after exporting their summaries. The default gate load is **eight XCTest clones with no CPU burners**; the extra twelve `/usr/bin/yes` processes are diagnostic load, never the acceptance bar.
+
+- `r2-baseline-eight`: all twelve complete classes, three iterations, **315 passing executions, zero failures, two pre-existing skips (optional Git benchmark and the test host’s absent Conversation menu)**.
+- `r2-baseline-stress`: the same selection, three iterations with eight clones plus twelve CPU burners, **315 passes, zero failures, two skips**.
+- `r2-full-eight-before`: the full parallel lane and the new sibling regression, **2,257 passes, one expected failing-first test, 35 skips**. Failure: continuous sibling writes kept deletion invisible.
+- `r2-follow-read-before` / `r2-follow-read-red`: the held real replacement demonstrated repeated reads; the precise assertion in the second run was **3 vs 1**. Other selected classes passed. Both runs used eight clones without burners.
+- `r2-core-before`: three held-finalization regressions failed against the old steering admission (18 assertions). With the guard restored, **20 helper tests passed ten repetitions (200 executions)** while native load was active; the related queue/retry/resume/compaction selection passed **192/192**.
+- `r2-core-steering-mutation`: removing only the state check made all three terminal-state regressions fail again (17 assertions). The correct source was restored and the 20 helper tests passed again.
+
+`r2-full-stress-after`: full parallel lane, eight clones plus twelve diagnostic CPU workers, **2,260 passed, zero failures, 35 skipped**. All three file-follow regressions and the webhook integration passed.
+
+The following independent semantic mutations were also detected under eight clones; all source files were restored byte-for-byte before final validation:
+
+| Mutation | Regression that rejected it |
+| --- | --- |
+| Restore endlessly restarted FileWatch timer | Sibling-activity deletion still failed with the generous **60-second** deadline. |
+| Remove FileTab read coalescing | Both held replacement tests rejected duplicate reads. |
+| Abandon a replacement whose reader reports `.changed` | The second-save test could not finish the held replacement. |
+| Ignore the source-blame validity predicate | Both owned-navigation negative tests rejected the incorrectly selected commits. |
+| Report a terminal exit one greater than the child's code | The retry/fallback tests rejected 4 instead of 3; the exit-127 distinction also failed. |
+| Append bytes only to the loopback gateway's recorded response | Portable/pinned capture checks rejected all four exact-body mismatches. |
+| Ignore only the per-chat webhook-off switch | The integration rejected **two requests instead of one**, after actual snapshot/delivery drainage. |
+
+Native mutation logs: `r2-native-semantic-mutations`, `r2-follow-coalescing-mutation`, `r2-changed-webhook-mutations`. An initial broader webhook eligibility mutation was also detected but caused many synthetic background notifications; the final narrow mutation above preserved utility-chat eligibility and isolated the off switch.
+
+**Final `r2-final-ten-eight`: PASS.** Eight clones, no CPU burners or artificial Git delay, ten iterations of all twelve classes on the merged isolated host: **1,080 passed executions, zero failures, two pre-existing skips**, completed 2026-10-14 05:54:51 UTC. Every one of the 108 passing methods has exactly ten passing repetition nodes in the exported test tree, including every original target and all three new file-follow regressions.
+
+| Class | Passing methods | Passed executions |
+| --- | ---: | ---: |
+| `FileBlameTests` | 10 | 100 |
+| `FileTabTests` | 16 | 160 |
+| `ComposerSubmissionTests` | 6 | 60 |
+| `PseudoTerminalReapTests` | 5 | 50 |
+| `CaptureMacIntegrationTests` | 2 | 20 |
+| `WebhookTests` | 11 | 110 |
+| `AppControlAccessibilityTests` | 6 | 60 |
+| `GitCommitBrowsingTests` | 3 | 30 |
+| `MCPInvocationRetentionTests` | 4 | 40 |
+| `SidebarSearchSidebarTests` | 9 | 90 |
+| `StableToolPresentationTests` | 10 | 100 |
+| `WorkspaceRefreshLifecycleTests` | 26 | 260 |
+
+The skips are `GitCommitBrowsingTests.testMeasureCommitBrowsingWhenRequested` (optional benchmark) and `ComposerSubmissionTests.testTheMenuBarGivesCommandReturnToSendOrSteer` (the test host has no Conversation menu). Neither skip was added by these changes. Each of the six originally reported methods passed **10/10** on this merged tree, independently verified by full method identifier rather than inferred from class totals.
+
+**Final `r2-full-eight-final`: PASS.** The complete native parallel lane, eight clones and no CPU burners, passed **2,260 tests with zero failures and 35 skips**, completed 2026-10-14 06:01:08 UTC. The log identifies exactly eight native worker processes. This is the gate's native parallel load; the serial lane (apart from the isolated host check), packaging and other complete-release checks were not rerun here. The heavier eight-plus-twelve diagnostic run also passed, but is not the acceptance bar.
+
+`git diff --check`, Python fixture syntax parsing and lane listing pass. The read-only Codex (gpt-6.1-sol, xhigh) plan/diff reviews and final whole-change double-check report no findings; the final review independently verified every repeat count and advised the historical-attribution qualifications recorded above. All mutations were restored before the acceptance runs. No build-root test or helper executable remained after the final lane, and only `round2-latest.xcresult` remains; earlier results survive as exported summaries/test trees and logs.
+
+### Current safe reproduction
+
+The scheme owns test isolation. Do not set a replacement home manually. From this worktree, with `PI_BUILD_ROOT` set to its dedicated build directory:
+
+```bash
+unset CFFIXED_USER_HOME TEST_RUNNER_CFFIXED_USER_HOME
+unset PI_APP_FLAKE_GIT_READ_SECONDS TEST_RUNNER_PI_APP_FLAKE_GIT_READ_SECONDS
+export PI_APP_SCRATCH_ROOT="$PI_BUILD_ROOT/fixtures-r2"
+export TEST_RUNNER_PI_APP_SCRATCH_ROOT="$PI_APP_SCRATCH_ROOT"
+classes=(FileBlameTests FileTabTests ComposerSubmissionTests PseudoTerminalReapTests
+         CaptureMacIntegrationTests WebhookTests AppControlAccessibilityTests
+         GitCommitBrowsingTests MCPInvocationRetentionTests SidebarSearchSidebarTests
+         StableToolPresentationTests WorkspaceRefreshLifecycleTests)
+args=()
+for c in "${classes[@]}"; do args+=("-only-testing:PiAppTests/$c"); done
+scripts/test-macos.sh "${args[@]}" -parallel-testing-enabled YES \
+  -parallel-testing-worker-count 8 -test-iterations 10
+```
+
+The local `run-round2.sh` wrapper uses these same options, replaces its explicit result bundle, exports result summaries, and cleans up any optional diagnostic CPU workers. It never uses the obsolete Round 1 manifest or home workaround. Full parallel runs use the selector from `python3 scripts/test-lanes.py parallel`. Serial isolation checks run alone.
+
+The focused helper regressions use generated temporary state:
+
+```bash
+swift test --package-path packages/swift-host \
+  --scratch-path "$PI_BUILD_ROOT/swift-tests" \
+  --filter 'SessionSettlementTests|QueueEditingTests|QueueHandoffTests'
+```
+
+### Round 2 files
+
+- App: `Files/FileWatch.swift`, `Files/FileTab.swift`, `Git/ChangesTab.swift` (read-only navigation task access for owned completion).
+- Helper: `packages/swift-host/Sources/PiAgentCore/SessionQueue.swift`.
+- Native tests: `FileBlameTests.swift`, `FileTabTests.swift`, `ComposerSubmissionTests.swift`, `PseudoTerminalReapTests.swift`, `CaptureMacIntegrationTests.swift`, `WebhookTests.swift`.
+- Helper regressions: `packages/swift-host/Tests/PiAgentCoreTests/SessionSettlementTests.swift`.
+- Loopback fixture: `scripts/test-native-host.py`.
+- `NEXT-RELEASE.md` and this validation record.
