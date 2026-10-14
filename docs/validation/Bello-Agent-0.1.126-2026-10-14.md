@@ -1,6 +1,6 @@
 # Bello Agent 0.1.126 — Sub-agents with two-way steering, smoother scrolling, output speed with time to first token
 
-Status: **packaged; publication pending** (this record is updated after publication). Marketing version 0.1.126, build 130. Previous public release: 0.1.125/build 129.
+Status: **publicly released and verified** at [belloware.com](https://belloware.com/bello-agent.html), marketing version 0.1.126, build 130. Public verification completed at **2026-10-14 11:44:10 UTC**. Tagged source: **`91efed8e`**, `v0.1.126`. Website: **`f5ca12b`**. Previous public release: 0.1.125/build 129.
 
 ## Owner request
 
@@ -91,4 +91,24 @@ Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1, XcodeGen 2.44.1.
 
 ## Publication
 
-Pending.
+Packaged from **`91efed8e`** with `scripts/release.sh`. That commit is `main` merged with `dev/next` at `84f89a01`, plus the version bump, the release notes and this record's first draft. The script:
+- made a Release build, stripped the binaries and kept the dSYMs;
+- signed with Developer ID and ran the packaged-helper offline smoke test;
+- notarized and stapled the app and the DMG, then checked them with Gatekeeper;
+- signed the appcast and verified its Ed25519 signature.
+
+`validate-release.py` against build 129 passed. The owner approved publishing 0.1.126 once it was gated and soaked.
+
+- App notarization: **`9b796b5e-95ec-49e1-a598-5b291234f3ee`**, Accepted.
+- DMG notarization: **`b519b0f9-38e5-4cf3-8efd-4291b21d97a6`**, Accepted.
+- Installer: **14,366,530 bytes (13.70 MiB)**.
+- SHA-256: **`2d769bc6df09a3ed6339339220d68559abeaab201bca1cfd0c1e55ab281ce315`**.
+
+Source was pushed atomically to `main` and `dev/next` at `91efed8e`, with tag `v0.1.126`. `publish-release.sh 0.1.126` pushed website `f5ca12b`.
+
+`verify-published.py` passed at 2026-10-14 11:44:10 UTC:
+- the canonical and legacy feeds are identical;
+- the public DMG's SHA-256 matches;
+- the Ed25519 signature verifies.
+
+Install and update rehearsals were skipped by standing owner instruction.
