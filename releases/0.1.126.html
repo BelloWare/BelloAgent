@@ -1,0 +1,12 @@
+<h2>Bello Agent 0.1.126</h2>
+<ul>
+<li><strong>Sub-agents.</strong> A chat can hand focused tasks to sub-agents that work in the same project with the same tools. Up to 16 run at once per chat; more wait their turn. Each one shows as a card in the chat with Open, Inspect Requests and Stop, and is listed under its chat in the sidebar. Everything they spend counts toward the chat's own cost limit, and the request Inspector can show the chat together with its sub-agents.</li>
+<li><strong>Sub-agents talk both ways.</strong> A chat can start sub-agents in the background and keep working, steer one while it runs, or send a follow-up to one that finished, which keeps everything it already learned. A sub-agent can tell its chat about an important finding, a blocker or a question before it is done. These messages are labeled with who sent them, and a chat waits for its sub-agents before it finishes.</li>
+<li><strong>Smoother scrolling in long chats.</strong> Many fixes to scrolling and loading history: stale page reads are cancelled, so jumping through a long chat no longer queues up old reads, and pages, find, highlighting and long replies do less work while you scroll.</li>
+<li><strong>Output speed includes the wait for the first token.</strong> tok/s is now all output tokens divided by the time from sending the request to its last token, everywhere the app shows it.</li>
+<li>Send waits while a pasted image is still being added, and says so.</li>
+<li>A commit message typed while the Git panel switches repositories is no longer lost, and Amend no longer offers the previous repository's message.</li>
+<li>The side-chat panel no longer says "Working" on a running side; the spinner shows it.</li>
+<li>Request captures still being saved when you quit are saved before the app closes.</li>
+<li>Many smaller fixes to the terminal, composer, sidebar, file viewer and Git panel.</li>
+</ul>

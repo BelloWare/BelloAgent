@@ -1,13 +1,18 @@
-# Next release: 0.1.126
+# Next release: 0.1.127
 
-**Released 2026-10-13:** 0.1.125 (build 129, tag `v0.1.125`) is the latest release; record `docs/validation/Bello-Agent-0.1.125-2026-10-13.md`.
+**Released 2026-10-14:** 0.1.126 (build 130, tag `v0.1.126`) is the latest release; record `docs/validation/Bello-Agent-0.1.126-2026-10-14.md`.
+
+## 0.1.126
 
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.
 
-- [x] Sub-agents with background start, steering both ways and same-conversation follow-ups ship in **0.1.126**. V3 is enabled on `dev/subagents-steer-ui` for release integration: the parent waits for its family before finishing; native cards, typed parent/child messages, Back to Parent, family Inspector and durable Stop/Resume are included. **Owner choices:** children inherit the parent's effective tools; at most 16 active children per budget-owner chat, extra calls wait in assistant-call order, no per-response/project/helper cap, depth 1; all spend belongs to the parent; one-way `pi-app.native.v3` journal promotion (older helpers refuse writes); questions are asynchronous reports only. Children remain view + Stop, without a human composer. [Steering design](docs/design/subagents-steering.md), [enabled-build validation](docs/validation/subagents-steering-enabled.md), [app/gallery validation](docs/validation/subagents-steering-ui.md). Release integration/publication remains pending; this workstream does not push `dev/next`.
+- [x] Sub-agents with background start, steering both ways and same-conversation follow-ups ship in **0.1.126**. V3 is enabled on `dev/subagents-steer-ui` for release integration: the parent waits for its family before finishing; native cards, typed parent/child messages, Back to Parent, family Inspector and durable Stop/Resume are included. **Owner choices:** children inherit the parent's effective tools; at most 16 active children per budget-owner chat, extra calls wait in assistant-call order, no per-response/project/helper cap, depth 1; all spend belongs to the parent; one-way `pi-app.native.v3` journal promotion (older helpers refuse writes); questions are asynchronous reports only. Children remain view + Stop, without a human composer. [Steering design](docs/design/subagents-steering.md), [enabled-build validation](docs/validation/subagents-steering-enabled.md), [app/gallery validation](docs/validation/subagents-steering-ui.md). Merged into `dev/next` at `84f89a01` and released in 0.1.126.
 - [x] SCROLL-14 helper page cancellation (merged): superseded history/version reads cancel through the wire, journal decode and shared history loads; older helpers retain compatible coalescing. Regressions, mutation checks and generated long-chat measurements: `docs/perf/scroll14-helper-cancellation.md`.
 - [x] Output speed includes time to first token: all reported output tokens ÷ request-to-last-output duration, consistently across chats, Inspector, reports and menu bar; trailing usage waits remain excluded.
 - [x] Tests use a separate app/defaults identity, scratch data home and private clipboard, with a pre-test isolation guard and Keychain/Sparkle disabled; Debug, Release, gallery and performance runs preserve the installed app's preferences and release identity.
+- [ ] Left (tests): `ContextReadingTests.testAChangedModelOrJournalCountsAgain` timed out once (66.7 s) in the 0.1.126 gate's 8-clone parallel lane; it passed alone 3 of 3 (class 8.7 s). It waits on real helper launches; a load-tolerant wait is needed.
+- [ ] Left (tests): the historical webhook timeout's root cause is unconfirmed.
+- [ ] Left (steering contract): no helper turn/message detail paging; consuming links use the first retained request; large-family scan performance unmeasured.
 
 ## 0.1.126 decisions made while the owner was away (2026-10-13 night)
 
@@ -29,8 +34,8 @@
 - [x] No "Working" word on a running chat's sidebar row (`dev/sidebar-working`).
 - [x] A changed skill chip is refreshed with a notice instead of failing every send; a removed one is taken out with a note (`dev/skill-refresh`).
 - [x] Helper stop race (merged for 0.1.126, `dev/helper-shutdown` d5c6f84e): a prewarm/preview `connect` during `shutdownAndWait` started a replacement helper, so stops for update install, folder changes and the scratch-chat test failed after ~6 s and left a stray helper. `connect` now refuses while a stop is awaited. `HostSupervisorTests.testConnectionDuringShutdownAndWaitDoesNotReplaceTheStoppingHelper` (failing-first); Codex clean.
-- [ ] Left: the side-chat panel (`SidesPanel.swift`) still shows "Working".
-- [ ] Left (from 0.1.124): Git draft during a repository switch.
+- [x] The side-chat panel no longer shows "Working" (fixed in 0.1.126).
+- [x] Git draft during a repository switch (fixed in 0.1.126, `81985cf6`, UI-02/UI-06).
 
 ## 0.1.124
 
