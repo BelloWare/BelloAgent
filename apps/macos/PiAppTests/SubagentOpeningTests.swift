@@ -12,10 +12,10 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         repeat {
             requests = try await model.traces.list(sessionID: target.sessionID, workspaceID: parent.workspaceID)
-            if !requests.isEmpty { break }
+            if requests.first?["timings"]?.object?["dispatch"]?.number != nil { break }
             try await Task.sleep(for: .milliseconds(10))
         } while ContinuousClock.now < deadline
-        XCTAssertFalse(requests.isEmpty, "Child capture was not durably archived")
+        XCTAssertNotNil(requests.first?["timings"]?.object?["dispatch"]?.number, "The generated terminal evidence needs the retained dispatch timestamp")
         let attempt = try XCTUnwrap(requests.first?["attemptId"]?.string)
         XCTAssertEqual(kill(try XCTUnwrap(host.helperProcessIdentifier), SIGKILL), 0)
         try await eventually("Fixture host did not exit") { host.connectionID == nil }

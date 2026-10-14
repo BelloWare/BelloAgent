@@ -5,8 +5,9 @@ struct SubagentGroupState: Equatable {
     var count: Int, active: Int, queued: Int
     var expanded: Bool
     var indent: CGFloat
+    var pending = 0
     var label: String {
-        "\(count) sub-agent\(count == 1 ? "" : "s")" + (active > 0 ? " · \(active) running" : "") + (queued > 0 ? " · \(queued) queued" : "")
+        "\(count) sub-agent\(count == 1 ? "" : "s")" + (active > 0 ? " · \(active) running" : "") + (queued > 0 ? " · \(queued) queued" : "") + (pending > 0 ? " · \(pending) pending" : "")
     }
 }
 
@@ -33,7 +34,8 @@ extension WorkspaceModel {
         let states = children.compactMap { subagentSummaries[$0.id]?.status }
         return SubagentGroupState(parentID: parent.id, count: children.count,
             active: states.filter { $0 == .running || $0 == .stopping }.count, queued: states.filter { $0 == .queued }.count,
-            expanded: filtering || subagentGroupExpanded(parent.id), indent: indent)
+            expanded: filtering || subagentGroupExpanded(parent.id), indent: indent,
+            pending: children.reduce(0) { $0 + (subagentSummaries[$1.id]?.pendingMessages ?? 0) })
     }
 }
 

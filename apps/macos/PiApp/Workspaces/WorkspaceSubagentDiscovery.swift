@@ -32,12 +32,15 @@ extension WorkspaceModel {
         let previous = subagentSummaries[child.id]
         let retained = previous.flatMap { value in
             value.link == found.header.link && value.revision > 0 &&
-                (!found.hasTerminalRecord || value.status == found.status) ? value : nil
+                ((value.turn ?? 1) > (found.turn ?? 1) || ((value.turn ?? 1) == (found.turn ?? 1) && (!found.hasTerminalRecord || value.status == found.status))) ? value : nil
         }
-        let summary = live ?? retained ?? SubagentSummary(link: found.header.link, description: found.header.description, model: found.header.model.model, status: found.status, revision: 0)
+        let summary = live ?? retained ?? SubagentSummary(link: found.header.link, description: found.header.description, model: found.header.model.model, status: found.status, revision: 0, turn: found.turn, executionID: found.executionID)
+        if let live, let previous, !live.supersedes(previous) { return }
         if subagentSummaries[child.id] != summary { subagentSummaries[child.id] = summary }
+        if let owner = displays[summary.link.budgetOwnerSessionID], owner.childSummaries[child.id] != summary { owner.childSummaries[child.id] = summary }
         displays[child.id]?.isManagedSubagent = true
         displays[child.id]?.subagentStatus = summary.status
+        displays[child.id]?.subagentTurn = summary.turn
         if let issue = child.delegationIssue { displays[child.id]?.notice = issue }
         // Terminal or newly created content is indexed by the normal search
         // scheduler. Streamed progress never reaches this registration path.

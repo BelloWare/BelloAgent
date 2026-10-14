@@ -31,6 +31,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     }
     var dirtyRunHolds: Set<String> = []
     /// Changes only at delegation lifecycle boundaries, never streamed tokens.
+    var subagentReturnTargets: [String: SubagentTarget] = [:]
     @Published var subagentSummaries: [String: SubagentSummary] = [:]
     var deletingFamilies: Set<String> = []
     var familyFileRecycler: (([URL]) async throws -> Void)?

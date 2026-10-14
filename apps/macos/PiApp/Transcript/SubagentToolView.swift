@@ -11,6 +11,10 @@ struct SubagentTarget: Equatable, Sendable {
         delegationID = link.delegationID; sessionID = link.childSessionID; ownerID = link.budgetOwnerSessionID
         assistantID = link.call.assistantMessageID; toolCallID = link.call.toolCallID
     }
+    func matchesOrigin(_ link: SubagentLink) -> Bool {
+        delegationID == link.delegationID && sessionID == link.childSessionID && ownerID == link.budgetOwnerSessionID
+            && (receiptSource || (assistantID == link.call.assistantMessageID && toolCallID == link.call.toolCallID))
+    }
     init?(metadata: WireValue) {
         guard let fields = metadata.object, [1, 2].contains(fields["version"]?.number ?? 0),
               let delegation = fields["delegationId"]?.string, let session = fields["sessionId"]?.string,
@@ -44,11 +48,11 @@ struct SubagentToolView: Equatable, Sendable {
         receiptTurn = tool.nativeSubagent?.object?["turn"]?.nonnegativeInteger ?? output["turn"]?.nonnegativeInteger
         summary = tool.subagent ?? tool.nativeSubagent?.object?["summary"].flatMap { try? JSONDecoder().decode(SubagentSummary.self, from: JSONEncoder().encode($0)) }
         var destination = tool.nativeSubagent.flatMap(SubagentTarget.init(metadata:)) ?? summary.flatMap { $0.link.valid ? SubagentTarget($0.link) : nil }
-        if destination?.turn == nil { destination?.turn = summary?.turn }
+        if (tool.name == "subagent_start" || destination?.turn == nil), let number = summary?.turn { destination?.turn = number }
         target = destination
         task = input["task"]?.string ?? input["message"]?.string ?? input["reason"]?.string ?? (tool.name == "subagent_wait" ? "Wait for selected child turns to settle." : tool.input)
         description = summary?.description ?? input["description"]?.string ?? String(task.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(120))
-        let savedState = tool.state == "unknown" ? SubagentStatus.interrupted : SubagentStatus(rawValue: tool.state) ?? .queued
+        let savedState = output["status"]?.string == "accepted" ? SubagentStatus.queued : tool.state == "unknown" ? SubagentStatus.interrupted : SubagentStatus(rawValue: tool.state) ?? .queued
         status = summary?.status ?? output["status"]?.string.flatMap(SubagentStatus.init(rawValue:)) ?? savedState
         result = tool.name == "subagent" ? output["text"]?.string ?? tool.output : output["text"]?.string ?? (output.isEmpty ? tool.output : "")
         error = output["error"]?.object?["message"]?.string

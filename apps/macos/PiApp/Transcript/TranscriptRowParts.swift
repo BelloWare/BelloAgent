@@ -83,7 +83,7 @@ enum TranscriptToolRow {
         if SubagentToolView.isControl(tool.name) {
             let child = SubagentToolView(tool)
             return Model(icon: "person.2", title: "Sub-agent", summary: child.description, suffix: child.label,
-                         state: state(of: tool), trailing: child.summary?.progress.map { TranscriptActivity.formatDuration($0.elapsedMs) } ?? elapsed(of: tool),
+                         state: child.summary.map { $0.status.terminal ? state(of: tool) : .running } ?? state(of: tool), trailing: child.summary?.progress.map { TranscriptActivity.formatDuration($0.elapsedMs) } ?? elapsed(of: tool),
                          help: child.task, linksSummary: true, description: description, outcome: outcome, file: nil)
         }
         return Model(icon: actionSymbol(description.kind), title: title(parts, outcome: outcome), summary: summary,

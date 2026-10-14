@@ -15,6 +15,10 @@ extension WorkspaceModel {
             guard let child = record(target.sessionID), child.workspaceID == parent.workspaceID, child.delegation == header.link else { throw StoreError.invalidRecord }
             guard !Task.isCancelled, selectionRevision == navigation else { return false }
             await select(target.sessionID, revealInSidebar: false, reopensSide: false, focusesComposer: false)
+            guard selectedID == target.sessionID, !Task.isCancelled else { return false }
+            subagentReturnTargets[target.sessionID] = target
+            let message = try await history.subagentTurnMessage(path: path, childID: target.sessionID, turn: target.turn, messageID: target.messageID)
+            if let message, selectedID == target.sessionID { _ = await revealInTranscript(sessionID: target.sessionID, messageID: message) }
             return !Task.isCancelled && selectedID == target.sessionID && page == .chats
         } catch is CancellationError { }
         catch { self.error = error.localizedDescription }
@@ -45,7 +49,9 @@ extension WorkspaceModel {
               let host = hosts[parent.workspaceID], host.isReady, opened.contains(parent.id) else { return }
         Task {
             do {
-                _ = try await host.request("subagent.stop", sessionID: parent.id, params: ["delegationId":.string(target.delegationID)])
+                let turn = target.turn ?? subagentSummaries[target.sessionID]?.turn
+                let params: [String: WireValue] = turn.map { ["childId":.string(target.sessionID), "turn":.number(Double($0))] } ?? ["delegationId":.string(target.delegationID)]
+                _ = try await host.request("subagent.stop", sessionID: parent.id, params: params)
                 refresh(parent.id); if opened.contains(target.sessionID) { refresh(target.sessionID) }
             } catch { displays[target.sessionID]?.notice = error.localizedDescription }
         }
@@ -53,10 +59,10 @@ extension WorkspaceModel {
 
     func backToSubagentParent(_ childID: String) async {
         guard let link = record(childID)?.delegation else { return }
-        await openSubagentParent(link)
+        await openSubagentParent(link, returningTo: subagentReturnTargets[childID])
     }
 
-    func openSubagentParent(_ link: SubagentLink) async {
+    func openSubagentParent(_ link: SubagentLink, returningTo target: SubagentTarget? = nil) async {
         let childID = link.childSessionID, navigation = selectionRevision
         guard link.valid, let parent = record(link.budgetOwnerSessionID),
               record(childID).map({ $0.workspaceID == parent.workspaceID && $0.delegation == link }) ?? true else {
@@ -66,7 +72,11 @@ extension WorkspaceModel {
         if side(parent.id) != nil { await selectSide(parent.id, revealInSidebar: false) }
         else if let ancestor = parent.parentSessionID, record(ancestor) != nil, !parent.imported { await showSide(parent.id, revealInSidebar: false) }
         else { await select(parent.id, revealInSidebar: false, reopensSide: false, focusesComposer: false) }
-        await revealSubagentCall(link)
+        var destination = link
+        if let target, target.matchesOrigin(link) {
+            destination.call.assistantMessageID = target.assistantID; destination.call.toolCallID = target.toolCallID
+        }
+        await revealSubagentCall(destination)
     }
 
     func revealSubagentCall(_ link: SubagentLink) async {

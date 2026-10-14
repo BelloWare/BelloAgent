@@ -83,6 +83,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     var subagentsRevision: String?
     var isManagedSubagent = false
     @Published var subagentStatus: SubagentStatus?
+    @Published var subagentTurn: Int?
+    var childSummaries: [String: SubagentSummary] = [:] { didSet { if childSummaries != oldValue { publishTranscript() } } }
+    @Published var familyWaiting = false { didSet { if familyWaiting != oldValue { publishTranscript() } } }
+    @Published var agentInboxPending = 0 { didSet { if agentInboxPending != oldValue { publishTranscript() } } }
     @Published var delegatedTask: String?
     /// Committed activity only: text, draft, selection and context rendering do not enter this stream.
     let activityChanges = PassthroughSubject<Void, Never>()
@@ -245,16 +249,25 @@ struct TranscriptVersionView: Equatable, Sendable {
             let latest = Self.hidingBranchMarkers(messages)
             if let at = latest.firstIndex(where: { $0.id == version.latestID }) { return Array(latest[..<at]) + version.presented }
         }
-        var rows = Self.hidingBranchMarkers(messages)
+        var rows = Self.hidingBranchMarkers(messages).map(presentAgentState)
         if isManagedSubagent, messages.isEmpty, let delegatedTask, !delegatedTask.isEmpty {
-            rows.append(TranscriptMessage(id: "subagent-task:" + id, role: "user", text: delegatedTask))
+            rows.append(parentAuthoredTask(TranscriptMessage(id: "subagent-task:" + id, role: "user", text: delegatedTask)))
         }
+        if isManagedSubagent, let index = rows.firstIndex(where: { $0.role == "user" }), rows[index].nativeAgentDelivery == nil {
+            rows[index] = parentAuthoredTask(rows[index])
+        }
+        if familyWaiting && busy { rows.append(TranscriptMessage(id: "family-wait:" + id, role: "system", text: "Waiting for sub-agents", kind: "notice")) }
+        else if agentInboxPending > 0 && !busy { rows.append(TranscriptMessage(id: "family-pending:" + id, role: "system", text: "Pending for parent Resume · \(agentInboxPending) agent message\(agentInboxPending == 1 ? "" : "s")", kind: "notice")) }
         for row in sendingRows where !messages.reversed().contains(where: { $0.id == row.id }) { rows.append(row) }
         if let retryNotice { rows.append(TranscriptMessage(id: "notice:retry:" + id, role: "system", text: retryNotice, kind: "notice")) }
         if let failureMessage {
             let paused = queuePaused && !queue.isEmpty
             var row = TranscriptMessage(id: "failure:run:" + id, role: "system", text: failureMessage, kind: "failure",
                                         detail: paused ? "Queued follow-ups are paused. Resume when you’re ready." : nil)
+            if failureCode == "coordination_limit" {
+                row.failureCode = resuming ? Self.pausedResumingCode : "coordination_limit"
+                row.detail = "Accepted messages are saved. Resume opens a new coordination allowance; completed work is not replayed."
+            }
             if failureCode == Self.skillUpdatedCode {
                 // The queued message's skill was pinned to its current
                 // version: the notice says so and offers the run's Resume,
@@ -458,6 +471,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The Paused row is drawn: while a Resume is on its way it stays, without its button.
     var showsPausedRun: Bool { !busy && !loading && runState.holdsQueue && continuable != false && queueEditHold == nil }
     func observeRunState(_ snapshot: [String: WireValue]) {
+        beginTranscriptBatch(); defer { endTranscriptBatch() }
+        familyWaiting = snapshot["familyWaiting"]?.bool ?? false
+        agentInboxPending = snapshot["agentInboxPending"]?.nonnegativeInteger ?? 0
+        subagentTurn = snapshot["subagentTurn"]?.nonnegativeInteger
         let rawState = snapshot["state"]?.string ?? "idle", run = snapshot["runStatus"]?.string ?? rawState
         // Older helpers reported failed runs as paused. Keep the run's outcome
         // separate from whether its remaining follow-ups require Resume.
@@ -818,7 +835,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     init(id: String) {
         self.id = id
     }
-    var busy: Bool { runState.isBusy }
+    var busy: Bool { runState.isBusy || familyWaiting && !queuePaused && !runState.holdsQueue && runState != .error }
     /// A Resume on its way counts from the press: the chat keeps its display
     /// and helper session while its continuation starts.
     var hasWork: Bool { busy || resuming || queueCount > 0 }

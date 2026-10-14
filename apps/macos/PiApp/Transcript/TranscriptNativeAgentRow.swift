@@ -62,8 +62,7 @@ struct AgentMessagePresentation: Equatable {
         var items: [ShellItem] = []
         for event in presentation.events {
             let heading = PiKit.WrappedText(event.title, font: PiKit.Font.caption, color: .piInkSecondary)
-            let words = TranscriptPlainTextView()
-            words.update(text: event.text, face: TranscriptCardFaces.note, environment: inputs.environment, swiftUILines: true)
+            let words = AgentDeliveryText(event.text, environment: inputs.environment)
             let badge = PiKit.Badge(text: event.label, tone: event.kind == "blocker" ? .danger : .neutral)
             let inspect = PiKit.Button("Inspect delivery", style: .ghost, compact: true) { actions.inspect(id) }
             let body = ShellStack(.vertical, spacing: 8, [.view(heading, .fill), .view(badge), .view(words, .fill), .view(inspect)])
@@ -75,4 +74,17 @@ struct AgentMessagePresentation: Equatable {
     }
     override func contentHeight(width: CGFloat) -> CGFloat { column.height(forWidth: max(1, width - 16)) }
     override func place(in rect: CGRect) { column.frame = CGRect(x: rect.minX + 8, y: rect.minY, width: max(1, rect.width - 16), height: rect.height) }
+}
+
+/// Selectable delivery text with width-dependent height inside a Pi card.
+@MainActor private final class AgentDeliveryText: NSView, PiKit.WidthSizing {
+    let words = TranscriptPlainTextView()
+    init(_ text: String, environment: TranscriptRowEnvironment) {
+        super.init(frame: .zero); addSubview(words)
+        words.update(text: text, face: TranscriptCardFaces.note, environment: environment, swiftUILines: true)
+    }
+    required init?(coder: NSCoder) { nil }
+    override var isFlipped: Bool { true }
+    func height(forWidth width: CGFloat) -> CGFloat { words.exactHeight(width: max(1, width)) }
+    override func layout() { super.layout(); words.frame = bounds }
 }

@@ -172,6 +172,7 @@ extension WorkspaceModel {
             guard try await reconcileSubmissionDraft(item, view: view, current: current) else { return }
             if let link = item.delegation {
                 view.isManagedSubagent = true; view.subagentStatus = subagentSummaries[id]?.status
+                view.subagentTurn = subagentSummaries[id]?.turn
                 if let issue = item.delegationIssue { view.notice = issue }
                 if let parent = record(link.budgetOwnerSessionID), parent.workspaceID == item.workspaceID, let path = parent.path,
                    let plan = try? await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: parent.id, childID: item.id).first,

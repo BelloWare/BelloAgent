@@ -208,7 +208,7 @@ struct SideActions {
         let kind: PaneFooterView.Kind
         if current.isSubagent {
             let parent = current.delegation.flatMap { model.record($0.budgetOwnerSessionID) }
-            kind = .subagent(status: session.subagentStatus?.label ?? (session.busy ? "Running" : "Saved sub-agent"),
+            kind = .subagent(status: (session.subagentStatus?.label ?? (session.busy ? "Running" : "Saved sub-agent")) + (session.subagentTurn.map { " · turn \($0)" } ?? ""),
                              busy: session.subagentStatus.map { !$0.terminal } ?? session.busy, parent: parent?.title ?? "Parent unavailable")
         } else if !projectAvailable { kind = .projectUnavailable(retry: !model.configurationLoaded) }
         else if current.isBackgroundTask {

@@ -108,7 +108,7 @@ extension SubagentSummary {
         let nextTurn = turn ?? 1, oldTurn = previous.turn ?? 1
         if nextTurn != oldTurn { return nextTurn > oldTurn }
         guard revision >= previous.revision else { return false }
-        return !previous.status.terminal || status.terminal
+        return !previous.status.terminal || status.terminal || (previous.status == .interrupted && previous.revision == 0 && revision > 0)
     }
     var presentationLabel: String {
         guard let turn else { return status.label }

@@ -66,7 +66,7 @@ import AppKit
     private var kind: Kind {
         let message = message
         let run = message.id.hasPrefix("failure:run:")
-        if message.failureCode == SessionDisplay.pausedCode || message.failureCode == SessionDisplay.pausedResumingCode { return .paused }
+        if message.failureCode == SessionDisplay.pausedCode || message.failureCode == SessionDisplay.pausedResumingCode || message.failureCode == "coordination_limit" { return .paused }
         if message.failureCode == SessionDisplay.skillRefreshedCode { return .skillChanged(queued: false) }
         if message.failureCode == SessionDisplay.skillUpdatedCode || message.failureCode == SessionDisplay.skillResumingCode { return .skillChanged(queued: true) }
         guard message.failureCode?.hasPrefix(SessionDisplay.costLimitCode) == true else { return .failure(retry: run) }
@@ -81,7 +81,7 @@ import AppKit
             // A restart's cut-off run offers Resume, and nothing while one is on its way.
             if message.failureCode == SessionDisplay.resumingCode { return nil }
             return retry ? (message.failureCode == SessionDisplay.interruptedCode ? .resume : .retry) : nil
-        case .paused: return message.failureCode == SessionDisplay.pausedCode ? .resume : nil
+        case .paused: return message.failureCode == SessionDisplay.pausedCode || message.failureCode == "coordination_limit" ? .resume : nil
         case .costLimit(let raised, let run): return raised ? (run ? .continueRun : nil) : .raise
         // Nothing while a Resume is on its way.
         case .skillChanged(let queued): return queued && message.failureCode == SessionDisplay.skillUpdatedCode ? .resume : nil
@@ -112,7 +112,7 @@ import AppKit
             card.stroke = TranscriptNSPalette.accent.withAlphaComponent(0.35)
             symbol.show("pause.circle.fill", size: 15, weight: .semibold)
             symbol.contentTintColor = tint
-            titleText = environment.managedChild ? "Interrupted" : "Paused"
+            titleText = message.failureCode == "coordination_limit" ? "Coordination paused" : environment.managedChild ? "Interrupted" : "Paused"
             setAccessibilityLabel("Paused: " + message.text)
             setAccessibilityIdentifier("run-paused-notice")
         case .costLimit(let raised, let run):

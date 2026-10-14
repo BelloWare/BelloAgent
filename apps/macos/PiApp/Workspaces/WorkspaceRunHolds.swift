@@ -18,7 +18,7 @@ import Foundation
 
 /// A chat whose run waits for Resume, or was under way when last seen.
 struct RunHoldRecord: Codable, Sendable, Equatable {
-    struct Family: Codable, Sendable, Equatable { var active: Int; var queued: Int }
+    struct Family: Codable, Sendable, Equatable { var active: Int; var queued: Int; var pending: Int? = nil; var waiting: Bool? = nil }
     static let kind = "run-hold"
     /// Written once the first launch of this build has read every journal.
     static let bootstrapKind = "run-hold-bootstrap", bootstrapID = "v1"
@@ -39,6 +39,7 @@ extension SessionDisplay {
         if runState == .interrupted || (uncertain && !busy && runState != .error) { return RunState.interrupted.rawValue }
         if runState == .paused { return RunState.paused.rawValue }
         if busy { return "active" }
+        if agentInboxPending > 0 { return RunState.paused.rawValue }
         if queuePaused && !queue.isEmpty && runState != .error { return RunState.paused.rawValue }
         return nil
     }
@@ -71,7 +72,8 @@ extension WorkspaceModel {
     private func familyRunHold(_ owner: String) -> RunHoldRecord.Family? {
         let states = subagentChildren(of: owner).compactMap { subagentSummaries[$0.id]?.status }
         let active = states.filter { $0 == .running || $0 == .stopping }.count, queued = states.filter { $0 == .queued }.count
-        return active + queued == 0 ? nil : RunHoldRecord.Family(active: active, queued: queued)
+        let pending = displays[owner]?.agentInboxPending ?? 0, waiting = displays[owner]?.familyWaiting == true
+        return active + queued + pending == 0 && !waiting ? nil : RunHoldRecord.Family(active: active, queued: queued, pending: pending, waiting: waiting)
     }
 
     func setRunHold(_ sessionID: String, _ state: String?) { setRunHolds([(sessionID, state)]) }
