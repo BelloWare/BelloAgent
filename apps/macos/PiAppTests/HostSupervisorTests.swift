@@ -3,6 +3,70 @@ import Darwin
 @testable import PiApp
 
 final class HostSupervisorTests: XCTestCase {
+    @MainActor func testDispatchedPagesCancelWithoutReleasingAnUnacknowledgedSlot() async throws {
+        for method in ["session.history", "session.version.page"] {
+            let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+            var sent: [[String: WireValue]] = []
+            let host = HostSupervisor(commandSender: { sent.append($0) }); defer { host.shutdown() }
+            try await host.connect(cwd: root, state: root.appendingPathComponent("state"))
+            let connection = try XCTUnwrap(host.connectionID), epoch = try XCTUnwrap(host.epoch)
+            var cancelled = false
+            let page = Task {
+                do { _ = try await host.request(method, commandID: "page"); XCTFail("A superseded page must throw cancellation") }
+                catch { cancelled = error is CancellationError }
+            }
+            for _ in 0..<1000 where sent.isEmpty { await Task.yield() }
+            let active = (0..<31).map { index in Task { try await host.request("runtime.info", commandID: "active-\(index)") } }
+            for _ in 0..<1000 where sent.count < 32 { await Task.yield() }
+            page.cancel()
+            for _ in 0..<1000 where !cancelled { await Task.yield() }
+            XCTAssertTrue(cancelled, "Cancellation must finish the caller before a helper reply")
+            let cancel = sent.first { $0["kind"]?.string == "read.cancel" }
+            XCTAssertEqual(cancel?["requestId"]?.string, "page")
+            XCTAssertEqual(cancel?["hostEpoch"]?.string, epoch)
+            XCTAssertNotNil(cancel?["readToken"]?.string)
+            XCTAssertEqual(cancel?["readToken"], sent.first?["readToken"])
+            let newest = Task { try await host.request(method, commandID: "newest") }
+            for _ in 0..<1000 where host.queuedCommandCount == 0 { await Task.yield() }
+            XCTAssertFalse(sent.contains { $0["commandId"]?.string == "newest" }, "Even an ignored cancel must preserve the helper's 32-slot bound")
+            host.receive(reply("page", epoch: epoch), connectionID: connection)
+            for _ in 0..<1000 where !sent.contains(where: { $0["commandId"]?.string == "newest" }) { await Task.yield() }
+            XCTAssertEqual(sent.last?["commandId"]?.string, "newest")
+            host.receive(reply("newest", epoch: epoch), connectionID: connection)
+            _ = try await newest.value
+            await page.value
+            for index in 0..<31 { host.receive(reply("active-\(index)", epoch: epoch), connectionID: connection) }
+            for task in active { _ = try await task.value }
+            try await host.shutdownAndWait()
+        }
+    }
+
+    @MainActor func testLegacyHelperAndSameTurnPageReplyRemainCompatible() async throws {
+        let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
+        var sent: [[String: WireValue]] = []
+        let host = HostSupervisor(commandSender: { sent.append($0) }); defer { host.shutdown() }
+        try await host.connect(cwd: root, state: root.appendingPathComponent("state"))
+        let connection = try XCTUnwrap(host.connectionID), epoch = try XCTUnwrap(host.epoch)
+        // A legacy ready frame deliberately omits the optional capability.
+        host.receive(.frame(["v": .number(1), "kind": .string("ready"), "major": .number(1),
+            "engine": .string("swift"), "engineVersion": .string("1.0.0"), "hostEpoch": .string(epoch),
+            "capabilities": .array(["responses", "mcp", "steering", "transport-capture"].map(WireValue.string))]), connectionID: connection)
+        let old = Task { try await host.request("session.history", commandID: "reused") }
+        for _ in 0..<1000 where sent.isEmpty { await Task.yield() }
+        old.cancel()
+        // The synchronous cancellation mark must win before its queued cleanup.
+        host.receive(reply("reused", epoch: epoch), connectionID: connection)
+        do { _ = try await old.value; XCTFail("A cancelled page was returned by a same-turn reply") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        let fresh = Task { try await host.request("session.history", commandID: "reused") }
+        for _ in 0..<1000 where sent.count < 2 { await Task.yield() }
+        XCTAssertEqual(sent.count, 2, "A legacy helper receives only ordinary commands")
+        host.receive(reply("reused", epoch: epoch), connectionID: connection)
+        _ = try await fresh.value
+        XCTAssertTrue(host.isReady)
+        try await host.shutdownAndWait()
+    }
+
     @MainActor func testQueuedCancellationWinsOverSameTurnReplyAndStopBypassesFullQueue() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         var sent: [[String: WireValue]] = []

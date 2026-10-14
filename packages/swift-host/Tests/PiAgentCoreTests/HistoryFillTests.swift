@@ -122,6 +122,56 @@ final class HistoryFillTests: XCTestCase {
         try await eventually(timeout: .seconds(30)) { !(await session.partialHistory) }
     }
 
+    func testCancelledPageLeavesASharedHistoryLoadForItsOtherReader() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat), session = try chat.session(chatID, resume: path), gate = Gate(), done = Done()
+        await session.holdHistoryFill { stage in if stage == "full" { await gate.wait() } }
+        let obsolete = Task {
+            do { _ = try await session.versionPage(["messageId": "u2"]); XCTFail("Cancelled page returned success") }
+            catch { XCTAssertTrue(error is CancellationError) }
+            await done.finish()
+        }
+        try await eventually { await gate.entered == 1 }
+        let current = Task { try await session.versionPage(["messageId": "u2"]) }
+        try await eventually { await session.historyLoadJoins >= 1 }
+        obsolete.cancel()
+        // Always release before asserting so the baseline cannot strand tasks.
+        for _ in 0..<100 { if await done.done { break }; try await Task.sleep(for: .milliseconds(2)) }
+        let cancelledPromptly = await done.done, workerCancelled = await gate.cancelled
+        await gate.release()
+        await obsolete.value
+        let page = try await current.value
+        XCTAssertTrue(cancelledPromptly, "An obsolete page must relinquish its command slot before the shared load completes")
+        XCTAssertEqual(workerCancelled, 0, "The other reader still needs this load")
+        XCTAssertEqual(page["messages"].list.first?["text"].text, "the original question")
+        let loads = await gate.entered
+        XCTAssertEqual(loads, 1)
+        await session.close()
+    }
+
+    func testLastCancelledPageStopsHistoryWorkerAndANewReadCanReplaceIt() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat), session = try chat.session(chatID, resume: path), gate = Gate()
+        await session.holdHistoryFill { stage in if stage == "full" { await gate.wait() } }
+        let obsolete = Task { try await session.versionPage(["messageId": "u2"]) }
+        try await eventually { await gate.entered == 1 }
+        obsolete.cancel()
+        let current = Task { try await session.versionPage(["messageId": "u2"]) }
+        for _ in 0..<100 { if await gate.entered >= 2 { break }; try await Task.sleep(for: .milliseconds(2)) }
+        let entered = await gate.entered
+        for _ in 0..<100 { if await gate.cancelled > 0 { break }; try await Task.sleep(for: .milliseconds(2)) }
+        let stopped = await gate.cancelled, partial = await session.partialHistory
+        await gate.release()
+        do { _ = try await obsolete.value; XCTFail("Cancelled page returned success") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        XCTAssertEqual(stopped, 1, "The last reader must stop its worker at a safe point")
+        XCTAssertTrue(partial, "A cancelled load cannot adopt a partial result")
+        XCTAssertEqual(entered, 2, "A fresh reader cannot join the retired load or lose its handle to the old worker's cleanup")
+        let fresh = try await current.value
+        XCTAssertEqual(fresh["messages"].list.first?["text"].text, "the original question")
+        await session.close()
+    }
+
     func testEditPreparationAndVersionsShareAFullLoadWithoutHoldingTheActor() async throws {
         let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
         let path = try await source(chat), session = try chat.session(chatID, resume: path), gate = Gate()

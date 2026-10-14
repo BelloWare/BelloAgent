@@ -85,10 +85,9 @@ extension WorkspaceModel {
                 view.jumpWanted = nil; view.jumpOffset = offset
             } else {
                 view.jumpWanted = (position, offset)
-                // Journal reads check cancellation between read/decode units.
-                // A dispatched helper read has no cancellation command: keep
-                // its one-read-at-a-time bound until it answers.
-                if !opened.contains(id) { view.jumpTask?.cancel() }
+                // Modern helpers stop obsolete reads at a safe point. A legacy
+                // helper retains the one-read bound and coalesces destinations.
+                if !opened.contains(id) || hosts[item.workspaceID]?.supportsReadCancellation == true { view.jumpTask?.cancel() }
             }
             return
         }
