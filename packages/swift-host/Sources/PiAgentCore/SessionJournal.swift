@@ -32,7 +32,7 @@ struct JournalChainCheck {
 /// other *processes*, not other threads.
 final class SessionJournal {
     private(set) var url: URL
-    private let handle: FileHandle
+    private var handle: FileHandle
     private var lockFD: Int32
     private var poisoned = false
     var writeOutcomeUncertain: Bool { poisoned }
@@ -161,11 +161,56 @@ final class SessionJournal {
         }
         return (branch.last, reader.size, headerCheck, markerCheck, bindings)
     }
+    /// One-way format promotion, under the existing writer lock. Only the marker
+    /// name changes (same byte count); origin and historical record identities,
+    /// offsets, hashes and provider context otherwise remain untouched.
+    func promoteToSteering(managedChild: Bool) throws {
+        guard !poisoned else { throw SubagentRecovery.damaged() }
+        if markerKind == JournalRecordKind.steeringMarker { return }
+        guard markerKind == (managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker),
+              let check = markerCheck else { throw SubagentRecovery.damaged() }
+        try synchronize()
+        let temporary = url.appendingPathExtension("promotion")
+        // A previous killed copy is uncommitted. This writer owns its cleanup.
+        _ = unlink(temporary.path)
+        let fd = open(temporary.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw AgentError("subagent_promotion", "Cannot create promotion copy") }
+        let copy = FileHandle(fileDescriptor:fd,closeOnDealloc:true)
+        defer { try? copy.close(); _ = unlink(temporary.path) }
+        let reader = try JournalRecordReader(url)
+        var replaced = false, promotedLine = Data()
+        while true {
+            let offset = reader.completeBytes
+            guard var line = try reader.nextLine() else { break }
+            if offset == check.offset {
+                guard JournalCheckpoint.digest(line) == check.sha256,
+                      let text = String(data:line,encoding:.utf8) else { throw SubagentRecovery.damaged() }
+                promotedLine = Data(text.replacingOccurrences(of:markerKind,with:JournalRecordKind.steeringMarker).utf8)
+                guard promotedLine.count == line.count, promotedLine != line else { throw SubagentRecovery.damaged() }
+                line = promotedLine; replaced = true
+            }
+            line.append(10); try copy.write(contentsOf:line)
+        }
+        guard replaced else { throw SubagentRecovery.damaged() }
+        try copy.synchronize()
+        guard rename(temporary.path,url.path) == 0 else { throw AgentError("subagent_promotion", "Cannot install promoted journal") }
+        do {
+            let directoryFD = open(url.deletingLastPathComponent().path,O_RDONLY | O_CLOEXEC)
+            guard directoryFD >= 0 else { throw SubagentRecovery.damaged() }
+            defer { _ = close(directoryFD) }
+            guard fsync(directoryFD) == 0 else { throw SubagentRecovery.damaged() }
+            try handle.close(); handle = try FileHandle(forWritingTo:url); try handle.seekToEnd()
+            markerKind = JournalRecordKind.steeringMarker
+            markerCheck = .init(offset:check.offset,length:check.length,sha256:JournalCheckpoint.digest(promotedLine))
+            resumedFrom = nil; JournalCheckpoint.remove(for:url)
+        } catch { poisoned = true; throw error }
+    }
+
     /// Read-only validation before a parent consults a managed child's evidence.
     /// This also works when an idle child viewer already holds its writer.
     static func verifyManagedChild(url: URL, id: String) throws {
         let checked = try chain(url: url, id: id, binding: nil, requireMarker: true)
-        guard checked.bindings.markerKind == JournalRecordKind.childMarker else { throw SubagentRecovery.damaged() }
+        guard [JournalRecordKind.childMarker, JournalRecordKind.steeringMarker].contains(checked.bindings.markerKind ?? "") else { throw SubagentRecovery.damaged() }
     }
 
     /// The chain from a checkpoint on, when the records the checkpoint relies

@@ -342,7 +342,7 @@ public actor AgentSession {
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
         spend=replayed.spend; spendTracked=replayed.spendTracked; accounting=replayed.accounting; subagents=replayed.subagents
         familyBudgetEnabled = !subagents.plans.isEmpty
-        guard (opened.markerKind == JournalRecordKind.childMarker) == (subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
+        guard opened.markerKind == JournalRecordKind.steeringMarker || (opened.markerKind == JournalRecordKind.childMarker) == (subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery

@@ -47,6 +47,8 @@ public struct ChatMessage: Codable, Equatable, Sendable {
     /// For tool results: durationMs plus, for file tools, path/added/removed.
     public var toolStats: JSON? = nil
     public var nativeSubagent: JSON? = nil
+    /// Agent-authored input, never user consent or explicit skill selection.
+    public var nativeAgentDelivery: JSON? = nil
     /// "length" when the model stopped at the output budget; nil otherwise.
     public var stopReason: String? = nil
     /// Assistant rows: the reply's usage in pi's shape (input, output,
@@ -83,6 +85,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         if let responseTimeline { value["nativeResponseTimeline"] = (try? JSON.parse(JSONEncoder().encode(responseTimeline))) ?? .null }
         if let toolStats { value["nativeToolStats"] = toolStats }
         if let nativeSubagent { value["nativeSubagent"] = nativeSubagent }
+        if let nativeAgentDelivery { value["nativeAgentDelivery"] = nativeAgentDelivery }
         if let turn { value["nativeTurn"] = JSON(turn) }
         if let modelMs { value["nativeModelMs"] = JSON(modelMs) }
         if let taskRootID { value["nativeTaskRoot"] = JSON(taskRootID) }
@@ -112,6 +115,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         guard let role = pi["role"].text, ["user","assistant","toolResult","system"].contains(role) else { throw AgentError("invalid_session", "Unsupported message role") }
         self.id=id; self.role=role
         nativeSubagent = pi["nativeSubagent"].isNull ? nil : pi["nativeSubagent"]
+        nativeAgentDelivery = pi["nativeAgentDelivery"].isNull ? Optional<JSON>.none : pi["nativeAgentDelivery"]
         content = pi["content"].text.map { [textBlock($0)] } ?? pi["content"].list
         providerItems = pi["nativeProviderItems"].isNull ? nil : pi["nativeProviderItems"].list
         providerIdentity = pi["nativeProviderIdentity"].isNull ? nil : pi["nativeProviderIdentity"]
@@ -121,7 +125,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         toolCallId = pi["toolCallId"].text; toolName = pi["toolName"].text; isError = pi["isError"].flag ?? false
         replayEligible = pi["nativeReplayEligible"].flag ?? true; displayText = pi["nativeDisplayText"].text
         if !pi["nativeCompaction"].isNull, pi["nativeCompaction"]["version"].int != 2 { throw AgentError("session_damaged","Unsupported inherited compaction metadata version") }
-        userInput = pi["nativeUserInput"].isNull ? nil : pi["nativeUserInput"]
+        userInput = pi["nativeUserInput"].isNull ? Optional<JSON>.none : pi["nativeUserInput"]
         if let kind = pi["nativeContextNote"]["kind"].text, let note = pi["nativeContextNote"]["text"].text { contextNote = ContextNote(kind: kind, text: note) }
         requestAttemptIDs = pi["nativeRequestAttemptIds"].isNull ? nil : pi["nativeRequestAttemptIds"].list.compactMap(\.text)
         kind = pi["nativeKind"].text; detail = pi["nativeDetail"].text
@@ -166,6 +170,7 @@ public struct ChatMessage: Codable, Equatable, Sendable {
         if let responseTimeline { value["responseTimeline"] = (try? JSON.parse(JSONEncoder().encode(responseTimeline.projected()))) ?? .null }
         if role == "assistant" { value["toolCallCount"] = JSON(tools.count) }
         if let kind { value["kind"] = JSON(kind) }
+        if let nativeAgentDelivery { value["nativeAgentDelivery"] = nativeAgentDelivery; value["kind"] = "agent_message" }
         if let stopReason { value["stopReason"] = JSON(stopReason) }
         if let detail { value["detail"] = JSON(preview(detail, bytes: 1024)) }
         if let timestamp { value["at"] = JSON(timestamp) }

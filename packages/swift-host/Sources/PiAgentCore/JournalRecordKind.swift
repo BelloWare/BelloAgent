@@ -11,7 +11,15 @@ enum JournalRecordKind {
     /// The marker after the session header: a native journal, and its binding.
     static let marker = "pi-app.native.v1"
     static let childMarker = "pi-app.native.v2"
-    static func isMarker(_ value: String?) -> Bool { value == marker || value == childMarker }
+    static let steeringMarker = "pi-app.native.v3"
+    static let agentOperation = "pi-app.agent-operation.v1"
+    static let agentTurn = "pi-app.subagent-turn.v1"
+    static let agentTurnState = "pi-app.subagent-turn-state.v1"
+    static let agentTerminal = "pi-app.subagent-turn-terminal.v1"
+    static let agentMessage = "pi-app.agent-message.v1"
+    static let agentDelivery = "pi-app.agent-delivery.v1"
+    static let familyRun = "pi-app.family-run.v1"
+    static func isMarker(_ value: String?) -> Bool { value == marker || value == childMarker || value == steeringMarker }
     static let budgetAttempt = "pi-app.budget-attempt.v1"
     static let costUpdate = "pi-app.cost-update.v1"
     static let subagentCall = "pi-app.subagent-call.v1"

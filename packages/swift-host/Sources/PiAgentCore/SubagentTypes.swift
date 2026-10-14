@@ -5,9 +5,11 @@ import Foundation
 /// No preference or wire flag can bypass this policy.
 public enum SubagentPolicy {
     public static let enabled = true
+    /// Enable only when the helper and the app v3 integration are complete.
+    public static let steeringEnabled = false
     public static let maximumActiveChildren = 16
     public static let maximumDepth = 1
-    public static var capabilities: [String] { enabled ? ["subagents-v1", "shared-budget-v1"] : [] }
+    public static var capabilities: [String] { enabled ? ["subagents-v1", "shared-budget-v1"] + (steeringEnabled ? ["subagents-steering-v3"] : []) : [] }
 }
 
 /// A provider may reuse a call ID in another response or another session.
@@ -64,6 +66,12 @@ public struct SubagentSummary: Codable, Sendable, Equatable {
     public var revision: Int
     public var tools: [String]? = nil
     public var progress: SubagentProgress? = nil
+    public var turn: Int? = nil
+    public var executionID: String? = nil
+    public var deliveryState: String? = nil
+    public var pendingMessages: Int? = nil
+    public var followUpsRemaining: Int? = nil
+    public var parentWaiting: Bool? = nil
 }
 
 /// Display-only progress, coalesced while running and saved once with the
