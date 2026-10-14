@@ -2,6 +2,58 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentRecoveryTests: XCTestCase {
+    func testParentOpenReleasesEveryRestoredFamilyReaderAndInvalidatesTheViewers() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let profile = try fixtureProfile(), frames = RecoveryUnloadFrames()
+        try writeReaderFamily(root, profile: profile, owner: "parent", children: ["first", "second"])
+        try writeReaderFamily(root, profile: profile, owner: "other", children: ["unrelated"])
+        let host = NativeHostService(emit: { frames.append($0) })
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd":JSON(root.path), "directory":JSON(root.path), "resources":["codexHome":JSON(root.appendingPathComponent("codex").path)]])
+        func open(_ id: String) async throws -> JSON {
+            try await host.command("session.open", sessionID: id, params: ["profile":profile.raw, "apiKey":"fixture", "path":JSON(root.appendingPathComponent(id + ".jsonl").path)])
+        }
+        for id in ["first", "second", "unrelated"] { _ = try await open(id) }
+        let first = await host.loadedSession("first"), second = await host.loadedSession("second"), unrelated = await host.loadedSession("unrelated")
+        do {
+            let parent = try await open("parent")
+            XCTAssertEqual(parent["state"].text, "paused")
+            XCTAssertEqual(Set(frames.unloaded), ["first", "second"], "Every detached reader must invalidate the app's opened set")
+            for id in ["first", "second"] {
+                let released = await host.loadedSession(id)
+                XCTAssertNil(released)
+                _ = try await open(id)
+                let child = await host.loadedSession(id), status = await child?.subagents.status
+                XCTAssertEqual(status, .notExecuted, "Reopening reads the owner's repaired terminal record")
+                XCTAssertFalse(child === first); XCTAssertFalse(child === second)
+            }
+            let untouched = await host.loadedSession("unrelated")
+            XCTAssertTrue(untouched === unrelated, "Another budget owner's reader stays attached")
+            _ = try await open("parent")
+            let attached = await host.loadedSession("first")
+            XCTAssertNotNil(attached, "An already loaded owner does not recover or evict its viewers again")
+        } catch { XCTFail("Parent recovery failed with open child readers: \(error)") }
+        await host.shutdown()
+    }
+
+    func testParentRecoveryCannotDetachAnUnsettledManagedChild() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let profile = try fixtureProfile(), frames = RecoveryUnloadFrames()
+        try writeReaderFamily(root, profile: profile, owner: "parent", children: ["child"])
+        let host = NativeHostService(emit: { frames.append($0) })
+        _ = try await host.command("workspace.open", sessionID: nil, params: ["cwd":JSON(root.path), "directory":JSON(root.path), "resources":["codexHome":JSON(root.appendingPathComponent("codex").path)]])
+        _ = try await host.command("session.open", sessionID: "child", params: ["profile":profile.raw, "apiKey":"fixture", "path":JSON(root.appendingPathComponent("child.jsonl").path)])
+        let loaded = await host.loadedSession("child"), child = try XCTUnwrap(loaded)
+        let origin = await child.subagents.origin
+        await child.installManagedCancellation(SubagentCoordinator(), key: try XCTUnwrap(origin).link.call)
+        do {
+            _ = try await host.command("session.open", sessionID: "parent", params: ["profile":profile.raw, "apiKey":"fixture", "path":JSON(root.appendingPathComponent("parent.jsonl").path)])
+            XCTFail("Unsettled live work cannot be detached for recovery")
+        } catch let error as AgentError { XCTAssertEqual(error.code, "session_busy") }
+        let retained = await host.loadedSession("child"), journal = await child.journal
+        XCTAssertTrue(retained === child); XCTAssertNotNil(journal); XCTAssertTrue(frames.unloaded.isEmpty)
+        await host.shutdown()
+    }
+
     func testSavedChildTerminalIsAdoptedExactlyOnceWithoutRunningAnything() async throws {
         let fixture = try RecoveryFixture(); defer { fixture.remove() }
         let expected = SubagentToolResult(plan: fixture.plan, status: .completed, text: "durable answer", messageIDs: ["final"], began: true)
@@ -122,8 +174,35 @@ final class SubagentRecoveryTests: XCTestCase {
         let displayed = await parent.displayMessage(assistant)
         XCTAssertEqual(displayed["tools"].list.first?["subagent"]["link"]["childSessionID"].text, "child")
         XCTAssertEqual(displayed["tools"].list.first?["subagent"]["status"].text, "interrupted")
+        let listed = await SubagentCoordinator().list(parent: parent)
+        XCTAssertEqual(listed["children"].list.first?["status"].text, "interrupted", "A recovered old-helper result is not an in-flight preparation")
         await parent.close()
     }
+}
+
+private final class RecoveryUnloadFrames: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frames: [JSON] = []
+    func append(_ frame: JSON) { lock.lock(); defer { lock.unlock() }; frames.append(frame) }
+    var unloaded: [String] { lock.lock(); defer { lock.unlock() }; return frames.filter { $0["type"].text == "session.unloaded" }.compactMap { $0["sessionId"].text } }
+}
+
+private func writeReaderFamily(_ root: URL, profile: Profile, owner: String, children: [String]) throws {
+    let parent = try SessionJournal(url: root.appendingPathComponent(owner + ".jsonl"), id: owner, cwd: root, binding: profile.binding, create: true)
+    var task = ChatMessage(role: "user", content: [textBlock("task")]); task.id = "turn"
+    try parent.append(["type":"message", "message":task.pi], id: task.id)
+    var assistant = ChatMessage(role: "assistant", content: children.map { ["type":"toolCall", "id":JSON($0), "name":"subagent", "arguments":["task":"task"]] })
+    assistant.id = "reply"; assistant.turn = "turn"
+    try parent.append(["type":"message", "message":assistant.pi], id: assistant.id)
+    for id in children {
+        var origin = subagentFixtureOrigin(child: id, parent: owner, call: id); origin.link.delegationID = "delegation-" + id
+        let plan = SubagentPlan(origin: origin, task: "task", resultMessageID: "result-" + id)
+        try parent.append(["type":"custom", "customType":JSON(JournalRecordKind.subagentCall), "data":try subagentJSON(plan)])
+        let child = try SessionJournal(url: root.appendingPathComponent(id + ".jsonl"), id: id, cwd: root, binding: profile.binding, create: true, managedChild: true)
+        try child.append(["type":"custom", "customType":JSON(JournalRecordKind.subagentOrigin), "data":try subagentJSON(origin)])
+        try child.append(["type":"custom", "customType":JSON(JournalRecordKind.subagentState), "data":["delegationID":JSON(origin.link.delegationID), "status":"queued"]])
+    }
+    try parent.append(["type":"custom", "customType":JSON(JournalRecordKind.state), "data":["active":true,"queue":[],"steering":[],"commands":[]]])
 }
 
 private struct RecoveryFixture {

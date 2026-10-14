@@ -205,6 +205,7 @@ public actor NativeHostService {
     /// whole journal. (A side starts from its parent's context instead.)
     private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, prepared: JournalReplayConsumer? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
         guard let cwd, let directory else { throw AgentError("workspace_required", "Open a workspace first") }
+        try await releaseFamilyReaders(owner: id)
         let client=ProviderClient(traces:traces), traces=traces, outcomes=unknownToolOutcomes, changed=notification()
         let session = try await Task.detached(priority:.userInitiated) {
             try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
@@ -225,6 +226,19 @@ public actor NativeHostService {
             if let subagentCoordinator { await session.enableSubagents(subagentCoordinator) }
         }
         return session
+    }
+    /// Called under the runtime gate before every cold session construction.
+    /// Recovery writes child journals, so all restored readers of this owner
+    /// must detach first. The gate prevents a concurrent preview repinning one;
+    /// unloadIfIdle keeps live queued/running/settling children protected.
+    private func releaseFamilyReaders(owner: String) async throws {
+        for id in subagentReaders.sorted() {
+            guard let child = sessions[id], await child.subagents.origin?.link.budgetOwnerSessionID == owner else { continue }
+            guard await child.unloadIfIdle() else { throw AgentError("session_busy", "A managed child is still settling. Wait before reopening its parent.") }
+            sessions.removeValue(forKey: id); profiles.removeValue(forKey: id); subagentReaders.remove(id)
+            dirty.removeValue(forKey: id)
+            emit(["v":1, "kind":"event", "hostEpoch":JSON(epoch), "sessionId":JSON(id), "seq":JSON(await child.sequence), "type":"session.unloaded", "payload":[:]])
+        }
     }
     private func registerSubagent(_ child: AgentSession, profile: Profile, apiKey: String, parent: AgentSession) async throws {
         let childID = child.id, ownerID = parent.id, childDirectory = child.directory, childCwd = child.cwd

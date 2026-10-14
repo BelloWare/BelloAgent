@@ -45,20 +45,11 @@ extension WorkspaceModel {
               record(childID).map({ $0.workspaceID == parent.workspaceID && $0.delegation == link }) ?? true else {
             displays[childID]?.notice = "The parent chat is unavailable. This saved sub-agent remains viewable."; return
         }
-        do {
-            // A restored reader has no coordinator job. Close it before the
-            // parent's recovery opens child journals; the helper refuses to
-            // unload any live queued or settling child.
-            if !opened.contains(parent.id), opened.contains(childID), let host = hosts[parent.workspaceID], host.isReady {
-                _ = try await host.request("session.close", sessionID: childID)
-                opened.remove(childID)
-            }
-            guard !Task.isCancelled, selectionRevision == navigation else { return }
-            if side(parent.id) != nil { await selectSide(parent.id, revealInSidebar: false) }
-            else if let ancestor = parent.parentSessionID, record(ancestor) != nil, !parent.imported { await showSide(parent.id, revealInSidebar: false) }
-            else { await select(parent.id, revealInSidebar: false, reopensSide: false, focusesComposer: false) }
-            await revealSubagentCall(link)
-        } catch { displays[childID]?.notice = error.localizedDescription }
+        guard !Task.isCancelled, selectionRevision == navigation else { return }
+        if side(parent.id) != nil { await selectSide(parent.id, revealInSidebar: false) }
+        else if let ancestor = parent.parentSessionID, record(ancestor) != nil, !parent.imported { await showSide(parent.id, revealInSidebar: false) }
+        else { await select(parent.id, revealInSidebar: false, reopensSide: false, focusesComposer: false) }
+        await revealSubagentCall(link)
     }
 
     func revealSubagentCall(_ link: SubagentLink) async {

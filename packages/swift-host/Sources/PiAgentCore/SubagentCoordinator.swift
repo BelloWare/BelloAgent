@@ -20,6 +20,7 @@ private actor SubagentCompletion {
 actor SubagentCoordinator {
     typealias Register = @Sendable (AgentSession, Profile, String, AgentSession) async throws -> Void
     typealias Settled = @Sendable (AgentSession) async -> Void
+    typealias ListingSnapshot = @Sendable (AgentSession) async -> (SubagentJournalState, Int)
     private struct Runtime: Sendable { let environment: SubagentEnvironment, child: AgentSession; let childGeneration: Int }
     private struct Job: Sendable {
         let plan: SubagentPlan, generation: Int, runtimeID: String
@@ -33,21 +34,29 @@ actor SubagentCoordinator {
     }
     private let register: Register
     private let settled: Settled
-    private var jobs: [SubagentCallKey: Job] = [:]
+    private let listingSnapshot: ListingSnapshot
+    private var listingRevision: UInt64 = 0
+    private var preparing: Set<SubagentCallKey> = [] { didSet { listingRevision &+= 1 } }
+    private var jobs: [SubagentCallKey: Job] = [:] { didSet { listingRevision &+= 1 } }
     private struct Rejected: Sendable { let result: SubagentToolResult, runtimeID: String }
-    private var rejected: [SubagentCallKey: Rejected] = [:]
+    private var rejected: [SubagentCallKey: Rejected] = [:] { didSet { listingRevision &+= 1 } }
     private var queues: [String: [SubagentCallKey]] = [:]
     private var active: [String: Int] = [:]
     private var cancelledThrough: [String: Int] = [:]
     var retainedJobCount: Int { jobs.count + rejected.count }
-    init(register: @escaping Register = { _, _, _, _ in }, settled: @escaping Settled = { _ in }) {
-        self.register = register; self.settled = settled
+    init(register: @escaping Register = { _, _, _, _ in }, settled: @escaping Settled = { _ in },
+         listingSnapshot: @escaping ListingSnapshot = { await $0.subagentListingSnapshot() }) {
+        self.register = register; self.settled = settled; self.listingSnapshot = listingSnapshot
     }
 
     /// Plan and create all queued children in assistant-call order before any
     /// starts. A write failure cannot leave an unobserved run behind this await.
     func prepare(_ calls: [(SubagentCallKey, ToolCall)], environment env: SubagentEnvironment) async {
-        for (key, call) in calls where jobs[key] == nil && rejected[key] == nil {
+        for (key, call) in calls where jobs[key] == nil && rejected[key] == nil && !preparing.contains(key) {
+            // Install before the parent's durable registration yields. A list
+            // may see its plan before any child runtime or job exists.
+            preparing.insert(key)
+            defer { preparing.remove(key) }
             var planned: SubagentPlan?
             var created: AgentSession?
             do {
@@ -191,14 +200,23 @@ actor SubagentCoordinator {
     /// Parent results and their order are journal-backed. The coordinator keeps
     /// only live jobs and terminal answers awaiting durable parent consumption.
     func list(parent: AgentSession, cursor: Int = 0, limit: Int = 100) async -> JSON {
-        let state = await parent.subagents, owner = parent.id, revision = await parent.sequence
-        let ids = state.callOrder ?? state.plans.keys.sorted()
-        let start = min(max(0, cursor), ids.count), page = ids[start...].prefix(max(1, min(limit, 256))), next = start + page.count
-        return ["revision":JSON(revision), "active":JSON(active[owner, default: 0]), "total":JSON(ids.count),
-                "cursor":next < ids.count ? JSON(next) : .null, "children":.array(page.compactMap { state.plans[$0] }.compactMap { plan in
-            let status = jobs[plan.origin.link.call]?.status ?? state.outcomes?[plan.origin.link.delegationID] ?? .interrupted
-            return try? subagentJSON(SubagentSummary(link: plan.origin.link, description: plan.origin.description, model: plan.origin.model.model, status: status, revision: revision, tools: plan.origin.tools, progress: jobs[plan.origin.link.call]?.progress))
-        })]
+        while true {
+            let before = listingRevision
+            let (state, revision) = await listingSnapshot(parent), owner = parent.id
+            // Preparation, settlement or consumption can overtake this await.
+            // Retry rather than combine a pre-result journal snapshot with an
+            // already-pruned job and falsely publish a terminal interruption.
+            guard before == listingRevision else { continue }
+            let ids = state.callOrder ?? state.plans.keys.sorted()
+            let start = min(max(0, cursor), ids.count), page = ids[start...].prefix(max(1, min(limit, 256))), next = start + page.count
+            return ["revision":JSON(revision), "active":JSON(active[owner, default: 0]), "total":JSON(ids.count),
+                    "cursor":next < ids.count ? JSON(next) : .null, "children":.array(page.compactMap { state.plans[$0] }.compactMap { plan in
+                let key = plan.origin.link.call
+                let status = state.outcomes?[plan.origin.link.delegationID] ?? jobs[key]?.status ?? rejected[key]?.result.status
+                    ?? (preparing.contains(key) ? .queued : .interrupted)
+                return try? subagentJSON(SubagentSummary(link: plan.origin.link, description: plan.origin.description, model: plan.origin.model.model, status: status, revision: revision, tools: plan.origin.tools, progress: jobs[key]?.progress))
+            })]
+        }
     }
     func consumed(_ keys: [SubagentCallKey]) {
         for key in keys {

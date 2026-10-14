@@ -1,9 +1,60 @@
 import XCTest
+import Darwin
 @testable import PiApp
 
 /// Real helper navigation over a generated loopback stream. The fixture's
 /// explicit barrier keeps a child active until its viewer has attached.
 final class SubagentOpeningTests: XCTestCase, SerialTestLane {
+    @MainActor func testRestoredChildPreviewDoesNotBlockAnyParentRecoveryEntryPoint() async throws {
+        for route in ["sidebar Resume", "parent preview", "Back to Parent"] {
+            let (setup, model, host, parent, target) = try await fixture()
+            let pid = try XCTUnwrap(host.helperProcessIdentifier)
+            XCTAssertEqual(kill(pid, SIGKILL), 0)
+            try await eventually("Killed fixture helper stayed attached") { host.connectionID == nil && !model.opened.contains(parent.id) }
+            let child = try XCTUnwrap(model.record(target.sessionID))
+            _ = try await model.open(child)
+            XCTAssertTrue(model.opened.contains(child.id))
+            XCTAssertFalse(model.opened.contains(parent.id))
+            // The explicit Next Request preview owns the same child runtime.
+            _ = try await host.request("context.preview", sessionID: child.id)
+            if route == "Back to Parent" { await model.backToSubagentParent(child.id) }
+            else { await model.openFromSidebar(parent.id) }
+            do {
+                if route == "parent preview" {
+                    _ = try await model.open(try XCTUnwrap(model.record(parent.id)))
+                    _ = try await host.request("context.preview", sessionID: parent.id)
+                } else {
+                    var steps: [String] = []; model.resumeSteps = { steps.append($0) }
+                    model.resumeRun(sessionID: parent.id)
+                    try await eventually("Resume never settled: \(route)", timeout: .seconds(30)) { steps.contains("answered") || steps.contains("failed") }
+                    XCTAssertTrue(steps.contains("answered"), "\(route): \(model.error ?? "no error")")
+                }
+                XCTAssertFalse(model.opened.contains(child.id), "\(route) must invalidate the restored reader")
+                XCTAssertTrue(model.opened.contains(parent.id))
+                await model.openSubagent(target)
+                XCTAssertTrue(model.opened.contains(child.id), "The viewer can reopen after recovery")
+            } catch { XCTFail("\(route): \(error)") }
+            try Data().write(to: setup.root.appendingPathComponent("release-child"))
+            model.shutdown(); try await host.shutdownAndWait()
+        }
+    }
+
+    @MainActor func testUnloadDuringOpeningCannotReinsertAStaleChildRuntime() async throws {
+        let (_, model, host, _, target) = try await fixture()
+        // Deliver the same invalidation as family recovery, exactly after the
+        // open reply and before the app finishes persisting/attaching it.
+        host.requestObserver = { method, _, _ in
+            if method == "session.open" {
+                host.onEvent?(["type":.string("session.unloaded"), "sessionId":.string(target.sessionID)])
+            }
+        }
+        await model.openSubagent(target)
+        XCTAssertFalse(model.opened.contains(target.sessionID), "An overtaken open must not revive an invalidated runtime")
+        host.requestObserver = nil
+        await model.openSubagent(target)
+        XCTAssertTrue(model.opened.contains(target.sessionID), "A new explicit open can attach normally")
+    }
+
     @MainActor private func fixture() async throws -> (GatewayWorkspace, WorkspaceModel, HostSupervisor, ChatRecord, SubagentTarget) {
         let setup = try await gatewayWorkspace("subagent-opening", projectID: "subagent-opening")
         let model = WorkspaceModel(stateRoot: setup.state, vault: setup.vault)

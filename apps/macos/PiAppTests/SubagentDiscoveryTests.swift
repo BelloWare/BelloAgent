@@ -3,6 +3,36 @@ import XCTest
 @testable import PiApp
 
 final class SubagentDiscoveryTests: XCTestCase {
+    @MainActor func testLiveListingAndDiscoveryAcceptTheSameCanonicalChildPath() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+        model.chats.remove(at: 1)
+        let family = try Self.family(model), store = try XCTUnwrap(model.store)
+        try await store.putChats(model.chats)
+        try await model.traces.configure(quota: nil, bodyRetention: 86_400, metricRetention: 86_400)
+        let parent = model.chats[0], directory = try model.subagentDirectory(parent.workspaceID)
+        var link = SubagentTranscriptTests.link; link.childSessionID = family.child
+        let header = try await model.history.subagentHeader(path: family.path, directory: directory,
+            expected: SubagentTarget(link))
+        let canonical = family.path.resolvingSymlinksInPath()
+        // The helper, old metadata and Foundation directory enumeration may
+        // spell /var and /private/var differently. They name the same journal.
+        let alternate = canonical.path.hasPrefix("/var/") ? "/private" + canonical.path : String(canonical.path.dropFirst("/private".count))
+        XCTAssertNotEqual(alternate, canonical.path, "This macOS fixture must exercise a real path alias")
+        let found = DiscoveredSubagent(header: header, path: alternate, task: "task", status: .running)
+        try await model.registerDiscoveredSubagent(found, workspaceID: parent.workspaceID)
+        var saved = try XCTUnwrap(model.record(family.child)); saved.path = alternate
+        try await store.put(saved, kind: "chat", id: saved.id)
+        let summary = SubagentSummary(link: header.link, description: header.description, model: header.model.model, status: .running, revision: 1)
+        try await model.registerListedSubagent(summary, parent: parent, task: "task")
+        await model.reconcileSubagents(parentID: parent.id)
+        XCTAssertNil(model.error)
+        XCTAssertEqual(model.chats.filter { $0.id == family.child }.count, 1)
+        XCTAssertEqual(model.record(family.child)?.path, canonical.path)
+        var foreign = found; foreign.path = root.appendingPathComponent("different.jsonl").path
+        do { _ = try await store.registerSubagent(foreign, workspaceID: parent.workspaceID); XCTFail("A different journal cannot take over this child") } catch { }
+    }
+
     @MainActor static func family(_ model: WorkspaceModel, accepted: Bool = true, task: String = "Find ambiguous parser tokens") throws -> (child: String, path: URL) {
         var link = SubagentTranscriptTests.link; link.childSessionID = UUID().uuidString
         let directory = model.root.appendingPathComponent("Workspaces/pane-project/Sessions")

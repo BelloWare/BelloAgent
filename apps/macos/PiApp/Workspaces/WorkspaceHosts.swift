@@ -37,7 +37,10 @@ extension WorkspaceModel {
         host.onEvent = { [weak self] frame in
             guard let id = frame["sessionId"]?.string else { return }
             if frame["type"]?.string == "session.changed" { self?.refresh(id) }
-            if frame["type"]?.string == "session.unloaded" { self?.opened.remove(id); self?.displays[id]?.notice = "Saved history · Host runtime unloaded"; self?.displays[id]?.captureAvailable = false }
+            if frame["type"]?.string == "session.unloaded" {
+                self?.sessionOpenings[id]?.task.cancel()
+                self?.opened.remove(id); self?.displays[id]?.notice = "Saved history · Host runtime unloaded"; self?.displays[id]?.captureAvailable = false
+            }
         }
         host.onLoss = { [weak self, weak host] in
             guard let self, let host, self.hosts[workspace.id] === host else { return }
@@ -258,6 +261,9 @@ extension WorkspaceModel {
                         // Managed readers inherit their owner's capture policy;
                         // opening one must never issue a child policy change.
                         if !item.isSubagent { _ = try await host.request("debug.mode", sessionID: item.id, params: ["mode": .string(preference.mode)]) }
+                        // Recovery may have unloaded this reader after its open
+                        // reply, while path/capture persistence yielded above.
+                        try Task.checkCancellation()
                         opened.insert(item.id)
                         // Settings or this chat's override may have changed
                         // while its seed or opening acknowledgement was read.

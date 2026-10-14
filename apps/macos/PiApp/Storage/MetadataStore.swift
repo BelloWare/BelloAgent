@@ -712,7 +712,12 @@ actor MetadataStore {
         let validParent = parent.flatMap { $0.workspaceID == workspaceID && !$0.isSubagent && !$0.imported ? $0 : nil }
         let issue = found.issue ?? (validParent == nil ? "The parent chat is unavailable. This saved sub-agent is view-only." : nil)
         let old = try get(ChatRecord.self, kind: "chat", id: link.childSessionID)
-        if let old { guard old.workspaceID == workspaceID, old.delegation == nil || old.delegation == link, old.path == found.path else { throw StoreError.invalidRecord } }
+        // Directory discovery and live opening can spell the same validated
+        // journal differently (/var and /private/var on macOS). Compare file
+        // identity canonically without accepting a different journal or origin.
+        let path = URL(fileURLWithPath: found.path).resolvingSymlinksInPath().path
+        if let old { guard old.workspaceID == workspaceID, old.delegation == nil || old.delegation == link,
+            old.path.map({ URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }) == path else { throw StoreError.invalidRecord } }
         var child = old ?? ChatRecord(id: link.childSessionID, workspaceID: workspaceID, title: header.description, path: found.path,
             profileID: validParent?.profileID ?? "", toolMode: header.readOnly ? ChatRecord.readOnlyTools : ChatRecord.editingTools,
             model: header.model.model, thinkingLevel: header.model.thinkingLevel, contextWindow: header.model.contextWindow,
@@ -722,6 +727,7 @@ actor MetadataStore {
         // header and reciprocal parent plan rebuild an absent identity; a
         // conflicting identity or a different file still fails above.
         child.delegation = link
+        child.path = path
         // Small metadata preview; the complete task remains in the owner's
         // journal and the ordinary child's user message once it starts.
         if !found.task.isEmpty { child.delegationTask = String(found.task.prefix(4096)) }

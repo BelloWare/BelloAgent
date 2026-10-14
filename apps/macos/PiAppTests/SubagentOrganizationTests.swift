@@ -132,6 +132,27 @@ final class SubagentOrganizationTests: XCTestCase {
         do { try await model.setSessionArchived("chat-child", archived: true); XCTFail("Independent child archive accepted") } catch { }
         do { try await model.moveSessions(["chat-child"], in: "pane-project", toTopic: nil); XCTFail("Independent child move accepted") } catch { }
     }
+
+    @MainActor func testArchivingFamilySelectsAnActiveChatFromEitherParentOrChild() async throws {
+        for selected in ["chat-parent", "chat-child"] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+            let store = try XCTUnwrap(model.store)
+            model.chats[0].sidebarOrder = 30
+            model.chats[1].sidebarOrder = 20
+            model.chats[2].sidebarOrder = 10
+            model.selectedID = selected; model.focusedSessionID = selected
+            try await store.putChats(model.chats)
+            try await model.setSessionArchived("chat-parent", archived: true)
+            XCTAssertEqual(model.selectedID, "chat-side", "A newly archived child cannot replace \(selected)")
+            XCTAssertEqual(model.record("chat-parent")?.isArchived, true)
+            XCTAssertEqual(model.record("chat-child")?.isArchived, true)
+            XCTAssertEqual(model.record("chat-side")?.isArchived, false)
+            try await model.setSessionArchived("chat-parent", archived: false)
+            XCTAssertEqual(model.selectedID, "chat-side", "Restoring the family must preserve navigation")
+            XCTAssertEqual(model.record("chat-child")?.isArchived, false)
+        }
+    }
     @MainActor func testFamilyRunHoldPersistsCountsWithoutAnIndependentChildHold() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try Self.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)

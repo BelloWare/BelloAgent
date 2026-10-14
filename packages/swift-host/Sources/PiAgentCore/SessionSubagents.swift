@@ -18,6 +18,8 @@ struct SubagentEnvironment: Sendable {
 }
 
 extension AgentSession {
+    func subagentListingSnapshot() -> (SubagentJournalState, Int) { (subagents, sequence) }
+
     func enableSubagents(_ coordinator: SubagentCoordinator) {
         subagentCoordinator = coordinator
         let ownerID = id, runtimeID = displayEpoch

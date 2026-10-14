@@ -2,6 +2,64 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentCoordinatorTests: XCTestCase {
+    func testListingRetriesAJournalSnapshotOvertakenByResultConsumption() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = DelegationClient(count: 1), gate = DelegationListingGate(), registry = DelegationRegistry()
+        let coordinator = SubagentCoordinator(register: { child, _, _, _ in await registry.add(child) },
+            listingSnapshot: { await gate.snapshot($0) })
+        let parent = try await makeParent(root, client: client, coordinator: coordinator)
+        _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "task"), steer: false)
+        try await eventually { await client.active == 1 }
+        let listing = Task { await coordinator.list(parent: parent) }
+        try await eventually { await gate.entered }
+        await client.releaseAll()
+        try await eventually { !(await parent.isRunning) }
+        let retained = await coordinator.retainedJobCount
+        XCTAssertEqual(retained, 0, "The job was consumed while list held the earlier journal snapshot")
+        await gate.release()
+        let result = await listing.value
+        XCTAssertEqual(result["children"].list.map { $0["status"].text }, ["completed"])
+        for child in await registry.children { await child.close() }
+        await parent.close()
+    }
+
+    func testListingDuringPreparationKeepsEveryAcceptedCallQueued() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = DelegationClient(count: 2), registry = DelegationRegistry(holdAt: 2)
+        let coordinator = SubagentCoordinator(register: { child, _, _, _ in try await registry.register(child) })
+        let parent = try await makeParent(root, client: client, coordinator: coordinator)
+        _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "tasks"), steer: false)
+        try await eventually { await registry.entered }
+        let preparing = await coordinator.list(parent: parent)
+        XCTAssertEqual(preparing["children"].list.map { $0["status"].text }, ["queued", "queued"])
+        XCTAssertEqual(preparing["active"].int, 0)
+        await registry.release()
+        try await eventually { await client.active == 2 }
+        await client.releaseAll()
+        try await eventually { !(await parent.isRunning) }
+        let completed = await coordinator.list(parent: parent)
+        XCTAssertEqual(completed["children"].list.map { $0["status"].text }, ["completed", "completed"])
+        for child in await registry.children { await child.close() }
+        await parent.close()
+    }
+
+    func testListingRejectedPreparationKeepsItsActualFailureUntilConsumption() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = DelegationClient(count: 2), registry = DelegationRegistry(failAt: 2)
+        let coordinator = SubagentCoordinator(register: { child, _, _, _ in try await registry.register(child) })
+        let parent = try await makeParent(root, client: client, coordinator: coordinator)
+        _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "tasks"), steer: false)
+        try await eventually { await client.active == 1 }
+        let pending = await coordinator.list(parent: parent)
+        XCTAssertEqual(pending["children"].list.map { $0["status"].text }, ["running", "failed"])
+        await client.releaseAll()
+        try await eventually { !(await parent.isRunning) }
+        let completed = await coordinator.list(parent: parent)
+        XCTAssertEqual(completed["children"].list.map { $0["status"].text }, ["completed", "failed"])
+        for child in await registry.children { await child.close() }
+        await parent.close()
+    }
+
     func testStopDuringDelegationPreflightSettlesEveryCallBeforeResume() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let tools = DelegationPreflightTools(), client = ScriptClient([toolReply(["subagent", "first"]), answer("Resumed without replay")])
@@ -499,8 +557,29 @@ private actor DelegationPreflightTools: ToolExecuting {
 private actor DelegationRegistry {
     var children: [AgentSession] = []
     var settlementCancellation: [Bool] = []
+    let holdAt: Int?, failAt: Int?
+    var entered = false
+    private var gate: CheckedContinuation<Void, Never>?
+    init(holdAt: Int? = nil, failAt: Int? = nil) { self.holdAt = holdAt; self.failAt = failAt }
+    func register(_ child: AgentSession) async throws {
+        children.append(child)
+        if children.count == failAt { throw AgentError("fixture_register", "Child registration failed") }
+        if children.count == holdAt { entered = true; await withCheckedContinuation { gate = $0 } }
+    }
+    func release() { gate?.resume(); gate = nil }
     func add(_ child: AgentSession) { children.append(child) }
     func settled(cancelled: Bool) { settlementCancellation.append(cancelled) }
+}
+
+private actor DelegationListingGate {
+    var entered = false
+    private var gate: CheckedContinuation<Void, Never>?
+    func snapshot(_ parent: AgentSession) async -> (SubagentJournalState, Int) {
+        let snapshot = await parent.subagentListingSnapshot()
+        if !entered { entered = true; await withCheckedContinuation { gate = $0 } }
+        return snapshot
+    }
+    func release() { gate?.resume(); gate = nil }
 }
 
 private actor DelegationClient: ModelClient {
