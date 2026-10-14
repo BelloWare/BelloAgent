@@ -10,7 +10,10 @@ public struct GitStatusEntry: Identifiable, Equatable, Sendable {
     public let worktreeState: Character
     public let untracked: Bool
     public var id: String { path }
-    public var staged: Bool { !untracked && indexState != "." }
+    /// Porcelain's unmerged pairs (including add/add and delete/delete) are
+    /// unresolved index stages, not ordinary staged content or untracked files.
+    public var conflicted: Bool { !untracked && (indexState == "U" || worktreeState == "U" || (indexState == "A" && worktreeState == "A") || (indexState == "D" && worktreeState == "D")) }
+    public var staged: Bool { !untracked && !conflicted && indexState != "." }
     public var unstaged: Bool { untracked || worktreeState != "." }
     public var renamed: Bool { originalPath != nil }
     /// A rename in the index or in the working tree. Git shows it as one row
@@ -20,12 +23,14 @@ public struct GitStatusEntry: Identifiable, Equatable, Sendable {
     public var isRename: Bool { originalPath != nil && (indexState == "R" || worktreeState == "R") }
     /// One letter for the row badge: the worktree change, else the index change.
     public var badge: String {
+        if conflicted { return "!" }
         if untracked { return "U" }
         let state = worktreeState != "." ? worktreeState : indexState
         return String(state)
     }
     public var summary: String {
         switch badge {
+        case "!": "Conflict"
         case "U": "Untracked"
         case "M": "Modified"
         case "A": "Added"
@@ -381,8 +386,9 @@ public actor GitService {
                 let original = next() ?? ""
                 status.entries.append(GitStatusEntry(path: path, originalPath: original, indexState: xy[0], worktreeState: xy[1], untracked: false))
             case "u" where columns.count >= 11:
-                let path = columns[10...].joined(separator: " ")
-                status.entries.append(GitStatusEntry(path: path, originalPath: nil, indexState: "U", worktreeState: "U", untracked: false))
+                let xy = Array(columns[1]), path = columns[10...].joined(separator: " ")
+                guard xy.count == 2 else { continue }
+                status.entries.append(GitStatusEntry(path: path, originalPath: nil, indexState: xy[0], worktreeState: xy[1], untracked: false))
             case "?":
                 status.entries.append(GitStatusEntry(path: String(line.dropFirst(2)), originalPath: nil, indexState: ".", worktreeState: ".", untracked: true))
             default: break
@@ -625,6 +631,18 @@ public actor GitService {
     }
     func unstage(_ paths: [String], in root: String) async throws {
         guard !paths.isEmpty else { return }
+        if try await headCommit(in: root) == nil {
+            let symbolic = try await run(["symbolic-ref", "--quiet", "HEAD"], in: root)
+            let branch = symbolic.text.trimmingCharacters(in: .newlines)
+            guard symbolic.status == 0, branch.hasPrefix("refs/heads/"),
+                  try await run(["show-ref", "--verify", "--quiet", branch], in: root).status == 1 else {
+                throw GitFailure(message: "HEAD could not be read. The index was left unchanged.")
+            }
+            // Before the first commit there is no tree to restore. Remove
+            // only the selected index entries, even if disk has newer bytes.
+            try await runBatched(["rm", "--cached", "-f", "--ignore-unmatch", "--"], paths: paths, in: root, "Unstaging")
+            return
+        }
         for batch in Self.batches(of: Self.literal(paths), prefix: ["restore", "--staged", "--"]) {
             let output = try await run(["restore", "--staged", "--"] + batch, in: root)
             if output.status != 0 { _ = try require(await run(["reset", "-q", "HEAD", "--"] + batch, in: root), "Unstaging") }
@@ -637,14 +655,21 @@ public actor GitService {
     /// - `.staged`: the index as it is staged; unstaged edits stay.
     /// Neither falls back to the other: an empty path list is refused, never
     /// read as "commit the index".
-    func commit(message: String, in root: String, content: GitCommitContent, amend: Bool = false) async throws -> String {
+    func commit(message: String, in root: String, content: GitCommitContent, amend: Bool = false,
+                expectedTarget: GitCommitTarget? = nil, signOff: Bool = false) async throws -> String {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw GitFailure(message: "Enter a commit message.") }
         var arguments = ["commit", "-q", "-m", trimmed]
+        if signOff { arguments.append("--signoff") }
+        let target: GitCommitTarget?
         if amend {
-            guard try await headCommit(in: root) != nil else { throw GitFailure(message: "There is no commit to amend yet.") }
+            guard let current = try await commitTarget(in: root) else { throw GitFailure(message: "There is no commit to amend yet.") }
+            let reviewed = expectedTarget ?? current
+            target = reviewed
+            try await validateCommitTarget(reviewed, in: root)
             arguments.append("--amend")
-        }
+        } else { target = nil }
+        try await refuseConflicts(in: root)
         var pathspecFile: URL?
         defer { if let pathspecFile { try? FileManager.default.removeItem(at: pathspecFile) } }
         switch content {
@@ -670,6 +695,10 @@ public actor GitService {
                 _ = try require(compared, "Reading the index"); throw GitFailure(message: "Reading the index failed.")
             }
         }
+        // Native amend cannot atomically bind the reviewed HEAD while keeping
+        // Git's hook/index behaviour. Recheck after preparation, immediately
+        // before dispatch; external Git can still race after this check.
+        if let target { try await validateCommitTarget(target, in: root) }
         let committed = try await run(arguments, in: root)
         // Git refuses a commit that would change nothing with its status on
         // stdout and nothing on stderr, which read as "git exit 1".
@@ -720,12 +749,13 @@ public actor GitService {
     /// message). A hook that changes the working tree's files refuses it too:
     /// what the hook wrote stays, and the reword says so rather than
     /// publishing over it. post-commit and post-rewrite run after.
-    func reword(message: String, in root: String, expectedHead: String?) async throws -> String {
+    func reword(message: String, in root: String, expectedHead: String?, expectedTarget: GitCommitTarget? = nil, signOff: Bool = false) async throws -> String {
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw GitFailure(message: "Enter a commit message.") }
         guard let head = try await headCommit(in: root) else { throw GitFailure(message: "There is no commit to reword yet.") }
         if let expectedHead, expectedHead != head {
             throw GitFailure(message: "The last commit changed since this panel read it. Review it and reword again.")
         }
+        if let expectedTarget { try await validateCommitTarget(expectedTarget, in: root) }
         try await refuseDuringOperation(in: root)
         // The commit's own header: its tree and every recorded parent, also
         // where a shallow clone stops (rev-list would report none there and
@@ -759,6 +789,12 @@ public actor GitService {
         _ = try require(await run(["hook", "run", "--ignore-missing", "pre-commit"], in: root, timeout: 120, environment: hookEnvironment), "The pre-commit hook")
         let messageFile = scratch.appendingPathComponent("COMMIT_EDITMSG")
         try Data(Self.cleanedMessage(message).utf8).write(to: messageFile)
+        if signOff {
+            let identity = try require(await run(["var", "GIT_COMMITTER_IDENT"], in: root), "Reading sign-off identity").text
+            guard let end = identity.lastIndex(of: ">") else { throw GitFailure(message: "The sign-off identity could not be read.") }
+            _ = try require(await run(["interpret-trailers", "--in-place", "--if-exists=addIfDifferent", "--trailer",
+                                       "Signed-off-by: " + identity[...end], messageFile.path], in: root), "Adding sign-off")
+        }
         // As git commit --amend -m calls it: a message given, amending HEAD.
         _ = try require(await run(["hook", "run", "--ignore-missing", "prepare-commit-msg", "--", messageFile.path, "message"], in: root, timeout: 120, environment: hookEnvironment), "The prepare-commit-msg hook")
         _ = try require(await run(["hook", "run", "--ignore-missing", "commit-msg", "--", messageFile.path], in: root, timeout: 120, environment: hookEnvironment), "The commit-msg hook")
@@ -790,6 +826,7 @@ public actor GitService {
 
         // Hooks can take their time: HEAD must still be on the same branch,
         // with no operation begun, before anything moves.
+        if let expectedTarget { try await validateCommitTarget(expectedTarget, in: root) }
         guard try await symbolicHead(in: root) == branch else { throw GitFailure(message: "HEAD moved to another branch while rewording, so the last commit was not reworded.") }
         try await refuseDuringOperation(in: root)
         let subject = finalMessage.split(separator: "\n").first.map(String.init) ?? ""

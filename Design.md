@@ -786,9 +786,10 @@ toolbar carries a branch menu (switch to a local branch, or create one from
 HEAD), fetch, pull (fast-forward only) and push with ahead/behind counters,
 and a stash menu (stash everything including untracked files, pop a listed
 stash). The changelist shows staged and unstaged files with status badges and
-a checkbox per file and per section; Commit takes the checked files' working
-tree state (or the staged index when nothing is checked), Amend folds them
-into HEAD and prefills its message, and Discard, per file or for everything,
+a checkbox per file and per section; Commit explicitly selects checked files'
+whole working-tree state or staged index content, with no empty-selection
+fallback. Checked files remains the default (`GitController.defaultCommitScope`).
+Amend folds the selected content into HEAD and prefills its message; Discard, per file or for everything,
 always confirms first because git keeps no copy. The diff pane renders hunk
 headers, old/new line numbers and tinted rows, unified or side-by-side
 (removed and added blocks paired line by line), with wrap. History filters by
@@ -796,6 +797,20 @@ message text or hash prefix and by author, optionally across all branches,
 marks commits with their branch and tag badges, and a commit's file chips
 narrow its diff to one file. Reads never touch the index; every write is an
 explicit action.
+
+In 0.1.127, Amend and Reword retain the reviewed repository, full HEAD hash,
+branch, message and scope in a Pi question. Cancel is the Return default and
+Escape cancels. A changed repository, draft or scope invalidates the answer;
+the service checks HEAD and branch again before rewriting. Native amend still
+has an external-Git race after the final check; it is not an atomic transaction.
+Reword retains its existing tree-preserving hooks and compare-and-swap update.
+Sign off is optional and uses the configured Git committer identity. Check
+reads conflicts and selected-scope whitespace off the main thread, cancels
+superseded reads and retains bounded diagnostics. Conflicts block commit;
+whitespace and advisory Git warnings require review. Failures keep the draft.
+Unmerged rows have a red conflict badge, and unborn Unstage removes only
+selected index entries. Historical diffs offer Open Working File at the start
+of today's file; they do not reuse historical line numbers.
 
 Choosing a commit reads what it changed, not what it looks like: one `git show`
 returns the message and the changed paths, a second returns their line counts,

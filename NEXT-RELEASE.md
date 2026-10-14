@@ -2,6 +2,10 @@
 
 **Released 2026-10-14:** 0.1.126 (build 130, tag `v0.1.126`) is the latest release; record `docs/validation/Bello-Agent-0.1.126-2026-10-14.md`.
 
+## 0.1.127
+
+- [x] Git safety (`dev/a127-git-safety`, stream 1): conflict badges and guarded unborn unstage; Amend/Reword questions name the reviewed hash, branch and content scope, with Cancel as the default; stale requests are refused. Optional Sign off, cancellable conflicts/whitespace checks with advisory Git warnings, and explicit historical Open Working File. Checked files remains the default in one constant. Native amend still has an external-Git race after its last target check. [Validation](docs/validation/git-safety-0.1.127.md).
+
 ## 0.1.126
 
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.
