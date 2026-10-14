@@ -44,7 +44,10 @@ struct SidebarChatEntry: Identifiable {
         PerformanceProbe.shared.count("sidebarIndexInvalidations")
         chatsByID = nil; sidesByID = nil; projectGroups = nil; chatOrder = nil
         if !entryLists.isEmpty { entryLists.removeAll(keepingCapacity: true) }
-        if !groupChats.isEmpty { groupChats.removeAll(keepingCapacity: true); groupedProjects.removeAll(keepingCapacity: true) }
+        if !groupChats.isEmpty { groupChats.removeAll(keepingCapacity: true) }
+        // An empty project was grouped too, even though it has no buckets.
+        // Its first chat must cause that empty answer to be rebuilt.
+        groupedProjects.removeAll(keepingCapacity: true)
     }
     /// Every group of a project in one pass over that project's chats. Asking
     /// per group filtered the whole workspace once per topic, per archive

@@ -26,12 +26,9 @@ final class GitCommitBrowsingTests: XCTestCase {
         try git(["config", "user.email", "fixture@example.com"], in: root)
         try git(["config", "commit.gpgsign", "false"], in: root)
     }
-    @MainActor private func eventually(_ what: String, _ condition: () -> Bool, file: StaticString = #filePath, line: UInt = #line) async throws {
-        for _ in 0..<400 {
-            if condition() { return }
-            try await Task.sleep(for: .milliseconds(10))
-        }
-        XCTFail("Never \(what)", file: file, line: line)
+    @MainActor private func waitForGit(_ what: String, _ condition: @MainActor () -> Bool,
+                                       file: StaticString = #filePath, line: UInt = #line) async throws {
+        try await eventually("Git did not " + what, timeout: .seconds(60), file: file, line: line, condition)
     }
 
     @MainActor func testCommitDetailsAreCachedCancellableAndNeverParsedTwice() async throws {
@@ -41,13 +38,13 @@ final class GitCommitBrowsingTests: XCTestCase {
             try String(repeating: "line \(index)\n", count: 20).write(to: root.appendingPathComponent("file\(index).txt"), atomically: true, encoding: .utf8)
             try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Commit \(index)"], in: root)
         }
-        let controller = GitController(roots: [root.path])
-        try await eventually("read the history") { controller.commits.count == 3 }
+        let controller = GitController(roots: [root.path]); defer { controller.letGo() }
+        try await waitForGit("read the history") { controller.commits.count == 3 }
         XCTAssertEqual(controller.commits.map(\.subject), ["Commit 3", "Commit 2", "Commit 1"])
 
         let newest = controller.commits[0], older = controller.commits[1]
         controller.selectedCommit = newest
-        try await eventually("read the newest commit") { !controller.detailDiff.isEmpty }
+        try await waitForGit("read the newest commit") { !controller.detailDiff.isEmpty }
         XCTAssertEqual(controller.detail?.commit.hash, newest.hash)
         XCTAssertEqual(controller.detail?.files.map(\.path), ["file3.txt"])
         XCTAssertEqual(controller.detail?.insertions, 20); XCTAssertEqual(controller.detail?.deletions, 0)
@@ -55,7 +52,7 @@ final class GitCommitBrowsingTests: XCTestCase {
         XCTAssertFalse(controller.detailDiffDeferred)
 
         controller.selectedCommit = older
-        try await eventually("read the older commit") { controller.detailDiff.map(\.path) == ["file2.txt"] }
+        try await waitForGit("read the older commit") { controller.detailDiff.map(\.path) == ["file2.txt"] }
 
         // Coming back shows the commit with no further read: this is what makes
         // clicking through history feel immediate rather than re-running git.
@@ -66,7 +63,7 @@ final class GitCommitBrowsingTests: XCTestCase {
 
         // Racing through commits leaves the last one showing, never an earlier one.
         for commit in controller.commits { controller.selectedCommit = commit }
-        try await eventually("settle on the oldest commit") { !controller.commitLoading && controller.detail?.commit.hash == controller.commits[2].hash }
+        try await waitForGit("settle on the oldest commit") { !controller.commitLoading && controller.detail?.commit.hash == controller.commits[2].hash }
         XCTAssertEqual(controller.detailDiff.map(\.path), ["file1.txt"])
         XCTAssertEqual(controller.notice, "")
     }
@@ -81,10 +78,10 @@ final class GitCommitBrowsingTests: XCTestCase {
         }
         try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Forty files"], in: root)
 
-        let controller = GitController(roots: [root.path])
-        try await eventually("read the history") { controller.commits.count == 2 }
+        let controller = GitController(roots: [root.path]); defer { controller.letGo() }
+        try await waitForGit("read the history") { controller.commits.count == 2 }
         controller.selectedCommit = controller.commits[0]
-        try await eventually("list the changed files") { controller.detail?.files.count == 40 }
+        try await waitForGit("list the changed files") { controller.detail?.files.count == 40 }
         XCTAssertTrue(controller.detail?.isLarge == true)
         XCTAssertEqual(controller.detail?.insertions, 40 * 120)
         XCTAssertEqual(controller.detail?.summary, "40 files · +4800 −0")
@@ -93,14 +90,14 @@ final class GitCommitBrowsingTests: XCTestCase {
 
         // One file opens on its own, without the other thirty-nine.
         controller.detailFile = "big7.txt"
-        try await eventually("read one file's diff") { controller.detailFileDiff.map(\.path) == ["big7.txt"] }
+        try await waitForGit("read one file's diff") { controller.detailFileDiff.map(\.path) == ["big7.txt"] }
         XCTAssertEqual(controller.detailFileDiff.first?.added, 120)
         XCTAssertTrue(controller.detailDiff.isEmpty)
 
         controller.detailFile = nil
-        try await eventually("return to the file list") { controller.detailDiffDeferred }
+        try await waitForGit("return to the file list") { controller.detailDiffDeferred }
         controller.loadDeferredCommitDiff()
-        try await eventually("read the whole patch") { controller.detailDiff.count == 40 }
+        try await waitForGit("read the whole patch") { controller.detailDiff.count == 40 }
         XCTAssertFalse(controller.detailDiffDeferred)
     }
 
@@ -157,14 +154,14 @@ final class GitCommitBrowsingTests: XCTestCase {
         try "other\nchanged\n".write(to: root.appendingPathComponent("other.txt"), atomically: true, encoding: .utf8)
         try git(["add", "."], in: root); try git(["commit", "-q", "-m", "Touch the other file"], in: root)
 
-        let controller = GitController(roots: [root.path])
-        try await eventually("read the history") { controller.commits.count == 4 }
+        let controller = GitController(roots: [root.path]); defer { controller.letGo() }
+        try await waitForGit("read the history") { controller.commits.count == 4 }
         controller.showFileHistory("renamed.txt")
         XCTAssertEqual(controller.panel, .history)
-        try await eventually("filter the history to one path") { controller.commits.count == 3 }
+        try await waitForGit("filter the history to one path") { controller.commits.count == 3 }
         XCTAssertEqual(controller.commits.map(\.subject), ["Rename the notes", "Extend the notes", "Add both files"])
         controller.clearFileHistory()
-        try await eventually("show every commit again") { controller.commits.count == 4 }
+        try await waitForGit("show every commit again") { controller.commits.count == 4 }
 
         // The rename keeps both names in the commit that performed it.
         let service = GitService()

@@ -10,6 +10,10 @@
 - SCROLL-11 (measuring every line of an expanded long diff before first paint): not fixed. Deferring the measurement produced reading-position edge cases in five review rounds, so it was reverted to the synchronous measurement. The cost is one-time per expansion; it is left as a known item.
 - UI-05 (send during image paste): Send waits while an image is importing. The button is disabled and a notice says "Adding image…". This replaces a deferred auto-send, which kept producing races in review (navigation, eviction, draft reload, deletion).
 
+## 0.1.126 validation workstreams (2026-10-14)
+
+- [x] Six native parallel-gate flakes (`dev/a126-flakes`): fixed cold-search typed-answer ownership and empty-project sidebar cache invalidation; condition waits, per-phase fixture handshakes and owned history reads replace timing/order assumptions. The loaded soak also caught and fixed the accessibility blame wait. All six classes stay parallel: 580 passing executions, zero failures, one opt-in benchmark skipped; each original target 10/10 under 128 CPU workers, slow Git reads and test-app pauses. Failing-first and mutation evidence, files and broader-gate limits: [validation record](docs/validation/parallel-flakes-0.1.126-2026-10-14.md).
+
 ## 0.1.125
 
 **0.1.125 (owner 2026-10-13):** Resume runs and update while running, a quieter sidebar, skill refresh.

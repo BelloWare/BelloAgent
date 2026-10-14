@@ -13,7 +13,9 @@ final class StableToolPresentationTests: XCTestCase {
         server.standardOutput = FileHandle.nullDevice; server.standardError = FileHandle.nullDevice
         try server.run(); defer { if server.isRunning { server.terminate() } }
         let ready = root.appendingPathComponent("ready.json")
-        for _ in 0..<500 where !FileManager.default.fileExists(atPath:ready.path) { try await Task.sleep(for:.milliseconds(10)) }
+        try await eventually("The loopback phase gateway is listening", timeout: .seconds(60)) {
+            FileManager.default.fileExists(atPath: ready.path)
+        }
         let port = try XCTUnwrap(try JSONDecoder().decode([String:Int].self,from:Data(contentsOf:ready))["port"])
         let workspace = WorkspaceRecord(id:"phases",path:root.path,trusted:true)
         var profile = ProfileRecord(); profile.baseUrl = "http://127.0.0.1:\(port)/v1"; profile.modelId = "phase-fixture"
@@ -32,6 +34,11 @@ final class StableToolPresentationTests: XCTestCase {
         let main = TranscriptStreamingStressTests.Stage(view), narrow = TranscriptStreamingStressTests.Stage(view,width:320)
         defer { main.window.close(); narrow.window.close() }
         var falseFooters = 0, sawTools = false, sawPreparing = false, publications = 0
+        var preparingRounds: Set<Int> = [], toolsRounds: Set<Int> = []
+        func observed(_ phase: String, round: Int) {
+            XCTAssertTrue(FileManager.default.createFile(
+                atPath: root.appendingPathComponent("phase-\(round)-\(phase)-observed").path, contents: Data()))
+        }
         let subscription = view.presentationChanges.sink { input in
             publications += 1
             let items = TaskTranscriptPlan.items(input.messages,lifecycle:input.lifecycle)
@@ -41,17 +48,26 @@ final class StableToolPresentationTests: XCTestCase {
                 XCTAssertLessThan(live.elapsedMs ?? .infinity,60000,"A real gateway turn must not display an epoch-sized duration")
                 sawTools = sawTools || active.phase == "tools"
                 sawPreparing = sawPreparing || active.preparingCalls > 0
+                // Hold each synthetic phase until this actual publication is
+                // observed. Neither helper scheduling nor UI coalescing has
+                // to fit inside a fixture sleep.
+                if active.phase == "model", active.preparingCalls > 0, preparingRounds.insert(active.issuedCalls).inserted {
+                    observed("preparing", round: active.issuedCalls)
+                }
+                if active.phase == "tools", toolsRounds.insert(active.issuedCalls - 1).inserted {
+                    observed("tools", round: active.issuedCalls - 1)
+                }
                 falseFooters += items.filter { if case .block(let b) = $0 { return b.presentation == .summary && b.task?.key == active.key }; return false }.count
             }
         }
         view.draft = "Run the deterministic tool presentation task"; model.send(sessionID:chat.id)
-        for _ in 0..<1500 {
-            if !view.loading && !view.busy && view.taskPresentation?.recent.isEmpty == false { break }
-            try await Task.sleep(for:.milliseconds(10))
+        try await eventually("The real helper finished both tool rounds", timeout: .seconds(60)) {
+            !view.loading && !view.busy && view.taskPresentation?.recent.isEmpty == false
         }
         subscription.cancel(); main.refresh(); narrow.refresh()
         XCTAssertNil(view.failureMessage); XCTAssertNil(view.sendFailure)
         XCTAssertTrue(sawTools); XCTAssertTrue(sawPreparing); XCTAssertEqual(falseFooters,0)
+        XCTAssertEqual(preparingRounds, [0, 1]); XCTAssertEqual(toolsRounds, [0, 1])
         for stage in [main,narrow] {
             XCTAssertTrue(work(stage.page.snapshot?.items ?? []).isEmpty, "Ordered responses never become a task-wide work group")
             XCTAssertEqual(cards(stage.page.snapshot?.items ?? []).count, 2, "Each call is one card at its own position")
@@ -68,13 +84,21 @@ final class StableToolPresentationTests: XCTestCase {
         // The log trails the chat by a moment: a request is listed from its
         // first packet, and its bodies are whole once its record is final.
         var attempts: [[String:WireValue]] = []
-        for _ in 0..<1000 {
+        try await eventually("All three Inspector captures are final", timeout: .seconds(60), until: {
             attempts = try await model.traces.list(sessionID:chat.id)
-            if attempts.count == 3, attempts.allSatisfy({ $0["outcome"]?.string != "running" }) { break }
-            try await Task.sleep(for:.milliseconds(10))
-        }
+            return attempts.count == 3 && attempts.allSatisfy { $0["outcome"]?.string != "running" }
+        })
         XCTAssertEqual(attempts.count,3)
-        let records = try String(contentsOf:root.appendingPathComponent("records.jsonl")).split(separator:"\n").map { try JSONDecoder().decode([String:WireValue].self,from:Data($0.utf8)) }
+        // The gateway records after writing its final SSE packet; capture
+        // finalization alone does not order that independent file write.
+        var records: [[String: WireValue]] = []
+        try await eventually("The gateway recorded all three complete exchanges", timeout: .seconds(60)) {
+            guard let data = try? String(contentsOf: root.appendingPathComponent("records.jsonl")),
+                  data.hasSuffix("\n"),
+                  let decoded = try? data.split(separator: "\n").map({ try JSONDecoder().decode([String: WireValue].self, from: Data($0.utf8)) }) else { return false }
+            records = decoded
+            return records.count == 3
+        }
         XCTAssertEqual(records.count,3)
         for attempt in attempts {
             let id = try XCTUnwrap(attempt["attemptId"]?.string)
