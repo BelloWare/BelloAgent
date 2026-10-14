@@ -5,6 +5,90 @@ import XCTest
 @testable import PiApp
 
 final class FileReviewStateTests: XCTestCase {
+    @MainActor func testNestedFileHistoryKeepsSingleProjectRepositoryReachable() async throws {
+        try await checkNestedHistoryRepositoryChoices(multipleRoots: false)
+    }
+
+    @MainActor func testNestedFileHistoryKeepsMultipleProjectRepositoriesAndAccessibleSelection() async throws {
+        try await checkNestedHistoryRepositoryChoices(multipleRoots: true)
+    }
+
+    @MainActor private func checkNestedHistoryRepositoryChoices(multipleRoots: Bool) async throws {
+        let fixture = try FileReviewProjectFixture()
+        defer { fixture.close() }
+        let model = fixture.model, nested = fixture.repo.appendingPathComponent("Dependencies/Nested")
+        func seed(_ folder: URL, file: String) throws {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try "committed fixture\n".write(to: folder.appendingPathComponent(file), atomically: true, encoding: .utf8)
+            try fixture.git(["-C", folder.path, "init", "-b", "main"])
+            try fixture.git(["-C", folder.path, "config", "user.name", "File Review Fixture"])
+            try fixture.git(["-C", folder.path, "config", "user.email", "fixture@example.invalid"])
+            try fixture.git(["-C", folder.path, "add", "."])
+            try fixture.git(["-C", folder.path, "commit", "-m", "Seed repository choice"])
+            try "working fixture\n".write(to: folder.appendingPathComponent(file), atomically: true, encoding: .utf8)
+        }
+        try seed(nested, file: "Nested.swift")
+        var configured = [(folder: fixture.repo, file: "Sources/Review.swift")]
+        if multipleRoots {
+            let extra = fixture.root.appendingPathComponent("Extra repository")
+            try seed(extra, file: "Extra.swift")
+            model.workspaces[0].paths = [extra.path]
+            configured.append((extra, "Extra.swift"))
+        }
+        try "outer working fixture\n".write(to: fixture.url, atomically: true, encoding: .utf8)
+        let snapshots = try (configured + [(nested, "Nested.swift")]).map { folder, file in
+            (folder: folder, file: file,
+             tree: try fixture.git(["-C", folder.path, "rev-parse", "HEAD^{tree}"]),
+             index: try fixture.git(["-C", folder.path, "show", ":" + file]),
+             bytes: try Data(contentsOf: folder.appendingPathComponent(file)))
+        }
+        let tab = model.openFile(nested.appendingPathComponent("Nested.swift"))
+        let nestedRoot = try fixture.git(["-C", nested.path, "rev-parse", "--show-toplevel"])
+        model.showFileHistory(from: tab); await tab.historyTask?.value
+        let changes = try XCTUnwrap(model.tabs.pane.activeTab as? ChangesTab), controller = changes.controller
+        fixture.mount()
+        try await eventually("nested repository history") {
+            fixture.mount()
+            return controller.repositoryRoot == nestedRoot && !controller.loading && !controller.commits.isEmpty
+        }
+        XCTAssertEqual(controller.logFilter.path, "Nested.swift")
+        XCTAssertEqual(controller.commits.first?.subject, "Seed repository choice")
+        XCTAssertEqual(controller.roots, configured.map { $0.folder.path } + [nestedRoot])
+
+        // The same Changes tab is reused after leaving file history. Its
+        // actual toolbar must still offer every configured repository.
+        changes.goBack(); fixture.mount()
+        XCTAssertTrue(model.showChanges(in: "review") === changes)
+        fixture.mount()
+        let content = try XCTUnwrap(changes.contentView.content as? ChangesTabContent)
+        let picker = try XCTUnwrap(content.panel.subviewsOfType(PiKit.Dropdown<String>.self).first {
+            $0.accessibilityLabel() == "Repository"
+        }, "a nested target also needs a repository picker in a single-root project")
+        XCTAssertFalse(picker.isHiddenOrHasHiddenAncestor)
+        XCTAssertEqual(picker.items.map(\.0), configured.map { $0.folder.path } + [nestedRoot])
+        XCTAssertEqual(picker.label, nested.lastPathComponent)
+        XCTAssertEqual(picker.accessibilityValue() as? String, nested.lastPathComponent)
+        XCTAssertEqual(picker.selection, nestedRoot)
+
+        for (folder, file) in configured {
+            let choice = try XCTUnwrap(picker.items.first { $0.0 == folder.path })
+            picker.onSelect?(choice.0)
+            let repository = try fixture.git(["-C", folder.path, "rev-parse", "--show-toplevel"])
+            try await eventually("selected configured repository") {
+                fixture.mount()
+                return controller.repositoryRoot == repository && !controller.loading &&
+                    controller.status.entries.contains { $0.path == file }
+            }
+            XCTAssertEqual(picker.accessibilityValue() as? String, folder.lastPathComponent)
+            XCTAssertEqual(picker.selection, folder.path)
+        }
+        for snapshot in snapshots {
+            XCTAssertEqual(try fixture.git(["-C", snapshot.folder.path, "rev-parse", "HEAD^{tree}"]), snapshot.tree)
+            XCTAssertEqual(try fixture.git(["-C", snapshot.folder.path, "show", ":" + snapshot.file]), snapshot.index)
+            XCTAssertEqual(try Data(contentsOf: snapshot.folder.appendingPathComponent(snapshot.file)), snapshot.bytes)
+        }
+    }
+
     @MainActor func testSideFallbackAndAncestorVisibilityResumeTheActualMountedFile() async throws {
         let fixture = try FileReviewProjectFixture()
         defer { fixture.close() }

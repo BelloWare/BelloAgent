@@ -115,6 +115,10 @@ extension WorkspaceModel {
             changes.navigation?.cancel()
             changes.cameFrom(tab)
             let controller = changes.controller
+            // Keep configured repositories reachable while a nested target is
+            // selected, and let the picker name its current selection.
+            let choices = roots.contains(location.folder) ? roots : roots + [location.folder]
+            if controller.roots != choices { controller.roots = choices }
             if controller.root != location.folder { controller.root = location.folder }
             controller.showFileHistory(location.path)
         }
