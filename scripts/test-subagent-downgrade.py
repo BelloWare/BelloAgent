@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Read/write compatibility against an explicitly supplied pre-v2 helper.
+"""Compatibility against explicitly supplied pre-v2 and optional v2 helpers.
 
 Only generated journals are opened. No turn is submitted and no gateway runs.
 """
 import hashlib
+import argparse
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,7 @@ import tempfile
 from native_host_client import HostPeer
 
 
-def check(binary):
+def check(binary, promoted_only=False):
     with tempfile.TemporaryDirectory(prefix='subagent-downgrade-', dir=os.environ['PI_BUILD_ROOT']) as directory:
         root = Path(directory)
         sessions = root / 'sessions'
@@ -55,6 +56,17 @@ def check(binary):
 
         try:
             assert command('workspace.open', dict(cwd=str(root), directory=str(sessions), resources=dict(codexHome=str(root/'codex'))))['ok']
+            for session in ('promoted-parent','promoted-child'):
+                promoted_link = dict(link,childSessionID='promoted-child',budgetOwnerSessionID='promoted-parent',
+                                     call=dict(link['call'],parentSessionID='promoted-parent'))
+                promoted_origin = dict(origin,link=promoted_link)
+                path = journal(session,'pi-app.native.v3',[] if session.endswith('parent') else [('origin',dict(type='custom',customType='pi-app.subagent-origin.v1',data=promoted_origin))])
+                before = path.read_bytes()
+                refused = command('session.open',dict(profile=profile,apiKey='fixture',path=str(path)),session)
+                assert not refused['ok'] and refused['result']['code'] == 'legacy_session', refused
+                assert path.read_bytes() == before, 'Older helper changed a promoted journal'
+            print(f'PASS: {binary} refuses promoted parent and child without changing bytes')
+            if promoted_only: return
             opened = command('session.open', dict(profile=profile, apiKey='fixture', path=str(parent)), 'parent')
             assert opened['ok'], opened
             rows = [json.loads(line) for line in parent.read_text().splitlines()]
@@ -74,4 +86,9 @@ def check(binary):
 
 
 if __name__ == '__main__':
-    check(Path(sys.argv[1]).resolve())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('pre_v2_helper',type=Path)
+    parser.add_argument('--v2-helper',type=Path)
+    args = parser.parse_args()
+    check(args.pre_v2_helper.resolve())
+    if args.v2_helper: check(args.v2_helper.resolve(),promoted_only=True)
