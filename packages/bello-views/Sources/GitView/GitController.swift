@@ -683,6 +683,15 @@ import AppKit
         publish(\.historyExhausted, history.reading.next == nil)
     }
 
+    /// Every explicit row choice retires pending blame navigation, even when
+    /// the same commit is already selected. List choices remain filter-bound.
+    public func chooseHistoryCommit(_ commit: GitCommit) {
+        guard !closed, !suspended, acceptsRepository(repositoryIdentity) else { return }
+        historyChoices += 1; revealTokens += 1
+        pinnedCommit = nil; revealTarget = nil
+        selectedCommit = commit
+    }
+
     /// Exact hash navigation is a pin, never a row inserted into a query.
     public func openHistoryCommit(_ commit: GitCommit) {
         guard !closed, !suspended, acceptsRepository(repositoryIdentity) else { return }

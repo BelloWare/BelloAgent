@@ -160,7 +160,7 @@ import GitView
     private func open(_ commit: GitCommit, repository: GitController.RepositoryIdentity?) {
         guard controller.acceptsRepository(repository) else { return }
         navigation = UUID(); pendingNavigation = nil
-        highlighted = commit.hash; controller.selectedCommit = commit; show(reading)
+        highlighted = commit.hash; controller.chooseHistoryCommit(commit); show(reading)
         focusHighlighted()
     }
     func focusList() {

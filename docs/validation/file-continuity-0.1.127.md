@@ -47,6 +47,8 @@ The standalone gallery case passed (`review-native-final.log`). The 24 captures 
 
 Integration handoff to the Changes-tab owner: its existing private Back-bar caption is hardcoded to **“Opened from its blame”**, so direct File History shows that wording too. Back navigation and state are correct. Change the caption to a neutral “Return to the file” (or add a source-specific reason) in the owning stream; this stream does not edit `Git/ChangesTab.swift`.
 
+Resolved in the [final stream-1 integration](git-safety-final-integration-0.1.127.md): the direct menu action calls `changes.cameFrom(tab, source: .file)`, producing “Opened from the file”; blame keeps its own label. The real menu/Back regression and regenerated file-review gallery assert that wording.
+
 ## Review and remaining limits
 
 Read-only Codex review found and drove fixes for visibility, partial metadata, horizontal extent, navigation ordering, cache release, recent trust pruning, pre-Git containment and deterministic cancellation assertions. The follow-up whole-change review reported **no remaining actionable implementation findings**, verified width-only geometry does not request syntax, and independently inspected four gallery images. Intentional temporary mutation diffs were excluded from review. Release packaging/publication, real-repository checks and manual VoiceOver are outside this implementation stream. Only this branch is pushed; integration into `dev/next` belongs to the lead.

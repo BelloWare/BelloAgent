@@ -113,7 +113,7 @@ extension WorkspaceModel {
             guard let location else { self.error = "This file is not in a Git repository in its project."; return }
             guard let changes = self.showChanges(in: projectID) else { return }
             changes.navigation?.cancel()
-            changes.cameFrom(tab)
+            changes.cameFrom(tab, source: .file)
             let controller = changes.controller
             // Keep configured repositories reachable while a nested target is
             // selected, and let the picker name its current selection.

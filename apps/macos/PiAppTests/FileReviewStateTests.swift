@@ -319,6 +319,13 @@ final class FileReviewStateTests: XCTestCase {
         try await eventually("file history") { changes.controller.commits.count == 1 }
         XCTAssertEqual(changes.controller.panel, .history)
         XCTAssertEqual(changes.controller.logFilter.path, "Sources/Review.swift")
+        let content = try XCTUnwrap(changes.contentView.content as? ChangesTabContent)
+        content.refresh()
+        let source = try XCTUnwrap(content.subviewsOfType(PiKit.TextLine.self).first {
+            $0.accessibilityIdentifier() == "changes-file-history-source"
+        })
+        XCTAssertEqual(source.line.text, "Opened from the file")
+        XCTAssertTrue(changes.returnTab === tab)
         changes.goBack()
         XCTAssertTrue(model.tabs.pane.activeTab === tab)
         XCTAssertEqual(tab.scroll?.textView.focus, .init(line: 47, column: 12))

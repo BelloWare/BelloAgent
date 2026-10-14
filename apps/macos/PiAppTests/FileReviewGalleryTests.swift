@@ -57,13 +57,22 @@ final class FileReviewGalleryTests: XCTestCase {
                 try fixture.capture(to: folder.appendingPathComponent("recents-\(prefix).png"))
                 reopenedRecents.close(restoringFocus: false); overlay.removeFromSuperview()
 
-                model.showFileHistory(from: restored)
+                let history = try XCTUnwrap(restored.menuEntries().compactMap { entry -> PiMenuItem? in
+                    if case .item(let item) = entry, item.identifier == "file-show-history" { return item }; return nil
+                }.first)
+                history.perform()
                 await restored.historyTask?.value
                 let changes = try XCTUnwrap(model.tabs.pane.activeTab as? ChangesTab)
                 fixture.mount()
                 try await eventually("file history ready") { changes.controller.repositoryRoot != nil && !changes.controller.commits.isEmpty }
                 await fixture.settle()
                 XCTAssertEqual(changes.controller.logFilter.path, "Sources/Review.swift")
+                let content = try XCTUnwrap(changes.contentView.content as? ChangesTabContent)
+                content.refresh()
+                let source = try XCTUnwrap(content.subviewsOfType(PiKit.TextLine.self).first {
+                    $0.accessibilityIdentifier() == "changes-file-history-source"
+                })
+                XCTAssertEqual(source.line.text, "Opened from the file")
                 try fixture.capture(to: folder.appendingPathComponent("history-\(prefix).png"))
                 changes.goBack(); fixture.mount(); await fixture.settle()
                 XCTAssertTrue(model.tabs.pane.activeTab === restored)

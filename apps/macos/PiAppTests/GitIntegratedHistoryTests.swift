@@ -4,6 +4,70 @@ import XCTest
 @testable import PiApp
 
 final class GitIntegratedHistoryTests: GitPanelTestCase {
+    @MainActor func testChoosingTheSameHistoryRowRetiresAnOlderBlameWithoutPinningTheRow() async throws {
+        let fixture = try GitHistoryFixture(count: 3); defer { fixture.close() }
+        let controller = fixture.controller; controller.panel = .history
+        let panel = GitPanelView(controller: controller), window = host(panel)
+        defer { window.close() }
+        try await eventually("read selectable history") { controller.commits.count == 3 && !controller.loading }
+        panel.refresh(); panel.layoutSubtreeIfNeeded()
+        let browser = try XCTUnwrap(GitOperationSafetyTests.views(GitHistoryBrowser.self, in: panel).first)
+        let current = try XCTUnwrap(controller.commits.first), older = try XCTUnwrap(controller.commits.last)
+        browser.focusList(); browser.insertNewline(nil)
+        try await eventually("open first row") { controller.detail?.commit.hash == current.hash && !controller.commitLoading }
+        let before = try fixture.repositoryBytes()
+        var choseAgain = false
+        let revealed = await controller.revealHistory(.init(commit: older.hash, path: "notes.txt", line: 1), in: try XCTUnwrap(controller.repositoryRoot)) {
+            if !choseAgain { choseAgain = true; browser.insertNewline(nil) }
+            return true
+        }
+        XCTAssertTrue(choseAgain)
+        XCTAssertFalse(revealed)
+        XCTAssertEqual(controller.selectedCommit?.hash, current.hash)
+        XCTAssertNil(controller.revealTarget)
+        // A row is still governed by its list filters, unlike a hash/blame pin.
+        browser.message.onChange?("No matching commit")
+        try await eventually("remove the ordinary row by filtering") {
+            controller.commits.isEmpty && !controller.history.reading.loading
+        }
+        XCTAssertNil(controller.selectedCommit)
+        XCTAssertEqual(try fixture.repositoryBytes(), before)
+    }
+
+    @MainActor func testAutomaticControllerRefreshKeepsHistoryGeometryQuiet() async throws {
+        let fixture = try GitHistoryFixture(count: 8); defer { fixture.close() }
+        let controller = fixture.controller; controller.panel = .history
+        let panel = GitPanelView(controller: controller), window = host(panel, width: 320, height: 400)
+        defer { window.close() }
+        try await eventually("read exhausted live history") { controller.commits.count == 8 && !controller.loading }
+        panel.refresh(); panel.layoutSubtreeIfNeeded()
+        let browser = try XCTUnwrap(GitOperationSafetyTests.views(GitHistoryBrowser.self, in: panel).first)
+        browser.focusList(); for _ in 0..<7 { browser.moveDown(nil) }
+        panel.layoutSubtreeIfNeeded()
+        let document = try XCTUnwrap(browser.list.documentView)
+        let height = document.frame.height, scroll = browser.list.contentView.bounds.origin
+        let before = controller.history.reading, bytes = try fixture.repositoryBytes()
+        XCTAssertNil(before.next); XCTAssertGreaterThan(scroll.y, 0)
+        var release: CheckedContinuation<Void, Never>?
+        controller.history.didRead = { _ in await withCheckedContinuation { release = $0 } }
+        let refresh = Task { await controller.refresh(automatic: true) }
+        defer { release?.resume(); refresh.cancel(); controller.history.didRead = nil }
+        try await eventually("hold the controller refresh before publication") { release != nil }
+        panel.refresh(); panel.layoutSubtreeIfNeeded()
+        XCTAssertFalse(controller.loading)
+        XCTAssertFalse(controller.history.reading.loading)
+        XCTAssertEqual(document.frame.height, height)
+        XCTAssertEqual(browser.list.contentView.bounds.origin, scroll)
+        XCTAssertTrue(GitOperationSafetyTests.views(GitHistoryStatusRow.self, in: browser).isEmpty)
+        release?.resume(); release = nil
+        await refresh.value
+        panel.refresh(); panel.layoutSubtreeIfNeeded()
+        XCTAssertEqual(controller.history.reading.commits, before.commits)
+        XCTAssertEqual(document.frame.height, height)
+        XCTAssertEqual(browser.list.contentView.bounds.origin, scroll)
+        XCTAssertEqual(try fixture.repositoryBytes(), bytes)
+    }
+
     @MainActor func testBlameRevealsItsLineInsideANarrowViewport() async throws {
         let fixture = try GitHistoryFixture(count: 3); defer { fixture.close() }
         let tabs = TabHost(defaults: nil); tabs.showsWindows = false

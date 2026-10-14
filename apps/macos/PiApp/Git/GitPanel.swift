@@ -1099,7 +1099,7 @@ enum GitPanelSplit {
         RedrawCounter.note("GitCommitRow")
         let controller = controller
         row.selected = selected
-        row.onPress = { controller.selectedCommit = commit }
+        row.onPress = { controller.chooseHistoryCommit(commit) }
         row.setAccessibilityIdentifier("git-commit-" + commit.shortHash)
         content.apply(commit)
         row.setAccessibilityLabel(content.spokenText)
