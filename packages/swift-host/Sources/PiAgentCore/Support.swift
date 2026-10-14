@@ -19,7 +19,10 @@ public struct AgentError: Error, LocalizedError, Sendable {
     /// What pi's provider would have reported for this failure, when it came
     /// from the gateway; pi's overflow and retry rules read it (`piMessage`).
     public let providerMessage: String?
-    public init(_ code: String, _ message: String, failure: ProviderFailure? = nil, attemptID: String? = nil, providerMessage: String? = nil) { self.code = code; self.message = message; self.failure=failure; self.attemptID=attemptID; self.providerMessage=providerMessage }
+    /// A known rejected terminal must be discarded even if settling its
+    /// accounting produces the primary error. Not part of the wire error.
+    let discardIncompleteReply: Bool
+    public init(_ code: String, _ message: String, failure: ProviderFailure? = nil, attemptID: String? = nil, providerMessage: String? = nil, discardIncompleteReply: Bool = false) { self.code = code; self.message = message; self.failure=failure; self.attemptID=attemptID; self.providerMessage=providerMessage; self.discardIncompleteReply=discardIncompleteReply }
     public var errorDescription: String? { message }
     public var json: JSON { ["code": JSON(code), "message": JSON(message)] }
 }

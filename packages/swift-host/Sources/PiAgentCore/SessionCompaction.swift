@@ -191,11 +191,13 @@ extension AgentSession {
            var row = history.first(where: { $0.id == id }) {
             presentationOrdinal += 1; part.sessionOrdinal=presentationOrdinal
             var timeline=row.responseTimeline ?? ResponseTimeline()
-            let previous=timeline.segments.last?.id
             let changed=timeline.consume(part)
             if changed {
                 row.responseTimeline=timeline
-                try? updatePresentation(row,persist:previous != timeline.segments.last?.id || part.update == "end" || part.update == "replace")
+                // Keep unaccepted provider content live only. Settlement
+                // persists accepted content or discards the rejected attempt
+                // before writing the next local status receipt.
+                try? updatePresentation(row,persist:false)
             }
         }
         if nowMS()-compactionProgressAt>=250 { compactionProgressAt=nowMS(); event("compaction_progress") }

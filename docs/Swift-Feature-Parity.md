@@ -62,6 +62,31 @@ latest acceptance record for actual native, helper and distribution coverage.
 | Unread replies | Durable unread state baselines old history, reconciles offline journals and survives restart; the sidebar shows a dot rather than a count; explicit Mark as Read remains | Only the latest completed reply visibly painted in a foreground chat clears automatically. Status-panel unread rows are omitted. Background/report/scrollback and stale receipts cannot clear newer output. Existing CUA limits remain. |
 | Request-aware gateway tests | Current Responses requests and selected-model probes are validated before replies, including negative probes, exact bytes and no probe session pollution | Historical Messages coverage stays recorded separately. Tool-result/compaction/cache behavior depends on requests. These are independent local mocks, not installed LiteLLM or deployed-gateway acceptance. |
 
+## Owner-approved deviation from pi 0.85.1: unexplained incomplete responses (0.1.127)
+
+On 2026-10-15 the owner approved treating an OpenAI Responses terminal with
+`status: "incomplete"` and a missing, null or empty `incomplete_details.reason`
+as a transient provider failure. A LiteLLM proxy had returned HTTP 200, one
+reasoning item, an unexplained `response.incomplete` with all-zero usage, and
+`[DONE]`. Pi classifies this as a non-retryable error.
+
+Bello uses `provider_incomplete_unexplained` to enter the existing retry path
+for turns, utility requests and compaction summaries. Settings ▸ Connections ▸
+Retries applies, with the policy fixed per request and delays of
+base × 2^(n−1). Disabled/exhausted retries retain the existing error wording
+(including the existing attempt-count prefix on exhaustion). Explicit reasons
+remain non-retryable and retain `Response incomplete: <reason>`;
+`max_output_tokens` remains a length stop.
+
+Tools from the rejected attempt never execute. Its content is discarded before
+retry or final failure, including its partial-reply recovery log, so it cannot
+become an assistant reply or enter subsequent model input. Its presentation
+ledger retains attempt links with no reply content. Terminal usage is retained
+in Inspector metadata even when reply acceptance fails; reported usage/cost
+uses the existing accounting paths. Stop remains cancellation, including when
+it races the known incomplete terminal. See
+[validation](validation/retry-incomplete-0.1.127.md).
+
 ## Deviations from pi 0.85.1: side chats and skill selection
 
 Pi has no side chats, and its fork starts a new session id. Our sides follow

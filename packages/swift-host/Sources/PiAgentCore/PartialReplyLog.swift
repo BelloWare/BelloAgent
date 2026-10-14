@@ -127,6 +127,19 @@ final class PartialReplyLog {
         if let path { _ = unlink(path) }
         path = nil; reply = nil; discardPending()
     }
+    /// A rejected attempt must not be recovered during backoff. If the
+    /// directory refuses unlink, empty and sync the existing file instead;
+    /// if neither works, fail the run rather than continuing with stale data.
+    func discard() throws {
+        discardPending()
+        if let path, unlink(path) != 0, errno != ENOENT {
+            if fd < 0 { fd = open(path, O_WRONLY | O_NOFOLLOW | O_CLOEXEC) }
+            guard fd >= 0, ftruncate(fd, 0) == 0, fsync(fd) == 0 else {
+                throw AgentError("session_write", "Could not discard the incomplete response's recovery log.")
+            }
+        }
+        remove()
+    }
     private func stop() {
         failed = true; discardPending()
         if fd >= 0 { _ = close(fd); fd = -1 }
