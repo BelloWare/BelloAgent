@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Crash the actual helper at delegation durability barriers using loopback only.
 
-A generated source copy under PI_BUILD_ROOT enables the sole rollout switch and
+A generated source copy under PI_BUILD_ROOT selects the historical v2 contract and
 injects SIGSTOP barriers. Production sources/bundles have no environment override
-or test barrier. Recovery and Resume use the unmodified debug helper supplied on
+or test barrier. Recovery and Resume use the unmodified helper supplied on
 the command line. Every project, effect, journal and credential is synthetic.
 """
 import argparse
@@ -63,7 +63,8 @@ def fixture_binary(without_drain=False):
     (source / 'Tests/PiAgentCoreTests/Placeholder.swift').write_text('import XCTest\n')
     core = source / 'Sources/PiAgentCore'
     policy = core / 'SubagentTypes.swift'
-    policy.write_text(policy.read_text().replace('public static let enabled = false', 'public static let enabled = true'))
+    policy.write_text(policy.read_text().replace('public static let enabled = false', 'public static let enabled = true')
+                      .replace('public static let steeringEnabled = true', 'public static let steeringEnabled = false'))
     (core / 'FixtureCrashBarrier.swift').write_text(BARRIER)
     journal = core / 'SessionJournal.swift'
     text = journal.read_text().replace('        try beforeAppend(v)', '        FixtureCrashBarrier.record(v, url: url, edge: "before")\n        try beforeAppend(v)')

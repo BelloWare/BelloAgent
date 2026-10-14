@@ -474,9 +474,12 @@ struct TranscriptVersionView: Equatable, Sendable {
     var showsPausedRun: Bool { !busy && !loading && runState.holdsQueue && continuable != false && queueEditHold == nil }
     func observeRunState(_ snapshot: [String: WireValue]) {
         beginTranscriptBatch(); defer { endTranscriptBatch() }
-        familyWaiting = snapshot["familyWaiting"]?.bool ?? false
-        agentInboxPending = snapshot["agentInboxPending"]?.nonnegativeInteger ?? 0
-        subagentTurn = snapshot["subagentTurn"]?.nonnegativeInteger
+        let waiting = snapshot["familyWaiting"]?.bool ?? false
+        if familyWaiting != waiting { familyWaiting = waiting }
+        let pending = snapshot["agentInboxPending"]?.nonnegativeInteger ?? 0
+        if agentInboxPending != pending { agentInboxPending = pending }
+        let childTurn = snapshot["subagentTurn"]?.nonnegativeInteger
+        if subagentTurn != childTurn { subagentTurn = childTurn }
         let rawState = snapshot["state"]?.string ?? "idle", run = snapshot["runStatus"]?.string ?? rawState
         // Older helpers reported failed runs as paused. Keep the run's outcome
         // separate from whether its remaining follow-ups require Resume.

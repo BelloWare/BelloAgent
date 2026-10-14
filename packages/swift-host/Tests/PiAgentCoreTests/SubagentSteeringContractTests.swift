@@ -3,7 +3,8 @@ import XCTest
 
 final class SubagentSteeringContractTests: XCTestCase {
     func testV3SwitchAndRoleContracts() throws {
-        XCTAssertFalse(SubagentPolicy.steeringEnabled)
+        XCTAssertTrue(SubagentPolicy.steeringEnabled)
+        XCTAssertTrue(SubagentPolicy.capabilities.contains("subagents-steering-v3"))
         XCTAssertEqual(SubagentSteeringContract.parentNames.count, 5)
         XCTAssertThrowsError(try SubagentSteeringContract.validate("subagent_start", ["task":"x","mode":"background","timeout_ms":1]))
         XCTAssertThrowsError(try SubagentSteeringContract.validate("subagent_wait", ["mode":"one"]))
@@ -11,6 +12,18 @@ final class SubagentSteeringContractTests: XCTestCase {
         XCTAssertThrowsError(try SubagentSteeringContract.validate("subagent_send", ["child_id":"c","message":"x","expected_turn":1.5]))
         XCTAssertNoThrow(try SubagentSteeringContract.validate("subagent_start", ["task":"x","mode":"background","tools":[]]))
         XCTAssertNoThrow(try SubagentSteeringContract.validate("subagent_report", ["kind":"question","message":"Which file?"]))
+    }
+    func testProductionInstallationOffersV3WithoutFixtureEnablement() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let parent = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+                                      readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore())
+        let before = await parent.sessionDefinitions()
+        XCTAssertTrue(Set(before.map(\.name)).isDisjoint(with: SubagentSteeringContract.parentNames))
+        await parent.enableSubagents(SubagentCoordinator())
+        let after = await parent.sessionDefinitions()
+        XCTAssertTrue(Set(SubagentSteeringContract.parentNames).isSubset(of: Set(after.map(\.name))))
+        XCTAssertFalse(after.contains { $0.name == "subagent" })
+        await parent.close()
     }
     func testPromotionReplacesOnlyMarkerAndPreservesWriterLock() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }

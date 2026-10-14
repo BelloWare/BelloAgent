@@ -49,8 +49,11 @@ final class SessionSettlementTests: XCTestCase {
     func testFailedRunRejectsSteeringWhileFinalLinksAreHeldAndKeepsItsQueue() async throws {
         try await checkSteeringDuringSettlement(.error)
     }
+    func testEnabledAgentToolsPreserveOrdinaryFailureAndStopGeneration() async throws {
+        try await checkSteeringDuringSettlement(.error, agentTools: true)
+    }
 
-    private func checkSteeringDuringSettlement(_ terminal: SessionState) async throws {
+    private func checkSteeringDuringSettlement(_ terminal: SessionState, agentTools: Bool = false) async throws {
         let root = try temporaryDirectory()
         let client = ScriptClient(terminal == .error ? [] : [answer("Done"), answer("Next done")], holdFirst: true)
         let gate = SettlementGate()
@@ -58,6 +61,7 @@ final class SessionSettlementTests: XCTestCase {
             directory: root.appendingPathComponent("state"), readOnly: false, resources: Resources(cwd: root, home: root),
             client: client, tools: RecordingTools(), traces: TraceStore(), autoCompaction: false)
         addTeardownBlock { await gate.release(); await session.close(); try? FileManager.default.removeItem(at: root) }
+        if agentTools { await session.enableSubagents(SubagentCoordinator()) }
         await session.holdFinalLinks(at: gate)
         _ = try await session.submit(Submission(commandID: "first", turnID: "first", text: "Question"), steer: false)
         try await eventually(timeout: .seconds(60)) { await client.count == 1 }
@@ -65,6 +69,10 @@ final class SessionSettlementTests: XCTestCase {
         try await eventually(timeout: .seconds(60)) { await gate.entered }
         let state = await session.state, running = await session.isRunning
         XCTAssertEqual(state, terminal)
+        if agentTools {
+            let generation = await session.stopCount
+            XCTAssertEqual(generation, 0, "Offering agent tools must not stop an ordinary failed run")
+        }
         XCTAssertTrue(running, "Final request links still own the task, but its run has ended")
         _ = try await session.submit(Submission(commandID: "next", turnID: "next", text: "Next question"), steer: false)
         do {

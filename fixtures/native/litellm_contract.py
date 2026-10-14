@@ -18,6 +18,13 @@ def require(condition, description):
 
 
 def validate_schema(schema, name="tool parameters"):
+    if isinstance(schema, dict) and "oneOf" in schema:
+        branches = schema["oneOf"]
+        require(set(schema) == {"oneOf"} and isinstance(branches, list) and len(branches) >= 2,
+                name + " union must describe at least two object branches")
+        for branch in branches:
+            validate_schema(branch, name)
+        return
     require(isinstance(schema, dict) and schema.get("type") == "object", name + " must be an object schema")
     properties, required = schema.get("properties"), schema.get("required", [])
     require(isinstance(properties, dict), name + " must describe properties")
@@ -33,6 +40,16 @@ def validate_schema(schema, name="tool parameters"):
 def validate_arguments(arguments, schema):
     """Check the subset used by the native tools, independently of the host."""
     require(isinstance(arguments, dict), "tool call arguments must be an object")
+    if "oneOf" in schema:
+        matches = 0
+        for branch in schema["oneOf"]:
+            try:
+                validate_arguments(arguments, branch)
+                matches += 1
+            except FixtureContractError:
+                pass
+        require(matches == 1, "tool call must match exactly one schema branch")
+        return
     require(set(schema.get("required", [])) <= set(arguments), "tool call is missing a required argument")
     if schema.get("additionalProperties") is False:
         require(set(arguments) <= set(schema["properties"]), "tool call contains an unknown argument")
@@ -46,6 +63,8 @@ def validate_arguments(arguments, schema):
             require(type(value) in ((int,) if kind == "integer" else (int, float)), "tool argument has the wrong numeric type: " + name)
         if "enum" in spec:
             require(value in spec["enum"], "tool argument is outside its enum: " + name)
+        if "const" in spec:
+            require(value == spec["const"], "tool argument differs from its constant: " + name)
 
 
 CORRELATION_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")

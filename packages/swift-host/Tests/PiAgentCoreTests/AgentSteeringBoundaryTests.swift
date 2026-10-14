@@ -2,6 +2,20 @@ import XCTest
 @testable import PiAgentCore
 
 final class AgentSteeringBoundaryTests: XCTestCase {
+    func testParentFailureDrainsBackgroundChildWithoutBecomingCancellation() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = AgentBoundaryClient(failParent:true)
+        let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
+        await parent.enableSubagents(SubagentCoordinator())
+        _ = try await parent.submit(Submission(commandID:"command",turnID:"user",text:"Delegate then fail"),steer:false)
+        try await eventually { !(await parent.isRunning) }
+        let state = await parent.state, code = await parent.errorCode, family = await parent.agentState()
+        XCTAssertEqual(state,.error)
+        XCTAssertEqual(code,"fixture_failure")
+        XCTAssertEqual(family.turns.count,1)
+        XCTAssertTrue(family.turns.values.allSatisfy { $0.status == .interrupted })
+        await parent.close()
+    }
     func testParentFinalWaitKeepsFamilyAliveAndDeliversResultOnce() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = AgentBoundaryClient(), coordinator = AgentSteeringCoordinator()
@@ -44,8 +58,8 @@ final class AgentSteeringBoundaryTests: XCTestCase {
 
 }
 actor AgentBoundaryClient: ModelClient {
-    let reports: Bool, starts: Int
-    init(reports: Bool = false, starts: Int = 1) { self.reports = reports; self.starts = starts }
+    let reports: Bool, starts: Int, failParent: Bool
+    init(reports: Bool = false, starts: Int = 1, failParent: Bool = false) { self.reports = reports; self.starts = starts; self.failParent = failParent }
     var parentCount = 0, childCount = 0, released = false
     var parentRequests: [[ChatMessage]] = [], childRequests: [[ChatMessage]] = []
     func release() { released = true }
@@ -60,6 +74,10 @@ actor AgentBoundaryClient: ModelClient {
             if parentCount == 1 {
                 reply = ModelReply(message:ChatMessage(role:"assistant",content:[]))
                 for index in 0..<starts { let start = agentCallReply("start-\(index)","subagent_start",["task":"Child task","mode":JSON(reports ? "wait" : "background")]); reply.calls += start.calls; reply.message.content += start.message.content }
+            }
+            else if failParent {
+                while childCount == 0 { try await Task.sleep(for:.milliseconds(5)) }
+                throw AgentError("fixture_failure","Parent failed")
             }
             else if reports && parentCount == 2 {
                 let event = messages.flatMap { $0.nativeAgentDelivery?["events"].list ?? [] }.first { $0["kind"].text == "question" }

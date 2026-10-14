@@ -44,7 +44,9 @@ final class ManualCompactionTests: XCTestCase {
             let index = try XCTUnwrap(model.chats.firstIndex { $0.id == id })
             model.chats[index].model = id == "default" ? nil : "chosen-" + id
             model.chats[index].thinkingLevel = id == "default" ? nil : "high"
-            model.chats[index].contextWindow = id == "default" ? nil : 60000
+            // Keep the complete v3 tool schemas and summary allowance inside
+            // the selected window, alongside the two large fixture answers.
+            model.chats[index].contextWindow = id == "default" ? nil : 80000
             model.chats[index].maxOutputTokens = id == "default" ? nil : 2048
             model.chats[index].modelOutputLimit = id == "default" ? nil : 16000
             if id == "slash" { view.draft = "/compact keep the evidence list"; view.directCommand = true; model.send(sessionID:id) }

@@ -3,6 +3,39 @@ import XCTest
 @testable import PiApp
 
 final class SubagentSteeringPresentationTests: XCTestCase {
+    @MainActor func testStableAgentRunStateDoesNotRepublishTheShellAndChangesStillArrive() {
+        let view = SessionDisplay(id: "child")
+        var snapshot: [String:WireValue] = ["state":.string("running"), "runStatus":.string("running"),
+            "familyWaiting":.bool(true), "agentInboxPending":.number(2), "subagentTurn":.number(3)]
+        view.observeRunState(snapshot)
+        var publications = 0
+        let observer = view.objectWillChange.sink { publications += 1 }
+        defer { observer.cancel() }
+        for _ in 0..<12 { view.observeRunState(snapshot) }
+        XCTAssertEqual(publications, 0, "Unchanged agent state must not redraw the whole chat per snapshot")
+        snapshot["familyWaiting"] = .bool(false); snapshot["agentInboxPending"] = .number(0); snapshot["subagentTurn"] = .number(4)
+        view.observeRunState(snapshot)
+        XCTAssertFalse(view.familyWaiting); XCTAssertEqual(view.agentInboxPending, 0); XCTAssertEqual(view.subagentTurn, 4)
+        XCTAssertEqual(publications, 3, "Real state changes still update the shell and child footer")
+    }
+    @MainActor func testChildFooterOmitsTheHumanTurnCount() {
+        let child = SessionDisplay(id: "child"); child.isManagedSubagent = true
+        child.subagentTurn = 3; child.runState = .running; child.footer.gateway.requests = 2
+        let pills = SessionStatsPills(session: child, selectedContextWindow: nil, compact: false, open: { _ in })
+        pills.update(context: [:])
+        XCTAssertEqual(pills.gauge.accessibilityName, "Session statistics: 2 steps")
+        child.isManagedSubagent = false; pills.update(context: [:])
+        XCTAssertEqual(pills.gauge.accessibilityName, "Session statistics: 0 turns 2 steps")
+    }
+    func testProjectedV3ParentResponseDoesNotUseTheLegacyWorkHeader() throws {
+        let reply = TranscriptMessage.project(id: "reply", message: ["role":.string("assistant"), "content":.array([
+            .object(["type":.string("text"), "text":.string("I will work while the child checks.")]),
+            .object(["type":.string("toolCall"), "id":.string("start"), "name":.string("subagent_start"),
+                     "arguments":.object(["task":.string("Check the parser"), "mode":.string("background")])])])])
+        XCTAssertNotNil(reply.responseTimeline)
+        let items = TaskTranscriptPlan.items([.init(id: "user", role: "user", text: "Check"), reply], lifecycle: nil)
+        XCTAssertFalse(items.contains { if case .block(let block) = $0 { return block.key.hasPrefix("legacy:") }; return false })
+    }
     static var delivery: WireValue { .object([
         "version":.number(1), "author":.string("subagent"), "childId":.string("chat-child"),
         "turn":.number(2), "eventIds":.array([.string("question-2")]), "task":.string("Check the parser"),

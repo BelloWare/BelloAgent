@@ -8,7 +8,7 @@ final class AgentSteeringLegacyTests: XCTestCase {
         var first = try await Resources(cwd:root,home:root).resolve(); first.prompt = "LEGACY_ADOPTED_INSTRUCTIONS"; first.revision = "legacy-current"
         let client = AccountedAgentScript([answer("Legacy answer"),answer("First follow-up"),answer("Second follow-up")])
         let parent = try AgentSession(id:"parent",profile:profile,apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(frozen:first),client:client,tools:RecordingTools(),traces:TraceStore())
-        await parent.enableSubagents(SubagentCoordinator())
+        await parent.enableSubagents(SubagentCoordinator(), steering: false)
         let legacy = ToolCall(id:"v2",name:"subagent",arguments:["task":"Legacy task"])
         _ = try await parent.agentFixtureCall(legacy,newTask:true); try await parent.runToolBatch([legacy])
         let plans = await parent.subagents.plans

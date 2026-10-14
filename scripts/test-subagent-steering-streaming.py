@@ -319,6 +319,8 @@ def run(binary,recovery,mode):
 def main(recovery,fixture=False,modes=None):
     modes = modes or MODES
     assert set(modes).issubset(MODES),modes
-    binary = load_crashes().fixture_binary() if fixture else BUILD/'steering-crash-build/debug/pi-native-host'
-    reports = [run(binary,recovery,mode) for mode in modes]
+    # Only the pending-mailbox stress needs the generated acceptance clock.
+    # Normal enabled-build validation exercises the supplied bundled helper.
+    generated = load_crashes().fixture_binary() if fixture or 'speakers' in modes else None
+    reports = [run(generated if fixture or mode == 'speakers' else recovery,recovery,mode) for mode in modes]
     (BUILD/'logs/subagent-steering-streaming.json').write_text(json.dumps(reports,indent=2)+'\n')

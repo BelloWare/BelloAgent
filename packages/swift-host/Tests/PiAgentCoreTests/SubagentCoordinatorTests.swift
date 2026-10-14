@@ -65,7 +65,7 @@ final class SubagentCoordinatorTests: XCTestCase {
         let tools = DelegationPreflightTools(), client = ScriptClient([toolReply(["subagent", "first"]), answer("Resumed without replay")])
         let parent = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
             readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: tools, traces: TraceStore())
-        await parent.enableSubagents(SubagentCoordinator())
+        await parent.enableSubagents(SubagentCoordinator(), steering: false)
         _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "task"), steer: false)
         try await eventually { await tools.entered }
         await parent.stop(); await tools.release()
@@ -107,7 +107,7 @@ final class SubagentCoordinatorTests: XCTestCase {
         await parent.close()
         let restored = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
             readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: path)
-        await restored.enableSubagents(coordinator)
+        await restored.enableSubagents(coordinator, steering: false)
         try await restored.configureSubagentModels([next])
         let reopened = await models(restored)
         XCTAssertEqual(reopened, idle, "Reopening cannot change the prepared schema or invalidate compatible usage")
@@ -155,7 +155,7 @@ final class SubagentCoordinatorTests: XCTestCase {
             XCTAssertEqual(history.filter { $0.role == "user" }.count, 1)
             XCTAssertFalse(history.contains { $0.text.contains("PRIVATE PARENT CONTEXT") })
             XCTAssertEqual(own.reported, 1); XCTAssertEqual(origin?.tools, ["first", "second"])
-            await child.enableSubagents(coordinator)
+            await child.enableSubagents(coordinator, steering: false)
             let definitions = await child.sessionDefinitions()
             XCTAssertFalse(definitions.contains { $0.name == "subagent" }, "Depth one applies even when a coordinator is attached")
             let terminal = await child.subagents.terminal
@@ -426,7 +426,7 @@ final class SubagentCoordinatorTests: XCTestCase {
                 beforeJournalAppend: { record in
                     if failWrite && record["customType"].text == JournalRecordKind.cost { throw AgentError("fixture_io", "No space") }
                 })
-            await parent.enableSubagents(SubagentCoordinator())
+            await parent.enableSubagents(SubagentCoordinator(), steering: false)
             let lifecycle = try await parent.requestLifecycle(turnID: "turn", purpose: "turn")
             XCTAssertNil(lifecycle, "Offering delegation must not activate family accounting")
             await parent.countAttempt(billingObservation(profile: try fixtureProfile(), session: id, attempt: "physical", cost: 0.25))
@@ -492,7 +492,7 @@ final class SubagentCoordinatorTests: XCTestCase {
         let client = DelegationClient(count: 1)
         let reopened = try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
             readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), resumePath: path)
-        await reopened.enableSubagents(coordinator)
+        await reopened.enableSubagents(coordinator, steering: false)
         _ = try await reopened.submit(Submission(commandID: "second", turnID: "second", text: "new task"), steer: false)
         try await eventually { let active = await client.active, running = await reopened.isRunning; return active == 1 || !running }
         await coordinator.cancel(owner: "parent", runtimeID: oldRuntimeID, through: Int.max)
@@ -512,7 +512,7 @@ final class SubagentCoordinatorTests: XCTestCase {
         let client = DelegationClient(count: 1); await client.releaseAll()
         let side = try AgentSession(id: "side", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
             readOnly: true, resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: TraceStore(), seed: [], parent: ["parentSessionId":"original"])
-        await side.enableSubagents(SubagentCoordinator())
+        await side.enableSubagents(SubagentCoordinator(), steering: false)
         _ = try await side.preserveSide()
         _ = try await side.submit(Submission(commandID: "side", turnID: "side", text: "task"), steer: false)
         try await eventually { !(await side.isRunning) }
@@ -524,7 +524,7 @@ final class SubagentCoordinatorTests: XCTestCase {
     private func makeParent(_ root: URL, id: String = "parent", client: any ModelClient, coordinator: SubagentCoordinator, traces: TraceStore = TraceStore()) async throws -> AgentSession {
         let parent = try AgentSession(id: id, profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root, readOnly: true,
                                       resources: Resources(cwd: root, home: root), client: client, tools: RecordingTools(), traces: traces)
-        await parent.enableSubagents(coordinator)
+        await parent.enableSubagents(coordinator, steering: false)
         return parent
     }
     func testSessionOnlyOffersDelegationAfterCoordinatorInstallation() async throws {
@@ -533,7 +533,7 @@ final class SubagentCoordinatorTests: XCTestCase {
                                       readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: RecordingTools(), traces: TraceStore())
         let before = await parent.sessionDefinitions()
         XCTAssertFalse(before.contains { $0.name == "subagent" })
-        await parent.enableSubagents(SubagentCoordinator())
+        await parent.enableSubagents(SubagentCoordinator(), steering: false)
         let after = await parent.sessionDefinitions()
         XCTAssertTrue(after.contains { $0.name == "subagent" })
         await parent.close()

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """V3 extension of test-subagent-crashes.py: generated helpers and loopback only.
 
-The production helper (switch off) does cold recovery; an enabled source copy
-without fault environment performs explicit Resume. No installed app/data.
+The supplied enabled production helper does cold recovery and explicit Resume.
+Only the generated source copy contains fault hooks. No installed app/data.
 """
 import argparse
 import http.server
@@ -160,7 +160,7 @@ def run(point, fixture, recovery, older=None):
         peer = None
         try:
             if legacy:
-                peer = opened(recovery,resume=False)
+                peer = opened(older or v2.fixture_binary(),resume=False)
                 v2.command(peer,'turn.submit',dict(clientTurnId='legacy-user',text='Complete the v2 task'),'parent')
                 v2.wait_for(lambda:v2.command(peer,'session.status',{},'parent')['state'] == 'idle')
                 peer.close(); peer = None; legacy_ready.set()
@@ -213,7 +213,7 @@ def run(point, fixture, recovery, older=None):
                     except AssertionError as error:
                         assert 'legacy_session' in str(error), str(error)
                     assert path.read_bytes() == before
-            peer = opened(fixture)
+            peer = opened(recovery)
             ready = v2.command(peer,'session.snapshot',{},'parent')
             if ready.get('continuable'):
                 v2.command(peer,'run.continue',{},'parent')

@@ -286,14 +286,18 @@ extension AgentSession {
             }
             state = .idle; runStatus = .idle; errorMessage=nil; errorCode=nil
         } catch {
-            if !isSubagent, let coordinator = agentCoordinator {
+            // Settling a failed family cancels this task too. Preserve the
+            // original outcome before that internal Stop, and leave ordinary
+            // chats on their existing failure path until a family is accepted.
+            let cancelled = Task.isCancelled || error is CancellationError
+            if !isSubagent, subagents.family != nil, let coordinator = agentCoordinator {
                 let owner = id, runtime = displayEpoch, generation = stopCount
                 stop()
                 await Task { await coordinator.cancel(owner:owner,runtimeID:runtime,through:generation); await coordinator.drain(owner:owner) }.value
             }
             let error: Error = familyStopReason ?? error
             setFamilyWaiting(false)
-            queuePaused=true; runStatus=familyStopReason == nil && (Task.isCancelled || error is CancellationError) ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
+            queuePaused=true; runStatus=familyStopReason == nil && cancelled ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
             errorMessage=(error as? AgentError)?.message ?? (runStatus == .cancelled ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
             errorCode=runStatus == .failed ? (error as? AgentError)?.code : nil
             if let activeSubmission { commandState(activeSubmission,runStatus.rawValue) }

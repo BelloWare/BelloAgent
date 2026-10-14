@@ -190,6 +190,18 @@ extension SubagentGalleryFixture {
         default: break
         }
         parent.childSummaries = model.subagentSummaries
+        for display in [parent, child] {
+            for index in display.messages.indices where display.messages[index].role == "assistant" {
+                let row = display.messages[index]
+                var timeline = ResponseTimeline()
+                timeline.consume(ResponsePartEvent(attemptID: row.id, ordinal: 0, itemID: "text", kind: "text", update: "append", text: row.text))
+                for (ordinal, tool) in (row.tools ?? []).enumerated() {
+                    timeline.consume(ResponsePartEvent(attemptID: row.id, ordinal: ordinal + 1, itemID: tool.id, kind: "toolArguments", update: "append", text: tool.input, callID: tool.id, name: tool.name))
+                }
+                timeline.finish(row.tools?.isEmpty == false ? "toolUse" : "stop")
+                display.messages[index].responseTimeline = timeline
+            }
+        }
         for row in child.messages where row.tools != nil { child.disclosure.setOpen(true, .work(row.id)) }
         let session = showChild ? child : parent
         model.selectedID = session.id; model.focusedSessionID = session.id; model.selected = session

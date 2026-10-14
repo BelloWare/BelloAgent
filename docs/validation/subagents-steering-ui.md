@@ -1,5 +1,9 @@
 # Sub-agent steering — app phase 5 validation
 
+Phase 7 subsequently enables the completed feature and validates the merged
+release tree; see [enabled-build validation](subagents-steering-enabled.md).
+Statements below about the disabled switch describe the phase 5 checkpoint.
+
 Worktree `wt-steer-ui`, branch `dev/subagents-steer-ui`, build root
 `/Users/admin/Library/Caches/BelloSwiftWork/build-steer-ui`. macOS arm64,
 Xcode 16.1, isolated `com.belloware.PiAppTests.Host`. Generated fixtures and

@@ -686,6 +686,19 @@ The original design-only commit claimed no implementation builds or runtime vali
 
 ## Implementation notes
 
+Phase 7 enablement (2026-10-14): the production v3 switch is on for 0.1.126.
+Enabled native validation exposed an error-path interaction: installing the
+coordinator for every eligible chat made an ordinary provider failure call Stop
+and then read its own cancellation as the original outcome. Family failure
+settlement now requires an accepted family, and preserves the original outcome
+before cancelling/draining children. An ordinary failed chat retains its existing
+error behavior; a failed family still settles its children and keeps the failure
+code. See [enabled-build validation](../validation/subagents-steering-enabled.md)
+for failing-first and mutation evidence.
+The full native lane also caught unconditional publication of three agent-state
+fields on each streamed snapshot. They now update only when their value changes,
+matching the surrounding run-state fields; real state transitions still publish.
+
 Phase 1 handoff (2026-10-14): `SubagentPolicy.steeringEnabled` is the single v3 execution switch, initially false; v2 remains available. The six exact JSON schemas in §3 are implemented in `SubagentSteeringContract.swift` with strict validation and UTF-8 limits. Parent tools: `subagent_start`, `subagent_send`, `subagent_wait`, `subagent_status`, `subagent_stop`; child only: `subagent_report`. No blocking ask. Capability when enabled: `subagents-steering-v3`.
 
 Wire contract for phase 5:

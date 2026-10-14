@@ -182,6 +182,11 @@ final class StreamingCostTests: XCTestCase {
         // Warm until the retained event window is full, so what the measured
         // window shows is steady-state cost, not a ring still filling.
         for index in 0..<(AgentSession.retainedEvents + AgentSession.retainedEventSlack + 1000) { try await client.emit(.text("warm-\(index) ")) }
+        // The reply itself must grow. Reserve this fixture's known payload so
+        // a String capacity boundary is not mistaken for per-token retention.
+        // Both the heap bound and the early/late CPU comparison stay unchanged.
+        let longestTokenBytes = "grow-\(rounds * 4 - 1) ".utf8.count
+        await session.reserveAccumulationFixtureCapacity(rounds * 6 * longestTokenBytes)
         let heapStart = heapInUse()
         let cpuStart = processCPUMilliseconds(), start = ProcessInfo.processInfo.systemUptime
         for index in 0..<rounds { try await client.emit(.text("token-\(index) ")) }
@@ -374,5 +379,11 @@ final class StreamingCostTests: XCTestCase {
         XCTAssertEqual(after["commands"].list.last?["status"].text, "completed")
         XCTAssertNotEqual(after["taskPresentationRevision"], before["taskPresentationRevision"])
         XCTAssertNotEqual(after["commandsRevision"], before["commandsRevision"])
+    }
+}
+
+private extension AgentSession {
+    func reserveAccumulationFixtureCapacity(_ additionalBytes: Int) {
+        partialText.reserveCapacity(partialText.utf8.count + additionalBytes)
     }
 }

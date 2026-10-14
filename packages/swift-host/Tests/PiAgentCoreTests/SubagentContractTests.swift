@@ -11,7 +11,7 @@ final class SubagentContractTests: XCTestCase {
 
     func testProductionAvailabilityAdvertisesTheCompleteFeature() {
         XCTAssertTrue(SubagentPolicy.enabled)
-        XCTAssertEqual(SubagentPolicy.capabilities, ["subagents-v1", "shared-budget-v1"])
+        XCTAssertEqual(SubagentPolicy.capabilities, ["subagents-v1", "shared-budget-v1", "subagents-steering-v3"])
         XCTAssertEqual(SubagentPolicy.maximumActiveChildren, 16)
         XCTAssertEqual(SubagentPolicy.maximumDepth, 1)
     }

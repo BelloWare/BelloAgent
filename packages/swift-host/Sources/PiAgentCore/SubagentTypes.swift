@@ -5,8 +5,8 @@ import Foundation
 /// No preference or wire flag can bypass this policy.
 public enum SubagentPolicy {
     public static let enabled = true
-    /// Enable only when the helper and the app v3 integration are complete.
-    public static let steeringEnabled = false
+    /// Background runs, steering and follow-ups ship together in 0.1.126.
+    public static let steeringEnabled = true
     public static let maximumActiveChildren = 16
     public static let maximumDepth = 1
     public static var capabilities: [String] { enabled ? ["subagents-v1", "shared-budget-v1"] + (steeringEnabled ? ["subagents-steering-v3"] : []) : [] }

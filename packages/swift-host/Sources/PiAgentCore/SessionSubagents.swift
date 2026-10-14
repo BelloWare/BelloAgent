@@ -20,11 +20,11 @@ struct SubagentEnvironment: Sendable {
 extension AgentSession {
     func subagentListingSnapshot() -> (SubagentJournalState, Int) { (subagents, sequence) }
 
-    func enableSubagents(_ coordinator: SubagentCoordinator) async {
+    func enableSubagents(_ coordinator: SubagentCoordinator, steering: Bool = SubagentPolicy.steeringEnabled) async {
         subagentCoordinator = coordinator
         let ownerID = id, runtimeID = displayEpoch
         familyCancelled = { generation in Task { await coordinator.cancel(owner: ownerID, runtimeID: runtimeID, through: generation) } }
-        if SubagentPolicy.steeringEnabled, !isSubagent { enableAgentSteering(await coordinator.steering) }
+        if steering, !isSubagent { enableAgentSteering(await coordinator.steering) }
     }
     func installManagedCancellation(_ coordinator: SubagentCoordinator, key: SubagentCallKey) {
         managedCancellation = { Task { await coordinator.cancel(key) } }

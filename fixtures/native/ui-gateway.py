@@ -171,8 +171,10 @@ class Gateway(http.server.BaseHTTPRequestHandler):
         call_tool = tool_name in contract["tool_names"] and ("read fixture" in prompt.lower() or secondary_read or stress_tool) and not tool_result
         tool_arguments = {"command": "/usr/bin/python3 -u stress-output.py", "timeout": 60} if stress_tool else {"path": "SECONDARY.md" if secondary_read else "README.md"}
         if "delegate opening fixture" in prompt.lower() and not tool_result:
-            tool_name, call_tool = "subagent", "subagent" in contract["tool_names"]
+            tool_name = "subagent_start" if "subagent_start" in contract["tool_names"] else "subagent"
+            call_tool = tool_name in contract["tool_names"]
             tool_arguments = {"task": "managed child opening fixture", "description": "Opening regression"}
+            if tool_name == "subagent_start": tool_arguments["mode"] = "wait"
         text = "Fixture reply: " + (prompt or "Tool result received.") + "\n\nUnicode: 中文🙂 café."
         if connection_test:
             text = "OK"
