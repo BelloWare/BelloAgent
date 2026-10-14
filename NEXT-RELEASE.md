@@ -5,6 +5,9 @@
 **0.1.126 plan (owner 2026-10-13):** three Codex (gpt-6-astra, max) audits — at least 20 confirmed scroll-smoothness issues/improvements, plus core and UI bugs; Codex fixes them in worktrees and merges; sub-agents designed jointly with Codex (budget belongs to the parent; display, request inspector, parent/child navigation), Codex implements, Claude reviews.
 
 - [x] Sub-agents implemented on `dev/subagents` for 0.1.126, pending lead review and merge: synchronous delegated tasks, up to 16 active children per parent chat with extra calls queued, one level deep. Children inherit effective tools and share the parent's budget and capture policy. Native cards, child transcripts, Back to Parent, family Inspector, folded sidebar groups and durable Stop/Resume recovery are included. Phase 12 enables the sole rollout switch. [Design and implementation notes](docs/design/subagents.md); [validation record](docs/validation/subagents-phases-7-12.md). This branch has not been merged into `dev/next` or published as a release.
+- [x] SCROLL-14 helper page cancellation (merged): superseded history/version reads cancel through the wire, journal decode and shared history loads; older helpers retain compatible coalescing. Regressions, mutation checks and generated long-chat measurements: `docs/perf/scroll14-helper-cancellation.md`.
+- [x] Output speed includes time to first token: all reported output tokens ÷ request-to-last-output duration, consistently across chats, Inspector, reports and menu bar; trailing usage waits remain excluded.
+- [x] Tests use a separate app/defaults identity, scratch data home and private clipboard, with a pre-test isolation guard and Keychain/Sparkle disabled; Debug, Release, gallery and performance runs preserve the installed app's preferences and release identity.
 
 ## 0.1.126 decisions made while the owner was away (2026-10-13 night)
 

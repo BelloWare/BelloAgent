@@ -228,3 +228,19 @@ final class InspectorIndexTests: XCTestCase {
         try await archive.close()
     }
 }
+
+extension InspectorIndexTests {
+    func testInspectorRecomputesOldHelperRatesFromRawTimingsAndUsage() throws {
+        var metadata: [String: WireValue] = [
+            "attemptId": .string("old-helper"), "outcome": .string("completed"),
+            "usage": .object(["output": .number(101), "reasoning": .number(80)]),
+            "metrics": .object(["observedTTFTms": .number(2_000), "streamDurationMs": .number(1_000), "decodeTokensPerSecond": .number(100)])
+        ]
+        let row = try XCTUnwrap(InspectorRequestRow.live(metadata))
+        XCTAssertEqual(try XCTUnwrap(row.settledRate), 101 / 3.0, accuracy: 1e-9)
+        XCTAssertEqual(row.ttft, 2_000)
+        XCTAssertEqual(row.figures.first { $0.label == "Speed" }?.value, "34 tok/s")
+        metadata["metrics"] = .object(["decodeTokensPerSecond": .number(100)])
+        XCTAssertNil(InspectorRequestRow.live(metadata)?.settledRate, "Old rate-only metadata cannot supply output speed")
+    }
+}

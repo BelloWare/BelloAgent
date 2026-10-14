@@ -226,7 +226,7 @@ struct SessionRequestTimeline: Sendable, Equatable {
 /// ends of an axis read inward instead of running off the chart.
 enum SessionStatsTickAnchor: Sendable, Equatable { case leading, center, trailing }
 
-/// The settled decode rate of each measured request, in order, against the
+/// The settled output speed of each measured request, in order, against the
 /// session's average. Past `maximumPoints` requests, consecutive requests are
 /// folded into bins and each bin shows its own settled rate.
 struct SessionSpeedSeries: Sendable, Equatable {
@@ -340,14 +340,14 @@ struct SessionTimeCharts: Sendable, Equatable {
     static func hero(_ gateway: GatewayTotals) -> [SessionStatsFigure] {
         let turns = gateway.turnCount ?? 0, steps = gateway.requests
         let throughput = gateway.settledThroughput
-        let decodeCaption: String
-        if throughput.samples == 0 { decodeCaption = "no request measured" }
-        else if let coverage = throughput.coverage { decodeCaption = coverage }
-        else { decodeCaption = "\(SessionStatsFormat.plural(throughput.samples, "request", "requests")) measured" }
+        let speedCaption: String
+        if throughput.samples == 0 { speedCaption = "no request measured" }
+        else if let coverage = throughput.coverage { speedCaption = coverage }
+        else { speedCaption = "\(SessionStatsFormat.plural(throughput.samples, "request", "requests")) measured" }
         return [
             SessionStatsFigure(id: "turns", value: "\(turns)", title: turns == 1 ? "turn" : "turns", caption: "your messages"),
             SessionStatsFigure(id: "steps", value: "\(steps)", title: steps == 1 ? "step" : "steps", caption: "model requests"),
-            SessionStatsFigure(id: "speed", value: throughput.label ?? "—", title: "decode speed", caption: decodeCaption,
+            SessionStatsFigure(id: "speed", value: throughput.label ?? "—", title: "output speed", caption: speedCaption,
                                partial: throughput.coverage != nil),
         ]
     }
@@ -522,8 +522,8 @@ struct SessionTimeCharts: Sendable, Equatable {
             if bin.count == 1, let rate = first.sample.settledTokensPerSecond {
                 let sample = first.sample
                 var parts = [MetricFormat.throughput(rate)]
-                if let output = sample.outputTokens, let decode = sample.streamingMilliseconds {
-                    parts.append("\(MetricFormat.exactTokens(output)) out in \(MetricFormat.latency(decode)) of generating")
+                if let output = sample.outputTokens, let ttft = sample.ttftMilliseconds, let decode = sample.streamingMilliseconds {
+                    parts.append("\(MetricFormat.exactTokens(output)) out in \(MetricFormat.latency(ttft + decode)) from request to last output")
                 }
                 points.append(SessionSpeedSeries.Point(id: sample.id, index: points.count, x: Double(first.number), rate: rate, model: first.model,
                                                        colorIndex: palette.index(first.model),
@@ -554,7 +554,7 @@ struct SessionTimeCharts: Sendable, Equatable {
         if binSize > 1 { subtitle += " · each point is \(binSize) requests" }
         if history.olderRequests > 0 { subtitle += " · the latest \(history.requests.count) of \(history.total)" }
         let averageLabel = average.map { "Session average " + MetricFormat.throughput($0) }
-        var spoken = "Decode speed per request, \(points.count) points."
+        var spoken = "Output speed per request, \(points.count) points."
         if let averageLabel { spoken += " \(averageLabel)." }
         if let fastest = points.max(by: { $0.rate < $1.rate }), let slowest = points.min(by: { $0.rate < $1.rate }), points.count > 1 {
             spoken += " Fastest \(fastest.label), \(MetricFormat.throughput(fastest.rate)); slowest \(slowest.label), \(MetricFormat.throughput(slowest.rate))."

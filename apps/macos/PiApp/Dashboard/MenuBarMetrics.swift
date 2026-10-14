@@ -26,7 +26,7 @@ enum MenuBarPeriod: String, CaseIterable, Identifiable, Hashable, Sendable {
 }
 
 /// One time slice of the status-bar charts: requests, reported cost and the
-/// settled decode rate (`gateway.settledThroughput`) of the attempts
+/// settled output speed (`gateway.settledThroughput`) of the attempts
 /// dispatched inside it.
 struct MenuBarBucket: Sendable, Identifiable, Equatable {
     let id: Int

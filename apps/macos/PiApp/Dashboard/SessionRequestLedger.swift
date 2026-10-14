@@ -1,7 +1,7 @@
 import AppKit
 
 /// One retained request as the ledger writes it: what it was, where it went,
-/// what it consumed and how fast it decoded. Every cell is a reported figure
+/// what it consumed and its output speed. Every cell is a reported figure
 /// or an explicit gap; nothing is averaged or inferred across requests.
 struct SessionRequestLedgerRow: Identifiable, Equatable {
     let id: String
@@ -20,9 +20,8 @@ struct SessionRequestLedgerRow: Identifiable, Equatable {
     let generation: String
     let throughput: String
     let cost: String
-    /// True when this request has no decode speed — no completed span of at
-    /// least 250 ms, or fewer than two output tokens — so it contributes
-    /// nothing to the settled rate.
+    /// True when completed output or valid TTFT + span is missing, or the
+    /// total duration is below the floor, so this request contributes no rate.
     let unmeasured: Bool
 
     init(number: Int, sample: SessionTimingSample) {
@@ -63,7 +62,7 @@ struct SessionRequestLedger: Equatable {
         hasOlderRequests = history.hasOlderLedgerRequests ?? history.hasOlderRequests
         var rate = SettledThroughput()
         for sample in samples {
-            rate.add(decodeMilliseconds: sample.outcome == "completed" ? sample.streamingMilliseconds : nil, outputTokens: sample.outputTokens)
+            rate.add(ttftMilliseconds: sample.ttftMilliseconds, decodeMilliseconds: sample.outcome == "completed" ? sample.streamingMilliseconds : nil, outputTokens: sample.outputTokens)
         }
         throughput = rate
     }
@@ -72,17 +71,17 @@ struct SessionRequestLedger: Equatable {
         let count = "\(rows.count) request\(rows.count == 1 ? "" : "s")"
         return hasOlderRequests ? "Most recent \(count)" : count
     }
-    /// Named, not counted away: the requests with no decode speed are listed
+    /// Named, not counted away: the requests with no output speed are listed
     /// but excluded from the rate.
     var coverageNote: String {
         let missing = rows.filter(\.unmeasured).count
         let rate = throughput.label ?? "unavailable"
         if missing == 0 {
-            return "Session throughput \(rate) — every listed request was measured: output tokens after the first over first to last token."
+            return "Session throughput \(rate) — every listed request was measured: output tokens over time from sending the request to the last output token (time to first token included; hidden reasoning included)."
         }
         let subject = missing == 1 ? "1 request has" : "\(missing) requests have"
         let verb = missing == 1 ? "is" : "are"
-        return "Session throughput \(rate) over \(throughput.samples) of \(rows.count) listed requests. \(subject) no decode speed — no completed span of \(SettledThroughput.floorLabel) or more, or fewer than two output tokens — and \(verb) excluded from the rate rather than counted as zero."
+        return "Session throughput \(rate) over \(throughput.samples) of \(rows.count) listed requests. \(subject) no output speed — missing completed output or timing, or request-to-last-output duration under \(SettledThroughput.floorLabel) — and \(verb) excluded from the rate rather than counted as zero."
     }
     var copyText: String {
         (["#\tStatus\tModel\tInput\tOutput\tTTFT\tGeneration\tThroughput\tCost"]

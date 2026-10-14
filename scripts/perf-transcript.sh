@@ -3,10 +3,14 @@
 # build-for-testing, through its .xctestrun so the sources may move on.
 # Usage: run-perf.sh <derived-data> <out-dir> [rounds] [soak-seconds] [max-load]
 set -uo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DD=$1 OUT=$2 ROUNDS=${3:-3} SOAK=${4:-122} MAXLOAD=${5:-4}
 mkdir -p "$OUT"
 cd "$OUT"
 RUN=$(ls "$DD"/Build/Products/*.xctestrun | head -1)
+# Old build-for-testing products hosted tests in the shipping app. Never
+# execute those, even when the source checkout has since gained isolation.
+python3 "$ROOT/scripts/check-test-host.py" "$RUN" || exit 1
 X=(-xctestrun "$RUN" -destination 'platform=macOS,arch=arm64')
 quiet() { # waits until the one-minute load is below MAXLOAD
   while :; do l=$(sysctl -n vm.loadavg | awk '{print $2}'); awk -v l="$l" -v m="$MAXLOAD" 'BEGIN{exit !(l<m)}' && return; sleep 20; done

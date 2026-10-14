@@ -15,10 +15,16 @@ struct KeychainVaultStorage: VaultStorage {
             .appendingPathComponent("com.belloware.PiApp/configuration.lock")
     }
     static func validateIdentity() throws {
+        #if PI_TEST_HOST
+        // A different defaults home does not isolate the login Keychain.
+        // Reject before any Security API, including when a test is signed.
+        throw VaultError.invalid("Keychain access is disabled in PiAppTestHost; inject a fixture VaultStorage.")
+        #else
         var code: SecCode?, requirement: SecRequirement?
         guard SecCodeCopySelf([], &code) == errSecSuccess, let code,
               SecRequirementCreateWithString(Self.requirement as CFString, [], &requirement) == errSecSuccess,
               SecCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSStrictValidate), requirement) == errSecSuccess else { throw VaultError.unsigned }
+        #endif
     }
     private func query() -> [String: Any] {
         let context = LAContext(); context.interactionNotAllowed = true

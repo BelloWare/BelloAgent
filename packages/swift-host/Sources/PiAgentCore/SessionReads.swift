@@ -11,6 +11,13 @@ extension AgentSession {
     }
     /// Versioned browsing contract; older numeric callers retain their adapter.
     public func historyWindow(_ params: JSON) async throws -> JSON {
+        let cancellation = BlockingWorkCancellation()
+        return try await withTaskCancellationHandler {
+            try await historyWindow(params, cancellation: cancellation)
+        } onCancel: { cancellation.cancel() }
+    }
+    private func historyWindow(_ params: JSON, cancellation: BlockingWorkCancellation) async throws -> JSON {
+        try cancellation.checkCancellation()
         let cursor: ConversationCursor? = params["cursor"].isNull ? nil : try JSONDecoder().decode(ConversationCursor.self, from: params["cursor"].data())
         if let cursor, cursor.incarnation != displayEpoch || cursor.lineage != presentationTimeline {
             throw AgentError("history_changed", "This conversation changed. Reload the visible history.")
@@ -29,12 +36,15 @@ extension AgentSession {
             let older = params["direction"].text != "newer" && target == nil
             if fromStart || (position.map { $0 < olderRows } ?? false) || (entry != nil && at == nil) || (target.map { id in !visible.contains { $0.id == id } } ?? false) || (older && at == 0) { try await loadOlderRows() }
         }
+        try cancellation.checkCancellation()
         let lineage = presentationTimeline
         if let cursor, cursor.incarnation != displayEpoch || cursor.lineage != lineage {
             throw AgentError("history_changed", "This conversation changed. Reload the visible history.")
         }
         if let oldLineage = params["lineage"].text, oldLineage != lineage { throw AgentError("history_changed", "The conversation branch changed during source handoff") }
         return try withShownRows { shown in
+            shown.cancellation = cancellation
+            shown.readStep = historyPageStep
             let boundary = entry.flatMap(shown.position)
             if entry != nil && boundary == nil { throw AgentError("history_changed", "The history boundary is no longer available. Reload history.") }
             let target = params["around"].text
@@ -53,6 +63,8 @@ extension AgentSession {
             var start = forward ? range.lowerBound : range.upperBound, end = start
             let positions = forward ? Array(range) : Array(range.reversed())
             for index in positions {
+                historyPageStep?("history")
+                try cancellation.checkCancellation()
                 let row = boundedDisplayRow(try displayShown(candidates[index - range.lowerBound], &shown))
                 let size = try row.data().count
                 guard rows.isEmpty || bytes + size + 1 <= HistoryWindowPolicy.envelopeBytes else { break }
@@ -72,6 +84,7 @@ extension AgentSession {
                 result["partialTurnInput"] = JSON(shown.id(input))
             }
             result["taskRecords"] = tasks
+            try cancellation.checkCancellation()
             return result
         }
     }
