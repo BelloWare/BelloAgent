@@ -7,6 +7,101 @@ preferences, Keychain or paid providers. The production switch stayed off
 through phase 11 and is enabled in phase 12. This worktree has not been merged
 into `dev/next` or published as a release.
 
+## Review after the 0.1.126 audit merge
+
+Started from `f4bf746b`, which includes `dev/next` audit fixes `2f12977a`;
+`git pull --ff-only origin dev/subagents` was already up to date. Rebuilt before
+testing. Artifacts for this review use `logs/review2-*` and `review2-*.xcresult`.
+Implementation commit: `744566bb` (`Fix sub-agent opening, settlement and review UI regressions`).
+
+The canonical response-order notice is **pre-existing**, not introduced by
+sub-agents: `v0.1.125:apps/macos/PiApp/Transcript/TaskTranscriptPlan.swift:183`
+already displays it for ordinary canonical tool timelines. It remains unchanged.
+
+The new opening tests use the packaged helper, MemoryVault and
+`fixtures/native/ui-gateway.py`, with an explicit child-stream barrier in the
+test's temporary directory. No real credentials, data or provider traffic.
+
+Findings:
+
+| Review item | Disposition |
+| --- | --- |
+| Card money | Fixed: uses `compactGatewayUSD`, the existing footer/Inspector formatter. Regression checks `$0.04` across the card, footer, Inspector group and sidebar. |
+| Duplicate card status | Fixed: status remains in the header; the body begins with the model and keeps the other progress lines. |
+| Open child missing from sidebar | Fixed: the selected child transiently reveals its group and is highlighted in both Topics and Flat. The saved fold is unchanged. |
+| Canonical response-order notice | No change: pre-existing ordinary tool-timeline behavior, confirmed in `v0.1.125`. |
+| Child capture-mode write | Fixed: managed opening reads the inherited mode from `session.open` and sends no `debug.mode`. The helper's policy guard remains intact. |
+| Parent topic move | Fixed: only independently chosen roots enter the transaction; it traverses managed descendants. Direct child moves still fail. |
+| Cancelled delegation preflight | Fixed: every issued call gets a not-executed result before cancellation escapes. Parent Resume works immediately without replay. |
+| Sidebar live navigation | Fixed: a valid managed selection uses `openSubagent`, including its header validation and runtime attachment. |
+| Terminal runtime retention | Fixed: settlement evicts unseen children from both host registries. Explicit readers stay pinned; close, forget and eviction serialize with open and check runtime identity. Stop cleanup runs in an awaited uncancelled task. |
+| Inspector parent link | Fixed: an excluded target widens to Family through the normal filter setter, including usage scope and out-of-window request lookup. |
+
+Regression evidence:
+
+- Merged-tree native baseline: **22 passed** (`review2-baseline-native.log`).
+- UI failing-first run: **25 executed, 13 failures**, covering the four changed
+  UI behaviors (`review2-ui-red.log`); the restored set passed all **25**.
+- Real-helper opening failing-first run: all **3 cases failed** for the reported
+  capture write, stale sidebar snapshot and retained terminal runtime
+  (`review2-opening-red4.log`). Earlier fixture setup/build failures are not
+  counted as behavioral evidence.
+- Preflight guard restored to its old behavior: missing result rows and
+  `nothing_to_continue` (**3 failures**, `review2-mutation-preflight.log`).
+- The Stop cleanup regression first failed its cancellation assertion
+  (`review2-cleanup-cancellation-red.log`); the real four-child wire fixture
+  independently caught retained stopped children (`review2-streaming-stop-red.log`).
+- **12 guard mutations killed**: card money, duplicate status, selection reveal,
+  topic roots, Inspector filter, Inspector usage, child capture write, sidebar
+  live opening, preflight settlement, terminal eviction, viewer pin, and
+  uncancelled cleanup. See `review2-native-mutations.json`,
+  `review2-helper-mutations.json`, and `review2-mutation-preflight.log`.
+  Runtime mutations use a generated helper copy outside the repository.
+- Final helper selection: **90 passed** (`review2-helper-restored.log`), including
+  `SessionSettlementTests` **2**, `CostLimitTests` **11**, `CaptureDrainTests` **4**,
+  `HostServiceTests` **6**, and `SubagentCoordinatorTests` **20**.
+- Affected native parallel classes: **101 passed** (`review2-affected-native.log`),
+  run through `scripts/test-macos.sh` using a bash array after lane inspection.
+- Native serial classes, each alone: `SubagentNavigationTests` **5**,
+  `SubagentOpeningTests` **3**, `TopicOrganizationTests` **14**,
+  `CaptureDrainTests` **6**, and `HostSupervisorTests` **7**: **35 passed**.
+- One earlier opening run reported a transient discovery/metadata warning.
+  Retained an assertion with generated-path diagnostics; **75 repeated cases**
+  then passed (`review2-opening-repeat.log`, `review2-opening-stability.log`),
+  as did the final serial run. Its cause was not established; no speculative
+  weakening of identity/path validation was made.
+- Real gateway streams: **4 scenarios passed**, each with four concurrent
+  children: complete, open viewer, Stop and shutdown (`review2-streaming-final.log`).
+  Unseen completed/stopped runtimes are absent; reopened journals retain local
+  costs; an open viewer survives settlement; parent costs and captured bytes
+  remain complete and unduplicated.
+- Crash/relaunch: **21 barriers passed** against the final helper, including
+  Stop, shutdown, update, terminal persistence and external-effect boundaries
+  (`review2-crashes.log`). Resume sent only the parent continuation.
+- Gallery: regenerated all **92 §13.5 scenes**, both appearances and sizes, in
+  `review2-gallery/subagents/` (`review2-gallery-final.log`). Visually checked
+  the expanded running card and child viewer: `$0.04`, no repeated body status,
+  expanded child group and highlighted child. The first gallery invocation
+  skipped because Xcode needed `TEST_RUNNER_PI_APP_UI_SCREENSHOT_ROOT`; the
+  final invocation supplies it and runs the test.
+- The first full native parallel lane finished **2,299 passed, 1 failed,
+  35 skipped**. `TranscriptFocusTests` compares window-server pixels across
+  keyboard focus changes and had been classified as parallel. Its changed-pixel
+  assertion failed with other test hosts active. Added the explicit serial-lane
+  marker; both tests pass alone (`review2-serial-TranscriptFocusTests.log`).
+  No production rendering code changed for this test-lane correction.
+- The next full lane finished **2,297 passed, 1 failed, 35 skipped**: the existing
+  `FileSyntaxTests.testLinesAskedTogetherShareOnePass` read 4,807 bytes against
+  a 4,766-byte bound. Concurrent request batching makes that count depend on
+  scheduling, which the test handoff assigns to the serial lane. Marked the
+  class serial without relaxing its assertions; **55 cases passed** over five
+  repetitions (`review2-serial-FileSyntaxTests.log`). No syntax-reader production
+  code changed. Both classification corrections are independent of sub-agents.
+- Final full native parallel lane, eight workers: **2,287 passed, 35 opt-in
+  skips, 0 failures** (`review2-full-parallel-restored.log` and
+  `review2-full-parallel-restored.xcresult`). The serial classes above ran alone;
+  the final lane uses `scripts/test-lanes.py parallel` without hand-picked skips.
+
 ## Review fixes after phases 1–6
 
 Started from `ea952f1e` (merged `dev/next`); `git pull --ff-only origin dev/subagents`
