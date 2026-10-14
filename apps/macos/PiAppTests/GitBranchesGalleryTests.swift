@@ -32,6 +32,18 @@ final class GitBranchesGalleryTests: XCTestCase {
                 try await eventually("comparison rows", timeout: .seconds(30)) { compare.note.line.text.contains("read only") }
                 try await capture(compareSheet, "compare-\(sizeName)-\(suffix)", folder)
                 compare.cancel(); compareSheet.removeFromSuperview()
+                let history = scene.historyPanel()
+                scene.controller.showBranchHistory(branch.ref, repository: try XCTUnwrap(scene.controller.repositoryIdentity))
+                await scene.controller.refresh()
+                scene.controller.chooseHistoryCommit(try XCTUnwrap(scene.controller.history.reading.commits.first))
+                try await eventually("branch History detail", timeout: .seconds(30)) { !scene.controller.commitLoading }
+                history.refresh(); history.layoutSubtreeIfNeeded()
+                try await capture(history, "history-branch-\(sizeName)-\(suffix)", folder)
+                history.removeFromSuperview(); scene.controller.panel = .changes
+                // The embedded panel retires its own reads when removed.
+                // Resume the standalone popup fixture after that callback.
+                try await eventually("History panel removed", timeout: .seconds(30)) { scene.controller.suspended }
+                scene.controller.setShown(true); try await scene.ready()
                 let stash = GitStashList(service: scene.repo.service, root: scene.repo.path, valid: { true })
                 let stashSheet = PiKit.Sheet("Stashes", subtitle: "Saved work in this repository", symbol: "tray.and.arrow.down", content: stash, actions: [PiKit.Button("New Stash…", style: .secondary, compact: true)])
                 scene.host.addSubview(stashSheet); stashSheet.frame = scene.host.bounds

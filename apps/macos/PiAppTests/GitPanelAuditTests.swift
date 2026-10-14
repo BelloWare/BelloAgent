@@ -362,6 +362,8 @@ final class GitPanelAuditTests: GitPanelTestCase {
         try await eventually("the first read") { controller.status.entries.count == 2 && controller.statusRead && !controller.loading }
         func shown() -> GitCommitBox.Presentation { GitCommitBox.presentation(GitCommitBox.Inputs(controller)) }
 
+        XCTAssertEqual(shown().title, "Commit Staged Changes", "the owner chose the index as the default")
+        controller.commitScope = .checkedFiles
         XCTAssertEqual(shown().title, "Commit Checked Files")
         XCTAssertFalse(shown().commitEnabled, "no message yet")
         XCTAssertTrue(shown().hint.hasSuffix("write a message to commit"), shown().hint)

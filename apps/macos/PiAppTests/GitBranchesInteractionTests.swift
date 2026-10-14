@@ -5,11 +5,48 @@ import Combine
 @testable import GitView
 
 final class GitBranchesInteractionTests: XCTestCase {
+    @MainActor func testShowBranchHistoryRetiresPendingBlameEvenWithoutAnExistingSelection() async throws {
+        let scene = try GitBranchesScene(); defer { scene.close() }
+        let branch = try await scene.repo.divergedBranch(); try await scene.ready()
+        let controller = scene.controller, identity = try XCTUnwrap(controller.repositoryIdentity)
+        let main = try await scene.repo.branch("main"), before = try scene.repo.snapshot()
+        XCTAssertNil(controller.selectedCommit)
+        var choseBranch = false
+        let revealed = await controller.revealHistory(.init(commit: main.oid, path: "f.txt", line: 1), in: identity.root) {
+            if !choseBranch { choseBranch = true; controller.showBranchHistory(branch.ref, repository: identity) }
+            return true
+        }
+        XCTAssertTrue(choseBranch)
+        XCTAssertFalse(revealed, "Showing a branch is newer than the pending blame navigation")
+        XCTAssertNil(controller.selectedCommit)
+        XCTAssertNil(controller.revealTarget)
+        await controller.refresh()
+        XCTAssertEqual(controller.history.reading.query.scope, .reference(branch.ref))
+        XCTAssertEqual(controller.history.reading.commits.first?.hash, branch.oid)
+        XCTAssertEqual(try scene.repo.snapshot(), before)
+    }
+    @MainActor func testComparisonUsesTheLiveHistoryRowContentAndCommittedDates() async throws {
+        let scene = try GitBranchesScene(width: 420); defer { scene.close() }
+        let branch = try await scene.repo.divergedBranch()
+        try scene.repo.write("main.txt", "main only\n"); try scene.repo.commit("Main only")
+        let before = try scene.repo.snapshot()
+        let compare = GitBranchCompare(service: scene.repo.service, root: scene.repo.path, branch: branch, valid: { true })
+        scene.host.addSubview(compare); compare.frame = scene.host.bounds
+        defer { compare.cancel(); compare.removeFromSuperview() }
+        try await eventually("comparison", timeout: .seconds(30)) { compare.note.line.text.contains("read only") }
+        compare.layoutSubtreeIfNeeded()
+        let row = try XCTUnwrap(compare.targetList.madeView(for: branch.oid))
+        XCTAssertEqual(String(describing: type(of: try XCTUnwrap(row.subviews.first))), "GitHistoryRowContent")
+        XCTAssertTrue(row.accessibilityLabel()?.contains("Topic only") == true)
+        XCTAssertTrue(row.accessibilityLabel()?.contains("committed") == true)
+        XCTAssertTrue(row.accessibilityLabel()?.contains("UTC") == true)
+        XCTAssertEqual(try scene.repo.snapshot(), before)
+    }
     @MainActor func testRenameRetargetsHistoryWhileHiddenDuringSameRepositoryFolderSwitch() async throws {
         let scene = try GitBranchesScene(); defer { scene.close() }
         let branch = try await scene.repo.divergedBranch(); try await scene.ready()
         let controller = scene.controller, identity = try XCTUnwrap(controller.repositoryIdentity)
-        controller.showBranchHistory(branch.ref, repository: identity)
+        controller.historyOptions.reference = branch.ref; controller.panel = .history
         controller.logFilter.text = "Topic only"
         try await eventually("branch history", timeout: .seconds(30)) { controller.commits.map(\.hash) == [branch.oid] }
         let folder = URL(fileURLWithPath: scene.repo.path).appendingPathComponent("folder")
@@ -22,11 +59,11 @@ final class GitBranchesInteractionTests: XCTestCase {
         try await controller.renameBranch(branch, to: "renamed/topic", repository: identity)
         XCTAssertTrue(controller.suspended)
         XCTAssertFalse(controller.acceptsRepository(identity), "The new folder has not been resolved while hidden")
-        XCTAssertEqual(controller.logFilter.reference, "refs/heads/renamed/topic")
+        XCTAssertEqual(controller.historyOptions.reference, "refs/heads/renamed/topic")
         controller.setShown(true)
         try await eventually("subfolder history refresh", timeout: .seconds(30)) { controller.refreshesFinished > finished && !controller.loading }
         XCTAssertEqual(controller.repositoryIdentity, identity)
-        XCTAssertEqual(controller.logFilter.reference, "refs/heads/renamed/topic")
+        XCTAssertEqual(controller.historyOptions.reference, "refs/heads/renamed/topic")
         XCTAssertEqual(controller.logFilter.text, "Topic only")
         XCTAssertEqual(controller.commits.map(\.hash), [branch.oid])
         XCTAssertEqual(controller.notice, "")
@@ -37,12 +74,13 @@ final class GitBranchesInteractionTests: XCTestCase {
         let scene = try GitBranchesScene(); defer { scene.close() }
         let branch = try await scene.repo.divergedBranch(); try await scene.ready()
         let controller = scene.controller, identity = try XCTUnwrap(controller.repositoryIdentity)
-        controller.showBranchHistory(branch.ref, repository: identity)
+        controller.historyOptions.reference = branch.ref; controller.panel = .history
         controller.logFilter.text = "Topic only"
         try await eventually("branch history", timeout: .seconds(30)) { controller.commits.map(\.hash) == [branch.oid] }
-        let filter = controller.logFilter, before = try scene.repo.snapshot()
+        let filter = controller.logFilter, options = controller.historyOptions, before = try scene.repo.snapshot()
         do { try await controller.renameBranch(branch, to: "main", repository: identity); XCTFail("Existing branches cannot be overwritten") } catch {}
         XCTAssertEqual(controller.logFilter, filter)
+        XCTAssertEqual(controller.historyOptions, options)
         XCTAssertEqual(controller.commits.map(\.hash), [branch.oid])
         XCTAssertEqual(try scene.repo.git(["rev-parse", branch.ref]).trimmingCharacters(in: .newlines), branch.oid)
         XCTAssertEqual(try scene.repo.snapshot(), before)
@@ -51,14 +89,14 @@ final class GitBranchesInteractionTests: XCTestCase {
         let scene = try GitBranchesScene(); defer { scene.close() }
         let branch = try await scene.repo.divergedBranch(); try await scene.ready()
         let controller = scene.controller, identity = try XCTUnwrap(controller.repositoryIdentity)
-        controller.showBranchHistory(branch.ref, repository: identity)
+        controller.historyOptions.reference = branch.ref; controller.panel = .history
         let main = try await scene.repo.branch("main"), before = try scene.repo.snapshot()
         let subscription = controller.$busy.sink { busy in
-            if busy { controller.logFilter.reference = main.ref }
+            if busy { controller.historyOptions.reference = main.ref }
         }
         defer { subscription.cancel() }
         try await controller.renameBranch(branch, to: "renamed/topic", repository: identity)
-        XCTAssertEqual(controller.logFilter.reference, main.ref)
+        XCTAssertEqual(controller.historyOptions.reference, main.ref)
         XCTAssertEqual(controller.commits.map(\.hash), [main.oid])
         XCTAssertEqual(controller.notice, "")
         XCTAssertEqual(try scene.repo.git(["rev-parse", "refs/heads/renamed/topic"]).trimmingCharacters(in: .newlines), branch.oid)
@@ -68,8 +106,9 @@ final class GitBranchesInteractionTests: XCTestCase {
         let scene = try GitBranchesScene(); defer { scene.close() }
         let branch = try await scene.repo.divergedBranch(); try await scene.ready()
         let controller = scene.controller
-        controller.showBranchHistory(branch.ref, repository: try XCTUnwrap(controller.repositoryIdentity))
-        controller.logFilter = GitLogFilter(allBranches: true, text: "Topic only", author: "Branch Fixture", path: "f.txt", reference: branch.ref)
+        controller.historyOptions = GitHistoryOptions(reference: branch.ref, dates: .init(from: "2000-01-01", through: "2099-12-31"))
+        controller.panel = .history
+        controller.logFilter = GitLogFilter(allBranches: true, text: "Topic only", author: "Branch Fixture", path: "f.txt")
         try await eventually("filtered branch history", timeout: .seconds(30)) { controller.commits.map(\.hash) == [branch.oid] }
         let before = try scene.repo.snapshot(), finished = controller.refreshesFinished
         _ = try await scene.openBranches(); scene.tools.branchAction(.rename, branch: branch)
@@ -78,12 +117,14 @@ final class GitBranchesInteractionTests: XCTestCase {
         try await eventually("rename and history refresh", timeout: .seconds(30)) { controller.refreshesFinished > finished && !controller.busy }
         XCTAssertEqual(try scene.repo.git(["rev-parse", "refs/heads/renamed/topic"]).trimmingCharacters(in: .newlines), branch.oid)
         XCTAssertNotEqual(try scene.repo.gitStatus(["show-ref", "--verify", branch.ref]), 0)
-        XCTAssertEqual(controller.logFilter, GitLogFilter(allBranches: true, text: "Topic only", author: "Branch Fixture", path: "f.txt", reference: "refs/heads/renamed/topic"))
+        XCTAssertEqual(controller.logFilter, GitLogFilter(allBranches: true, text: "Topic only", author: "Branch Fixture", path: "f.txt"))
+        XCTAssertEqual(controller.historyOptions, GitHistoryOptions(reference: "refs/heads/renamed/topic", dates: .init(from: "2000-01-01", through: "2099-12-31")))
+        XCTAssertEqual(controller.history.reading.query.scope, .reference("refs/heads/renamed/topic"))
+        XCTAssertEqual(controller.history.reading.notice, "")
         XCTAssertEqual(controller.notice, "")
         XCTAssertEqual(controller.commits.map(\.hash), [branch.oid])
-        let history = GitHistoryList(controller: controller)
-        history.apply(.init(controller))
-        XCTAssertEqual(scene.find(GitBranchHistoryChip.self, in: history).first?.reference, "refs/heads/renamed/topic")
+        let panel = scene.historyPanel(), history = try XCTUnwrap(scene.find(GitHistoryBrowser.self, in: panel).first)
+        XCTAssertTrue(scene.find(GitHistoryFilterChip.self, in: history).contains { $0.toolTip == "refs/heads/renamed/topic" })
         XCTAssertEqual(try scene.repo.snapshot(), before)
     }
     @MainActor func testTrackingRowsStayAlignedAndUseTheCatalogWhileFiltering() async throws {
@@ -170,6 +211,7 @@ final class GitBranchesInteractionTests: XCTestCase {
     @MainActor func testUnmergedDeleteAsksTwiceNamesCommitsAndReturnCancels() async throws {
         let scene = try GitBranchesScene(); defer { scene.close() }
         let branch = try await scene.repo.divergedBranch(); try await scene.ready(); _ = try await scene.openBranches()
+        scene.controller.historyOptions.reference = branch.ref
         var asked: [NSAlert] = []
         scene.tools.questions.answerAlert = { alert in
             asked.append(alert)
@@ -184,14 +226,48 @@ final class GitBranchesInteractionTests: XCTestCase {
         XCTAssertTrue(second.informativeText.contains(String(branch.oid.prefix(7))))
         XCTAssertTrue(second.informativeText.contains("not in main"))
         XCTAssertEqual(try scene.repo.git(["rev-parse", branch.ref]).trimmingCharacters(in: .newlines), branch.oid)
+        XCTAssertEqual(scene.controller.historyOptions.reference, branch.ref, "Cancelling must retain the active filter")
     }
-    @MainActor func testConfirmedDeleteUsesReviewedRefAndPreservesWorktree() async throws {
+    @MainActor func testConfirmedDeleteClearsTheLiveHistoryReferenceAndPreservesOtherFilters() async throws {
         let scene = try GitBranchesScene(); defer { scene.close() }
         let branch = try await scene.repo.divergedBranch(); try await scene.ready(); _ = try await scene.openBranches()
+        let controller = scene.controller, main = try await scene.repo.branch("main")
+        controller.panel = .history
+        controller.logFilter = .init(allBranches: true, author: "Branch Fixture", path: "f.txt")
+        controller.historyOptions = .init(reference: branch.ref, dates: .init(from: "2000-01-01", through: "2099-12-31"))
+        try await eventually("selected branch history", timeout: .seconds(30)) {
+            controller.history.reading.query.scope == .reference(branch.ref) && !controller.history.reading.loading
+        }
         scene.tools.questions.answerAlert = { _ in .alertFirstButtonReturn }
-        let before = try scene.repo.snapshot()
+        let before = try scene.repo.snapshot(), filter = controller.logFilter
         await scene.tools.delete(branch)
         XCTAssertEqual(try scene.repo.git(["branch", "--list", "topic"]), "")
+        XCTAssertEqual(controller.logFilter, filter)
+        XCTAssertEqual(controller.historyOptions, GitHistoryOptions(dates: .init(from: "2000-01-01", through: "2099-12-31")))
+        XCTAssertEqual(controller.history.reading.query.scope, .all)
+        XCTAssertEqual(controller.history.reading.commits.map(\.hash), [main.oid])
+        XCTAssertEqual(controller.history.reading.notice, "")
+        let panel = scene.historyPanel(), browser = try XCTUnwrap(scene.find(GitHistoryBrowser.self, in: panel).first)
+        XCTAssertFalse(scene.find(GitHistoryFilterChip.self, in: browser).contains { $0.toolTip == branch.ref })
+        XCTAssertTrue(scene.find(GitHistoryFilterChip.self, in: browser).contains { $0.toolTip == "All branches" })
+        XCTAssertEqual(try scene.repo.snapshot(), before)
+    }
+    @MainActor func testDeleteDoesNotClearAHistoryFilterChangedDuringTheWrite() async throws {
+        let scene = try GitBranchesScene(); defer { scene.close() }
+        let branch = try await scene.repo.divergedBranch(); try await scene.ready(); _ = try await scene.openBranches()
+        let controller = scene.controller, main = try await scene.repo.branch("main"), before = try scene.repo.snapshot()
+        controller.historyOptions.reference = branch.ref
+        let subscription = controller.$busy.sink { busy in
+            if busy { controller.historyOptions.reference = main.ref }
+        }
+        defer { subscription.cancel() }
+        scene.tools.questions.answerAlert = { _ in .alertFirstButtonReturn }
+        await scene.tools.delete(branch)
+        XCTAssertEqual(try scene.repo.git(["branch", "--list", "topic"]), "")
+        XCTAssertEqual(controller.historyOptions.reference, main.ref)
+        XCTAssertEqual(controller.history.reading.query.scope, .reference(main.ref))
+        XCTAssertEqual(controller.history.reading.commits.map(\.hash), [main.oid])
+        XCTAssertEqual(controller.history.reading.notice, "")
         XCTAssertEqual(try scene.repo.snapshot(), before)
     }
     @MainActor func testRepositorySwitchDuringQuestionRetiresConsent() async throws {
@@ -205,19 +281,37 @@ final class GitBranchesInteractionTests: XCTestCase {
         XCTAssertEqual(try scene.repo.git(["rev-parse", branch.ref]).trimmingCharacters(in: .newlines), branch.oid)
         XCTAssertEqual(try other.read("f.txt"), "base\n")
     }
-    @MainActor func testBranchHistoryCallbackCarriesRepositoryAndLegacyFallbackFilters() async throws {
+    @MainActor func testShowBranchHistoryUsesTheLiveBrowserAndItsRemovableReferenceChip() async throws {
         let scene = try GitBranchesScene(); defer { scene.close() }
-        let branch = try await scene.repo.divergedBranch(); try await scene.ready(); _ = try await scene.openBranches()
-        let identity = try XCTUnwrap(scene.controller.repositoryIdentity)
-        var refs: [String] = []
-        scene.controller.onShowBranchHistory = { ref, repository in XCTAssertEqual(repository, identity); refs.append(ref) }
-        scene.tools.branchAction(.history, branch: branch)
-        XCTAssertEqual(refs, [branch.ref])
-        scene.controller.onShowBranchHistory = nil
-        scene.controller.showBranchHistory(branch.ref, repository: identity)
-        try await eventually("branch history", timeout: .seconds(30)) { scene.controller.commits.contains { $0.subject == "Topic only" } }
-        XCTAssertEqual(scene.controller.panel, .history)
-        XCTAssertEqual(scene.controller.logFilter.reference, branch.ref)
+        _ = try await scene.repo.divergedBranch(); try scene.repo.origin(branch: "topic")
+        try await scene.ready()
+        let controller = scene.controller, before = try scene.repo.snapshot()
+        let panel = scene.historyPanel(), browser = try XCTUnwrap(scene.find(GitHistoryBrowser.self, in: panel).first)
+        let main = try await scene.repo.branch("main")
+        for name in ["topic", "origin/topic"] {
+            let branch = try await scene.repo.branch(name)
+            controller.logFilter = .init(text: "An unrelated previous search", author: "Nobody", path: "absent.txt")
+            controller.historyOptions.dates = .init(from: "2000-01-01", through: "2000-01-01")
+            _ = try await scene.openBranches(); scene.tools.branchAction(.history, branch: branch)
+            await controller.refresh()
+            XCTAssertEqual(controller.panel, .history)
+            XCTAssertEqual(controller.historyOptions, GitHistoryOptions(reference: branch.ref))
+            XCTAssertEqual(controller.history.reading.query.scope, .reference(branch.ref))
+            XCTAssertEqual(controller.history.reading.commits.first?.hash, branch.oid)
+            XCTAssertEqual(controller.history.reading.notice, "")
+            panel.refresh(); panel.layoutSubtreeIfNeeded()
+            let chip = try XCTUnwrap(scene.find(GitHistoryFilterChip.self, in: browser).first { $0.toolTip == branch.ref })
+            XCTAssertEqual(chip.remove.accessibilityLabel(), "Remove " + branch.ref)
+            chip.remove.onPress?()
+            try await eventually("removing the branch filter reads current History", timeout: .seconds(30)) {
+                controller.history.reading.query.scope == .current && !controller.history.reading.loading
+            }
+            XCTAssertNil(controller.historyOptions.reference)
+            XCTAssertEqual(controller.history.reading.commits.map(\.hash), [main.oid])
+            panel.refresh()
+            XCTAssertFalse(scene.find(GitHistoryFilterChip.self, in: browser).contains { $0.toolTip == branch.ref })
+        }
+        XCTAssertEqual(try scene.repo.snapshot(), before)
     }
     @MainActor func testBranchHistoryReferenceRetiresOnlyAfterSwitchingRepositories() async throws {
         for sameNamedBranch in [false, true] {
@@ -242,7 +336,7 @@ final class GitBranchesInteractionTests: XCTestCase {
             try await eventually("same repository folder history", timeout: .seconds(30)) {
                 controller.refreshesFinished > finished && !controller.loading
             }
-            XCTAssertEqual(controller.logFilter.reference, branch.ref, "A subfolder keeps its repository's branch filter")
+            XCTAssertEqual(controller.historyOptions.reference, branch.ref, "A subfolder keeps its repository's branch filter")
 
             finished = controller.refreshesFinished
             controller.root = other.path
@@ -252,7 +346,7 @@ final class GitBranchesInteractionTests: XCTestCase {
             try await eventually("other repository file history", timeout: .seconds(30)) {
                 controller.refreshesFinished > finished && !controller.loading
             }
-            XCTAssertNil(controller.logFilter.reference, "Repository A's ref cannot filter B, even if B has a same-named branch")
+            XCTAssertNil(controller.historyOptions.reference, "Repository A's ref cannot filter B, even if B has a same-named branch")
             XCTAssertEqual(controller.logFilter.text, "B file history")
             XCTAssertEqual(controller.logFilter.author, "Branch Fixture")
             XCTAssertTrue(controller.logFilter.allBranches)
@@ -276,7 +370,7 @@ final class GitBranchesInteractionTests: XCTestCase {
         let controller = scene.controller
         controller.showBranchHistory(branch.ref, repository: try XCTUnwrap(controller.repositoryIdentity))
         controller.logFilter.text = "Existing filter"
-        let oldFilter = controller.logFilter
+        let oldFilter = controller.logFilter, oldOptions = controller.historyOptions
         var held: CheckedContinuation<Void, Never>?, shouldHold = true
         controller.statusDidRead = {
             if shouldHold { shouldHold = false; await withCheckedContinuation { held = $0 } }
@@ -290,21 +384,17 @@ final class GitBranchesInteractionTests: XCTestCase {
         controller.showBranchHistory(destination.ref, repository: identity)
         XCTAssertEqual(controller.logFilter, oldFilter, "An unavailable selection cannot start a new filter against the old snapshot")
         XCTAssertTrue(controller.notice.localizedCaseInsensitiveContains("loading"))
-        var callbacks = 0
-        controller.onShowBranchHistory = { _, _ in callbacks += 1 }
-        controller.showBranchHistory(destination.ref, repository: identity)
-        XCTAssertEqual(callbacks, 0, "The adapter also waits for a matching repository snapshot")
-        controller.onShowBranchHistory = nil
+        XCTAssertEqual(controller.historyOptions, oldOptions, "The new browser also waits for a matching repository snapshot")
         controller.statusDidRead = nil; held?.resume(); held = nil
         try await eventually("destination status publication", timeout: .seconds(30)) {
             controller.refreshesFinished > finished && !controller.loading
         }
-        XCTAssertNil(controller.logFilter.reference)
+        XCTAssertNil(controller.historyOptions.reference)
         controller.showBranchHistory(destination.ref, repository: identity)
         try await eventually("retry reads the destination branch", timeout: .seconds(30)) {
             controller.commits.contains { $0.hash == destination.oid }
         }
-        XCTAssertEqual(controller.logFilter.reference, destination.ref)
+        XCTAssertEqual(controller.historyOptions.reference, destination.ref)
         XCTAssertEqual(controller.notice, "")
         XCTAssertEqual(try scene.repo.snapshot(), beforeA)
         XCTAssertEqual(try other.snapshot(), beforeB)
@@ -401,6 +491,11 @@ private actor GitBranchWriteGate {
     }
     func close() { tools.close(); controller.letGo(); window.contentView = nil; window.close(); repo.close() }
     func ready() async throws { await controller.refresh(); try await eventually("repository ready", timeout: .seconds(30)) { self.controller.statusRead && !self.controller.loading } }
+    func historyPanel() -> GitPanelView {
+        let panel = GitPanelView(controller: controller)
+        panel.frame = host.bounds; host.addSubview(panel); panel.refresh(); panel.layoutSubtreeIfNeeded()
+        return panel
+    }
     func openBranches() async throws -> GitBranchesPopover {
         tools.showBranches(from: anchor)
         try await eventually("branch catalog", timeout: .seconds(30)) { self.tools.branches?.catalog != nil }

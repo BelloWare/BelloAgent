@@ -292,9 +292,9 @@ final class GitBranchesTests: XCTestCase {
     func testHistoryHashSearchHonorsExplicitBranchEvenWithAllBranchesEnabled() async throws {
         let f = try BranchFixture(); defer { f.close() }
         let topic = try await f.divergedBranch(), before = try f.snapshot()
-        let excluded = try await f.service.log(in: f.path, filter: GitLogFilter(allBranches: true, text: topic.oid, reference: "refs/heads/main"))
+        let excluded = try await f.service.log(in: f.path, filter: GitLogFilter(allBranches: true, text: topic.oid), reference: "refs/heads/main")
         XCTAssertTrue(excluded.isEmpty, "An explicit branch filter must also constrain hash matches")
-        let included = try await f.service.log(in: f.path, filter: GitLogFilter(allBranches: true, text: topic.oid, reference: topic.ref))
+        let included = try await f.service.log(in: f.path, filter: GitLogFilter(allBranches: true, text: topic.oid), reference: topic.ref)
         XCTAssertEqual(included.map(\.hash), [topic.oid])
         XCTAssertEqual(try f.snapshot(), before)
     }

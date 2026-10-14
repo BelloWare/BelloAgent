@@ -65,8 +65,8 @@ import GitView
                 PiKit.TextLine(PiKit.Line("No unique commits", font: PiKit.Font.body, color: .piInkTertiary))
             })); return
         }
-        list.reload(.init(count: commits.count, key: { commits[$0].hash }, height: { index, width in
-            GitCommitRowView.height(of: commits[index], width: width)
+        list.reload(.init(count: commits.count, key: { commits[$0].hash }, height: { index, _ in
+            GitHistoryRow.height(commits[index])
         }, view: { index, existing in
             let row = (existing as? GitCompareCommitRow) ?? GitCompareCommitRow()
             row.show(commits[index]); return row
@@ -96,10 +96,10 @@ import GitView
 }
 
 @MainActor private final class GitCompareCommitRow: NSView {
-    private let content = GitCommitRowContent()
+    private let content = GitHistoryRowContent()
     init() { super.init(frame: .zero); addSubview(content); setAccessibilityElement(true); setAccessibilityRole(.staticText) }
     required init?(coder: NSCoder) { nil }
     override var isFlipped: Bool { true }
     override func layout() { super.layout(); content.frame = bounds.insetBy(dx: 8, dy: 5) }
-    func show(_ commit: GitCommit) { content.apply(commit); setAccessibilityLabel(content.spokenText); toolTip = commit.hash + "\n" + commit.subject }
+    func show(_ commit: GitCommit) { content.show(commit); setAccessibilityLabel(content.spokenText); toolTip = commit.hash + "\n" + commit.subject }
 }

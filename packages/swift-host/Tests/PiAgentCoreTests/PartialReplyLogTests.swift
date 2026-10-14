@@ -30,6 +30,37 @@ private actor DeltaThenAnswerClient: ModelClient {
     }
 }
 
+/// Stop the first reply before it can be journaled; a later Retry/Resume
+/// receives an unexplained incomplete, then its automatic retry completes.
+private actor RetainedReplyRetryClient: ModelClient {
+    let first = StallingClient()
+    private(set) var requests = 0
+    private(set) var retryWaiting = false
+    private var released = false
+    func releaseRetry() { released = true }
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        try await complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,turnID:turnID,purpose:purpose,onObservation:{ _ in },onDelta:onDelta)
+    }
+    func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        requests += 1
+        let attempt = requests == 1 ? "attempt" : requests == 2 ? "rejected" : "accepted"
+        await onObservation(RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:purpose,fingerprint:"fixture",profile:profile))
+        if requests == 1 {
+            return try await first.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,turnID:turnID,purpose:purpose,onDelta:onDelta)
+        }
+        if requests == 2 {
+            try await onDelta(.part(ResponsePartEvent(attemptID:"rejected",ordinal:1,itemID:"rejected",outputIndex:0,partIndex:0,kind:"text",update:"append",text:"Rejected later reply",observedAt:1)))
+            try await onDelta(.text("Rejected later reply"))
+            try await onDelta(.thinking("Rejected later reasoning"))
+            throw PiErrorText.incompleteFailure(.null)
+        }
+        retryWaiting = true
+        while !released { try await Task.sleep(nanoseconds:1_000_000) }
+        try await onDelta(.text("Accepted later reply"))
+        return answer("Accepted later reply")
+    }
+}
+
 /// The reply a run is streaming survives a helper that dies mid-reply
 /// (`PartialReplyLog`): a reopen shows it as the interrupted reply a stop
 /// leaves, and sends nothing again.
@@ -246,6 +277,88 @@ final class PartialReplyLogTests: XCTestCase {
         XCTAssertEqual(kept.map(\.id), [try XCTUnwrap(streamingID)]); XCTAssertEqual(kept.first?.text, pieces.joined())
         XCTAssertFalse(FileManager.default.fileExists(atPath: log.path))
         await reopened.close()
+    }
+
+    func testRetryPreservesAnEarlierUnsavedReplyWhenANewerReplyIsIncomplete() async throws {
+        try await assertEarlierUnsavedReplySurvivesIncomplete(resume:false)
+    }
+    func testResumePreservesAnEarlierUnsavedReplyWhenANewerReplyIsIncomplete() async throws {
+        try await assertEarlierUnsavedReplySurvivesIncomplete(resume:true)
+    }
+    private func assertEarlierUnsavedReplySurvivesIncomplete(resume: Bool) async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at:chat.root) }
+        let client = RetainedReplyRetryClient(), refused = LockedFlags()
+        let session = try chat.session("chat",client:client,beforeAppend: { record in
+            if record["message"]["role"].text == "assistant", refused.value == nil {
+                refused.value = record["id"].text
+                throw AgentError("session_record_limit","fixture: the earlier reply will not write")
+            }
+        })
+        await session.useRetrySettings(.init(maxRetries:1,baseDelayMs:1))
+        _ = try await session.submit(Submission(commandID:"c1",turnID:"t1",text:"a question"),steer:false)
+        try await stream(client.first)
+        await session.flushStreamed()
+        let sessionPath = await session.path, streamingID = await session.partialID
+        let path = try XCTUnwrap(sessionPath), replyID = try XCTUnwrap(streamingID)
+        let journal = URL(fileURLWithPath:path), directory = journal.deletingLastPathComponent()
+        let log = PartialReplyLog.url(for:journal)
+        XCTAssertTrue(FileManager.default.fileExists(atPath:log.path))
+        // The open journal can still append, but keepAside cannot rename.
+        try FileManager.default.setAttributes([.posixPermissions:0o500],ofItemAtPath:directory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:directory.path) }
+        await session.stop()
+        try await eventually { !(await session.isRunning) }
+        XCTAssertNotNil(refused.value)
+        let unsaved = await session.partialReplyUnsaved
+        XCTAssertTrue(unsaved)
+        let original = try Data(contentsOf:log)
+        XCTAssertFalse(original.isEmpty)
+
+        if resume { _ = try await session.continueRun(commandID:"resume") }
+        else { try await session.retryRun() }
+        try await eventually { await client.retryWaiting }
+        let retained = await session.partialReplyUnsaved, retainedPath = await session.partialReplyLog?.path
+        XCTAssertTrue(retained)
+        XCTAssertEqual(retainedPath,log.path,"The earlier reply still owns the log")
+        XCTAssertEqual(try Data(contentsOf:log),original,"Incomplete cleanup must not truncate an earlier reply")
+        let rejected = await session.history.filter { $0.kind == "requestLedger" && $0.requestAttemptIDs == ["rejected"] }
+        XCTAssertEqual(rejected.count,1)
+        XCTAssertTrue(rejected.first?.responseTimeline?.segments.isEmpty == true)
+        await client.releaseRetry()
+        try await eventually { !(await session.isRunning) }
+        let requests = await client.requests, state = await session.state
+        XCTAssertEqual(requests,3); XCTAssertEqual(state,.idle)
+        let stillUnsaved = await session.partialReplyUnsaved, stillRetainedPath = await session.partialReplyLog?.path
+        XCTAssertTrue(stillUnsaved); XCTAssertEqual(stillRetainedPath,log.path)
+        XCTAssertEqual(try Data(contentsOf:log),original,"The successful retry must not overwrite the retained reply")
+        let current = await replies(session)
+        XCTAssertEqual(current.map(\.text),["Accepted later reply"])
+
+        // Reopen the actual files left by a crash, without permitting the
+        // live session's close to move the retained log out of the way.
+        let copy = try killedCopy(path)
+        defer { try? FileManager.default.removeItem(at:copy.deletingLastPathComponent()) }
+        await session.close()
+        try FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:directory.path)
+        for _ in 0..<2 {
+            let noDispatch = ScriptClient([])
+            let reopened = try chat.session("chat",client:noDispatch,resume:copy.path,in:copy.deletingLastPathComponent())
+            let kept = await replies(reopened), calls = await noDispatch.count
+            let earlier = kept.filter { $0.id == replyID }
+            XCTAssertEqual(earlier.count,1)
+            XCTAssertEqual(earlier.first?.text,pieces.joined())
+            XCTAssertEqual(earlier.first?.thinking,"Thinking it over.")
+            XCTAssertEqual(earlier.first?.stopReason,"interrupted")
+            XCTAssertEqual(earlier.first?.replayEligible,false)
+            XCTAssertEqual(earlier.first?.responseTimeline?.segments.map(\.text),["Thinking it over.",pieces.joined()])
+            XCTAssertEqual(kept.filter { $0.text == "Accepted later reply" }.count,1)
+            XCTAssertFalse(kept.contains { $0.text.contains("Rejected later") || $0.thinking.contains("Rejected later") })
+            let rejected = await reopened.history.filter { $0.kind == "requestLedger" && $0.requestAttemptIDs == ["rejected"] }
+            XCTAssertEqual(rejected.count,1)
+            XCTAssertTrue(rejected.first?.responseTimeline?.segments.isEmpty == true)
+            XCTAssertEqual(calls,0,"Reopening must not dispatch a provider request")
+            await reopened.close()
+        }
     }
 
     /// A reply whose turn the shown timeline no longer holds (an edit hid

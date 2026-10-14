@@ -4,6 +4,29 @@ import Foundation
 // appended text rather than re-sending the entire document on every fragment.
 
 extension AgentSession {
+    /// An unexplained incomplete is not an assistant response, even as a
+    /// display-only partial. The app projects orphan request ledgers as
+    /// replies, so persist a content-free ledger and drop this attempt's log.
+    func discardIncompleteReply() throws {
+        partialText=""; partialThinking=""; partialTimeline=ResponseTimeline()
+        // A refused journal update must not leave this attempt recoverable.
+        dropStreamed()
+        // If keepAside failed for an earlier unsaved reply, it still owns
+        // this log; logStreamed refuses to put the current attempt in it.
+        if !partialReplyUnsaved {
+            try partialReplyLog?.discard()
+            partialReplyLog=nil
+        }
+        if let id=partialLedgerID, var row=history.first(where: { $0.id == id }) {
+            row.responseTimeline=ResponseTimeline(); row.responseTimeline?.finish("failed")
+            row.detail="Request failed"
+            // The durable ledger is still content-free. Clear the live copy
+            // too even if recording its failure receipt is refused.
+            try updatePresentation(row,persist:false)
+            try updatePresentation(row,persist:true)
+        }
+        partialLedgerID=nil; resetPartialRow()
+    }
     /// Clears everything the streaming row is built from: its tool cards, the
     /// count of calls it has seen.
     func resetPartialRow() {
@@ -22,12 +45,11 @@ extension AgentSession {
             logStreamed(.part(part))
             let previous = partialTimeline.segments.last?.id
             changed = partialTimeline.consume(part)
-            // The ledger is journaled when a part begins and, with its
-            // terminal receipt, when the reply ends; every record holds the
-            // whole timeline so far. An end or a repeated `.done` of a part
-            // it holds only refreshes the row in memory.
-            if changed, previous != partialTimeline.segments.last?.id { saveResponseLedger(persist:true) }
-            else if changed, part.update == "end" || part.update == "replace" { saveResponseLedger(persist:false) }
+            // Until the terminal is accepted, only the removable .stream log
+            // keeps this content on disk. An append-only ledger must not
+            // expose a rejected reply if a later cleanup write fails. Normal
+            // completed/interrupted replies persist their timeline at settlement.
+            if changed, previous != partialTimeline.segments.last?.id || part.update == "end" || part.update == "replace" { saveResponseLedger(persist:false) }
         case .text(let text):
             partialText += text
             changed = !text.isEmpty

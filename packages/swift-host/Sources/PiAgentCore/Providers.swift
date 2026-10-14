@@ -3,6 +3,10 @@ import Foundation
 import FoundationNetworking
 #endif
 
+/// Stop still wins, but a caller must discard a terminal it already knows
+/// was an unexplained incomplete instead of preserving it as a cut stream.
+struct UnexplainedIncompleteCancellation: Error { let attemptID: String }
+
 public struct ProviderClient: ModelClient {
     public let traces: TraceStore
     public init(traces: TraceStore) { self.traces=traces }
@@ -12,7 +16,7 @@ public struct ProviderClient: ModelClient {
         let safe = credentials.requestBody(Data(error.message.utf8))
         let message = safe.omitted ? "Provider error details exceeded the display safety limit." : String(decoding: safe.bytes, as: UTF8.self)
         let piText = error.providerMessage.map { String(decoding: credentials.requestBody(Data($0.utf8)).bytes, as: UTF8.self) }
-        return AgentError(error.code, preview(message) + (message.utf8.count > 16_384 ? "\n[Error details truncated; inspect the retained request for more.]" : ""),failure:error.failure,attemptID:error.attemptID,providerMessage:piText)
+        return AgentError(error.code, preview(message) + (message.utf8.count > 16_384 ? "\n[Error details truncated; inspect the retained request for more.]" : ""),failure:error.failure,attemptID:error.attemptID,providerMessage:piText,discardIncompleteReply:error.discardIncompleteReply)
     }
     /// Profile custom headers can never replace transport, authentication or
     /// session/turn correlation headers.
@@ -197,6 +201,7 @@ public struct ProviderClient: ModelClient {
                             continue
                         }
                         let deltas = try accumulator.consume(value)
+                        if accumulator.terminal { await traces.usage(attempt, UsageObservation.normalized(accumulator.root["usage"], api: profile.api)) }
                         // The model starts generating when its first output
                         // item opens, whatever the item: hidden reasoning is
                         // part of the output it reports, so the decode span
@@ -241,6 +246,7 @@ public struct ProviderClient: ModelClient {
                 if profile.api == "openai-responses" { _ = observation.consume(value,streaming:false,at:lastBodyAt ?? nowMS()) }
                 await traces.reported(attempt,value:value,streaming:false)
                 try accumulator.acceptJSON(value)
+                await traces.usage(attempt, UsageObservation.normalized(accumulator.root["usage"], api: profile.api))
                 for part in displayEvents.consume(value, at: lastBodyAt, json: true) { try await onDelta(.part(part)) }
                 let reply=try accumulator.result()
                 if let time=lastBodyAt {
@@ -263,6 +269,8 @@ public struct ProviderClient: ModelClient {
             return result
         } catch {
             stream.cancel()
+            let incomplete = accumulator.incompleteFailure
+            let discardIncomplete = incomplete?.code == "provider_incomplete_unexplained"
             observation.interrupt(at:nowMS())
             let cancelled=Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled
             if !captureFinished {
@@ -271,11 +279,17 @@ public struct ProviderClient: ModelClient {
                 observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
             }
             if !settlementStarted, let lifecycle {
-                try await lifecycle.settleAttempt(AttemptSettlement(scope: lifecycle.scope, observation: observation, dispatched: didDispatch))
+                do { try await lifecycle.settleAttempt(AttemptSettlement(scope: lifecycle.scope, observation: observation, dispatched: didDispatch)) }
+                catch let error as AgentError { throw error.carrying(nil,discardIncompleteReply:discardIncomplete) }
             }
-            if let error = error as? AgentError, error.code.hasPrefix("accounting_") { throw error }
-            if cancelled { throw CancellationError() }
-            if let e=error as? AgentError { throw Self.safeFailure(AgentError(e.code,e.message,failure:e.failure,attemptID:attempt,providerMessage:e.providerMessage), credentials: credentials) }
+            if let error = error as? AgentError, error.code.hasPrefix("accounting_") { throw error.carrying(nil,discardIncompleteReply:discardIncomplete) }
+            if cancelled {
+                if discardIncomplete { throw UnexplainedIncompleteCancellation(attemptID:attempt) }
+                throw CancellationError()
+            }
+            // A transport failure after this terminal cannot turn its rejected
+            // content back into an ordinary interrupted reply.
+            if let e=incomplete ?? (error as? AgentError) { throw Self.safeFailure(AgentError(e.code,e.message,failure:e.failure,attemptID:attempt,providerMessage:e.providerMessage,discardIncompleteReply:e.discardIncompleteReply), credentials: credentials) }
             throw AgentError("provider_transport", Self.transportGuidance(error, attempt: attempt),failure:.transientTransport,attemptID:attempt,
                              providerMessage:PiErrorText.transport(error,afterResponse:status != 0))
         }
@@ -409,8 +423,17 @@ public struct ProviderAccumulator: Sendable {
         }
         return []
     }
+    var incompleteFailure: AgentError? {
+        guard terminal, api == "openai-responses", root["status"].text == "incomplete",
+              root["incomplete_details"]["reason"].text != "max_output_tokens" else { return nil }
+        return PiErrorText.incompleteFailure(root["incomplete_details"]["reason"])
+    }
     public func result() throws -> ModelReply {
         guard terminal else { throw AgentError("incomplete_stream","The stream ended without its terminal event. No tool arguments were executed.",providerMessage:ProviderClient.piIncompleteStream) }
+        // Classify the terminal before inspecting output or tool arguments.
+        // Pi keeps only max_output_tokens as a length stop; ours retries an
+        // unexplained incomplete, even when the proxy supplied no output.
+        if let incompleteFailure { throw incompleteFailure }
         var message=ChatMessage(role:"assistant",content:[]),calls:[ToolCall]=[]
         let rawContent=api=="openai-responses" ? root["output"]:root["content"]
         guard case .array(let listed)=rawContent else { throw AgentError("invalid_stream","Missing terminal output array") }
@@ -420,12 +443,6 @@ public struct ProviderAccumulator: Sendable {
         let raw=indexed.map(\.1)
         message.providerItems=raw
         let truncated=api=="openai-responses" ? root["status"].text=="incomplete":root["stop_reason"].text=="max_tokens"
-        // Pi's mapStopReason: only max_output_tokens is a length stop; any other
-        // incomplete response is an error.
-        if api=="openai-responses", truncated, root["incomplete_details"]["reason"].text != "max_output_tokens" {
-            let text=PiErrorText.incomplete(root["incomplete_details"]["reason"].text)
-            throw AgentError("provider_incomplete",text,providerMessage:text)
-        }
         for (index,item) in indexed {
             switch item["type"].text {
             case "message":

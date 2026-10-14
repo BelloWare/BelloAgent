@@ -66,9 +66,9 @@ private actor ThreePartClient: ModelClient {
 }
 
 final class TimelineDurabilityTests: XCTestCase {
-    /// The request ledger is journaled when a part begins and when the reply
-    /// ends, not again for every `.done` of a part it already holds.
-    func testALedgerIsJournaledOncePerPartAndAtItsEnd() async throws {
+    /// A completed reply retains all parts, with bounded journal writes.
+    /// Provisional content lives in the partial log until settlement.
+    func testASettledLedgerKeepsAllPartsWithBoundedJournalWrites() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let session = try make(root,client:ThreePartClient())
         _ = try await session.submit(Submission(commandID:"one",turnID:"one",text:"Check the file"),steer:false)
@@ -136,15 +136,29 @@ final class TimelineDurabilityTests: XCTestCase {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let client = TimelineFixtureClient(holdsFirst:true), session = try make(root,client:client)
         _ = try await session.submit(Submission(commandID:"one",turnID:"one",text:"Task"),steer:false)
-        try await eventually { await session.partialTimeline.segments.count == 3 }
+        try await eventually {
+            let text=await session.partialText, thinking=await session.partialThinking
+            return text == "First continued" && thinking == "Returned explanation"
+        }
+        await session.flushStreamed()
         let savedPath = await session.path
+        let source = URL(fileURLWithPath:try XCTUnwrap(savedPath))
         let crash = root.appendingPathComponent("state/crash.jsonl")
-        try FileManager.default.copyItem(atPath:try XCTUnwrap(savedPath),toPath:crash.path)
+        // A crash leaves both files: unaccepted model content is recoverable
+        // from .stream, not an irrevocable content-bearing ledger record.
+        try FileManager.default.copyItem(at:source,to:crash)
+        try FileManager.default.copyItem(at:PartialReplyLog.url(for:source),to:PartialReplyLog.url(for:crash))
         let noDispatch = ScriptClient([]), resumed = try make(root,client:noDispatch,path:crash.path)
         let ledger = await resumed.visible.first { $0.kind == "requestLedger" }
-        XCTAssertEqual(ledger?.responseTimeline?.segments.map(\.text),["First ","Returned explanation","continued"])
+        XCTAssertEqual(ledger?.responseTimeline?.segments.count,0)
         XCTAssertEqual(ledger?.responseTimeline?.terminal,"interrupted")
         XCTAssertEqual(ledger?.responseTimeline?.coverage,"partial")
+        let prefix = await resumed.visible.first { $0.role == "assistant" }
+        XCTAssertEqual(prefix?.responseTimeline?.segments.map(\.text),["First ","Returned explanation","continued"])
+        XCTAssertEqual(prefix?.text,"First continued")
+        XCTAssertEqual(prefix?.thinking,"Returned explanation")
+        XCTAssertEqual(prefix?.responseTimeline?.terminal,"interrupted")
+        XCTAssertEqual(prefix?.replayEligible,false)
         let calls = await noDispatch.count; XCTAssertEqual(calls,0)
         let context = await resumed.context
         XCTAssertFalse(context.contains { $0.kind == "requestLedger" })

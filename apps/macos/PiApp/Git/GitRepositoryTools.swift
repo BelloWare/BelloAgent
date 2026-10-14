@@ -131,7 +131,7 @@ import GitView
                 let detail = "\(review.unmergedCount) commits on \(branch.name) are not in \(base) (\(review.head.oid.prefix(8))). Deleting the branch removes its name and reflog; these commits may become unreachable.\n\n\(commits)" + (review.unmergedCount > review.commits.count ? "\n… and \(review.unmergedCount - review.commits.count) more." : "")
                 guard await questions.confirm("Delete unmerged branch \(branch.name)?", detail, action: "Delete Unmerged Branch", destructive: true, cancelIsDefault: true, over: parent), valid(token, identity) else { return }
             }
-            let result = try await controller.performRepositoryWrite(repository: identity) { [service] root in try await service.deleteBranch(review, allowUnmerged: review.unmergedCount > 0, in: root) }
+            let result = try await controller.deleteBranch(review, allowUnmerged: review.unmergedCount > 0, repository: identity)
             controller.reportRepositoryResult(result, repository: identity)
             if valid(token, identity) { close() }
         } catch { if valid(token, identity) { showFailure(error.localizedDescription) } }
