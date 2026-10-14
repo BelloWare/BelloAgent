@@ -193,6 +193,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// The chat whose rename sheet is open.
     @Published var renameTarget: RenameTarget?
     @Published var projectSidebarStates: [String: ProjectSidebarState] = [:] { didSet { sidebarIndex.invalidate() } }
+    @Published var sidebarViewState = SidebarViewState() { didSet { sidebarIndex.invalidate() } }
+    var sidebarViewWrite: Task<Void, Never>?
+    var dirtySidebarViewState = false
+    var sidebarViewModeChanged = false
+    var sidebarViewPagesChanged: Set<String> = []
     @Published var topics: [TopicRecord] = [] { didSet { sidebarIndex.invalidate() } }
     @Published var topicEditor: TopicEditorTarget?
     /// The chat whose webhook the preview sheet shows.

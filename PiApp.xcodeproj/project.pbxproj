@@ -20,6 +20,7 @@
 		01E0DF335B9E1BEBDB6B3B7B /* SmoothShellTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6371829EC4909ABE377E7EA4 /* SmoothShellTests.swift */; };
 		02AB2EF3C276011967EF329D /* WorkspaceResources.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9C9CF619028C9BDB105EBF0 /* WorkspaceResources.swift */; };
 		031673B38B79F3D5203266A3 /* ChatOpenPlacementTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51924FD4946EDCAF9331B8EC /* ChatOpenPlacementTests.swift */; };
+		0336912FE7A82E319D21FB1A /* SidebarHeaderActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C589F2A53C12884BF1382E7 /* SidebarHeaderActions.swift */; };
 		03C0A2017B35A2EE5A5604B4 /* NextRequestModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF98A7A05F92EE427BC34480 /* NextRequestModel.swift */; };
 		03CB1848938256D70E335738 /* AutomaticContextTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C1BFEEEE75FEC2B2F2880C7 /* AutomaticContextTests.swift */; };
 		0436A8F13D571CF69F454AF7 /* ContextDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = B91E690736A2B9606F92C71C /* ContextDiagnostics.swift */; };
@@ -354,6 +355,7 @@
 		47F69D086A3FF74DB2E21EFD /* WorkspaceContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48B202B6A630835604556E2C /* WorkspaceContent.swift */; };
 		4826E8F0562AA5984D60E1AA /* WorkspaceRedrawTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50D30D6F28DFAF77F4E8F328 /* WorkspaceRedrawTests.swift */; };
 		483E3E11B63DF9AFC47B7532 /* NativeTranscriptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D08476ED085159E85CA27B84 /* NativeTranscriptView.swift */; };
+		48BA10612C41B90EBD9E694E /* SidebarViewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E08078A864AC02AF8FE774E /* SidebarViewState.swift */; };
 		4915CF0EDEF0D96E9D967D78 /* KeyCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 994545FF52002DB9E5DC25B7 /* KeyCode.swift */; };
 		495187808B37D459D08E3408 /* SubagentHeaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46096ADDD5BBE59C21B6E768 /* SubagentHeaderView.swift */; };
 		4972970D105D333529D55451 /* MonitorParityReferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = 575C2A187D62E29A303E79FC /* MonitorParityReferences.swift */; };
@@ -500,6 +502,7 @@
 		653C72704068BCFA5B9A1D4F /* TranscriptNativeMessageKindBehaviourTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 737CE700D96AD17D0A02A779 /* TranscriptNativeMessageKindBehaviourTests.swift */; };
 		656E130CE74003C0E329C454 /* TranscriptPlainTextReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C26784C1A77C839948FB331 /* TranscriptPlainTextReference.swift */; };
 		657A8B95145B4FAD2244C738 /* WorkspaceConnectionSwitch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82AAB4E83E61653FBADB4264 /* WorkspaceConnectionSwitch.swift */; };
+		657E893F7EA93ECFC68A6FD3 /* SidebarHeaderActions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C589F2A53C12884BF1382E7 /* SidebarHeaderActions.swift */; };
 		6585852EDAE4DB0252529EE1 /* InspectorItemsOutline.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ACF5575C7A0765CCE538867 /* InspectorItemsOutline.swift */; };
 		65D95C20369D022D030C9E3D /* SubagentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06DC714AEC2E5A8277D006CF /* SubagentModels.swift */; };
 		6621AF6609FC04DB65A6A595 /* TurnAccountingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46174FE7691971BD819501D7 /* TurnAccountingTests.swift */; };
@@ -1014,6 +1017,7 @@
 		D636F47FDFA440FAB32F1411 /* FilePageReadTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABAF83A35F03C275F4EC5698 /* FilePageReadTests.swift */; };
 		D6566168045F2B3679B6D71A /* SessionInspectorWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47527ECCC7ACD25DEECB456D /* SessionInspectorWindow.swift */; };
 		D662B691BC1AEAA36EC0605C /* TopicSessionDragTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03BFE92A90D4B108808625ED /* TopicSessionDragTests.swift */; };
+		D675F81D71B3C9BECD33A8B8 /* SidebarViewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E08078A864AC02AF8FE774E /* SidebarViewState.swift */; };
 		D6D2EE2CE1D952FFDF0366E8 /* SessionStatsPopovers.swift in Sources */ = {isa = PBXBuildFile; fileRef = 404C31A143E07012FAC91956 /* SessionStatsPopovers.swift */; };
 		D72F0EFA0C1768B4EA3CB471 /* GitWorkingTreeWatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E03982A5FA00EEB98E642B8 /* GitWorkingTreeWatcherTests.swift */; };
 		D801A7689FED5A8EF23BC9B9 /* WorkspaceDraftMarks.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC089FE1954B75F6159369C8 /* WorkspaceDraftMarks.swift */; };
@@ -1520,6 +1524,7 @@
 		4D301C9F9215E33033E8021F /* WebhookPreviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebhookPreviewSheet.swift; sourceTree = "<group>"; };
 		4D9270F67B22F8A445548E6B /* WorkspaceSubagents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSubagents.swift; sourceTree = "<group>"; };
 		4DE20A0B27B40678D8EFE797 /* TranscriptSwitchFirstFrameTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptSwitchFirstFrameTests.swift; sourceTree = "<group>"; };
+		4E08078A864AC02AF8FE774E /* SidebarViewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarViewState.swift; sourceTree = "<group>"; };
 		4E876685D4FDF23AB1D2D99C /* PiControlAccessibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiControlAccessibilityTests.swift; sourceTree = "<group>"; };
 		4E8F54C4A11455477354DDEE /* ConversationRunTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationRunTests.swift; sourceTree = "<group>"; };
 		4EE4C08410FAB24B02C593CA /* TaskPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TaskPresentation.swift; sourceTree = "<group>"; };
@@ -1682,6 +1687,7 @@
 		7B5AD8CE65CF1E547E8EC42F /* DashboardReader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardReader.swift; sourceTree = "<group>"; };
 		7BD3DB726BB2C8517BEA72A7 /* TranscriptSkillPillsReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptSkillPillsReference.swift; sourceTree = "<group>"; };
 		7BE0A1DA539E09BB68382ACA /* DashboardQuery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardQuery.swift; sourceTree = "<group>"; };
+		7C589F2A53C12884BF1382E7 /* SidebarHeaderActions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarHeaderActions.swift; sourceTree = "<group>"; };
 		7C636C2BEF455FB8E13EB126 /* InspectorRawTabReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorRawTabReference.swift; sourceTree = "<group>"; };
 		7C6BC000729839911B6DBA18 /* ReportMessageNavigationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReportMessageNavigationTests.swift; sourceTree = "<group>"; };
 		7CED4FC0B8CF56E965F7FA5F /* InspectorComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InspectorComponents.swift; sourceTree = "<group>"; };
@@ -2448,12 +2454,14 @@
 				DC6DF74DE69259C278544883 /* SidebarEntryViews.swift */,
 				E362E213F43C007D06A9748B /* SidebarGroupHeader.swift */,
 				CCCC5CF597441A108EE1D6B3 /* SidebarGroups.swift */,
+				7C589F2A53C12884BF1382E7 /* SidebarHeaderActions.swift */,
 				E4360F4B765505CF164ADB79 /* SidebarList.swift */,
 				61A593A003902F2A743AAE66 /* SidebarListDocument.swift */,
 				AAC5A834A65EF0FA85ADBBE7 /* SidebarMetricsLayout.swift */,
 				213C5E27F5FC7EDA3C4C9E8F /* SidebarSearch.swift */,
 				6726C6BA9128629870695E42 /* SidebarSelection.swift */,
 				539EF94D9613DB8814CBA14A /* SidebarSubagents.swift */,
+				4E08078A864AC02AF8FE774E /* SidebarViewState.swift */,
 				BCAE9C2C4C16A0AEFD53C76B /* SidePaneView.swift */,
 				0BAC8A526A09FABE71F0CBEC /* SidesPanel.swift */,
 				46096ADDD5BBE59C21B6E768 /* SubagentHeaderView.swift */,
@@ -3640,12 +3648,14 @@
 				0D3E1409145302770238E30C /* SidebarEntryViews.swift in Sources */,
 				55704A077D414C11989ABB93 /* SidebarGroupHeader.swift in Sources */,
 				0AC7ED8AEF85ED0BDEC2C4C7 /* SidebarGroups.swift in Sources */,
+				0336912FE7A82E319D21FB1A /* SidebarHeaderActions.swift in Sources */,
 				BCC5466B6F54FF71E217F568 /* SidebarList.swift in Sources */,
 				6F15172929F7F3F8AF7C6EC0 /* SidebarListDocument.swift in Sources */,
 				E1820A870AD626EC4C015CC5 /* SidebarMetricsLayout.swift in Sources */,
 				21831D06743E292F75DD18B6 /* SidebarSearch.swift in Sources */,
 				8419A1A541B0FA8E54C11725 /* SidebarSelection.swift in Sources */,
 				ED9D49E6A8BF2B8F11095584 /* SidebarSubagents.swift in Sources */,
+				48BA10612C41B90EBD9E694E /* SidebarViewState.swift in Sources */,
 				3DB2A6F2461C4334E80F9E6F /* SidesPanel.swift in Sources */,
 				C38D0150C84E5B5DD10538C4 /* SkillCatalog.swift in Sources */,
 				06316B7CEB4C492869964598 /* SkillDetails.swift in Sources */,
@@ -4031,12 +4041,14 @@
 				236BFB4519782DDBF9884613 /* SidebarEntryViews.swift in Sources */,
 				5422B639D8027E3D9771480A /* SidebarGroupHeader.swift in Sources */,
 				42F498138CFA935836E6F1CA /* SidebarGroups.swift in Sources */,
+				657E893F7EA93ECFC68A6FD3 /* SidebarHeaderActions.swift in Sources */,
 				47013823FBD0AF2D81F19B4E /* SidebarList.swift in Sources */,
 				610F0B8D4930B563893A8FAE /* SidebarListDocument.swift in Sources */,
 				37F1E1F4446F214C5754EF7B /* SidebarMetricsLayout.swift in Sources */,
 				F1D5F4F6A9AEAD3B7143761F /* SidebarSearch.swift in Sources */,
 				398AC56905C6446F1043CD38 /* SidebarSelection.swift in Sources */,
 				BD8040909F0FDFCE2EB43CD0 /* SidebarSubagents.swift in Sources */,
+				D675F81D71B3C9BECD33A8B8 /* SidebarViewState.swift in Sources */,
 				069B871371B2691480136B9D /* SidesPanel.swift in Sources */,
 				EA06F56DCF158598C6896CCD /* SkillCatalog.swift in Sources */,
 				94B93CC1C9E4C7B7CE30AC9E /* SkillDetails.swift in Sources */,

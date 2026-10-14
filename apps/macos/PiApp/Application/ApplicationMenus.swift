@@ -10,6 +10,7 @@ import AppKit
     private let showSettings: () -> Void
     private var commands: [ObjectIdentifier: Command] = [:]
     private var topicsMenu: NSMenu?
+    private var sidebarViewMenu: NSMenu?
     private var topicCommands: Set<ObjectIdentifier> = []
     private struct Command {
         let title: () -> String
@@ -62,6 +63,11 @@ import AppKit
     }
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === topicsMenu { rebuildTopics(menu) }
+        if menu === sidebarViewMenu {
+            menu.removeAllItems()
+            let choices = PiMenus.menu(SidebarHeaderActions.viewEntries(model: model))
+            for item in choices.items { choices.removeItem(item); menu.addItem(item) }
+        }
         for item in menu.items {
             if let command = commands[ObjectIdentifier(item)] { item.title = command.title(); item.isEnabled = command.enabled() }
         }
@@ -101,7 +107,7 @@ import AppKit
         system(app, "Quit Bello Agent", #selector(NSApplication.terminate(_:)), key: "q", target: NSApp)
 
         let file = menu("File")
-        command(file, "New Chat", key: "n", enabled: { [model] in model.selectedWorkspaceID != nil }, action: model.newChat)
+        command(file, "New Chat", key: "n", enabled: { [model] in model.canStartSidebarChat }, action: model.newChat)
         command(file, "Open Project…", key: "o", action: model.pickWorkspace)
         command(file, "Open File…", key: "p", enabled: { [model] in model.canQuickOpen }) { [model] in model.showQuickOpen(in: NSApp.keyWindow) }
         command(file, "Import Pi Session…", action: model.importChat)
@@ -132,6 +138,11 @@ import AppKit
             if title == "Redo" { edit.items.last?.keyEquivalentModifierMask = [.command, .shift] }
         }
         let view = menu("View")
+        let sidebarChoices = PiMenus.menu(SidebarHeaderActions.viewEntries(model: model))
+        sidebarChoices.title = "Show Chats"; sidebarChoices.delegate = self; sidebarViewMenu = sidebarChoices
+        let sidebarItem = NSMenuItem(title: "Show Chats", action: nil, keyEquivalent: "")
+        sidebarItem.identifier = NSUserInterfaceItemIdentifier("sidebarView"); sidebarItem.submenu = sidebarChoices
+        view.addItem(sidebarItem)
         command(view, title: { [model] in model.page == .report ? "Back to Chats" : "Usage Report" }, key: "r", modifiers: [.command, .shift], action: model.toggleReport)
         command(view, title: { [model] in model.page == .background ? "Back to Chats" : "Background Requests" }, key: "b", modifiers: [.command, .shift], action: model.toggleBackgroundRequests)
         command(view, title: { [model] in model.sidebarShowsArchived ? "Hide Archived Chats" : "Show Archived Chats" }, action: model.toggleArchivedChats)
