@@ -54,4 +54,21 @@ final class PiMenuTests: XCTestCase {
         XCTAssertTrue(entries[1].isSeparator)
         if case .note(let text) = entries[2] { XCTAssertEqual(text, "Caption") } else { XCTFail("The caption stays") }
     }
+
+    @MainActor func testCheckedItemsKeepTheirIconsBesideTheNativeCheckColumn() throws {
+        for checked in [false, true] {
+            let menu = PiMenus.menu([
+                .button("Topics", systemImage: "folder", checked: !checked) {},
+                .button("Flat", systemImage: "list.bullet", checked: checked) {},
+                .button("Plain choice", checked: true) {}
+            ])
+            XCTAssertEqual(menu.items.map(\.state), [checked ? .off : .on, checked ? .on : .off, .on])
+            for (item, symbol) in zip(menu.items, ["folder", "list.bullet"]) {
+                let icon = try XCTUnwrap(item.image, "Checking \(item.title) must not remove its icon")
+                XCTAssertEqual(icon.tiffRepresentation, NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.tiffRepresentation)
+                XCTAssertNil(item.view, "AppKit owns the separate state, icon and title columns")
+            }
+            XCTAssertNil(menu.items[2].image, "An iconless choice remains iconless")
+        }
+    }
 }

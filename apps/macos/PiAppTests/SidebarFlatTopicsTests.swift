@@ -89,6 +89,31 @@ final class SidebarFlatTopicsTests: XCTestCase {
         XCTAssertNil(tagged["loose"]!)
     }
 
+    @MainActor func testRetainedTagsStayShortAndKeepTheFullGroupNameForHelpAndVoiceOver() throws {
+        let model = try fixture()
+        let missing = "missing-project-with-a-long-distinguishing-suffix"
+        model.chats.append(chat("retained", in: missing, order: 100))
+        model.sides["retained"] = SideRecord(id: "retained-side", parentID: "retained", workspaceID: missing,
+                                             profileID: "fixture", title: "Side", kept: false)
+        model.workspaces[1].path = model.root.appendingPathComponent("Retained chats · local").path
+        flat(model)
+        for width in [WindowChrome.sidebarWidth, WindowChrome.minimumSidebarWidth] {
+            let sidebar = makeSidebar(model, width: width, height: 1400)
+            let saved = try XCTUnwrap(sidebar.list.views["chat|retained"] as? SidebarChatRowView)
+            let side = try XCTUnwrap(sidebar.list.views["side|retained-side"] as? SidebarSideRowView)
+            for (body, row) in [(saved.body, saved.row), (side.body, side.row)] {
+                XCTAssertEqual(body.projectTag.text, "Retained chats")
+                XCTAssertEqual(body.projectTag.toolTip, "Project: Retained chats · " + missing)
+                XCTAssertTrue(row.accessibilityLabel()?.contains("project Retained chats · " + missing) == true)
+                body.layoutSubtreeIfNeeded()
+                XCTAssertGreaterThanOrEqual(body.projectTag.bounds.width, body.projectTag.naturalWidth,
+                                           "The short caption fits even on an indented minimum-width row")
+            }
+            let configured = try XCTUnwrap(sidebar.list.views["chat|o1"] as? SidebarChatRowView)
+            XCTAssertEqual(configured.body.projectTag.text, "Retained chats · local", "Use project availability, not a name prefix")
+        }
+    }
+
     @MainActor func testGlobalChoicePersistsBothWaysAndDoesNotRewriteProjectPreferences() async throws {
         let model = try fixture()
         flat(model)
@@ -241,9 +266,13 @@ final class SidebarFlatTopicsTests: XCTestCase {
         var menu = try headerMenu(model)
         XCTAssertEqual(item("sidebarView-topics", in: menu)?.state, .on)
         XCTAssertEqual(item("sidebarView-flat", in: menu)?.state, .off)
+        XCTAssertNotNil(item("sidebarView-topics", in: menu)?.image)
+        XCTAssertNotNil(item("sidebarView-flat", in: menu)?.image)
         XCTAssertTrue(PiMenus.perform("sidebarView-flat", in: menu)); XCTAssertTrue(isFlat(model))
         menu = try headerMenu(model)
         XCTAssertEqual(item("sidebarView-flat", in: menu)?.state, .on)
+        XCTAssertNotNil(item("sidebarView-topics", in: menu)?.image)
+        XCTAssertNotNil(item("sidebarView-flat", in: menu)?.image)
         XCTAssertTrue(PiMenus.perform("sidebarView-topics", in: menu)); XCTAssertFalse(isFlat(model))
     }
 
@@ -432,7 +461,7 @@ final class SidebarFlatTopicsTests: XCTestCase {
         XCTAssertEqual(model.selectedID, "retained")
         XCTAssertEqual(model.selected?.messages.first?.text, "Retained answer")
         XCTAssertTrue(model.hosts.isEmpty)
-        XCTAssertEqual(rows(build(model)).first { $0.id == "retained" }?.state.projectTag, "Retained chats · missing")
+        XCTAssertEqual(rows(build(model)).first { $0.id == "retained" }?.state.projectTag, "Retained chats")
     }
 
 }

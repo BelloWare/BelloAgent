@@ -39,6 +39,8 @@ struct SidebarChatRowState: Equatable {
     var hasDraft = false
     /// Tags are present only in the combined Flat list.
     var projectTag: String?
+    /// Full group identity for help and VoiceOver when the caption is shorter.
+    var projectTagFullName: String?
     var topicTag: String?
     /// Identity of the loaded page, when the chat has one. A row swaps between
     /// retained billing and a live session only when this changes; the live
@@ -69,6 +71,7 @@ struct SidebarSideRowState: Equatable {
     var indent: CGFloat = 0
     var recency: Int?
     var projectTag: String?
+    var projectTagFullName: String?
     var topicTag: String?
 }
 
@@ -163,7 +166,10 @@ extension WorkspaceModel {
         let hiddenRoots = filtering ? 0
             : max(0, all.reduce(0) { $0 + ($1.depth == 0 ? 1 : 0) } - visible.reduce(0) { $0 + ($1.depth == 0 ? 1 : 0) })
         let anyMarked = hasMarkedSessions, projectDraggable = project?.isScratch == false
-        let projectNames = flat ? Dictionary(sidebarProjects.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first }) : [:]
+        let projectTags = flat ? Dictionary(sidebarProjects.map {
+            ($0.id, (title: $0.available ? $0.name : "Retained chats",
+                     fullName: $0.available ? $0.name : "Retained chats · " + $0.id))
+        }, uniquingKeysWith: { first, _ in first }) : [:]
         let topicTitles = flat ? Dictionary(grouping: topics, by: \.workspaceID)
             .mapValues { Dictionary($0.map { ($0.id, $0.title) }, uniquingKeysWith: { first, _ in first }) } : [:]
         func topicTag(project: String, topic: String?) -> String? {
@@ -186,7 +192,8 @@ extension WorkspaceModel {
                 heldRun: chat.isSubagent || chat.isArchived || chat.isUtilityChat ? nil : runHolds[chat.id]?.presented,
                 recency: recencyRank(chat.id),
                 hasDraft: showsDraftMark(chat.id),
-                projectTag: projectNames[chat.workspaceID],
+                projectTag: projectTags[chat.workspaceID]?.title,
+                projectTagFullName: projectTags[chat.workspaceID]?.fullName,
                 topicTag: topicTag(project: chat.workspaceID, topic: chat.topicID),
                 liveIdentity: displays[chat.id].map(ObjectIdentifier.init),
                 hasSide: entry.hasChildren || side?.kept == false,
@@ -206,7 +213,8 @@ extension WorkspaceModel {
                     available: ChatRowMetrics.availableWidth(sidebar: sidebarWidth, indent: indent + 14, depth: entry.depth),
                     indent: indent + CGFloat(14 + min(entry.depth, 3) * 14),
                     recency: recencyRank(side.id),
-                    projectTag: projectNames[side.workspaceID],
+                    projectTag: projectTags[side.workspaceID]?.title,
+                    projectTagFullName: projectTags[side.workspaceID]?.fullName,
                     topicTag: topicTag(project: side.workspaceID, topic: side.topicID ?? chat.topicID))
             }
             rows.append(row)

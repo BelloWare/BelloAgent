@@ -198,7 +198,8 @@ import Combine
         if display?.runStateKnown != true, let held = state.heldRun { stats.updateActivity(state: held, loading: false, activity: [:]) }
         return ChatRowBodyView.Content(stats: stats, title: chat.title, subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
                                        unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
-                                       markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft, projectTag: state.projectTag, topicTag: state.topicTag, hasSide: state.hasSide,
+                                       markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft,
+                                       projectTag: state.projectTag, projectTagFullName: state.projectTagFullName, topicTag: state.topicTag, hasSide: state.hasSide,
                                        expanded: state.expanded, pinned: chat.isPinned, archived: chat.isArchived,
                                        archivable: !chat.isSubagent && !chat.isUtilityChat, available: state.available)
     }
@@ -335,7 +336,7 @@ import Combine
         }
         return ChatRowBodyView.Content(stats: stats, title: state.title, subtitle: state.kept ? "Saved · Read-only" : "In memory · Read-only",
                                        symbol: "arrow.triangle.branch", selected: state.selected, unreadCount: state.unreadCount,
-                                       projectTag: state.projectTag, topicTag: state.topicTag, available: state.available)
+                                       projectTag: state.projectTag, projectTagFullName: state.projectTagFullName, topicTag: state.topicTag, available: state.available)
     }
     private func refreshBody() {
         let height = bounds.width > 0 ? entryHeight(width: bounds.width) : nil

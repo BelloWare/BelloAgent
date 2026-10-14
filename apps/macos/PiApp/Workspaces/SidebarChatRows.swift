@@ -294,6 +294,7 @@ struct ChatRowStats: Equatable {
         var hasDraft = false
         /// Project and topic tags in the combined Flat list only.
         var projectTag: String?
+        var projectTagFullName: String?
         var topicTag: String?
         var hasSide = false
         var expanded = true
@@ -305,7 +306,7 @@ struct ChatRowStats: Equatable {
         /// unread or failed.
         var accessibilityLabel: String {
             var words = [title]
-            if let projectTag { words.append("project " + projectTag) }
+            if let project = projectTagFullName ?? projectTag { words.append("project " + project) }
             if let topicTag { words.append("topic " + topicTag) }
             let run = RunState(rawValue: stats.state)
             if run.holdsQueue { words.append(run == .interrupted ? "paused, run interrupted" : "paused") }
@@ -434,7 +435,7 @@ struct ChatRowStats: Equatable {
         draftMark.isHidden = !new.hasDraft
         projectTag.isHidden = new.projectTag == nil
         projectTag.text = new.projectTag ?? ""
-        projectTag.toolTip = new.projectTag.map { "Project: " + $0 }
+        projectTag.toolTip = (new.projectTagFullName ?? new.projectTag).map { "Project: " + $0 }
         tags.isHidden = new.projectTag == nil && new.topicTag == nil
         topicTag.isHidden = new.topicTag == nil
         topicTag.text = new.topicTag ?? ""

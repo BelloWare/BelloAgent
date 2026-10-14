@@ -193,7 +193,8 @@ themes. The broader main-scene differences are the synthetic folder name and
 generated throughput value; row layout, colors and footer are unchanged in
 the reviewed images. This is not a whole-gallery byte-equality claim.
 Comparison notes: `logs/topics-image-comparison.txt`; reviewed crops/pairs:
-`$BUILD/gallery-review`. No remaining layout finding in the changed coverage.
+`$BUILD/gallery-review`. The initial review missed the checked-icon alignment
+and retained-tag abbreviation corrected in the follow-up below.
 
 Read-only Codex gpt-6.1-sol xhigh planning and reviews covered the whole diff.
 Two persistence races and the duplicate empty state were repaired with failing
@@ -201,3 +202,63 @@ tests. Final whole-change review: **no findings**; advice was to finish the full
 parallel lane, verify all eight new captures, and compare Topics with the old
 captures. VoiceOver labels/roles are checked by native tests; no manual
 VoiceOver session is claimed.
+
+## Owner gallery polish follow-up
+
+Follow-up to `0080a567`, scoped to the two owner findings in 14f/14g. Lead
+inspection confirmed the missing checked icon and the misleading retained
+caption. The shared menu builder was discarding a checked item's symbol; the
+old per-project menu used the same builder and had the same suppression. It now
+keeps the original symbol and `NSMenuItem.state`, so AppKit draws the checkmark
+in its separate leading column without shifting the icon or title. This also
+keeps the archive symbol when Show Archived Chats is checked.
+
+Unavailable project tags now read **Retained chats**. Their tooltip and row
+accessibility label retain `Retained chats · <entire project ID>`, including
+on transient sides. This uses project availability rather than matching a name
+prefix, so a configured folder called “Retained chats · local” is unchanged.
+The per-pass project lookup builds the short and full strings together; no
+per-row scan was added. Topics group names and layout stay unchanged. The
+shared Pi badge already draws overflowing text with an end ellipsis; no badge
+renderer change was needed.
+
+Affected native commands use the same `$BUILD` and isolated test host, with
+`-parallel-testing-enabled NO`. The serial application-menu class runs in its
+own invocation. No full lane, unrelated classes or full gallery were rerun.
+
+| Log in `$BUILD/logs` | Follow-up result |
+| --- | --- |
+| `polish-red.log` | Before the fix, all three selected regressions fail: 17 assertions across checked icons, the header choices and retained parent/side captions, tooltips and VoiceOver labels. |
+| `polish-affected.log` | **39 passed**, zero failures/skips: PiMenuTests 3, SidebarAppearanceTests 6, SidebarFlatTopicsTests 30. Includes both menu checked states, configured name-prefix collision, minimum widths and Topics round-trip pixels. |
+| `polish-mutation.log` | Reintroducing checked-icon suppression and the old retained caption fails both selected tests with seven assertions. Both production sources were restored byte for byte. |
+| `polish-native-menu.log` | **11 passed**, zero failures/skips: NativeApplicationTests alone, including the shared View-menu switch. |
+
+Read-only planning and whole-diff review by Codex gpt-6.1-sol xhigh found no
+issues. Its final advice was to finish native validation and inspect menu
+alignment and narrow retained tags in the affected gallery.
+
+Affected gallery: **1/1 passed**, zero failures/skips, 14.460 seconds, with
+`PI_APP_UI_GALLERY_FLAT_TOPICS_ONLY=1` and its `TEST_RUNNER_` counterpart; the
+screenshot-root variables point to `$BUILD/gallery-polish`. Only
+`UIScreenshotTests/testRenderRedesignGallery` was selected. Text evidence is
+`logs/polish-gallery.log`; eight captures are in
+`$BUILD/gallery-polish/screenshots`.
+
+The lead viewed every fresh image below, not just the test result:
+
+- `14f-sidebar-flat-all-normal-light.png`
+- `14f-sidebar-flat-all-normal-dark.png`
+- `14f-sidebar-flat-all-narrow-light.png`
+- `14f-sidebar-flat-all-narrow-dark.png`
+- `14g-sidebar-header-menu-normal-light.png`
+- `14g-sidebar-header-menu-normal-dark.png`
+- `14g-sidebar-header-menu-narrow-light.png`
+- `14g-sidebar-header-menu-narrow-dark.png`
+
+In all four menu captures, Topics keeps its folder icon and Flat keeps its list
+icon; their icon/title columns align, with the checked Flat mark in a separate
+leading column. The retained tag reads “Retained chats” in full at both sidebar
+widths in both themes. The narrow project and topic tags visibly end with
+ellipses. No remaining finding in these two corrected areas. Tooltip and
+VoiceOver strings are asserted by native tests; no manual VoiceOver session
+is claimed. Automatic result bundles were removed; text logs remain.
