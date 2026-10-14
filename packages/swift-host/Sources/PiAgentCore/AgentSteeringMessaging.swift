@@ -49,6 +49,10 @@ extension AgentSteeringCoordinator {
             do {
                 if try await deliver(owner:session,recipient:session,childTurn:nil) { await lock.release(); return true }
                 if !final { await lock.release(); return false }
+                if await session.agentDeliveryHeld {
+                    await session.setFamilyWaiting(true)
+                    await lock.release(); await wake.wait(after:revision); continue
+                }
                 let busy = jobs.values.contains { $0.owner === session }
                 if !busy {
                     let ready = try await session.closeAgentFamilyFence()
@@ -109,8 +113,13 @@ extension AgentSteeringCoordinator {
             break
         }
         let ids = selected.map(\.id)
+        if childTurn == nil, (state.run?.reportContinuations ?? 0) >= 32,
+           selected.contains(where: { $0.kind != "result" && $0.kind != "not_delivered_interrupted" }) {
+            throw AgentMailboxPolicy.cap()
+        }
         let existing = state.deliveries.values.first { !$0.committed && $0.recipientID == recipient.id && $0.eventIDs == ids }
         var delivery = existing ?? AgentDelivery(rowID:UUID().uuidString,recipientID:recipient.id,eventIDs:ids,payload:payload)
+        if existing == nil, childTurn == nil, state.run != nil, (state.run?.reportContinuations ?? 0) < 32 { delivery.continuation = true }
         if existing == nil { try await owner.appendAgentRecord(JournalRecordKind.agentDelivery,delivery) }
         try await recipient.appendAgentDelivery(delivery,selected:selected)
         delivery.committed = true
@@ -135,7 +144,8 @@ extension AgentSteeringCoordinator {
             try Task.checkCancellation()
             let revision = await wake.revision, current = await parent.agentState()
             let completed = targets.filter { current.turns[$0.id]?.status.terminal == true }.count
-            let inbox = !current.pending(author:"subagent").isEmpty
+            let held = await parent.agentDeliveryHeld
+            let inbox = !held && !current.pending(author:"subagent").isEmpty
             let elapsed = start.duration(to:.now), ms = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
             let reason: String?
             if targets.isEmpty { reason = "empty" }

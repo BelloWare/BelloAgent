@@ -112,7 +112,9 @@ actor AgentSteeringCoordinator {
                     return op.receipt
                 }
             }
-            var job = Job(owner:parent,environment:env,plan:plan,turn:turn)
+            var runtimeEnv = env
+            if plan.origin.frozenResources == nil, let snapshot = state.turns[AgentTurnTarget(childID:turn.childID,turn:1).id]?.legacyResources { runtimeEnv.resources = snapshot }
+            var job = Job(owner:parent,environment:runtimeEnv,plan:plan,turn:turn)
             if turn.turn == 1 {
                 do {
                     let child = try await open(env,plan); job.child = child

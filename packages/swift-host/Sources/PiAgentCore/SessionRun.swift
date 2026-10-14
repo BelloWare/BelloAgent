@@ -63,7 +63,7 @@ extension AgentSession {
             let started=nowMS(); var measured=false
             defer { if !measured { modelRequestsMs += nowMS()-started } }
             do {
-                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,cacheSessionID:promptCacheSessionID,turnID:turnID,purpose:purpose,lifecycle:try await requestLifecycle(turnID:turnID,purpose:purpose),onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
+                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,cacheSessionID:promptCacheSessionID,turnID:turnID,purpose:purpose,lifecycle:try await requestLifecycle(turnID:turnID,purpose:purpose,requestMessages:messages),onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
                 modelReplyMs = nowMS()-started; modelRequestsMs += modelReplyMs; measured = true
                 return reply
             } catch let error as AgentError {
@@ -185,7 +185,9 @@ extension AgentSession {
                                 if let partialID { recordDisplayChange(partialID, at: displayClock()) }
                             },refresh:{
                                 // Pi retries by continuing its loop, which first delivers queued steering.
-                                guard try await drainSteering() else { return nil }
+                                let userDelivered = try await drainSteering()
+                                let agentDelivered = try await agentCoordinator?.boundary(self,final:false) ?? false
+                                guard userDelivered || agentDelivered else { return nil }
                                 overflowRecoveryAttempted=false
                                 prepared=try await prepareRequest(appliedSnapshot ?? prepared.snapshot)
                                 return (try turnProfile.dispatching(prepared.count),requestContext,prepared.instructions,prepared.definitions)

@@ -35,6 +35,7 @@ final class SessionJournal {
     private var handle: FileHandle
     private var lockFD: Int32
     private var poisoned = false
+    private var promoting = false
     var writeOutcomeUncertain: Bool { poisoned }
     private var tail: String?, bytes: UInt64
     var head: String? { tail }
@@ -167,10 +168,15 @@ final class SessionJournal {
     /// name changes (same byte count); origin and historical record identities,
     /// offsets, hashes and provider context otherwise remain untouched.
     func promoteToSteering(managedChild: Bool) throws {
+        guard !promoting else { throw AgentError("subagent_promotion_busy", "Journal promotion is in progress") }
         guard !poisoned else { throw SubagentRecovery.damaged() }
         if markerKind == JournalRecordKind.steeringMarker { return }
         guard markerKind == (managedChild ? JournalRecordKind.childMarker : JournalRecordKind.marker),
               let check = markerCheck else { throw SubagentRecovery.damaged() }
+        // Synchronous under the owning actor: no await may split this span.
+        // The explicit fence also rejects callbacks that try to append while
+        // synchronizing the source before the copy/replacement.
+        promoting = true; defer { promoting = false }
         try synchronize()
         let temporary = url.appendingPathExtension("promotion")
         // A previous killed copy is uncommitted. This writer owns its cleanup.
@@ -259,6 +265,7 @@ final class SessionJournal {
     /// only for records a run is still producing. `synchronize` closes that
     /// window when the turn settles.
     @discardableResult func append(_ value: JSON, id: String = UUID().uuidString, flush: Bool = true) throws -> String {
+        guard !promoting else { throw AgentError("subagent_promotion_busy", "Journal promotion is in progress") }
         guard !poisoned else { throw AgentError("session_damaged", "A journal write failed; recover a copy before continuing") }
         var v=value; v["id"]=JSON(id); v["parentId"]=tail.map { JSON($0) } ?? .null; v["timestamp"]=JSON(isoNow())
         var data=try v.data(); data.append(10)

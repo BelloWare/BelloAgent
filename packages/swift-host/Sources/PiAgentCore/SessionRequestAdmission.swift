@@ -10,7 +10,7 @@ extension AgentSession {
         budgetOwner = owner; budgetOwnerGeneration = generation
     }
 
-    func requestLifecycle(turnID: String, purpose: String) async throws -> RequestLifecycle? {
+    func requestLifecycle(turnID: String, purpose: String, requestMessages: [ChatMessage]? = nil) async throws -> RequestLifecycle? {
         guard familyBudgetEnabled || isSubagent else { return nil }
         guard let owner = isSubagent ? budgetOwner : self else { throw AgentError("managed_subagent", "The parent must own this child's requests") }
         let sourceGeneration = stopCount
@@ -22,6 +22,7 @@ extension AgentSession {
                                  turnID: turnID, executionID: activeTaskPresentation?.executionID ?? displayEpoch, purpose: purpose,
                                  ownerGeneration: isSubagent ? budgetOwnerGeneration : stopCount, delegation: subagents.origin?.link)
         scope.childTurn = agentLease?.turn; scope.parentExecutionID = agentLease?.parentExecutionID
+        if agentCoordinator != nil, let requestMessages { scope.agentDeliveryIDs = requestMessages.flatMap { $0.nativeAgentDelivery?["eventIds"].list.compactMap(\.text) ?? [] } }
         let admittedScope = scope
         return RequestLifecycle(scope: admittedScope, admitAttempt: { [weak self, weak owner] attempt in
             guard let self, let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }

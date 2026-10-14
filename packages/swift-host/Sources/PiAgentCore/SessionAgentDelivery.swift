@@ -26,10 +26,8 @@ extension AgentSession {
         // Agent authorship cannot carry attachments, skill selections or user consent.
         row.userInput = nil
         try append(row); try journal?.synchronize(); boundary = context
-        if familyWaiting, selected.contains(where: { $0.kind != "result" && $0.kind != "not_delivered_interrupted" }), var run = subagents.family?.run {
-            guard run.reportContinuations < 32 else { throw AgentError("coordination_limit", "Automatic report continuation limit reached; Resume to continue") }
-            run.reportContinuations += 1; try appendAgentRecord(JournalRecordKind.familyRun,run)
-        }
+        // The preparation already durably charged this continuation before
+        // the recipient row. A crash cannot erase the coordination charge.
         event("agent.message-delivered")
     }
     /// Use the same real input budget and counter as request admission. This

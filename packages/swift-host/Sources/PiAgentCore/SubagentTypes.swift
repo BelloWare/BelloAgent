@@ -72,6 +72,9 @@ public struct SubagentSummary: Codable, Sendable, Equatable {
     public var pendingMessages: Int? = nil
     public var followUpsRemaining: Int? = nil
     public var parentWaiting: Bool? = nil
+    /// Transient progress belongs to this session runtime inside the wire's
+    /// hostEpoch. Semantic revision is the durable owner's family revision.
+    public var progressEpoch: String? = nil
 }
 
 /// Display-only progress, coalesced while running and saved once with the

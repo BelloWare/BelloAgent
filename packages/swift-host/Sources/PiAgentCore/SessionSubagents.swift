@@ -10,7 +10,7 @@ struct SubagentEnvironment: Sendable {
     let definitions: [ToolDefinition], capabilities: [String]
     let mcpPolicy: JSON?
     let tools: any ToolExecuting, client: any ModelClient
-    let resources: ResourceSnapshot
+    var resources: ResourceSnapshot
     let cwd: URL, directory: URL
     let readOnly: Bool, traces: TraceStore
     let retry: PiProviderRules.RetrySettings
