@@ -13,6 +13,7 @@ import AppKit
     private lazy var observer = ShellObserver { [weak self] in self?.refresh() }
     private lazy var footerObserver = ShellObserver { [weak self] in self?.refresh() }
     private weak var followedFooter: SessionMetrics?
+    private weak var followedBudget: SessionBudgetState?
     private var followedBudgetOwnerID: String?
     private var limitCard: NSView?
     private var chartViews: [NSView] = []
@@ -38,15 +39,20 @@ import AppKit
         var views: [NSView] = [InspectorPageHeader("Overview", subtitle: subtitle, actions: [InspectorShowInChat { [weak inspector] in inspector?.showInChat() }]), figures()]
         let chat = inspector.workspace?.record(inspector.scope.sessionID)
         let budgetOwner = chat.flatMap { inspector.workspace?.budgetOwner(for: $0) }
-        if followedFooter !== inspector.display?.footer || followedBudgetOwnerID != budgetOwner?.id {
+        let budget = chat.flatMap { inspector.workspace?.budgetState(for:$0.id) }
+        if followedFooter !== inspector.display?.footer || followedBudgetOwnerID != budgetOwner?.id || followedBudget !== budget {
             footerObserver.reset(); followedFooter = inspector.display?.footer
+            followedBudget = budget
             followedBudgetOwnerID = budgetOwner?.id
             // Saved sides retain their display when their parent is deleted.
             // Follow shared footers too, so that transition builds the editor.
             if let footer = followedFooter { footerObserver.observe(footer) }
-            if let footer = followedFooter, let workspace = inspector.workspace, budgetOwner?.id == inspector.scope.sessionID {
+            if let budget { footerObserver.observe(budget) }
+            if let budget, let workspace = inspector.workspace, budgetOwner?.id == inspector.scope.sessionID {
                 let id = inspector.scope.sessionID
-                limitCard = PiKit.card(CostLimitLiveEditor(footer: footer, choose: { [weak workspace] limit in try await workspace?.setCostLimit(limit, for: id) }), padding: PiSpacing.lg)
+                let choose: @MainActor (CostLimit?) async throws -> Void = { [weak workspace] limit in try await workspace?.setCostLimit(limit, for:id) }
+                let editor = followedFooter.map { CostLimitLiveEditor(footer:$0,choose:choose) } ?? CostLimitLiveEditor(budget:budget,choose:choose)
+                limitCard = PiKit.card(editor, padding: PiSpacing.lg)
                 limitCard?.setAccessibilityIdentifier("inspector-cost-limit")
             } else { limitCard = nil }
         }
@@ -86,7 +92,7 @@ import AppKit
         let heroGrid = GridView(columns: .adaptive(minimum: compact ? 120 : 150, maximum: .greatestFiniteMagnitude), spacing: PiSpacing.md, rowSpacing: 14)
         heroGrid.items = hero.map { figure in
             let view: NSView
-            if figure.id == "cost", inspector.familyFilter == .family, let footer = inspector.display?.footer { view = costFigure(figure, footer: footer) }
+            if figure.id == "cost", inspector.familyFilter == .family, let reading = inspector.workspace?.costReading(for:inspector.scope.sessionID) ?? inspector.display?.footer.cost { view = costFigure(figure, reading: reading) }
             else { view = PiKit.Figure(value: figure.value, title: figure.title, caption: figure.caption, partial: figure.partial, large: true) }
             if figure.id == "cost" { view.toolTip = view.toolTip ?? inspector.inputs.gateway.costLabel; view.setAccessibilityHelp(view.toolTip) }
             view.setAccessibilityIdentifier("inspector-figure-" + figure.id); return view
@@ -97,8 +103,7 @@ import AppKit
         if let coverage = inspector.tokenCharts.coverage { views.append(inspectorText(coverage, font: PiKit.Font.micro, color: .piWarning, lines: .max)) }
         let card = PiKit.card(inspectorColumn(views, spacing: 16), padding: PiSpacing.lg); card.setAccessibilityIdentifier("inspector-overview-figures"); return card
     }
-    private func costFigure(_ figure: SessionStatsFigure, footer: SessionMetrics) -> PiKit.Figure {
-        let reading = footer.cost
+    private func costFigure(_ figure: SessionStatsFigure, reading: SessionCostReading) -> PiKit.Figure {
         let presentation = SessionStatsPresentation(gateway: inspector.inputs.gateway, work: nil, cost: reading)
         let value = presentation.costFigure?.components(separatedBy: " of ").first ?? figure.value
         var caption: [String] = []

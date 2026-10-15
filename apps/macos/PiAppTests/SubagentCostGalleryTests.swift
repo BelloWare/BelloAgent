@@ -124,12 +124,47 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
             }
         }
         try await orphanScenes(fixture,side:sideView,folder:folder)
+        try await budgetOnlyScenes(fixture,folder:folder)
     }
+    @MainActor private func budgetOnlyScenes(_ fixture: SubagentGalleryFixture, folder: URL) async throws {
+        let model = fixture.model, id = fixture.parent.id
+        model.displays.removeValue(forKey:id)
+        model.observeCost(["cost":.object(["spentUSD":.number(1.63),"reportedRequests":.number(5),"limitUSD":.number(5)])],sessionID:id)
+        for (appearance, name) in [(NSAppearance.Name.aqua,"light"),(.darkAqua,"dark")] {
+            for size in [NSSize(width:420,height:600),NSSize(width:920,height:600),NSSize(width:1240,height:800)] {
+                let inspector = SessionInspectorModel(scope:.init(sessionID:id,workspaceID:"pane-project"),title:"Review the parser",archive:model.traces,workspace:model,
+                    usageLoader: { [archive = model.traces] scope, until, offset in
+                        try await archive.sessionMetrics(sessionID:scope.sessionID,workspaceID:scope.workspaceID,until:until,offset:offset,includeFamily:scope.includeFamily)
+                    },cache:InspectorDocumentCache())
+                inspector.setVisible(true); defer { inspector.setVisible(false) }
+                let overview = InspectorOverviewPage(inspector:inspector,compact:size.width < 1000)
+                let window = NSWindow(contentRect:CGRect(origin:.zero,size:size),styleMask:[.titled],backing:.buffered,defer:false)
+                window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named:appearance)
+                window.contentView = overview; window.orderFront(nil)
+                defer { window.contentView = nil; window.close() }
+                overview.wantsLayer = true
+                overview.effectiveAppearance.performAsCurrentDrawingAppearance { overview.layer?.backgroundColor = NSColor.piContent.cgColor }
+                try await eventually("Budget-only owner editor is ready") {
+                    inspector.indexLoaded && !inspector.isReading && inspector.inputs.gateway.requests == 5
+                        && ConversationPaneTests.views(CostLimitLiveEditor.self,in:overview).contains { $0.reading.spentUSD == 1.63 }
+                }
+                XCTAssertNil(inspector.display); XCTAssertNil(model.displays[id])
+                let card = try XCTUnwrap(ConversationPaneTests.views(NSView.self,in:overview).first { $0.accessibilityIdentifier() == "inspector-cost-limit" })
+                let chip = try XCTUnwrap(ConversationPaneTests.views(CostLimitChip.self,in:card).first)
+                XCTAssertFalse(chip.accessibilityLabel()?.isEmpty ?? true)
+                XCTAssertTrue(window.makeFirstResponder(chip))
+                overview.layoutSubtreeIfNeeded(); card.scrollToVisible(card.bounds)
+                try save(overview,to:folder.appendingPathComponent("budget-only-owner-\(name)-\(Int(size.width)).png"))
+            }
+        }
+    }
+
     @MainActor private func orphanScenes(_ fixture: SubagentGalleryFixture, side: SessionDisplay, folder: URL) async throws {
         let model = fixture.model, originalChats = fixture.model.chats
         for (appearance, name) in [(NSAppearance.Name.aqua,"light"),(.darkAqua,"dark")] {
             for size in [NSSize(width:420,height:600),NSSize(width:920,height:600),NSSize(width:1240,height:800)] {
                 model.chats = originalChats
+                try await model.store?.putChats(originalChats)
                 try await model.restoreSideBudgets(); model.refreshCostReading(side.id)
                 let chat = try XCTUnwrap(model.record(side.id))
                 let inspector = SessionInspectorModel(scope:.init(sessionID:side.id,workspaceID:chat.workspaceID),title:chat.title,archive:model.traces,workspace:model,
@@ -154,6 +189,7 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
                 XCTAssertFalse(ConversationPaneTests.views(NSView.self,in:overview).contains { $0.accessibilityIdentifier() == "inspector-cost-limit" })
                 try save(overview,to:folder.appendingPathComponent("side-shared-overview-\(name)-\(Int(size.width)).png"))
                 model.chats.removeAll { $0.id == fixture.parent.id }
+                try await model.store?.remove(kind:"chat",id:fixture.parent.id)
                 try await model.restoreSideBudgets(); model.refreshCostReading(side.id)
                 try await eventually("same overview gains orphan budget controls") {
                     let figure = ConversationPaneTests.views(NSView.self,in:overview).first { $0.accessibilityIdentifier() == "inspector-figure-cost" }
@@ -175,6 +211,7 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
             }
         }
         model.chats = originalChats
+        try await model.store?.putChats(originalChats)
         try await model.restoreSideBudgets(); model.refreshCostReading(side.id)
     }
 
@@ -183,7 +220,7 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
         // effective limit with SessionCostReading's default $25 default.
         var reading = fixture.model.costReading(for: fixture.parent.id)
         reading.spentUSD = 1.63; reading.reportedRequests = 5; reading.unreportedRequests = 0
-        fixture.parent.footer.cost = reading
+        fixture.model.observeCost(["cost":.object(["spentUSD":.number(1.63),"reportedRequests":.number(5),"limitUSD":.number(5)])],view:fixture.parent)
         XCTAssertEqual(reading.limit, .usd(5)); XCTAssertEqual(reading.defaultLimit, reading.limit)
         XCTAssertEqual(reading.source, "Default · $5.00")
     }

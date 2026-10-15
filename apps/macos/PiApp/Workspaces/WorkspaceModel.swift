@@ -277,6 +277,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Suspends legacy cost accounting in opening-race fixtures.
     var costSeedRead: (@MainActor (ChatRecord) async -> WireValue?)?
     var costLimitWrites: [String: (token: UUID, task: Task<Void, Error>)] = [:]
+    var budgetStates: [String: SessionBudgetState] = [:]
+    var sideBudgetRestoreRevision = 0
     var skillCatalogLoads: [String: (token: UUID, scope: String, task: Task<Void, Never>)] = [:]
     /// Retained gateway totals for chats without a loaded display, keyed by chat id.
     let chatAccounting = SessionAccountingCache()

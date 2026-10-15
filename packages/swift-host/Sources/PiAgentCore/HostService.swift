@@ -596,6 +596,9 @@ public actor NativeHostService {
             }
             await session.stop(); return ["accepted":true]
         case "session.status":
+            // Native budget owners need no transcript/context/capture read.
+            // This is the same authoritative numeric ledger as a full status.
+            if params["budgetOnly"].flag == true { return ["cost":await session.costSnapshot] }
             var statusParams = params; statusParams["includeMessages"] = false
             return await session.snapshot(statusParams)
         case "session.edit.prepare": return try await session.prepareEdit(identity(params["messageId"]),offset:boundedInt(params["offset"],maximum:262144),expectedTimeline:params["sourceTimeline"].text,expectedTextDigest:params["sourceTextDigest"].text)

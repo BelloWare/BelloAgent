@@ -92,12 +92,15 @@ struct SessionCostReading: Equatable, Sendable {
         guard let cap = limit.usd, cap > 0, let spent, spent.isFinite, spent >= 0 else { return nil }
         return spent / cap
     }
-    var fraction: Double? { fraction(spent: budgetSpentUSD ?? spentUSD) }
+    var fraction: Double? { fraction(spent: budgetOwnerID == nil ? spentUSD : budgetSpentUSD) }
     /// At 80% of the limit or more.
-    func warning(spent: Double?) -> Bool { (fraction(spent: budgetSpentUSD ?? spent) ?? 0) >= Self.warningFraction }
+    func warning(spent: Double?) -> Bool { (fraction(spent: budgetOwnerID == nil ? spent : budgetSpentUSD) ?? 0) >= Self.warningFraction }
     var warning: Bool { warning(spent: spentUSD) }
     /// The next model request would not go.
     var reached: Bool { (fraction ?? 0) >= 1 }
+    /// Continue waits for authoritative spend, including a shared owner that
+    /// has no transcript display. Retained captures may have expired.
+    var held: Bool { reached || (budgetOwnerID == nil ? spentUSD : budgetSpentUSD) == nil }
     /// "$4.12 of $5.00" under a limit, "$4.12" with none; nil with no spend.
     func figure(spent: Double?) -> String? {
         guard let spent, spent.isFinite, spent >= 0 else { return nil }

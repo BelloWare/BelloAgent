@@ -65,7 +65,11 @@ enum SideBudgetRecovery {
         var origins: [String: Origin] = [:]
         for file in files where file.lastPathComponent.hasPrefix("side_") && file.pathExtension == "jsonl" {
             guard within(canonical(file.path), canonical(directory.path)) else { continue }
-            if let origin = try readOrigin(file) { origins[origin.id] = origin }
+            // Membership is not established yet. An unreadable/incomplete
+            // unrelated file must not block the workspace; opening that file
+            // still reports its ordinary damaged-history/recovery error.
+            // Once an origin links it to this owner, charges reads strictly.
+            if let origin = try? readOrigin(file) { origins[origin.id] = origin }
         }
         var result: [(origin: Origin, parents: [String])] = []
         for origin in origins.values.sorted(by: { $0.id < $1.id }) {

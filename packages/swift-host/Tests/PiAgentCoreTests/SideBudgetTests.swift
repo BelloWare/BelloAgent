@@ -2,6 +2,55 @@ import XCTest
 @testable import PiAgentCore
 
 final class SideBudgetTests: XCTestCase {
+    func testBudgetStatusReadsNumericStateWithoutTranscriptOrCaptureContext() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let host = try await host(root), owner = try await open(host,"main",seed:1.2)
+        let status = try await host.command("session.status",sessionID:"main",params:["budgetOnly":true])
+        XCTAssertEqual(Set(status.map.keys),["cost"])
+        let cost = await owner.costSnapshot; XCTAssertEqual(status["cost"],cost)
+        await host.shutdown()
+    }
+    func testUnrelatedSideWithUnreadableOriginDoesNotBlockHealthyColdOpens() async throws {
+        for tail in [Data("{\"type\":\"message\"".utf8), Data(repeating: 120, count: 33 * 1024 * 1024)] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let main = try await session("main",root:root), path = await main.path
+            await main.close()
+            let bad = root.appendingPathComponent("side_damaged.jsonl")
+            var bytes = Data("{\"type\":\"session\",\"id\":\"damaged\"}\n".utf8); bytes.append(tail)
+            try bytes.write(to:bad)
+            do {
+                let reopened = try await session("main",root:root,path:path)
+                let spend = await reopened.spend; XCTAssertEqual(spend.usd,0)
+                await reopened.close()
+            } catch { XCTFail("Unknown side membership must not poison another chat: \(error)") }
+            do {
+                let damaged = try await session("damaged",root:root,path:bad.path)
+                await damaged.close(); XCTFail("The damaged side must still use history recovery")
+            } catch { }
+            XCTAssertEqual(try Data(contentsOf:bad),bytes,"Discovery never rewrites damaged history")
+        }
+    }
+
+    func testReconciliationCreatesAMissingLoadedChildChargeAndPersistsIt() async throws {
+        try await reconcileManagedMirror(readerLoaded:true,missingCharge:true)
+    }
+    func testMissingManagedMirrorRejectsForeignOwnershipAndIgnoresUnrelatedSources() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let origin = subagentFixtureOrigin()
+        let child = try AgentSession(id:"child",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),prepared:nil,subagentOrigin:origin)
+        let cost = await child.contribution(billingObservation(profile:try fixtureProfile(),session:"child",attempt:"missing",cost:0.7),owner:"parent",delegation:origin.link.delegationID)
+        for key in ["budgetOwnerSessionId","delegationId"] {
+            var foreign = cost; foreign[key] = "foreign"
+            do { _ = try await child.mirrorSharedCharge(foreign); XCTFail("A missing entry must not bypass \(key)") } catch { }
+        }
+        var unrelated = cost; unrelated["sourceSessionId"] = "other-child"
+        let ignored = try await child.mirrorSharedCharge(unrelated); XCTAssertFalse(ignored)
+        let before = await child.spend; XCTAssertEqual(before.usd,0)
+        for _ in 0..<2 { _ = try await child.mirrorSharedCharge(cost) }
+        let after = await child.spend; XCTAssertEqual(after.usd,0.7); XCTAssertEqual(after.reported,1)
+        await child.close()
+    }
     func testUnsettledManagedWorkPinsItsMainOrSideOwnerBetweenRequests() async throws {
         for isSide in [false,true] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
@@ -266,7 +315,7 @@ final class SideBudgetTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath:try XCTUnwrap(mainPath)))
     }
 
-    private func reconcileManagedMirror(readerLoaded: Bool) async throws {
+    private func reconcileManagedMirror(readerLoaded: Bool, missingCharge: Bool = false) async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let host = try await host(root), main = try await open(host,"main")
         _ = try await host.command("side.open",sessionID:"main",params:["sideSessionId":"parent"])
@@ -282,6 +331,17 @@ final class SideBudgetTests: XCTestCase {
         let observation = billingObservation(profile:try fixtureProfile(),session:"child",attempt:"unknown-child",cost:nil)
         try await request.settleAttempt(AttemptSettlement(scope:request.scope,observation:observation,dispatched:true))
         try await child.setSubagentState(.completed); await child.close()
+        if missingCharge {
+            let path = root.appendingPathComponent("child.jsonl")
+            let rows = try String(contentsOf:path,encoding:.utf8).split(separator:"\n").map { line -> String in
+                var record = try JSON.parse(Data(line.utf8))
+                if record["data"]["attemptId"].text == "unknown-child" {
+                    record["customType"] = "fixture.uncommitted-cost"; record["data"] = [:]
+                }
+                return String(decoding:try record.data(),as:UTF8.self)
+            }
+            try Data((rows.joined(separator:"\n") + "\n").utf8).write(to:path)
+        }
         if readerLoaded { _ = try await open(host,"child",path:root.appendingPathComponent("child.jsonl").path) }
         else { _ = try await host.command("session.close",sessionID:"parent",params:[:]) }
         let evidence: JSON = ["attemptId":"unknown-child","sessionId":"child","turnId":"turn","purpose":"turn","outcome":"completed","requestScope":try subagentJSON(request.scope),"gateway":["cost":["status":"reported","usd":0.7]],"usage":["inputIncludingCache":100,"output":20]]
@@ -297,6 +357,12 @@ final class SideBudgetTests: XCTestCase {
             XCTAssertEqual(cost["unreportedRequests"].int,0)
         }
         await host.shutdown()
+        if missingCharge {
+            let reopened = try await session("child",root:root,path:root.appendingPathComponent("child.jsonl").path)
+            let spend = await reopened.spend
+            XCTAssertEqual(spend.usd,0.7); XCTAssertEqual(spend.reported,1)
+            await reopened.close()
+        }
     }
 
     func testColdRecoveryAdoptsAReportedCorrectionFromALegacySideOnce() async throws {

@@ -9,6 +9,33 @@ final class SubagentMetadataTests: XCTestCase {
        "parentTurnID":"turn","parentExecutionID":"execution","depth":1}}
     """
 
+    func testPersistedBudgetProjectionHonorsForkDeletionDamageAndProjectBoundaries() async throws {
+        let root = URL(fileURLWithPath:scratchBase()).appendingPathComponent(UUID().uuidString)
+        let store = MetadataStore(url:root.appendingPathComponent("desktop.sqlite"))
+        defer { try? FileManager.default.removeItem(at:root) }
+        func side(_ id: String, _ parent: String, workspace: String = "project", fork: Bool = false) -> ChatRecord {
+            ChatRecord(id:id,workspaceID:workspace,title:id,path:"/fixture/" + (fork ? "fork_" : "side_") + id + ".jsonl",profileID:"profile",parentSessionID:parent)
+        }
+        let main = ChatRecord(id:"main",workspaceID:"project",title:"Main",profileID:"profile")
+        let records = [main,side("side","main"),side("nested","side"),side("fork","main",fork:true),side("fork-side","fork"),
+            side("foreign","main",workspace:"elsewhere"),side("cycle-a","cycle-b"),side("cycle-b","cycle-a"),side("damaged-child","damaged")]
+        try await store.putChats(records)
+        try await store.put("undecodable chat",kind:"chat",id:"damaged")
+        var projection = try await store.sideBudgetAncestry()
+        XCTAssertEqual(projection["project"]?["nested"],["side","main"])
+        XCTAssertEqual(projection["project"]?["fork"],[])
+        XCTAssertEqual(projection["project"]?["fork-side"],["fork"])
+        XCTAssertEqual(projection["elsewhere"]?["foreign"],[])
+        XCTAssertNil(projection["project"]?["cycle-a"]); XCTAssertNil(projection["project"]?["cycle-b"])
+        XCTAssertNil(projection["project"]?["damaged-child"],"Unreadable metadata is not evidence of deletion")
+        try await store.put("deleted",kind:"session-deleted",id:"main")
+        projection = try await store.sideBudgetAncestry()
+        XCTAssertEqual(projection["project"]?["side"],[])
+        XCTAssertEqual(projection["project"]?["nested"],["side"])
+        XCTAssertEqual(projection["project"]?["fork-side"],["fork"])
+        await store.close()
+    }
+
     func testManagedIdentitySurvivesMetadataRoundTrip() throws {
         let record = try JSONDecoder().decode(ChatRecord.self, from: Data(child.utf8))
         let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])

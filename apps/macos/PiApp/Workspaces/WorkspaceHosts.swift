@@ -53,6 +53,7 @@ extension WorkspaceModel {
             self.liveActivity.disconnect(workspace.id)
             self.discardLostSides(workspaceID: workspace.id)
             for chat in self.chats where chat.workspaceID == workspace.id {
+                self.retireBudgetRead(chat.id)
                 self.opened.remove(chat.id); self.budgetDependencySessions.remove(chat.id); self.releasedHelperSessions.remove(chat.id); self.displays[chat.id]?.captureAvailable = false
                 self.displays[chat.id]?.lastSequence = -1
                 if !retired, let view = self.displays[chat.id] {
@@ -186,6 +187,7 @@ extension WorkspaceModel {
                 do {
                     _ = try await host.request("session.close", sessionID: id)
                     if let self, self.hosts[item.workspaceID] === host, host.connectionID == connection {
+                        self.retireBudgetRead(id)
                         self.opened.remove(id); self.budgetDependencySessions.remove(id); self.releasedHelperSessions.remove(id)
                         unloaded = true
                     }
@@ -198,6 +200,8 @@ extension WorkspaceModel {
         }
     }
     func helperSessionDidUnload(_ id: String) {
+        retireBudgetRead(id)
+        if record(id) == nil { budgetStates.removeValue(forKey:id) }
         opened.remove(id); budgetDependencySessions.remove(id); releasedHelperSessions.remove(id)
         releaseUnusedBudgetSessions()
     }
@@ -307,6 +311,8 @@ extension WorkspaceModel {
                     try await withConnectionOpen(item, lease: lease, host: host) {
                         try await reconcileJournal(item.id, host: host, profile: profile)
                         let initial = try await host.request("session.open", sessionID: item.id, params: params)
+                        budgetState(for:item.id).limitSent = costLimit(for:item.id)
+                        observeCost(initial.object ?? [:],sessionID:item.id)
                         // Previewing a fresh chat allocates a native journal too. Persist
                         // its path before an idle unload, even when no message is sent.
                         if let path = initial.object?["path"]?.string, let index = chats.firstIndex(where: { $0.id == item.id }) {
@@ -328,6 +334,9 @@ extension WorkspaceModel {
                         // reply, while path/capture persistence yielded above.
                         try Task.checkCancellation()
                         opened.insert(item.id)
+                        // Recovery may have corrected the cost after the open
+                        // response. Read just the authoritative numeric state.
+                        if budgetDependency { refreshBudgetState(item.id) }
                         // Settings or this chat's override may have changed
                         // while its seed or opening acknowledgement was read.
                         if params["costLimit"] != costLimit(for: item.id).wire { await sendCostLimit(item.id) }

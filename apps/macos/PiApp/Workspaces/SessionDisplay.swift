@@ -340,7 +340,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// notice's state.
     func applyCostReading(_ reading: SessionCostReading) {
         if footer.cost != reading { footer.cost = reading }
-        let held = reading.reached || reading.spentUSD == nil
+        let held = reading.held
         guard held != costLimitHeld else { return }
         costLimitHeld = held
         if failureCode == Self.costLimitCode { publishTranscript() }

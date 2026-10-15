@@ -10,7 +10,10 @@ extension WorkspaceModel {
             let page = try await host.request("budget.attempts", sessionID: item.id, params: after.map { ["after":.string($0)] } ?? [:])
             let ids = page.object?["attemptIds"]?.array?.compactMap(\.string) ?? []
             let evidence = try await traces.budgetEvidence(attempts: ids, owner: item.id, workspace: item.workspaceID)
-            if !evidence.isEmpty { _ = try await host.request("budget.reconcile", sessionID: item.id, params: ["evidence":.array(evidence)]) }
+            if !evidence.isEmpty {
+                let cost = try await host.request("budget.reconcile", sessionID: item.id, params: ["evidence":.array(evidence)])
+                observeCost(["cost":cost],sessionID:item.id)
+            }
             after = page.object?["next"]?.string
         } while after != nil
     }

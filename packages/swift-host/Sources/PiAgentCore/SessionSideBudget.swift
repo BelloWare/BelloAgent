@@ -40,7 +40,26 @@ extension AgentSession {
     func sharedCharges(_ attempts: [String]) -> [JSON] { attempts.compactMap { accounting.attempts[$0]?.contribution } }
     func committedSideCharges() -> [JSON] { accounting.sideCharges(owner:id) }
     @discardableResult func mirrorSharedCharge(_ cost: JSON) throws -> Bool {
-        guard let attempt = cost["attemptId"].text, let entry = accounting.attempts[attempt],
+        guard let attempt = cost["attemptId"].text, cost["reported"].int == 1 else { return false }
+        if accounting.attempts[attempt] == nil {
+            // The owner can have dispatched/settled while the child's first
+            // mirror was lost. A loaded reader owns its writer, so repair it
+            // here instead of skipping both the runtime and disk mirror.
+            guard let origin = subagents.origin, cost["sourceSessionId"].text == id else { return false }
+            guard origin.link.childSessionID == id,
+                  origin.link.budgetOwnerSessionID == cost["budgetOwnerSessionId"].text,
+                  origin.link.delegationID == cost["delegationId"].text else { throw AttemptAccounting.damaged() }
+            if !cost["scope"].isNull {
+                let scope = try JSONDecoder().decode(RequestScope.self,from:cost["scope"].data())
+                guard scope.valid, scope.sourceSessionID == id, scope.delegation == origin.link,
+                      scope.budgetOwnerSessionID == origin.link.budgetOwnerSessionID else { throw AttemptAccounting.damaged() }
+            }
+            var value = cost; value["accountingRevision"] = JSON(accounting.revision + 1)
+            try appendAccounting(kind:JournalRecordKind.cost,data:value)
+            stopFamilyAtLimit()
+            return true
+        }
+        guard let entry = accounting.attempts[attempt],
               let previous = entry.contribution ?? entry.admission, previous["reported"].int != 1, cost["reported"].int == 1 else { return false }
         guard previous["sourceSessionId"] == cost["sourceSessionId"], previous["budgetOwnerSessionId"] == cost["budgetOwnerSessionId"],
               previous["delegationId"] == cost["delegationId"] else { throw AttemptAccounting.damaged() }

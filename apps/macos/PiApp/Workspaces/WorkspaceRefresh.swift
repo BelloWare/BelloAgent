@@ -48,10 +48,10 @@ extension WorkspaceModel {
     func refresh(_ id: String) {
         sidebarSearchStorage?.journalChanged()
         guard let item = record(id), let host = hosts[item.workspaceID], opened.contains(id) else { return }
-        // Budget-only ancestors need no transcript or status polling. Capture
-        // accounting refreshes their compact totals independently.
+        // Dependency-only owners read authoritative numeric budgets without
+        // allocating a transcript. Retained captures are a separate projection.
         if budgetDependencySessions.contains(id), displays[id] == nil {
-            releaseUnusedBudgetSessions(); return
+            refreshBudgetState(id); releaseUnusedBudgetSessions(); return
         }
         // Written only when new: every write runs `displays`' observers, which
         // scan every display, and this runs on every event of every chat.

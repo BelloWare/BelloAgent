@@ -448,23 +448,33 @@ enum CostLimitText {
 @MainActor final class CostLimitLiveEditor: CostLimitEditor {
     private var observer: ShellObserver?
     /// The chat's figures; a replaced chat display (reopened, evicted) is followed.
-    var footer: SessionMetrics { didSet { if footer !== oldValue { follow() } } }
+    var footer: SessionMetrics? { didSet { if footer !== oldValue { follow() } } }
+    private var budget: SessionBudgetState?
     init(footer: SessionMetrics, title: String = "Cost limit", choose: @escaping @MainActor (CostLimit?) async throws -> Void) {
         self.footer = footer
         super.init(reading: footer.cost, title: title, choose: choose)
         follow()
     }
+    init(budget: SessionBudgetState, title: String = "Cost limit", choose: @escaping @MainActor (CostLimit?) async throws -> Void) {
+        self.budget = budget
+        super.init(reading:budget.reading,title:title,choose:choose)
+        follow()
+    }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     private func updateReading() {
-        var next = footer.cost
-        next.costAttribution = SessionStatsPresentation(gateway: footer.gateway, work: nil, cost: next).costAttribution
-        reading = next
+        if let footer {
+            var next = footer.cost
+            next.costAttribution = SessionStatsPresentation(gateway: footer.gateway, work: nil, cost: next).costAttribution
+            reading = next
+        } else if let budget { reading = budget.reading }
     }
     private func follow() {
         updateReading()
         let observer = ShellObserver { [weak self] in self?.updateReading() }
-        observer.observe(publisher: footer.$cost)
-        observer.observe(publisher: footer.$gateway)
+        if let footer {
+            observer.observe(publisher: footer.$cost)
+            observer.observe(publisher: footer.$gateway)
+        } else if let budget { observer.observe(budget) }
         self.observer = observer
     }
 }

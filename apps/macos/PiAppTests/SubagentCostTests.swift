@@ -14,6 +14,7 @@ final class SubagentCostTests: XCTestCase {
         let link = try JSONDecoder().decode(RequestScope.self,from:JSONEncoder().encode(scope)).delegation
         let agent = ChatRecord(id:"agent",workspaceID:"w",title:"Agent",profileID:"p",parentSessionID:side.id,delegation:link)
         model.chats = [main,side,nested,agent]
+        try await model.store?.putChats(model.chats)
         let display = SessionDisplay(id:side.id); model.displays[side.id] = display
         let child = SessionDisplay(id:agent.id); model.displays[agent.id] = child
         try await model.traces.configure(quota:nil,bodyRetention:86400,metricRetention:86400)
@@ -34,6 +35,7 @@ final class SubagentCostTests: XCTestCase {
         XCTAssertEqual(child.footer.gateway.budgetOwnerID,main.id)
         XCTAssertEqual(model.chatStats[nested.id]?.budgetOwnerID,main.id)
         model.chats.removeAll { $0.id == main.id }
+        try await model.store?.remove(kind:"chat",id:main.id)
         try await model.restoreSideBudgets(); model.refreshCostReading(side.id)
         try await eventually("orphan ancestry refreshes cached accounting without a new request") {
             display.footer.gateway.budgetOwnerID == nil && model.chatStats[side.id]?.budgetOwnerID == nil && model.chatStats[nested.id]?.budgetOwnerID == side.id && child.footer.gateway.budgetOwnerID == side.id
@@ -133,6 +135,7 @@ final class SubagentCostTests: XCTestCase {
         let fork = ChatRecord(id:"fork",workspaceID:"w",title:"Fork",path:"/fixture/fork_fork.jsonl",profileID:"p",parentSessionID:"main",costLimit:.usd(7))
         let side = ChatRecord(id:"side",workspaceID:"w",title:"Side",path:"/fixture/side_side.jsonl",profileID:"p",parentSessionID:"fork")
         model.chats = [main,fork,side]; model.pendingChatIDs.insert(fork.id)
+        try await model.store?.putChats(model.chats)
         _ = model.mountSide(fork,beside:main.id)
         XCTAssertNil(model.sideBudgetParent(fork), "Pane placement cannot grant budget ownership")
         XCTAssertEqual(model.budgetOwner(for:side).id,fork.id)
@@ -154,6 +157,7 @@ final class SubagentCostTests: XCTestCase {
         let main = ChatRecord(id:"main",workspaceID:"w",title:"Main",profileID:"p",costLimit:.usd(3))
         let side = ChatRecord(id:"side",workspaceID:"w",title:"Side",path:"/fixture/side_side.jsonl",profileID:"p",parentSessionID:"main")
         model.chats = [main,side]
+        try await model.store?.putChats(model.chats)
         let view = SessionDisplay(id:side.id); model.displays[side.id] = view
         view.footer.cost = model.costReading(for:side.id)
         XCTAssertEqual(view.footer.cost.budgetOwnerID,main.id)
@@ -167,6 +171,7 @@ final class SubagentCostTests: XCTestCase {
         try await model.traces.configure(quota:nil,bodyRetention:86400,metricRetention:86400)
         try await model.restoreSideBudgets()
         model.chats.removeAll { $0.id == main.id }
+        try await model.store?.remove(kind:"chat",id:main.id)
         try await model.restoreSideBudgets(); model.refreshCostReading(side.id)
         XCTAssertEqual(model.budgetOwner(for:side).id,side.id)
         XCTAssertNil(view.footer.cost.budgetOwnerID)
@@ -260,6 +265,7 @@ final class SubagentCostTests: XCTestCase {
             let main = ChatRecord(id: "main", workspaceID: "w", title: "Main", profileID: "p")
             let side = ChatRecord(id: "side", workspaceID: "w", title: "Side", path: "/fixture/side_side.jsonl", profileID: "p", parentSessionID: "main")
             model.chats = [main, side]
+            try await model.store?.putChats(model.chats)
             model.displays[side.id] = SessionDisplay(id: side.id)
             try await model.traces.configure(quota: nil, bodyRetention: 86400, metricRetention: 86400)
             try await model.restoreSideBudgets()
@@ -278,6 +284,7 @@ final class SubagentCostTests: XCTestCase {
             }
             XCTAssertNil(model.record("child"))
             model.chats.removeAll { $0.id == "main" }
+            try await model.store?.remove(kind:"chat",id:main.id)
             try await model.restoreSideBudgets()
             let target = try await model.traces.accountingTarget(attemptID: attempt, workspaceID: "w")
             XCTAssertEqual(target?.budgetOwnerSessionID, "side", "The orphan projection replaces historical ancestry")
@@ -285,6 +292,7 @@ final class SubagentCostTests: XCTestCase {
             // An old scope on a metadata-only update uses current desktop
             // ancestry without a body read or an unrelated transcript scan.
             model.chats.append(main)
+            try await model.store?.put(main,kind:"chat",id:main.id)
             try await model.restoreSideBudgets()
             try await eventually("Projection refresh settles") { model.accountingTasks.isEmpty }
             model.publishChatStats(GatewayTotals(), sessionID: "main")

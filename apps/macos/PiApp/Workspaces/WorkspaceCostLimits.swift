@@ -1,4 +1,16 @@
 import AppKit
+import Combine
+
+/// Durable spend observed from the helper, with no transcript, context or
+/// retained request rows. Owners can serve side budgets without a display.
+@MainActor final class SessionBudgetState: ObservableObject {
+    @Published var reading: SessionCostReading
+    var limitSent: CostLimit?
+    var readTask: Task<Void,Never>?
+    var readID = UUID()
+    var dirty = false
+    init(_ reading: SessionCostReading) { self.reading = reading }
+}
 
 /// What the cost-limit notice in a transcript asks for.
 enum CostLimitNoticeAction: Sendable { case raise, continueRun }
@@ -49,22 +61,17 @@ extension WorkspaceModel {
     }
 
     func restoreSideBudgets() async throws {
+        sideBudgetRestoreRevision &+= 1
+        let revision = sideBudgetRestoreRevision
         try await retainBudgetAncestors()
         // Keep recovery precedes archive startup. Registration is already
         // durable; the projection is rebuilt when the archive opens below.
         guard await traces.isOpen else { return }
-        var workspaces: [String: [String: [String]]] = [:]
-        for item in chats where !item.isSubagent && (item.parentSessionID != nil || sideBudgetParent(item) != nil) {
-            var current = item, parents: [String] = [], seen: Set<String> = [item.id]
-            while let id = sideBudgetParent(current), seen.insert(id).inserted,
-                  let parent = record(id), parent.workspaceID == item.workspaceID {
-                parents.append(id); current = parent
-            }
-            // An empty mapping retires a stale fork/orphan projection while
-            // retaining physical captures and unrelated discarded-side usage.
-            workspaces[item.workspaceID, default: [:]][item.id] = parents
-        }
+        guard let store else { return }
+        let workspaces = try await store.sideBudgetAncestry()
+        guard !isShutDown, !Task.isCancelled, revision == sideBudgetRestoreRevision else { return }
         for (workspace, sides) in workspaces {
+            guard revision == sideBudgetRestoreRevision else { return }
             let affected = try await traces.recordSideBudgets(sides, workspaceID: workspace)
             // Orphans retain their display and row caches. Re-read the numeric
             // projection when ancestry changes, including managed children and
@@ -79,7 +86,7 @@ extension WorkspaceModel {
     /// The chat's reading with its current limit and what its helper last
     /// said of its spend.
     func costReading(for id: String) -> SessionCostReading {
-        var reading = displays[id]?.footer.cost ?? SessionCostReading()
+        var reading = budgetStates[id]?.reading ?? displays[id]?.footer.cost ?? SessionCostReading()
         if reading.budgetOwnerID != nil { reading.costAttribution = nil }
         reading.budgetOwnerID = nil; reading.budgetSpentUSD = nil
         reading.override = record(id).map { budgetOwner(for: $0).costLimit } ?? nil; reading.defaultLimit = defaultCostLimit; reading.limit = costLimit(for: id)
@@ -87,7 +94,7 @@ extension WorkspaceModel {
             let owner = budgetOwner(for: item)
             if owner.id != id {
                 reading.budgetOwnerID = owner.id
-                reading.budgetSpentUSD = displays[owner.id]?.footer.cost.spentUSD ?? chatStats[owner.id]?.costUSD
+                reading.budgetSpentUSD = budgetStates[owner.id]?.reading.spentUSD ?? displays[owner.id]?.footer.cost.spentUSD
                 reading.costAttribution = "Counts toward " + owner.title
             }
         }
@@ -95,7 +102,47 @@ extension WorkspaceModel {
     }
     /// Puts a chat's limit on its display: the footer's figure and the stop notice.
     func refreshCostReading(_ id: String) {
-        displays[id]?.applyCostReading(costReading(for: id))
+        let reading = costReading(for:id)
+        if let budget = budgetStates[id], budget.reading != reading { budget.reading = reading }
+        displays[id]?.applyCostReading(reading)
+    }
+    func budgetState(for id: String) -> SessionBudgetState {
+        if let state = budgetStates[id] { return state }
+        let state = SessionBudgetState(costReading(for:id)); budgetStates[id] = state
+        return state
+    }
+    private func refreshBudgetFamily(_ owner: String) {
+        for id in Set(displays.keys).union(budgetStates.keys) {
+            if id == owner || record(id).map({ budgetOwner(for:$0).id == owner }) == true { refreshCostReading(id) }
+        }
+    }
+
+    /// Coalesced cost-only use of the existing status read. No transcript
+    /// display is allocated; a retired host/runtime cannot publish a late reply.
+    func refreshBudgetState(_ id: String) {
+        guard let item = record(id), opened.contains(id), let host = hosts[item.workspaceID], host.isReady else { return }
+        let state = budgetState(for:id); state.dirty = true
+        guard state.readTask == nil else { return }
+        let connection = host.connectionID
+        let readID = UUID(); state.readID = readID
+        state.readTask = Task { [weak self, weak state] in
+            guard let self, let state else { return }
+            defer { if state.readID == readID { state.readTask = nil } }
+            while state.dirty, !Task.isCancelled, !isShutDown {
+                state.dirty = false
+                do {
+                    let snapshot = try await host.request("session.status",sessionID:id,params:["budgetOnly":.bool(true)]).object ?? [:]
+                    guard !Task.isCancelled, state.readID == readID, opened.contains(id), hosts[item.workspaceID] === host,
+                          host.connectionID == connection, budgetStates[id] === state else { return }
+                    observeCost(snapshot,sessionID:id)
+                } catch { return }
+            }
+        }
+    }
+    func retireBudgetRead(_ id: String) {
+        budgetStates[id]?.readID = UUID()
+        budgetStates[id]?.readTask?.cancel(); budgetStates[id]?.readTask = nil
+        budgetStates[id]?.limitSent = nil
     }
 
     /// Sets a chat's own limit, or with nil lets it follow the default. The
@@ -138,7 +185,7 @@ extension WorkspaceModel {
                 }
             }
         } else { throw HostError.failure("This chat is no longer available.") }
-        refreshCostReading(id); displays[id]?.costLimitChanged()
+        refreshBudgetFamily(id); displays[id]?.costLimitChanged()
     }
     /// Saves the Settings default. Every chat that follows it is told.
     func setDefaultCostLimit(_ limit: CostLimit) async throws {
@@ -148,6 +195,7 @@ extension WorkspaceModel {
     /// The default changed (Settings saved, the vault read again): every
     /// open chat that follows it shows and enforces the new one.
     func defaultCostLimitChanged() {
+        for id in budgetStates.keys { refreshCostReading(id) }
         for (id, view) in displays {
             refreshCostReading(id)
             if record(id).map({ $0.costLimit == nil }) ?? false { view.costLimitChanged() }
@@ -159,6 +207,7 @@ extension WorkspaceModel {
     func sendCostLimit(_ id: String) async {
         guard opened.contains(id), let item = record(id), budgetOwner(for: item).id == id, let host = hosts[item.workspaceID], host.isReady else { return }
         let limit = costLimit(for: item)
+        budgetState(for:id).limitSent = limit
         displays[id]?.costLimitSent = limit
         // A failed send is not retried from here: the next change sends again,
         // and a snapshot showing the old limit asks only for a limit not yet tried.
@@ -192,20 +241,23 @@ extension WorkspaceModel {
     /// under. A helper that runs under another limit than the chat's (a
     /// change it missed) is told the chat's once.
     func observeCost(_ snapshot: [String: WireValue], view: SessionDisplay) {
+        observeCost(snapshot,sessionID:view.id)
+    }
+    func observeCost(_ snapshot: [String: WireValue], sessionID id: String) {
         guard let cost = snapshot["cost"]?.object else { return }
-        var reading = costReading(for: view.id)
+        let state = budgetState(for:id)
+        var reading = costReading(for:id)
         reading.spentUSD = cost["spentUSD"]?.number
         reading.reportedRequests = cost["reportedRequests"]?.nonnegativeInteger ?? 0
         reading.unreportedRequests = cost["unreportedRequests"]?.nonnegativeInteger ?? 0
-        view.applyCostReading(reading)
-        for (id, _) in displays where id != view.id {
-            if let item = record(id), budgetOwner(for: item).id == view.id { refreshCostReading(id) }
-        }
-        guard let item = record(view.id), budgetOwner(for: item).id == item.id else { return }
+        if state.reading != reading { state.reading = reading }
+        displays[id]?.applyCostReading(reading)
+        refreshBudgetFamily(id)
+        guard let item = record(id), budgetOwner(for: item).id == item.id else { return }
         let helper: CostLimit = cost["limitUSD"]?.number.map(CostLimit.usd) ?? .unlimited
-        if helper != reading.limit, view.costLimitSent != reading.limit {
-            view.costLimitSent = reading.limit
-            let id = view.id
+        if helper != reading.limit, state.limitSent != reading.limit {
+            state.limitSent = reading.limit
+            displays[id]?.costLimitSent = reading.limit
             Task { await sendCostLimit(id) }
         }
     }
@@ -229,13 +281,14 @@ extension WorkspaceModel {
     /// follow-ups go on after it; a run that stopped between turns resumes
     /// its queue instead.
     func continueAfterCostLimit(_ id: String) {
-        guard !installPreparing, let item = record(id), !costReading(for: id).reached else { return }
+        guard !installPreparing, let item = record(id), !costReading(for: id).held else { return }
         guard !item.isArchived else { displays[id]?.notice = Self.archivedNotice; return }
         Task {
             do {
                 let lease = try connectionLease(for: item)
                 let host = try await open(item)
                 try requireConnection(lease)
+                guard !costReading(for:id).held else { return }
                 do { _ = try await host.request("turn.retry", sessionID: id, params: turnOverrides(for: item)) }
                 catch HostError.rejected(let code, _) where code == "nothing_to_retry" {
                     _ = try await host.request("queue.resume", sessionID: id)

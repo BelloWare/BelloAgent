@@ -228,6 +228,45 @@ actor MetadataStore {
         return try migrateLoadedChats(values, profiles: profiles)
     }
 
+    /// The complete durable graph, independent of the presentation window.
+    /// Reads metadata only; discarded draft content is never materialized.
+    func sideBudgetAncestry() throws -> [String: [String: [String]]] {
+        let database = try ready()
+        var statement: OpaquePointer?
+        let sql = "SELECT c.id,c.value FROM records c WHERE c.kind='chat' AND NOT EXISTS(SELECT 1 FROM records d WHERE d.kind='session-deleted' AND d.id=c.id)"
+        guard sqlite3_prepare_v2(database,sql,-1,&statement,nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        var records: [String:ChatRecord] = [:], present = Set<String>()
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            if let text = sqlite3_column_text(statement,0) {
+                let id = String(cString:text); present.insert(id)
+                let size = Int(sqlite3_column_bytes(statement,1))
+                if size <= Self.recordByteLimit("chat"), let bytes = sqlite3_column_blob(statement,1),
+                   let chat = try? JSONDecoder().decode(ChatRecord.self,from:Data(bytes:bytes,count:size)), chat.id == id { records[id] = chat }
+            }
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else { throw StoreError.unavailable }
+        var result: [String:[String:[String]]] = [:]
+        for chat in records.values where !chat.isSubagent && chat.parentSessionID != nil {
+            var current = chat, parents: [String] = [], seen: Set<String> = [chat.id], valid = true
+            while let id = current.persistedBudgetParentID {
+                guard seen.insert(id).inserted, parents.count < 128 else { valid = false; break }
+                guard let parent = records[id] else {
+                    // Undecodable metadata is not proof of deletion. Preserve
+                    // its prior projection until the damaged record is repaired.
+                    if present.contains(id) { valid = false }
+                    break
+                }
+                guard parent.workspaceID == chat.workspaceID, !parent.isSubagent else { break }
+                parents.append(id); current = parent
+            }
+            if valid { result[chat.workspaceID,default:[:]][chat.id] = parents }
+        }
+        return result
+    }
+
     /// Loaded sides and managed children retain their actual budget ancestry
     /// outside the ordinary chat window. A fork source is only provenance.
     func loadBudgetAncestors(of chats: [ChatRecord], profiles: [ProfileRecord] = []) throws -> [ChatRecord] {
