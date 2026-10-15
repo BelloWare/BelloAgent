@@ -62,10 +62,13 @@ extension WorkspaceModel {
     }
     private var familyPickerSession: String? {
         guard let id = conversationCommandID() else { return nil }
-        if subagentTab(id)?.container?.isPane == false { return id }
+        if let reader = hostedConversationReader(in: conversationWindow()), reader.container?.isPane == false { return reader.key }
+        // The main column's anchor is covered and disabled on other pages.
+        // A visible independent child window above keeps its own picker.
+        guard page == .chats else { return nil }
         // Embedded readers have no header of their own. Their menu must use
         // the visible main column's anchor, even after another chat is selected.
-        if subagentTab(id)?.container?.isPane == true { return selectedID }
+        if subagentTab(id) != nil { return selectedID }
         let owner = record(id)?.delegation?.budgetOwnerSessionID ?? id
         if let chat = record(owner), let main = sideFamilyOwner(chat), main == selectedID { return main }
         return id

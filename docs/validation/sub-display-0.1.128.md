@@ -1704,3 +1704,129 @@ The **one full native parallel lane passed: 2,541 passed, 37 skipped, zero failu
 four workers); its log and extracted summary/tests JSON use that same run prefix.
 No second full lane was run. Round 9 has no known remaining implementation or
 validation failures; lead review and integration remain with the lead.
+
+
+## Lead review round 10: numbering, picker availability and plain labels
+
+### Causes and changes
+
+- Coordination filtered accepted starts by budget owner before assigning numbers.
+  A fork's first owned child therefore became #1 after discovery had correctly
+  assigned #2. Coordination now counts every unique accepted start, including
+  copied starts (replayed records reserve no additional number), while separately
+  filtering owned event/hold membership. The projection, display overlay and
+  Inspector use the same ordinal;
+  no original child is adopted and no source journal changes.
+- Family availability checked membership without checking whether its main-column
+  picker could open. Both menu validation and dispatch now resolve an available
+  Chats picker or the active independent child window. A remembered child focus
+  alone does not substitute for a visible picker.
+- Older work headers and expanded response parts exposed reconstruction metadata
+  that gave readers no action. The Work header now uses the ordinary activity/tool
+  summary; old-response order disclaimers and part-order captions are removed.
+  Missing completion says “Completion not recorded”; missing response detail says
+  “Some response details are unavailable”. The human copy fallback heading is
+  “Full saved response”, preserving the complete Markdown and diagnostic evidence.
+  Opaque response sections say “Additional response data”; wait receipts translate
+  settled/empty/timeout states and omit unknown internal reason codes.
+- Original-reference Back labels name the destination fork and refresh when it is
+  renamed. The compact label is bounded; tooltip and VoiceOver retain the complete
+  destination and numbered child identity. The adjacent original-reader identity
+  uses `#N · description`, keeping its number visible at narrow widths. Navigation
+  behavior stays unchanged.
+
+### Transcript wording audit
+
+Searched all transcript source and its presentation/copy adapters for legacy,
+canonical, part/arrival/delivery order, timing, evidence, terminal/receipt,
+projection, hydration, replay, checkpoint, pending/unknown and raw state labels.
+The saved pre-change grep is `review10-jargon-before.txt` in the stream build root.
+
+| Surface | Disposition |
+| --- | --- |
+| Older Work header | Ordinary activity/tool summary instead of legacy/order caption |
+| Older request-info detail | Removed order disclaimer |
+| Missing timeline updates | Plain missing-details notice |
+| Expanded response-part evidence | Removed delivery-order/arrival-timing captions |
+| Execution without completion | “Completion not recorded” |
+| Opaque response section | “Additional response data” |
+| Wait receipt reasons | Plain finished/no-agents/wait-time wording; unknown codes omitted |
+| Human copy fallback heading | “Full saved response”; saved source preserved |
+| Original-reference header | “Back to <fork title>”; full destination in tooltip/VoiceOver |
+| Missing text, partial history, unknown cost/tool outcome, pending delivery | Kept: these explain missing content, uncertainty or an available Resume action |
+| Raw journal keys, model/tool text, request evidence, identifiers, comments, user prose | Unchanged: not app-authored transcript chrome |
+
+### Failing-first and final evidence
+
+The initial failing runs reproduced the production behavior before each fix:
+
+| Run (`review10-<name>`) | Pass | Fail | Reproduction |
+| --- | ---: | ---: | --- |
+| `red-projection` | 25 | 2 | Fork child renumbered #1; legacy request-info disclaimer |
+| `red-menu` | 46 | 1 | View/Conversation family commands enabled on Reports and Background |
+| `red-original` | 0 | 1 | Generic Back to Parent instead of the destination fork |
+| `red-native-words` | 27 | 2 | Legacy Work caption and terminal-receipt wording |
+| `red-copy` | 3 | 1 | Canonical/order heading in copied saved response |
+| `red-menu-key-reader` | 46 | 1 | Stale external-child focus enabled the covered main picker |
+| `red-expanded-labels` | 29 | 1 | Opaque/order captions in expanded response parts |
+| `red-compact-and-wait` | 16 | 2 | Long fork title exceeded a 320-point header; internal wait reasons |
+| `red-header-number` | 7 | 1 | Named Back squeezed out the original child's number in a narrow header |
+
+Real production mutations, each rejected and restored:
+
+- `mutation-ordinal`: count only owned starts again. SubagentDiscoveryTests failed
+  the fork projection/display/Inspector regression (13 passed, 1 failed).
+- `mutation-ownership`: admit every numbered child to the owned coordination set.
+  The same class failed its foreign-event/hold exclusion (13 passed, 1 failed).
+- `mutation-picker`: remove the Chats-page guard. SubagentReaderTests failed actual
+  View/Conversation menu validation and dispatch checks (46 passed, 1 failed).
+
+Every run uses `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`
+and `scripts/test-macos.sh -only-testing:PiAppTests/<Class>`. Serial-lane classes
+run alone. Logs, exact arguments and extracted summary/tests JSON use the run
+prefixes above in that build root; no named result bundles are retained.
+
+Final affected validation: **320 unique tests passed across 18 classes, five
+existing skips, zero failures**. `review10-final-affected-counts.json` records the
+union by test identifier, avoiding double-counting repeated classes. Final evidence:
+
+| Run (`review10-<name>`) | Pass | Skip | Scope |
+| --- | ---: | ---: | --- |
+| `green-projection` | 150 | 5 | Thirteen affected projection, display, Inspector, family, fold and native parity classes |
+| `final-reader` | 47 | 0 | SubagentReaderTests alone; actual View/Conversation menu validation and dispatch |
+| `final-timeline` | 30 | 0 | TranscriptNativeTimelineBehaviourTests alone; expanded parts, warnings and Work summary |
+| `final-pane` | 81 | 0 | ConversationPaneTests alone |
+| `final-projection` | 77 | 0 | Eight affected classes after the wording/compact-button refinements |
+| `final-row-parity` | 24 | 2 | Native/reference rows after removing order captions |
+| `final-header` | 8 | 0 | SubagentDisplayTests after preserving the narrow original identity |
+| `final-original-header` | 1 | 0 | InheritedSubagentReaderTests alone; original read-only matrix and named/renamed Back |
+
+The five skips are existing opt-in calibration sweeps and probes. No full native
+lane was run this round, per the affected-classes-only instruction. No helper
+package source changed, so no helper-package run was needed. The three mutation
+checks above were all restored before final validation.
+
+### Gallery and boundaries
+
+Standalone gallery validation passed **three tests, zero failures, two intentional
+opt-in skips**. All **20 final PNGs were opened and visually inspected**:
+
+- `/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display/gallery-review10-original`:
+  eight original-reference card/reader captures, picker closed/open, light/dark,
+  1240×800 and 920×600. Back names the fork; the compact child number remains
+  readable; provenance remains visible and popovers stay within the window.
+  Final run: `review10-gallery-original-final` (one pass, two unrelated opt-ins skipped).
+- `/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display/gallery-review10-rows/screenshots`:
+  twelve native transcript captures covering Work, expanded response parts,
+  compact/expanded turns, stopped replies and saved-response warnings in light/dark.
+  The added `23-saved-response-details-*` scenes show the plain labels and retained
+  Request details action. Run: `review10-gallery-rows` (two passes).
+
+XcodeGen regenerated the project; `git diff --check` passes. All fixture and gallery
+data stayed in this stream's build root or isolated test scratch directories.
+Journal bytes, model/tool text, ownership, Stop authority, permission, capture,
+vault and accounting boundaries are unchanged. Raw request diagnostics remain raw;
+only app-authored transcript labels and the human copy fallback heading changed.
+No installed app, real preferences, Keychain or paid-provider calls were used.
+Round 10 has no known remaining implementation or validation failures; independent
+lead review and integration remain with the lead.

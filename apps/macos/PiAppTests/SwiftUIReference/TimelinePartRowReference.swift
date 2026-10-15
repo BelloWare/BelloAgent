@@ -42,7 +42,7 @@ struct TimelinePartRow: View {
         // thought, not the name of the channel it arrived on.
         case "reasoningSummary", "reasoningText": return "Think"
         case "toolArguments": return "Preparing \(part.part.name ?? "tool")"
-        case "opaque": return "Opaque provider item"
+        case "opaque": return "Additional response data"
         case "correction": return "Corrected response content"
         case "status": return part.text
         default: return "Response part"
@@ -109,7 +109,6 @@ struct TimelinePartRow: View {
                     } else if part.part.kind != "status" {
                         MarkdownBodyView(source:part.text,style:reasoning ? .reasoning : .prose,capsWidth:false,streaming:running).equatable()
                     }
-                    Text(part.part.evidence == "observed" ? "Observed delivery order" : "\(part.part.evidence) · arrival timing unavailable").font(.system(size:10.5)).foregroundStyle(TranscriptPalette.faint)
                     if part.truncated { Text("This older timeline fragment was saved without its remaining text.").font(.system(size:11)).foregroundStyle(TranscriptPalette.warning) }
                     Button("Request details") { actions.inspect(message.id) }.buttonStyle(.plain).font(.system(size:11)).foregroundStyle(TranscriptPalette.faint)
                 }
@@ -228,7 +227,7 @@ struct ExecutionTimelineRow: View {
                 ForEach(timeline.segments) { part in
                     TimelinePartRow(part:part,message:message,actions:actions,open:true,toggle:{})
                 }
-                if timeline.terminal == nil { Text("No terminal receipt yet").font(.system(size:11)).foregroundStyle(TranscriptPalette.warning) }
+                if timeline.terminal == nil { Text("Completion not recorded").font(.system(size:11)).foregroundStyle(TranscriptPalette.warning) }
             }
         }.padding(.vertical,8)
     }

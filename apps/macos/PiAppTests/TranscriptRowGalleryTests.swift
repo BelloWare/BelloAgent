@@ -43,6 +43,26 @@ final class TranscriptRowGalleryTests: XCTestCase {
         }
     }
 
+    @MainActor func testSavedResponseLabelsGallery() throws {
+        guard let path = testEnvironment("PI_APP_UI_SCREENSHOT_ROOT") else { throw XCTSkip("Set PI_APP_UI_SCREENSHOT_ROOT") }
+        let gallery = URL(fileURLWithPath:path).appendingPathComponent("screenshots")
+        try FileManager.default.createDirectory(at:gallery,withIntermediateDirectories:true)
+        let previous = TranscriptDisplay.mode; defer { TranscriptDisplay.use(previous) }; TranscriptDisplay.use(.normal)
+        var reply = TranscriptMessage(id:"saved",role:"assistant",text:"Saved answer",stopReason:"stop")
+        var timeline = ResponseTimeline()
+        timeline.consume(.init(attemptID:"fixture",ordinal:0,itemID:"data",kind:"opaque",update:"replace",text:"Saved response data",evidence:"canonical"))
+        timeline.consume(.init(attemptID:"fixture",ordinal:1,itemID:"answer",kind:"text",update:"replace",text:"The saved response remains readable."))
+        timeline.omittedEvents = 1; reply.responseTimeline = timeline
+        var operation = TranscriptMessage(id:"operation",role:"system",text:"",kind:"execution",detail:"Saving the summary")
+        var progress = ResponseTimeline()
+        progress.consume(.init(attemptID:"fixture",ordinal:0,itemID:"status",kind:"status",update:"replace",text:"Summary prepared"))
+        operation.responseTimeline = progress
+        try capture("23-saved-response-details",messages:[.init(id:"question",role:"user",text:"Show the saved response and its progress."),reply,operation],into:gallery) { session,items in
+            for case .block(let block) in items where block.part != nil { session.disclosure.setOpen(true,.work(block.key)) }
+            session.disclosure.setOpen(true,.compaction("operation"))
+        }
+    }
+
     // MARK: The conversations worth looking at
 
     /// A real edit request, so the row opens the diff card rather than the

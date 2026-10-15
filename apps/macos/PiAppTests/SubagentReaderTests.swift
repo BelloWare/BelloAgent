@@ -624,6 +624,49 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         for _ in 0..<200 where asked.isEmpty { try await Task.sleep(for: .milliseconds(2)) }
         XCTAssertEqual(asked.count, 1, "Explicit parent focus still offers its ordinary confirmation")
     }
+    @MainActor func testFamilyMenusRequireAUsablePickerButKeepIndependentChildWindows() async throws {
+        let (model, _) = try fixture()
+        model.conversationWindow = { nil }
+        let menus = ApplicationMenus(model:model,updates:UpdateController(),workspaceWindow:{nil},revealWorkspace:{},showSettings:{})
+        let old = NSApp.mainMenu; defer { NSApp.mainMenu = old }; menus.install()
+        let commands = try ["View", "Conversation"].map { title in
+            let menu = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == title }?.submenu)
+            return try XCTUnwrap(menu.items.first { $0.title == "Sides and Agents…" })
+        }
+        var requests: [String] = []
+        let subscription = model.agentFamilyRequests.sink { requests.append($0) }; defer { subscription.cancel() }
+        for page in [WorkspacePage.chats, .report, .background, .chats] {
+            model.page = page
+            XCTAssertEqual(model.canShowAgentFamily, page == .chats)
+            for command in commands { XCTAssertEqual(menus.validateMenuItem(command), page == .chats) }
+            let before = requests.count
+            model.showAgentFamily()
+            XCTAssertEqual(requests.count - before, page == .chats ? 1 : 0, "Disabled requests must not reach a hidden picker")
+        }
+        let tab = try await open("chat-child",in:model)
+        model.tabs.showsWindows = false
+        let container = model.tabs.popOut(tab), window = try XCTUnwrap(model.tabs.window(of:container))
+        model.conversationWindow = { window }
+        for page in [WorkspacePage.chats, .report, .background] {
+            model.page = page; model.focusedSessionID = "chat-parent"
+            XCTAssertTrue(model.canShowAgentFamily)
+            for command in commands {
+                XCTAssertTrue(menus.validateMenuItem(command))
+                let before = requests.count
+                _ = menus.perform(command.action!,with:command)
+                XCTAssertEqual(requests.count, before + 1)
+                XCTAssertEqual(requests.last, "chat-parent")
+            }
+        }
+        // Main-window activation must not reuse a previous child window's
+        // remembered focus when the main picker is covered.
+        model.conversationWindow = { nil }; model.focusedSessionID = tab.key
+        for page in [WorkspacePage.report, .background] {
+            model.page = page
+            for command in commands { XCTAssertFalse(menus.validateMenuItem(command)) }
+            let before = requests.count; model.showAgentFamily(); XCTAssertEqual(requests.count,before)
+        }
+    }
     @MainActor func testEmbeddedReaderFamilyMenuTargetsTheVisibleMainHeader() async throws {
         let (model, _) = try fixture()
         let tab = try await open("chat-child", in: model)
@@ -638,7 +681,8 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(model.canShowAgentFamily)
         model.showAgentFamily()
         XCTAssertEqual(owners, [other.id], "Embedded commands use the main column's available picker")
-        model.tabs.popOut(tab)
+        let container = model.tabs.popOut(tab), window = try XCTUnwrap(model.tabs.window(of:container))
+        model.conversationWindow = { window }
         model.showAgentFamily()
         XCTAssertEqual(owners.last, "chat-parent", "A child window has its own family anchor")
     }

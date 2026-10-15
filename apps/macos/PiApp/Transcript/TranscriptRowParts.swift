@@ -330,7 +330,7 @@ struct TranscriptTimelinePart {
         // thought, not the name of the channel it arrived on.
         case "reasoningSummary", "reasoningText": return "Think"
         case "toolArguments": return "Preparing \(part.part.name ?? "tool")"
-        case "opaque": return "Opaque provider item"
+        case "opaque": return "Additional response data"
         case "correction": return "Corrected response content"
         case "status": return part.text
         default: return "Response part"

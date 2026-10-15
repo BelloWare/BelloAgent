@@ -28,7 +28,6 @@ import AppKit
         var environment: TranscriptRowEnvironment
     }
     enum Kind { case words, card, work }
-    static let evidenceFace = TranscriptPlainTextFace(size: 10.5, monospaced: false, lineSpacing: 0, label: "Evidence")
     static let warningFace = TranscriptPlainTextFace(size: 11, monospaced: false, lineSpacing: 0, label: "Warning")
     static let detailsFont = NSFont.systemFont(ofSize: 11)
 
@@ -40,7 +39,6 @@ import AppKit
     private var code: TranscriptNativeCodeBlock?
     private var markdown: NativeMarkdownContainer?
     private var dots: TranscriptWaitingDots?
-    private var evidence: TranscriptPlainTextView?
     private var truncatedNote: TranscriptPlainTextView?
     private(set) var details: TranscriptLinkButton?
     private var model: Model?
@@ -93,8 +91,8 @@ import AppKit
         needsLayout = true
     }
     private func clear() {
-        for view in [reply, action, line, code, markdown, dots, evidence, truncatedNote, details] as [NSView?] { view?.removeFromSuperview() }
-        reply = nil; action = nil; line = nil; code = nil; markdown = nil; dots = nil; evidence = nil; truncatedNote = nil; details = nil
+        for view in [reply, action, line, code, markdown, dots, truncatedNote, details] as [NSView?] { view?.removeFromSuperview() }
+        reply = nil; action = nil; line = nil; code = nil; markdown = nil; dots = nil; truncatedNote = nil; details = nil
     }
     private func changed() { needsLayout = true; sizeChanged() }
 
@@ -108,8 +106,8 @@ import AppKit
                     link: nil, toggle: model.toggle, environment: model.environment)
         // What a closed row opens costs nothing: it is not built at all.
         guard model.open else {
-            for view in [code, markdown, dots, evidence, truncatedNote, details] as [NSView?] { view?.removeFromSuperview() }
-            code = nil; markdown = nil; dots = nil; evidence = nil; truncatedNote = nil; details = nil
+            for view in [code, markdown, dots, truncatedNote, details] as [NSView?] { view?.removeFromSuperview() }
+            code = nil; markdown = nil; dots = nil; truncatedNote = nil; details = nil
             return
         }
         if part.part.kind == "toolArguments" {
@@ -138,10 +136,6 @@ import AppKit
             markdown?.removeFromSuperview(); markdown = nil
             dots?.running = false; dots?.removeFromSuperview(); dots = nil
         }
-        let evidence = self.evidence ?? { let text = TranscriptPlainTextView(); text.isSelectable = false; addSubview(text); self.evidence = text; return text }()
-        let evidenceText = part.part.evidence == "observed" ? "Observed delivery order" : "\(part.part.evidence) · arrival timing unavailable"
-        evidence.update(text: evidenceText, face: Self.evidenceFace, environment: model.environment, swiftUILines: true, color: TranscriptNSPalette.faint)
-        evidence.setAccessibilityLabel(evidenceText)
         if part.truncated {
             let note = truncatedNote ?? { let text = TranscriptPlainTextView(); text.isSelectable = false; addSubview(text); self.truncatedNote = text; return text }()
             let text = "This older timeline fragment was saved without its remaining text."
@@ -174,9 +168,7 @@ import AppKit
             let waiting = (model?.part.text.isEmpty ?? false) && dots != nil
             pieces.append((markdown, CGSize(width: width, height: waiting ? max(TranscriptNativeReplyRow.waitingHeight, measured) : measured)))
         }
-        for text in [evidence, truncatedNote] {
-            if let text { pieces.append((text, CGSize(width: text.usedWidth(width: width), height: text.exactHeight(width: width)))) }
-        }
+        if let text = truncatedNote { pieces.append((text, CGSize(width: text.usedWidth(width: width), height: text.exactHeight(width: width)))) }
         if let details { pieces.append((details, details.size)) }
         return pieces
     }
@@ -441,8 +433,8 @@ import AppKit
         }
         if open, message.responseTimeline?.supported == true, message.responseTimeline?.terminal == nil {
             let text = noReceipt ?? { let text = TranscriptPlainTextView(); text.isSelectable = false; addSubview(text); noReceipt = text; return text }()
-            text.update(text: "No terminal receipt yet", face: Self.noReceiptFace, environment: inputs.environment, swiftUILines: true, color: TranscriptNSPalette.warning)
-            text.setAccessibilityLabel("No terminal receipt yet")
+            text.update(text: "Completion not recorded", face: Self.noReceiptFace, environment: inputs.environment, swiftUILines: true, color: TranscriptNSPalette.warning)
+            text.setAccessibilityLabel("Completion not recorded")
         } else if let noReceipt { noReceipt.removeFromSuperview(); self.noReceipt = nil }
         setAccessibilityLabel(nil)
     }

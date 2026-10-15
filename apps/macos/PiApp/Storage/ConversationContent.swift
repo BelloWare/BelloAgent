@@ -122,7 +122,7 @@ enum ConversationContent {
             var canonical = entry
             var plain = message; plain.removeValue(forKey: "nativeResponseTimeline")
             canonical["message"] = .object(plain)
-            return evidence + "## Canonical retained content (arrival order unavailable)\n\n" + text(canonical)
+            return evidence + "## Full saved response\n\n" + text(canonical)
         }
         let body = content?.string ?? (content?.array ?? []).map { value -> String in
             let block = value.object ?? [:]

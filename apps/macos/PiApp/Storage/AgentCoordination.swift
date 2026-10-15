@@ -40,10 +40,12 @@ extension HistoryReader {
         try subagentRecords(path) { row, line in
             if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == ownerID else { throw StoreError.invalidRecord } }
             if let plan = Self.subagentPlan(row), let raw = plan["origin"],
-               let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)), origin.link.valid,
-               origin.link.budgetOwnerSessionID == ownerID {
+               let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)), origin.link.valid {
                 let id = origin.link.childSessionID
-                if children.insert(id).inserted { numbers[id] = numbers.count + 1 }
+                // Copied starts reserve their number without granting this
+                // fork ownership of the original child's messages or holds.
+                if numbers[id] == nil { numbers[id] = numbers.count + 1 }
+                if origin.link.budgetOwnerSessionID == ownerID { children.insert(id) }
             }
             let data = row["data"]?.object ?? [:]
             switch row["customType"]?.string {

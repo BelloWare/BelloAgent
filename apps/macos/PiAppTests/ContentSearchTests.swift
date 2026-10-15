@@ -6,6 +6,17 @@ import XCTest
 /// text finds, in the same order and counts, with its ASCII shortcut and its
 /// records decoded a run at a time.
 final class ContentSearchTests: XCTestCase {
+    func testIncompleteResponseCopyUsesPlainHeadingAndKeepsTheFullSavedSource() throws {
+        var timeline = ResponseTimeline()
+        timeline.consume(.init(attemptID:"attempt",ordinal:0,itemID:"part",kind:"text",update:"append",text:"Partial preview"))
+        timeline.omittedEvents = 1
+        let encoded = try JSONDecoder().decode(WireValue.self,from:JSONEncoder().encode(timeline))
+        let source = "Complete **saved** answer"
+        let text = ConversationContent.text(["message":.object(["role":.string("assistant"),"content":.string(source),"nativeResponseTimeline":encoded])])
+        XCTAssertTrue(text.contains("## Full saved response"))
+        XCTAssertTrue(text.contains("Partial preview")); XCTAssertTrue(text.contains(source))
+        XCTAssertFalse(text.contains("Canonical")); XCTAssertFalse(text.contains("arrival order"))
+    }
     func testRenderedSearchKeepsSourceCopyPagingAndAbandonedRowsSeparate() async throws {
         let root = scratchRoot("rendered-agent-search")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

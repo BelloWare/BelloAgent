@@ -54,6 +54,16 @@ final class InheritedSubagentReaderTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(model.selectedID,fork.id)
         XCTAssertTrue(tab.title.contains("From the original chat · " + parent.title))
         XCTAssertTrue(tab.stripTitle.contains("From the original chat"))
+        let backButton = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self,in:tab.contentView).first { $0.accessibilityIdentifier() == "back-to-subagent-parent" })
+        XCTAssertEqual(backButton.title, "Back to " + fork.title)
+        XCTAssertTrue(backButton.toolTip?.contains(fork.title) == true)
+        XCTAssertTrue(backButton.accessibilityLabel()?.contains(fork.title) == true)
+        let forkIndex = try XCTUnwrap(model.chats.firstIndex { $0.id == fork.id })
+        model.chats[forkIndex].title = "Renamed fork"
+        tab.pane?.refresh()
+        XCTAssertEqual(backButton.title, "Back to Renamed fork", "Destination labels follow renames without reloading the child")
+        model.chats[forkIndex].title = fork.title; tab.pane?.refresh()
+
         XCTAssertEqual(model.displays[child.id]?.messages.first?.text,"Original saved reply")
         let inspect = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self,in:card).first { $0.accessibilityIdentifier() == "inspect-subagent" })
         inspect.onPress?(); XCTAssertEqual(model.lastInspectorFocus,.subagent(child.delegation!.delegationID))

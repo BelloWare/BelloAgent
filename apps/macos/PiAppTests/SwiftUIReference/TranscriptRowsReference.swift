@@ -1082,8 +1082,7 @@ struct BlockRowView: View {
             : ["cancelled", "interrupted"].contains(outcome ?? "") ? .stopped : .ok
         return TranscriptWorkRow(icon: "list.bullet",
                                  title: block.key.hasPrefix("legacy:") ? "Work" : block.presentation == .work ? "Task" : "Work",
-                                 summary: block.key.hasPrefix("legacy:") ? "Legacy response · part order unavailable"
-                                    : block.presentation == .work ? workLabel
+                                 summary: !block.key.hasPrefix("legacy:") && block.presentation == .work ? workLabel
                                     : ToolCallSummary(rows: block.replies).label(reasoned: reasoned) ?? "Working",
                                  state: state, open: open, toggle: { toggle(.work(block.key)) },
                                  help: workLabel) { EmptyView() }

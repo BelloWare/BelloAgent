@@ -45,6 +45,21 @@ final class SubagentDisplayTests: XCTestCase {
         header.update(chat: child, parent: model.chats[0], back: {})
         XCTAssertTrue(ConversationPaneTests.views(PiKit.TextLine.self, in: header).contains { $0.line.text.hasPrefix("Sub-agent 2 ·") })
     }
+    @MainActor func testNamedForkBackFitsANarrowReaderAndSpeaksTheCompleteDestination() throws {
+        let root = scratchRoot("fork-back-title"), model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model,root:root)
+        let header = SubagentHeaderView(frame:.zero), title = String(repeating:"W",count:100)
+        var child = model.chats[1]; child.subagentNumber = 2
+        header.update(chat:child,parent:model.chats[0],effort:"high",original:"From the original chat · parent",backTitle:title,back:{})
+        header.frame = .init(x:0,y:0,width:320,height:header.height(forWidth:320)); header.layoutSubtreeIfNeeded()
+        let back = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self,in:header).first)
+        XCTAssertTrue(back.title.hasPrefix("Back to W")); XCTAssertTrue(back.title.hasSuffix("…"))
+        XCTAssertLessThanOrEqual(header.convert(back.bounds,from:back).maxX,header.bounds.maxX - 16)
+        XCTAssertTrue(back.accessibilityLabel()?.contains(title) == true); XCTAssertTrue(back.toolTip?.contains(title) == true)
+        let identity = try XCTUnwrap(ConversationPaneTests.views(PiKit.TextLine.self,in:header).first { $0.line.text.hasPrefix("#2 ·") })
+        XCTAssertTrue(identity.accessibilityLabel()?.contains(child.displayTitle) == true)
+        XCTAssertGreaterThanOrEqual(identity.bounds.width,PiKit.Line("#2",font:PiKit.Font.caption,color:.piInkSecondary).size().width)
+    }
     @MainActor func testNumberedCardsAndMixedAgentMessagesKeepWireTextAndProvenanceUntouched() throws {
         let display = SessionDisplay(id: "chat-parent"); display.historyState = .ready
         display.subagentNumbers = ["chat-child": 2, "sibling": 7]

@@ -168,6 +168,20 @@ filtering remain presentation-only: no model-visible text, permission, tool, cap
 journal or accounting contract changes. Family membership and counts are cached at
 metadata/activity boundaries; views never derive them from transcripts.
 
+Coordination and discovery reserve ordinals for every unique accepted start,
+including inherited starts in a fork. Only owned starts admit message/delivery
+links or Stop holds; reserving a number never grants authority over an original.
+Family menu validation and dispatch require the visible main picker on Chats,
+or the active reader's independent window. Reports and Background have no main
+picker. An original-reference reader labels Back with its destination fork title,
+including the complete destination in the tooltip and VoiceOver. Its adjacent
+identity uses the compact `#N · description` so the number survives narrow panes.
+
+Transcript chrome omits reconstruction/order captions (legacy/canonical, delivery
+order and missing arrival timing). Work headers use their ordinary activity summary.
+Missing completion or saved text remains explicit in plain words, and Request
+details remains available. Prose, raw request evidence and saved data are unchanged.
+
 **Status:** Proposed implementation design, incorporating lead review  
 **Date:** 2026-10-13  
 **Source baseline:** `fb09bc70a257d1cc0f74644531d9ce32a26b58e9`  

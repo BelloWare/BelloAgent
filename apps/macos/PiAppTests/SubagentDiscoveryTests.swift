@@ -20,6 +20,45 @@ final class SubagentDiscoveryTests: XCTestCase {
         let plans = try await model.history.subagentPlans(path:path,ownerID:"fork")
         XCTAssertEqual(plans.count,1); XCTAssertEqual(plans.first?.number,2)
         XCTAssertEqual(plans.first?.header.link.childSessionID,ownID)
+        // A copied receipt reserves its ordinal but grants no coordination
+        // authority. Replayed starts and follow-ups must not reserve more.
+        rows += [rows[1], own]
+        for id in [family.child, ownID] {
+            rows.append(["customType":.string("pi-app.agent-operation.v1"), "data":.object([
+                "key":.object(["parentSessionID":.string("fork"), "assistantMessageID":.string("send"), "toolCallID":.string(id)]),
+                "turn":.object(["childID":.string(id), "turn":.number(2), "inputID":.string("input-" + id)])])])
+            rows.append(["customType":.string("pi-app.subagent-turn-terminal.v1"), "data":.object(["childID":.string(id), "turn":.number(2)])])
+        }
+        rows.append(["customType":.string("pi-app.family-run.v1"), "data":.object(["heldChildren":.array([.string(family.child), .string(ownID)])])])
+        bytes = Data(); for row in rows { bytes.append(try JSONEncoder().encode(row)); bytes.append(10) }; try bytes.write(to:path)
+        let coordination = try await model.history.agentCoordination(path:path, ownerID:"fork")
+        XCTAssertEqual(coordination.subagentNumbers, [family.child:1, ownID:2])
+        XCTAssertEqual(coordination.entries.map(\.childID), [ownID, ownID])
+        XCTAssertEqual(coordination.entries.map(\.subagentNumber), [2, 2])
+        XCTAssertEqual(coordination.heldChildren, [ownID], "Copied children remain outside the fork's authority")
+        let cached = try await model.history.agentCoordination(path:path, ownerID:"fork")
+        XCTAssertEqual(cached, coordination)
+        var fork = model.chats[0]; fork.id = "fork"; fork.path = path.path; fork.parentSessionID = "chat-parent"
+        model.chats.append(fork)
+        let display = SessionDisplay(id:fork.id); model.displays[fork.id] = display
+        display.subagentNumbers = [family.child:1, ownID:2]
+        model.applyAgentCoordination(coordination, parentID:fork.id)
+        XCTAssertEqual(display.subagentNumbers[ownID], 2, "Coordination cannot replace the discovery ordinal")
+        var tool = SubagentSteeringPresentationTests.tool
+        var metadata = tool.nativeSubagent!.object!; metadata["sessionId"] = .string(ownID); tool.nativeSubagent = .object(metadata)
+        XCTAssertEqual(display.presentAgentState(.init(id:"reply",role:"assistant",text:"",tools:[tool])).tools?.first?.subagentNumber, 2)
+        let header = try XCTUnwrap(plans.first?.header)
+        let summary = SubagentSummary(link:header.link,description:header.description,model:header.model.model,status:.completed,revision:1)
+        try await model.traces.configure(quota:nil,bodyRetention:86_400,metricRetention:86_400)
+        try await model.traces.recordSubagent(summary,workspaceID:fork.workspaceID)
+        let inspector = SessionInspectorModel(scope:.init(sessionID:fork.id,workspaceID:fork.workspaceID),title:"Fork",archive:model.traces,workspace:model,
+            usageLoader:{ _, _, _ in throw CaptureFailure.unavailable })
+        inspector.setVisible(true); defer { inspector.setVisible(false) }
+        try await eventually("Inspector loads the fork's owned family") { inspector.indexLoaded }
+        XCTAssertEqual(inspector.groups.count, 1)
+        XCTAssertEqual(inspector.groups.first?.number, 2)
+        XCTAssertTrue(inspector.groups.first?.title.hasPrefix("Sub-agent 2 ·") == true)
+        XCTAssertEqual(try Data(contentsOf:path), bytes)
     }
     @MainActor func testOlderRecoveryOriginKeepsReciprocalDiscoveryAndLiveFollowUpsAttached() async throws {
         for missing in [WireValue?.none, .null] {
