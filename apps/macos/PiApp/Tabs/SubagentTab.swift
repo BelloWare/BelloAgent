@@ -11,6 +11,24 @@ import AppKit
     private var foundRecord = false
     private var closed = false
     private var focusOnAttachment = false
+    private var needsRevalidation = true
+    private var navigationGeneration = UUID()
+    var navigation: HostedReaderToken { .init(reader: self, generation: navigationGeneration) }
+    func acceptsNavigation(_ generation: UUID) -> Bool { !closed && navigationGeneration == generation }
+    @discardableResult func renewNavigation() -> HostedReaderToken {
+        navigationGeneration = UUID()
+        loading?.cancel(); loading = nil
+        if let model, model.subagentTab(key) === self, let display = model.displays[key] {
+            display.presentation.cancel()
+            display.presentation.olderRead = nil; display.presentation.newerRead = nil
+            display.olderPage.loading = false; display.newerPage.loading = false; display.loadingEarlier = false
+            display.abandonReveal(); display.abandonJump()
+            display.versionLoad?.cancel(); display.versionLoad = nil
+            if display.versionView?.loading == true { display.versionView = nil }
+            if display.historyState == .loading { needsRevalidation = true; display.historyState = .dormant; display.refreshingCachedRows = false }
+        }
+        return navigation
+    }
     init(childID: String) { super.init(key: childID, title: "Sub-agent", symbol: "person.crop.rectangle.stack") }
     override class func restore(key: String, state: Data?) -> HostedTab? {
         guard !key.isEmpty else { return nil }
@@ -49,19 +67,24 @@ import AppKit
     override func didShow() { refresh(); ensureLoaded(); focus() }
     override func didHide() {
         focusOnAttachment = false
+        // A move briefly removes the container; that same reader keeps its
+        // intent. A real hide retires it even if the tab is shown again soon.
+        if container != nil, model?.subagentTabIsShown(key) == false { needsRevalidation = true; renewNavigation() }
         if let model, !model.subagentTabIsShown(key), model.focusedSessionID == key {
             model.focusedSessionID = model.selectedID
         }
     }
     func ensureLoaded() {
-        guard !closed, let model, loading == nil, model.record(key)?.isSubagent == true else { return }
+        guard !closed, let model, loading == nil, model.record(key)?.isSubagent == true,
+              needsRevalidation || model.displays[key]?.historyState == nil || model.displays[key]?.historyState == .dormant else { return }
+        let navigation = navigation
         loading = Task { [weak self, weak model] in
-            guard let self, let model else { return }
-            await model.loadSubagentTab(self)
-            self.loading = nil
-            if model.subagentTab(self.key) === self { self.refresh() }
+            guard !Task.isCancelled, let self, let model, navigation.isCurrent else { return }
+            await model.loadSubagentTab(self, navigation: navigation)
+            if navigation.isCurrent { self.needsRevalidation = false; self.loading = nil; self.refresh() }
         }
     }
+    func revalidateOnOpen() { needsRevalidation = true }
     override func contentVisibilityChanged(_ shown: Bool) {
         refresh()
         // The ordinary Side selection can uncover this tab without activate().
@@ -108,6 +131,7 @@ import AppKit
         return true
     }
     override func willClose() {
+        renewNavigation()
         closed = true; focusOnAttachment = false
         loading?.cancel(); loading = nil
         model?.displays[key]?.presentation.cancel()
@@ -135,37 +159,38 @@ extension WorkspaceModel {
         guard let tab = subagentTab(id), let container = tab.container else { return false }
         return container.shownTab(sideAvailable: container.isPane && paneSideAvailable) === tab && (!container.isPane || page == .chats)
     }
-    @discardableResult func openSubagentTab(_ id: String) async -> SubagentTab? {
+    @discardableResult func openSubagentTab(_ id: String, opening: HostedReaderToken? = nil) async -> SubagentTab? {
         guard let child = record(id), child.isSubagent else { return nil }
-        subagentNavigationRevision &+= 1
-        let request = subagentNavigationRevision
-        let selection = selectionRevision, paneIntent = tabs.navigationRevision
+        let request = opening ?? beginSubagentOpening(id)
+        let reader = request.reader
+        defer { if opening == nil { finishSubagentOpening(request) } }
         // Keep the owner in the main column. An orphan's saved reader can
         // still open beside the currently selected chat.
-        if let ownerID = child.delegation?.budgetOwnerSessionID, let owner = record(ownerID), owner.workspaceID == child.workspaceID, !owner.isSubagent {
+        if reader.container?.isPane != false, let ownerID = child.delegation?.budgetOwnerSessionID, let owner = record(ownerID), owner.workspaceID == child.workspaceID, !owner.isSubagent {
             let mainID = sideFamilyOwner(owner) ?? ownerID
             if selectedID != mainID {
                 await select(mainID, revealInSidebar: false, reopensSide: false, focusesComposer: false)
-                guard selectedID == mainID, selectionRevision == selection + 1 else { return nil }
+                guard request.isCurrent, selectedID == mainID else { return nil }
             }
         }
-        guard !Task.isCancelled, request == subagentNavigationRevision, tabs.navigationRevision == paneIntent, record(id)?.delegation == child.delegation else { return nil }
-        page = .chats
-        let tab = tabs.open(kind: SubagentTab.kind, key: id) { SubagentTab(childID: id) } as! SubagentTab
+        guard !Task.isCancelled, request.isCurrent, record(id)?.delegation == child.delegation else { return nil }
+        if reader.container?.isPane != false { page = .chats }
+        reader.revalidateOnOpen()
+        let tab = tabs.open(kind: SubagentTab.kind, key: id) { reader } as! SubagentTab
         // Opening is the focus decision; finishing its asynchronous read is not.
         tab.focus(); tab.ensureLoaded()
         if let loading = tab.loading { await loading.value }
         else {
             // Reopening an already shown viewer can reattach after recovery.
-            do { try await attachManagedSubagent(child) }
+            do { try await attachManagedSubagent(child, current: { request.isCurrent }) }
             catch is CancellationError { }
             catch { displays[id]?.notice = error.localizedDescription }
         }
-        guard !Task.isCancelled, request == subagentNavigationRevision, subagentTab(id) === tab else { return nil }
+        guard !Task.isCancelled, request.isCurrent, subagentTab(id) === tab else { return nil }
         return tab
     }
-    func loadSubagentTab(_ tab: SubagentTab) async {
-        guard let child = record(tab.key), child.isSubagent, subagentTab(child.id) === tab else { return }
+    func loadSubagentTab(_ tab: SubagentTab, navigation: HostedReaderToken) async {
+        guard navigation.isCurrent, let child = record(tab.key), child.isSubagent, subagentTab(child.id) === tab else { return }
         let view = displays[child.id] ?? SessionDisplay(id: child.id)
         // Hidden children receive status only. Reuse the journal revision check
         // used by main-chat selection even if this display was already ready.
@@ -175,8 +200,8 @@ extension WorkspaceModel {
         displays[child.id] = view
         tab.refresh()
         await loadSelectedChat(child.id, item: child, into: view, selection: selectionRevision,
-                               generation: view.presentationGeneration, heldRows: held, focusesComposer: false, tab: tab)
-        tab.refresh()
+                               generation: view.presentationGeneration, heldRows: held, focusesComposer: false, reader: navigation)
+        if navigation.isCurrent { tab.refresh() }
         releaseUnreadDisplays(keeping: selectedID ?? "")
     }
     func focusSubagentParent(_ id: String) {

@@ -61,26 +61,29 @@ extension WorkspaceModel {
         return (URL(fileURLWithPath: project.path).lastPathComponent, project.roots)
     }
     /// ⌘F: the focused chat's search, unless the keys are in text a tab holds.
-    func searchFocusedConversation(in window: NSWindow? = NSApp.keyWindow) {
-        guard !Self.typingInATab(in: window), let id = focusedSessionID ?? selectedID else { return }
+    func searchFocusedConversation(in window: NSWindow? = nil) {
+        let window = window ?? conversationWindow()
+        guard hostedConversationReader(in: window) != nil || !Self.typingInATab(in: window), let id = conversationCommandID(in: window) else { return }
         inspectConversation(id)
     }
     /// ⌘F, ⌘G, ⇧⌘G: the focused chat's find bar over its transcript,
     /// unless the keys are in text a tab holds.
-    func findInFocusedConversation(_ kind: TranscriptFindCommand.Kind, in window: NSWindow? = NSApp.keyWindow) {
-        guard !Self.typingInATab(in: window), let id = focusedSessionID ?? selectedID, let view = displays[id] else { return }
+    func findInFocusedConversation(_ kind: TranscriptFindCommand.Kind, in window: NSWindow? = nil) {
+        let window = window ?? conversationWindow()
+        guard hostedConversationReader(in: window) != nil || !Self.typingInATab(in: window), let id = conversationCommandID(in: window), let view = displays[id] else { return }
         revealSerial += 1
         view.findCommand = TranscriptFindCommand(kind: kind, serial: revealSerial)
     }
     /// Whether the focused chat's find bar is open: Find Previous (⇧⌘G) is
     /// only offered then; otherwise the keys open Changes and History.
     var focusedFindIsOpen: Bool {
-        (focusedSessionID ?? selectedID).flatMap { displays[$0] }?.findHost?.findIsOpen == true
+        conversationCommandID().flatMap { displays[$0] }?.findHost?.findIsOpen == true
     }
     /// ⌘.: stops the focused chat, unless the keys are in text a tab holds.
-    func stopFocused(in window: NSWindow? = NSApp.keyWindow) {
-        guard !Self.typingInATab(in: window) else { return }
-        stop(sessionID: focusedSessionID)
+    func stopFocused(in window: NSWindow? = nil) {
+        let window = window ?? conversationWindow()
+        guard hostedConversationReader(in: window) != nil || !Self.typingInATab(in: window) else { return }
+        stop(sessionID: conversationCommandID(in: window))
     }
     /// Whether a window's keyboard focus is in editable text inside a tab's
     /// content (`TabContentContainer`), such as a Changes tab's commit

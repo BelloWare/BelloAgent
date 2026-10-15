@@ -4,9 +4,10 @@ extension WorkspaceModel {
     /// Cards keep original ownership even when copied into a fork. Navigation
     /// validates the reciprocal child header inside this project's directory.
     @discardableResult func openSubagent(_ target: SubagentTarget) async -> Bool {
-        let navigation = selectionRevision, paneIntent = tabs.navigationRevision, opening = subagentNavigationRevision
+        let opening = beginSubagentOpening(target.sessionID)
+        defer { finishSubagentOpening(opening) }
         func currentOpening() -> Bool {
-            !isShutDown && !Task.isCancelled && selectionRevision == navigation && tabs.navigationRevision == paneIntent && subagentNavigationRevision == opening
+            !isShutDown && !Task.isCancelled && opening.isCurrent
         }
         do {
             guard let parent = record(target.ownerID), store != nil else { throw HostError.failure("The parent chat is unavailable. The saved child can still be opened from search.") }
@@ -17,15 +18,14 @@ extension WorkspaceModel {
             if record(target.sessionID) == nil { await reconcileSubagents(parentID: parent.id) }
             guard currentOpening() else { return false }
             guard let child = record(target.sessionID), child.workspaceID == parent.workspaceID, child.delegation == header.link else { throw StoreError.invalidRecord }
-            guard let tab = await openSubagentTab(target.sessionID), subagentTabIsShown(target.sessionID),
+            guard let tab = await openSubagentTab(target.sessionID, opening: opening), subagentTabIsShown(target.sessionID),
                   !Task.isCancelled, focusedSessionID == target.sessionID else { return false }
             subagentReturnTargets[target.sessionID] = target
-            let intent = tabs.navigationRevision, request = subagentNavigationRevision
             let message = try await history.subagentTurnMessage(path: path, childID: target.sessionID, turn: target.turn, messageID: target.messageID)
-            guard !Task.isCancelled, tabs.navigationRevision == intent, subagentNavigationRevision == request,
+            guard currentOpening(),
                   subagentTab(target.sessionID) === tab, subagentTabIsShown(target.sessionID), focusedSessionID == target.sessionID else { return false }
-            if let message { _ = await revealInTranscript(sessionID: target.sessionID, messageID: message) }
-            return !Task.isCancelled && subagentTabIsShown(target.sessionID)
+            if let message { _ = await revealInTranscript(sessionID: target.sessionID, messageID: message, navigation: opening) }
+            return currentOpening() && subagentTabIsShown(target.sessionID)
         } catch is CancellationError { }
         catch { if currentOpening() { self.error = error.localizedDescription } }
         return false
@@ -39,10 +39,10 @@ extension WorkspaceModel {
               let parent = record(link.budgetOwnerSessionID), parent.workspaceID == item.workspaceID,
               let host = hosts[item.workspaceID], host.isReady, opened.contains(parent.id) else { return }
         let navigation = selectionRevision, connection = host.connectionID
-        let tab = subagentTab(item.id)
+        let reader = subagentTab(item.id)?.navigation
         func ownsPresentation() -> Bool {
             if let current { return current() }
-            if let tab { return subagentTab(item.id) === tab }
+            if let reader { return reader.isCurrent && subagentTab(item.id) === reader.reader }
             return selectedID == item.id && selectionRevision == navigation
         }
         let directory = try subagentDirectory(item.workspaceID)
@@ -73,7 +73,8 @@ extension WorkspaceModel {
 
     func backToSubagentParent(_ childID: String) async {
         guard let link = record(childID)?.delegation else { return }
-        subagentNavigationRevision &+= 1
+        if pendingSubagentOpening?.reader.key == childID { retirePendingSubagentOpening() }
+        else { subagentTab(childID)?.renewNavigation() }
         if subagentTab(childID)?.container?.isPane == true {
             if selectedID == link.budgetOwnerSessionID { focusSubagentParent(link.budgetOwnerSessionID); return }
             if let owner = record(link.budgetOwnerSessionID), sideFamilyOwner(owner) == selectedID {

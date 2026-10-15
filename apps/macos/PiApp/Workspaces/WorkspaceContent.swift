@@ -60,6 +60,13 @@ extension WorkspaceModel {
 
     func inspectConversation(_ id: String) { contentSessionID = id; showConversationContent = true }
     func searchConversation(_ id: String, query: String, start: Int, renderedAgentProse: Bool = false) async throws -> ContentSearch {
+        let reader = subagentTab(id)?.navigation
+        let result = try await searchConversationSource(id, query: query, start: start, renderedAgentProse: renderedAgentProse)
+        try Task.checkCancellation()
+        guard reader?.isCurrent != false else { throw CancellationError() }
+        return result
+    }
+    private func searchConversationSource(_ id: String, query: String, start: Int, renderedAgentProse: Bool) async throws -> ContentSearch {
         guard let item = record(id) else { throw StoreError.invalidRecord }
         // The app owns Markdown rendering. Search its journal projection for
         // Find, including unloaded rows, without changing the helper's source
@@ -90,11 +97,12 @@ extension WorkspaceModel {
     }
     func revealConversationHit(_ id: String, hit: ContentHit) async throws {
         guard let item = record(id), let view = displays[id] else { throw StoreError.invalidRecord }
+        let reader = subagentTab(id)?.renewNavigation()
         let generation = view.presentationGeneration
         var page = try await readConversationWindow(item, cursor: nil, around: hit.id)
-        guard !Task.isCancelled, displays[id] === view, view.presentationGeneration == generation else { return }
+        guard !Task.isCancelled, reader?.isCurrent != false, displays[id] === view, view.presentationGeneration == generation else { return }
         page.messages = await withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
-        guard !Task.isCancelled, displays[id] === view, view.presentationGeneration == generation else { return }
+        guard !Task.isCancelled, reader?.isCurrent != false, displays[id] === view, view.presentationGeneration == generation else { return }
         adoptInitialHistory(page, into: view, around: hit.id)
         view.browsingHistory = true
         anchorChanged(view)
@@ -107,15 +115,18 @@ extension WorkspaceModel {
     @discardableResult
     func revealMessage(sessionID: String, messageID: String?, historyLookup: (@Sendable (String, String) async throws -> HistoryPage)? = nil) async -> Bool {
         guard !Task.isCancelled else { return false }
+        retirePendingSubagentOpening()
         messageNavigationRevision += 1
         guard let item = record(sessionID) else {
             error = "That chat is no longer available. It was deleted or was an unkept side conversation; its retained requests remain in the report and inspector."
             return false
         }
         if item.isSubagent {
-            guard await openSubagentTab(sessionID) != nil, subagentTabIsShown(sessionID) else { return false }
+            let opening = beginSubagentOpening(sessionID)
+            defer { finishSubagentOpening(opening) }
+            guard await openSubagentTab(sessionID, opening: opening) != nil, opening.isCurrent, subagentTabIsShown(sessionID) else { return false }
             guard let messageID else { return true }
-            return await revealInTranscript(sessionID: sessionID, messageID: messageID)
+            return await revealInTranscript(sessionID: sessionID, messageID: messageID, navigation: opening)
         }
         let parentID = side(sessionID)?.parentID ?? item.id
         let changingSelection = selectedID != parentID

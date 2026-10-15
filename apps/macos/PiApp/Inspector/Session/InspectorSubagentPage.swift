@@ -25,7 +25,7 @@ import AppKit
         actions.append(PiKit.Button("Originating tool", symbol: "arrow.up.left", style: .ghost) { [weak inspector] in
             inspector?.showSubagentParent(link)
         })
-        var views: [NSView] = [InspectorPageHeader(group.title, subtitle: group.summary.model, badges: [PiKit.Badge(text: group.summary.presentationLabel, tone: group.summary.status == .completed ? .success : .neutral)], actions: []),
+        var views: [NSView] = [InspectorPageHeader(group.title, subtitle: [group.summary.model, group.effort].compactMap { $0 }.joined(separator: " · "), badges: [PiKit.Badge(text: group.summary.presentationLabel, tone: group.summary.status == .completed ? .success : .neutral)], actions: []),
                                inspectorText(group.detail, color: .piInkSecondary), inspectorRow(actions.map { .view($0) }, spacing: 8)]
         let entries = inspector.coordination.filter { $0.childID == link.childSessionID }
         if !entries.isEmpty { views.append(inspector.coordinationMenu(entries)) }

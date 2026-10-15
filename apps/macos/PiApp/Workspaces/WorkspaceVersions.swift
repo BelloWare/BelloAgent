@@ -42,11 +42,12 @@ extension WorkspaceModel {
         if let shown = view.versionView, shown.latestID == latestID, shown.index == index,
            around == nil || shown.rows.contains(where: { $0.id == around }) { return }
         view.versionLoad?.cancel()
+        let reader = subagentTab(sessionID)?.renewNavigation()
         view.versionView = TranscriptVersionView(latestID: latestID, index: index, count: count, ids: ids, live: live)
         let messageID = ids[index - 1]
         view.versionLoad = Task { [weak self, weak view] in
             guard let self, let view else { return }
-            @MainActor func current() -> Bool { !Task.isCancelled && view.versionView?.latestID == latestID && view.versionView?.index == index }
+            @MainActor func current() -> Bool { !Task.isCancelled && reader?.isCurrent != false && view.versionView?.latestID == latestID && view.versionView?.index == index }
             do {
                 // Page by page: the first page shows as soon as it is read,
                 // the rest follow it, each decoded off the main actor.
@@ -79,6 +80,7 @@ extension WorkspaceModel {
     /// Back to latest: the banner's link, the switcher's last version, a send.
     func latestVersion(sessionID: String) {
         guard let view = displays[sessionID] else { return }
+        if view.versionView != nil { subagentTab(sessionID)?.renewNavigation() }
         view.versionLoad?.cancel(); view.versionLoad = nil
         if view.versionView != nil { view.versionView = nil }
     }

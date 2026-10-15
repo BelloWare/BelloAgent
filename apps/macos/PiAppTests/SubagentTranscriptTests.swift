@@ -27,11 +27,17 @@ final class SubagentTranscriptTests: XCTestCase {
             let open = try XCTUnwrap(buttons.first { $0.accessibilityIdentifier() == "open-subagent" })
             XCTAssertEqual(open.title,"History")
             XCTAssertEqual(open.accessibilityLabel(),SubagentToolView.historicalNotice)
-            for button in buttons {
+            for id in ["open-subagent", "inspect-subagent", "stop-subagent"] {
+                let button = try XCTUnwrap(buttons.first { $0.accessibilityIdentifier() == id })
                 XCTAssertTrue(button.isHidden || !button.isEnabled)
                 button.onPress?()
             }
             XCTAssertFalse(called)
+            // Historical navigation stays disabled; copying saved Markdown is
+            // still a local reading action, including after appearance changes.
+            let copies = buttons.filter { $0.accessibilityLabel()?.hasSuffix("as Markdown") == true }
+            XCTAssertEqual(copies.count, 2)
+            XCTAssertTrue(copies.allSatisfy(\.isEnabled))
             XCTAssertTrue(ConversationPaneTests.views(TranscriptPlainTextView.self,in:card).contains { $0.string.contains("Historical sub-agent") })
         }
         try checkHistory(.light)

@@ -6,6 +6,7 @@ struct SubagentFamily: Equatable {
         var status: SubagentStatus?
         var model: String
         var spend: Double?
+        var effort: String? = nil
         var active: Bool { status.map { !$0.terminal } ?? false }
         var label: String { chat.subagentShortTitle }
         var statusLabel: String {
@@ -46,7 +47,7 @@ extension WorkspaceModel {
         }.map { child in
             let summary = subagentSummaries[child.id]
             return SubagentFamily.Member(chat: child, status: summary?.status,
-                model: summary?.model ?? child.model ?? profiles.first(where: { $0.id == child.profileID })?.modelId ?? "Unknown model", spend: summary?.progress.flatMap { $0.reported > 0 ? $0.usd : nil })
+                model: summary?.model ?? child.model ?? profiles.first(where: { $0.id == child.profileID })?.modelId ?? "Unknown model", spend: summary?.progress.flatMap { $0.reported > 0 ? $0.usd : nil }, effort: subagentEffortLabel(child.id, summary: summary))
         }
         let value = SubagentFamily(ownerID: ownerID, members: members,
             runningCount: members.filter { $0.status == .running }.count,
@@ -60,7 +61,7 @@ extension WorkspaceModel {
         return (chat.isSubagent ? chat.subagentShortTitle : chat.title) + " — in " + (record(owner)?.title ?? "Unavailable parent")
     }
     private var familyPickerSession: String? {
-        guard let id = focusedSessionID ?? selectedID else { return nil }
+        guard let id = conversationCommandID() else { return nil }
         if subagentTab(id)?.container?.isPane == false { return id }
         // Embedded readers have no header of their own. Their menu must use
         // the visible main column's anchor, even after another chat is selected.

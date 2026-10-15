@@ -1,7 +1,7 @@
 import AppKit
 
 /// Native menus read their current titles and availability as they open.
-/// Conversation shortcuts belong to the workspace window that owns the chat.
+/// Conversation commands belong to the key workspace or hosted reader window.
 @MainActor final class ApplicationMenus: NSObject, NSMenuDelegate, NSMenuItemValidation {
     private let model: WorkspaceModel
     private let updates: UpdateController
@@ -24,7 +24,9 @@ import AppKit
         super.init()
     }
     var conversationCommands: Bool {
-        NSApp.keyWindow != nil && NSApp.keyWindow === workspaceWindow() && model.conversationCommandsEnabled
+        guard let window = model.conversationWindow(), window === workspaceWindow() || model.hostedConversationReader(in: window) != nil,
+              window.attachedSheet == nil, !(window.childWindows ?? []).contains(where: { $0.isVisible && $0.canBecomeKey }) else { return false }
+        return model.conversationCommandsEnabled
     }
     /// A sheet or a picker is over the workspace window: one of the model's
     /// sheets, a question's, or a popover that can take the keyboard (hover
@@ -111,7 +113,7 @@ import AppKit
         command(file, "Open Project…", key: "o", action: model.pickWorkspace)
         command(file, "Open File…", key: "p", enabled: { [model] in model.canQuickOpen }) { [model] in model.showQuickOpen(in: NSApp.keyWindow) }
         command(file, "Import Pi Session…", action: model.importChat)
-        command(file, "Rename Chat…", enabled: { [model] in model.conversationCommandsEnabled }, action: model.rename)
+        command(file, "Rename Chat…", enabled: { [model] in model.conversationCommandsEnabled && model.commandChat?.isSubagent != true }, action: model.rename)
         command(file, "Delete Chat…", enabled: { [model] in model.canDeleteCommandChat }, action: model.deleteChat)
         file.addItem(.separator())
         command(file, title: { [model] in model.commandChat?.isArchived == true ? "Restore Chat" : "Archive Chat" },
@@ -148,8 +150,8 @@ import AppKit
         command(view, title: { [model] in model.sidebarShowsArchived ? "Hide Archived Chats" : "Show Archived Chats" }, action: model.toggleArchivedChats)
         command(view, "Sides and Agents…", enabled: { [model] in model.canShowAgentFamily }, action: model.showAgentFamily)
         command(view, "Session Inspector…", key: "i", modifiers: [.command, .option],
-                enabled: { [model] in !model.presentsSheet && (model.focusedSessionID ?? model.selectedID).flatMap(model.record) != nil }) { [model] in
-            if let id = model.focusedSessionID ?? model.selectedID { model.inspect(id) }
+                enabled: { [model] in !model.presentsSheet && model.conversationCommandID().flatMap(model.record) != nil }) { [model] in
+            if let id = model.conversationCommandID() { model.inspect(id) }
         }
         command(view, "Changes and History…", key: "g", modifiers: [.command, .shift], enabled: { [model] in !model.workspaces.isEmpty && !model.presentsSheet }) { [weak self, model] in
             if model.showChanges()?.container?.isPane == true { self?.revealWorkspace() }
@@ -178,7 +180,7 @@ import AppKit
         }) { [model] in model.resumeRun(sessionID: model.focusedSessionID) }
         command(conversation, "Resume Follow-ups", enabled: editable) { [model] in model.action("queue.resume", sessionID: model.focusedSessionID) }
         command(conversation, "Compact Now", enabled: editable) { [model] in model.action("context.compact", sessionID: model.focusedSessionID) }
-        command(conversation, "Latest Messages", enabled: active) { [model] in model.latest(sessionID: model.focusedSessionID) }
+        command(conversation, "Latest Messages", enabled: active) { [model] in model.latest(sessionID: model.conversationCommandID()) }
         conversation.addItem(.separator())
         command(conversation, "Fold This Turn", key: "[", modifiers: [.command, .option], enabled: { [model] in model.canFoldTurns }) { [model] in model.setFocusedTurnFolded(true) }
         command(conversation, "Unfold This Turn", key: "]", modifiers: [.command, .option], enabled: { [model] in model.canFoldTurns }) { [model] in model.setFocusedTurnFolded(false) }

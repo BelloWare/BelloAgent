@@ -11,6 +11,7 @@ struct DiscoveredSubagent: Sendable {
     var executionID: String? = nil
     /// Rebuildable UI ordinal in the owner's persisted acceptance order.
     var number: Int? = nil
+    var effort: String? = nil
 }
 
 extension HistoryReader {
@@ -125,7 +126,7 @@ extension HistoryReader {
             guard UUID(uuidString: path.deletingPathExtension().lastPathComponent) != nil,
                   path.resolvingSymlinksInPath().deletingLastPathComponent() == directory.resolvingSymlinksInPath() else { continue }
             var prefix: [[String: WireValue]] = [], status: SubagentStatus = .interrupted, terminal = false
-            var latestTurn: Int?, executionID: String?
+            var latestTurn: Int?, executionID: String?, effort: String?
             do {
                 try subagentRecords(path) { row, line in
                     if line <= 3 { prefix.append(row) }
@@ -139,8 +140,11 @@ extension HistoryReader {
                     if ["pi-app.agent-operation.v1", "pi-app.subagent-turn.v1", "pi-app.subagent-turn-state.v1", "pi-app.subagent-turn-terminal.v1"].contains(kind),
                        let data = turnData, data["childID"]?.string == path.deletingPathExtension().lastPathComponent,
                        let number = data["turn"]?.nonnegativeInteger, number > 0, number >= (latestTurn ?? 0) {
-                        if number != latestTurn { terminal = false; status = .interrupted }
+                        if number != latestTurn { terminal = false; status = .interrupted; effort = nil }
                         latestTurn = number; executionID = data["executionID"]?.string
+                        // State/terminal mirrors need not repeat the accepted
+                        // turn's effort. Never replace it with an absent field.
+                        if let accepted = data["effort"]?.string { effort = accepted }
                         if kind == "pi-app.subagent-turn-terminal.v1", let value = data["status"]?.string.flatMap(SubagentStatus.init(rawValue:)), value.terminal {
                             status = value; terminal = true
                         }
@@ -151,7 +155,11 @@ extension HistoryReader {
                 _ = try subagentHeader(path: path, directory: directory, expected: SubagentTarget(header.link))
                 let accepted = (try? plan(header.link.budgetOwnerSessionID))?[header.link.childSessionID]?.object
                 let issue = Self.subagentOriginMatchesAccepted(raw,accepted:accepted?["origin"]) ? nil : "The parent’s matching delegation is unavailable. This saved sub-agent is view-only."
-                found.append(DiscoveredSubagent(header: header, path: path.path, task: accepted?["task"]?.string ?? "", status: status, issue: issue, hasTerminalRecord: terminal, turn: latestTurn, executionID: executionID, number: numbers[header.link.budgetOwnerSessionID]?[header.link.childSessionID]))
+                var effective = header
+                if issue == nil, effective.model.reasoning == nil {
+                    effective.model.reasoning = accepted?["origin"]?.object?["model"]?.object?["reasoning"]?.array?.compactMap(\.string)
+                }
+                found.append(DiscoveredSubagent(header: effective, path: path.path, task: accepted?["task"]?.string ?? "", status: status, issue: issue, hasTerminalRecord: terminal, turn: latestTurn, executionID: executionID, number: numbers[header.link.budgetOwnerSessionID]?[header.link.childSessionID], effort: effort))
             } catch is CancellationError { throw CancellationError() }
             catch { continue } // Invalid headers remain untouched; helper recovery reports their exact error.
         }

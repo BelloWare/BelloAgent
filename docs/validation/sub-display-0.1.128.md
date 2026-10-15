@@ -927,3 +927,268 @@ fixtures, isolated native test hosts and the test clipboard. No installed app,
 real preferences, Keychain, paid provider or `xctrace --launch` was used. Remaining
 work is the lead's independent review and integration; this round makes no new
 claim about earlier full-lane flakes.
+
+
+## Lead review round 6: reader ownership and effort integration
+
+2026-10-15, `dev/a128-sub-display`, following `f1cf06cc`. Merged
+`origin/dev/next` at `e13e1462` in `114c1bf3`, retaining the policy/effort,
+fork-history, new-chat project chip and side-keep recovery behavior. Release
+notes retain every stream's items. The Xcode project was regenerated with
+`xcodegen`; reciprocal origin validation and historical fork controls remain
+alongside numbered readers and Markdown cards. No upstream commit was rewritten.
+
+The first broad affected run also caught a fixture integration mismatch: the
+policy stream emits an object envelope plus model-specific `oneOf` effort
+branches, while the strict loopback oracle accepted only a bare `oneOf`. The
+packaged helper therefore received HTTP 400 before a turn could stream. The
+fixture now validates both the object envelope and exactly one branch; unsupported
+effort/model pairs and malformed unions still fail. No production tool schema
+was changed to accommodate the fixture. The imported historical-card test now
+asserts disabled Open/Inspect/Stop specifically and separately asserts that local
+Task/Result Markdown Copy remains enabled across appearance changes; treating
+every button as a child control conflicted with the rich-text reading contract.
+
+### Causes and lifecycle changes
+
+The review found three inconsistent owners for asynchronous reader work: external
+Show in Chat only checked a child-open generation, history Find/Home/position
+reads checked the main-window revision, and menu validation accepted only the
+workspace window. That let older child reveals survive a newer parent reveal,
+canceled valid popped-out reads after main navigation, and disabled the menu
+commands that their keyboard equivalents could already run.
+
+A hosted child now owns one `HostedReaderToken`, with the reader identity and a
+single generation. Every awaited opening, reveal and history operation captures
+and validates that token. Presentation generations still identify retained page
+content; they no longer substitute for the reader's navigation intent. The audit
+covered the following paths, including their paging state:
+
+- Opening from a card, search or Show in Chat shares the same token through
+  header validation, registration/attachment, initial history and message reveal.
+  A newer external destination retires the previous pending opening even when
+  that destination is an already-loaded ordinary chat.
+- Reopening revalidates saved history. Real hide, Back, close, reload and newer
+  reader navigation retire previous reads and clear their loading/read handles
+  while preserving page cursors. A canceled initial presentation becomes dormant
+  so a current presentation can reload it.
+- Moving between pane and popped-out window retains the reader and its token;
+  a transient detached container does not become a hide or force a second load.
+  Unrelated main selections and Reports leave a popped-out reader's token intact.
+- Find/search, Home, position jumps and retries, older/newer paging, history
+  progress/viewport work, position recovery and version reads all check that
+  reader token before applying their awaited results. Completion cannot restore
+  focus after a newer focus choice. Existing display eviction and side-availability
+  visibility rules are preserved.
+- Conversation command availability and dispatch resolve the key child window's
+  active reader, or the responder inside an embedded reader. Find, Next/Previous,
+  Stop, Latest Messages, Search and Copy, folding and Inspector follow that reader
+  even when the main window is on Reports. Native sheets still suppress commands;
+  human composer commands and managed-child Delete/Rename remain unavailable.
+
+The native menu fixture nominates its real popped-out `NSWindow` through the
+window resolver used by command routing. Production resolves `NSApp.keyWindow`.
+This avoids competing with other test hosts on this shared machine for process
+activation; the fixture still validates and invokes the actual menu items,
+checks the child's native Find bar and native sheet exclusion, and checks that
+Stop does not affect the selected parent. The workspace-only guard mutation below
+reproduces the menu failure without relying on OS focus acquisition.
+
+### Effort display and integration decisions
+
+The picker metadata line, transcript card header/details, child header and family
+Inspector use the accepted current turn's effort. Explicit and inherited values
+both read as the actual level (for example, `high`); `default` reads as
+`model default` when the model has effort controls. A model with an explicitly
+empty capability list shows no effort. Missing legacy capability information is
+filled only from the accepted grant or the connection's existing catalog;
+unknown model-default capability is omitted rather than invented.
+
+Cold discovery retains the latest accepted turn's effort across terminal/state
+mirrors which omit it. Older journals fall back to the accepted model grant.
+Follow-ups update current cards and headers; historical send receipts keep the
+effort accepted for their own turn. The display context is a small in-memory
+cache, published with metadata instead of parsed during layout. Long child titles
+truncate before the separate trailing effort label, keeping the level readable
+in a narrow pane. Tooltips and VoiceOver include the level.
+
+The display changes add no persisted field, journal write, tool schema, provider
+call or model-facing text. The merged policy stream intentionally owns the
+optional effort contract and its saved fields; this stream reads those fields.
+Its [policy validation](subagent-policy-0.1.128.md) remains the record of those
+behavioral changes. Cost totals, webhook policy, permissions, capture, vault,
+tools and ephemeral side persistence were not altered by these fixes.
+
+### Failing-first and production mutations
+
+Logs and artifacts are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`.
+
+| Evidence | Result |
+| --- | --- |
+| `review6-red-corrected-SubagentReaderTests.log` | 26 tests, 24 failed assertions before reader fixes |
+| `review6-red-corrected-SubagentEffortTests.log` | 3 tests, 26 failed assertions before effort display changes |
+| `review6-green4-SubagentReaderTests.log` | 26 passed |
+| `review6-green1-SubagentEffortTests.log` | 3 passed |
+| `review6-mutation-SubagentReaderTests.log` | 26 tests, 23 failed assertions; all three named review regressions failed |
+| `review6-mutation-SubagentEffortTests.log` | 3 tests, five failed assertions in the changed follow-up effort regression |
+
+The initial red invocations each exposed a fixture compile issue, corrected
+before production changes (a run-state case and an async XCTest autoclosure).
+The corrected red reader run also included the original menu activation setup;
+that fixture was later made deterministic as described above. Intermediate green
+runs exposed a move/reload race, now covered by the same reader token and explicit
+revalidation flag, before the final 26-test pass.
+
+The mutation harness removed pending-opening retirement before a parent reveal,
+restored global main-window revision checks for child Find/Home/position reads,
+restored workspace-only menu availability, and made the initial grant override a
+new follow-up's accepted effort. The two affected classes ran alone, returned
+exit 65, and failed the four expected named regressions. The harness restored all
+four production files in `finally`; `review6-mutation-status.json` records the
+verified failures and restoration. Final validation uses the restored fixes.
+
+The interrupted `ConversationPaneTests` run is retained in
+`review6-integration-ConversationPaneTests.log`: the first helper-crash test failed
+after the oracle rejected the schema, and the run was stopped before further
+timeouts. Two new gateway regressions then failed first (three assertions, both
+API formats and common-constraint enforcement), in `review6-red-gateway.log`.
+The corrected oracle passed all **20 Python gateway tests** in
+`review6-green-gateway.log`. Reverting the production oracle guards reproduced
+all three assertions in `review6-mutation-gateway.log`; the harness restored the
+file (`review6-mutation-gateway-status.json`). The final native ConversationPane
+rerun then passed **81/81** against the packaged helper and loopback gateway.
+
+The first affected parallel batch (`review6-integration-affected-parallel.log`)
+passed 218 tests with two failures: the historical-card test assumption described
+above and a one-row difference (601 versus 602) in
+`HistoryExtentTests.testAReaderInRoomBelowKeepsTheirPlaceWhenTheRoomIsMeasuredAgain`.
+The same history assertion failed in the isolated pre-final class (23 passed,
+one failed; `review6-history-isolated-before.log`). An exact comparison against
+merge commit `114c1bf3` passed 24/24 (`review6-history-baseline.log`); the harness
+backed up and restored every working file, verified in
+`review6-history-baseline-status.json`. Reader checks were then kept directly
+after awaits in the existing history function, eliminating an extra async
+wrapper and capturing progress ownership before any source handoff. The history
+assertion and scroll-position implementation were not changed. The resulting
+isolated class passed 24/24; final parallel results below remain separate evidence
+for this scheduling-sensitive mismatch.
+
+### Final validation
+
+Final affected native validation: **377 passed, zero failures, zero skips**
+(30 classes). The eight serial classes ran alone; the 22 parallel classes ran
+together with four workers. The two extra isolated integration checks are not
+counted twice in the 377 total. `review6-final-status.json`, the per-run
+`review6-final-<Class>-summary.json` files and
+`review6-final-affected-parallel-tests.json` retain the results.
+
+| Serial class | Passed |
+| --- | ---: |
+| `SubagentReaderTests` | 26 |
+| `SubagentOpeningTests` | 12 |
+| `SubagentNavigationTests` | 7 |
+| `NativeApplicationTests` | 11 |
+| `ConversationPaneTests` | 81 |
+| `SidebarSearchTypingTests` | 2 |
+| `SubagentMarkdownTests` | 16 |
+| `SubagentPerformanceTests` | 2 |
+
+| Affected parallel class | Passed |
+| --- | ---: |
+| `HistoryEdgeTests` | 16 |
+| `HistoryExtentTests` | 24 |
+| `MessageVersionTranscriptTests` | 8 |
+| `ReportMessageNavigationTests` | 9 |
+| `SideKeepOrderingTests` | 12 |
+| `SideKeepRecoveryTests` | 15 |
+| `SidebarSearchSidebarTests` | 9 |
+| `SubagentDeletionTests` | 10 |
+| `SubagentDiscoveryTests` | 13 |
+| `SubagentDisplayTests` | 7 |
+| `SubagentEffortTests` | 3 |
+| `SubagentInspectorTests` | 6 |
+| `SubagentModelGrantTests` | 2 |
+| `SubagentOrganizationTests` | 13 |
+| `SubagentPanelTests` | 8 |
+| `SubagentSteeringInspectorTests` | 5 |
+| `SubagentSteeringPresentationTests` | 9 |
+| `SubagentSteeringWorkspaceTests` | 4 |
+| `SubagentTranscriptTests` | 10 |
+| `TabHostTests` | 16 |
+| `TranscriptFindTests` | 11 |
+| `TranscriptRevealTests` | 10 |
+
+Commands used `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`
+and `TEST_RUNNER_PI_APP_SCRATCH_ROOT` within that root, with
+`scripts/test-macos.sh -only-testing:PiAppTests/<Class>`. Lane assignments were
+checked with `python3 scripts/test-lanes.py list`; `review6-lanes.txt` preserves
+them. No named `.xcresult` bundle was created.
+
+The 55,812-byte result in a 400-message chat retained the existing performance
+budgets: cold maximum draw **25.64 ms**, Markdown batch **4.63 ms**, heartbeat
+**55.21 ms**; expanded maximum draw **28.24 ms**, batch **15.16 ms**, heartbeat
+**82.77 ms**. Progress updates caused zero sidebar recomputations.
+
+The final restored loopback suite passed **20/20** in
+`review6-final-gateway.log`. Helper integration validation passed **46/46** in
+`review6-helper.log`: `SubagentPolicyEffortTests` (25), `SubagentForkTests` and
+`JournalCloneTests` (21 combined). The command was `swift test --package-path
+packages/swift-host --scratch-path <build-root>/swift-host --configuration release
+--arch arm64 --jobs 4 -Xswiftc -Osize --filter
+'SubagentPolicyEffortTests|SubagentForkTests|JournalCloneTests'`, with temporary
+fixtures inside this stream's scratch root. No helper source was authored by this
+round beyond the upstream merge.
+
+The **one full native parallel lane** completed in 652.5 seconds: **2,533
+passed, three failed, 37 skipped (2,573 tests)**. It used the arguments from
+`python3 scripts/test-lanes.py parallel`, passed to `scripts/test-macos.sh` with
+`-parallel-testing-enabled YES -parallel-testing-worker-count 4`. The exact skip
+arguments, output, summary and test tree are retained in
+`review6-full-parallel-args.txt`, `review6-full-parallel.log`,
+`review6-full-parallel-summary.json` and `review6-full-parallel-tests.json`.
+`HistoryExtentTests`, including the earlier one-row mismatch, passed in this lane.
+
+The three failures exposed one further guard regression: folding had been coupled
+to the existence of a chat record when menu routing was made reader-aware. Local
+folding has always worked from a retained transcript display. Reader availability
+is now separate from record availability: folding needs the display; lifecycle
+and helper commands still need their chat record. Key child-window routing,
+sheet/Quick Open exclusion and the managed-child Delete guard remain intact.
+The existing behavioral tests failed before this correction:
+
+- `TranscriptTurnFoldTests.testEvaluatingTheFoldMenuDoesNotPlanThePage`
+- `TranscriptTurnFoldTests.testTheFoldCommandsOpenAndCloseTheEndOfTurnFold`
+- `ResponseChronologyTests.testTheFoldCommandsDriveTheSameParts`
+
+After the fix, **75 affected checks passed, zero failures or skips**:
+`SubagentReaderTests` 26 and `NativeApplicationTests` 11 each ran alone, followed
+by `TranscriptTurnFoldTests` and `ResponseChronologyTests` (38 combined) in a
+four-worker affected invocation. These reran the real folding behavior, menu
+availability/dispatch, native sheet guards and child Delete protection. Results
+are in `review6-final-SubagentReaderTests.log`,
+`review6-final-NativeApplicationTests.log`,
+`review6-final-post-full-folding.log` and their saved summaries/test tree.
+There are **415 distinct passing affected native tests** across the two final
+phases; repeated reader/menu checks are not counted twice. The full lane was not
+repeated, honoring the requested one-run limit. Its three failures remain in the
+record and are not relabelled as a passing full run. The final small folding
+correction has affected-class coverage rather than another complete lane.
+
+### Gallery
+
+`SubagentEffortGalleryTests` ran standalone: **one passed, zero failures**, log
+`review6-gallery-SubagentEffortGalleryTests.log`. All **12 captures** were inspected
+at `gallery-review6-effort/` (manifest in that directory):
+
+- Light and dark at 1240×800 and 920×600, each with the card, open picker and child
+  side-pane header.
+- Picker rows show `high`, `low`, `model default` and a model with no effort label;
+  the native fixture also checks all four accessibility labels and popup bounds.
+- Card header/details and child header show `high`. The narrow child header keeps
+  effort visible while its title truncates. The picker stays within the window,
+  with compact rows, uppercase sections and the accent + New Side action.
+
+No installed app was launched and no real preferences, Keychain, paid provider
+or `xctrace --launch` was used. Remaining handoff after validation and push is the
+lead's independent review; no merge or push to `dev/next` is part of this stream.

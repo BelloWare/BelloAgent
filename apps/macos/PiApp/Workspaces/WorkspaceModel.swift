@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 
 enum WorkspacePage: String, Sendable { case chats, report, background }
 
@@ -31,11 +32,15 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         didSet { menuBarProjection.dirty.formUnion(oldValue.keys); menuBarProjection.dirty.formUnion(runHolds.keys); activityChanged.send() }
     }
     var dirtyRunHolds: Set<String> = []
-    /// Changes only at delegation lifecycle boundaries, never streamed tokens.
-    var subagentNavigationRevision = 0
+    /// An external destination being opened, not navigation inside other readers.
+    var pendingSubagentOpening: HostedReaderToken?
+    /// Native command ownership has one window source. Tests can nominate an
+    /// actual fixture window without competing with other processes for focus.
+    var conversationWindow: () -> NSWindow? = { NSApp.keyWindow }
     var subagentReturnTargets: [String: SubagentTarget] = [:]
     @Published var subagentSummaries: [String: SubagentSummary] = [:] { didSet { subagentFamilies.removeAll(); invalidateConversationFamily() } }
     var subagentFamilies: [String: SubagentFamily] = [:]
+    var subagentEfforts: [String: SubagentEffort] = [:]
     var conversationFamilies: [String: ConversationFamily] = [:]
     var familySideRecords: [String: [ChatRecord]]?
     let agentFamilyRequests = PassthroughSubject<String, Never>()
@@ -61,7 +66,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var readStateWrites: [String: Task<Void, Never>] = [:]
     @Published var profiles: [ProfileRecord] = [] { didSet { subagentFamilies.removeAll(); noteActivityChanged() } }
     @Published var selectedID: String? {
-        didSet { if selectedID != oldValue { messageNavigationRevision += 1; organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } }
+        didSet { if selectedID != oldValue { messageNavigationRevision += 1; mainSelectionChangedDuringReaderOpening(); organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } }
     }
     /// Invalidates delayed report-to-message navigation when another target wins.
     var messageNavigationRevision = 0
@@ -232,6 +237,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         didSet {
             if page != oldValue { organizationNavigationRevision &+= 1; noteSelectionChanged() }
             if page == .report && page != oldValue { messageNavigationRevision += 1 }
+            if page != .chats && page != oldValue {
+                if pendingSubagentOpening?.reader.container?.isPane != false { retirePendingSubagentOpening() }
+                (tabs.pane.activeTab as? SubagentTab)?.didHide()
+            }
         }
     }
     /// Report page state survives navigation so filters, selection and results come back intact.
@@ -249,7 +258,12 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     func openReport() { page = .report }
     func closeReport() { page = .chats }
     func toggleReport() { page = page == .report ? .chats : .report }
-    var conversationCommandsEnabled: Bool { page == .chats && !presentsSheet && !quickOpen.isOpen && (focusedSessionID ?? selectedID).flatMap(record) != nil }
+    var conversationReaderIsAvailable: Bool {
+        !presentsSheet && !quickOpen.isOpen && (page == .chats || hostedConversationReader(in: conversationWindow()) != nil)
+    }
+    var conversationCommandsEnabled: Bool {
+        conversationReaderIsAvailable && conversationCommandID().flatMap(record) != nil
+    }
     /// First-run setup fills the window: the vault has answered, and there is
     /// no connection or no chat yet. Its steps end with the project, so
     /// nothing else offers one meanwhile.
@@ -503,6 +517,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         TranscriptKeptRows.policy = self
         tabs.sideAvailable = { [weak self] in self?.paneSideAvailable == true }
         tabs.configureTab = { [weak self] tab in self?.configureFileNavigation(tab); self?.configureSubagentTab(tab) }
+        tabs.navigationChanged = { [weak self] tab, container in self?.tabNavigationChanged(tab, in: container) }
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
         FileTab.activate = { [weak self] tab in self?.tabs.activate(tab) }
         FileTab.openHistory = { [weak self] tab in self?.showFileHistory(from: tab) }

@@ -174,6 +174,7 @@ extension TabHost {
     private let defaults: UserDefaults?
     static let savedKey = "tabHost"
     var configureTab: ((HostedTab) -> Void)?
+    var navigationChanged: ((HostedTab?, TabContainer) -> Void)?
     var sideAvailable: () -> Bool = { true }
     private(set) var navigationRevision = 0
     private func shownTab(in container: TabContainer) -> HostedTab? {
@@ -222,6 +223,7 @@ extension TabHost {
     /// Shows a tab in its pane or window, the window brought forward.
     func activate(_ tab: HostedTab) {
         guard let container = tab.container else { return }
+        navigationChanged?(tab, container)
         navigationRevision &+= 1
         // A newly inserted tab has no activeID and has not been shown yet.
         let shown = container.activeID == nil ? nil : shownTab(in: container)
@@ -233,6 +235,7 @@ extension TabHost {
     }
     /// In the pane: the chat's side in place of the tabs.
     func showSide() {
+        navigationChanged?(nil, pane)
         navigationRevision &+= 1
         guard !pane.sideShown else { return }
         let previous = shownTab(in: pane)

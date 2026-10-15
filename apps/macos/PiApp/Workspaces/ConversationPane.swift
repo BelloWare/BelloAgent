@@ -274,7 +274,7 @@ struct SideActions {
         }
         if let link = chat.delegation {
             if subagentHeader.superview !== self { addSubview(subagentHeader) }
-            subagentHeader.update(chat: chat, parent: model.record(link.budgetOwnerSessionID), back: { [weak model] in
+            subagentHeader.update(chat: chat, parent: model.record(link.budgetOwnerSessionID), effort: model.subagentEffortLabel(chat.id), back: { [weak model] in
                 Task { await model?.backToSubagentParent(chat.id) }
             })
         } else { subagentHeader.removeFromSuperview() }

@@ -121,7 +121,7 @@ extension WorkspaceModel {
             for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: member.id) }
             try await store.removeAll(kind: "receipt:\(member.id)")
             try await store.removeAll(kind: "pending:\(member.id)")
-            contextReadings.removeValue(forKey: member.id); subagentSummaries.removeValue(forKey: member.id)
+            contextReadings.removeValue(forKey: member.id); subagentSummaries.removeValue(forKey: member.id); subagentEfforts.removeValue(forKey: member.id)
             chats.removeAll { $0.id == member.id }; displays.removeValue(forKey: member.id); opened.remove(member.id)
             forgetOpened(member.id)
             if selectedID == member.id { selectedID = nil; selected = nil }

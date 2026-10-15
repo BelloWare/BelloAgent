@@ -24,6 +24,8 @@ extension SessionDisplay {
             let value = SubagentToolView(source)
             let childID = value.childID ?? (source.name == "subagent_report" && isManagedSubagent ? id : nil)
             original.subagentNumber = childID.flatMap { subagentNumbers[$0] }
+            let effort = childID.flatMap { subagentEfforts[$0] } ?? SubagentEffort()
+            original.subagentEffort = effort.label(value.summary?.effort)
             if let id = value.receiptMessageID, let event = agentCoordination[id] {
                 original.agentDeliveryState = event.disposition == "pending" && !busy ? "held" : event.disposition
             }
@@ -34,7 +36,8 @@ extension SessionDisplay {
                live.progressEpoch == summary.progressEpoch, let progress = live.progress { summary.progress = progress }
             summary.parentWaiting = familyWaiting
             if !busy, (summary.pendingMessages ?? 0) > 0 || summary.deliveryState == "pending" { summary.deliveryState = "held" }
-            var tool = original; tool.subagent = summary; tool.agentHeldByUser = heldAgentChildren.contains(target.sessionID); return tool
+            var tool = original; tool.subagent = summary; tool.subagentEffort = effort.label(summary.effort)
+            tool.agentHeldByUser = heldAgentChildren.contains(target.sessionID); return tool
         }
         return row
     }

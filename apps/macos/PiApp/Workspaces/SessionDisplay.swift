@@ -88,6 +88,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var heldAgentChildren: Set<String> = [] { didSet { if heldAgentChildren != oldValue { publishTranscript() } } }
     var childSummaries: [String: SubagentSummary] = [:] { didSet { if childSummaries != oldValue { publishTranscript() } } }
     var subagentNumbers: [String: Int] = [:] { didSet { if subagentNumbers != oldValue { publishTranscript() } } }
+    var subagentEfforts: [String: SubagentEffort] = [:] { didSet { if subagentEfforts != oldValue { publishTranscript() } } }
     @Published var familyWaiting = false { didSet { if familyWaiting != oldValue { publishTranscript() } } }
     @Published var agentInboxPending = 0 { didSet { if agentInboxPending != oldValue { publishTranscript() } } }
     @Published var delegatedTask: String?

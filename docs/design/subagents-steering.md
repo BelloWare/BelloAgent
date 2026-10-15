@@ -10,13 +10,22 @@ tabs preserve numbering, view/Stop, typed-message links and family Inspector.
 Embedded Back only focuses the parent; delayed history reads preserve that decision.
 Full child windows have sibling access and route their own Find/Stop shortcuts.
 Saved sides retain their own delegation families, grouped by side in the main
-picker; Stop and Inspector still address the actual delegation owner. Reader
-loads belong to tab/display generations rather than unrelated main selections,
-and native responder changes keep command focus with the visible reader.
+picker; Stop and Inspector still address the actual delegation owner. Each hosted
+reader has one navigation token for opens, reveals, Find, paging and version reads,
+retained across pane/window moves. Back, hide, close or a newer destination retires
+its pending work; unrelated main-window selection and Reports leave popped-out
+reads intact. Native responder changes and the key child window determine menu
+availability and command targets as well as keyboard shortcuts.
 Task, result and report prose uses the assistant Markdown reader, with bounded
 previews, source-preserving copy and rendered-text Find. Typed authorship and
 delivery metadata stay separate from the Markdown source. Managed readers cannot
 invoke Delete Chat on their selected main chat; family menus use a visible anchor.
+Picker metadata, card headers/details, child headers and family Inspector show
+the turn's accepted effort. Inherited effort uses its actual level, `default`
+reads “model default”, and models without effort controls omit it. The accepted
+model grant supplies legacy values; later follow-ups update current surfaces
+while older send receipts retain their own turn's effort. This is display metadata
+derived from the policy stream's saved fields, without new journal writes.
 Unsent side drafts remain memory-only. No steering, model-visible or journal
 contract changes accompany this UI amendment.
 

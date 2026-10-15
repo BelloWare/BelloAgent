@@ -42,7 +42,7 @@ import AppKit
         guard case .subagent(let value) = card else { return }
         self.value = value
         setAccessibilityLabel(value.title + " · " + value.label)
-        toolTip = value.title
+        toolTip = value.title + " · " + value.label
         open.toolTip = value.operation == "subagent_report" ? "Open parent of " + value.title : "Open " + value.title
         open.setAccessibilityLabel(open.toolTip)
         inspect.toolTip = "Inspect requests for " + value.title; inspect.setAccessibilityLabel(inspect.toolTip)
@@ -53,7 +53,7 @@ import AppKit
         if value.heldByUser, !historical { lines.append("Held until a new parent task or explicit Resume.") }
         if let summary = value.summary {
             if let count = summary.pendingMessages, count > 0, !historical { lines.append("\(count) pending " + (count == 1 ? "message" : "messages")) }
-            lines.append("Model: " + summary.model)
+            lines.append("Model: " + summary.model + (value.effort.map { " · " + $0 } ?? ""))
             if let tools = summary.tools { lines.append(tools.isEmpty ? "Tools: none" : "Tools: " + tools.joined(separator: ", ")) }
             if let progress = summary.progress {
                 lines.append("\(progress.requests) requests · \(progress.tools) tools completed · " + TranscriptActivity.formatDuration(progress.elapsedMs))

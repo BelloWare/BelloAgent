@@ -22,7 +22,7 @@ extension NativeTranscriptPane {
         isFocusedConversation = { [weak model, weak self] in
             // Not while the report or a sheet covers the chats.
             guard let model, model.conversationCommandsEnabled, let id = self?.session?.id else { return false }
-            return (model.focusedSessionID ?? model.selectedID) == id
+            return model.conversationCommandID() == id
         }
         onViewportReady = { [weak model] in model?.historyViewportReady($0, generation: $1) }
         onJump = { [weak model] in model?.jumpToHistoryPosition($0, position: $1, offset: $2) }

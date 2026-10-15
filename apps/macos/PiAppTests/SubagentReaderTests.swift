@@ -4,23 +4,24 @@ import XCTest
 
 private actor ChildHistoryGate {
     var text = "Saved child reply"
+    var messageID = "saved-reply"
     var held = false
     private(set) var reads = 0
     private var waiting: [CheckedContinuation<Void, Never>] = []
-    func set(_ text: String, held: Bool = false) { self.text = text; self.held = held }
+    func set(_ text: String, held: Bool = false, messageID: String = "saved-reply") { self.text = text; self.held = held; self.messageID = messageID }
     func release() { held = false; waiting.forEach { $0.resume() }; waiting = [] }
     func page() async throws -> ConversationHistoryPage {
         reads += 1
         if held { await withCheckedContinuation { waiting.append($0) } }
         return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture"), "lineage": .string("root"),
-            "messages": .array([.object(["id": .string("saved-reply"), "role": .string("assistant"), "text": .string(text)])]),
+            "messages": .array([.object(["id": .string(messageID), "role": .string("assistant"), "text": .string(text)])]),
             "older": .null, "newer": .null]))
     }
 }
 
 final class SubagentReaderTests: XCTestCase, SerialTestLane {
     @MainActor private func fixture() throws -> (WorkspaceModel, ChildHistoryGate) {
-        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let root = scratchRoot("subagent-reader")
         let model = try SubagentOrganizationTests.fixture(root)
         registerWorkspaceFixtureTeardown(model, root: root)
         model.automaticContextOperation = { _, _ in throw CancellationError() }
@@ -39,6 +40,119 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
     }
     @MainActor private func otherTab(_ model: WorkspaceModel) -> HostedTab {
         model.tabs.open(kind: HostedTab.kind, key: "other") { HostedTab(key: "other", title: "Other reader", symbol: "doc") }
+    }
+    @MainActor func testNewParentMessageNavigationRetiresAnAwaitingChildReveal() async throws {
+        let (model, gate) = try fixture()
+        model.selected?.messages = [.init(id: "parent-message", role: "assistant", text: "Main reply")]
+        await gate.set("Child reply", held: true)
+        let child = try XCTUnwrap(model.displays["chat-child"]); child.historyState = .dormant
+        let opening = Task { await model.revealMessage(sessionID: child.id, messageID: "saved-reply") }
+        for _ in 0..<500 { if await gate.reads > 0 { break }; try await Task.sleep(for: .milliseconds(2)) }
+        let parentRevealed = await model.revealMessage(sessionID: "chat-parent", messageID: "parent-message")
+        XCTAssertTrue(parentRevealed)
+        await gate.release()
+        let childRevealed = await opening.value
+        XCTAssertFalse(childRevealed)
+        XCTAssertNil(child.reveal, "The old child request cannot land after the newer parent request")
+        XCTAssertEqual(model.selected?.scrollAnchor?.id, "parent-message")
+        XCTAssertEqual(model.focusedSessionID, "chat-parent")
+    }
+    @MainActor func testPoppedOutHistoryReadsSurviveUnrelatedMainNavigation() async throws {
+        for operation in ["find", "home", "position"] {
+            let (model, gate) = try fixture()
+            let tab = try await open("chat-child", in: model)
+            model.tabs.showsWindows = false; model.tabs.popOut(tab)
+            let display = try XCTUnwrap(model.displays[tab.key])
+            model.historyViewportReady(tab.key, generation: display.presentationGeneration)
+            display.olderPage.cursor = .init(incarnation: "fixture", lineage: "root", entry: "saved-reply")
+            let before = await gate.reads
+            await gate.set("Earlier reply", held: true, messageID: "earlier")
+            let reading = Task { @MainActor in
+                if operation == "find" { return await model.revealInTranscript(sessionID: tab.key, messageID: "earlier", fromFind: true) }
+                if operation == "home" { return await model.revealStartOfChat(sessionID: tab.key) }
+                model.jumpToHistoryPosition(tab.key, position: 0, offset: 24)
+                await display.jumpTask?.value
+                return display.messages.first?.id == "earlier"
+            }
+            for _ in 0..<500 { if await gate.reads > before { break }; try await Task.sleep(for: .milliseconds(2)) }
+            // A real selection uses an independent generated page; only the child read is held.
+            let mainGate = ChildHistoryGate()
+            model.historyWindowLoader = { id, _, _, _ in try await (id == tab.key ? gate : mainGate).page() }
+            var other = try XCTUnwrap(model.record("chat-parent")); other.id = "other-main"; model.chats.append(other)
+            await model.select(other.id); model.page = .report
+            XCTAssertTrue(model.subagentTabIsShown(tab.key))
+            await gate.release()
+            let loaded = await reading.value
+            XCTAssertTrue(loaded, operation)
+            XCTAssertEqual(display.messages.first?.id, "earlier", operation)
+            XCTAssertEqual(display.scrollAnchor?.id, "earlier", operation)
+            XCTAssertEqual(model.selectedID, other.id); XCTAssertEqual(model.page, .report)
+        }
+    }
+    @MainActor func testBackRetiresAnAwaitingRevealInTheVisibleChild() async throws {
+        let (model, gate) = try fixture()
+        let tab = try await open("chat-child", in: model)
+        let display = try XCTUnwrap(model.displays[tab.key])
+        model.historyViewportReady(tab.key, generation: display.presentationGeneration)
+        let before = await gate.reads
+        await gate.set("Earlier reply", held: true, messageID: "earlier")
+        let reading = Task { await model.revealInTranscript(sessionID: tab.key, messageID: "earlier", fromFind: true) }
+        for _ in 0..<500 { if await gate.reads > before { break }; try await Task.sleep(for: .milliseconds(2)) }
+        await model.backToSubagentParent(tab.key)
+        XCTAssertTrue(model.subagentTabIsShown(tab.key))
+        await gate.release()
+        let loaded = await reading.value
+        XCTAssertFalse(loaded)
+        XCTAssertEqual(display.messages.first?.id, "saved-reply")
+        XCTAssertNil(display.reveal); XCTAssertNil(display.revealRead)
+    }
+    @MainActor func testPoppedOutConversationMenusUseTheKeyReaderEvenAfterMainFocusChanges() async throws {
+        let (model, _) = try fixture()
+        let tab = try await open("chat-child", in: model)
+        let container = model.tabs.popOut(tab), window = try XCTUnwrap(model.tabs.window(of: container))
+        NSApp.unhide(nil); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil); window.makeKey()
+        for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(10)) }
+        let pane = try XCTUnwrap(tab.pane), display = try XCTUnwrap(model.displays[tab.key])
+        XCTAssertTrue(window.makeFirstResponder(pane))
+        model.page = .report; model.focusedSessionID = "chat-parent"
+        // The machine is shared with other test hosts. Nominate this real
+        // native window as key without making global activation a test input.
+        model.conversationWindow = { window }
+        XCTAssertTrue(model.hostedConversationReader(in: window) === tab)
+        XCTAssertFalse(model.presentsSheet); XCTAssertFalse(model.quickOpen.isOpen)
+        let menus = ApplicationMenus(model: model, updates: UpdateController(), workspaceWindow: { nil }, revealWorkspace: {}, showSettings: {})
+        let old = NSApp.mainMenu; defer { NSApp.mainMenu = old }; menus.install()
+        let menu = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "Conversation" }?.submenu)
+        func command(_ name: String) throws -> NSMenuItem { try XCTUnwrap(menu.items.first { $0.title == name }) }
+        for name in ["Find…", "Find Next", "Stop", "Latest Messages", "Search and Copy Conversation…"] {
+            XCTAssertTrue(menus.validateMenuItem(try command(name)), name)
+        }
+        let find = try command("Find…")
+        let file = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu)
+        XCTAssertFalse(menus.validateMenuItem(try XCTUnwrap(file.items.first { $0.title == "Delete Chat…" })))
+        for name in ["Send / Queue Follow-up", "Open Side", "Compact Now"] { XCTAssertFalse(menus.validateMenuItem(try command(name)), name) }
+        _ = menus.perform(find.action!, with: find)
+        XCTAssertEqual(display.findCommand?.kind, .show); XCTAssertNil(model.selected?.findCommand)
+        // The real Find bar establishes the menu's Previous availability.
+        pane.transcript.showFind()
+        XCTAssertTrue(menus.validateMenuItem(try command("Find Previous")))
+        for (name, expected) in [("Find Next", TranscriptFindCommand.Kind.next), ("Find Previous", .previous)] {
+            let item = try command(name); _ = menus.perform(item.action!, with: item)
+            XCTAssertEqual(display.findCommand?.kind, expected)
+        }
+        let parent = try XCTUnwrap(model.selected); parent.runState = .running
+        let stop = try command("Stop"); _ = menus.perform(stop.action!, with: stop)
+        XCTAssertEqual(parent.runState, .running, "The child menu must never stop the selected main chat")
+        display.scrollAnchor = .init(id: "earlier", offset: 10, followsBottom: false)
+        let latest = try command("Latest Messages"); _ = menus.perform(latest.action!, with: latest)
+        XCTAssertTrue(display.scrollAnchor?.followsBottom == true)
+        let sheet = NSWindow(contentRect: .init(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false; window.beginSheet(sheet, completionHandler: nil)
+        XCTAssertFalse(menus.validateMenuItem(find))
+        window.endSheet(sheet); sheet.orderOut(nil); sheet.close()
+        let search = try command("Search and Copy Conversation…"); _ = menus.perform(search.action!, with: search)
+        XCTAssertEqual(model.contentSessionID, tab.key); XCTAssertTrue(model.showConversationContent)
+        model.showConversationContent = false
     }
     @MainActor func testDeleteCommandCannotDeleteTheMainChatFromAFocusedManagedReader() async throws {
         let (model, _) = try fixture()
@@ -187,7 +301,7 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         let (model, _) = try fixture()
         let tab = try await open("chat-child", in: model)
         let container = model.tabs.popOut(tab), window = try XCTUnwrap(model.tabs.window(of: container))
-        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        NSApp.unhide(nil); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil); window.makeKey()
         for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(10)) }
         let pane = try XCTUnwrap(tab.pane), display = try XCTUnwrap(model.displays[tab.key])
         XCTAssertTrue(window.makeFirstResponder(pane))
@@ -336,10 +450,15 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         for _ in 0..<500 { if await gate.reads > 0 { break }; try await Task.sleep(for: .milliseconds(2)) }
         let tab = try XCTUnwrap(model.subagentTab("chat-child"))
         let loading = try XCTUnwrap(tab.loading)
+        let intent = tab.navigation
         model.tabs.popOut(tab)
         model.tabs.move(tab, to: model.tabs.pane)
+        XCTAssertTrue(intent.isCurrent, "Moving the same reader keeps its pending read")
         await model.backToSubagentParent(tab.key)
         await gate.release(); await loading.value; _ = await opening.value
+        // Back retires the opening. Its still-visible reader independently
+        // revalidates history under the new intent without taking focus.
+        tab.refresh(); await tab.loading?.value
         XCTAssertTrue(model.subagentTab(tab.key) === tab)
         XCTAssertEqual(model.displays[tab.key]?.messages.first?.text, "Moved reader")
         XCTAssertEqual(model.focusedSessionID, "chat-parent")

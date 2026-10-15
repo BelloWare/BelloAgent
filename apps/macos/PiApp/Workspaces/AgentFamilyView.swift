@@ -176,7 +176,7 @@ import Combine
             let ownerTitle = model.record(group.ownerID)?.title ?? "Unavailable parent"
             rows.append(heading(group.ownerID == value.ownerID ? "Sub-agents" : "Sub-agents in " + ownerTitle))
             for member in group.members {
-                let detail = [member.statusLabel, member.model, member.spend.map(CostLimit.dollars)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                let detail = [member.statusLabel, member.model, member.effort, member.spend.map(CostLimit.dollars)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
                 let row = row(member.label, detail: detail, id: "open-agent-" + member.chat.id,
                     label: "Open " + member.chat.displayTitle + " in " + ownerTitle + ", " + detail, current: member.chat.id == sessionID) { [weak model, close] in
                     close(); Task { await model?.openSubagentTab(member.chat.id) }

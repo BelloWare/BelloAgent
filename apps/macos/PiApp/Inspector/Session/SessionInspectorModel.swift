@@ -20,7 +20,9 @@ import AppKit
     @Published private(set) var groups: [InspectorSubagentGroup] = []
     func numberSubagentGroups(_ numbers: [String: Int]) {
         let numbered = groups.map { value in
-            var group = value; group.number = numbers[group.summary.link.childSessionID] ?? group.number; return group
+            var group = value; group.number = numbers[group.summary.link.childSessionID] ?? group.number
+            group.effort = workspace?.subagentEffortLabel(group.summary.link.childSessionID, summary: group.summary)
+            return group
         }
         if numbered != groups { groups = numbered }
     }
@@ -355,7 +357,9 @@ import AppKit
                 let groups = try await archive.inspectorSubagents(owner: scope.sessionID, workspaceID: scope.workspaceID)
                 guard !Task.isCancelled else { return }
                 self.groups = groups.map { value in
-                    var group = value; group.number = self.workspace?.record(value.summary.link.childSessionID)?.subagentNumber; return group
+                    var group = value; group.number = self.workspace?.record(value.summary.link.childSessionID)?.subagentNumber
+                    group.effort = self.workspace?.subagentEffortLabel(value.summary.link.childSessionID, summary: value.summary)
+                    return group
                 }
                 await self.readAgentCoordination()
                 guard !Task.isCancelled else { return }

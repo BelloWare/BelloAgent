@@ -149,11 +149,11 @@ extension WorkspaceModel {
     /// it: the rows it held when they are still its newest, else the page read.
     /// It stops wherever the reader has moved on.
     func loadSelectedChat(_ id: String, item: ChatRecord, into view: SessionDisplay, selection: Int,
-                                  generation: UUID, heldRows: HeldRows, focusesComposer: Bool, tab: SubagentTab? = nil) async {
+                                  generation: UUID, heldRows: HeldRows, focusesComposer: Bool, reader: HostedReaderToken? = nil) async {
         // However this ends, nothing is reading the chat any more.
         defer { view.finishHistoryPresentation(generation) }
         @MainActor func current() -> Bool {
-            !Task.isCancelled && (tab.map { self.subagentTab(id) === $0 } ?? (self.selectionRevision == selection && self.selectedID == id)) &&
+            !Task.isCancelled && (reader.map { $0.isCurrent && self.subagentTab(id) === $0.reader } ?? (self.selectionRevision == selection && self.selectedID == id)) &&
                 self.displays[id] === view && view.presentationGeneration == generation
         }
         do {
@@ -278,6 +278,13 @@ extension WorkspaceModel {
     func openFromSidebar(_ id: String) async {
         // A chat the filter listed for its messages opens at its match.
         let hit = sidebarSearchHit(id), opening = beginSidebarOpen()
+        if record(id)?.isSubagent == true {
+            let reader = beginSubagentOpening(id)
+            defer { finishSubagentOpening(reader) }
+            guard await openSubagentTab(id, opening: reader) != nil, reader.isCurrent else { return }
+            await revealSidebarSearchHit(id, hit: hit, opening: opening, reader: reader)
+            return
+        }
         await openSidebarRow(id)
         await revealSidebarSearchHit(id, hit: hit, opening: opening)
     }

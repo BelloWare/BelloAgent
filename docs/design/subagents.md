@@ -16,7 +16,7 @@ when the right pane opens. The popover aligns to the pill’s trailing edge and 
 within the owning window. A Sides section lists open/kept sides, status (working,
 new reply, failed, saved or draft), existing spend and New Side.
 Each compact row opens on click or Return; arrows move between rows. Sub-agents
-follow in stable number order with status, model, spend and a trailing Stop icon
+follow in stable number order with status, model, effective effort, spend and a trailing Stop icon
 for running children. Rows use at most two lines; six fit without scrolling at
 1240×800. New Side shares their title inset. Spend uses the existing cents/sub-cent
 money formatter; the reported-usage caveat is in the tooltip. Running, queued and stopping counts are distinct.
@@ -51,9 +51,12 @@ Back to Parent and later tab choices win. Visibility follows the host’s actual
 availability. Closing readers applies the existing eight-display eviction policy,
 protecting running sessions and open tabs. Cold readers do not start a helper.
 
-Reader loads belong to the exact tab and display generation, independently of
-main-chat selection. Opening intents also check pane selection before and after
-awaits, so a later file/child/side choice wins. Main, side and child presentations
+Each hosted reader owns one navigation token, retained when its tab moves between
+the pane and windows. Every awaited open, reveal and history read checks that token;
+main-window selection and page revisions do not govern independent child readers.
+A newer external destination retires an unfinished child opening, while Back, hide
+and close retire that reader's pending navigation. Moving a loaded reader preserves
+its page; reopening after a real hide revalidates history. Main, side and child presentations
 reset both paging boundaries together while retaining reusable cursors; canceled
 visits retire their task and can be reopened. Closing/reopening or moving a tab
 cannot adopt a former reader's page. Native responder transitions in both window
@@ -62,6 +65,22 @@ Visibility callbacks run after host state changes and respect the no-side fallba
 deferred attachment never undoes Back or a later focus choice.
 Show in Chat requires a current successful child opening before revealing a message;
 Back can supersede it even while leaving that reader visible beside the parent.
+
+Conversation menu validation and dispatch resolve the active reader of the key
+child window, including while the main window shows Reports. Embedded readers use
+native responder ancestry. Find, Previous/Next, Stop, Latest, Search and Copy,
+folding and Inspector target that reader; managed children cannot Delete Chat or
+use human composer commands. Native sheets and keyboard popovers retain their
+command boundaries.
+
+Effort is display metadata rebuilt from the accepted model grant and persisted
+turn records, with live accepted summaries taking precedence. The picker, card
+header/details, child header and family Inspector show the actual level (such as
+“high”), including when inherited. “default” reads as “model default”; models with
+an empty effort capability list show no effort. Unknown legacy capabilities do
+not invent a model-default label. Follow-ups update the current child's effort;
+older send receipts retain their own turn's value. No journal or model-facing
+text is changed by this presentation.
 
 Embedded Back to Parent focuses the existing parent without changing its draft,
 version or reading position. Source links still reveal their issuing message/version.

@@ -21,6 +21,7 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
     var agentHeldByUser: Bool? = nil
     /// App-only presentation cache, never sent to the helper or model.
     var subagentNumber: Int? = nil
+    var subagentEffort: String? = nil
 }
 struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     var id: String; var role: String; var text: String

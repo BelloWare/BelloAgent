@@ -38,6 +38,7 @@ struct SubagentToolView: Equatable, Sendable {
     static func isControl(_ name: String) -> Bool { name == "subagent" || ["subagent_start", "subagent_send", "subagent_wait", "subagent_status", "subagent_stop", "subagent_report"].contains(name) }
     let operation: String
     let number: Int?
+    let effort: String?
     let childID: String?
     var name: String { SubagentLabel.name(number) }
     var title: String { SubagentLabel.title(number, description) }
@@ -58,6 +59,7 @@ struct SubagentToolView: Equatable, Sendable {
     init(_ tool: ToolView) {
         operation = tool.name
         number = tool.subagentNumber
+        effort = tool.subagentEffort
         let input = tool.input.data(using: .utf8).flatMap { try? JSONDecoder().decode(WireValue.self, from: $0) }?.object ?? [:]
         let output = tool.output.data(using: .utf8).flatMap { try? JSONDecoder().decode(WireValue.self, from: $0) }?.object ?? [:]
         accepted = output["accepted"]?.bool
@@ -88,6 +90,9 @@ struct SubagentToolView: Equatable, Sendable {
         truncated = output["truncated"]?.bool == true || tool.truncated
     }
     var label: String {
+        statusLabel + (effort.map { " · " + $0 } ?? "")
+    }
+    private var statusLabel: String {
         if operation != "subagent" {
             if accepted == false { return "Not accepted" }
             if heldByUser { return "Stopped by you" + ((operation == "subagent_start" ? summary?.turn ?? receiptTurn : receiptTurn).map { " · turn \($0)" } ?? "") }
