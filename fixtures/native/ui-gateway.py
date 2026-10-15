@@ -174,7 +174,7 @@ class Gateway(http.server.BaseHTTPRequestHandler):
             tool_name = "subagent_start" if "subagent_start" in contract["tool_names"] else "subagent"
             call_tool = tool_name in contract["tool_names"]
             tool_arguments = {"task": "managed child opening fixture", "description": "Opening regression"}
-            if tool_name == "subagent_start": tool_arguments["mode"] = "wait"
+            if tool_name == "subagent_start": tool_arguments["mode"] = "background" if "in background" in prompt.lower() else "wait"
         text = "Fixture reply: " + (prompt or "Tool result received.") + "\n\nUnicode: 中文🙂 café."
         if connection_test:
             text = "OK"

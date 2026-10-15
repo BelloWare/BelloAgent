@@ -6,6 +6,30 @@ import AppKit
 /// Real helper navigation over a generated loopback stream. The fixture's
 /// explicit barrier keeps a child active until its viewer has attached.
 final class SubagentOpeningTests: XCTestCase, SerialTestLane {
+    @MainActor func testForkActionOnARunningFamilyCreatesAnIndependentChat() async throws {
+        let (setup, model, host, parent, target) = try await fixture(background:true)
+        await model.select(parent.id)
+        try await eventually("Parent never reached its final family wait") { model.displays[parent.id]?.familyWaiting == true }
+        let source = try XCTUnwrap(model.record(parent.id)?.path)
+        let child = try XCTUnwrap(model.record(target.sessionID)?.path)
+        let before = try [Data(contentsOf:URL(fileURLWithPath:source)),Data(contentsOf:URL(fileURLWithPath:child))]
+        model.forkSession(parent.id)
+        try await eventually("Fork action did not settle") { model.displays[parent.id]?.loading == false }
+        XCTAssertNil(model.error)
+        let fork = try XCTUnwrap(model.chats.first { $0.id != parent.id && !$0.isSubagent })
+        XCTAssertEqual(model.selectedID,fork.id)
+        XCTAssertTrue(model.subagentChildren(of:fork.id).isEmpty)
+        let state = try await host.request("session.snapshot",sessionID:fork.id)
+        XCTAssertEqual(state.object?["cost"]?.object?["spentUSD"]?.number,0)
+        let children = try await host.request("subagent.list",sessionID:fork.id)
+        XCTAssertEqual(children.object?["children"]?.array?.count,0)
+        XCTAssertEqual(try [Data(contentsOf:URL(fileURLWithPath:source)),Data(contentsOf:URL(fileURLWithPath:child))],before)
+        try Data().write(to:setup.root.appendingPathComponent("release-child"))
+        try await waitForParent(parent.id,host:host)
+        _ = try await host.request("turn.submit",sessionID:fork.id,params:["text":.string("Continue this independent fork"),"clientTurnId":.string(UUID().uuidString)])
+        try await waitForParent(fork.id,host:host)
+        XCTAssertNil(model.error)
+    }
     @MainActor func testColdParentOpenRepairsCapturedChildChargeBeforeReturningItsHost() async throws {
         let (_, model, host, parent, target) = try await fixture()
         var requests: [[String: WireValue]] = []
@@ -192,7 +216,7 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(model.opened.contains(target.sessionID), "A new explicit open can attach normally")
     }
 
-    @MainActor private func fixture(ancestor: Bool = false) async throws -> (GatewayWorkspace, WorkspaceModel, HostSupervisor, ChatRecord, SubagentTarget) {
+    @MainActor private func fixture(ancestor: Bool = false, background: Bool = false) async throws -> (GatewayWorkspace, WorkspaceModel, HostSupervisor, ChatRecord, SubagentTarget) {
         let setup = try await gatewayWorkspace("subagent-opening", projectID: "subagent-opening")
         let model = WorkspaceModel(stateRoot: setup.state, vault: setup.vault)
         model.automaticContextOperation = { _, _ in throw CancellationError() }
@@ -210,7 +234,7 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
             _ = try await host.request("turn.submit", sessionID: parent.id, params: ["text":.string("Earlier task"), "clientTurnId":.string("ancestor")])
             try await waitForParent(parent.id, host: host)
         }
-        _ = try await host.request("turn.submit", sessionID: parent.id, params: ["text":.string("delegate opening fixture"), "clientTurnId":.string(UUID().uuidString)])
+        _ = try await host.request("turn.submit", sessionID: parent.id, params: ["text":.string("delegate opening fixture" + (background ? " in background" : "")), "clientTurnId":.string(UUID().uuidString)])
         try await eventually("Child never reached its streaming barrier", timeout: .seconds(30)) {
             FileManager.default.fileExists(atPath: setup.root.appendingPathComponent("child-streaming").path)
         }

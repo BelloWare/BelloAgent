@@ -2,6 +2,10 @@
 
 **Released 2026-10-15:** 0.1.127 (build 131, tag `v0.1.127`) is the latest release; record `docs/validation/Bello-Agent-0.1.127-2026-10-15.md`.
 
+## 0.1.128
+
+- [x] Fork chats with sub-agents (`dev/a128-fork-subagents`): copy fallback now writes one marker at the source's required version; promoted APFS clones keep valid checkpoint hashes and replay parity. Forks retain sub-agent cards/results as history, with disabled History controls across appearance changes, their own budget and newly owned children. They never adopt or write the source's children. Existing duplicate-marker damage is rejected unchanged with instructions to fork again from the source; managed-child Fork remains deferred by design. [Root causes, tests, decisions and gallery](docs/validation/fork-subagents-0.1.128.md).
+
 ## 0.1.127
 
 - [x] Branches and stash (`dev/a127-git-branches`, stream 5): searchable Recent/Local/Remote branch popup with a separate current check, remote icons and cached upstream/ahead/behind metadata; tracking checkout, create/rename/delete with reviewed unmerged confirmation; read-only comparison sharing History rows and Show in History through the live browser’s removable ref chip; stash list, lazy saved-index/worktree/untracked previews, Apply/Pop/Drop and New Stash options. Native checkout protects local/ignored files; stash recovery is explicit; conflicts retain the stash. Native branch/stash deletion preserves Git’s operation reservations and packed-ref handling, stale stash choices refresh, and rename/delete retarget or clear the live History ref while preserving other filters. Integrated with current Git safety/History and the Staged-changes default. [Validation and integration handoff](docs/validation/git-branches-0.1.127.md).

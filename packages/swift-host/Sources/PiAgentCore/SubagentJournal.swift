@@ -88,9 +88,15 @@ struct SubagentJournalState: Codable, Sendable, Equatable {
     }
 
     mutating func retarget(_ sessionID: String) {
-        if family?.ownerID != sessionID, origin?.link.childSessionID != sessionID { family = nil }
+        if family?.ownerID != sessionID, origin?.link.childSessionID != sessionID {
+            // Delivered rows remain history. Keep their deduplication index,
+            // as full replay does, without any source execution authority.
+            let rows = family?.contextRows ?? [:]
+            family = rows.isEmpty ? nil : AgentFamilyState(ownerID:sessionID,contextRows:rows)
+        }
         plans = plans.filter { $0.value.origin.link.call.parentSessionID == sessionID }
         callOrder = callOrder?.filter { plans[$0] != nil }; outcomes = outcomes?.filter { plans[$0.key] != nil }
+        if plans.isEmpty { callOrder = nil; outcomes = nil }
         if origin?.link.childSessionID != sessionID { origin = nil; status = nil; terminal = nil }
     }
 

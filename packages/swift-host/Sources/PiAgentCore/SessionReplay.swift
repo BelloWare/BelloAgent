@@ -47,7 +47,7 @@ struct JournalReplayConsumer {
     private(set) var r = JournalReplay()
     private var id: String
     private var header: JournalCheckpoint.Check?
-    private let marker: JournalCheckpoint.Check?
+    private var marker: JournalCheckpoint.Check?
     // The newest run state's record, for a checkpoint: its bytes, where it
     // is, and the key it holds the state under.
     private var stateSource: (line: Data, offset: UInt64, key: String)?
@@ -247,6 +247,12 @@ struct JournalReplayConsumer {
     /// the same places, in the journal of session `id`, whose header is
     /// `header`. The checkpoints it takes from here on are the clone's.
     mutating func retarget(id: String, header: JournalCheckpoint.Check?) { self.id = id; self.header = header; r.subagents.retarget(id) }
+    /// Promotion changes only the marker bytes, preserving every record's
+    /// place. Keep cached checkpoints usable without replaying the transcript.
+    mutating func retarget(marker: JournalCheckpoint.Check?) {
+        self.marker = marker
+        if let marker { r.captured?.marker = marker; r.resumedFrom?.marker = marker }
+    }
     /// The connection changes a cloned journal kept (`SessionJournal.clone`):
     /// those before where the clone ends.
     mutating func retarget(rebinds: [JournalCheckpoint.Check]) {
