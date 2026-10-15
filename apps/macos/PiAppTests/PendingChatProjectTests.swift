@@ -245,6 +245,78 @@ final class PendingChatProjectTests: XCTestCase {
         }
     }
 
+    @MainActor func testSwitchRejectsLeavingChatsWhileDefaultsAreSuspended() async throws {
+        for report in [true, false] {
+            try await assertSwitchRejectsNavigation { model, _ in
+                if report { model.openReport() } else { model.openBackgroundRequests() }
+            }
+        }
+    }
+
+    @MainActor func testSwitchRejectsReturningToTheSameDraftAfterNavigation() async throws {
+        for destination in ["report", "background", "chat"] {
+            try await assertSwitchRejectsNavigation { model, view in
+                switch destination {
+                case "report": model.openReport()
+                case "background": model.openBackgroundRequests()
+                default: await model.select(try XCTUnwrap(model.chats.first { $0.id != view.id }).id)
+                }
+                await model.select(view.id)
+                XCTAssertEqual(model.page, .chats)
+                XCTAssertTrue(model.selected === view, "Returning restores the same nonempty draft display")
+            }
+        }
+    }
+
+    @MainActor func testSwitchCannotStartOutsideChats() async throws {
+        for report in [true, false] {
+            let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+            view.draft = "Keep the draft while another page is open."
+            if report { model.openReport() } else { model.openBackgroundRequests() }
+            let page = model.page, original = model.record(view.id)
+            do { try await model.setPendingChatProject("Harbor", for: view.id); XCTFail("A hidden chat accepted a project choice") }
+            catch { XCTAssertFalse(error.localizedDescription.isEmpty) }
+            XCTAssertEqual(model.page, page); XCTAssertEqual(model.record(view.id), original)
+            XCTAssertTrue(model.selected === view)
+        }
+    }
+
+    @MainActor private func assertSwitchRejectsNavigation(_ navigate: @MainActor (WorkspaceModel, SessionDisplay) async throws -> Void) async throws {
+        let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+        let draft = "Keep this nonempty draft when navigating away and back."
+        view.draft = draft
+        // Create the other destination before holding defaults: New Chat
+        // itself waits for the same saved-default write as the project picker.
+        let other = try await startPendingProjectChat(model, project: "Harbor")
+        other.draft = "Another pending chat."
+        await model.select(view.id)
+        let original = try XCTUnwrap(model.record(view.id)), lease = try model.connectionLease(for: original)
+        let gate = AsyncGate(), profile = model.profileChoice
+        model.overrideWrites[profile] = (UUID(), Task { await gate.wait() })
+        var entered = false
+        let choice = Task { entered = true; try await model.setPendingChatProject("Harbor", for: view.id) }
+        do {
+            try await eventually("project choice suspended at defaults") { entered }
+            try await navigate(model, view)
+        } catch {
+            await gate.open(); _ = try? await choice.value
+            model.overrideWrites.removeValue(forKey: profile)
+            throw error
+        }
+        let page = model.page, selection = model.selectedID
+        await gate.open()
+        do { try await choice.value; XCTFail("A project choice survived newer navigation") }
+        catch { XCTAssertFalse(error.localizedDescription.isEmpty) }
+        model.overrideWrites.removeValue(forKey: profile)
+        XCTAssertEqual(model.page, page, "The newer page keeps control of navigation")
+        XCTAssertEqual(model.selectedID, selection)
+        XCTAssertEqual(model.record(view.id), original, "A stale choice cannot change the pending chat's project or defaults")
+        XCTAssertTrue(model.displays[view.id] === view, "The original draft display and its state stay intact")
+        XCTAssertEqual(model.selected?.draft, draft)
+        XCTAssertTrue(model.pendingChatIDs.contains(view.id))
+        XCTAssertNoThrow(try model.requireConnection(lease), "Refusing a stale choice preserves the existing connection boundary")
+    }
+
     @MainActor func testImportAndSideKeepTheirDestinationUntilFinished() async throws {
         let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
         let importing = model.beginImageImport(sessionID: view.id)

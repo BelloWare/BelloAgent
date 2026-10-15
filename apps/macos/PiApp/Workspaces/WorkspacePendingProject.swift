@@ -43,7 +43,7 @@ extension WorkspaceModel {
     /// user input. No session, journal, capture or permission state is moved.
     func setPendingChatProject(_ projectID: String, for id: String) async throws {
         if let reason = pendingProjectBlocker(id) { throw HostError.failure(reason) }
-        guard let item = record(id), let view = displays[id], selectedID == id else {
+        guard page == .chats, let item = record(id), let view = displays[id], selectedID == id else {
             throw HostError.failure("Open the new chat before changing its project.")
         }
         guard item.workspaceID != projectID else { return }
@@ -52,6 +52,9 @@ extension WorkspaceModel {
         }
         let profileID = requestProfiles.contains(where: { $0.id == profileChoice }) ? profileChoice : requestProfiles.first?.id
         guard let profileID else { throw HostError.failure("Choose a saved Responses connection first.") }
+        // This revision already tracks page, chat-selection and side-focus
+        // changes, including a trip away and back to the same draft.
+        let navigation = organizationNavigationRevision
         await overrideWrites[profileID]?.task.value
         var fresh = try await newChatRecord(workspaceID: projectID, profileID: profileID, previousChatID: id, topicID: nil)
         let available = await Self.availableChatProjects([target])
@@ -59,11 +62,12 @@ extension WorkspaceModel {
         // A send, rename, navigation, folder edit or loss of trust during the
         // reads wins. The old chat and draft remain untouched on every refusal.
         if let reason = pendingProjectBlocker(id) { throw HostError.failure(reason) }
-        guard selectedID == id, displays[id] === view, record(id) == item,
+        guard page == .chats, organizationNavigationRevision == navigation,
+              selectedID == id, displays[id] === view, record(id) == item,
               pendingChatProjects.contains(target), available == [target],
               requestProfiles.contains(where: { $0.id == profileID }),
               let index = chats.firstIndex(where: { $0.id == id }) else {
-            throw HostError.failure("The chat or project changed. Choose its project again.")
+            throw HostError.failure("The chat, project or page changed. Choose its project again.")
         }
         fresh.id = id; fresh.sidebarOrder = item.sidebarOrder
         let replacement = SessionDisplay(id: id)

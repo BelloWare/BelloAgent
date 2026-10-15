@@ -250,3 +250,57 @@ this review round. Exact arguments and fixture environment are preserved in
 
 Both review findings are resolved. Remaining handoff: lead re-review and branch
 integration; the historical ContextReading timeout remains a test follow-up.
+
+## Lead review round 2
+
+Date: 2026-10-15. The independent review found that identity checks did not
+invalidate a project choice when the user navigated during its defaults or
+availability reads. Usage Report and Background requests retain the selected
+chat, record and display. Returning to a nonempty draft also restores those
+same identities. The final `select(id)` could therefore commit an obsolete
+choice and replace the user's newer page with Chats.
+
+`setPendingChatProject` now requires the Chats page at entry, snapshots the
+existing `organizationNavigationRevision` before its first suspension, and
+rechecks both the revision and the Chats page immediately before committing.
+That revision already tracks page, selected-chat and side-focus changes, so
+even navigation away and back invalidates the pending choice. Rejection leaves
+the project/defaults, display, draft, connection lease and current page intact.
+The change only reads the existing navigation counter; no shared navigation
+code, observer, helper, permission, capture or journal behavior changed.
+
+Three behavioral regressions cover seven scenarios: leaving for Report or
+Background requests while defaults are held; leaving and returning through
+Report, Background requests or another chat; and attempting to start a stale
+choice while either non-chat page is already open. All use generated projects,
+an in-memory vault and the existing defaults-write gate. The second chat is
+prepared before closing that gate, since New Chat itself also waits for it.
+An initial fixture run exposed that setup ordering and is retained separately
+as `validation/review2-fixture-initial.log`; the corrected failing-first run
+has no unexpected failures.
+
+`validation/review2-navigation-red.log` records all three regressions failing
+before the production fix: 30 assertions across the seven scenarios. The
+normal affected run, `validation/review2-affected.log`, passed 34 tests:
+PendingChatProject (16), ReportNavigation (3), BackgroundRequests (6) and
+OrganizationBatch (9). `python3 scripts/test-lanes.py list` classifies all four
+as parallel. Each run used this stream's `PI_BUILD_ROOT`; generated scratch
+fixtures used the same root via both scratch-root environment names.
+
+Mutation evidence: `validation/review2-navigation-mutation.log` weakens the
+real commit guard from revision equality to `>=`, allowing newer navigation.
+The away-and-back test fails with 12 assertions across all three destinations,
+proving that current-page/record/display checks alone do not protect the switch.
+Revision equality was restored before final validation.
+
+Final restored run: `validation/review2-final.log`, the same four affected
+classes, **34 passed, zero failures, zero skips** (23.633 seconds). The pending
+project class now contains 16 tests. Summaries are preserved in
+`validation/review2-selected-summary.json` and the native result's
+`validation/review2-final-summary.json`.
+
+No full native lane was run for round 2, as requested: the production edit is
+confined to the pending-project operation and shared navigation is unchanged.
+No layout or gallery scene changed; the 22 inspected `gallery-review1/` images
+remain the current visual evidence. No installed app, paid provider, real
+preferences or Keychain was used. Remaining handoff: lead re-review/integration.
