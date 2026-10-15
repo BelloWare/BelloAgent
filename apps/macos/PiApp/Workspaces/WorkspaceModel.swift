@@ -308,6 +308,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var costSeedRead: (@MainActor (ChatRecord) async -> WireValue?)?
     var costLimitWrites: [String: (token: UUID, task: Task<Void, Error>)] = [:]
     var budgetStates: [String: SessionBudgetState] = [:]
+    /// Numeric-work probe for streaming regressions; never counts transcript work.
+    var budgetFamilyRefreshVisits = 0
     var sideBudgetRestoreRevision = 0
     var skillCatalogLoads: [String: (token: UUID, scope: String, task: Task<Void, Never>)] = [:]
     /// Retained gateway totals for chats without a loaded display, keyed by chat id.

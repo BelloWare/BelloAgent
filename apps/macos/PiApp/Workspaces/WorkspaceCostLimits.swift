@@ -9,7 +9,26 @@ import Combine
     var readTask: Task<Void,Never>?
     var readID = UUID()
     var dirty = false
+    var childCostCursor: SubagentCostCursor?
     init(_ reading: SessionCostReading) { self.reading = reading }
+}
+
+/// Orders accepted progress without keeping its prose or making dollars
+/// monotonic: a later accounting correction can legitimately reduce them.
+struct SubagentCostCursor {
+    var turn: Int, revision: Int
+    var epoch: String?
+    var elapsed: Double
+    init?(_ summary: SubagentSummary) {
+        guard let progress = summary.progress else { return nil }
+        turn = summary.turn ?? 1; revision = summary.revision
+        epoch = summary.progressEpoch; elapsed = progress.elapsedMs
+    }
+    func follows(_ previous: Self) -> Bool {
+        if turn != previous.turn { return turn > previous.turn }
+        guard revision >= previous.revision else { return false }
+        return epoch != previous.epoch || elapsed > previous.elapsed
+    }
 }
 
 /// What the cost-limit notice in a transcript asks for.
@@ -117,6 +136,7 @@ extension WorkspaceModel {
     }
     private func refreshBudgetFamily(_ owner: String) {
         for id in Set(displays.keys).union(budgetStates.keys) {
+            budgetFamilyRefreshVisits += 1
             if id == owner || record(id).map({ budgetOwner(for:$0).id == owner }) == true { refreshCostReading(id) }
         }
     }
@@ -250,6 +270,10 @@ extension WorkspaceModel {
     func observeCost(_ snapshot: [String: WireValue], sessionID id: String) {
         guard let cost = snapshot["cost"]?.object else { return }
         let state = budgetState(for:id)
+        // A direct snapshot also fences the progress already received. A
+        // repeated list response cannot undo this newer accounting reading.
+        if let summary = subagentSummaries[id], let cursor = SubagentCostCursor(summary),
+           state.childCostCursor.map({ cursor.follows($0) }) ?? true { state.childCostCursor = cursor }
         let previous = state.reading
         var reading = costReading(for:id)
         reading.spentUSD = cost["spentUSD"]?.number
@@ -257,7 +281,7 @@ extension WorkspaceModel {
         reading.unreportedRequests = cost["unreportedRequests"]?.nonnegativeInteger ?? 0
         if state.reading != reading { state.reading = reading }
         displays[id]?.applyCostReading(reading)
-        refreshBudgetFamily(id)
+        if reading != previous { refreshBudgetFamily(id) }
         if reading.spentUSD != previous.spentUSD || reading.reportedRequests != previous.reportedRequests || reading.unreportedRequests != previous.unreportedRequests {
             if let owner = record(id)?.delegation?.budgetOwnerSessionID {
                 subagentFamilies.removeValue(forKey:owner)
@@ -272,6 +296,18 @@ extension WorkspaceModel {
             displays[id]?.costLimitSent = reading.limit
             Task { await sendCostLimit(id) }
         }
+    }
+
+    /// Validated live summaries carry the child's own lifetime ledger. Keep
+    /// numeric state current even after its reader/runtime leaves `opened`.
+    /// Called only after origin, connection and summary-order validation.
+    func observeSubagentCost(_ summary: SubagentSummary) {
+        guard let progress = summary.progress, let cursor = SubagentCostCursor(summary) else { return }
+        let state = budgetState(for:summary.link.childSessionID)
+        guard state.childCostCursor.map({ cursor.follows($0) }) ?? true else { return }
+        state.childCostCursor = cursor
+        observeCost(["cost":.object(["spentUSD":.number(progress.usd),
+            "reportedRequests":.number(Double(progress.reported)),"unreportedRequests":.number(Double(progress.unreported))])],sessionID:summary.link.childSessionID)
     }
 
     /// The notice's two actions: open the limit editor over the button, or
