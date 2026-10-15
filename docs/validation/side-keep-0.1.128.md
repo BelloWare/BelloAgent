@@ -89,6 +89,32 @@ Both mutated production files were restored byte-for-byte before final verificat
 
 Final restored verification: **70 passed, 0 failed**, using `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-fork-subagents scripts/test-macos.sh` with seven `-only-testing:PiAppTests/<Class>` arguments: `SideKeepOrderingTests` (8), `SideKeepRecoveryTests` (15), `SideTests` (15), `WorkspaceDurabilityTests` (7), `TopicStorageTests` (17), `SideRelaunchTests` (3), and `ForkFromReplyTests` (5). All seven are in the parallel lane according to `python3 scripts/test-lanes.py list`. Evidence: `logs/side-keep-review-restored.log`. No review validation failures remain. No helper or gallery source changed, so those suites were not repeated.
 
+## Review round 2: attachment retention, concurrent success and combined failures (2026-10-15)
+
+All three review findings reproduced with generated fixtures. The initial failing-first run executed 19 tests and reported **16 failures in five methods** (including one thrown `staleRevision` in the positive duplicate-registration test): `logs/side-keep-review2-red.log`. Dismissal removed the last metadata root used to scan a preserved journal for pasted-image references; an otherwise successful competing registration was treated as stale; and publishing one live failure invalidated another copy's pending report through the shared revision.
+
+The ordering audit also reproduced two windows around sidebar publication. A successful database commit was not recognized before its in-memory chat row appeared (`logs/side-keep-review2-sidebar-red.log`: 20 tests, one thrown registration error). A delayed failure report could then contradict that completed registration (`logs/side-keep-review2-completed-report-red.log`: 12 tests, one assertion failure). Both now use the same atomic pending/registered/missing metadata lookup.
+
+Decisions and implementation:
+
+- **Dismissal preserves a cleanup-only journal reference**, in the same transaction that removes the pending registration. `side-keep-retained` records are keyed by workspace, chat ID and file location; different preserved files with the same chat ID cannot overwrite each other's reference. They are never listed for registration or shown as reminders. Cleanup follows the journal's bytes, including attachments appended after dismissal. Missing retained files conservatively defer cleanup, matching the existing missing-journal policy. A later successful registration transfers the matching reference to the ordinary chat row; other preserved paths remain protected.
+- **Concurrent success is acknowledged without writes.** The registration transaction records the exact consumed intent and its committed path in `side-keep-registration`. A duplicate succeeds only when that receipt matches the captured copy and the saved chat still has the expected identity, workspace and path. It returns current organization without rewriting chat metadata, drafts or draft-write events. A pending replacement still takes precedence and must match before any write. Registration can also recognize the completed receipt before sidebar publication. Normal chat deletion removes the completed receipt.
+- **Overlapping failures retry their lookup** after a resolution revision changes. A different copy's report no longer drops an unresolved item. A completed copy is recognized from durable metadata, and dismissal/replacement guards remain in force.
+- The new records are desktop metadata only. No journal format, helper/tool semantics, capture/vault boundary, layout, or persistence of unkept side drafts changes. No journal or pasted-image bytes are repaired or rewritten by dismissal.
+
+Coverage includes pasted images used only by historical edits/queued inputs, multiple dismissed paths sharing an ID, a later journal append, relaunch, orphan cleanup, missing-file deferral, concurrent side/fork registration, newer typing and organization, pre-publication success, wrong-copy/path/workspace refusal, alias retries, concurrent named failures and receipt cleanup on deletion. The first restored focused run passed **45/45** across `PastedAttachmentTests`, `SideKeepOrderingTests`, `SideKeepRecoveryTests` and `SubagentDeletionTests` (`logs/side-keep-review2-green.log`).
+
+| Real production mutation | Result | Evidence |
+|---|---|---|
+| Exclude retained journals from attachment discovery | **Caught:** 8 tests, 6 failures in 2 methods. | `logs/side-keep-review2-mutation-retention.log` |
+| Bypass the completed receipt's captured-copy comparison | **Caught:** 12 tests, 1 failure for adopting a different committed copy. | `logs/side-keep-review2-mutation-receipt.log` |
+| Bypass the pending-copy comparison before registration writes | **Caught:** 12 tests, 5 failures for consuming a replacement. | `logs/side-keep-review2-mutation-pending.log` |
+| Return instead of retrying after a failure-report revision change | **Caught:** 12 tests, 2 failures for losing one of two named failures. | `logs/side-keep-review2-mutation-reports.log` |
+
+Both mutated production files were restored byte-for-byte before the final run: **92 passed, 0 failed, 0 skipped**. Command: `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-fork-subagents scripts/test-macos.sh` with `-only-testing:PiAppTests/<Class>` for `ForkFromReplyTests` (5), `PastedAttachmentTests` (8), `SideKeepOrderingTests` (12), `SideKeepRecoveryTests` (15), `SideRelaunchTests` (3), `SideTests` (15), `SubagentDeletionTests` (10), `TopicStorageTests` (17), and `WorkspaceDurabilityTests` (7). All nine are classified in the parallel lane. Evidence: `logs/side-keep-review2-restored.log` and `logs/side-keep-review2-restored-summary.json`.
+
+Only affected native classes ran, as requested. No full lane, helper-package or gallery rerun was needed; helper and layout sources are unchanged. No review validation failures remain.
+
 ## Remaining limits
 
 The particular cause in the owner's private file is unknown; no access was requested or used. Irrecoverable/mismatched identities are deliberately not guessed or silently adopted. The user can inspect their unchanged file, reveal its location, or dismiss the reminder. Missing files cannot be reconstructed by this change.

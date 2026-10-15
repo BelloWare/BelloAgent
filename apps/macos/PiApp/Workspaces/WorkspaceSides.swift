@@ -23,7 +23,25 @@ struct SideRecord: Identifiable, Equatable {
     static let titleSuffix = " — side"
     var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: ChatRecord.readOnlyTools, model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID, costLimit: costLimit) }
 }
-struct SideKeepIntent: Codable, Sendable { var chat: ChatRecord }
+struct SideKeepIntent: Codable, Sendable {
+    /// Attachment discovery only: never listed for automatic registration.
+    static let retainedKind = "side-keep-retained"
+    var chat: ChatRecord
+}
+
+/// The exact pending copy consumed by a successful registration. A delayed
+/// caller can acknowledge it without replaying chat/draft writes.
+struct SideKeepRegistration: Codable, Sendable {
+    static let kind = "side-keep-registration"
+    var expected: ChatRecord
+    var path: String?
+}
+
+enum SideKeepState: Sendable {
+    case pending(SideKeepIntent)
+    case registered(chat: ChatRecord, expected: ChatRecord)
+    case missing
+}
 
 extension WorkspaceModel {
     /// Both are asked for once per sidebar row, and the sidebar redraws on every
@@ -466,9 +484,21 @@ extension WorkspaceModel {
         return settled(lhs) == settled(rhs)
     }
     func registerKeptSide(id: String, path: String?) async throws {
-        guard let store, let intent = try await store.get(SideKeepIntent.self, kind: "side-keep", id: id), let expected = intent.chat.path,
-              let path, Self.sameFile(path, expected) else {
-            if chats.contains(where: { $0.id == id }) { return }
+        guard let store, let path else { throw HostError.failure("Keep could not match this chat to its saved file.") }
+        let intent: SideKeepIntent
+        switch try await store.sideKeepState(id: id) {
+        case .pending(let pending): intent = pending
+        case .registered(let chat, let expected):
+            guard Self.sameFile(path, chat.path) else {
+                throw HostError.failure("Keep could not match this chat to its saved file.")
+            }
+            try await history.validateIdentity(path: path, id: id)
+            await finishSideKeepRegistration(chat, expected: expected)
+            return
+        case .missing:
+            throw HostError.failure("Keep could not match this chat to its saved file.")
+        }
+        guard Self.sameFile(path, intent.chat.path) else {
             throw HostError.failure("Keep could not match this chat to its saved file.")
         }
         try await history.validateIdentity(path: path, id: id)
@@ -491,6 +521,11 @@ extension WorkspaceModel {
         // The transaction resolves a concurrent parent move and returns its
         // durable organization instead of the stale recovery intent's group.
         retained = try await store.commitKeptSide(retained, draft: draft, expected: intent.chat)
+        await finishSideKeepRegistration(retained, expected: intent.chat)
+    }
+    private func finishSideKeepRegistration(_ saved: ChatRecord, expected: ChatRecord) async {
+        var retained = saved
+        let id = retained.id
         retained.topicID = effectiveTopicID(for: retained)
         if let index = chats.firstIndex(where: { $0.id == id }) {
             if (retained.organizationRevision ?? 0) >= (chats[index].organizationRevision ?? 0) {
@@ -500,7 +535,7 @@ extension WorkspaceModel {
         if let info = side(id) { sides[info.parentID]?.kept = true; sides[info.parentID]?.keeping = false; sides[info.parentID]?.keepRequested = false; sides[info.parentID]?.topicID = chats.first(where: { $0.id == id })?.topicID }
         await retainSideReadState(id)
         sideKeepResolutionRevision &+= 1
-        sideKeepIssues.removeAll { $0.chat == intent.chat }
+        sideKeepIssues.removeAll { $0.chat == expected }
     }
     func reconcileSideKeeps() async {
         guard !reconcilingSideKeeps else { return }

@@ -13,21 +13,31 @@ extension WorkspaceModel {
         // A late receipt for a dismissed or already registered copy is settled,
         // not a new failure. A superseded attempt cannot describe its replacement.
         if case StoreError.staleRevision = error { return }
-        let revision = sideKeepResolutionRevision
         do {
             guard let store else { throw StoreError.unavailable }
-            let intent = try await store.get(SideKeepIntent.self, kind: "side-keep", id: id)
-            guard revision == sideKeepResolutionRevision else { return }
-            guard let intent else {
-                if sideKeepDismissals[id] == nil, !chats.contains(where: { $0.id == id }) {
-                    self.error = "Could not add “\(title)” to saved chats. \(error.localizedDescription)"
+            while true {
+                let revision = sideKeepResolutionRevision
+                let state = try await store.sideKeepState(id: id)
+                // Another copy's report must not discard this unresolved one.
+                // Re-read after any resolution, including dismissal of this
+                // copy, rather than publishing a snapshot that may be stale.
+                guard revision == sideKeepResolutionRevision else { continue }
+                let intent: SideKeepIntent
+                switch state {
+                case .pending(let pending): intent = pending
+                case .registered: return
+                case .missing:
+                    if sideKeepDismissals[id] == nil, !chats.contains(where: { $0.id == id }) {
+                        self.error = "Could not add “\(title)” to saved chats. \(error.localizedDescription)"
+                    }
+                    return
                 }
+                let issue = sideKeepIssue(intent, error: error)
+                sideKeepResolutionRevision &+= 1
+                sideKeepIssues.removeAll { $0.id == id }
+                sideKeepIssues.append(issue); sideKeepIssues.sort { $0.id < $1.id }
                 return
             }
-            let issue = sideKeepIssue(intent, error: error)
-            sideKeepResolutionRevision &+= 1
-            sideKeepIssues.removeAll { $0.id == id }
-            sideKeepIssues.append(issue); sideKeepIssues.sort { $0.id < $1.id }
         } catch { self.error = "Could not check the saved copy of “\(title)”. \(error.localizedDescription)" }
     }
 

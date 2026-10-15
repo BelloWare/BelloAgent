@@ -554,7 +554,7 @@ actor MetadataStore {
             let name = String(cString: kind)
             let chat: ChatRecord?
             if name == "chat" { chat = try JSONDecoder().decode(ChatRecord.self, from: data) }
-            else if name == "side-keep" { chat = try JSONDecoder().decode(SideKeepIntent.self, from: data).chat }
+            else if name == "side-keep" || name == SideKeepIntent.retainedKind { chat = try JSONDecoder().decode(SideKeepIntent.self, from: data).chat }
             else { chat = nil }
             if let chat {
                 let path = chat.path ?? root.appendingPathComponent("Workspaces/\(chat.workspaceID)/Sessions/\(chat.id).jsonl").path
@@ -620,17 +620,22 @@ actor MetadataStore {
         try put(draft, kind: "draft", id: sessionID)
     }
     @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord, expected: ChatRecord) throws -> ChatRecord {
-        let database = try ready()
-        guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
-        transactionDrafts = []  // told once committed (`transaction`)
-        do {
+        try transaction {
+            guard proposed.id == expected.id else { throw StoreError.staleRevision }
+            let pending = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id)
+            if pending == nil {
+                // Another registration may have won while this caller read the
+                // header. A receipt proves which copy won; an ID alone cannot.
+                // Return its current organization without touching newer typing.
+                guard let completed = try sideKeepRegistration(id: expected.id),
+                      completed.expected == expected else { throw StoreError.staleRevision }
+                return completed.chat
+            }
             // Identity reads suspend outside this transaction. Dismissal, a
             // replacement or another receipt may have consumed their intent.
             // Compare the captured intent before path/organization migration;
             // no chat or draft write is allowed without that exact pending copy.
-            guard proposed.id == expected.id,
-                  let pending = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id),
-                  pending.chat == expected else { throw StoreError.staleRevision }
+            guard pending?.chat == expected else { throw StoreError.staleRevision }
             var chat = proposed
             if let existing = try get(ChatRecord.self, kind: "chat", id: chat.id) {
                 // Replaying a keep receipt must preserve an independent rename
@@ -644,18 +649,43 @@ actor MetadataStore {
                 chat.topicID = parent?.workspaceID == chat.workspaceID ? parent?.topicID : nil
             }
             try put(chat, kind: "chat", id: chat.id); try put(draft, kind: "draft", id: chat.id); try remove(kind: "side-keep", id: chat.id)
+            try put(SideKeepRegistration(expected: expected, path: chat.path), kind: SideKeepRegistration.kind, id: chat.id)
+            // The registered chat now owns this reference. Other dismissed
+            // paths with the same ID remain independently protected.
+            try remove(kind: SideKeepIntent.retainedKind, id: sideKeepRetentionID(expected))
             guard let saved = try get(ChatRecord.self, kind: "chat", id: chat.id) else { throw StoreError.invalidRecord }
-            guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
-            flushTransactionDrafts()
             return saved
-        } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+        }
+    }
+    /// A commit may precede its caller's sidebar publication. Read its receipt
+    /// and current chat atomically, without treating a replacement as settled.
+    func sideKeepState(id: String) throws -> SideKeepState {
+        try transaction {
+            if let pending = try get(SideKeepIntent.self, kind: "side-keep", id: id) { return .pending(pending) }
+            if let completed = try sideKeepRegistration(id: id) { return .registered(chat: completed.chat, expected: completed.expected) }
+            return .missing
+        }
+    }
+    private func sideKeepRegistration(id: String) throws -> (chat: ChatRecord, expected: ChatRecord)? {
+        guard let receipt = try get(SideKeepRegistration.self, kind: SideKeepRegistration.kind, id: id),
+              let saved = try get(ChatRecord.self, kind: "chat", id: id),
+              receipt.expected.id == id, saved.id == id,
+              saved.workspaceID == receipt.expected.workspaceID, saved.path == receipt.path else { return nil }
+        return (saved, receipt.expected)
+    }
+    private func sideKeepRetentionID(_ chat: ChatRecord) throws -> String {
+        // Preserve each file, including replacements that reuse a chat ID.
+        let identity = try JSONEncoder().encode([chat.workspaceID, chat.id, chat.path] as [String?])
+        return SHA256.hash(data: identity).map { String(format: "%02x", $0) }.joined()
     }
     /// Only the exact pending copy reviewed by the confirmation can be
-    /// dismissed. Journals, chats, drafts and other metadata stay untouched.
+    /// dismissed. Keep its journal discoverable for attachment retention,
+    /// without leaving an automatic-registration intent or changing its bytes.
     func dismissSideKeep(_ expected: ChatRecord) throws {
         try transaction {
             guard let current = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id) else { return }
             guard current.chat == expected else { throw StoreError.staleRevision }
+            try put(current, kind: SideKeepIntent.retainedKind, id: sideKeepRetentionID(current.chat))
             try remove(kind: "side-keep", id: expected.id)
         }
     }

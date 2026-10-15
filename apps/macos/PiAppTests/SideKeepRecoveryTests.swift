@@ -116,6 +116,8 @@ final class SideKeepRecoveryTests: XCTestCase {
         try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: chat.path!)
         try await model.registerKeptSide(id: chat.id, path: alias.path)
         XCTAssertEqual(model.record(chat.id)?.path, alias.path)
+        try await model.registerKeptSide(id: chat.id, path: chat.path)
+        XCTAssertEqual(model.record(chat.id)?.path, alias.path, "A duplicate through another spelling does not rewrite the registered path")
         let copy = try await save(bytes, id: "copy", in: model)
         do { try await model.registerKeptSide(id: copy.id, path: alias.path); XCTFail("Wrong file must not be registered") } catch {}
         XCTAssertNil(model.record(copy.id))
