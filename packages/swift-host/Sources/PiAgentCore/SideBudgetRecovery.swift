@@ -43,12 +43,14 @@ enum SideBudgetRecovery {
             // unrelated side's damaged tail must not prevent other chats
             // opening; damage in a related ledger must still fail closed.
             let reader = try JournalRecordReader(origin.file)
-            var accounting = AttemptAccounting(), remainder = SessionSpend()
+            var accounting = AttemptAccounting(), remainder = SessionSpend(), children = SubagentJournalState()
             while let line = try reader.nextLine() {
                 if line.isEmpty { continue }
                 let record = try JSON.parse(line)
                 try accounting.consumeRecord(record,sessionID:origin.id,spend:&remainder)
+                try children.consume(record,sessionID:origin.id)
             }
+            try recoverChildren(children,owner:origin.id,directory:directory,accounting:&accounting,spend:&remainder)
             for key in accounting.attempts.keys.sorted() {
                 let entry = accounting.attempts[key]!
                 if let record = record(entry,side:origin.id,parents:parents) { result.append(record) }

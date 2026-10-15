@@ -736,8 +736,25 @@ public actor NativeHostService {
     /// never acquire competing writers between discovery and persistence.
     private func mirrorFamilyCharges(_ costs: [JSON], owner id: String, directory: URL) async throws {
         guard !costs.isEmpty else { return }
+        // Loaded readers need the same accepted-origin authority as disk
+        // mirrors. Resolve each needed direct owner once, even without its
+        // runtime. Discarded sides with no surviving reader need no authority.
+        var plans: [String:[String:SubagentPlan]] = [:]
         for child in sessions.values where child.id != id {
-            for cost in costs { try await child.mirrorSharedCharge(cost) }
+            let managed = await child.isSubagent
+            for cost in costs {
+                var accepted: SubagentOrigin?
+                if managed, cost["sourceSessionId"].text == child.id {
+                    guard let delegation = cost["delegationId"].text, let owner = cost["budgetOwnerSessionId"].text else { throw AttemptAccounting.damaged() }
+                    if plans[owner] == nil {
+                        if let session = sessions[owner] { plans[owner] = await session.subagents.plans }
+                        else { plans[owner] = try SideBudgetRecovery.childPlans(owner:owner,directory:directory) }
+                    }
+                    guard let plan = plans[owner]?[delegation] else { throw AttemptAccounting.damaged() }
+                    accepted = plan.origin
+                }
+                try await child.mirrorSharedCharge(cost,acceptedOrigin:accepted)
+            }
         }
         try SideBudgetRecovery.mirrorCapturedCosts(costs,owner:id,directory:directory,loaded:Set(sessions.keys))
         for owner in sessions.values {

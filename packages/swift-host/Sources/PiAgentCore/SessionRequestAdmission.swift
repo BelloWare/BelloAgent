@@ -93,23 +93,31 @@ extension AgentSession {
         if let previous = accounting.attempts[attempt]?.contribution { return previous }
         var data = contribution(observation, owner: settlement.scope.budgetOwnerSessionID, delegation: settlement.scope.delegation?.delegationID)
         if let parents = settlement.scope.sideParents { data["sideParents"] = .array(parents.map { JSON($0) }) }
-        data["scope"] = try subagentJSON(settlement.scope)
-        try appendAccounting(kind: JournalRecordKind.cost, data: data)
+        if let update = try FamilyCharge.merge(data,into:accounting.attempts[attempt],revision:accounting.revision,scope:subagentJSON(settlement.scope)) {
+            try appendAccounting(kind:update.kind,data:update.data)
+        }
         stopFamilyAtLimit()
-        return data
+        return accounting.attempts[attempt]?.contribution
     }
     private func settleFamilyAttempt(_ settlement: AttemptSettlement, owner: AgentSession) async throws {
         defer { requestPermits.removeValue(forKey: settlement.observation.attemptID)?.finish() }
+        let origin = subagents.origin
+        let accepted = await owner.subagents.plans[settlement.scope.delegation?.delegationID ?? ""]?.origin
+        let child = origin.map { FamilyCharge.Child(accepted:accepted ?? $0,observed:$0) }
         do {
-            if let data = try await owner.settleSharedAttempt(settlement), isSubagent {
-                try appendAccounting(kind: JournalRecordKind.cost, data: data)
+            if let data = try await owner.settleSharedAttempt(settlement), isSubagent,
+               let update = try FamilyCharge.merge(data,into:accounting.attempts[settlement.observation.attemptID],revision:accounting.revision,child:child) {
+                try appendAccounting(kind:update.kind,data:update.data)
             }
         } catch {
             // Preserve terminal evidence locally if the owner's append failed.
             // Recovery validates it against the owner's admission before use.
             if isSubagent, settlement.dispatched, accounting.attempts[settlement.observation.attemptID]?.contribution == nil {
                 let data = contribution(settlement.observation, owner: settlement.scope.budgetOwnerSessionID, delegation: settlement.scope.delegation?.delegationID)
-                _ = try? appendAccounting(kind: JournalRecordKind.cost, data: data)
+                if let update = try? FamilyCharge.merge(data,into:accounting.attempts[settlement.observation.attemptID],revision:accounting.revision,
+                       scope:subagentJSON(settlement.scope),child:child) {
+                    _ = try? appendAccounting(kind:update.kind,data:update.data)
+                }
             }
             await owner.failFamilyAccounting(error)
             throw error

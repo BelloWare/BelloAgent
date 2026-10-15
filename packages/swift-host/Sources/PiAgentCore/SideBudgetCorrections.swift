@@ -48,13 +48,9 @@ extension SideBudgetRecovery {
                       previous["budgetOwnerSessionId"] == cost["budgetOwnerSessionId"], previous["delegationId"] == cost["delegationId"],
                       let logicalOwner = cost["budgetOwnerSessionId"].text,
                       logicalOwner == origin.id || family.contains(where: { $0.origin.id == logicalOwner && $0.parents.contains(origin.id) }) else { throw AttemptAccounting.damaged() }
-                if previous["reported"].int == 1 {
-                    guard previous["usd"] == cost["usd"] else { throw AttemptAccounting.damaged() }
-                } else {
-                    var value = cost; value["accountingRevision"] = JSON(accounting.revision + 1)
-                    if value["sideParents"].isNull, !previous["sideParents"].isNull { value["sideParents"] = previous["sideParents"] }
-                    try accounting.consume(kind:JournalRecordKind.costUpdate,data:value,spend:&spend)
-                    try writer.append(["type":"custom","customType":JSON(JournalRecordKind.costUpdate),"data":value],flush:true)
+                if let update = try FamilyCharge.merge(cost,into:entry,revision:accounting.revision) {
+                    try accounting.consume(kind:update.kind,data:update.data,spend:&spend)
+                    try writer.append(["type":"custom","customType":JSON(update.kind),"data":update.data],flush:true)
                 }
                 // A prior failed mirror is retried even when the side already
                 // has the correction. Each child keeps its local revision.

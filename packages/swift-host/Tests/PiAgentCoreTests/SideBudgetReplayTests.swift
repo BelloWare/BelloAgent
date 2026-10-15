@@ -54,12 +54,6 @@ final class SideBudgetReplayTests: XCTestCase {
         for adoption in ["subagentCall", "agentOperation"] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
             let file = try writeLegacySide(root,keyed:true,position:"before",adoption:adoption,seed:"none")
-            let origin = subagentFixtureOrigin(parent:"side")
-            do {
-                let child = try SessionJournal(url:root.appendingPathComponent("child.jsonl"),id:"child",cwd:root,binding:fixtureProfile().binding,create:true,managedChild:true)
-                try child.append(row(JournalRecordKind.subagentOrigin,try subagentJSON(origin)))
-                try child.append(row(JournalRecordKind.cost,charge("delegated",source:"child",usd:0.3,delegation:"delegation")))
-            }
             do { _ = try SessionJournal(url:root.appendingPathComponent("main.jsonl"),id:"main",cwd:root,binding:fixtureProfile().binding,create:true) }
             for _ in 0..<2 {
                 let main = try session("main",root:root,path:root.appendingPathComponent("main.jsonl"))
@@ -302,6 +296,10 @@ final class SideBudgetReplayTests: XCTestCase {
             var admission = delegated.removing(["usd","reported","unreported","usage","outcome"]); admission["state"] = "dispatched"
             try writer.append(row(JournalRecordKind.budgetAttempt,admission))
             try writer.append(row(JournalRecordKind.cost,delegated))
+            // Cold adoption validates the reciprocal child evidence too.
+            let child = try SessionJournal(url:root.appendingPathComponent("child.jsonl"),id:"child",cwd:root,binding:fixtureProfile().binding,create:true,managedChild:true)
+            try child.append(row(JournalRecordKind.subagentOrigin,try subagentJSON(plan.origin)))
+            try child.append(row(JournalRecordKind.cost,delegated),flush:true)
         }
         if position != "before" {
             let value = charge("after",usd:0.1)

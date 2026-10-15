@@ -42,7 +42,9 @@ extension AgentSession {
     func correctAccounting(_ data: JSON) throws {
         guard let id = data["attemptId"].text, let entry = accounting.attempts[id], entry.admission != nil else { throw AttemptAccounting.damaged() }
         do {
-            _ = try appendAccounting(kind: JournalRecordKind.costUpdate, data: data)
+            if let update = try FamilyCharge.merge(data,into:entry,revision:accounting.revision) {
+                try appendAccounting(kind:update.kind,data:update.data)
+            }
             stopFamilyAtLimit()
         } catch { failFamilyAccounting(error); throw error }
     }

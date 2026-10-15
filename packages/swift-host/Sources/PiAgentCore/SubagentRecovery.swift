@@ -45,7 +45,7 @@ enum SubagentRecovery {
                     if let kind = record["customType"].text { try childAccounting.consume(kind: kind, data: record["data"], spend: &childSpend) }
                 }
                 childBytes = reader.size
-                guard child.origin == plan.origin || child.origin == nil && markerOnly else { throw damaged() }
+                guard child.origin?.matchesAccepted(plan.origin) == true || child.origin == nil && markerOnly else { throw damaged() }
             }
             func writeChild(_ kind: String, _ data: JSON) throws {
                 if writer == nil {
@@ -65,23 +65,20 @@ enum SubagentRecovery {
             // never import another chat's spend or overwrite a known revision.
             for (attempt, entry) in childAccounting.attempts {
                 guard let cost = entry.contribution else { continue }
-                guard let owned = accounting.attempts[attempt], let admission = owned.admission,
-                      admission["sourceSessionId"].text == childID, admission["budgetOwnerSessionId"].text == owner,
-                      admission["delegationId"].text == id, admission["state"].text == "dispatched",
-                      cost["sourceSessionId"] == admission["sourceSessionId"], cost["budgetOwnerSessionId"] == admission["budgetOwnerSessionId"],
-                      cost["delegationId"] == admission["delegationId"] else { throw damaged() }
-                if owned.contribution == nil || owned.contribution?["unreported"].int == 1 && cost["reported"].int == 1 {
-                    var value = cost; value["accountingRevision"] = JSON(accounting.revision + 1)
-                    try commit(owned.contribution == nil ? JournalRecordKind.cost : JournalRecordKind.costUpdate, value)
+                guard let owned = accounting.attempts[attempt], owned.admission?["state"].text == "dispatched" else { throw damaged() }
+                if let update = try FamilyCharge.merge(cost,into:owned,revision:accounting.revision,
+                    child:.init(accepted:plan.origin,observed:child.origin),failure:damaged()) {
+                    try commit(update.kind,update.data)
                 }
             }
             let settledAttempts = accounting.attempts.values.filter { $0.admission?["delegationId"].text == id }
             if exists {
                 for entry in settledAttempts {
                     guard let cost = entry.contribution, let attempt = cost["attemptId"].text else { continue }
-                    let prior = childAccounting.attempts[attempt]?.contribution
-                    if prior == nil || prior?["unreported"].int == 1 && cost["reported"].int == 1 {
-                        try writeChild(prior == nil ? JournalRecordKind.cost : JournalRecordKind.costUpdate, cost)
+                    if let update = try FamilyCharge.merge(cost,into:childAccounting.attempts[attempt],revision:childAccounting.revision,
+                        admission:entry.admission,child:.init(accepted:plan.origin,observed:child.origin),failure:damaged()) {
+                        try writeChild(update.kind,update.data)
+                        try childAccounting.consume(kind:update.kind,data:update.data,spend:&childSpend)
                     }
                 }
             }

@@ -1,10 +1,7 @@
 import Foundation
 
 extension SideBudgetRecovery {
-    struct AccountingRecord {
-        var kind: String
-        var data: JSON
-    }
+    typealias AccountingRecord = FamilyCharge.Update
 
     /// Preserve unresolved admissions, including proof of non-dispatch. A
     /// synthetic terminal cost would prevent a later admission transition.
@@ -20,6 +17,9 @@ extension SideBudgetRecovery {
     /// Derived ancestry never changes a physical request's identity/scope.
     static func adoption(_ incoming: AccountingRecord, accounting: AttemptAccounting) throws -> AccountingRecord? {
         guard let attempt = incoming.data["attemptId"].text else { throw AttemptAccounting.damaged() }
+        if incoming.kind != JournalRecordKind.budgetAttempt {
+            return try FamilyCharge.merge(incoming.data,into:accounting.attempts[attempt],revision:accounting.revision)
+        }
         guard let entry = accounting.attempts[attempt], let previous = entry.contribution ?? entry.admission else { return incoming }
         for key in ["sourceSessionId","budgetOwnerSessionId","delegationId"] {
             guard previous[key] == incoming.data[key] else { throw AttemptAccounting.damaged() }
@@ -31,9 +31,6 @@ extension SideBudgetRecovery {
             let state = record.data["state"]
             guard admission["state"] != state, admission["state"].text != "not_dispatched", state.text != "admitted" else { return nil }
             record.data = admission; record.data["state"] = state
-        } else if let prior = entry.contribution {
-            guard prior["reported"].int != 1, record.data["reported"].int == 1 else { return nil }
-            record.kind = JournalRecordKind.costUpdate
         }
         return record
     }

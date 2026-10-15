@@ -40,44 +40,23 @@ extension AgentSession {
     }
     func sharedCharges(_ attempts: [String]) -> [JSON] { attempts.compactMap { accounting.attempts[$0]?.contribution } }
     func committedSideCharges() -> [JSON] { accounting.sideCharges(owner:id) }
-    @discardableResult func mirrorSharedCharge(_ cost: JSON) throws -> Bool {
+    @discardableResult func mirrorSharedCharge(_ cost: JSON, acceptedOrigin: SubagentOrigin? = nil) throws -> Bool {
         guard let attempt = cost["attemptId"].text, cost["reported"].int == 1 else { return false }
-        if accounting.attempts[attempt] == nil {
-            // The owner can have dispatched/settled while the child's first
-            // mirror was lost. A loaded reader owns its writer, so repair it
-            // here instead of skipping both the runtime and disk mirror.
-            guard let origin = subagents.origin, cost["sourceSessionId"].text == id else { return false }
-            guard origin.link.childSessionID == id,
-                  origin.link.budgetOwnerSessionID == cost["budgetOwnerSessionId"].text,
-                  origin.link.delegationID == cost["delegationId"].text else { throw AttemptAccounting.damaged() }
-            if !cost["scope"].isNull {
-                let scope = try JSONDecoder().decode(RequestScope.self,from:cost["scope"].data())
-                guard scope.valid, scope.sourceSessionID == id, scope.delegation == origin.link,
-                      scope.budgetOwnerSessionID == origin.link.budgetOwnerSessionID else { throw AttemptAccounting.damaged() }
-            }
-            var value = cost; value["accountingRevision"] = JSON(accounting.revision + 1)
-            try appendAccounting(kind:JournalRecordKind.cost,data:value)
-            stopFamilyAtLimit()
-            return true
-        }
-        guard let entry = accounting.attempts[attempt],
-              let previous = entry.contribution ?? entry.admission, previous["reported"].int != 1, cost["reported"].int == 1 else { return false }
-        guard previous["sourceSessionId"] == cost["sourceSessionId"], previous["budgetOwnerSessionId"] == cost["budgetOwnerSessionId"],
-              previous["delegationId"] == cost["delegationId"] else { throw AttemptAccounting.damaged() }
-        var value = cost; value["accountingRevision"] = JSON(max(accounting.revision, entry.revision) + 1)
-        if value["sideParents"].isNull, !previous["sideParents"].isNull { value["sideParents"] = previous["sideParents"] }
-        if entry.admission != nil { try correctAccounting(value); return true }
-        // A managed reader or a migrated side charge has a contribution-only
-        // mirror, not admission authority. Validate that relationship separately.
+        let entry = accounting.attempts[attempt]
+        let child: FamilyCharge.Child?
         if let origin = subagents.origin {
-            guard origin.link.childSessionID == cost["sourceSessionId"].text,
-                  origin.link.budgetOwnerSessionID == cost["budgetOwnerSessionId"].text,
-                  origin.link.delegationID == cost["delegationId"].text else { throw AttemptAccounting.damaged() }
+            if entry == nil, cost["sourceSessionId"].text != id { return false }
+            child = .init(accepted:acceptedOrigin ?? origin,observed:origin)
         } else {
-            guard let owner = cost["budgetOwnerSessionId"].text,
-                  sideBudgetMembers[owner]?.contains(id) == true else { throw AttemptAccounting.damaged() }
+            guard let entry else { return false }
+            if entry.admission == nil {
+                guard let owner = cost["budgetOwnerSessionId"].text,
+                      owner == id || sideBudgetMembers[owner]?.contains(id) == true else { throw AttemptAccounting.damaged() }
+            }
+            child = nil
         }
-        try appendAccounting(kind:JournalRecordKind.costUpdate,data:value)
+        guard let update = try FamilyCharge.merge(cost,into:entry,revision:accounting.revision,child:child) else { return false }
+        try appendAccounting(kind:update.kind,data:update.data)
         stopFamilyAtLimit()
         return true
     }

@@ -39,10 +39,10 @@ extension AgentSession {
                 // Missing/conflicting pricing is still unknown, never free.
                 guard cost["status"].text == "reported", let usd = cost["usd"].double,
                       usd.isFinite, usd >= 0, usd <= 1_000_000_000_000 else { continue }
-                let contribution: JSON
+                let candidate: JSON
                 if let prior = entry.contribution, prior["reported"].int == 1 {
                     guard prior["usd"].double == usd else { throw AttemptAccounting.damaged() }
-                    contribution = prior
+                    candidate = prior
                 } else {
                     var observation = RequestObservation(sessionID: scope.sourceSessionID, turnID: scope.turnID, attemptID: attempt, purpose: scope.purpose, fingerprint: "", profile: profile)
                     observation.monitoring = metadata
@@ -52,11 +52,15 @@ extension AgentSession {
                     }
                     var value = self.contribution(observation, owner: scope.budgetOwnerSessionID, delegation: scope.delegation?.delegationID)
                     if let parents = scope.sideParents { value["sideParents"] = .array(parents.map { JSON($0) }); value["scope"] = try subagentJSON(scope) }
-                    contribution = value
-                    try correctAccounting(contribution)
+                    candidate = value
                 }
-                if mirrorChildren, let link = scope.delegation, let plan = subagents.plans[link.delegationID] {
-                    try SubagentRecovery.mirrorCapturedCost(contribution, plan: plan, directory: directory)
+                if let update = try FamilyCharge.merge(candidate,into:entry,revision:accounting.revision) {
+                    try appendAccounting(kind:update.kind,data:update.data)
+                    stopFamilyAtLimit()
+                }
+                if mirrorChildren, let link = scope.delegation, let plan = subagents.plans[link.delegationID],
+                   let contribution = accounting.attempts[attempt]?.contribution {
+                    try SubagentRecovery.mirrorCapturedCost(contribution,plan:plan,directory:directory)
                 }
             }
             return costSnapshot
@@ -81,16 +85,10 @@ extension SubagentRecovery {
             try child.consume(record, sessionID: id)
             if let kind = record["customType"].text { try accounting.consume(kind: kind, data: record["data"], spend: &spend) }
         }
-        guard child.origin == plan.origin, let attempt = cost["attemptId"].text else { throw damaged() }
-        let prior = accounting.attempts[attempt]?.contribution
-        // Local revisions and derived side ancestry can differ after legacy
-        // adoption or parent deletion. Neither changes the physical charge.
-        // Keep the immutable request scope (including its original ancestry),
-        // source/owner/delegation identities, amounts and usage exact.
-        let derived: Set<String> = ["accountingRevision", "sideParents"]
-        if let prior, prior.removing(derived) == cost.removing(derived) { return }
-        guard prior == nil || prior?["reported"].int != 1 else { throw damaged() }
-        var value = cost; value["accountingRevision"] = JSON(accounting.revision + 1)
-        try writer.append(["type":"custom", "customType":JSON(prior == nil ? JournalRecordKind.cost : JournalRecordKind.costUpdate), "data":value], flush: true)
+        guard let attempt = cost["attemptId"].text else { throw damaged() }
+        if let update = try FamilyCharge.merge(cost,into:accounting.attempts[attempt],revision:accounting.revision,
+            child:.init(accepted:plan.origin,observed:child.origin),failure:damaged()) {
+            try writer.append(["type":"custom","customType":JSON(update.kind),"data":update.data],flush:true)
+        }
     }
 }
