@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Sub-agent review round 5 (`dev/a128-sub-display`): bounded code previews copy complete fences through hover and VoiceOver actions; superseded Show in Chat opens cannot move a child reader; popped-out Find/Next/Previous and Stop shortcuts ignore Caps Lock. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-5-code-copy-and-reader-navigation).
+
 - [x] Sub-agent review round 4 (`dev/a128-sub-display`): Find queries search rendered agent prose across saved history and live/unsaved rows, open matching cards and retain source Copy/paging. Saved-side actions use the visible main family picker. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-4-rendered-find-and-side-menu-routing).
 
 - [x] Sub-agent review round 3 and rich text (`dev/a128-sub-display`): Delete Chat follows focused conversation ownership and stays disabled for managed readers; family menus use a visible picker, and open pickers remeasure added rows. Task, Result, typed deliveries and reports use the assistant Markdown renderer, with bounded previews, source-preserving Copy, rendered Find and batched large-result expansion. Picker headings use small uppercase labels and New Side is an accent + action. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-3-focused-commands-and-markdown).

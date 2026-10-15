@@ -113,8 +113,7 @@ extension WorkspaceModel {
             return false
         }
         if item.isSubagent {
-            await openSubagentTab(sessionID)
-            guard subagentTabIsShown(sessionID) else { return false }
+            guard await openSubagentTab(sessionID) != nil, subagentTabIsShown(sessionID) else { return false }
             guard let messageID else { return true }
             return await revealInTranscript(sessionID: sessionID, messageID: messageID)
         }

@@ -93,7 +93,7 @@ import AppKit
               model.subagentTabIsShown(key), model.subagentReaderCommandsEnabled(key),
               let responder = window.firstResponder as? NSView, responder === pane || responder.isDescendant(of: pane),
               let display = model.displays[key] else { return false }
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.capsLock)
         let text = event.charactersIgnoringModifiers?.lowercased()
         let find: TranscriptFindCommand.Kind?
         switch (text, flags) {

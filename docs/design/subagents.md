@@ -60,12 +60,15 @@ cannot adopt a former reader's page. Native responder transitions in both window
 types update conversation command focus by walking only the responder's ancestors.
 Visibility callbacks run after host state changes and respect the no-side fallback;
 deferred attachment never undoes Back or a later focus choice.
+Show in Chat requires a current successful child opening before revealing a message;
+Back can supersede it even while leaving that reader visible beside the parent.
 
 Embedded Back to Parent focuses the existing parent without changing its draft,
 version or reading position. Source links still reveal their issuing message/version.
 Popped-out children have the same picker, highlighting the current child; only the
 active tab sets the native window title. In-chat Find/Next/Previous, Inspector Find
-and Stop shortcuts route to the hosted child, excluding sheets and other popups.
+and Stop shortcuts route to the hosted child, ignoring Caps Lock and excluding
+sheets and other popups.
 A child window keeps those commands and Back when the main window shows Reports;
 an embedded reader remains covered with its main chat.
 Delete Chat resolves the focused conversation and is disabled for managed readers;
@@ -90,6 +93,9 @@ agent prose, including unloaded rows, then opens matching cards/previews. Curren
 streaming and unsaved display rows are searched off the main actor too; an
 abandoned journal record cannot be reintroduced as unsaved text. The retained-source
 search, Copy Conversation and helper search contract stay unchanged.
+Code-copy actions use the complete cached block even when its drawn preview ends
+partway through the fence. Hover and VoiceOver targets refresh together on expansion,
+folding and source changes, without laying out the undrawn code.
 
 Full identities retain **Sub-agent N · description**. Compact family/search/tab
 labels use **#N · description**; tabs truncate at the tail and native titles,

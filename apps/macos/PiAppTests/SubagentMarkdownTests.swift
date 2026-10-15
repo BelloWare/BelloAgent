@@ -187,6 +187,68 @@ final class SubagentMarkdownTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), source)
         more.onPress?(); XCTAssertEqual(row.height(width: 620), before)
     }
+    @MainActor func testBoundedCodePreviewCopiesTheWholeFenceThroughBothNativeActions() async throws {
+        let code = String(repeating: "let value = 123 // Retain every line\n", count: 80) + "finish()"
+        func source(_ code: String) -> String { "```swift\n" + code + "\n```" }
+        let row = try Self.card(task: "Task", result: source(code))
+        let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: row).last)
+        let surface = body.markdown, text = surface.textView
+        let window = NSWindow(contentRect: row.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = row
+        defer { window.contentView = nil; window.close() }
+        row.layoutSubtreeIfNeeded()
+        XCTAssertFalse(body.isComplete); XCTAssertLessThan(text.string.count, code.count)
+        let manager = try XCTUnwrap(text.layoutManager), container = try XCTUnwrap(text.textContainer)
+        let rect = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: NSRange(location: 0, length: 1), actualCharacterRange: nil), in: container)
+        let point = NSPoint(x: rect.midX, y: rect.midY + text.topInset)
+        let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: surface.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+        surface.mouseMoved(with: event)
+        let toolbar = try XCTUnwrap(surface.subviews.compactMap { $0 as? MarkdownCodeToolbarView }.first)
+        func checkCopies(_ expected: String) throws {
+            NSPasteboard.general.clearContents()
+            XCTAssertTrue(toolbar.copy.accessibilityPerformPress())
+            XCTAssertEqual(NSPasteboard.general.string(forType: .string), expected, "The hover button copies the complete fence")
+            NSPasteboard.general.clearContents()
+            let action = try XCTUnwrap(text.accessibilityCustomActions()?.first { $0.name == "Copy code" })
+            XCTAssertTrue(action.handler?() ?? false)
+            XCTAssertEqual(NSPasteboard.general.string(forType: .string), expected, "VoiceOver copies the same complete fence")
+        }
+        try checkCopies(code)
+        body.setExpanded(true)
+        try await eventually("The entire code fence is drawn") { body.isComplete }
+        try checkCopies(code)
+        body.setExpanded(false); XCTAssertFalse(body.isComplete)
+        try checkCopies(code)
+        let prefix = text.string, changed = code + "\nnewEnding()"
+        body.update(source(changed), environment: .init())
+        XCTAssertEqual(text.string, prefix, "Only the hidden suffix changed; the existing toolbar must still update")
+        try checkCopies(changed)
+        body.copy.onPress?(); XCTAssertEqual(NSPasteboard.general.string(forType: .string), source(changed))
+    }
+    @MainActor func testNestedCodePreviewCopyTargetsKeepTheirOrderWhileExpanding() async throws {
+        let long = String(repeating: "  let nested = 42\n", count: 90) + "  done()"
+        let source = "```\n```\n\n> ```swift\n> first()\n> ```\n\n- Nested fence\n\n  ```swift\n" + long + "\n  ```\n\n```swift\nlast()\n```"
+        let row = try Self.card(task: "Task", result: source)
+        let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: row).last)
+        // Empty fences have no parsed block, so they must not shift the targets.
+        let expected = ["first()", String(repeating: "let nested = 42\n", count: 90) + "done()", "last()"]
+        func checkCopies(_ codes: ArraySlice<String>) throws {
+            let actions = (body.markdown.textView.accessibilityCustomActions() ?? []).filter { $0.name.hasPrefix("Copy code") }
+            XCTAssertEqual(actions.count, codes.count)
+            for (action, code) in zip(actions, codes) {
+                NSPasteboard.general.clearContents(); XCTAssertTrue(action.handler?() ?? false)
+                XCTAssertEqual(NSPasteboard.general.string(forType: .string), code)
+            }
+        }
+        XCTAssertFalse(body.isComplete)
+        try checkCopies(expected.prefix(2))
+        body.setExpanded(true)
+        try await eventually("All nested fences are drawn") { body.isComplete }
+        try checkCopies(expected[...])
+        body.setExpanded(false)
+        try checkCopies(expected.prefix(2))
+    }
     @MainActor func testSelectionCopiesTheSelectedMarkdownSpelling() throws {
         let source = "One **bold** word, `code`, and [reference](https://example.test). Same **bold** word."
         let row = try Self.card(task: "Task", result: source)

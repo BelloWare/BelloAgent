@@ -104,6 +104,27 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         await gate.release(); _ = await opening.value
         XCTAssertEqual(model.focusedSessionID, "chat-parent", "Finishing a read is not a new focus request")
     }
+    @MainActor func testBackSupersedesShowInChatWithoutMovingTheStillVisibleReader() async throws {
+        let (model, gate) = try fixture()
+        await gate.set("Finished loading", held: true)
+        let display = try XCTUnwrap(model.displays["chat-child"])
+        display.historyState = .dormant
+        let revealing = Task { await model.revealMessage(sessionID: display.id, messageID: "saved-reply") }
+        for _ in 0..<500 { if await gate.reads > 0 { break }; try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertNotNil(model.subagentTab(display.id))
+        await model.backToSubagentParent(display.id)
+        XCTAssertTrue(model.subagentTabIsShown(display.id), "Back preserves the embedded reader's visibility")
+        let serial = model.revealSerial
+        await gate.release()
+        let revealed = await revealing.value
+        XCTAssertFalse(revealed, "A superseded opening cannot reveal its old message")
+        XCTAssertNil(display.reveal)
+        XCTAssertEqual(model.revealSerial, serial)
+        XCTAssertEqual(model.focusedSessionID, "chat-parent")
+        let current = await model.revealMessage(sessionID: display.id, messageID: "saved-reply")
+        XCTAssertTrue(current, "An explicit new Show in Chat still reveals the message")
+        XCTAssertEqual(display.reveal?.messageID, "saved-reply")
+    }
     @MainActor func testAnotherTabChosenDuringLoadDoesNotFocusTheHiddenChild() async throws {
         let (model, gate) = try fixture()
         await gate.set("Finished loading", held: true)
@@ -185,9 +206,19 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(TabHost.tabKey(try key("g"), in: window))
         XCTAssertEqual(display.findCommand?.kind, .next)
         XCTAssertTrue(TabHost.tabKey(try key("."), in: window))
+        for (text, flags, expected) in [("F", NSEvent.ModifierFlags.command, TranscriptFindCommand.Kind.show),
+                                        ("G", [.command, .shift], .previous), ("G", .command, .next)] {
+            XCTAssertTrue(window.makeFirstResponder(pane))
+            let serial = model.revealSerial
+            XCTAssertTrue(TabHost.tabKey(try key(text, flags.union(.capsLock)), in: window), "Caps Lock does not disable \(text)")
+            XCTAssertEqual(display.findCommand?.kind, expected)
+            XCTAssertGreaterThan(model.revealSerial, serial, "The child receives a fresh Find command")
+        }
+        XCTAssertTrue(TabHost.tabKey(try key(".", [.command, .capsLock]), in: window))
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
         sheet.isReleasedWhenClosed = false; window.beginSheet(sheet, completionHandler: nil)
         XCTAssertFalse(TabHost.tabKey(try key("f"), in: window))
+        XCTAssertFalse(TabHost.tabKey(try key("F", [.command, .capsLock]), in: window))
         window.endSheet(sheet); sheet.orderOut(nil); sheet.close()
         model.tabs.moveToPane(tab)
         XCTAssertFalse(model.subagentReaderCommandsEnabled(tab.key), "The Reports page still covers a reader embedded in the workspace")

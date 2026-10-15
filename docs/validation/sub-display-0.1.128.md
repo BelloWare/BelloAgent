@@ -834,3 +834,96 @@ fixtures and native test hosts were isolated; no installed app, real preferences
 Keychain, paid provider or `xctrace --launch` was used. Remaining work is the lead's
 independent review and integration. This round does not claim to resolve the
 earlier, non-reproduced full-lane retention flake.
+
+## Lead review round 5: code copy and reader navigation
+
+2026-10-15, `dev/a128-sub-display`, following `a5c02c7a`. All three review
+findings are fixed. This round ran affected classes only, as requested. No layout
+changed, so no new gallery or full native lane ran; the earlier gallery paths
+remain the visual record.
+
+### Root causes and changes
+
+- The 1,200-character preview shortened the parsed code before the native builder
+  created its copy mark. Both the hover toolbar and VoiceOver therefore copied
+  that prefix. The cached agent reading now retains complete code targets in
+  parsed block order, including nested quotes/lists. Each preview adoption binds
+  those targets to its native marks and refreshes an existing hover toolbar.
+  This also handles a changed hidden suffix when the visible prefix is identical.
+  TextKit and syntax highlighting still receive only the bounded preview; full
+  code targets are collected during reading preparation, never layout. Ordinary
+  assistant rendering and source/selection Copy retain their existing contracts.
+- Show in Chat ignored a nil `openSubagentTab` completion and checked only whether
+  the child was visible. Back intentionally leaves an embedded reader visible,
+  so an obsolete opening could still reveal its message. Reveal now requires a
+  successful current opening before touching the child's transcript. The held-load
+  regression verifies the return value, reveal state, reveal serial and parent
+  focus, then verifies a fresh explicit Show in Chat still works.
+- Exact shortcut comparisons retained Caps Lock. The hosted reader now removes
+  that flag before matching, like the native transcript. Actual popped-out
+  `TabHost.tabKey` tests cover uppercase Find, Next, Previous and Stop with Caps
+  Lock, while retaining responder/window ownership and sheet exclusion.
+
+### Failing-first and mutation evidence
+
+All logs are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`.
+
+| Evidence | Result |
+| --- | --- |
+| `review5-red-SubagentMarkdownTests.log` | 16 tests; copy regressions reproduced; the nested fixture initially also expected a copy action for an empty fence, which the existing parser omits |
+| `review5-red-corrected-SubagentMarkdownTests.log` | Fixture corrected before production edits; 16 tests, eight failures in the two new copy tests |
+| `review5-red-SubagentReaderTests.log` | 22 tests, 12 failed assertions in the superseded reveal and Caps Lock tests |
+| `review5-green-SubagentMarkdownTests.log` | All 16 passed with the fixes |
+| `review5-green-SubagentReaderTests.log` | All 22 passed with the fixes |
+| `review5-mutation-SubagentMarkdownTests.log` | Removing the production full-code binding reproduced eight failures in both copy regressions |
+| `review5-mutation-SubagentReaderTests.log` | Reverting the production opening-result guard and Caps Lock normalization reproduced the 12 navigation/shortcut failures |
+
+The three production mutations were applied together, then the two serial classes
+ran separately. Each targeted test failed as expected; both runs returned exit 65.
+The harness verified the named regression failures and restored all three files
+in `finally`. `review5-mutations-status.json` records that evidence. Final runs
+below used the restored fixes. The copy regressions press the real hover Copy
+button and invoke its VoiceOver action; they cover folding, expansion, retained
+toolbar refresh, nested fence ordering and unchanged full Markdown Copy.
+
+### Final affected validation
+
+**84 passed, zero failed, three opt-in diagnostics skipped (87 tests).**
+
+| Class | Passed | Skipped |
+| --- | ---: | ---: |
+| `SubagentMarkdownTests` | 16 | 0 |
+| `SubagentReaderTests` | 22 | 0 |
+| `SubagentNavigationTests` | 7 | 0 |
+| `TranscriptNativeChromeBehaviourTests` | 8 | 0 |
+| `SubagentPerformanceTests` | 2 | 0 |
+| `MarkdownTextSurfaceTests` | 6 | 3 |
+| `NativeCodeTextTests` | 11 | 0 |
+| `NestedFenceIdentityTests` | 3 | 0 |
+| `ReportMessageNavigationTests` | 9 | 0 |
+
+The first five classes ran individually, matching their serial lane assignments,
+with logs `review5-final-<Class>.log`. The remaining four ran in one affected
+parallel invocation (four workers), `review5-affected-parallel.log`. The skipped
+methods are the existing opt-in line-pitch, token-cost and snapshot diagnostics.
+Commands used `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`
+and `TEST_RUNNER_PI_APP_SCRATCH_ROOT` within that root, with
+`scripts/test-macos.sh -only-testing:PiAppTests/<Class>`. Lane assignments were
+checked with `python3 scripts/test-lanes.py list`. `review5-final-status.json`
+records exit codes; `review5-affected-summary.json` preserves the final automatic
+result bundle's 29-pass/3-skip summary. No named `.xcresult` was created.
+
+The existing 55,812-byte result in a 400-message chat passed its performance
+budgets: cold maximum draw **25.50 ms**, native Markdown batch **4.56 ms**, whole
+window heartbeat **56.73 ms**; expanded maximum draw **22.77 ms**, native batch
+**13.88 ms**, heartbeat **79.69 ms**. Progress updates caused zero sidebar
+recomputations. These are the existing prose rendering/expansion measurements;
+the code-copy tests separately assert that the folded code display remains bounded.
+
+No helper package, model-facing text, journal, cost/webhook accounting, permissions,
+capture, tool, vault or side-draft persistence changed. Tests used generated
+fixtures, isolated native test hosts and the test clipboard. No installed app,
+real preferences, Keychain, paid provider or `xctrace --launch` was used. Remaining
+work is the lead's independent review and integration; this round makes no new
+claim about earlier full-lane flakes.

@@ -884,6 +884,21 @@ import AppKit
 
     // MARK: Controls
 
+    /// A bounded preview keeps the original blocks' order, but may draw only
+    /// a prefix of a fence. Bind its copy actions to the complete parsed code,
+    /// without putting that code into TextKit or the syntax highlighter. Do
+    /// this after each update, even when only an undrawn suffix changed.
+    func bindCodeCopyTargets(_ codes: [String]) {
+        guard !codes.isEmpty, let storage = textView.textStorage else { return }
+        var index = 0
+        var previous: MarkdownCodeMark?
+        storage.enumerateAttribute(.piCodeBlock, in: NSRange(location: 0, length: storage.length)) { value, _, _ in
+            guard let mark = value as? MarkdownCodeMark, mark !== previous, codes.indices.contains(index) else { return }
+            mark.code = codes[index]; previous = mark; index += 1
+        }
+        refreshHover()
+    }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverArea { removeTrackingArea(hoverArea) }

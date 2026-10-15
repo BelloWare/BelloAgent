@@ -80,6 +80,7 @@ import AppKit
         guard let environment else { return }
         markdown.update(blocks: reading.prefix(visibleCharacters), style: .prose, capsWidth: true, streaming: false,
                         headings: reading.headings, environment: environment, sourceText: source)
+        markdown.bindCodeCopyTargets(reading.codeCopyTargets)
         prepared = true; markdown.isHidden = false; needsLayout = true
     }
     func contains(_ query: String, flexible: Bool) -> Bool {
@@ -141,13 +142,26 @@ import AppKit
 private struct AgentMarkdownReading: Sendable {
     var blocks: [MarkdownBlock]
     var headings: [MarkdownCopyTarget]
+    var codeCopyTargets: [String]
     var searchText: String
     var characters: Int
     static func make(_ source: String) -> Self {
         let blocks = TranscriptMarkdown.blocks(source)
         let text = TranscriptMarkdown.plainText(blocks)
+        var codes: [String] = []
+        func collectCodes(_ blocks: [MarkdownBlock]) {
+            for block in blocks {
+                switch block {
+                case .code(_, let code): codes.append(code)
+                case .quote(let nested): collectCodes(nested)
+                case .list(_, _, let items): for item in items { collectCodes(item) }
+                default: break
+                }
+            }
+        }
+        collectCodes(blocks)
         return .init(blocks: blocks, headings: TranscriptCopy.targets(in: source).filter { if case .section = $0.kind { return true }; return false },
-                     searchText: text, characters: max(1, text.utf16.count))
+                     codeCopyTargets: codes, searchText: text, characters: max(1, text.utf16.count))
     }
     func prefix(_ count: Int) -> [MarkdownBlock] {
         guard count < characters else { return blocks }
