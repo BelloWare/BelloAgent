@@ -119,17 +119,7 @@ struct JournalReplayConsumer {
         }
         let item=try JSON.parse(line)
         try r.subagents.consume(item, sessionID: id)
-        if item["customType"].text == JournalRecordKind.subagentCall,
-           item["data"]["origin"]["link"]["call"]["parentSessionID"].text == id,
-           !item["data"]["adoptionSeed"].isNull {
-            try r.accounting.consume(kind: JournalRecordKind.cost, data: item["data"]["adoptionSeed"], spend: &r.spend)
-            r.spendTracked = true
-        }
-        if item["customType"].text == JournalRecordKind.agentOperation,
-           item["ownerID"].text == id, !item["data"]["plan"]["adoptionSeed"].isNull {
-            try r.accounting.consume(kind:JournalRecordKind.cost,data:item["data"]["plan"]["adoptionSeed"],spend:&r.spend)
-            r.spendTracked = true
-        }
+        if try r.accounting.consumeRecord(item,sessionID:id,spend:&r.spend) { r.spendTracked = true; return }
         if item["customType"].text == JournalRecordKind.rebind {
             // Named already when the checkpoint resumed from lists it.
             if !rebinds.contains(where: { $0.offset == lineStart }) {
@@ -139,9 +129,6 @@ struct JournalReplayConsumer {
             // resumes there and checks it rather than reading everything.
             r.captured?.rebinds = rebinds
             return
-        }
-        if let kind = item["customType"].text, [JournalRecordKind.budgetAttempt, JournalRecordKind.cost, JournalRecordKind.costUpdate].contains(kind) {
-            try r.accounting.consume(kind: kind, data: item["data"], spend: &r.spend); r.spendTracked = true; return
         }
         if item["type"].text == "message" {
             let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); r.history.append(message); if !["execution","requestLedger"].contains(message.kind ?? "") { r.context.append(message) }; r.visible.append(message)

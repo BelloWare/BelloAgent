@@ -18,6 +18,27 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
     var usageReported: [String: Int] = [:]
     var usageUnknownRequests = 0
 
+    /// Full replay and numeric-only side recovery must interpret the same
+    /// ledger. The first delegation can replace older keyed charges with one
+    /// adoption seed; copied foreign plans never reset this owner's spending.
+    /// Returns whether the row carries accounting, including repeated evidence.
+    @discardableResult mutating func consumeRecord(_ record: JSON, sessionID: String, spend: inout SessionSpend) throws -> Bool {
+        guard let kind = record["customType"].text else { return false }
+        let seed: JSON
+        switch kind {
+        case JournalRecordKind.subagentCall where record["data"]["origin"]["link"]["call"]["parentSessionID"].text == sessionID:
+            seed = record["data"]["adoptionSeed"]
+        case JournalRecordKind.agentOperation where record["ownerID"].text == sessionID:
+            seed = record["data"]["plan"]["adoptionSeed"]
+        case JournalRecordKind.budgetAttempt, JournalRecordKind.cost, JournalRecordKind.costUpdate:
+            try consume(kind:kind,data:record["data"],spend:&spend); return true
+        default: return false
+        }
+        guard !seed.isNull else { return false }
+        try consume(kind:JournalRecordKind.cost,data:seed,spend:&spend)
+        return true
+    }
+
     /// Returns false for repeated evidence. Unknown admitted work counts as
     /// unknown until a terminal cost or proof of non-dispatch replaces it.
     @discardableResult mutating func consume(kind: String, data: JSON, spend: inout SessionSpend) throws -> Bool {

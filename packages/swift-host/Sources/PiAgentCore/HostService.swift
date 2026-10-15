@@ -329,7 +329,7 @@ public actor NativeHostService {
         let workspace=OpenWorkspace(cwd:cwd,directory:directory,resources:resources,mcp:mcp,nativeTools:nativeTools)
         if let result=try await workspaceCommand(method,sessionID:sessionID,params:params,in:workspace) { return result }
         let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
-        if let result=try await namedSessionCommand(method,id:id,params:params) { return result }
+        if let result=try await namedSessionCommand(method,id:id,params:params,directory:directory) { return result }
         guard let session=sessions[id] else { throw AgentError(AgentErrorCode.sessionMissing, "Session runtime is not loaded") }
         if let result=try await sessionCommand(method,id:id,session:session,params:params,in:workspace) { return result }
         guard !quiesced, !closing else { throw AgentError("closing", "Host is closing or quiesced") }
@@ -526,7 +526,7 @@ public actor NativeHostService {
         }
     }
     /// Commands on a chat by its id, whether it is open here or not.
-    private func namedSessionCommand(_ method:String, id:String, params:JSON) async throws -> JSON? {
+    private func namedSessionCommand(_ method:String, id:String, params:JSON, directory:URL) async throws -> JSON? {
         if method.hasPrefix("debug.") { return try await traces.command(method,session:id,params:params) }
         switch method {
         case "session.forget":
@@ -547,6 +547,10 @@ public actor NativeHostService {
                 for (value, _) in family {
                     guard await value.canUnload else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
                 }
+                let costs: [JSON]
+                if let owner = sessions[id] { costs = await owner.committedSideCharges() }
+                else { costs = try SideBudgetRecovery.committedSideCharges(owner:id,directory:directory) }
+                try await mirrorFamilyCharges(costs,owner:id,directory:directory)
                 for (value, _) in family.sorted(by: { $0.1 > $1.1 }) {
                     guard await value.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
                     sessions.removeValue(forKey:value.id); profiles.removeValue(forKey:value.id); subagentReaders.remove(value.id)
@@ -571,16 +575,7 @@ public actor NativeHostService {
                 let result = try await session.reconcileCapturedAccounting(params["evidence"].list, mirrorChildren:false)
                 let ids = params["evidence"].list.compactMap { $0["attemptId"].text }
                 let costs = await session.sharedCharges(ids)
-                for child in sessions.values where child.id != id {
-                    for cost in costs { try await child.mirrorSharedCharge(cost) }
-                }
-                for owner in sessions.values {
-                    for cost in costs where cost["reported"].int == 1 {
-                        guard let delegation = cost["delegationId"].text,
-                              let plan = await owner.subagents.plans[delegation], sessions[plan.origin.link.childSessionID] == nil else { continue }
-                        try SubagentRecovery.mirrorCapturedCost(cost,plan:plan,directory:owner.directory)
-                    }
-                }
+                try await mirrorFamilyCharges(costs,owner:id,directory:session.directory)
                 return result
             }
         case "subagent.list":
@@ -734,6 +729,23 @@ public actor NativeHostService {
         default: return nil
         }
     }
+    /// Call only while holding the runtime gate, so disk and live mirrors can
+    /// never acquire competing writers between discovery and persistence.
+    private func mirrorFamilyCharges(_ costs: [JSON], owner id: String, directory: URL) async throws {
+        guard !costs.isEmpty else { return }
+        for child in sessions.values where child.id != id {
+            for cost in costs { try await child.mirrorSharedCharge(cost) }
+        }
+        try SideBudgetRecovery.mirrorCapturedCosts(costs,owner:id,directory:directory,loaded:Set(sessions.keys))
+        for owner in sessions.values {
+            for cost in costs where cost["reported"].int == 1 {
+                guard let delegation = cost["delegationId"].text,
+                      let plan = await owner.subagents.plans[delegation], sessions[plan.origin.link.childSessionID] == nil else { continue }
+                try SubagentRecovery.mirrorCapturedCost(cost,plan:plan,directory:owner.directory)
+            }
+        }
+    }
+
     private func hasBudgetDependents(_ id: String) async -> Bool {
         for session in sessions.values where session.id != id {
             if await session.sideBudgetIDs.contains(id) { return true }

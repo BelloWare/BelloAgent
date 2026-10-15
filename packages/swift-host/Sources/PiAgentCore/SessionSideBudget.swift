@@ -38,6 +38,7 @@ extension AgentSession {
         }
     }
     func sharedCharges(_ attempts: [String]) -> [JSON] { attempts.compactMap { accounting.attempts[$0]?.contribution } }
+    func committedSideCharges() -> [JSON] { accounting.sideCharges(owner:id) }
     @discardableResult func mirrorSharedCharge(_ cost: JSON) throws -> Bool {
         guard let attempt = cost["attemptId"].text, let entry = accounting.attempts[attempt],
               let previous = entry.contribution ?? entry.admission, previous["reported"].int != 1, cost["reported"].int == 1 else { return false }

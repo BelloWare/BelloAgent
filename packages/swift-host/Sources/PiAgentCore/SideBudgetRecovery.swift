@@ -9,14 +9,19 @@ enum SideBudgetRecovery {
         var file: URL
     }
     static func parentExists(_ id: String, directory: URL) throws -> Bool {
+        try journalURL(id,directory:directory) != nil
+    }
+    static func journalURL(_ id: String, directory: URL) throws -> URL? {
         let id = try identity(JSON(id))
         for name in [id, "side_" + id, "fork_" + id] {
+            let file = canonical(directory.appendingPathComponent(name + ".jsonl").path)
+            guard within(file,canonical(directory.path)) else { throw AttemptAccounting.damaged() }
             do {
-                _ = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent(name + ".jsonl").path)
-                return true
+                _ = try FileManager.default.attributesOfItem(atPath:file.path)
+                return file
             } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError { }
         }
-        return false
+        return nil
     }
 
     static func unkeyedCharge(spend: SessionSpend, accounting: AttemptAccounting, side: String, parents: [String]) -> JSON? {
@@ -32,22 +37,8 @@ enum SideBudgetRecovery {
         return charge(seed,side:side,parents:parents)
     }
     static func charges(owner: String, directory: URL) throws -> [JSON] {
-        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-        var origins: [String: Origin] = [:]
-        for file in files where file.lastPathComponent.hasPrefix("side_") && file.pathExtension == "jsonl" {
-            guard within(canonical(file.path), canonical(directory.path)) else { continue }
-            if let origin = try readOrigin(file) { origins[origin.id] = origin }
-        }
         var result: [JSON] = []
-        for origin in origins.values.sorted(by: { $0.id < $1.id }) {
-            var parents: [String] = [], next = origin.parent, seen: Set<String> = [origin.id]
-            while seen.insert(next).inserted, parents.count < 128 {
-                parents.append(next)
-                if next == owner { break }
-                guard let parent = origins[next]?.parent else { break }
-                next = parent
-            }
-            guard parents.last == owner else { continue }
+        for (origin, parents) in try savedFamily(owner:owner,directory:directory) {
             // Only this family's ledger can affect opening its owner. An
             // unrelated side's damaged tail must not prevent other chats
             // opening; damage in a related ledger must still fail closed.
@@ -56,9 +47,7 @@ enum SideBudgetRecovery {
             while let line = try reader.nextLine() {
                 if line.isEmpty { continue }
                 let record = try JSON.parse(line)
-                guard let kind = record["customType"].text,
-                      [JournalRecordKind.budgetAttempt,JournalRecordKind.cost,JournalRecordKind.costUpdate].contains(kind) else { continue }
-                try accounting.consume(kind:kind,data:record["data"],spend:&remainder)
+                try accounting.consumeRecord(record,sessionID:origin.id,spend:&remainder)
             }
             for key in accounting.attempts.keys.sorted() {
                 let entry = accounting.attempts[key]!
@@ -68,6 +57,27 @@ enum SideBudgetRecovery {
             if let seed = unkeyedCharge(spend:remainder,accounting:accounting,side:origin.id,parents:parents) {
                 result.append(seed)
             }
+        }
+        return result
+    }
+    static func savedFamily(owner: String, directory: URL) throws -> [(origin: Origin, parents: [String])] {
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        var origins: [String: Origin] = [:]
+        for file in files where file.lastPathComponent.hasPrefix("side_") && file.pathExtension == "jsonl" {
+            guard within(canonical(file.path), canonical(directory.path)) else { continue }
+            if let origin = try readOrigin(file) { origins[origin.id] = origin }
+        }
+        var result: [(origin: Origin, parents: [String])] = []
+        for origin in origins.values.sorted(by: { $0.id < $1.id }) {
+            var parents: [String] = [], next = origin.parent, seen: Set<String> = [origin.id]
+            while seen.insert(next).inserted, parents.count < 128 {
+                parents.append(next)
+                if next == owner { break }
+                guard let parent = origins[next]?.parent else { break }
+                next = parent
+            }
+            guard parents.last == owner else { continue }
+            result.append((origin, parents))
         }
         return result
     }

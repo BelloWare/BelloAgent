@@ -129,6 +129,94 @@ final class SideBudgetTests: XCTestCase {
         try await reconcileManagedMirror(readerLoaded:false)
     }
 
+    func testReconciliationPersistsUnloadedSidesBeforeParentDeletionWithoutCaptureRecovery() async throws {
+        for nested in [false,true] {
+            for managed in [false,true] {
+                for readerLoaded in managed ? [false,true] : [false] {
+                    try await reconcileThenDeleteParent(nested:nested,managed:managed,readerLoaded:readerLoaded)
+                }
+            }
+        }
+    }
+
+    func testForgettingAColdParentRepairsAnInterruptedMirrorBeforeDeletingItsOnlyEvidence() async throws {
+        try await reconcileThenDeleteParent(nested:true,managed:true,readerLoaded:false,interruptedMirror:true)
+    }
+
+    private func reconcileThenDeleteParent(nested: Bool, managed: Bool, readerLoaded: Bool, interruptedMirror: Bool = false) async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let host = try await host(root), main = try await open(host,"main")
+        _ = try await host.command("side.open",sessionID:"main",params:["sideSessionId":"parent"])
+        if nested { _ = try await host.command("side.open",sessionID:"parent",params:["sideSessionId":"nested"]) }
+        let ownerID = nested ? "nested" : "parent", sourceID = managed ? "child" : ownerID
+        let loaded = await host.loadedSession(ownerID), owner = try XCTUnwrap(loaded)
+        let source: AgentSession
+        if managed {
+            await owner.beginPresentedTask("turn")
+            var origin = subagentFixtureOrigin(parent:ownerID)
+            let execution = await owner.activeTaskPresentation?.executionID
+            origin.link.parentExecutionID = try XCTUnwrap(execution)
+            try await owner.installAdmissionFixturePlan(SubagentPlan(origin:origin,task:"Private side task",resultMessageID:"result"))
+            source = try AgentSession(id:"child",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),prepared:nil,subagentOrigin:origin)
+            try await source.bindBudgetOwner(owner,generation:0)
+        } else { source = owner }
+        let request = try await start(source,attempt:"unknown")
+        try await request.settleAttempt(AttemptSettlement(scope:request.scope,observation:billingObservation(profile:try fixtureProfile(),session:sourceID,attempt:"unknown",cost:nil),dispatched:true))
+        if managed {
+            try await source.setSubagentState(.completed); await source.close()
+            if readerLoaded { _ = try await open(host,"child",path:root.appendingPathComponent("child.jsonl").path) }
+        }
+        if nested { _ = try await host.command("session.close",sessionID:"nested",params:[:]) }
+        _ = try await host.command("session.close",sessionID:"parent",params:[:])
+        // The only capture evidence is this transient value. No archive can
+        // rescue the orphan after the main journal has been deleted.
+        let evidence: JSON = ["attemptId":"unknown","sessionId":JSON(sourceID),"turnId":"turn","purpose":"turn","outcome":"completed",
+            "requestScope":try subagentJSON(request.scope),"gateway":["cost":["status":"reported","usd":0.7]],"usage":["inputIncludingCache":100,"output":20,"total":120]]
+        let ids = ["parent"] + (nested ? ["nested"] : []) + (managed ? ["child"] : [])
+        let label = "nested=\(nested) managed=\(managed) readerLoaded=\(readerLoaded)"
+        let mainPath = await main.path
+        func assertDisk(_ ids: [String]) throws {
+            for id in ids {
+                let url = root.appendingPathComponent((id == "child" ? "" : "side_") + id + ".jsonl")
+                let journal = try SessionJournal(url:url,id:id,cwd:root,binding:nil,create:false)
+                let replay = try AgentSession.replay(journal,url:url,id:id,binding:fixtureProfile().binding,spendTracked:false,resume:false)
+                XCTAssertEqual(replay.spend.usd,0.7,label + " disk " + id)
+                XCTAssertEqual(replay.spend.reported,1,label); XCTAssertEqual(replay.spend.unreported,0,label)
+                XCTAssertEqual(replay.accounting.usageTotals["output"],20,label)
+            }
+        }
+        if interruptedMirror {
+            // Simulate the durable owner commit followed by a helper exit
+            // before mirroring. No capture or loaded owner remains to retry it.
+            _ = try await main.reconcileCapturedAccounting([evidence],mirrorChildren:false)
+            _ = try await host.command("session.close",sessionID:"main",params:[:])
+        } else {
+            for _ in 0..<2 { _ = try await host.command("budget.reconcile",sessionID:"main",params:["evidence":.array([evidence])]) }
+            try assertDisk(ids.filter { $0 != "child" || !readerLoaded })
+        }
+        _ = try await host.command("session.forget",sessionID:"main",params:[:])
+        await host.shutdown()
+        try FileManager.default.removeItem(atPath:try XCTUnwrap(mainPath))
+        // Inspect disk before any session initializer can repair a mirror.
+        try assertDisk(ids)
+        for _ in 0..<2 {
+            let reopened = try await self.host(root)
+            for id in ids {
+                let value = try await open(reopened,id,path:root.appendingPathComponent((id == "child" ? "" : "side_") + id + ".jsonl").path,limit:0.5)
+                let cost = await value.costSnapshot
+                XCTAssertEqual(cost["spentUSD"].double,0.7,label + " reopen " + id)
+                XCTAssertEqual(cost["reportedRequests"].int,1,label); XCTAssertEqual(cost["unreportedRequests"].int,0,label)
+                if id != "child" {
+                    do { _ = try await start(value,attempt:UUID().uuidString); XCTFail("Corrected orphan family must enforce its budget: " + label) }
+                    catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit",label) }
+                }
+            }
+            await reopened.shutdown()
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath:try XCTUnwrap(mainPath)))
+    }
+
     private func reconcileManagedMirror(readerLoaded: Bool) async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let host = try await host(root), main = try await open(host,"main")
