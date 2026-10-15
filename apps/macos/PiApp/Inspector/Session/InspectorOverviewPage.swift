@@ -106,10 +106,13 @@ import AppKit
         let start = subagentPage * size, end = min(start + size, groups.count)
         var views: [NSView] = [PiKit.SectionHeader("Sub-agent costs", subtitle: "Included in this chat · retained requests")]
         for group in groups[start..<end] {
-            let button = PiKit.Button(group.title, style: .ghost) { [weak inspector] in inspector?.select(.subagent(group.id)) }
+            let title = inspectorText(group.title, font: .systemFont(ofSize: 12.5, weight: .medium))
+            title.toolTip = group.title
+            let detail = inspectorText(group.detail, font: PiKit.Font.micro, color: .piInkSecondary, lines: .max)
+            let button = PiKit.SelectableRow(content: inspectorColumn([title, detail], spacing: 2)) { [weak inspector] in inspector?.select(.subagent(group.id)) }
             button.setAccessibilityIdentifier("subagent-cost-" + group.id)
             button.setAccessibilityLabel(group.title + ", " + group.detail + ", counts toward this chat. Open sub-agent statistics")
-            views.append(inspectorColumn([inspectorRow([.view(button), .spacer(0)]), inspectorText(group.detail, font: PiKit.Font.micro, color: .piInkSecondary, lines: .max)], spacing: 2))
+            views.append(button)
         }
         if groups.count > size {
             views.append(PiKit.Pager(center: inspectorText("\(start + 1)–\(end) of \(groups.count)"), canPrevious: start > 0, canNext: end < groups.count,

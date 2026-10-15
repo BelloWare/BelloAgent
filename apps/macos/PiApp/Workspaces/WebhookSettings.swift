@@ -141,6 +141,9 @@ struct WebhookFinishTracker {
     private var epoch: String?
     private var states: [String: String]?
     private var finishedTasks: Set<String>?
+    private var finishedCommandTurns = Set<String>()
+    private var activeTaskKey: String?
+    private var completionRevision: Int?
     private var taskActive = false
     private var taskTimeline: String?
     private var managedChild = false
@@ -150,12 +153,33 @@ struct WebhookFinishTracker {
     mutating func observe(_ snapshot: [String: WireValue], baseline: Bool = false) -> String? {
         let nextEpoch = snapshot["monitoring"]?.object?["epoch"]?.string
         defer { epoch = nextEpoch }
-        if baseline || epoch != nextEpoch {
+        let reset = baseline || epoch != nextEpoch
+        if reset {
             pending = nil; finishedTasks = nil; taskActive = false; taskTimeline = nil
+            finishedCommandTurns = []; activeTaskKey = nil; completionRevision = nil
         }
         // Runtime role arrives before desktop metadata repair, including when
         // a child is opened in a tab/window. Keep it for delta-only snapshots.
         if snapshot["subagentStatus"]?.string != nil { managedChild = true }
+        // Older helpers lack the runtime completion counter. Their receipts
+        // can establish new work, but must match a task root before notifying.
+        // Loading older rows restores tasks, never command receipts.
+        var receiptOutcome: String?
+        if let commands = snapshot["commands"]?.array {
+            var next: [String: String] = [:], turns = Set<String>()
+            for command in commands.suffix(128) {
+                guard let receipt = command.object, let id = receipt["commandId"]?.string, !id.isEmpty,
+                      let turn = receipt["turnId"]?.string, !turn.isEmpty, !turn.hasPrefix("compaction:"),
+                      let state = receipt["state"]?.string else { continue }
+                next[id] = state; turns.insert(turn)
+                if !reset, let states, states[id] != state, ["completed", "failed"].contains(state) {
+                    finishedCommandTurns.insert(turn)
+                    if receiptOutcome != "failed" { receiptOutcome = state }
+                }
+            }
+            finishedCommandTurns.formIntersection(turns)
+            states = next
+        } else if reset { states = nil }
         // Task terminals are emitted only after the helper's final family
         // fence. Receipts may settle before children/reports and cannot start
         // another notification. Inspect bounded identities, never transcripts.
@@ -163,47 +187,45 @@ struct WebhookFinishTracker {
            tasks["version"]?.number == 1, tasks["epoch"]?.string == nextEpoch,
            let recent = tasks["recent"]?.array, recent.count <= 64 {
             let timeline = tasks["timeline"]?.string
-            if let taskTimeline, taskTimeline != timeline { finishedTasks = nil; pending = nil }
+            if let taskTimeline, taskTimeline != timeline { pending = nil }
             taskTimeline = timeline
             var next = Set<String>()
-            for value in recent {
+            let active = tasks["active"]?.object
+            if let completion = tasks["completion"]?.object,
+               let revision = completion["revision"]?.number.flatMap({ Int(exactly: $0) }), revision >= 0 {
+                // This fence advances only when execution finishes, not when
+                // checkpoint history is restored or a timeline is selected.
+                // An edit may advance it before any active snapshot arrives.
+                if !reset, let completionRevision, revision > completionRevision {
+                    pending = Self.outcome(completion["outcome"]?.string)
+                }
+                completionRevision = revision
+                finishedCommandTurns.removeAll()
+            }
+            // For older projections, an observed active execution or a new
+            // matching terminal receipt proves this is live work. A new key
+            // in the history list alone cannot prove that.
+            for value in recent.reversed() {
                 guard let record = value.object, let root = record["rootID"]?.string,
                       let execution = record["executionID"]?.string, !root.isEmpty, !execution.isEmpty,
                       let outcome = record["outcome"]?.string else { continue }
                 let key = "\(root.utf8.count):" + root + execution
                 next.insert(key)
-                if !baseline, let finishedTasks, !finishedTasks.contains(key) {
-                    switch outcome {
-                    case "failed": pending = "failed"
-                    case "completed", "output-limited": if pending != "failed" { pending = "completed" }
-                    default: break
-                    }
+                if completionRevision == nil, !reset, finishedTasks?.contains(key) != true,
+                   activeTaskKey == key || (active == nil && finishedCommandTurns.contains(root)) {
+                    if pending != "failed" { pending = Self.outcome(outcome) }
+                    finishedCommandTurns.remove(root)
                 }
             }
-            if finishedTasks == nil { pending = nil }
             finishedTasks = next
-            taskActive = tasks["active"]?.object != nil
+            taskActive = active != nil
+            if let root = active?["rootID"]?.string, let execution = active?["executionID"]?.string {
+                activeTaskKey = "\(root.utf8.count):" + root + execution
+            } else { activeTaskKey = nil }
         }
-        // A snapshot carries receipts only when they changed.
-        if let commands = snapshot["commands"]?.array {
-            var next: [String: String] = [:]
-            for command in commands.suffix(128) {
-                guard let receipt = command.object, let id = receipt["commandId"]?.string, !id.isEmpty,
-                      let turn = receipt["turnId"]?.string, !turn.isEmpty, !turn.hasPrefix("compaction:"),
-                      let state = receipt["state"]?.string else { continue }
-                next[id] = state
-            }
-            if finishedTasks == nil, !baseline, epoch == nextEpoch, let states {
-                for (id, state) in next where states[id] != state {
-                    switch state {
-                    case "failed": pending = "failed"
-                    case "completed": if pending != "failed" { pending = "completed" }
-                    default: break
-                    }
-                }
-            }
-            states = next
-        } else if epoch != nextEpoch { states = nil }
+        if finishedTasks == nil, completionRevision == nil, let receiptOutcome, pending != "failed" {
+            pending = receiptOutcome
+        }
         guard !baseline, !managedChild else { pending = nil; return nil }
         let state = RunState(rawValue: snapshot["state"]?.string ?? "idle")
         if state.isBusy { return nil }
@@ -213,6 +235,13 @@ struct WebhookFinishTracker {
         if state != .error, (snapshot["queueCount"]?.number ?? 0) > 0 { return nil }
         pending = nil
         return state == .error || snapshot["runStatus"]?.string == "failed" ? "failed" : outcome
+    }
+    private static func outcome(_ value: String?) -> String? {
+        switch value {
+        case "completed", "output-limited": "completed"
+        case "failed": "failed"
+        default: nil
+        }
     }
 }
 

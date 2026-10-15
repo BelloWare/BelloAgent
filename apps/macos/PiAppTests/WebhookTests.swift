@@ -267,6 +267,44 @@ final class WebhookTests: XCTestCase {
         XCTAssertEqual(tracker.observe(try state("user-resume", outcome: "completed", epoch: "e2")), "completed")
     }
 
+    private func taskSnapshot(_ roots: [String], timeline: String = "root", revision: Int, outcome: String = "completed", legacy: Bool = false) -> [String: WireValue] {
+        var value = snapshot(outcome == "failed" ? "error" : "idle")
+        var task: [String: WireValue] = ["version":.number(1), "epoch":.string("e1"), "timeline":.string(timeline),
+            "recent":.array(roots.map { .object(["rootID":.string("turn-" + $0), "executionID":.string($0), "outcome":.string(outcome)]) })]
+        if !legacy { task["completion"] = .object(["revision":.number(Double(revision)), "outcome":.string(outcome)]) }
+        value["taskPresentation"] = .object(task)
+        return value
+    }
+
+    func testLazyHistoryRestoresTerminalsWithoutCompletingANewRun() {
+        for legacy in [false, true] {
+            var tracker = WebhookFinishTracker()
+            var initial = taskSnapshot(["loaded"], revision: 0, legacy: legacy)
+            initial["commands"] = snapshot("idle", commands: [("old", "completed"), ("loaded", "completed")])["commands"]
+            XCTAssertNil(tracker.observe(initial, baseline: true))
+            let restored = taskSnapshot(["old", "loaded"], revision: 0, legacy: legacy)
+            XCTAssertNil(tracker.observe(restored), "Checkpoint history restores terminal keys without changing epoch or timeline")
+            XCTAssertNil(tracker.observe(snapshot("idle")), "The following idle delta must stay silent too")
+            XCTAssertNil(tracker.observe(taskSnapshot([], timeline: "historical", revision: 0, legacy: legacy)))
+            XCTAssertNil(tracker.observe(restored), "Revealing the same history again is still not executed work")
+        }
+    }
+
+    func testFastEditCompletionSurvivesTheTimelineChange() {
+        for legacy in [false, true] {
+            for outcome in ["completed", "failed"] {
+                var tracker = WebhookFinishTracker()
+                var initial = taskSnapshot(["old"], revision: 0, legacy: legacy)
+                initial["commands"] = snapshot("idle", commands: [("old", "completed")])["commands"]
+                XCTAssertNil(tracker.observe(initial, baseline: true))
+                var edited = taskSnapshot(["replacement"], timeline: "edited-branch", revision: 1, outcome: outcome, legacy: legacy)
+                edited["commands"] = snapshot("idle", commands: [("old", "completed"), ("replacement", outcome)])["commands"]
+                XCTAssertEqual(tracker.observe(edited), outcome, "An accepted edit can finish before its first active snapshot")
+                XCTAssertNil(tracker.observe(edited), "One notification for the replacement task")
+            }
+        }
+    }
+
     @MainActor func testChildSnapshotBeforeMetadataRepairCannotSendAWebhook() throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("webhook-child-" + UUID().uuidString)
         let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

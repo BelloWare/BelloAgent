@@ -9,6 +9,7 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
         let folder = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let fixture = try SubagentGalleryFixture(root: folder.appendingPathComponent("fixture-" + UUID().uuidString))
+        fixture.model.configuration.chatCostLimit = .usd(5)
         addTeardownBlock { @MainActor in
             fixture.close(); try? await fixture.model.traces.close(); await fixture.model.store?.close()
         }
@@ -36,7 +37,7 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
                     for session in [fixture.parent, fixture.child] {
                         await fixture.model.refreshAccounting(session, workspaceID: "pane-project", includeMessages: false)
                     }
-                    fixture.parent.footer.cost = SessionCostReading(limit: .usd(5), spentUSD: 1.23, reportedRequests: 4)
+                    setParentCost(fixture)
                     await fixture.settle()
                     try await eventually("settled cost pill", timeout: .seconds(10)) {
                         fixture.content.layoutSubtreeIfNeeded()
@@ -48,7 +49,7 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
                 }
                 fixture.show("completed"); settleFixtureValues(fixture)
                 await fixture.model.refreshAccounting(fixture.parent, workspaceID: "pane-project", includeMessages: false)
-                fixture.parent.footer.cost = SessionCostReading(limit: .usd(5), spentUSD: 1.23, reportedRequests: 4)
+                setParentCost(fixture)
                 let inspector = SessionInspectorModel(scope: .init(sessionID: "chat-parent", workspaceID: "pane-project"), title: "Review the parser", archive: fixture.model.traces, workspace: fixture.model, usageLoader: { [archive = fixture.model.traces] scope, until, offset in
                     try await archive.sessionMetrics(sessionID: scope.sessionID, workspaceID: scope.workspaceID, until: until, offset: offset, includeFamily: scope.includeFamily)
                 })
@@ -58,9 +59,9 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
                 let window = try XCTUnwrap(controller.window), content = try XCTUnwrap(window.contentView)
                 try await eventually("rendered child cost controls", timeout: .seconds(10)) {
                     content.layoutSubtreeIfNeeded(); window.displayIfNeeded()
-                    return ConversationPaneTests.views(PiKit.Button.self, in: content).filter { $0.accessibilityIdentifier().hasPrefix("subagent-cost-") }.count == 4
+                    return ConversationPaneTests.views(PiKit.ButtonBase.self, in: content).filter { $0.accessibilityIdentifier().hasPrefix("subagent-cost-") }.count == 4
                 }
-                let buttons = ConversationPaneTests.views(PiKit.Button.self, in: content).filter { $0.accessibilityIdentifier().hasPrefix("subagent-cost-") }
+                let buttons = ConversationPaneTests.views(PiKit.ButtonBase.self, in: content).filter { $0.accessibilityIdentifier().hasPrefix("subagent-cost-") }
                 XCTAssertEqual(buttons.count, 4)
                 XCTAssertTrue(buttons.first?.accessibilityLabel()?.contains("counts toward this chat") == true)
                 XCTAssertTrue(window.makeFirstResponder(try XCTUnwrap(buttons.first)), "Cost details are reachable by keyboard")
@@ -87,12 +88,22 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
             }
         }
     }
+    @MainActor private func setParentCost(_ fixture: SubagentGalleryFixture) {
+        // Use production limit resolution rather than mixing a synthetic $5
+        // effective limit with SessionCostReading's default $25 default.
+        var reading = fixture.model.costReading(for: fixture.parent.id)
+        reading.spentUSD = 1.23; reading.reportedRequests = 4; reading.unreportedRequests = 0
+        fixture.parent.footer.cost = reading
+        XCTAssertEqual(reading.limit, .usd(5)); XCTAssertEqual(reading.defaultLimit, reading.limit)
+        XCTAssertEqual(reading.source, "Default · $5.00")
+    }
     @MainActor private func settleFixtureValues(_ fixture: SubagentGalleryFixture) {
         PiKit.Motion.reducedOverride = true
         fixture.parent.runState = .idle; fixture.parent.runStatus = "completed"
         // The shared gallery fixture has illustrative progress. Match this
         // scene's actual capture so the card, child and parent agree.
         guard var summary = fixture.model.subagentSummaries["child-0"] else { return }
+        summary.description = String(String(repeating: "Review Unicode token boundaries, cancellation and diagnostic spans ", count: 2).prefix(120))
         summary.progress?.usd = 0.15; summary.progress?.reported = 1; summary.progress?.unreported = 0
         summary.progress?.requests = 1; summary.progress?.inputTokens = 1500; summary.progress?.outputTokens = 250
         fixture.model.subagentSummaries["child-0"] = summary

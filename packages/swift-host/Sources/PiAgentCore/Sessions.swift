@@ -172,6 +172,7 @@ public actor AgentSession {
     var taskRootID: String?
     var activeTaskPresentation: TaskPresentationRecord?
     var recentTaskPresentations: [TaskPresentationRecord] = []
+    var taskCompletion = TaskCompletionProjection()
     var partialStartedAt: Double?
     var presentationUtility = false
     var cachedPresentationTimeline: String?

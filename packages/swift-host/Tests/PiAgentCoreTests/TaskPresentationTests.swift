@@ -106,6 +106,8 @@ final class TaskPresentationTests: XCTestCase {
         for _ in 0..<2 { try await session.retryRun(); try await eventually { !(await session.isRunning) } }
         let ended=try await lifecycle(session)
         XCTAssertEqual(ended.recent.map(\.outcome),["failed","failed","completed"])
+        let completions = await session.snapshot(["includeMessages":false])["taskPresentation"]["completion"]
+        XCTAssertEqual(completions["revision"].int, 3, "Every live execution, including Resume/failure, advances the completion fence")
         XCTAssertEqual(Set(ended.recent.map(\.key)).count,3)
         XCTAssertTrue(ended.recent.allSatisfy { $0.rootID == "u" && $0.anchorSourceID == "u" })
         XCTAssertEqual(ended.recent.prefix(2).map(\.lastSourceID),["u","u"])
@@ -117,11 +119,16 @@ final class TaskPresentationTests: XCTestCase {
         let branch=try await lifecycle(session)
         XCTAssertNotEqual(branch.timeline,ended.timeline)
         XCTAssertEqual(branch.recent.map(\.rootID),["replacement"])
+        let editedCompletion = await session.snapshot(["includeMessages":false])["taskPresentation"]["completion"]
+        XCTAssertEqual(editedCompletion["revision"].int, 4, "A fast edit keeps completion evidence across its timeline change")
+        XCTAssertEqual(editedCompletion["outcome"].text, "completed")
         let savedPath=await session.path
         await session.close()
         let reopened=try make(root,client:ScriptClient([]),resume:try XCTUnwrap(savedPath)); addTeardownBlock { await reopened.close() }
         let restored=try await lifecycle(reopened)
         XCTAssertEqual(restored.recent,branch.recent)
+        let reopenedCompletion = await reopened.snapshot(["includeMessages":false])["taskPresentation"]["completion"]
+        XCTAssertEqual(reopenedCompletion["revision"].int, 0, "Reopening resets runtime evidence without changing historical records")
     }
 
     func testCrashCheckpointRestoresInterruptedEvidenceAndNeverReexecutesTool() async throws {

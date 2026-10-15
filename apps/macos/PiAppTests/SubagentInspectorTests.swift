@@ -86,6 +86,35 @@ final class SubagentInspectorTests: XCTestCase {
         try await archive.close()
     }
 
+    @MainActor func testLongCostBreakdownTitlesFitAndAlignWithTheirDetails() async throws {
+        let root = root(); defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root)
+        try await archive.configure(quota: nil, bodyRetention: 1000, metricRetention: 1000)
+        let scope = try JSONDecoder().decode(RequestScope.self, from: JSONEncoder().encode(subagentCaptureScope(source: "child")))
+        let title = String(repeating: "Review parser boundaries and integration details ", count: 3).prefix(120)
+        try await archive.recordSubagent(SubagentSummary(link: try XCTUnwrap(scope.delegation), description: String(title), model: "fixture", status: .completed, revision: 1), workspaceID: "w")
+        let model = SessionInspectorModel(scope: .init(sessionID: "parent", workspaceID: "w"), title: "Parent", archive: archive, workspace: nil,
+            usageLoader: { scope, until, offset in try await archive.sessionMetrics(sessionID: scope.sessionID, workspaceID: scope.workspaceID, until: until, offset: offset, includeFamily: scope.includeFamily) }, cache: InspectorDocumentCache())
+        model.setVisible(true); defer { model.setVisible(false) }
+        try await eventually("long-title cost group") { model.groups.count == 1 }
+        let page = InspectorOverviewPage(inspector: model, compact: true)
+        for width in [CGFloat(420), 680] {
+            page.frame = CGRect(x: 0, y: 0, width: width, height: 600); page.layoutSubtreeIfNeeded()
+            let card = try XCTUnwrap(ConversationPaneTests.views(NSView.self, in: page).first { $0.accessibilityIdentifier() == "inspector-subagent-costs" })
+            let button = try XCTUnwrap(ConversationPaneTests.views(PiKit.ButtonBase.self, in: card).first { $0.accessibilityIdentifier().hasPrefix("subagent-cost-") })
+            let bounds = button.convert(button.bounds, to: card)
+            XCTAssertGreaterThanOrEqual(bounds.minX, 0); XCTAssertLessThanOrEqual(bounds.maxX, card.bounds.width, "Long titles stay within the available card width")
+            XCTAssertTrue(button.accessibilityLabel()?.contains(title) == true, "VoiceOver retains the full title")
+            let labels = ConversationPaneTests.views(ShellText.self, in: card)
+            let heading = try XCTUnwrap(labels.first(where: { $0.text == title }))
+            let detail = try XCTUnwrap(labels.first(where: { $0.text == model.groups[0].detail }))
+            XCTAssertEqual(heading.convert(heading.bounds, to: card).minX, detail.convert(detail.bounds, to: card).minX, accuracy: 0.5)
+            XCTAssertLessThanOrEqual(heading.frame.width, button.bounds.width)
+            button.performClick(nil); XCTAssertEqual(model.page, .subagent(model.groups[0].id))
+        }
+        try await archive.close()
+    }
+
     @MainActor func testOverviewUsageFollowsFamilyFiltersAndIgnoresTheParentsFooterForAChild() async throws {
         let root = root(); defer { try? FileManager.default.removeItem(at: root) }
         let workspace = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

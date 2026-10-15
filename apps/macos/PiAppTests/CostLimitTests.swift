@@ -54,6 +54,7 @@ final class CostLimitTests: XCTestCase {
         XCTAssertEqual(model.costLimit(for: follows.id), .usd(10), "The default applies to a chat without its own limit")
         XCTAssertEqual(model.costLimit(for: own.id), .usd(3), "A chat's own limit wins over the default")
         XCTAssertEqual(model.costReading(for: follows.id).source, "Default · $10.00")
+        XCTAssertEqual(model.costReading(for: follows.id).defaultLimit, model.costReading(for: follows.id).limit, "Default chip and header resolve the same Settings limit")
         let opening = await model.costLimitParams(for: try XCTUnwrap(model.record(follows.id)))
         XCTAssertEqual(opening["costLimit"], .object(["usd": .number(10)]), "A session open carries the default")
         try await model.setDefaultCostLimit(.unlimited)

@@ -55,6 +55,15 @@ public struct TaskPresentationRecord: Codable, Equatable, Sendable {
     }
 }
 
+/// Runtime-only completion evidence. Historical task records may be loaded
+/// lazily, pruned or restored; none of those operations advances this counter.
+/// It resets with the display epoch and is never written to the journal.
+public struct TaskCompletionProjection: Codable, Equatable, Sendable {
+    public var revision = 0
+    public var outcome: String?
+    public init() {}
+}
+
 public struct TaskPresentationProjection: Codable, Equatable, Sendable {
     public var version: Int = 1
     public var sessionID: String
@@ -65,6 +74,7 @@ public struct TaskPresentationProjection: Codable, Equatable, Sendable {
     public var active: TaskPresentationRecord?
     public var recent: [TaskPresentationRecord]
     public var utilityPhase: String?
+    public var completion: TaskCompletionProjection?
     public init(sessionID: String, epoch: String, timeline: String, sequence: Int, sourceRevision: String,
                 active: TaskPresentationRecord?, recent: [TaskPresentationRecord], utilityPhase: String? = nil) {
         self.sessionID = sessionID; self.epoch = epoch; self.timeline = timeline; self.sequence = sequence

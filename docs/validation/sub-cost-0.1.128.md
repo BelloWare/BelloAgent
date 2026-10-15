@@ -80,3 +80,32 @@ Gallery: `/Users/admin/Library/Caches/BelloSwiftWork/build-sub-cost/gallery/sub-
 The other stream owns sub-agent numbering and the collapsed result. Its numbering may be applied to the existing child labels used here. The only card change is the additive “Counts toward parent chat” text in `TranscriptNativeSubagentCard.swift`; no card structure, disclosure or turn aggregation changed.
 
 Lead tasks: reconcile shared-file changes, run the separate Codex review, integrate both branches and perform release validation/publication. This stream does not merge, tag, publish or push `dev/next`.
+
+## Lead review round 1
+
+The first review found two distinct gaps in terminal-record comparison: checkpoint history loading restores terminal keys without a new epoch/timeline, while a fast edit can finish before any snapshot of its new active task. The first implementation could notify for the former and silently baseline the latter.
+
+The helper now attaches an optional `completion` projection (`revision`, `outcome`) to `taskPresentation`. Its runtime counter advances only in `finishPresentedTask`, after the existing durable terminal/family fence; it starts at zero for each helper display epoch. Historical task loading, pruning, navigation and restoration do not change it. This is bounded presentation evidence, never a journal field or model input. The native tracker compares that counter across timeline changes. Older helpers remain readable: an observed active task identity or newly completed receipt matching the task root is required; newly revealed historical keys alone cannot notify. Receipt-only helpers keep their earlier fallback.
+
+The Inspector cost breakdown now uses the same custom `PiKit.SelectableRow` approach as Inspector turn navigation. Its single-line title truncates within the available width, retains a full tooltip/accessibility label, and shares its leading edge with the detail. The full row is keyboard actionable. The generated gallery now includes a 120-character child title.
+
+The $5/$25 discrepancy was a gallery fixture artifact, not a production discrepancy on this branch or `origin/dev/next`. The fixture constructed `SessionCostReading(limit: .usd(5))` while leaving `defaultLimit` at its default $25. Production `WorkspaceModel.costReading(for:)` resolves the override, default and effective limit together; that code is unchanged from `origin/dev/next`. The fixture now configures an in-memory $5 default and uses that production resolver, with assertions that the default chip and header agree. No new child-sidebar behavior was added.
+
+| Round 1 check | Result | Log under build root |
+| --- | --- | --- |
+| Failing-first native review regressions | 24 tests; 8 expected assertion failures in the two webhook regressions and long-title layout regression | `logs/review1-native-red.log` |
+| Failing-first helper completion evidence | 2 tests; 12 expected assertions for missing runtime completion evidence | `logs/review1-helper-red.log` |
+| Helper task presentation, lazy/full history and family fence | 29/29 passed | `logs/review1-helper-green.log` |
+| Affected native webhook, Inspector, cost attribution and cost-limit classes | 39/39 passed | `logs/review1-native-green.log` |
+| Native mutations: remove legacy live-work proof, reset counter on timeline change, restore unconstrained title | All three selected regressions failed, 6 assertions | `logs/review1-mutation-native.log` |
+| Helper mutation: remove the live completion-counter increment | Both selected regressions failed, 4 assertions | `logs/review1-mutation-helper.log` |
+| Restored helper task/history/family regressions | 29/29 passed | `logs/review1-helper-restored.log` |
+| Standalone regenerated cost gallery | 1/1 passed, 20 PNGs | `logs/review1-gallery.log` |
+| Full native parallel lane (one run, four workers) | 2,464 passed, 37 skipped, 1 route-accounting failure | `logs/review1-full-parallel.log` |
+| Unchanged route-accounting class, isolated after the gate | 13/13 passed | `logs/review1-turn-accounting-isolated.log` |
+
+Both mutation runs restored production sources in `finally`; the guards, counter increment and constrained row were verified after restoration. The gallery was regenerated in `gallery/sub-cost`. Reviewed `breakdown-light-1240.png`, `breakdown-dark-920.png` and both `breakdown-narrow-*.png`: the 120-character title fits/truncates, title and detail align, and the parent limit header and Default chip both read $5.00. Also checked `inspector-light-920.png` and `completed-dark-920.png` for consistent parent figures and long-title behavior.
+
+The single full lane ran 2,502 tests. Its sole failure was `TurnAccountingTests.testAnAutoRouterTurnSaysHowManyModelsAnsweredAndListsEachRequest`, at the route-list assertion (line 111): the two expected routes were present alongside a third `wire-fixture → —` route. This was a data assertion, not an OCR assertion. All 13 tests in that unchanged class then passed in isolation. The fixture's `logSettled` predicate can accept usage filled from reply records before the capture's model identity settles (`TranscriptActivity.aggregate` fills the running request's usage); this is a plausible timing explanation, not a confirmed root cause of the full-lane failure. No route-accounting production code or that test class was changed. The full lane was not repeated. Its structured summary is retained at `logs/review1-full-parallel-summary.json`; isolated screenshots are under `gallery/review1-turn-accounting`.
+
+All three review findings and the reported gallery discrepancy are addressed. The route-accounting full-lane failure remains a lead/integration follow-up; the isolated pass is not presented as a clean full gate.
