@@ -24,6 +24,7 @@ import AppKit
     }
 
     private let card: PiKit.Box
+    let projectChip: PendingChatProjectChip
     private let cardContent = Content()
     private let loadingLine = PiKit.TextLine(PiKit.Line("Loading the complete original input…", font: PiKit.Font.caption, color: .labelColor))
     private let importNotice = PiKit.Note("Adding image… Send when it finishes", lineLimit: 2)
@@ -82,10 +83,13 @@ import AppKit
         var disabled: Bool
         var completionVisible: Bool
         var accessibilityLabel: String
+        var pendingProject: WorkspaceRecord?
+        var projectEnabled: Bool
     }
 
     init(model: WorkspaceModel) {
         self.model = model
+        projectChip = PendingChatProjectChip(model: model)
         card = PiKit.elevated(cardContent, radius: 16)
         attach = PiKit.IconButton(symbol: "photo.badge.plus", label: "Attach Image…", size: 28, filled: true)
         skills = PiKit.IconButton(symbol: "command", label: "Skills…", size: 28, filled: true)
@@ -112,6 +116,7 @@ import AppKit
         super.init(frame: .zero)
         card.content = cardContent
         addSubview(card)
+        addSubview(projectChip)
         for view in [loadingLine, chips, placeholder, importNotice, bar] as [NSView] { cardContent.addSubview(view) }
         importNotice.setAccessibilityIdentifier("composer-image-import-notice")
         chips.spacing = 6; chips.rowSpacing = 6
@@ -155,6 +160,7 @@ import AppKit
     /// footer in the composer's place; the next `show` makes them again.
     func retire() {
         observer = nil
+        projectChip.show(sessionID: nil, project: nil, enabled: false)
         field?.removeFromSuperview(); field = nil
         session = nil; shown = nil; lastDraft = nil
         pills.retire()
@@ -258,7 +264,11 @@ import AppKit
                      form: form, hint: hint, showsChanges: showsChanges, showsActions: chat != nil && !isSide,
                      supportsImages: model.supportsImages(session.id), disabled: editing && session.loading || !inheritedEnabled || session.recoveringDraft,
                      completionVisible: session.completionVisible,
-                     accessibilityLabel: isSide ? "Side message composer" : "Main message composer")
+                     accessibilityLabel: isSide ? "Side message composer" : "Main message composer",
+                     pendingProject: model.pendingChatIDs.contains(session.id) && !session.loading && session.sendingRows.isEmpty && session.messages.isEmpty
+                        && chat?.path == nil && chat?.parentSessionID == nil && chat?.isUtilityChat == false && !isSide
+                        ? chat.flatMap { model.workspace(for: $0.workspaceID) } : nil,
+                     projectEnabled: inheritedEnabled && model.pendingProjectBlocker(session.id) == nil)
     }
 
     /// Reads the chat and changes only what differs.
@@ -291,6 +301,7 @@ import AppKit
             }
         }
         // Banners above the field.
+        projectChip.show(sessionID: session.id, project: state.pendingProject, enabled: state.projectEnabled)
         loadingLine.isHidden = !(state.editPreparing && !state.editing)
         if state.editing {
             let banner = editingBanner ?? {
@@ -423,6 +434,7 @@ import AppKit
         return parts
     }
     private func cardHeight(width: CGFloat) -> CGFloat { cardParts(width: width).reduce(0) { $0 + $1.1 } }
+    private var projectHeight: CGFloat { projectChip.isHidden ? 0 : projectChip.intrinsicContentSize.height + PiSpacing.sm }
     /// The last height worked out, until something in the card changes.
     private var measured: (width: CGFloat, height: CGFloat)?
     override func invalidateIntrinsicContentSize() { measured = nil; super.invalidateIntrinsicContentSize() }
@@ -439,7 +451,7 @@ import AppKit
     var minimumWidth: CGFloat { bar.naturalWidth + Self.outer.left + Self.outer.right }
     func height(forWidth width: CGFloat) -> CGFloat {
         if let measured, measured.width == width { return measured.height }
-        let height = cardHeight(width: cardWidth(width)) + Self.outer.top + Self.outer.bottom
+        let height = cardHeight(width: cardWidth(width)) + projectHeight + Self.outer.top + Self.outer.bottom
         measured = (width, height)
         return height
     }
@@ -452,7 +464,10 @@ import AppKit
         let width = cardWidth(bounds.width)
         let height = cardHeight(width: width)
         let x = width > bounds.width - Self.outer.left - Self.outer.right ? PiKit.round((bounds.width - width) / 2, piScale) : Self.outer.left
-        card.frame = CGRect(x: x, y: Self.outer.top, width: width, height: height)
+        let labelWidth = min(220, max(0, editorWidth(bounds.width) - 36))
+        if projectChip.maxLabelWidth != labelWidth { projectChip.maxLabelWidth = labelWidth }
+        projectChip.frame = CGRect(origin: CGPoint(x: Self.outer.left, y: Self.outer.top), size: projectChip.intrinsicContentSize)
+        card.frame = CGRect(x: x, y: Self.outer.top + projectHeight, width: width, height: height)
         let fieldWidth = editorWidth(bounds.width)
         var y: CGFloat = 0
         for (view, partHeight, inset) in cardParts(width: width) {

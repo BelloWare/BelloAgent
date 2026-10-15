@@ -125,6 +125,13 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var openedBeforeReadStates: Set<String> = []
     @Published var selected: SessionDisplay?
     @Published var error: String?
+    @Published var sideKeepIssues: [SideKeepIssue] = []
+    var reconcilingSideKeeps = false
+    var sideKeepResolutionRevision: UInt64 = 0
+    /// Accepted dismissals also silence delayed live receipts in this process.
+    /// Each confirmation owns a token so a failed overlapping answer cannot
+    /// undo another dismissal. Nothing about an unkept side is persisted here.
+    var sideKeepDismissals: [String: Set<UUID>] = [:]
     /// Projects whose folder was not found when a helper was to start in it,
     /// by project id: the folder named. The pane offers Locate Folder….
     @Published var missingProjectFolders: [String: String] = [:]
@@ -132,6 +139,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Nothing is written for them: no chat record, draft, journal or helper session.
     /// One that gains a record is a chat a relaunch can reopen.
     var pendingChatIDs: Set<String> = [] { didSet { noteSelectionChanged() } }
+    /// A first metadata save fixes the project before its actor write returns.
+    /// Count overlapping callers so one completion cannot release another save.
+    @Published var pendingChatSaveCounts: [String: Int] = [:]
+    /// Latest accepted project choice per pending chat, owned until it finishes.
+    var pendingChatProjectChoices: [String: UUID] = [:]
     @Published var showProfiles = false
     @Published var profileChoice = ""
     @Published var selectedWorkspaceID: String? { didSet { if selectedWorkspaceID != oldValue { noteSelectionChanged() } } }

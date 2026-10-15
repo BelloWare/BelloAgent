@@ -41,8 +41,10 @@ extension AgentSession {
     /// take over (`replay`). The receipts are added where they are known.
     static func checkpointHelper(spend: SessionSpend, spendTracked: Bool, failedCompactionFingerprint: String?, contextRecovery: JSON,
                                  compactionState: JSON, parentInfo: JSON, presentationOrdinal: Int, subagents: SubagentJournalState = SubagentJournalState(), accounting: AttemptAccounting = AttemptAccounting()) -> JSON {
-        ["accounting": (try? subagentJSON(accounting)) ?? .null, "subagents": (try? subagentJSON(subagents)) ?? .null, "spend": spend.record, "spendTracked": JSON(spendTracked), "failedCompactionFingerprint": failedCompactionFingerprint.map { JSON($0) } ?? .null,
+        var helper: JSON = ["accounting": (try? subagentJSON(accounting)) ?? .null, "subagents": (try? subagentJSON(subagents)) ?? .null, "spend": spend.record, "spendTracked": JSON(spendTracked), "failedCompactionFingerprint": failedCompactionFingerprint.map { JSON($0) } ?? .null,
          "contextRecovery": contextRecovery, "compactionState": compactionState, "parentInfo": parentInfo, "presentationOrdinal": JSON(presentationOrdinal)]
+        if subagents.family != nil || subagents.origin != nil || !subagents.plans.isEmpty { helper["subagentEffortVersion"] = 1 }
+        return helper
     }
     /// A compaction's progress row once the compaction's record is in the
     /// journal: finished, and saying so. A replay and a checkpoint's rows
@@ -55,10 +57,14 @@ extension AgentSession {
     /// at, read from the journal; nil when any record is not what it recorded.
     static func loadCheckpoint(_ checkpoint: JournalCheckpoint, url: URL) -> (rows: [ChatMessage], context: [ChatMessage], state: JSON?, stateLine: Data?)? {
         guard let saved = try? JSON.parse(Data(checkpoint.helper.utf8)),
-              (try? JSONDecoder().decode(SubagentJournalState.self, from: saved["subagents"].data())) != nil,
+              let subagents = try? JSONDecoder().decode(SubagentJournalState.self, from: saved["subagents"].data()),
               (try? JSONDecoder().decode(AttemptAccounting.self, from: saved["accounting"].data())) != nil,
               let file = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? file.close() }
+        // An older helper's cache decodes away effort/capabilities even when
+        // their original journal rows survive. Replay those families in full;
+        // ordinary chats and current caches retain the checkpoint shortcut.
+        guard saved["subagentEffortVersion"].int == 1 || (subagents.family == nil && subagents.origin == nil && subagents.plans.isEmpty) else { return nil }
         var rows: [ChatMessage] = []
         rows.reserveCapacity(checkpoint.rows.count)
         for row in checkpoint.rows {

@@ -157,7 +157,7 @@ final class SideTests: XCTestCase {
         try Data("{\"type\":\"session\",\"version\":3,\"id\":\"wrong\"}\n".utf8).write(to: path)
         let chat = ChatRecord(id: "side", workspaceID: "w", title: "side", path: path.path, profileID: "p", toolMode: "read-only")
         try await model.store?.put(SideKeepIntent(chat: chat), kind: "side-keep", id: "side")
-        await model.reconcileSideKeeps(); XCTAssertNotNil(model.error); XCTAssertTrue(model.chats.isEmpty)
+        await model.reconcileSideKeeps(); XCTAssertEqual(model.sideKeepIssues.map(\.id), ["side"]); XCTAssertTrue(model.chats.isEmpty)
         let intent = try await model.store?.get(SideKeepIntent.self, kind: "side-keep", id: "side"); XCTAssertNotNil(intent)
         model.sides["parent"] = SideRecord(id: "ephemeral", parentID: "parent", workspaceID: "w", profileID: "p", title: "side")
         model.displays["parent"] = SessionDisplay(id: "parent"); model.displays["ephemeral"] = SessionDisplay(id: "ephemeral")

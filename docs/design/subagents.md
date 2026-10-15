@@ -226,6 +226,7 @@ The helper also validates UTF-8 byte bounds. `task` uses the existing 256 KiB te
 
 The tool description explains that:
 
+- Start sub-agents only when the user explicitly asks for sub-agents/agents, delegation, or parallel work; otherwise do the work yourself, even for large tasks. Added for 0.1.128 to both start contracts and, only when delegation tools are offered, as one parent system-prompt line.
 - The call waits for the child’s result.
 - Multiple calls in one assistant response can execute concurrently.
 - Children share the project’s files and the parent’s cost limit.

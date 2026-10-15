@@ -24,6 +24,7 @@ extension AgentSession {
         if let child = receipt["child_id"].text,
            let origin = subagents.plans.values.first(where: { $0.origin.link.childSessionID == child })?.origin ?? (subagents.origin?.link.childSessionID == child ? subagents.origin : nil) {
             wire["nativeSubagent"] = ["version":2,"sessionId":JSON(child),"delegationId":JSON(origin.link.delegationID),"budgetOwnerSessionId":JSON(origin.link.budgetOwnerSessionID),"parentAssistantMessageId":JSON(key.assistantMessageID),"toolCallId":JSON(key.toolCallID),"turn":receipt["turn"],"route":receipt["route"],"status":"accepted","effects":"completed"]
+            if let effort = receipt["effort"].text { wire["nativeSubagent"]["effort"] = JSON(effort) }
         }
         return wire
     }

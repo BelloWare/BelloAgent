@@ -89,7 +89,7 @@ The following are the normative input JSON Schemas. Also validate nonblank text 
 
 ### 3.1 `subagent_start`
 
-Description: “Start a child with a self-contained task and fresh conversation. Choose background to continue working, or wait for a bounded wait. Children share project files and this chat's cost limit. Results and child messages arrive automatically at your next safe boundary. Children cannot delegate.”
+Description: “Start a child with a self-contained task and fresh conversation. Choose background to continue working, or wait for a bounded wait. Children share project files and this chat's cost limit. Results and child messages arrive automatically at your next safe boundary. Children cannot delegate. Start sub-agents only when the user explicitly asks for sub-agents/agents, delegation, or parallel work; otherwise do the work yourself, even for large tasks.”
 
 ```json
 {
@@ -113,11 +113,19 @@ Description: “Start a child with a self-contained task and fresh conversation.
 
 `task` is at most 256 KiB; `description` at most 480 bytes. Model grants, local label derivation and frozen initial instructions follow v2. The advertised `model` property adds the existing picker-grant enum when available; helper validation remains authoritative. Omitted `tools` inherits effective work tools; `[]` removes all work tools. The child-only reporting tool is lifecycle machinery and remains available even with `tools: []`; this is an explicit extension of v2's tool-free-child meaning.
 
+**0.1.128 addition:** `subagent_start` and `subagent_send` also accept optional string `effort`. The start schema has the chosen model's supported reasoning levels plus `default`, using the existing catalog/profile capabilities; models without effort control omit the property, and different capability sets use disjoint model branches. The send schema always advertises the fixed effort vocabulary, independently of family history; it never enumerates child IDs or scans retained plans. The coordinator validates the addressed child's frozen capabilities and rejects unsupported or unknown explicit values before acceptance. Picker grants carry optional `reasoning` capabilities (`nil`: unreported, `[]`: no control). Omission inherits the parent's current effective effort at acceptance, using model default when the child model cannot support it. Accepted start plans retain the chosen `model.thinkingLevel`; each new child turn also saves optional `effort`. Missing fields in older journals inherit the saved model grant. Recovery never starts accepted work. `SubagentSummary.effort`, start/send receipts and metadata, terminal results, and both status actions expose the saved effort. The provider builder and capture policy are unchanged.
+
+For models without catalog reasoning data, capabilities use the saved connection's reasoning flag independently of the parent's current effort; choosing Model default does not erase them. When older v3 recovery writes omit optional effort or origin capabilities, replay retains the accepted turn's effort and validates the origin against the owner's accepted capability list. Explicit conflicts remain errors. Older family checkpoints without the effort-format marker are discarded as caches and rebuilt from the unchanged journals.
+
+Desktop reciprocal discovery uses the same missing-capability rule, comparing the complete raw origin after filling only an absent/null `model.reasoning` from the accepted parent origin. Conflicting explicit capability lists, tools, resources and other origin differences remain quarantined; a compatible recovered child retains its parent relationship through live follow-up registration.
+
+The final sentence of the start description is also appended as exactly one parent system-prompt line when delegation tools are offered (including the legacy synchronous tool). Children, disabled delegation, and unrelated prompt text are unchanged.
+
 `mode` is required. `timeout_ms` is allowed only for `wait`; otherwise reject it. Background returns after durable acceptance, without waiting for a slot or a provider request. Wait is the same accepted start followed by the wait semantics below for turn 1. A timeout or early wake never cancels the child. There is no unbounded synchronous mode that can trap a child report behind the parent's wait.
 
 ### 3.2 `subagent_send`
 
-Description: “Message one of your existing children. A queued/running turn receives steering at its next safe boundary. A finished child starts a follow-up turn with its previous conversation. This call returns an acceptance receipt; use wait if you need the answer before proceeding.”
+Description: “Message one of your existing children. A queued/running turn receives steering at its next safe boundary. A finished child starts a follow-up turn with its previous conversation. Optional effort applies only to a follow-up; steering keeps the running turn's effort. This call returns an acceptance receipt; use wait if you need the answer before proceeding.”
 
 ```json
 {
@@ -134,6 +142,10 @@ Description: “Message one of your existing children. A queued/running turn rec
 ```
 
 At most 256 KiB of UTF-8. `expected_turn`, when supplied, must equal the latest accepted turn number at acceptance; otherwise return `stale_turn` with the current number and do nothing. `reply_to` must name a report from this child to this parent; it is correlation, not authority or an automatic reply obligation. Use it for answers to questions. It cannot reference another family.
+
+An explicit `effort` is validated against the existing child's model. It applies only when the accepted route is `follow_up`; a `steer` receipt reports the running turn's unchanged effort. Omitted effort on a follow-up inherits the parent's current effective effort and is frozen for that new turn.
+
+The fixed send enum is `default`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The coordinator requires the addressed child's model to support the selected value. Unsupported values, including any explicit effort for a child without effort control, return `subagent_effort` with no accepted operation or request. Its property description is: “Reasoning effort for a follow-up; the child's model must support it. Omit to inherit the parent's current effort; use "default" for the model's own default.”
 
 The coordinator linearizes sends and terminal commits:
 

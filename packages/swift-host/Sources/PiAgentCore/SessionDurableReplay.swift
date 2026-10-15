@@ -60,6 +60,7 @@ extension AgentSession {
                 try consumer.consume(line, at: start)
             }
         }
+        consumer.retarget(marker:journal.markerCheck)
         durable = consumer
         return consumer
     }

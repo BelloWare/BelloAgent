@@ -50,6 +50,8 @@ public struct SubagentModelGrant: Codable, Sendable, Hashable {
     public var maxOutputTokens: Int?
     public var modelOutputLimit: Int?
     public var input: [String]?
+    /// Picker capabilities: nil is unreported; [] means no effort control.
+    public var reasoning: [String]? = nil
 }
 
 public enum SubagentStatus: String, Codable, Sendable {
@@ -75,6 +77,7 @@ public struct SubagentSummary: Codable, Sendable, Equatable {
     /// Transient progress belongs to this session runtime inside the wire's
     /// hostEpoch. Semantic revision is the durable owner's family revision.
     public var progressEpoch: String? = nil
+    public var effort: String? = nil
 }
 
 /// Display-only progress, coalesced while running and saved once with the

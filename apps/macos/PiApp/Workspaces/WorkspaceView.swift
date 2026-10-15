@@ -198,6 +198,14 @@ import Combine
         // The error strip, above the content column.
         errorStrip.inheritedEnabled = enabled
         errorStrip.show(model.error)
+        if column.review?.issues != model.sideKeepIssues {
+            column.review = model.sideKeepIssues.isEmpty ? nil : SideKeepNoticeView(issues: model.sideKeepIssues,
+                open: { [weak model] in model?.openSideKeepFile($0) },
+                reveal: { [weak model] in model?.showSideKeepFile($0) },
+                dismiss: { [weak model] in model?.dismissSideKeep($0, over: $1) },
+                retry: { [weak model] in Task { await model?.reconcileSideKeeps() } })
+        }
+        column.review?.inheritedEnabled = enabled
 
         // The chat, or what shows in its place.
         if let session = model.selected, let chat = model.chat {
@@ -337,6 +345,7 @@ import Combine
 /// The content column: the error strip, then the chat's region under it.
 @MainActor final class WorkspaceContentColumn: NSView {
     var strip: WorkspaceErrorStrip? { didSet { replace(oldValue, strip) } }
+    var review: SideKeepNoticeView? { didSet { replace(oldValue, review) } }
     var region: NSView? { didSet { replace(oldValue, region) } }
     private func replace(_ old: NSView?, _ new: NSView?) {
         guard old !== new else { return }
@@ -353,7 +362,11 @@ import Combine
         super.layout()
         let stripHeight = strip?.height(forWidth: bounds.width) ?? 0
         strip?.frame = CGRect(x: 0, y: 0, width: bounds.width, height: stripHeight)
-        region?.frame = CGRect(x: 0, y: stripHeight, width: bounds.width, height: max(0, bounds.height - stripHeight))
+        let reviewWidth = min(740, max(0, bounds.width - 32))
+        let reviewHeight = review.map { $0.height(forWidth: reviewWidth) + 24 } ?? 0
+        review?.frame = CGRect(x: (bounds.width - reviewWidth) / 2, y: stripHeight + 12, width: reviewWidth, height: reviewHeight - 24)
+        let top = stripHeight + reviewHeight
+        region?.frame = CGRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top))
     }
 }
 

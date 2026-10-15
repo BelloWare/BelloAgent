@@ -26,10 +26,13 @@ extension WorkspaceModel {
         }
         guard workspaces.contains(where: { $0.id == workspaceID && $0.trusted }), !workspaceChangesInFlight.contains(workspaceID) else { error = "Wait for project changes to finish and choose a trusted project."; return }
         guard requestProfiles.contains(where: { $0.id == profileChoice }) else { error = LiteLLMConfiguration.unsupportedAPIMessage; showProfiles = true; return }
-        guard let store else { error = "Desktop storage is unavailable. Resolve the storage error before creating a chat."; return }
+        guard store != nil else { error = "Desktop storage is unavailable. Resolve the storage error before creating a chat."; return }
         if let topicID, !topics.contains(where: { $0.id == topicID && $0.workspaceID == workspaceID }) {
             error = "This topic is no longer available. Choose another topic or the project."; return
         }
+        // New Chat supersedes the old draft's project choice even when it
+        // reuses that draft or waits for defaults before changing selection.
+        if let current = selectedID { pendingChatProjectChoices[current] = nil }
         if let current = selectedID, isPendingEmpty(current), let item = record(current), item.workspaceID == workspaceID, item.profileID == profileChoice, effectiveTopicID(for: item) == topicID {
             displays[current]?.composerFocusRequest += 1; return
         }
@@ -39,33 +42,42 @@ extension WorkspaceModel {
         Task { defer { workspaceChangesInFlight.remove(workspaceID); if let id = selectedID { scheduleAutomaticContext(id) } }
             do {
                 await pendingChoice?.value
-                var item = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: ChatRecord.defaultTitle, path: nil, profileID: profileID)
-                let remembered = try await store.get(ChatModelDefaults.self, kind: ChatModelDefaults.recordKind, id: profileID)
-                // On upgrade there may be a chosen model in the current chat
-                // but no defaults record yet. Never inherit another gateway.
-                let previous = previousChatID.flatMap(record).flatMap { $0.profileID == profileID && !$0.isBackgroundTask ? ChatModelDefaults(chat: $0) : nil }
-                (remembered ?? previous)?.apply(to: &item, profile: profiles.first { $0.id == profileID })
-                if remembered?.outputBudgetVersion == nil, item.outputBudgetVersion == 1, remembered != nil {
-                    try await store.put(ChatModelDefaults(chat: item), kind: ChatModelDefaults.recordKind, id: profileID)
-                }
-                // Removing a topic during the reads above must not leave a
-                // newly created chat assigned to a deleted group.
-                item.topicID = topicID.flatMap { id in topics.contains(where: { $0.id == id && $0.workspaceID == workspaceID }) ? id : nil }
-                // Configuration can change while the defaults are read. Never
-                // create a chat for a project that disappeared or lost trust.
-                guard workspaces.contains(where: { $0.id == workspaceID && $0.trusted && !$0.isScratch }) else {
-                    error = "Choose a trusted project before starting a chat."; return
-                }
+                let item = try await newChatRecord(workspaceID: workspaceID, profileID: profileID, previousChatID: previousChatID, topicID: topicID)
                 // Created on screen only; the first send writes it (materializeChat).
                 pendingChatIDs.insert(item.id); chats.insert(item, at: 0); await select(item.id)
             }
             catch { self.error = error.localizedDescription } }
     }
+    /// Shared by New Chat and its unsaved project picker. Project resources
+    /// remain owned by the destination helper; only model choices are inherited.
+    func newChatRecord(workspaceID: String, profileID: String, previousChatID: String?, topicID: String?) async throws -> ChatRecord {
+        guard let store else { throw StoreError.unavailable }
+        var item = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: ChatRecord.defaultTitle, path: nil, profileID: profileID)
+        let remembered = try await store.get(ChatModelDefaults.self, kind: ChatModelDefaults.recordKind, id: profileID)
+        let previous = previousChatID.flatMap(record).flatMap { $0.profileID == profileID && !$0.isBackgroundTask ? ChatModelDefaults(chat: $0) : nil }
+        (remembered ?? previous)?.apply(to: &item, profile: profiles.first { $0.id == profileID })
+        if remembered?.outputBudgetVersion == nil, item.outputBudgetVersion == 1, remembered != nil {
+            try await store.put(ChatModelDefaults(chat: item), kind: ChatModelDefaults.recordKind, id: profileID)
+        }
+        item.topicID = topicID.flatMap { id in topics.contains(where: { $0.id == id && $0.workspaceID == workspaceID }) ? id : nil }
+        guard workspaces.contains(where: { $0.id == workspaceID && $0.trusted && !$0.isScratch }) else {
+            throw HostError.failure("Choose a trusted project before starting a chat.")
+        }
+        return item
+    }
     /// Writes a pending chat's record before its first message, rename,
     /// archive, connection change or helper session needs it.
     func materializeChat(_ id: String) async throws {
         guard pendingChatIDs.contains(id), let item = chats.first(where: { $0.id == id }) else { return }
+        // A first use owns the project even if its write fails and the chat
+        // becomes eligible again. Never revive a choice made before that use.
+        pendingChatProjectChoices[id] = nil
         guard let store else { throw StoreError.unavailable }
+        pendingChatSaveCounts[id, default: 0] += 1
+        defer {
+            let remaining = pendingChatSaveCounts[id, default: 1] - 1
+            pendingChatSaveCounts[id] = remaining > 0 ? remaining : nil
+        }
         try await store.put(item, kind: "chat", id: id)
         PerformanceProbe.shared.count("pendingChatCreationWrites")
         // Navigation can discard a still-empty placeholder while this actor
@@ -237,7 +249,7 @@ extension WorkspaceModel {
             try removeRetiredCaptureSpools(sessionID: item.id)
             try await traces.clear(sessionID: item.id)
             forgetReadState(item.id); forgetRunHold(item.id)
-            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: item.id) }
+            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: item.id) }
             contextReadings.removeValue(forKey: item.id)
             try await store.removeAll(kind: "receipt:\(item.id)")
             for intent in try await store.list(CommandIntent.self, kind: "pending:\(item.id)") { try await store.remove(kind: "pending:\(item.id)", id: intent.id) }

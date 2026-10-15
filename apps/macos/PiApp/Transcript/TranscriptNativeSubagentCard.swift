@@ -19,6 +19,7 @@ import AppKit
     }()
     private var hasResult = false
     private var hasResultNote = false
+    private var historical = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -30,11 +31,11 @@ import AppKit
         open.setAccessibilityIdentifier("open-subagent")
         inspect.setAccessibilityIdentifier("inspect-subagent")
         stop.setAccessibilityIdentifier("stop-subagent")
-        open.onPress = { [weak self] in guard let self else { return }
+        open.onPress = { [weak self] in guard let self, !self.historical, self.open.isEnabled else { return }
             if self.value?.operation == "subagent_report", let reference = self.value?.messageReference { self.actions.openAgentSource?(reference) }
             else if let target = self.value?.target { self.actions.openSubagent?(target) } }
-        inspect.onPress = { [weak self] in guard let self, let target = self.value?.target else { return }; self.actions.inspectSubagent?(target) }
-        stop.onPress = { [weak self] in guard let self, let target = self.value?.target else { return }; self.actions.stopSubagent?(target) }
+        inspect.onPress = { [weak self] in guard let self, !self.historical, self.inspect.isEnabled, let target = self.value?.target else { return }; self.actions.inspectSubagent?(target) }
+        stop.onPress = { [weak self] in guard let self, !self.historical, !self.stop.isHidden, self.stop.isEnabled, let target = self.value?.target else { return }; self.actions.stopSubagent?(target) }
     }
     required init?(coder: NSCoder) { nil }
     override func configure(_ card: TranscriptToolRow.Card) {
@@ -46,17 +47,19 @@ import AppKit
         open.setAccessibilityLabel(open.toolTip)
         inspect.toolTip = "Inspect requests for " + value.title; inspect.setAccessibilityLabel(inspect.toolTip)
         stop.toolTip = "Stop " + value.title; stop.setAccessibilityLabel(stop.toolTip)
+        historical = value.target?.isHistorical(in:environment.sessionID) == true
         var lines: [String] = []
-        if value.heldByUser { lines.append("Held until a new parent task or explicit Resume.") }
+        if historical { lines.append(SubagentToolView.historicalNotice) }
+        if value.heldByUser, !historical { lines.append("Held until a new parent task or explicit Resume.") }
         if let summary = value.summary {
-            if let count = summary.pendingMessages, count > 0 { lines.append("\(count) pending " + (count == 1 ? "message" : "messages")) }
+            if let count = summary.pendingMessages, count > 0, !historical { lines.append("\(count) pending " + (count == 1 ? "message" : "messages")) }
             lines.append("Model: " + summary.model)
             if let tools = summary.tools { lines.append(tools.isEmpty ? "Tools: none" : "Tools: " + tools.joined(separator: ", ")) }
             if let progress = summary.progress {
                 lines.append("\(progress.requests) requests · \(progress.tools) tools completed · " + TranscriptActivity.formatDuration(progress.elapsedMs))
                 lines.append("Reported " + compactGatewayUSD(progress.usd) + " · \(progress.reported) reported" + (progress.unreported > 0 ? " · \(progress.unreported) cost unknown" : ""))
                 lines.append("Tokens: " + (progress.inputTokens.map(String.init) ?? "unknown") + " input · " + (progress.outputTokens.map(String.init) ?? "unknown") + " output")
-                if !progress.preview.isEmpty, !value.status.terminal { lines.append(progress.preview) }
+                if !progress.preview.isEmpty, !value.status.terminal, !historical { lines.append(progress.preview) }
             }
         }
         information.update(text: lines.joined(separator: "\n"), face: TranscriptCardFaces.note, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
@@ -64,12 +67,14 @@ import AppKit
         task.update(value.task, environment: environment, actions: actions)
         hasResult = !value.result.isEmpty; result.isHidden = !hasResult
         result.update(value.result, environment: environment, actions: actions)
-        let note = [value.error, value.truncated ? "Result truncated. Open the sub-agent for the complete saved reply." : nil].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let truncation = historical ? "Result truncated. Open the source chat to view the complete saved reply." : "Result truncated. Open the sub-agent for the complete saved reply."
+        let note = [value.error, value.truncated ? truncation : nil].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
         hasResultNote = !note.isEmpty; resultNote.isHidden = !hasResultNote
         resultNote.update(text: note, face: TranscriptCardFaces.note, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
-        open.title = value.operation == "subagent_report" ? "Parent" : "Open"
-        open.isEnabled = environment.isEnabled && (value.target != nil || value.operation == "subagent_report" && value.messageReference != nil)
-        inspect.isEnabled = environment.isEnabled && value.target != nil
+        open.title = historical ? "History" : value.operation == "subagent_report" ? "Parent" : "Open"
+        if historical { open.toolTip = SubagentToolView.historicalNotice; open.setAccessibilityLabel(open.toolTip) }
+        open.isEnabled = !historical && environment.isEnabled && (value.target != nil || value.operation == "subagent_report" && value.messageReference != nil)
+        inspect.isEnabled = !historical && environment.isEnabled && value.target != nil
         stop.isHidden = value.status.terminal || value.heldByUser || value.target?.ownerID != environment.sessionID || value.operation == "subagent_report"
         stop.isEnabled = environment.isEnabled && value.status != .stopping
         buttons.invalidateIntrinsicContentSize(); buttons.needsLayout = true
