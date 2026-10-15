@@ -40,12 +40,14 @@ changed. Existing journals remain readable.
   queued-edit mode. Slash text is saved literally; it is not transformed
   into commands or new skill grants. Original helper-side images and skills
   remain attached, including for empty-text image/skill messages.
-- Only an acknowledged Save updates its existing app row. The preview stays
+- Only a fresh Save acknowledgement updates its existing app row. The preview stays
   bounded, preserves steering presentation, and advances its text identity
   when a change lies beyond the visible preview. A newer snapshot wins over
   a late acknowledgement, and an acknowledgement never recreates a row.
   Queue snapshots older than the adopted edit revision are rejected and a
-  fresh snapshot is requested. Receipt settlement remains independent.
+  fresh snapshot is requested. Retried Save and saved-status acknowledgements
+  also request a current snapshot instead of reflecting historical text.
+  Receipt settlement remains independent.
 - Queued-edit explanations survive routine snapshot refresh. When a stopped
   run still reports a preflight explanation, both explanations remain visible.
   A failed Save after the edit ended preserves even unchanged text, ahead
@@ -196,3 +198,73 @@ No queue-edit blocker remains from the requested scenarios. The lead's
 independent Codex review and integration into `dev/next` remain
 separate. This stream pushes only `dev/a128-queue-edit`; it does not merge,
 publish a release or push `dev/next`.
+
+## Lead review round 1
+
+Both P2 findings reproduced before production changes on 2026-10-15.
+
+1. Retried `queue.edit.save` and settled `queue.edit.status` replies carry
+   the helper's **current** edit revision, not the historical outcome's
+   revision. The old revision-only guard therefore accepted old text at
+   revision 5 over a newer rewrite already displayed at revision 4.
+   Immediate reflection now requires a fresh `outcome: saved` reply without
+   `repeated: true`. Historical acknowledgements leave the row and presented
+   revision intact and request a current queue snapshot. Fresh saves still
+   publish immediately; existing stale-snapshot and missing-row guards stay.
+2. `cancelByIdentity` settles restart recovery through `finishRecord`, which
+   retained an earlier cancellation failure when no changed rewrite needed
+   preservation. Snapshot notice handling then republished that obsolete
+   warning. Matching recovery settlement now clears the retained notice
+   before preserving any changed rewrite, so `keepRewrite` can provide the
+   correct explanation. Begin-only reconciliation publishes its existing
+   “not opened for rewriting” explanation after settlement clears old state.
+
+Six new behavioral tests cover the findings. Two presentation tests exercise
+the historical acknowledgement guard. Four native interaction tests use
+the real queue-row Edit/Cancel Edit buttons and composer Save button, the
+packaged helper and generated loopback gateway. The historical-save cases
+create an actual newer helper rewrite, display its snapshot, advance the
+revision with an unrelated held edit, and settle the older Save by retry or status. The
+cancellation cases simulate a lost request or lost response, then recover
+through retry or status with no draft, an unchanged rewrite and a changed
+rewrite. They verify the warning before and after snapshots, the preserved
+text, released hold and persisted draft without a recovery record.
+
+Failing-first evidence, under `build-queue-edit/logs/review-1/`:
+
+- `red-presentation.log`: 7 tests; the 2 new cases failed with 4 assertions.
+- `red-interaction.log`: 17 tests; the 4 new cases failed with 10 assertions.
+- `green-interaction.log`: all 17 passed after the fixes.
+
+Mutation checks used the production code, one change at a time:
+
+- Removing the fresh-acknowledgement guard caused both new presentation
+  cases to fail again (4 assertions): `mutation-acknowledgement.log`.
+- Removing the recovery notice clear caused both cancellation interaction
+  cases to fail again (6 assertions): `mutation-recovery-notice.log`.
+
+Both production files were restored byte-for-byte before final validation.
+No helper, wire, journal, model-input, permission, capture or vault changes
+were needed. These fixes add no layout work or new UI geometry. The six
+previously inspected light/dark editing captures remain at the gallery
+paths above; this review round does not regenerate the unchanged gallery.
+
+Final affected-class validation: **131 passed, zero failures, zero skips**.
+
+| Class | Passed | Log in `logs/review-1/` |
+| --- | ---: | --- |
+| QueuedEditPresentationTests | 7 | `affected-parallel.log` |
+| WorkspaceRefreshLifecycleTests | 26 | `affected-parallel.log` |
+| ConversationPaneTests | 81 | `conversation-pane.log` |
+| QueueEditInteractionTests | 17 | `interaction-restored.log` |
+
+All ran with `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-queue-edit`
+through `scripts/test-macos.sh -only-testing:PiAppTests/<Class>`. The two
+parallel classes ran together with two workers. Each serial class ran alone
+with parallel testing disabled. Exported `*-summary.json` files and
+`final-results.json` record the final result totals. No additional full
+native lane was run, following the lead's affected-class-only instruction.
+No helper source changed, so helper package tests were not rerun.
+
+Both review items are addressed. Follow-up lead review and integration remain
+separate; only `dev/a128-queue-edit` is committed and pushed.

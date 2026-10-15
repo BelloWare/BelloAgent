@@ -287,7 +287,7 @@ extension WorkspaceModel {
             guard let self else { return }
             // A rewritten message is a message: the chat moves up its sidebar group.
             self.noteChatActivity(view.id)
-            view.reflectQueuedRewrite(turnID: turnID, text: text, reply: reply)
+            if !view.reflectQueuedRewrite(turnID: turnID, text: text, reply: reply) { self.refresh(sessionID) }
             // Typed after Save was pressed: kept, ahead of the draft set aside.
             let newer = view.draft == text ? nil : view.draft
             self.finishQueuedEdit(view)
@@ -450,6 +450,9 @@ extension WorkspaceModel {
     private func finishRecord(_ view: SessionDisplay, _ record: QueuedEditDraft, saved digest: String?) {
         guard view.unreconciledQueuedEdit == record else { return }
         view.unreconciledQueuedEdit = nil
+        // Settlement retires the recovery failure. If a changed rewrite
+        // must be kept, keepRewrite supplies its current explanation below.
+        view.queueEditNotice = ""
         if record.beginOnly == true { draftChanged(view); return }
         if let digest {
             // Saved: kept unless what was saved is this very rewrite (a Save
@@ -538,8 +541,8 @@ extension WorkspaceModel {
             if view.unreconciledQueuedEdit == nil { view.queueEditNotice = "The queued message was not opened for rewriting." }
             return
         }
-        if record.beginOnly == true { view.queueEditNotice = "The queued message was not opened for rewriting." }
         finishRecord(view, record, saved: state == "saved" ? (status["textDigest"]?.string ?? "") : nil)
+        if record.beginOnly == true { view.queueEditNotice = "The queued message was not opened for rewriting." }
     }
     /// The digest the helper keeps of a saved rewrite.
     nonisolated static func textDigest(_ text: String) -> String {

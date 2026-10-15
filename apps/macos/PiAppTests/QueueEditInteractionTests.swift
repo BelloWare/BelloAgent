@@ -117,6 +117,124 @@ final class QueueEditInteractionTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(fixture.session.queue.first?["text"]?.string, "Acknowledged replacement", "A confirmed Save updates its row even when streaming refresh is delayed")
     }
 
+    @MainActor func testRetriedSaveKeepsANewerRewriteFromTheHelper() async throws {
+        try await assertHistoricalSaveKeepsNewerQueueText(viaStatus: false)
+    }
+
+    @MainActor func testSaveSettledByStatusKeepsANewerRewriteFromTheHelper() async throws {
+        try await assertHistoricalSaveKeepsNewerQueueText(viaStatus: true)
+    }
+
+    @MainActor private func assertHistoricalSaveKeepsNewerQueueText(viaStatus: Bool) async throws {
+        let fixture = try await fixture()
+        let id = try await fixture.queued(paused: true)
+        let view = fixture.session, host = fixture.host
+        view.draft = "Unrelated queued message"; fixture.model.send(sessionID: view.id)
+        try await eventually("second message queued") { !view.loading && view.queue.count == 2 }
+        let otherID = try XCTUnwrap(view.queue.last?["turnId"]?.string)
+        view.draft = "Parked draft"
+        try await fixture.edit(id); try fixture.type("Older save")
+        let editID = try XCTUnwrap(view.queueEditID)
+        try await eventually("previous snapshot finished") { !view.snapshotInFlight }
+        view.snapshotInFlight = true
+        defer { view.snapshotInFlight = false }
+
+        // The first Save reached the helper, but its response was lost.
+        _ = try await host.request("queue.edit.save", sessionID: view.id, params: ["editId": .string(editID), "text": .string("Older save")])
+        _ = try await host.request("queue.edit.begin", sessionID: view.id, params: ["editId": .string("newer"), "turnId": .string(id)])
+        _ = try await host.request("queue.edit.save", sessionID: view.id, params: ["editId": .string("newer"), "text": .string("Newer rewrite")])
+        let snapshot = try await host.request("session.snapshot", sessionID: view.id).object ?? [:]
+        XCTAssertNotNil(view.applyQueueSnapshot(snapshot))
+        let rows = view.queue, displayedRevision = view.queuePresentedEditRevision
+        XCTAssertEqual(rows.first?["text"]?.string, "Newer rewrite")
+        let unrelated = try await host.request("queue.edit.begin", sessionID: view.id, params: ["editId": .string("unrelated"), "turnId": .string(otherID)]).object ?? [:]
+        XCTAssertGreaterThan(try XCTUnwrap(unrelated["revision"]?.number), Double(displayedRevision))
+
+        var acknowledgement: [String: WireValue] = [:]
+        fixture.model.queueEditOperation = { method, sessionID, params in
+            if viaStatus && method == "queue.edit.save" { throw HostError.failure("Synthetic lost retry reply") }
+            acknowledgement = try await host.request(method, sessionID: sessionID, params: params).object ?? [:]
+            return acknowledgement
+        }
+        fixture.pane.composer.refresh(); fixture.pane.composer.send.performClick(nil)
+        try await eventually("historical Save settled") { view.queueEditingID == nil }
+        XCTAssertEqual(acknowledgement["revision"], unrelated["revision"], "The helper returns its current revision for historical outcomes")
+        if viaStatus { XCTAssertEqual(acknowledgement["state"]?.string, "saved") }
+        else { XCTAssertEqual(acknowledgement["repeated"]?.bool, true) }
+        XCTAssertEqual(view.queue, rows, "Save settlement cannot roll the visible queue back to an earlier rewrite")
+        XCTAssertEqual(view.queuePresentedEditRevision, displayedRevision)
+        XCTAssertEqual(view.draft, "Parked draft")
+        XCTAssertTrue(view.sendingRows.isEmpty)
+        let current = try await host.request("queue.read", sessionID: view.id, params: ["turnId": .string(id)]).object ?? [:]
+        XCTAssertEqual(current["text"]?.string, "Newer rewrite")
+        view.snapshotInFlight = false
+        fixture.model.refresh(view.id)
+        try await eventually("current queue refreshed") { !view.snapshotInFlight && view.queuePresentedEditRevision == Int(unrelated["revision"]?.number ?? -1) }
+        XCTAssertEqual(view.queue.first?["text"]?.string, "Newer rewrite")
+    }
+
+    @MainActor func testRetryingCancellationClearsTheRestartRecoveryWarning() async throws {
+        try await assertRecoveredCancellationSettlesNotice(viaStatus: false)
+    }
+
+    @MainActor func testCancelledRecoveryStatusClearsTheRestartRecoveryWarning() async throws {
+        try await assertRecoveredCancellationSettlesNotice(viaStatus: true)
+    }
+
+    @MainActor private func assertRecoveredCancellationSettlesNotice(viaStatus: Bool) async throws {
+        let fixture = try await fixture()
+        let id = try await fixture.queued(paused: true)
+        let view = fixture.session, model = fixture.model, host = fixture.host
+        // Cover a hold with no recovered draft, an unchanged rewrite and a
+        // changed rewrite that must replace the old warning with useful text.
+        for rewrite in [nil, "Queued original", "Recovered rewrite"] as [String?] {
+            let editID = UUID().uuidString
+            view.draft = "Parked draft"; view.queueEditNotice = ""
+            _ = try await host.request("queue.edit.begin", sessionID: view.id, params: ["editId": .string(editID), "turnId": .string(id)])
+            view.unreconciledQueuedEdit = rewrite.map { QueuedEditDraft(editID: editID, turnID: id, rewrite: $0, original: "Queued original") }
+            model.refresh(view.id)
+            try await eventually("restart hold shown") { !view.snapshotInFlight && view.queueEditHold?.editID == editID }
+            try await eventually("Cancel Edit mounted") {
+                fixture.pane.layoutSubtreeIfNeeded()
+                return ConversationPaneTests.views(QueueRowView.self, in: fixture.pane).contains { $0.state?.item.id == id && !$0.cancelEdit.isHidden && $0.cancelEdit.isEnabled }
+            }
+            let row = try XCTUnwrap(ConversationPaneTests.views(QueueRowView.self, in: fixture.pane).first { $0.state?.item.id == id })
+            var firstCancel = true
+            model.queueEditOperation = { method, sessionID, params in
+                if method == "queue.edit.cancel", firstCancel {
+                    firstCancel = false
+                    if viaStatus { _ = try await host.request(method, sessionID: sessionID, params: params) }
+                    throw HostError.failure("Synthetic unanswered cancellation")
+                }
+                return try await host.request(method, sessionID: sessionID, params: params).object ?? [:]
+            }
+            row.cancelEdit.performClick(nil)
+            try await eventually("cancellation failure shown") { view.queueEditCancelling == nil && view.queueEditNotice.contains("could not be let go") }
+            model.refresh(view.id)
+            try await eventually("failure snapshot settled") { !view.snapshotInFlight }
+            XCTAssertTrue(view.notice.contains("could not be let go"), "Unconfirmed cancellation stays visible")
+            if viaStatus {
+                await model.reconcileQueuedEdit(view, try XCTUnwrap(view.unreconciledQueuedEdit))
+            } else {
+                try await eventually("Cancel Edit available again") { row.cancelEdit.isEnabled }
+                row.cancelEdit.performClick(nil)
+            }
+            try await eventually("recovery cancellation settled") { view.queueEditCancelling == nil && view.unreconciledQueuedEdit == nil }
+            XCTAssertFalse(view.queueEditNotice.contains("could not be let go"), "Confirmed recovery must retire its retained failure")
+            model.refresh(view.id)
+            try await eventually("settled snapshot applied") { !view.snapshotInFlight }
+            XCTAssertFalse(view.notice.contains("could not be let go"), "Snapshots must not republish a resolved cancellation failure")
+            let kept = rewrite == "Recovered rewrite"
+            XCTAssertEqual(view.draft, kept ? "Recovered rewrite\n\nParked draft" : "Parked draft")
+            if kept { XCTAssertTrue(view.queueEditNotice.contains("rewrite was not saved")) }
+            XCTAssertNil(view.queueEditingID); XCTAssertNil(view.queueEditHold)
+            XCTAssertEqual(view.queue.first?["text"]?.string, "Queued original")
+            try await model.flushDrafts()
+            let saved = try await model.store?.get(DraftRecord.self, kind: "draft", id: view.id)
+            XCTAssertEqual(saved?.text, view.draft); XCTAssertNil(saved?.queuedEdit)
+        }
+    }
+
     @MainActor func testReturnReplacesRunningSteeringWithoutSubmittingAnotherMessage() async throws {
         let fixture = try await fixture()
         let id = try await fixture.queued(paused: false, steer: true)

@@ -20,14 +20,16 @@ extension SessionDisplay {
         return pending
     }
 
-    /// Publish only after the helper accepted the Save. Never recreate a row
-    /// a newer snapshot has already delivered, removed or edited again.
-    func reflectQueuedRewrite(turnID: String, text: String, reply: [String: WireValue]) {
+    /// Only a fresh Save binds this text to the reply's revision. Retries
+    /// and status answers acknowledge a historical outcome but carry the
+    /// helper's current revision, so their current row needs a snapshot.
+    @discardableResult func reflectQueuedRewrite(turnID: String, text: String, reply: [String: WireValue]) -> Bool {
+        guard reply["outcome"]?.string == "saved", reply["repeated"]?.bool != true else { return false }
         if let revision = reply["revision"]?.number.map(Int.init) {
-            guard revision >= queueEditHoldRevision, revision > queuePresentedEditRevision else { return }
+            guard revision >= queueEditHoldRevision, revision > queuePresentedEditRevision else { return false }
             queuePresentedEditRevision = revision
         }
-        guard let index = queue.firstIndex(where: { $0["turnId"]?.string == turnID }) else { return }
+        guard let index = queue.firstIndex(where: { $0["turnId"]?.string == turnID }) else { return false }
         // A local display preview only; the full text was sent to the helper
         // and future edits still read it there. Bound work and retained text
         // like a queue snapshot, without walking the transcript.
@@ -38,5 +40,6 @@ extension SessionDisplay {
         row["textTruncated"] = .bool(preview.utf8.count < text.utf8.count)
         if queueEditOriginal != text { row["textRevision"] = .number((row["textRevision"]?.number ?? 0) + 1) }
         queue[index] = row
+        return true
     }
 }
