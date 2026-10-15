@@ -3,6 +3,90 @@ import XCTest
 @testable import PiApp
 
 final class SubagentDiscoveryTests: XCTestCase {
+    @MainActor func testOlderRecoveryOriginKeepsReciprocalDiscoveryAndLiveFollowUpsAttached() async throws {
+        for missing in [WireValue?.none, .null] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+            model.chats.remove(at: 1)
+            let family = try Self.recoveryFamily(model) { origin in
+                var selected = origin["model"]!.object!; selected["reasoning"] = missing; origin["model"] = .object(selected)
+            }
+            let store = try XCTUnwrap(model.store), parent = model.chats[0]
+            try await store.putChats(model.chats)
+            let before = try [Data(contentsOf:family.path),Data(contentsOf:URL(fileURLWithPath:parent.path!))]
+            let discovered = try await model.history.discoverSubagents(directory:family.path.deletingLastPathComponent(),parents:model.chats)
+            let found = try XCTUnwrap(discovered.first { $0.header.link.childSessionID == family.child })
+            XCTAssertNil(found.issue,"Missing optional capabilities are compatible with the owning plan")
+            await model.reconcileSubagents()
+            let child = try XCTUnwrap(model.record(family.child))
+            XCTAssertNil(child.delegationIssue); XCTAssertEqual(child.parentSessionID,parent.id)
+            let saved = try await store.get(ChatRecord.self,kind:"chat",id:child.id)
+            XCTAssertNil(saved?.delegationIssue); XCTAssertEqual(saved?.parentSessionID,parent.id)
+            try await model.traces.configure(quota:nil,bodyRetention:86_400,metricRetention:86_400)
+            let summary = SubagentSummary(link:found.header.link,description:found.header.description,model:found.header.model.model,status:.running,revision:1,turn:2)
+            try await model.registerListedSubagent(summary,parent:parent,task:"Follow-up")
+            await model.reconcileSubagents()
+            XCTAssertNil(model.record(child.id)?.delegationIssue)
+            XCTAssertEqual(model.record(child.id)?.parentSessionID,parent.id)
+            XCTAssertEqual(model.subagentSummaries[child.id]?.turn,2)
+            XCTAssertEqual(model.subagentSummaries[child.id]?.status,.running)
+            XCTAssertEqual(try [Data(contentsOf:family.path),Data(contentsOf:URL(fileURLWithPath:parent.path!))],before)
+            XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.sessionOpenings.isEmpty)
+        }
+    }
+
+    @MainActor func testRecoveryOriginCompatibilityRejectsExplicitCapabilitiesAndOtherDifferences() async throws {
+        for field in ["reasoning-empty","reasoning-different","model","readOnly","tools","resourceRevision","frozenResources","description","link","unknown-field"] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+            model.chats.remove(at: 1)
+            let family = try Self.recoveryFamily(model) { origin in
+                var selected = origin["model"]!.object!; selected.removeValue(forKey:"reasoning")
+                if field == "reasoning-empty" { selected["reasoning"] = .array([]) }
+                if field == "reasoning-different" { selected["reasoning"] = .array([.string("high")]) }
+                if field == "model" { selected["model"] = .string("different-model") }
+                origin["model"] = .object(selected)
+                switch field {
+                case "readOnly": origin[field] = .bool(false)
+                case "tools": origin[field] = .array([])
+                case "resourceRevision", "description", "unknown-field": origin[field] = .string("different")
+                case "frozenResources": origin[field] = .object(["prompt":.string("different")])
+                case "link":
+                    var link = origin[field]!.object!; link["parentTurnID"] = .string("different-turn"); origin[field] = .object(link)
+                default: break
+                }
+            }
+            try await model.store?.putChats(model.chats)
+            await model.reconcileSubagents()
+            let child = try XCTUnwrap(model.record(family.child),field)
+            XCTAssertNotNil(child.delegationIssue,field); XCTAssertNil(child.parentSessionID,field)
+            XCTAssertTrue(model.hosts.isEmpty)
+        }
+    }
+
+    @MainActor private static func recoveryFamily(_ model: WorkspaceModel, change: (inout [String:WireValue]) -> Void) throws -> (child: String, path: URL) {
+        let family = try self.family(model), parent = URL(fileURLWithPath:model.chats[0].path!)
+        func rows(_ path: URL) throws -> [[String:WireValue]] {
+            try String(contentsOf:path,encoding:.utf8).split(separator:"\n").map { try JSONDecoder().decode([String:WireValue].self,from:Data($0.utf8)) }
+        }
+        func write(_ values: [[String:WireValue]], _ path: URL) throws {
+            var data = Data(); for row in values { data.append(try JSONEncoder().encode(row)); data.append(10) }; try data.write(to:path)
+        }
+        var parentRows = try rows(parent), childRows = try rows(family.path)
+        var origin = childRows[2]["data"]!.object!, selected = origin["model"]!.object!
+        selected["reasoning"] = .array([.string("low"),.string("high")]); origin["model"] = .object(selected)
+        origin["tools"] = .array([.string("read")]); origin["resourceRevision"] = .string("frozen")
+        origin["frozenResources"] = .object(["prompt":.string("Frozen instructions")])
+        var plan = parentRows[1]["data"]!.object!; plan["origin"] = .object(origin)
+        parentRows[1] = ["type":.string("custom"),"customType":.string("pi-app.agent-operation.v1"),"data":.object(["plan":.object(plan)])]
+        change(&origin); childRows[2]["data"] = .object(origin)
+        childRows[1]["customType"] = .string("pi-app.native.v3")
+        childRows[3]["customType"] = .string("pi-app.subagent-turn-terminal.v1")
+        childRows[3]["data"] = .object(["childID":.string(family.child),"turn":.number(1),"executionID":.string("recovered"),"status":.string("not_executed")])
+        try write(parentRows,parent); try write(childRows,family.path)
+        return family
+    }
+
     @MainActor func testDiscoveryPublicationCannotUndoANewerTopicMoveOrArchive() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)

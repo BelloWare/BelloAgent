@@ -2,6 +2,17 @@ import Foundation
 import Darwin
 import CryptoKit
 
+enum HistoryIdentityError: Error, LocalizedError {
+    case header, identity, version
+    var errorDescription: String? {
+        switch self {
+        case .header: "The file has no readable conversation header."
+        case .identity: "The file belongs to a different chat."
+        case .version: "The file uses a conversation version this app cannot register."
+        }
+    }
+}
+
 struct HistoryPage: Sendable {
     var messages: [TranscriptMessage]; var before: String?; var total: Int
     /// Where the page's first row stands among the `total` rows of the
@@ -452,9 +463,14 @@ actor HistoryReader {
     }
     func validateIdentity(path: String, id: String) throws {
         let file = try open(path); defer { try? file.close() }
-        guard let bytes = try file.read(upToCount: 65_536), let newline = bytes.firstIndex(of: 10) else { throw StoreError.unreadableRecord }
-        let header = try JSONDecoder().decode(WireValue.self, from: bytes[..<newline]).object ?? [:]
-        guard header["type"]?.string == "session", header["id"]?.string == id, header["version"]?.number == 3, try read(path: path).notice == nil else { throw StoreError.unreadableRecord }
+        guard let bytes = try file.read(upToCount: 65_536), let newline = bytes.firstIndex(of: 10),
+              let header = try? JSONDecoder().decode(WireValue.self, from: bytes[..<newline]).object,
+              header["type"]?.string == "session", let actualID = header["id"]?.string, !actualID.isEmpty else { throw HistoryIdentityError.header }
+        guard header["version"]?.number == 3 else { throw HistoryIdentityError.version }
+        guard actualID == id else { throw HistoryIdentityError.identity }
+        // Registration only establishes identity. History warnings belong to
+        // the normal read-only open/recovery UI, including an incomplete tail
+        // after a quit. Do not scan, repair or rewrite that history here.
     }
     /// Auto context must not open a runtime that would repair an interrupted
     /// tool call or restore pending work. Explicit inspection/recovery remains

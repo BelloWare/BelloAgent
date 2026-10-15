@@ -15,6 +15,7 @@ final class SubagentDeletionTests: XCTestCase {
             try FileManager.default.moveItem(at: old, to: journal); model.chats[0].path = journal.path
             let parent = model.chats[0], store = try XCTUnwrap(model.store)
             try await store.putChats(model.chats)
+            try await store.put(SideKeepRegistration(expected: parent, path: parent.path), kind: SideKeepRegistration.kind, id: parent.id)
             let files = [journal, family.path] + [".meta", ".stream"].map { URL(fileURLWithPath: journal.path + $0) }
             for file in files.dropFirst(2) { try Data("fixture".utf8).write(to: file) }
             model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at: url) } }
@@ -23,6 +24,8 @@ final class SubagentDeletionTests: XCTestCase {
             XCTAssertNil(model.record(parent.id))
             let pending = try await store.pendingFamilyDeletions()
             XCTAssertTrue(pending.isEmpty)
+            let receipt = try await store.get(SideKeepRegistration.self, kind: SideKeepRegistration.kind, id: parent.id)
+            XCTAssertNil(receipt)
         }
     }
 

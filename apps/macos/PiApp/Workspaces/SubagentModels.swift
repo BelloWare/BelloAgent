@@ -11,7 +11,8 @@ extension ModelCatalog.Entry {
                choices.isEmpty || effort.map({ $0 != "default" && !choices.contains($0) }) == true { effort = "default" }
             return SubagentModelGrant(model: descriptor.id, thinkingLevel: effort, contextWindow: effective.contextWindow,
                                       maxOutputTokens: effective.maxOutputTokens, modelOutputLimit: effective.modelOutputLimit,
-                                      input: Array(Set(["text"] + WorkspaceModel.declaredInput(profile) + (descriptor.input ?? []))).sorted())
+                                      input: Array(Set(["text"] + WorkspaceModel.declaredInput(profile) + (descriptor.input ?? []))).sorted(),
+                                      reasoning: descriptor.reasoning)
         }
     }
 }

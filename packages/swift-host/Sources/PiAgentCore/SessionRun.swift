@@ -114,7 +114,7 @@ extension AgentSession {
     /// and again whenever a compaction or delivered steering changed it.
     func prepareRequest(_ snapshot: ResourceSnapshot) async throws -> PreparedRequest {
         let definitions=await sessionDefinitions()
-        let instructions=Self.requestInstructions(snapshot.prompt)
+        let instructions=Self.requestInstructions(snapshot.prompt, tools: definitions)
         let body=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
         let count=try countContext(requestContext,request:body); currentContextCount=count
         return PreparedRequest(snapshot:snapshot,definitions:definitions,instructions:instructions,body:body,count:count)
