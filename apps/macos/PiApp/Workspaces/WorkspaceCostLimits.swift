@@ -10,6 +10,9 @@ import Combine
     var readID = UUID()
     var dirty = false
     var childCostCursor: SubagentCostCursor?
+    /// The child's durable ledger revision, shared by live native events,
+    /// status and cold list reads. Progress clocks never supersede it.
+    var childLedgerRevision: Int?
     init(_ reading: SessionCostReading) { self.reading = reading }
 }
 
@@ -270,6 +273,11 @@ extension WorkspaceModel {
     func observeCost(_ snapshot: [String: WireValue], sessionID id: String) {
         guard let cost = snapshot["cost"]?.object else { return }
         let state = budgetState(for:id)
+        if record(id)?.isSubagent == true {
+            let revision = cost["accountingRevision"]?.nonnegativeInteger
+            if let previous = state.childLedgerRevision, revision.map({ $0 < previous }) ?? true { return }
+            if let revision { state.childLedgerRevision = revision }
+        }
         // A direct snapshot also fences the progress already received. A
         // repeated list response cannot undo this newer accounting reading.
         if let summary = subagentSummaries[id], let cursor = SubagentCostCursor(summary),
@@ -304,6 +312,7 @@ extension WorkspaceModel {
     func observeSubagentCost(_ summary: SubagentSummary) {
         guard let progress = summary.progress, let cursor = SubagentCostCursor(summary) else { return }
         let state = budgetState(for:summary.link.childSessionID)
+        guard state.childLedgerRevision == nil else { return }
         guard state.childCostCursor.map({ cursor.follows($0) }) ?? true else { return }
         state.childCostCursor = cursor
         observeCost(["cost":.object(["spentUSD":.number(progress.usd),

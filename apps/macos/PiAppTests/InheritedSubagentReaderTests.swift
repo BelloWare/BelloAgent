@@ -10,6 +10,39 @@ private actor OriginalReaderBackGate {
 }
 
 final class InheritedSubagentReaderTests: XCTestCase, SerialTestLane {
+    @MainActor func testColdOriginalReaderRefreshesCostWithoutReopeningOwnerOrChargingFork() async throws {
+        for kind in AgentForkKind.allCases {
+            let root = scratchRoot("original-cost-" + kind.rawValue), model = try SubagentOrganizationTests.fixture(root)
+            registerWorkspaceFixtureTeardown(model,root:root)
+            model.chats.remove(at:1)
+            let family = try SubagentDiscoveryTests.family(model)
+            try await model.store?.putChats(model.chats); await model.reconcileSubagents()
+            let child = try XCTUnwrap(model.record(family.child)), parent = model.chats[0], link = try XCTUnwrap(child.delegation)
+            model.observeCost(["cost":.object(["spentUSD":.number(0.25),"reportedRequests":.number(1),"accountingRevision":.number(1)])],sessionID:child.id)
+            model.helperSessionDidUnload(child.id)
+            let file = try FileHandle(forWritingTo:family.path); try file.seekToEnd()
+            for (revision,amount) in [(1,0.25),(2,0.35)] {
+                let data: WireValue = .object(["attemptId":.string("attempt-\(revision)"),"sourceSessionId":.string(child.id),"budgetOwnerSessionId":.string(parent.id),"delegationId":.string(link.delegationID),"usd":.number(amount),"reported":.number(1),"accountingRevision":.number(Double(revision))])
+                let row: WireValue = .object(["type":.string("custom"),"customType":.string("pi-app.cost.v1"),"id":.string("cost-\(revision)"),"parentId":.string(revision == 1 ? "terminal" : "cost-1"),"data":data])
+                try file.write(contentsOf:JSONEncoder().encode(row)); try file.write(contentsOf:Data([10]))
+            }
+            try file.close()
+            var fork = parent; fork.id = "fork"; fork.path = nil; fork.parentSessionID = kind.parentID(parent.id)
+            model.chats.append(fork)
+            model.historyWindowLoader = { _,_,_,_ in
+                try ConversationHistoryPage(.object(["version":.number(2),"incarnation":.string("fixture"),"lineage":.string("root"),"messages":.array([]),"older":.null,"newer":.null]))
+            }
+            await model.select(fork.id)
+            let opened = await model.openOriginalSubagent(SubagentTarget(link),from:fork.id)
+            XCTAssertTrue(opened)
+            try await eventually("Original reader retained stale spending") { model.displays[child.id]?.footer.cost.spentUSD == 0.60 }
+            XCTAssertEqual(model.costReading(for:child.id).reportedRequests,2)
+            XCTAssertEqual(model.costReading(for:child.id).budgetOwnerID,parent.id)
+            XCTAssertNil(model.costReading(for:fork.id).spentUSD)
+            XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.opened.isEmpty)
+        }
+    }
+
     @MainActor func testOrdinaryParentInspectorReopenClearsForkProvenance() async throws {
         for kind in AgentForkKind.allCases {
             let root = scratchRoot("inspector-original-context-" + kind.rawValue)

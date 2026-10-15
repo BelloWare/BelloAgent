@@ -99,6 +99,7 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
     }
     @MainActor func testColdParentOpenRepairsCapturedChildChargeBeforeReturningItsHost() async throws {
         let (_, model, host, parent, target) = try await fixture()
+        model.observeCost(["cost":.object(["spentUSD":.number(0),"reportedRequests":.number(0),"accountingRevision":.number(0)])],sessionID:target.sessionID)
         var requests: [[String: WireValue]] = []
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         repeat {
@@ -120,6 +121,10 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
         let reopened = try await model.open(try XCTUnwrap(model.record(parent.id)))
         let state = try await reopened.request("session.status", sessionID: parent.id)
         XCTAssertGreaterThanOrEqual(state.object?["cost"]?.object?["spentUSD"]?.number ?? -1, 0.2)
+        try await eventually("Cold repair did not refresh the released child's numeric state") {
+            model.costReading(for:target.sessionID).spentUSD == 0.2
+        }
+        XCTAssertNil(model.displays[target.sessionID]); XCTAssertFalse(model.opened.contains(target.sessionID))
         await model.openSubagent(target)
         XCTAssertNil(model.error)
         let child = try await reopened.request("session.status", sessionID: target.sessionID)

@@ -22,9 +22,10 @@ extension SideBudgetRecovery {
     /// make saved sides independently recoverable even if the owner is later
     /// deleted and the capture has expired. The host holds its runtime gate;
     /// live mirrors retain their own writers and are handled by the host.
-    static func mirrorCapturedCosts(_ costs: [JSON], owner: String, directory: URL, loaded: Set<String>) throws {
-        guard !costs.isEmpty else { return }
+    @discardableResult static func mirrorCapturedCosts(_ costs: [JSON], owner: String, directory: URL, loaded: Set<String>) throws -> [String:JSON] {
+        guard !costs.isEmpty else { return [:] }
         let family = try savedFamily(owner:owner,directory:directory)
+        var childrenToMirror: [String:(SubagentPlan,[JSON])] = [:]
         for (origin, _) in family where !loaded.contains(origin.id) {
             let relevant = costs.filter { $0["budgetOwnerSessionId"].text == origin.id || $0["sideParents"].list.contains(JSON(origin.id)) }
             guard !relevant.isEmpty else { continue }
@@ -54,10 +55,13 @@ extension SideBudgetRecovery {
                 if logicalOwner == origin.id, let delegation = cost["delegationId"].text {
                     guard let plan = children.plans[delegation], plan.origin.link.childSessionID == cost["sourceSessionId"].text else { throw AttemptAccounting.damaged() }
                     if !loaded.contains(plan.origin.link.childSessionID) {
-                        try SubagentRecovery.mirrorCapturedCost(cost,plan:plan,directory:directory)
+                        childrenToMirror[plan.origin.link.childSessionID,default:(plan,[])].1.append(cost)
                     }
                 }
             }
+        }
+        return try childrenToMirror.mapValues { plan, batch in
+            try SubagentRecovery.mirrorCapturedCosts(batch,plan:plan,directory:directory)
         }
     }
 }

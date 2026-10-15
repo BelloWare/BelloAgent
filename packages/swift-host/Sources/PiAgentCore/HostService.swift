@@ -58,6 +58,7 @@ public actor NativeHostService {
     private var cwd: URL?, roots: [URL]=[], directory: URL?, resources: Resources?, mcp: MCPManager?, nativeTools: NativeTools?
     private let traces: TraceStore, capture: CaptureDelivery
     private let runtimeGate=AsyncGate()
+    private let childBudgetReadings = ChildBudgetReadings()
     private var subagentCoordinator: SubagentCoordinator?
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
     private var subagentReaders: Set<String> = []
@@ -73,6 +74,8 @@ public actor NativeHostService {
     private var retrySettings = PiProviderRules.RetrySettings()
     /// Test seam for a Stop overtaking capability discovery or skill freezing.
     var beforeSubmissionPreflight: (@Sendable () async -> Void)?
+    /// Test seam for a slow disk mirror while unrelated commands arrive.
+    var beforeChildCostMirror: (@Sendable () -> Void)?
     public init(output: @escaping @Sendable (HostOutput)->Void) {
         self.output=output
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
@@ -221,6 +224,13 @@ public actor NativeHostService {
     /// no resource, and drops itself once the host is gone (`weak self`);
     /// retaining one handle per event would cost more than the work it tracks.
     private func notification() -> @Sendable (String,Int)->Void { { [weak self] id, seq in Task { await self?.mark(id,seq) } } }
+    private func observeChildCosts(_ child: AgentSession) async {
+        let id = child.id
+        await child.observeChildCosts { [weak self] cost in Task { await self?.publishChildCost(cost,id:id) } }
+    }
+    private func publishChildCost(_ cost: JSON, id: String) {
+        emit(["v":1,"kind":"event","hostEpoch":JSON(epoch),"sessionId":JSON(id),"type":"session.cost","payload":cost])
+    }
     /// A chat's runtime, built off this actor, which every other chat's
     /// commands go through: opening a chat or a fork parses and replays its
     /// whole journal. (A side starts from its parent's context instead.)
@@ -234,6 +244,7 @@ public actor NativeHostService {
         await adoptRetrySettings(session)
         if let origin = await session.subagents.origin {
             try await traces.inheritCapturePolicy(child: id, owner: origin.link.budgetOwnerSessionID)
+            await observeChildCosts(session)
         }
         if SubagentPolicy.enabled {
             if subagentCoordinator == nil {
@@ -270,6 +281,7 @@ public actor NativeHostService {
             throw AgentError("subagent_scope", "The child no longer belongs to this open workspace and parent")
         }
         sessions[childID] = child; profiles[childID] = (profile, apiKey)
+        await observeChildCosts(child)
         await adoptRetrySettings(child)
     }
     private func openAgentChild(_ environment: SubagentEnvironment, _ plan: SubagentPlan) async throws -> AgentSession {
@@ -279,7 +291,7 @@ public actor NativeHostService {
                 guard await old.unloadIfIdle() else { throw AgentError("session_busy", "Child is still settling") }
                 sessions.removeValue(forKey:id); profiles.removeValue(forKey:id)
             }
-            let child = try AgentSteeringCoordinator.makeChild(environment,plan)
+            let child = try await Task.detached(priority:.userInitiated) { try AgentSteeringCoordinator.makeChild(environment,plan) }.value
             do { try await registerSubagent(child,profile:await child.profile,apiKey:environment.apiKey,parent:environment.parent) }
             catch { await child.close(); throw error }
             return child
@@ -636,7 +648,26 @@ public actor NativeHostService {
         case "subagent.list":
             let cursor = try boundedInt(params["cursor"], maximum: Int.max), limit = try boundedInt(params["limit"], fallback: 100, maximum: 256)
             let coordinator = subagentCoordinator ?? SubagentCoordinator()
-            return await coordinator.list(parent: session, cursor: cursor, limit: limit)
+            var page = await coordinator.list(parent: session, cursor: cursor, limit: limit)
+            // Opt-in desktop projection. The coordinator's model-facing
+            // list/progress/result contract is unchanged.
+            if params["includeCosts"].flag == true {
+                let children = page["children"].list
+                page["costs"] = try await withRuntimeGate {
+                    guard sessions[id] === session else { throw AgentError(AgentErrorCode.sessionMissing,"Session runtime is not loaded") }
+                    let plans = await session.subagents.plans
+                    var result: JSON = [:]
+                    for summary in children {
+                        guard let delegation = summary["link"]["delegationID"].text, let plan = plans[delegation],
+                              plan.origin.link.budgetOwnerSessionID == id else { continue }
+                        let childID = plan.origin.link.childSessionID
+                        if let child = sessions[childID] { result[childID] = await child.costSnapshot }
+                        else { result[childID] = try await childBudgetReadings.read(plan:plan,directory:session.directory,allowMissing:summary["status"].text == "not_executed") }
+                    }
+                    return result
+                }
+            }
+            return page
         case "subagent.stop":
             if let coordinator = await session.agentCoordinator, await session.subagents.family != nil {
                 let target = AgentTurnTarget(childID:try required(params["childId"],"child id"),turn:try boundedInt(params["turn"],fallback:0,maximum:Int.max))
@@ -812,14 +843,27 @@ public actor NativeHostService {
             }
         }
         let loaded = Set(sessions.keys)
-        try await Task.detached { try SideBudgetRecovery.mirrorCapturedCosts(costs,owner:id,directory:directory,loaded:loaded) }.value
+        let sideReadings = try await Task.detached { try SideBudgetRecovery.mirrorCapturedCosts(costs,owner:id,directory:directory,loaded:loaded) }.value
+        for (child,cost) in sideReadings { publishChildCost(cost,id:child) }
+        var mirrors: [(SubagentPlan,URL,[JSON])] = []
         for owner in sessions.values {
+            let plans = await owner.subagents.plans
+            var batches: [String:[JSON]] = [:]
             for cost in costs {
                 guard let delegation = cost["delegationId"].text,
-                      let plan = await owner.subagents.plans[delegation], sessions[plan.origin.link.childSessionID] == nil else { continue }
-                try SubagentRecovery.mirrorCapturedCost(cost,plan:plan,directory:owner.directory)
+                      let plan = plans[delegation], sessions[plan.origin.link.childSessionID] == nil else { continue }
+                batches[delegation,default:[]].append(cost)
             }
+            for (delegation,batch) in batches { mirrors.append((plans[delegation]!,owner.directory,batch)) }
         }
+        let beforeMirror = beforeChildCostMirror
+        let readings = try await Task.detached {
+            try mirrors.map { plan, directory, costs in
+                beforeMirror?()
+                return (plan.origin.link.childSessionID,try SubagentRecovery.mirrorCapturedCosts(costs,plan:plan,directory:directory))
+            }
+        }.value
+        for (child,cost) in readings { publishChildCost(cost,id:child) }
     }
 
     private func hasBudgetDependents(_ id: String) async -> Bool {

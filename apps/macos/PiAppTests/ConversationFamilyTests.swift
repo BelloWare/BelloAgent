@@ -3,6 +3,80 @@ import XCTest
 @testable import PiApp
 
 final class ConversationFamilyTests: XCTestCase {
+    @MainActor func testColdOriginalChildLedgerReplacesRetainedCostWithoutStartingAHelper() async throws {
+        let model = try fixture(), family = try SubagentDiscoveryTests.family(model)
+        try await model.traces.configure(quota:nil,bodyRetention:1000,metricRetention:1000)
+        try await model.store?.putChats(model.chats)
+        await model.reconcileSubagents(parentID:"chat-parent")
+        let link = try XCTUnwrap(model.record(family.child)?.delegation)
+        model.observeCost(["cost":.object(["spentUSD":.number(0.25),"reportedRequests":.number(1),"accountingRevision":.number(1)])],sessionID:family.child)
+        let file = try FileHandle(forWritingTo:family.path); try file.seekToEnd()
+        for (number,usd,reported) in [(1,0.25,1),(2,0.35,1),(3,0.0,0)] {
+            let record: WireValue = .object(["type":.string("custom"),"id":.string("cost-\(number)"),"parentId":.string(number == 1 ? "terminal" : "cost-\(number-1)"),"customType":.string("pi-app.cost.v1"),"data":.object([
+                "attemptId":.string("attempt-\(number)"),"sourceSessionId":.string(family.child),"budgetOwnerSessionId":.string(link.budgetOwnerSessionID),"delegationId":.string(link.delegationID),
+                "usd":.number(usd),"reported":.number(Double(reported)),"unreported":.number(Double(1-reported)),"accountingRevision":.number(Double(number))])])
+            try file.write(contentsOf:JSONEncoder().encode(record)); try file.write(contentsOf:Data([10]))
+        }
+        try file.close()
+        let read = try await model.history.subagentCost(path:family.path,directory:family.path.deletingLastPathComponent(),expected:SubagentTarget(link))
+        model.observeCost(["cost":.object(try XCTUnwrap(read))],sessionID:family.child)
+        XCTAssertEqual(model.familyMemberSpend(family.child),0.60)
+        XCTAssertEqual(model.costReading(for:family.child).reportedRequests,2)
+        XCTAssertEqual(model.costReading(for:family.child).unreportedRequests,1)
+        XCTAssertEqual(model.budgetStates[family.child]?.childLedgerRevision,3)
+        XCTAssertEqual(model.costReading(for:family.child).budgetOwnerID,link.budgetOwnerSessionID)
+        XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.opened.isEmpty)
+        XCTAssertNil(model.displays[family.child])
+    }
+
+    @MainActor func testReleasedChildLedgerRevisionWinsAcrossEveryLifecyclePath() async throws {
+        let paths: [(String,SubagentStatus,Double,Int,Int)] = [
+            ("follow-up start",.queued,0.25,1,0), ("progress",.running,0.65,2,1),
+            ("settle without progress",.completed,0.65,2,0), ("limit stop",.cancelled,0.65,2,0),
+            ("cancel",.cancelled,0.25,1,1), ("helper restart",.interrupted,0.65,2,1),
+            ("fork original",.completed,0.65,2,0), ("downward correction",.completed,0.15,2,0)]
+        for (path,status,usd,reported,unknown) in paths {
+            let model = try fixture(), child = try XCTUnwrap(model.record("chat-child"))
+            let link = try XCTUnwrap(child.delegation)
+            func cost(_ revision: Int, _ usd: Double, _ reported: Int, _ unknown: Int) -> [String:WireValue] {
+                ["cost":.object(["accountingRevision":.number(Double(revision)), "spentUSD":.number(usd),
+                    "reportedRequests":.number(Double(reported)), "unreportedRequests":.number(Double(unknown))])]
+            }
+            model.observeCost(cost(4,0.25,1,0),sessionID:child.id)
+            model.helperSessionDidUnload(child.id)
+            model.subagentSummaries[child.id] = .init(link:link,description:path,model:"fixture",status:status,revision:20,turn:2)
+            if path == "helper restart" { model.interruptSubagents(workspaceID:child.workspaceID) }
+            if path == "fork original" {
+                var fork = try XCTUnwrap(model.record("chat-parent")); fork.id = "fork"; fork.path = "/fixture/fork_fork.jsonl"; fork.parentSessionID = link.budgetOwnerSessionID
+                model.chats.append(fork)
+                model.inheritedSubagents[fork.id] = [.init(target:SubagentTarget(link),title:child.title,number:1,forkID:fork.id)]
+                XCTAssertEqual(model.budgetOwner(for:fork).id,fork.id)
+                XCTAssertTrue(model.conversationFamily(fork.id).agents.members.isEmpty)
+            }
+            _ = model.conversationFamily("chat-parent")
+            let final = cost(7,usd,reported,unknown)
+            model.observeCost(final,sessionID:child.id)
+            // Native events, status replies and cold list projections can
+            // arrive in either order. No older ledger may replace the final.
+            model.observeCost(cost(4,0.25,1,0),sessionID:child.id)
+            let summary = SubagentSummary(link:link,description:path,model:"fixture",status:.running,revision:20,
+                progress:.init(phase:"generating",elapsedMs:9999,requests:1,tools:0,preview:"",usd:0.3,reported:1,unreported:0),turn:2,progressEpoch:"old-runtime")
+            model.observeSubagentCost(summary)
+            XCTAssertEqual(model.familyMemberSpend(child.id),usd,path)
+            XCTAssertEqual(model.costReading(for:child.id).reportedRequests,reported,path)
+            XCTAssertEqual(model.costReading(for:child.id).unreportedRequests,unknown,path)
+            XCTAssertEqual(model.displays["chat-parent"]?.subagentCosts[child.id]?.spentUSD,usd,path)
+            XCTAssertEqual(model.conversationFamily("chat-parent").agents.members.first?.spend,usd,path)
+            model.observeCost(cost(8,0.55,3,0),sessionID:child.id)
+            model.observeCost(final,sessionID:child.id)
+            XCTAssertEqual(model.familyMemberSpend(child.id),0.55,"Later corrections can lower dollars: " + path)
+            XCTAssertEqual(model.costReading(for:child.id).reportedRequests,3,path)
+            XCTAssertNil(model.displays[child.id],path)
+            XCTAssertFalse(model.opened.contains(child.id),path)
+            model.shutdown()
+        }
+    }
+
     @MainActor func testReleasedChildCostsFollowAcceptedProgressWithoutReopeningItsReader() async throws {
         let model = try fixture(), family = try SubagentDiscoveryTests.family(model)
         try await model.traces.configure(quota:nil,bodyRetention:1000,metricRetention:1000)

@@ -183,13 +183,17 @@ extension WorkspaceModel {
         let byChild = Dictionary(plans.map { ($0.header.link.childSessionID, $0) }, uniquingKeysWith: { first, _ in first })
         var cursor = 0
         repeat {
-            let page = try await host.request("subagent.list", sessionID: parent.id, params: ["cursor":.number(Double(cursor))]).object ?? [:]
+            let page = try await host.request("subagent.list", sessionID: parent.id, params: ["cursor":.number(Double(cursor)),"includeCosts":.bool(true)]).object ?? [:]
             guard !isShutDown, !Task.isCancelled, hosts[parent.workspaceID] === host, host.connectionID == connection,
                   record(parent.id)?.workspaceID == parent.workspaceID else { throw CancellationError() }
             for value in page["children"]?.array ?? [] {
                 let summary = try JSONDecoder().decode(SubagentSummary.self, from: JSONEncoder().encode(value))
                 let plan = byChild[summary.link.childSessionID]
                 try await registerListedSubagent(summary, parent: parent, task: plan?.task ?? "", connection: connection, number: plan?.number)
+                guard !Task.isCancelled, hosts[parent.workspaceID] === host, host.connectionID == connection else { throw CancellationError() }
+                if let cost = page["costs"]?.object?[summary.link.childSessionID] {
+                    observeCost(["cost":cost],sessionID:summary.link.childSessionID)
+                }
             }
             guard let next = page["cursor"]?.nonnegativeInteger else { break }
             guard next > cursor else { throw StoreError.invalidRecord }; cursor = next

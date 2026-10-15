@@ -46,6 +46,11 @@ struct BoundedIdentitySet: Sendable {
 }
 
 extension AgentSession {
+    func observeChildCosts(_ sink: @escaping @Sendable (JSON) -> Void) {
+        guard isSubagent else { return }
+        childCostObserver = sink
+        sink(costSnapshot)
+    }
     static let costLimitCode = "cost_limit"
     /// The most a limit may be: a guard on the wire value, not a policy.
     static let maximumCostLimitUSD = 1_000_000.0

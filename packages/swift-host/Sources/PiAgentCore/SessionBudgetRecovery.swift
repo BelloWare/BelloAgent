@@ -72,6 +72,12 @@ extension SubagentRecovery {
     /// Owner commits first. A failed mirror leaves that charge durable, and
     /// normal reopen recovery repairs the mirror before any continuation.
     static func mirrorCapturedCost(_ cost: JSON, plan: SubagentPlan, directory: URL) throws {
+        _ = try mirrorCapturedCosts([cost],plan:plan,directory:directory)
+    }
+
+    /// One replay per child, even when a correction batch has many attempts.
+    /// An empty batch is a native numeric read of the same validated ledger.
+    static func mirrorCapturedCosts(_ costs: [JSON], plan: SubagentPlan, directory: URL) throws -> JSON {
         let id = try identity(JSON(plan.origin.link.childSessionID))
         let url = canonical(directory.appendingPathComponent(id + ".jsonl").path)
         guard within(url, canonical(directory.path)) else { throw damaged() }
@@ -85,10 +91,16 @@ extension SubagentRecovery {
             try child.consume(record, sessionID: id)
             if let kind = record["customType"].text { try accounting.consume(kind: kind, data: record["data"], spend: &spend) }
         }
-        guard let attempt = cost["attemptId"].text else { throw damaged() }
-        if let update = try FamilyCharge.merge(cost,into:accounting.attempts[attempt],revision:accounting.revision,
-            child:.init(accepted:plan.origin,observed:child.origin),failure:damaged()) {
-            try writer.append(["type":"custom","customType":JSON(update.kind),"data":update.data],flush:true)
+        guard let origin = child.origin, origin.matchesAccepted(plan.origin) else { throw damaged() }
+        for cost in costs {
+            guard let attempt = cost["attemptId"].text else { throw damaged() }
+            if let update = try FamilyCharge.merge(cost,into:accounting.attempts[attempt],revision:accounting.revision,
+                child:.init(accepted:plan.origin,observed:origin),failure:damaged()) {
+                try writer.append(["type":"custom","customType":JSON(update.kind),"data":update.data],flush:true)
+                try accounting.consume(kind:update.kind,data:update.data,spend:&spend)
+            }
         }
+        return ["spentUSD":JSON(spend.usd),"reportedRequests":JSON(spend.reported),
+                "unreportedRequests":JSON(spend.unreported),"accountingRevision":JSON(accounting.revision)]
     }
 }

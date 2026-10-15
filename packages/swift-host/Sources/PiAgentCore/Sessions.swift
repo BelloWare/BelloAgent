@@ -44,6 +44,9 @@ public actor AgentSession {
     let cwd: URL, directory: URL, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore
     var apiKey: String
     let changed: @Sendable (String, Int) -> Void
+    /// Native numeric observations survive reader eviction. This is separate
+    /// from progress, tool results and the model-visible event lane.
+    var childCostObserver: (@Sendable (JSON) -> Void)?
     /// Settings saved while a run is going: they wait until it ends.
     var pendingConfiguration: (profile: Profile, apiKey: String)?
     // history: every journal message in order. context: live model context.
@@ -576,6 +579,7 @@ public actor AgentSession {
     /// history for a reader that has to catch up.
     static let retainedEvents = 4096, retainedEventSlack = 512
     func event(_ type: String, _ payload: JSON = [:]) {
+        if type == "cost.spend" { childCostObserver?(payload) }
         monitoring.activity(activityPhase, at: nowMS())
         sequence += 1; events.append(["seq":JSON(sequence),"type":JSON(type),"payload":payload])
         if events.count > Self.retainedEvents+Self.retainedEventSlack { events.removeFirst(events.count-Self.retainedEvents) }

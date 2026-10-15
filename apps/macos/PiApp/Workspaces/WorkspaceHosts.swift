@@ -34,12 +34,16 @@ extension WorkspaceModel {
         // Any number of projects and chats may be active at once; idle helpers
         // leave on their own after the grace period.
         let host = hosts[workspace.id] ?? HostSupervisor(); hosts[workspace.id] = host
-        host.onEvent = { [weak self] frame in
-            guard let id = frame["sessionId"]?.string else { return }
-            if frame["type"]?.string == "session.changed" { self?.refresh(id) }
+        host.onEvent = { [weak self, weak host] frame in
+            guard let self, let host, self.hosts[workspace.id] === host, let id = frame["sessionId"]?.string else { return }
+            if frame["type"]?.string == "session.cost", self.record(id)?.workspaceID == workspace.id,
+               self.record(id)?.isSubagent == true, let cost = frame["payload"] {
+                self.observeCost(["cost":cost],sessionID:id)
+            }
+            if frame["type"]?.string == "session.changed" { self.refresh(id) }
             if frame["type"]?.string == "session.unloaded" {
-                self?.sessionOpenings[id]?.task.cancel()
-                self?.helperSessionDidUnload(id); self?.displays[id]?.notice = "Saved history · Host runtime unloaded"; self?.displays[id]?.captureAvailable = false
+                self.sessionOpenings[id]?.task.cancel()
+                self.helperSessionDidUnload(id); self.displays[id]?.notice = "Saved history · Host runtime unloaded"; self.displays[id]?.captureAvailable = false
             }
         }
         host.onLoss = { [weak self, weak host] in
