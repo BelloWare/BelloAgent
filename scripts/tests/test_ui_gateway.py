@@ -18,6 +18,7 @@ sys.path.insert(0, str(FIXTURES))
 spec = importlib.util.spec_from_file_location("ui_gateway", FIXTURES / "ui-gateway.py")
 gateway = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gateway)
+from litellm_contract import FixtureContractError, validate_arguments
 
 
 class UIGatewayTests(unittest.TestCase):
@@ -91,6 +92,50 @@ class UIGatewayTests(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertEqual(self.model_in_stream(received, responses), "ui-fixture")
                 self.assertEqual(response_headers["x-fixture-model"], "ui-fixture")
+
+    def test_tool_can_advertise_a_single_allowed_union_branch(self):
+        for responses in (True, False):
+            with self.subTest(responses=responses):
+                path, headers, body = self.request(responses)
+                field = "parameters" if responses else "input_schema"
+                schema = body["tools"][0][field]
+                # oneOf still requires exactly one matching branch when
+                # only one variant is offered.
+                body["tools"][0][field] = {"oneOf": [schema]}
+                status, _, received = self.send(path, headers, body)
+                self.assertEqual(status, 200, received)
+
+    def test_tool_union_must_still_have_an_object_branch(self):
+        for branches in ([], [{"type": "string"}]):
+            with self.subTest(branches=branches):
+                path, headers, body = self.request()
+                body["tools"][0]["parameters"] = {"oneOf": branches}
+                status, _, _ = self.send(path, headers, body)
+                self.assertEqual(status, 400)
+
+    def test_tool_union_can_constrain_shared_object_fields(self):
+        for responses in (True, False):
+            with self.subTest(responses=responses):
+                path, headers, body = self.request(responses)
+                field = "parameters" if responses else "input_schema"
+                schema = body["tools"][0][field]
+                # The native subagent_start effort variants retain shared
+                # object fields at the root, then narrow them with oneOf.
+                schema["oneOf"] = [dict(schema, properties={"path": {"type": "string", "const": name}})
+                                   for name in ("a", "b")]
+                status, _, received = self.send(path, headers, body)
+                self.assertEqual(status, 200, received)
+
+    def test_union_arguments_must_match_root_constraints_and_exactly_one_branch(self):
+        branch = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+        schema = {"type": "object", "properties": {"path": {"type": "string", "enum": ["safe"]}},
+                  "required": ["path"], "oneOf": [branch]}
+        validate_arguments({"path": "safe"}, schema)
+        with self.assertRaises(FixtureContractError):
+            validate_arguments({"path": "unsafe"}, schema)
+        schema["oneOf"].append(branch)
+        with self.assertRaises(FixtureContractError):
+            validate_arguments({"path": "safe"}, schema)
 
     def test_responses_stream_has_indexed_items_before_deltas(self):
         path, headers, body = self.request(prompt="stream preview")

@@ -164,24 +164,24 @@ extension WorkspaceModel {
     /// `editID` resumes an edit the helper already holds (after a restart).
     func editQueued(_ turnID: String, sessionID: String, resuming editID: String? = nil) {
         guard let view = displays[sessionID] else { return }
-        guard draftWrites.recoveries[view.id] == nil else { view.notice = "Wait for the interrupted submission to finish saving."; return }
+        guard draftWrites.recoveries[view.id] == nil else { view.queueEditNotice = "Wait for the interrupted submission to finish saving."; return }
         guard view.editingMessageID == nil, !view.editPreparing else {
-            view.notice = "Finish or cancel the message edit before rewriting a queued message."; return
+            view.queueEditNotice = "Finish or cancel the message edit before rewriting a queued message."; return
         }
         if view.queueEditingID == turnID { view.composerFocusRequest += 1; return }
         guard view.queueEditingID == nil, view.queueEditBeginning == nil else {
-            view.notice = "Save or cancel the queued message you are rewriting first."; return
+            view.queueEditNotice = "Save or cancel the queued message you are rewriting first."; return
         }
         if let hold = view.queueEditHold, hold.editID != editID {
-            view.notice = "Another queued message in this chat is being edited. Resume or cancel that edit first."; return
+            view.queueEditNotice = "Another queued message in this chat is being edited. Resume or cancel that edit first."; return
         }
         if let cancelling = view.queueEditCancelling, cancelling == editID {
-            view.notice = "That edit is being cancelled; it can't be resumed."; return
+            view.queueEditNotice = "That edit is being cancelled; it can't be resumed."; return
         }
         // An earlier edit whose outcome is not known yet is settled first,
         // by its own identity: never a second edit beside it.
         if let earlier = view.unreconciledQueuedEdit, earlier.editID != editID {
-            view.notice = "Checking an earlier queued edit first; choose Edit again in a moment."
+            view.queueEditNotice = "Checking an earlier queued edit first; choose Edit again in a moment."
             Task { await reconcileQueuedEdit(view, earlier) }
             return
         }
@@ -189,7 +189,7 @@ extension WorkspaceModel {
         // A Cancel of this edit sent and not confirmed: it is settled first,
         // never crossed by a Resume.
         if let record = view.unreconciledQueuedEdit, record.editID == edit, record.pending == "cancel" {
-            view.notice = "That edit is being cancelled; it can't be resumed."
+            view.queueEditNotice = "That edit is being cancelled; it can't be resumed."
             Task { await reconcileQueuedEdit(view, record) }
             return
         }
@@ -237,10 +237,10 @@ extension WorkspaceModel {
                 return
             }
             switch failure {
-            case HostError.rejected("queue_delivering", _)?: view.notice = "That message is already being sent, so it can no longer be edited."
-            case HostError.rejected("queue_edit_busy", _)?: view.notice = "Another queued message in this chat is being edited. Finish or cancel that edit first."
-            case HostError.rejected("queue_missing", _)?: view.notice = "That message is no longer waiting."
-            case HostError.rejected(_, let message)? where !unanswered: view.notice = "The queued message was not opened for rewriting. " + message
+            case HostError.rejected("queue_delivering", _)?: view.queueEditNotice = "That message is already being sent, so it can no longer be edited."
+            case HostError.rejected("queue_edit_busy", _)?: view.queueEditNotice = "Another queued message in this chat is being edited. Finish or cancel that edit first."
+            case HostError.rejected("queue_missing", _)?: view.queueEditNotice = "That message is no longer waiting."
+            case HostError.rejected(_, let message)? where !unanswered: view.queueEditNotice = "The queued message was not opened for rewriting. " + message
             default:
                 // No answer: the helper may have taken the hold. Ask after the
                 // same edit; nothing is released on a timeout.
@@ -266,6 +266,7 @@ extension WorkspaceModel {
         view.queueEditPendingOperation = pending?.pending; view.queueEditSentDigest = pending?.pending == nil ? nil : pending?.sentDigest
         view.draft = rewrite ?? original; view.attachments = []; view.skills = []
         view.directCommand = false; view.completionVisible = false
+        view.completionParse?.cancel(); view.completionToken = nil; view.queueEditNotice = ""
         // Focus follows only while the reader is still where they asked.
         if focus { focusedSessionID = view.id; view.composerFocusRequest += 1 }
         draftChanged(view)
@@ -277,21 +278,22 @@ extension WorkspaceModel {
     func saveQueuedEdit(sessionID: String) {
         guard let view = displays[sessionID], let turnID = view.queueEditingID, let editID = view.queueEditID, !view.queueEditResolving else { return }
         guard view.attachments.isEmpty, view.skills.isEmpty else {
-            view.notice = "A queued message keeps its own images and skills. Remove the ones added here to save it."; return
+            view.queueEditNotice = "A queued message keeps its own images and skills. Remove the ones added here to save it."; return
         }
         // Sent whole: an unchanged Save keeps the message exactly as it was.
         let text = view.draft
-        guard text.contains(where: { !$0.isWhitespace }) || view.queueEditKeepsInput else { view.notice = "Type the message, or Cancel to keep it as it was."; return }
+        guard text.contains(where: { !$0.isWhitespace }) || view.queueEditKeepsInput else { view.queueEditNotice = "Type the message, or Cancel to keep it as it was."; return }
         resolveQueuedEdit(view, editID: editID, operation: "save", sent: text) { [weak self] reply in
             guard let self else { return }
             // A rewritten message is a message: the chat moves up its sidebar group.
             self.noteChatActivity(view.id)
+            if !view.reflectQueuedRewrite(turnID: turnID, text: text, reply: reply) { self.refresh(sessionID) }
             // Typed after Save was pressed: kept, ahead of the draft set aside.
             let newer = view.draft == text ? nil : view.draft
             self.finishQueuedEdit(view)
             if let newer, newer.contains(where: { !$0.isWhitespace }) {
                 view.draft = view.draft.isEmpty ? newer : newer + "\n\n" + view.draft
-                view.notice = "The queued message was saved as it was when you pressed Return; what you typed after is in the composer."
+                view.queueEditNotice = "The queued message was saved as it was when you chose Save; what you typed after is in the composer."
                 self.draftChanged(view)
             }
             Task { await self.recordQueuedRewrite(sessionID: sessionID, turnID: turnID, text: text) }
@@ -321,7 +323,7 @@ extension WorkspaceModel {
     private func resolveQueuedEdit(_ view: SessionDisplay, editID: String, operation: String, sent: String?, done: @escaping ([String: WireValue]) -> Void) {
         let sentDigest = sent.map(QueuedEditDraft.digest)
         if let pending = view.queueEditPendingOperation, pending != operation || view.queueEditSentDigest != sentDigest {
-            view.notice = "The earlier " + (pending == "save" ? "save" : pending == "cancel" ? "cancel" : "remove") + " of this edit is not confirmed yet. Repeat it, or wait for the helper to answer."
+            view.queueEditNotice = "The earlier " + (pending == "save" ? "save" : pending == "cancel" ? "cancel" : "remove") + " of this edit is not confirmed yet. Repeat it, or wait for the helper to answer."
             view.queueEditResolving = true
             let pendingDigest = view.queueEditSentDigest
             Task { await settleUnansweredQueuedEdit(view, editID: editID, operation: pending, sentDigest: pendingDigest, done: { [weak self] _ in
@@ -335,7 +337,7 @@ extension WorkspaceModel {
                 self.finishQueuedEdit(view)
                 if let newer, newer.contains(where: { !$0.isWhitespace }) {
                     view.draft = view.draft.isEmpty ? newer : newer + "\n\n" + view.draft
-                    view.notice = "An earlier save of this message took effect; what you typed after it is in the composer."
+                    view.queueEditNotice = "An earlier save of this message took effect; what you typed after it is in the composer."
                     self.draftChanged(view)
                 }
             }) }
@@ -353,15 +355,15 @@ extension WorkspaceModel {
                 if let revision = reply["revision"]?.number { view.adoptQueueEditHold(QueueEditHold(reply["held"]?.object), revision: Int(revision)) }
                 view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil
                 done(reply)
-            } catch HostError.rejected(let code, _) where ["queue_edit_cancelled", "queue_edit_removed", "queue_edit_saved", "queue_edit_missing", "command_conflict"].contains(code) {
+            } catch HostError.rejected(let code, let reason) where ["queue_edit_cancelled", "queue_edit_removed", "queue_edit_saved", "queue_edit_missing", "command_conflict"].contains(code) {
                 guard view.queueEditID == editID else { return }
                 // Ended otherwise. A Save refused because another text was
                 // saved keeps this rewrite, even one back to the original.
-                queuedEditEndedElsewhere(view, keepAlways: code == "command_conflict" || code == "queue_edit_saved" && operation == "save")
+                queuedEditEndedElsewhere(view, keepAlways: operation == "save" || code == "command_conflict", reason: reason)
             } catch let error where Self.definitive(error) {
                 guard view.queueEditID == editID else { return }
                 view.queueEditResolving = false; view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil
-                view.notice = (operation == "save" ? "The rewrite was not saved" : operation == "cancel" ? "The edit was not cancelled" : "The message was not removed")
+                view.queueEditNotice = (operation == "save" ? "The rewrite was not saved" : operation == "cancel" ? "The edit was not cancelled" : "The message was not removed")
                     + "; the queue is still paused. " + error.localizedDescription
                 draftChanged(view)
             } catch {
@@ -381,14 +383,16 @@ extension WorkspaceModel {
             switch status["state"]?.string {
             case "active":
                 view.queueEditResolving = false; view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil
-                view.notice = "That did not reach the helper; the edit is still open and the queue still paused. Try again."
+                view.queueEditNotice = "That did not reach the helper; the edit is still open and the queue still paused. Try again."
                 draftChanged(view)
             case "saved" where operation == "save" && status["textDigest"]?.string == sentDigest:
                 view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil; done(status)
             case "cancelled" where operation == "cancel", "removed" where operation == "remove":
                 view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil; done(status)
             default:
-                queuedEditEndedElsewhere(view, keepAlways: status["state"]?.string == "saved")
+                let state = status["state"]?.string
+                let reason = state == "removed" ? "The queued message was removed." : state == "cancelled" ? "The queued edit was cancelled elsewhere." : state == "saved" ? "Another rewrite was saved." : ""
+                queuedEditEndedElsewhere(view, keepAlways: operation == "save" || state == "saved", reason: reason)
             }
             return
         }
@@ -396,7 +400,7 @@ extension WorkspaceModel {
         // keeps what was asked, so a reopen settles it. Only the same request
         // may be repeated; the helper answers a repeat as it did the first.
         view.queueEditResolving = false
-        view.notice = "The helper has not answered, so whether that took effect is not known yet. The rewrite is still here; asking again is safe."
+        view.queueEditNotice = "The helper has not answered, so whether that took effect is not known yet. The rewrite is still here; asking again is safe."
         draftChanged(view)
     }
     /// Lets go of a hold this composer does not hold (one a restart left).
@@ -405,7 +409,7 @@ extension WorkspaceModel {
         let record = view.unreconciledQueuedEdit?.editID == hold.editID ? view.unreconciledQueuedEdit! : QueuedEditDraft(editID: hold.editID, turnID: hold.turnID, rewrite: "", original: "", beginOnly: true)
         // A Save or Remove sent and never answered is settled first: no Cancel crosses it.
         if record.pending == "save" || record.pending == "remove" {
-            view.notice = "An earlier change to that edit is not confirmed yet; asking the helper first."
+            view.queueEditNotice = "An earlier change to that edit is not confirmed yet; asking the helper first."
             Task { await reconcileQueuedEdit(view, record) }
             return
         }
@@ -438,7 +442,7 @@ extension WorkspaceModel {
             view.queueEditCancelling = nil
             await reconcileQueuedEdit(view, cancelling)
         } catch {
-            view.notice = "A queued edit could not be let go of yet; the queue may stay paused. It is asked after again when the chat is next opened."
+            view.queueEditNotice = "A queued edit could not be let go of yet; the queue may stay paused. It is asked after again when the chat is next opened."
         }
     }
     /// Done with a recovery record: it leaves the saved draft, and its
@@ -446,6 +450,9 @@ extension WorkspaceModel {
     private func finishRecord(_ view: SessionDisplay, _ record: QueuedEditDraft, saved digest: String?) {
         guard view.unreconciledQueuedEdit == record else { return }
         view.unreconciledQueuedEdit = nil
+        // Settlement retires the recovery failure. If a changed rewrite
+        // must be kept, keepRewrite supplies its current explanation below.
+        view.queueEditNotice = ""
         if record.beginOnly == true { draftChanged(view); return }
         if let digest {
             // Saved: kept unless what was saved is this very rewrite (a Save
@@ -459,10 +466,12 @@ extension WorkspaceModel {
     /// restart): the editor closes, and a rewrite that differs from the
     /// message (any rewrite, when other text was saved) stays in the composer
     /// ahead of the draft set aside.
-    private func queuedEditEndedElsewhere(_ view: SessionDisplay, keepAlways: Bool = false) {
+    private func queuedEditEndedElsewhere(_ view: SessionDisplay, keepAlways: Bool = false, reason: String = "") {
         let rewrite = view.draft, original = view.queueEditOriginal
         finishQueuedEdit(view)
+        view.queueEditNotice = "That queued edit had already ended, so this rewrite was not saved."
         keepRewrite(view, rewrite, unless: keepAlways ? nil : original)
+        if !reason.isEmpty { view.queueEditNotice = reason + " " + view.queueEditNotice }
     }
     private func keepRewrite(_ view: SessionDisplay, _ rewrite: String, unlessOriginalOf record: QueuedEditDraft) {
         keepRewrite(view, rewrite, unless: record.isOriginal(rewrite) ? rewrite : nil)
@@ -477,11 +486,11 @@ extension WorkspaceModel {
         if view.queueEditingID != nil, var before = view.draftBeforeQueueEdit {
             before.text = before.text.isEmpty ? rewrite : rewrite + "\n\n" + before.text
             view.draftBeforeQueueEdit = before
-            view.notice = "An earlier queued edit had ended, so its rewrite was not saved. It will be in the composer when this edit ends."
+            view.queueEditNotice = "An earlier queued edit had ended, so its rewrite was not saved. It will be in the composer when this edit ends."
             draftChanged(view); return
         }
         view.draft = view.draft.isEmpty ? rewrite : rewrite + "\n\n" + view.draft
-        view.notice = "That queued edit had already ended, so your rewrite was not saved. It is in the composer."
+        view.queueEditNotice = "That queued edit had already ended, so your rewrite was not saved. It is in the composer."
         draftChanged(view)
     }
     private func finishQueuedEdit(_ view: SessionDisplay) {
@@ -490,6 +499,7 @@ extension WorkspaceModel {
         view.queueEditingID = nil; view.queueEditID = nil; view.queueEditOriginal = ""; view.draftBeforeQueueEdit = nil
         view.queueEditResolving = false; view.queueEditKeepsInput = false; view.queueEditPendingOperation = nil; view.queueEditSentDigest = nil
         view.restoreDraft(before)
+        view.queueEditNotice = ""
         draftChanged(view)
     }
     /// A saved draft that held a rewrite, or a Begin with no answer: the
@@ -503,7 +513,7 @@ extension WorkspaceModel {
         let status: [String: WireValue]
         do { status = try await queueEditRequest("queue.edit.status", sessionID: view.id, params: ["editId": .string(record.editID)]) }
         catch {
-            if record.beginOnly == true { view.notice = "The helper has not said whether the queue is paused for that edit. When it does, the message offers Resume Edit or Cancel Edit." }
+            if record.beginOnly == true { view.queueEditNotice = "The helper has not said whether the queue is paused for that edit. When it does, the message offers Resume Edit or Cancel Edit." }
             draftChanged(view); return
         }
         guard view.unreconciledQueuedEdit == record, view.queueEditingID == nil else { return }
@@ -528,11 +538,11 @@ extension WorkspaceModel {
             // Never granted: a Cancel by its identity keeps a late Begin out,
             // and the record stays until the helper confirms it.
             await cancelByIdentity(view, record)
-            if view.unreconciledQueuedEdit == nil { view.notice = "The queued message was not opened for rewriting." }
+            if view.unreconciledQueuedEdit == nil { view.queueEditNotice = "The queued message was not opened for rewriting." }
             return
         }
-        if record.beginOnly == true { view.notice = "The queued message was not opened for rewriting." }
         finishRecord(view, record, saved: state == "saved" ? (status["textDigest"]?.string ?? "") : nil)
+        if record.beginOnly == true { view.queueEditNotice = "The queued message was not opened for rewriting." }
     }
     /// The digest the helper keeps of a saved rewrite.
     nonisolated static func textDigest(_ text: String) -> String {

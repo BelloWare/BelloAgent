@@ -576,6 +576,22 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// A Save or Cancel sent and not yet answered: the editor stays, and
     /// another press does nothing until the helper says how it ended.
     @Published var queueEditResolving = false
+    /// Kept separately from streaming/tool status until the next explicit
+    /// edit action or submission. A refresh must not hide why Save failed.
+    @Published var queueEditNotice = "" {
+        didSet { if queueEditNotice != oldValue { updateComposedNotice() } }
+    }
+    /// The preflight explanation last shown below the composer. A run
+    /// failure already shown in the transcript does not contribute a part.
+    var preflightNotice = "" {
+        didSet { if preflightNotice != oldValue { updateComposedNotice() } }
+    }
+    /// Keep the rendered value cached, but derive it only from its parts.
+    /// Clearing either part must work without another helper snapshot.
+    func updateComposedNotice() {
+        let composed = [queueEditNotice, preflightNotice].filter { !$0.isEmpty }.joined(separator: "\n")
+        if notice != composed { notice = composed }
+    }
     /// The message being rewritten keeps images or skills, so its text may be empty.
     var queueEditKeepsInput = false
     /// A Save, Cancel or Remove sent and not answered, and the text a Save
@@ -598,6 +614,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var queueDetailID: String? { didSet { if queueDetailID == nil { queueDetailShowing = nil } } }
     var queueDetailShowing: String?
     var queueEditHoldRevision = -1
+    var queuePresentedEditRevision = -1
     /// A rewrite saved with the draft whose edit has not been reconciled
     /// with the helper yet; kept in the saved draft until it is.
     var unreconciledQueuedEdit: QueuedEditDraft?
