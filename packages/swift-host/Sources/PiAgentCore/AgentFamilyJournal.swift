@@ -29,6 +29,8 @@ struct AgentChildTurn: Codable, Sendable, Equatable {
     /// V2 did not persist the original snapshot. Freeze the current parent's
     /// snapshot once at adoption, without rewriting immutable v2 provenance.
     var legacyResources: ResourceSnapshot? = nil
+    /// Frozen at acceptance. Older turns inherit their saved model grant.
+    var effort: String? = nil
     var target: AgentTurnTarget { .init(childID:childID,turn:turn) }
     var id: String { target.id }
 }

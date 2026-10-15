@@ -147,7 +147,7 @@ actor SubagentCoordinator {
         let progress = await runtime.child.subagentProgress(elapsed: nowMS() - job.startedAt)
         result.metadata["summary"] = (try? subagentJSON(SubagentSummary(link: job.plan.origin.link, description: job.plan.origin.description,
             model: job.plan.origin.model.model, status: result.status, revision: await runtime.environment.parent.sequence,
-            tools: job.plan.origin.tools, progress: progress))) ?? .null
+            tools: job.plan.origin.tools, progress: progress, effort: job.plan.origin.model.thinkingLevel))) ?? .null
         do { try await runtime.child.saveSubagentTerminal(result) }
         catch {
             let failure = AgentError("subagent_persistence", "The child outcome could not be saved. Inspect its journal and effects before continuing.")
@@ -201,7 +201,7 @@ actor SubagentCoordinator {
         guard jobs[key]?.status == job.status else { return }
         jobs[key]?.progress = progress
         await runtime.environment.parent.subagentChanged(SubagentSummary(link: job.plan.origin.link, description: job.plan.origin.description,
-                                                                         model: job.plan.origin.model.model, status: job.status, revision: await runtime.environment.parent.sequence, tools: job.plan.origin.tools, progress: progress), discovery: discovery)
+                                                                         model: job.plan.origin.model.model, status: job.status, revision: await runtime.environment.parent.sequence, tools: job.plan.origin.tools, progress: progress, effort: job.plan.origin.model.thinkingLevel), discovery: discovery)
     }
     /// Parent results and their order are journal-backed. The coordinator keeps
     /// only live jobs and terminal answers awaiting durable parent consumption.
@@ -221,7 +221,7 @@ actor SubagentCoordinator {
                 let key = plan.origin.link.call
                 let status = state.outcomes?[plan.origin.link.delegationID] ?? jobs[key]?.status ?? rejected[key]?.result.status
                     ?? (preparing.contains(key) ? .queued : .interrupted)
-                return try? subagentJSON(SubagentSummary(link: plan.origin.link, description: plan.origin.description, model: plan.origin.model.model, status: status, revision: revision, tools: plan.origin.tools, progress: jobs[key]?.progress))
+                return try? subagentJSON(SubagentSummary(link: plan.origin.link, description: plan.origin.description, model: plan.origin.model.model, status: status, revision: revision, tools: plan.origin.tools, progress: jobs[key]?.progress, effort: plan.origin.model.thinkingLevel))
             })]
         }
     }

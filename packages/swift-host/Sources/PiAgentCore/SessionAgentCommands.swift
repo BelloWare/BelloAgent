@@ -75,13 +75,15 @@ extension AgentSession {
     }
     func startAgentTurn(_ turn: AgentChildTurn) throws {
         guard agentLease?.executionID == turn.executionID, !closed else { throw SubagentRecovery.damaged() }
-        _ = try submitManaged(Submission(commandID:turn.executionID,turnID:turn.inputID,text:turn.task),steer:false)
+        _ = try submitManaged(Submission(commandID:turn.executionID,turnID:turn.inputID,text:turn.task,thinkingLevel:turn.effort),steer:false)
     }
     func agentResult(_ turn: AgentChildTurn, plan: SubagentPlan, cancelled: Bool) -> SubagentToolResult {
         let final = visible.last { $0.role == "assistant" && $0.taskRootID == turn.inputID && !$0.content.contains { $0["type"].text == "toolCall" } }
         let status: SubagentStatus = cancelled || state == .paused || state == .stopping ? .interrupted : state == .error ? .failed : final?.stopReason == "length" ? .outputLimited : .completed
         var result = SubagentToolResult(plan:plan,status:status,text:final?.text ?? "",error:state == .error ? AgentError(errorCode ?? "subagent_failed",errorMessage ?? "Child failed") : nil,messageIDs:final.map { [$0.id] } ?? [],accountingRevision:accounting.revision,began:true)
         result.envelope["version"] = 3; result.envelope["child_id"] = JSON(id); result.envelope["turn"] = JSON(turn.turn)
+        result.envelope["effort"] = JSON(turn.effort ?? plan.origin.model.thinkingLevel ?? "default")
+        result.metadata["effort"] = result.envelope["effort"]
         result.metadata["version"] = 2; result.metadata["turn"] = JSON(turn.turn); result.metadata["executionID"] = JSON(turn.executionID)
         result.messageID = nil
         return result

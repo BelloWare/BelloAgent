@@ -155,6 +155,7 @@ extension AgentChildTurn {
         result?.envelope["version"] = 3; result?.envelope["child_id"] = JSON(childID); result?.envelope["turn"] = JSON(turn)
         result?.metadata["version"] = 2; result?.metadata["turn"] = JSON(turn); result?.metadata["executionID"] = JSON(executionID)
         result?.metadata["parentAssistantMessageId"] = JSON(call.assistantMessageID); result?.metadata["toolCallId"] = JSON(call.toolCallID)
+        if let effort { result?.envelope["effort"] = JSON(effort); result?.metadata["effort"] = JSON(effort) }
         result?.messageID = nil
     }
 }

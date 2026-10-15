@@ -39,7 +39,7 @@ extension AgentSession {
         let snapshot: ResourceSnapshot
         if let appliedSnapshot { snapshot = appliedSnapshot } else { snapshot = try await resources.resolve() }
         let definitions = await sessionDefinitions(), messages = requestContext + [row]
-        let body = try ProviderClient.requestBody(profile:turnProfile,messages:messages,instructions:Self.requestInstructions(snapshot.prompt),tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
+        let body = try ProviderClient.requestBody(profile:turnProfile,messages:messages,instructions:Self.requestInstructions(snapshot.prompt, tools: definitions),tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
         return try countContext(messages,request:body).fits
     }
 }

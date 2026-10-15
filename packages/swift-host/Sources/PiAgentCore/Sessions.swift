@@ -482,6 +482,7 @@ public actor AgentSession {
                     if let child = op.receipt["child_id"].text,
                        let plan = subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) {
                         result.nativeSubagent = ["version":2,"sessionId":JSON(child),"delegationId":JSON(plan.origin.link.delegationID),"budgetOwnerSessionId":JSON(id),"parentAssistantMessageId":JSON(key.assistantMessageID),"toolCallId":JSON(callID),"turn":op.receipt["turn"],"route":op.receipt["route"],"status":"accepted","effects":"completed"]
+                        if let effort = receipt["effort"].text { result.nativeSubagent?["effort"] = JSON(effort) }
                     }
                 } else { result.content = [textBlock("Not accepted before interruption. No control command was replayed.")]; result.toolStats?["outcome"] = "not_executed" }
             }
