@@ -1830,3 +1830,64 @@ only app-authored transcript labels and the human copy fallback heading changed.
 No installed app, real preferences, Keychain or paid-provider calls were used.
 Round 10 has no known remaining implementation or validation failures; independent
 lead review and integration remain with the lead.
+
+## Lead review round 11: live Find and integration
+
+### Cause and change
+
+Rendered Find uses the app's Markdown projection of saved history, so it reads the
+journal directly even while its helper is running. Both the full index build and
+the final search stamp guard required an unchanged file. A normal message,
+tool-result or run-state append therefore became `unreadableRecord` and the actual
+`TranscriptFindController.setQuery` pipeline displayed “Search failed”.
+
+Each rendered search page now captures the descriptor's size before indexing. The
+index stops at that byte boundary and uses only complete records; a pending last
+line remains untouched. Before publishing, any stamp change requires a full-prefix
+SHA-256 match, plus descriptor/path identity and non-truncation. Growth does not
+retry or chase the writer. Exact-stamp prefix hashes share the existing eight-index
+LRU; no transcript bodies or duplicate journals are retained. Parsing and bounded
+64 KiB hash reads stay on the history actor, with cancellation checks. A malformed
+newest completed run-state record takes precedence over a later incomplete tail.
+
+Rendered tasks/results/reports, streaming replacements, unsaved rows, abandoned
+branch exclusion and paged source Copy retain their existing rules. Source/copy
+searches and copy pages retain strict revisions. Navigation tokens, journals,
+model-facing text, permissions, capture, vault and cost accounting are unchanged.
+
+### Failing-first evidence
+
+All run prefixes below are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`; each has a log, exact
+arguments and extracted result JSON. Native runs use the required
+`PI_BUILD_ROOT=… scripts/test-macos.sh -only-testing:PiAppTests/<Class>` invocation.
+
+| Run (`review11-<name>`) | Pass | Fail | Reproduction |
+| --- | ---: | ---: | --- |
+| `red-append` | 4 | 1 | Normal append rejected by storage search |
+| `red-live-find` | 16 | 1 | Actual `setQuery` reports Search failed during a running chat |
+| `red-boundaries` | 5 | 2 | Appends rejected; an in-flight trailing record rejects all Find results |
+| `red-tail-damage` | 6 | 1 | An incomplete tail masks a damaged newest completed state |
+
+The live test searches 121 rendered deliveries across two result pages, with
+deterministic writes after capture, after indexing and before publication. Its final
+matrix uses an assistant message, tool result and actual sorted native state record.
+Storage tests additionally assert the captured total, a subsequent search seeing
+new records, original bytes unchanged, incomplete-tail completion, damaged complete
+records, an in-place rewrite outside both 64 KiB edge windows plus growth, truncation
+and atomic path replacement.
+
+Real production mutations were rejected and restored before continuing:
+
+- `mutation-append`: restoring strict file-stamp equality fails the actual
+  controller's live Find regression (16 passed, one failed).
+- `mutation-prefix`: omitting the full-prefix check admits a middle-of-file
+  rewrite plus growth (six passed, one failed).
+- `mutation-path`: omitting current-path identity admits atomic replacement
+  (six passed, one failed).
+
+Pre-merge affected search/history checks passed 57 tests with one existing skip;
+the native Markdown/Find class passed all 17. After the tail-validation refinement
+and restored mutations, `premerge-search` passed all 11 ContentSearch/StateTail
+tests and standalone `premerge-live-find` passed all 17 again. The integration
+and final native lane are recorded below after merging `origin/dev/next`.

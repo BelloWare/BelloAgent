@@ -119,6 +119,39 @@ final class SubagentMarkdownTests: XCTestCase {
         try await eventually("Unsaved task Find finished") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
         XCTAssertEqual(pane.find.matches.map(\.messageID), ["subagent-task:agent-find"])
     }
+    @MainActor func testFindQuerySurvivesAppendsThroughoutALiveRenderedSearch() async throws {
+        for stage in HistoryReader.SearchReadStage.allCases {
+            let messages: [(String,[String:WireValue])] = (0..<121).map { index in
+                ("delivery-\(index)",["role":.string("user"),"content":.string("A **rendered** report"),
+                    "nativeAgentDelivery":.object(["author":.string("subagent"),"childId":.string("child"),"turn":.number(1)])])
+            }
+            let (model,pane,window) = try await findFixture(messages)
+            let session = try XCTUnwrap(model.selected), path = try XCTUnwrap(model.chats[0].path)
+            session.runState = .running; model.opened.insert(session.id)
+            await model.history.releaseIndexes()
+            // Exercise messages, tool results and the helper's sorted state
+            // records at the actual index/scan publication boundaries.
+            let appended: String
+            switch stage {
+            case .captured: appended = "{\"type\":\"message\",\"id\":\"new-reply\",\"parentId\":\"delivery-120\",\"message\":{\"role\":\"assistant\",\"content\":\"Still working\"}}"
+            case .indexed: appended = "{\"type\":\"message\",\"id\":\"new-result\",\"parentId\":\"delivery-120\",\"message\":{\"role\":\"toolResult\",\"toolName\":\"read\",\"toolCallId\":\"call\",\"content\":\"Read completed\"}}"
+            case .scanned: appended = "{\"customType\":\"pi-app.native.state.v1\",\"data\":{\"active\":true},\"id\":\"state\",\"parentId\":\"delivery-120\",\"timestamp\":\"2026-10-16T00:00:00Z\",\"type\":\"custom\"}"
+            }
+            let addition = Data((appended + "\n").utf8)
+            let once = ContentSearchTests.Once()
+            await model.history.observeSearchReads { current in
+                if current == stage { try once.run { try ContentSearchTests.append(addition,to:path) } }
+            }
+            pane.showFind(); pane.find.setQuery("A rendered report")
+            try await eventually("Live rendered Find finishes across both pages") {
+                pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching
+            }
+            XCTAssertFalse(pane.find.failed,"An ordinary \(stage) append must never become Search failed")
+            XCTAssertEqual(pane.find.matches.map(\.messageID),(0..<121).map { "delivery-\($0)" })
+            XCTAssertNotEqual(pane.findBar?.count.line.text,"Search failed")
+            pane.closeFind(focusing:false); await model.history.observeSearchReads(nil)
+        }
+    }
     @MainActor func testFindQuerySearchesALegacyChildsRenderedDelegatedTask() async throws {
         let (model, pane, window) = try await findFixture([
             ("question", ["role": .string("user"), "content": .string("Check **legacy** task boundaries.")]),

@@ -6,6 +6,94 @@ import XCTest
 /// text finds, in the same order and counts, with its ASCII shortcut and its
 /// records decoded a run at a time.
 final class ContentSearchTests: XCTestCase {
+    /// A deterministic writer at a real search boundary, with no timing race.
+    /// The lock protects the one-shot flag when captured by a Sendable observer.
+    final class Once: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+        func run(_ action: () throws -> Void) rethrows {
+            try lock.withLock { guard !done else { return }; done = true; try action() }
+        }
+    }
+    static func append(_ bytes: Data, to path: String) throws {
+        let file = try FileHandle(forWritingTo: URL(fileURLWithPath:path)); defer { try? file.close() }
+        try file.seekToEnd(); try file.write(contentsOf:bytes)
+    }
+    func testRenderedSearchIgnoresOnlyAnUncommittedTail() async throws {
+        let root = scratchRoot("search-incomplete-tail"), path = root.appendingPathComponent("chat.jsonl")
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let initial = Data("{\"type\":\"session\",\"version\":3,\"id\":\"chat\"}\n{\"type\":\"message\",\"id\":\"saved\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":\"Saved answer\"}}\n".utf8)
+        let pending = Data("{\"type\":\"message\",\"id\":\"pending\",\"parentId\":\"saved\",\"message\":{\"role\":\"assistant\",\"content\":\"Next".utf8)
+        try (initial + pending).write(to:path)
+        let reader = HistoryReader(indexDirectory:root)
+        let found = try await reader.searchContent(path:path.path,query:"Saved answer",start:0,renderedAgentProse:true)
+        XCTAssertEqual(found.hits.map(\.id),["saved"]); XCTAssertEqual(found.total,1)
+        XCTAssertEqual(try Data(contentsOf:path),initial + pending)
+        do { _ = try await reader.searchContent(path:path.path,query:"Saved",start:0); XCTFail("Source/copy searches still require validated history") }
+        catch { }
+        try Self.append(Data(" answer\"}}\n".utf8),to:path.path)
+        let completed = try await reader.searchContent(path:path.path,query:"Next answer",start:0,renderedAgentProse:true)
+        XCTAssertEqual(completed.hits.map(\.id),["pending"])
+        try Self.append(Data("not a complete JSON record\n".utf8),to:path.path)
+        do { _ = try await reader.searchContent(path:path.path,query:"Saved",start:0,renderedAgentProse:true); XCTFail("A damaged complete record is never a pending append") }
+        catch { }
+        // A malformed newest state is decoded after the fast offset scan. A
+        // following in-flight line must not mask that complete record's damage.
+        let damagedState = Data("{\"customType\":\"pi-app.native.state.v1\",\"data\":{\"active\":tru},\"id\":\"state\",\"parentId\":\"saved\",\"timestamp\":\"2026-10-16T00:00:00Z\",\"type\":\"custom\"}\n{".utf8)
+        try (initial + damagedState).write(to:path)
+        do { _ = try await reader.searchContent(path:path.path,query:"Saved",start:0,renderedAgentProse:true); XCTFail("A pending tail cannot hide damaged state") }
+        catch { }
+    }
+    func testRenderedSearchRejectsRewrittenTruncatedAndReplacedSnapshots() async throws {
+        for change in ["rewrite-and-grow", "truncate", "replace"] {
+            let root = scratchRoot("search-changed-prefix"), path = root.appendingPathComponent("chat.jsonl")
+            try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+            defer { try? FileManager.default.removeItem(at:root) }
+            let source = "Saved answer " + String(repeating:"x",count:300_000)
+            let header = Data("{\"type\":\"session\",\"version\":3,\"id\":\"chat\"}\n".utf8)
+            let row = try JSONEncoder().encode(WireValue.object(["type":.string("message"),"id":.string("saved"),"parentId":.null,
+                "message":.object(["role":.string("assistant"),"content":.string(source)])]))
+            let bytes = header + row + Data([10]); try bytes.write(to:path)
+            let reader = HistoryReader(indexDirectory:root)
+            await reader.observeSearchReads { stage in
+                guard stage == .indexed else { return }
+                if change == "replace" { try bytes.write(to:path,options:.atomic); return }
+                let file = try FileHandle(forWritingTo:path); defer { try? file.close() }
+                if change == "truncate" { try file.truncate(atOffset:UInt64(header.count)); return }
+                // Outside both 64 KiB edge fingerprints: growth must not hide
+                // an in-place change anywhere in the captured prefix.
+                try file.seek(toOffset:150_000); try file.write(contentsOf:Data("y".utf8))
+                try file.seekToEnd(); try file.write(contentsOf:Data("\n".utf8))
+            }
+            do { _ = try await reader.searchContent(path:path.path,query:"Saved answer",start:0,renderedAgentProse:true); XCTFail("Accepted \(change)") }
+            catch { }
+        }
+    }
+    func testRenderedSearchBoundsItsSnapshotWhileMessagesAppend() async throws {
+        for stage in HistoryReader.SearchReadStage.allCases {
+            let root = scratchRoot("search-append"), path = root.appendingPathComponent("chat.jsonl")
+            try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+            defer { try? FileManager.default.removeItem(at:root) }
+            let initial = Data("""
+            {"type":"session","version":3,"id":"chat"}
+            {"type":"message","id":"saved","parentId":null,"message":{"role":"user","content":"A **rendered** result","nativeAgentDelivery":{"author":"subagent","childId":"child","turn":1}}}
+
+            """.utf8)
+            let addition = Data("{\"type\":\"message\",\"id\":\"appended\",\"parentId\":\"saved\",\"message\":{\"role\":\"assistant\",\"content\":\"Appended result\"}}\n".utf8)
+            try initial.write(to:path)
+            let reader = HistoryReader(indexDirectory:root), once = Once()
+            await reader.observeSearchReads { current in
+                if current == stage { try once.run { try Self.append(addition,to:path.path) } }
+            }
+            let found = try await reader.searchContent(path:path.path,query:"rendered result",start:0,renderedAgentProse:true)
+            XCTAssertEqual(found.hits.map(\.id),["saved"]); XCTAssertEqual(found.total,1); XCTAssertNil(found.next)
+            await reader.observeSearchReads(nil)
+            let next = try await reader.searchContent(path:path.path,query:"Appended result",start:0,renderedAgentProse:true)
+            XCTAssertEqual(next.hits.map(\.id),["appended"]); XCTAssertEqual(next.total,2)
+            XCTAssertEqual(try Data(contentsOf:path),initial + addition)
+        }
+    }
     func testIncompleteResponseCopyUsesPlainHeadingAndKeepsTheFullSavedSource() throws {
         var timeline = ResponseTimeline()
         timeline.consume(.init(attemptID:"attempt",ordinal:0,itemID:"part",kind:"text",update:"append",text:"Partial preview"))

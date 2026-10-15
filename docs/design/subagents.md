@@ -100,6 +100,15 @@ or focus a transcript. Pure storage/helper readers return data; their UI callers
 own and validate navigation. Canceled reads clear only their own loading flags,
 and reopening resets both boundaries while retaining reusable cursors.
 
+Rendered Find reads complete records up to the journal size captured at the start
+of each search page. A normal append, including a partially written last record,
+does not fail that read. A changed stamp requires the captured prefix's complete
+SHA-256 to match; truncation, replacement and damaged completed records still fail.
+The hash and offset caches are bounded together, and all I/O, hashing and Markdown
+projection remain off the main actor. Search keeps the captured live-text overlay;
+later pages/searches may see newly committed records. Source Copy retains its
+strict revision guard. These storage bounds do not retire any reader token.
+
 Native responder transitions update command focus. Deferred attachment and read
 completion never refocus a reader. Show in Chat requires a successful, current
 opening even if Back left the embedded reader visible.

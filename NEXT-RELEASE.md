@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Live rendered Find (`dev/a128-sub-display`, review round 11): each search read captures a byte boundary, searches its complete records and tolerates normal journal appends. Full-prefix validation still rejects rewrites, truncation and replacement; incomplete tails never hide damaged completed records. Rendered agent prose, live overlays, source Copy and reader navigation ownership remain intact. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-11-live-find-and-integration).
+
 - [x] Sub-agent review round 10 (`dev/a128-sub-display`): coordination reserves inherited start numbers without adopting their children, keeping fork cards and Inspector identities consistent. Sides and Agents commands require an available picker; independent child windows retain their own. Transcript chrome uses plain activity/completion wording, and original-reference readers name the fork in their Back control. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-10-numbering-picker-availability-and-plain-labels).
 
 - [x] Sub-agent review round 9 (`dev/a128-sub-display`): retired initial reads recover when main chats, sides or hosted children become visible again; no-op tabs and unrelated windows preserve pending work. Find restarts retained queries without replaying obsolete reveals. Fork cards and pickers open original agents read-only, retaining provenance through tab restore and Inspector navigation, with unavailable-original reasons and owned numbering after inherited starts. Nested picker rows add guide lines and visible owner labels. [Validation and renewed navigation audit](docs/validation/sub-display-0.1.128.md#lead-review-round-9-reader-recovery-and-original-references).
