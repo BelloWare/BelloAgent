@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Saved-side discovery caches validated file identities and origin locators, without decoding unrelated histories. Loaded-family release follows direct ancestry; deletion discovery runs off the host actor. Generated 200-side performance and invalidation regressions cover cold opens and damaged-history isolation. [Round 17 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-17-origin-discovery-and-family-ui-integration).
+
 - [x] Evicted budget owners stay on cost-only refresh while a running saved side pins their runtime. Side activity updates authoritative spend without recreating a transcript; closing the last dependent releases the owner and retires late budget replies. Live-display counts cover eviction, activity and closure. [Round 16 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-16-released-owner-display-lifetime).
 
 - [x] Budget-rejected queued sub-agents seal their prepared child journal and release the runtime, retaining `not_executed` without cancelling other dispatched requests. The limit-stop table covers 18 accepted children across all five charge sources, exact terminal/release behavior, and a later follow-up after raising the budget. [Round 15 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-15-queued-child-finalization).

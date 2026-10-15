@@ -63,6 +63,9 @@ enum SideBudgetRecovery {
         return result
     }
     static func savedFamily(owner: String, directory: URL) throws -> [(origin: Origin, parents: [String])] {
+        #if DEBUG
+        SideOriginReadProbe.scan(directory)
+        #endif
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         var origins: [String: Origin] = [:]
         for file in files where file.lastPathComponent.hasPrefix("side_") && file.pathExtension == "jsonl" {
@@ -88,17 +91,7 @@ enum SideBudgetRecovery {
         return result
     }
     static func readOrigin(_ file: URL) throws -> Origin? {
-        let reader = try JournalRecordReader(file)
-        var id: String?
-        while let line = try reader.nextLine() {
-            guard !line.isEmpty, let record = try? JSON.parse(line) else { continue }
-            if record["type"].text == "session" { id = record["id"].text }
-            guard record["customType"].text == JournalRecordKind.sideOrigin else { continue }
-            guard let id, let parent = record["data"]["parentSessionId"].text,
-                  record["data"]["relationship"].text != "fork", file.lastPathComponent == "side_" + id + ".jsonl" else { return nil }
-            return Origin(id:id,parent:parent,file:file)
-        }
-        return nil
+        try SideOriginIndex.read(file)
     }
     static func charge(_ original: JSON, side: String, parents: [String]) -> JSON {
         // An allowlist is deliberate: even a malformed side cost record can

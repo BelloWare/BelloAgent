@@ -556,21 +556,24 @@ public actor NativeHostService {
                 // Deleting a side can remove the only priced/token evidence
                 // after its ancestor's append failed. Repair surviving owners
                 // before downward mirrors, detachment, capture clearing or Trash.
-                for ancestor in try SideBudgetRecovery.ancestors(of:id,directory:directory).reversed() {
-                    let records = try SideBudgetRecovery.deletionRecords(side:id,ancestor:ancestor,directory:directory)
+                let ancestors = try await Task.detached { try SideBudgetRecovery.ancestors(of:id,directory:directory) }.value
+                for ancestor in ancestors.reversed() {
+                    let records = try await Task.detached { try SideBudgetRecovery.deletionRecords(side:id,ancestor:ancestor,directory:directory) }.value
                     let committed: [JSON]
                     if let runtime = sessions[ancestor] {
                         try await runtime.importDeletionRecords(records)
                         committed = await runtime.committedSideCharges()
                     } else {
-                        try SideBudgetRecovery.importDeletionRecords(records,owner:ancestor,directory:directory)
-                        committed = try SideBudgetRecovery.committedSideCharges(owner:ancestor,directory:directory)
+                        committed = try await Task.detached {
+                            try SideBudgetRecovery.importDeletionRecords(records,owner:ancestor,directory:directory)
+                            return try SideBudgetRecovery.committedSideCharges(owner:ancestor,directory:directory)
+                        }.value
                     }
                     try await mirrorFamilyCharges(committed,owner:ancestor,directory:directory)
                 }
                 let costs: [JSON]
                 if let owner = sessions[id] { costs = await owner.committedSideCharges() }
-                else { costs = try SideBudgetRecovery.committedSideCharges(owner:id,directory:directory) }
+                else { costs = try await Task.detached { try SideBudgetRecovery.committedSideCharges(owner:id,directory:directory) }.value }
                 try await mirrorFamilyCharges(costs,owner:id,directory:directory)
                 for (value, _) in family.sorted(by: { $0.1 > $1.1 }) {
                     guard await value.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
@@ -586,14 +589,22 @@ public actor NativeHostService {
     /// Call under the runtime gate. Pane placement never defines this family.
     private func loadedBudgetFamily(_ id: String, directory: URL) async throws -> [(AgentSession,Int)] {
         var family: [(AgentSession,Int)] = []
-        var owners = Set(try SideBudgetRecovery.savedFamily(owner:id,directory:directory).map { $0.origin.id })
-        owners.insert(id)
+        var owners: Set<String> = [id]
         for value in sessions.values {
             let parents = await value.sideBudgetIDs
             if value.id == id || parents.contains(id) { family.append((value,parents.count)); owners.insert(value.id) }
         }
+        var coldOwners: [String:Bool] = [:]
         for value in sessions.values where !owners.contains(value.id) {
-            if let owner = await value.subagents.origin?.link.budgetOwnerSessionID, owners.contains(owner) { family.append((value,129)) }
+            guard let owner = await value.subagents.origin?.link.budgetOwnerSessionID else { continue }
+            if !owners.contains(owner), coldOwners[owner] == nil {
+                // Only a loaded reader's direct ancestry is relevant to release.
+                // Do not enumerate unrelated saved sides on the host actor.
+                coldOwners[owner] = try await Task.detached {
+                    try SideBudgetRecovery.ancestors(of:owner,directory:directory).contains(id)
+                }.value
+            }
+            if owners.contains(owner) || coldOwners[owner] == true { family.append((value,129)) }
         }
         return family.sorted { $0.0.id < $1.0.id }
     }
@@ -792,7 +803,7 @@ public actor NativeHostService {
                     guard let delegation = cost["delegationId"].text, let owner = cost["budgetOwnerSessionId"].text else { throw AttemptAccounting.damaged() }
                     if plans[owner] == nil {
                         if let session = sessions[owner] { plans[owner] = await session.subagents.plans }
-                        else { plans[owner] = try SideBudgetRecovery.childPlans(owner:owner,directory:directory) }
+                        else { plans[owner] = try await Task.detached { try SideBudgetRecovery.childPlans(owner:owner,directory:directory) }.value }
                     }
                     guard let plan = plans[owner]?[delegation] else { throw AttemptAccounting.damaged() }
                     accepted = plan.origin
@@ -800,7 +811,8 @@ public actor NativeHostService {
                 try await child.mirrorSharedCharge(cost,acceptedOrigin:accepted)
             }
         }
-        try SideBudgetRecovery.mirrorCapturedCosts(costs,owner:id,directory:directory,loaded:Set(sessions.keys))
+        let loaded = Set(sessions.keys)
+        try await Task.detached { try SideBudgetRecovery.mirrorCapturedCosts(costs,owner:id,directory:directory,loaded:loaded) }.value
         for owner in sessions.values {
             for cost in costs {
                 guard let delegation = cost["delegationId"].text,

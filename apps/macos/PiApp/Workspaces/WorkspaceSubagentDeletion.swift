@@ -140,7 +140,7 @@ extension WorkspaceModel {
                 let names: [String]
                 do { names = try FileManager.default.contentsOfDirectory(atPath: directory.path) }
                 catch let error as NSError where error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) { names = [] }
-                var files = names.filter { $0 == journal.lastPathComponent || $0 == journal.lastPathComponent + ".meta" || $0 == journal.lastPathComponent + ".promotion" || $0.hasPrefix(journal.lastPathComponent + ".stream") || JournalCheckpoint.isTemporary($0, for: journal) }
+                var files = names.filter { $0 == journal.lastPathComponent || $0 == journal.lastPathComponent + ".meta" || $0 == journal.lastPathComponent + ".origin" || $0 == journal.lastPathComponent + ".promotion" || $0.hasPrefix(journal.lastPathComponent + ".stream") || JournalCheckpoint.isTemporary($0, for: journal) }
                     .sorted().map { directory.appendingPathComponent($0) }
                 let outputs = try ToolOutputOwnership.directory(root: directory.appendingPathComponent("tool-output"), sessionID: member.id)
                 // Use throwing inspection: an I/O failure must retain the intent.
