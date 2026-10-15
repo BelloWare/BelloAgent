@@ -268,3 +268,80 @@ No helper source changed, so helper package tests were not rerun.
 
 Both review items are addressed. Follow-up lead review and integration remain
 separate; only `dev/a128-queue-edit` is committed and pushed.
+
+## Lead review round 2
+
+The retained queue-edit notice was cleared correctly, but its rendered
+composition could remain stale: `queueEditNotice` compared the displayed
+`notice` with the old queue-edit text alone. A stopped chat's displayed
+notice also contained `preflightError`, so the equality failed. Replacing
+the queue-edit warning also dropped the preflight part until another
+snapshot. Status and repeated-cancel replies need not produce that snapshot.
+
+`SessionDisplay` now retains the preflight explanation separately. Changes
+to either component recompute the cached display from the two components;
+no component is recovered by comparing or parsing the previously rendered
+text. Snapshot notice handling uses the same composition function. Failed
+run explanations remain in their existing transcript presentation without
+duplication in the composer, and unchanged empty components leave unrelated
+notices alone. This adds no work to layout or transcript traversal and
+changes no helper, wire, journal, permission, capture, vault or model input.
+
+Failing-first evidence is under `build-queue-edit/logs/review-2/`:
+
+- `red-refresh.log`: 30 tests; 3 new cases failed on immediate queue-part
+  clearing/replacement and preservation of the stopped-run explanation.
+  A fourth new case covers clearing preflight before the queue part.
+- `red-interaction.log`: 17 tests; both strengthened cancellation cases
+  failed (6 assertions). They hold snapshots in flight and verify the
+  visible notice immediately after status or a repeated Cancel, for no
+  recovered draft, an unchanged rewrite and a changed rewrite.
+- Two additional presentation tests cover changing/clearing either part in
+  either order without a snapshot, and unchanged empty components alongside
+  an unrelated notice.
+
+The first fixed interaction run (`green-interaction.log`) passed both
+regressions but exposed a fixture race in the image/skill case: `edit()`
+waited only for the queue row to exist, then clicked before its Edit button
+was enabled after Cancel. The fixture now waits for the actual button to be
+enabled and visible, retaining the click and edit-open assertions. The
+complete class then passed 17/17 (`interaction-ready.log`).
+
+Both component setters were mutation-checked in production code:
+
+- Suppressing recomposition for an empty queue-edit component failed the
+  presentation test in both clearing orders (2 assertions):
+  `mutation-queue-clear.log`.
+- Suppressing recomposition for an empty preflight component also failed
+  that test in both clearing orders (2 assertions):
+  `mutation-preflight-clear.log`.
+
+The source was restored byte-for-byte before final affected-class checks.
+
+Final validation: **143 passed, zero failures, zero skips**.
+
+| Class | Passed | Log in `logs/review-2/` |
+| --- | ---: | --- |
+| QueuedEditPresentationTests | 9 | `affected-parallel.log` |
+| WorkspaceRefreshLifecycleTests | 30 | `affected-parallel.log` |
+| WorkspaceFailureTests | 6 | `affected-parallel.log` |
+| ConversationPaneTests | 81 | `conversation-pane.log` |
+| QueueEditInteractionTests | 17 | `interaction-restored.log` |
+
+All used this stream's `PI_BUILD_ROOT` and `scripts/test-macos.sh` with
+`-only-testing:PiAppTests/<Class>`. The three parallel classes shared two
+workers; each serial class ran alone with parallel testing disabled.
+Exported `*-summary.json` files and `final-results.json` preserve the final
+counts. No full native lane or helper-package suite was rerun, following
+the affected-class-only review instruction. Gallery geometry and strings
+are unchanged; the existing light/dark captures above remain the gallery.
+
+Upstream integration was checked again after validation. Fetching
+`origin/dev/next` returned `e13e1462612f4bddc527f03e311a3a61c8c16c41`,
+already an ancestor of this branch. `git merge --no-ff --no-commit
+origin/dev/next` returned **Already up to date**. There were no incoming
+changes or conflicts to resolve, and no merge commit was needed; both the
+existing upstream behavior and this stream's changes remain present.
+`logs/review-2/upstream-merge.json` records the command, commit and result.
+Only `dev/a128-queue-edit` is pushed. The review finding is addressed;
+follow-up lead review and integration remain separate.

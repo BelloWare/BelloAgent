@@ -11,6 +11,34 @@ final class QueuedEditPresentationTests: XCTestCase {
         ["accepted": .bool(true), "outcome": .string("saved"), "turnId": .string("q"), "revision": .number(Double(revision))]
     }
 
+    @MainActor func testNoticeComponentsCanChangeAndClearInEitherOrder() {
+        let view = SessionDisplay(id: "chat")
+        for queueFirst in [false, true] {
+            view.queueEditNotice = "Keep the rewrite."
+            view.preflightNotice = "Run stopped."
+            XCTAssertEqual(view.notice, "Keep the rewrite.\nRun stopped.")
+            view.preflightNotice = "Run interrupted."
+            XCTAssertEqual(view.notice, "Keep the rewrite.\nRun interrupted.")
+            if queueFirst {
+                view.queueEditNotice = ""
+                XCTAssertEqual(view.notice, "Run interrupted.")
+                view.preflightNotice = ""
+            } else {
+                view.preflightNotice = ""
+                XCTAssertEqual(view.notice, "Keep the rewrite.")
+                view.queueEditNotice = ""
+            }
+            XCTAssertEqual(view.notice, "")
+        }
+    }
+
+    @MainActor func testUnchangedEmptyNoticeComponentsLeaveOtherNoticesAlone() {
+        let view = SessionDisplay(id: "chat")
+        view.notice = "Host interrupted. No command was replayed."
+        view.queueEditNotice = ""; view.preflightNotice = ""
+        XCTAssertEqual(view.notice, "Host interrupted. No command was replayed.")
+    }
+
     @MainActor func testASnapshotStartedBeforeSaveCannotUndoTheAcknowledgedRow() {
         let view = SessionDisplay(id: "chat")
         view.applyQueueSnapshot(snapshot(1, text: "Original"))

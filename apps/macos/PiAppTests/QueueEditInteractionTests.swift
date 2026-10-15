@@ -213,14 +213,27 @@ final class QueueEditInteractionTests: XCTestCase, SerialTestLane {
             model.refresh(view.id)
             try await eventually("failure snapshot settled") { !view.snapshotInFlight }
             XCTAssertTrue(view.notice.contains("could not be let go"), "Unconfirmed cancellation stays visible")
+            let stopped = try await host.request("session.status", sessionID: view.id).object ?? [:]
+            let preflight = try XCTUnwrap(stopped["preflightError"]?.string)
+            XCTAssertFalse(preflight.isEmpty)
+            XCTAssertEqual(view.notice, view.queueEditNotice + "\n" + preflight)
+            // No snapshot may repair the displayed notice after settlement.
+            // A status reply or repeated Cancel emits no queue-change event.
+            try await eventually("snapshot idle before recovery settlement") { !view.snapshotInFlight }
+            view.snapshotInFlight = true
+            defer { view.snapshotInFlight = false }
             if viaStatus {
                 await model.reconcileQueuedEdit(view, try XCTUnwrap(view.unreconciledQueuedEdit))
             } else {
+                _ = try await host.request("queue.edit.cancel", sessionID: view.id, params: ["editId": .string(editID)])
                 try await eventually("Cancel Edit available again") { row.cancelEdit.isEnabled }
                 row.cancelEdit.performClick(nil)
             }
             try await eventually("recovery cancellation settled") { view.queueEditCancelling == nil && view.unreconciledQueuedEdit == nil }
             XCTAssertFalse(view.queueEditNotice.contains("could not be let go"), "Confirmed recovery must retire its retained failure")
+            let expected = view.queueEditNotice.isEmpty ? preflight : view.queueEditNotice + "\n" + preflight
+            XCTAssertEqual(view.notice, expected, "Settlement must recompute both components without waiting for a snapshot")
+            view.snapshotInFlight = false
             model.refresh(view.id)
             try await eventually("settled snapshot applied") { !view.snapshotInFlight }
             XCTAssertFalse(view.notice.contains("could not be let go"), "Snapshots must not republish a resolved cancellation failure")
@@ -451,9 +464,9 @@ final class QueueEditInteractionTests: XCTestCase, SerialTestLane {
             pane.show(session: session, chat: chat, side: model.side(session.id)); window.makeKeyAndOrderFront(nil)
         }
         func edit(_ id: String) async throws {
-            try await eventually("queue row mounted") {
+            try await eventually("queue row's Edit action available") {
                 self.pane.layoutSubtreeIfNeeded()
-                return ConversationPaneTests.views(QueueRowView.self, in: self.pane).contains { $0.state?.item.id == id }
+                return ConversationPaneTests.views(QueueRowView.self, in: self.pane).contains { $0.state?.item.id == id && $0.edit.isEnabled && !$0.edit.isHidden }
             }
             let row = try XCTUnwrap(ConversationPaneTests.views(QueueRowView.self, in: pane).first { $0.state?.item.id == id })
             XCTAssertTrue(row.edit.isEnabled); row.edit.performClick(nil)

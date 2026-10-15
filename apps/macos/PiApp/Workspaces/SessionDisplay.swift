@@ -579,10 +579,18 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// Kept separately from streaming/tool status until the next explicit
     /// edit action or submission. A refresh must not hide why Save failed.
     @Published var queueEditNotice = "" {
-        didSet {
-            if !queueEditNotice.isEmpty { notice = queueEditNotice }
-            else if notice == oldValue { notice = "" }
-        }
+        didSet { if queueEditNotice != oldValue { updateComposedNotice() } }
+    }
+    /// The preflight explanation last shown below the composer. A run
+    /// failure already shown in the transcript does not contribute a part.
+    var preflightNotice = "" {
+        didSet { if preflightNotice != oldValue { updateComposedNotice() } }
+    }
+    /// Keep the rendered value cached, but derive it only from its parts.
+    /// Clearing either part must work without another helper snapshot.
+    func updateComposedNotice() {
+        let composed = [queueEditNotice, preflightNotice].filter { !$0.isEmpty }.joined(separator: "\n")
+        if notice != composed { notice = composed }
     }
     /// The message being rewritten keeps images or skills, so its text may be empty.
     var queueEditKeepsInput = false

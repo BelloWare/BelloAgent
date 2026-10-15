@@ -347,17 +347,16 @@ extension WorkspaceModel {
     /// unless something the reader has to review is there instead.
     private func applyToolNotice(_ result: [String: WireValue], to view: SessionDisplay, id: String, item: ChatRecord) {
         let toolNotice = item.isBackgroundTask ? (record(id)?.backgroundTaskNotice ?? "Tools disabled · Title generation") : item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID ? "Tools disabled · Connection test" : item.toolMode == ChatRecord.readOnlyTools ? "Read-only tools" : ""
-        let notice = view.queueEditNotice.isEmpty ? toolNotice : view.queueEditNotice
+        let preflight = result["preflightError"]?.string
+        view.preflightNotice = view.failureMessage == nil ? preflight ?? "" : ""
+        if preflight != nil { view.uncertain = true }
+        if !view.queueEditNotice.isEmpty || (preflight != nil && view.failureMessage == nil) {
+            view.updateComposedNotice()
+            return
+        }
         // An interruption or preflight explanation stays until the
         // user has reviewed it; the static tool notice must not replace it.
-        if view.notice != notice, !view.uncertain, view.failureMessage == nil { view.notice = notice }
-        if let preflight = result["preflightError"]?.string { if view.failureMessage == nil { view.notice = preflight }; view.uncertain = true }
-        if !view.queueEditNotice.isEmpty {
-            // A stopped run can keep reporting its preflight explanation.
-            // Keep both: it must not erase why the rewrite was not saved.
-            let preflight = result["preflightError"]?.string ?? ""
-            view.notice = view.queueEditNotice + (preflight.isEmpty || view.failureMessage != nil ? "" : "\n" + preflight)
-        }
+        if view.notice != toolNotice, !view.uncertain, view.failureMessage == nil { view.notice = toolNotice }
     }
     /// The chat's receipts, its messages still drawn as sending, and its
     /// pending submissions, settled against what the snapshot says. Returns
