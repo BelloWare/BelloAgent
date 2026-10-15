@@ -70,7 +70,7 @@ import Combine
 /// ⌘W in a tab window closes the tab it shows, and with its last tab the
 /// window; its close button, and the menu's Close, close the window and its
 /// tabs, as closing a window does.
-final class TabWindow: NSWindow {
+final class TabWindow: ConversationWindow {
     var closeTab: (() -> Bool)?
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         // The tab with focus has its own keys first (a file's ⌘F).
@@ -155,7 +155,7 @@ final class TabContentContainer: NSView {
             DispatchQueue.main.async { [weak self] in
                 MainActor.assumeIsolated {
                     // Not into content something has covered since (the report).
-                    guard let self, let window = self.window, content.superview === self, !content.isHiddenOrHasHiddenAncestor else { return }
+                    guard let self, let window = self.window, content.superview === self, tab.container === owner, tab.canRestoreFocus, !content.isHiddenOrHasHiddenAncestor else { return }
                     window.makeFirstResponder(tab.focusView ?? content)
                 }
             }

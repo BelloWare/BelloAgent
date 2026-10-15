@@ -35,15 +35,22 @@ extension WorkspaceModel {
     /// show). The chat should be the selected one (or a side shown beside
     /// it): nothing is placed in a transcript nobody is showing.
     @discardableResult
-    func revealInTranscript(sessionID id: String, messageID: String, mark: TranscriptReveal.Mark? = nil, fromFind: Bool = false, toolCallID: String? = nil) async -> Bool {
+    func revealInTranscript(sessionID id: String, messageID: String, mark: TranscriptReveal.Mark? = nil, fromFind: Bool = false, toolCallID: String? = nil, navigation: HostedReaderToken? = nil, intent: TranscriptNavigationToken? = nil) async -> Bool {
         guard !Task.isCancelled, transcriptShows(id), let view = displays[id], let item = record(id) else { return false }
+        if let navigation { guard navigation.isCurrent, navigation.reader.key == id else { return false } }
+        // Find owns its query and cancels superseded match tasks itself. Its
+        // reveals share the reader intent with pages the query is still reading;
+        // Back/hide/close still retire both through the reader's token.
+        let intent = intent ?? navigation.map { TranscriptNavigationToken(reader: $0, workspaceRevision: messageNavigationRevision) }
+            ?? transcriptNavigation(id, advancing: !fromFind)
+        guard intent.isCurrent(in: self) else { return false }
         revealSerial += 1
         view.reveal = TranscriptReveal(messageID: messageID, mark: mark, serial: revealSerial, fromFind: fromFind, toolCallID: toolCallID)
         if view.presentedMessages.contains(where: { $0.id == messageID }) {
             land(view, on: messageID)
             return true
         }
-        return await readWindow(item, view: view, around: messageID)
+        return await readWindow(item, view: view, around: messageID, navigation: intent)
     }
 
     /// Home: the chat's first message, at the top. A window that already
@@ -52,11 +59,12 @@ extension WorkspaceModel {
     @discardableResult
     func revealStartOfChat(sessionID id: String) async -> Bool {
         guard !Task.isCancelled, transcriptShows(id), let view = displays[id], let item = record(id) else { return false }
+        let navigation = transcriptNavigation(id, advancing: true)
         if view.olderPage.cursor == nil, let first = view.messages.first {
             land(view, on: first.id, landing: Double(TranscriptMetrics.pageTopInset))
             return true
         }
-        return await readWindow(item, view: view, around: nil)
+        return await readWindow(item, view: view, around: nil, navigation: navigation)
     }
 
     /// The reader has scrolled, or dragged the scroller, into room the
@@ -95,7 +103,8 @@ extension WorkspaceModel {
         if let failed = view.jumpFailedAt, ProcessInfo.processInfo.systemUptime - failed < 1 { view.jumpRetry = (position, offset); return }
         view.jumpRetry = nil
         revealSerial += 1
-        let serial = revealSerial, generation = view.presentationGeneration, navigation = messageNavigationRevision
+        let navigation = transcriptNavigation(id, advancing: true)
+        let serial = revealSerial, generation = view.presentationGeneration
         view.jumpRead = serial; view.jumpWanted = nil; view.jumpReading = position; view.jumpOffset = offset
         // The timeline the window holds: a position counts rows of it, and a
         // page of another (the chat changed elsewhere) is not read in its
@@ -110,7 +119,7 @@ extension WorkspaceModel {
         }
         func current() -> Bool {
             !Task.isCancelled && displays[item.id] === view && view.presentationGeneration == generation && view.jumpRead == serial
-                && view.revealRead == nil && transcriptShows(item.id) && messageNavigationRevision == navigation
+                && view.revealRead == nil && transcriptShows(item.id) && navigation.isCurrent(in: self)
         }
         // Reads at the old window's edges join rows that are about to go.
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
@@ -121,13 +130,14 @@ extension WorkspaceModel {
             @MainActor func pause(retrying retry: (position: Int, offset: Double)?) {
                 view.jumpFailedAt = ProcessInfo.processInfo.systemUptime; view.jumpRetry = retry
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self, weak view] in
-                    guard let self, let view else { return }
+                    guard let self, let view, navigation.isCurrent(in: self) else { return }
                     view.jumpFailedAt = nil
                     guard let retry = view.jumpRetry else { return }
                     self.jumpToHistoryPosition(item.id, position: retry.position, offset: retry.offset)
                 }
             }
             defer {
+                self.resumeVisibleReaders()
                 if view.jumpRead == serial {
                     view.jumpRead = nil; view.jumpTask = nil
                     // Where the reader went while this page was read.
@@ -135,7 +145,9 @@ extension WorkspaceModel {
                     // opened again meanwhile.)
                     if let wanted = view.jumpWanted {
                         view.jumpWanted = nil
-                        self.jumpToHistoryPosition(item.id, position: wanted.position, offset: wanted.offset)
+                        if navigation.isCurrent(in: self) {
+                            self.jumpToHistoryPosition(item.id, position: wanted.position, offset: wanted.offset)
+                        }
                     }
                 }
             }
@@ -148,7 +160,8 @@ extension WorkspaceModel {
                 // nothing drawn on either side within reach is not asked for
                 // again at once.
                 guard let found = try await Self.drawablePage(from: page, reading: { boundary, newer in
-                    try await self.readConversationWindow(item, cursor: boundary, newer: newer)
+                    guard current() else { throw CancellationError() }
+                    return try await self.readConversationWindow(item, cursor: boundary, newer: newer)
                 }) else { pause(retrying: nil); return }
                 guard current() else { return }
                 page = found.page
@@ -241,8 +254,8 @@ extension WorkspaceModel {
 
     /// Whether chat `id`'s transcript is what the reader has in front of them:
     /// the chats page, with the chat selected or open as the side beside it.
-    private func transcriptShows(_ id: String) -> Bool {
-        page == .chats && (id == selectedID || sides[selectedID ?? ""]?.id == id)
+    func transcriptShows(_ id: String) -> Bool {
+        subagentTabIsShown(id) || page == .chats && (id == selectedID || (sides[selectedID ?? ""]?.id == id && tabs.pane.shownTab(sideAvailable: paneSideAvailable) == nil))
     }
     private func land(_ view: SessionDisplay, on messageID: String, landing: Double = TranscriptReveal.landing) {
         view.revealRead = nil; view.abandonJump()
@@ -253,25 +266,26 @@ extension WorkspaceModel {
 
     /// Reads the page that starts at `around` (the chat's first page when
     /// nil) and adopts it in place of the window, landing on its first row.
-    private func readWindow(_ item: ChatRecord, view: SessionDisplay, around: String?) async -> Bool {
+    private func readWindow(_ item: ChatRecord, view: SessionDisplay, around: String?, navigation: TranscriptNavigationToken) async -> Bool {
         let generation = view.presentationGeneration
         let source = view.presentation.identity
         let boundary = view.olderPage.cursor ?? view.newerPage.cursor
         // The newest request wins: a find bar stepping through matches quickly
         // must not land on an earlier match whose read came back last.
         revealSerial += 1
-        let serial = revealSerial, navigation = messageNavigationRevision
+        let serial = revealSerial
         view.revealRead = serial; view.revealFailure = nil; view.abandonJump()
         // Only into a transcript that still shows this chat: a read that
         // lands after the reader went to another chat leaves this one as it was.
         func current() -> Bool {
             !Task.isCancelled && displays[item.id] === view && view.presentationGeneration == generation && view.revealRead == serial
-                && transcriptShows(item.id) && messageNavigationRevision == navigation
+                && transcriptShows(item.id) && navigation.isCurrent(in: self)
         }
         // Reads at the old window's edges join rows that are about to go.
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
         var landed = false
         defer {
+            resumeVisibleReaders()
             if view.revealRead == serial {
                 view.revealRead = nil
                 // A failed read must not leave a mark that ordinary paging

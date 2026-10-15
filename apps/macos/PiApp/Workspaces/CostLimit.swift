@@ -117,3 +117,17 @@ struct SessionCostReading: Equatable, Sendable {
     /// Which limit this is, in words: "Default · $25.00", "This chat · No limit".
     var source: String { (override == nil ? "Default · " : "This chat · ") + limit.label }
 }
+
+/// An immutable, app-only overlay shared by card projections. Keep this a
+/// reference: embedding the full reading in ToolView/SubagentToolView inflates
+/// the nested transcript plan's debug stack frames on helper-sized threads.
+final class SubagentCostPresentation: Sendable, Equatable {
+    let spentUSD: Double?, unreportedRequests: Int, unreportedNote: String?, costAttribution: String?
+    init(_ reading: SessionCostReading) {
+        spentUSD = reading.spentUSD; unreportedRequests = reading.unreportedRequests
+        unreportedNote = reading.unreportedNote; costAttribution = reading.costAttribution
+    }
+    static func == (lhs: SubagentCostPresentation, rhs: SubagentCostPresentation) -> Bool {
+        lhs.spentUSD == rhs.spentUSD && lhs.unreportedRequests == rhs.unreportedRequests && lhs.costAttribution == rhs.costAttribution
+    }
+}

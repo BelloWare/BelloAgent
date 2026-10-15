@@ -34,19 +34,30 @@ extension WorkspaceModel {
 
     /// Shows version `index` of the message the chat holds as `latestID`,
     /// version `live`; that one returns the transcript to it.
-    func showVersion(sessionID: String, latestID: String, index: Int, count: Int, ids: [String], live: Int? = nil, around: String? = nil) {
+    func showVersion(sessionID: String, latestID: String, index: Int, count: Int, ids: [String], live: Int? = nil, around: String? = nil, intent: TranscriptNavigationToken? = nil) {
         guard let view = displays[sessionID], ids.count == count, (1...count).contains(index) else { return }
-        view.versionFocus = latestID
-        let live = live ?? count
-        guard index != live else { latestVersion(sessionID: sessionID); return }
+        if let intent, !intent.isCurrent(in: self) { return }
         if let shown = view.versionView, shown.latestID == latestID, shown.index == index,
            around == nil || shown.rows.contains(where: { $0.id == around }) { return }
+        let live = live ?? count
+        if index == live { latestVersion(sessionID: sessionID, intent: intent); return }
+        let intent = intent ?? transcriptNavigation(sessionID, advancing: true)
+        view.versionFocus = latestID
         view.versionLoad?.cancel()
         view.versionView = TranscriptVersionView(latestID: latestID, index: index, count: count, ids: ids, live: live)
-        let messageID = ids[index - 1]
+        let messageID = ids[index - 1], loadID = view.versionView?.loadID
         view.versionLoad = Task { [weak self, weak view] in
             guard let self, let view else { return }
-            @MainActor func current() -> Bool { !Task.isCancelled && view.versionView?.latestID == latestID && view.versionView?.index == index }
+            defer {
+                self.resumeVisibleReaders()
+                if view.versionView?.loadID == loadID {
+                    view.versionLoad = nil
+                    // A canceled first page must not leave an endless cover.
+                    // Already published pages keep their reading position.
+                    if view.versionView?.loading == true { view.versionView = nil }
+                }
+            }
+            @MainActor func current() -> Bool { !Task.isCancelled && intent.isCurrent(in: self) && self.transcriptShows(sessionID) && self.displays[sessionID] === view && view.versionView?.loadID == loadID && view.versionView?.latestID == latestID && view.versionView?.index == index }
             do {
                 // Page by page: the first page shows as soon as it is read,
                 // the rest follow it, each decoded off the main actor.
@@ -77,8 +88,10 @@ extension WorkspaceModel {
     }
 
     /// Back to latest: the banner's link, the switcher's last version, a send.
-    func latestVersion(sessionID: String) {
+    func latestVersion(sessionID: String, intent: TranscriptNavigationToken? = nil) {
         guard let view = displays[sessionID] else { return }
+        if let intent { guard intent.isCurrent(in: self) else { return } }
+        else if view.versionView != nil { _ = transcriptNavigation(sessionID, advancing: true) }
         view.versionLoad?.cancel(); view.versionLoad = nil
         if view.versionView != nil { view.versionView = nil }
     }

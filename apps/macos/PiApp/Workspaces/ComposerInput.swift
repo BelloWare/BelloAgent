@@ -67,6 +67,8 @@ import AppKit
         var queueEditing: Bool
         var queueSteering: Bool
         var queueResolving: Bool
+        var queueNotice: String
+        var queueKeepsInput: Bool
         var attachments: [AttachmentRecord]
         var placeholder: String?
         var canSend: Bool
@@ -256,6 +258,7 @@ import AppKit
         return State(sessionID: session.id, editing: editing, editPreparing: session.editPreparing, editBlocker: blocker,
                      editNotice: session.editNotice, editSubmitting: session.editSubmitting, editReview: session.editInputReviewRequired,
                      queueEditing: queueEditing, queueSteering: queued?.steering ?? false, queueResolving: session.queueEditResolving,
+                     queueNotice: session.queueEditNotice, queueKeepsInput: session.queueEditKeepsInput,
                      attachments: session.attachments,
                      placeholder: draft.isEmpty && session.skills.isEmpty
                         ? "Message… " + ComposerSubmissionIntent.hint(queues: queues, steers: session.busy, onBar: queues && !editing && form.runControls.showsHint)
@@ -317,13 +320,18 @@ import AppKit
         if state.queueEditing {
             let banner = queueBanner ?? {
                 let banner = ComposerEditBanner(title: "", accessibilityName: "Editing a queued message",
-                                                cancel: { [weak self] in guard let self, let session = self.session else { return }; self.model.cancelQueuedEdit(sessionID: session.id) })
+                                                cancel: { [weak self] in guard let self, let session = self.session else { return }; self.model.cancelQueuedEdit(sessionID: session.id) },
+                                                save: { [weak self] in self?.submit(.followUp) })
                 cardContent.addSubview(banner); queueBanner = banner
                 return banner
             }()
             banner.update(title: state.queueSteering ? "Editing a steering message" : "Editing a queued message",
-                          detail: "This message and the others waiting are paused while you edit. Return saves it in its place in the queue.",
-                          maximumLines: 3, waiting: state.queueResolving, cancelEnabled: !state.queueResolving && !state.disabled)
+                          detail: state.queueNotice.isEmpty
+                            ? "Return or ⌘Return saves in the same place. Waiting messages are paused." + (state.queueKeepsInput ? " Original images and skills are kept." : "")
+                            : state.queueNotice,
+                          detailColor: state.queueNotice.isEmpty ? .piInkSecondary : .piDanger,
+                          waiting: state.queueResolving, cancelEnabled: !state.queueResolving && !state.disabled,
+                          saveEnabled: state.canSend && !state.disabled)
         } else { queueBanner?.removeFromSuperview(); queueBanner = nil }
         // Attached images.
         if state.attachments.map(\.id) != chipIDs || before?.disabled != state.disabled {
@@ -403,6 +411,7 @@ import AppKit
             }
         }
         send.isEnabled = state.canSend && !state.disabled
+        queueBanner?.save.isEnabled = state.canSend && !state.disabled
     }
 
     private func updateCompletions(_ session: SessionDisplay) {

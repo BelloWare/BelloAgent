@@ -207,6 +207,7 @@ extension WorkspaceModel {
         releaseUnusedBudgetSessions()
     }
     func open(_ item: ChatRecord, automaticContext: Bool = false, budgetDependency: Bool = false) async throws -> HostSupervisor {
+        guard !isOriginalSubagentReader(item.id) else { throw HostError.failure("This original sub-agent is open read-only from a fork.") }
         if !budgetDependency { releasedHelperSessions.remove(item.id) }
         var accepted = false
         // Pin before the first await, including metadata/credential reads and

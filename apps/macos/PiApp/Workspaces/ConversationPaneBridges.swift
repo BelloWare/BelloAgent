@@ -16,13 +16,13 @@ extension NativeTranscriptPane {
         onStart = { [weak model] id in Task { await model?.revealStartOfChat(sessionID: id) } }
         find.search = { [weak model] id, query, start in
             guard let model else { throw CancellationError() }
-            return try await model.searchConversation(id, query: query, start: start)
+            return try await model.searchConversation(id, query: query, start: start, renderedAgentProse: true)
         }
         find.reveal = { [weak model] id, messageID in await model?.revealInTranscript(sessionID: id, messageID: messageID, fromFind: true) ?? false }
         isFocusedConversation = { [weak model, weak self] in
             // Not while the report or a sheet covers the chats.
             guard let model, model.conversationCommandsEnabled, let id = self?.session?.id else { return false }
-            return (model.focusedSessionID ?? model.selectedID) == id
+            return model.conversationCommandID() == id
         }
         onViewportReady = { [weak model] in model?.historyViewportReady($0, generation: $1) }
         onJump = { [weak model] in model?.jumpToHistoryPosition($0, position: $1, offset: $2) }
@@ -58,8 +58,8 @@ extension NativeTranscriptPane {
                                                         latestVersion: { [weak model] in model?.latestVersion(sessionID: session.id) },
                                                         openFile: { [weak model] path, lines in model?.openFile(fromChat: session.id, path: path, lines: lines) },
                                                         resolveReplyFile: { [weak model] text in await model?.resolveReplyFile(text, fromChat: session.id) },
-                                                        openSubagent: { [weak model] target in guard !target.isHistorical(in:session.id) else { return }; Task { await model?.openSubagent(target) } },
-                                                        inspectSubagent: { [weak model] target in guard !target.isHistorical(in:session.id) else { return }; model?.openInspector(session: target.ownerID, focus: .subagent(target.delegationID)) },
+                                                        openSubagent: { [weak model] target in Task { if target.isHistorical(in:session.id) { await model?.openOriginalSubagent(target, from:session.id) } else { await model?.openSubagent(target) } } },
+                                                        inspectSubagent: { [weak model] target in if target.isHistorical(in:session.id) { model?.inspectOriginalSubagent(target, from:session.id) } else { model?.openInspector(session: target.ownerID, focus: .subagent(target.delegationID)) } },
                                                         stopSubagent: { [weak model] target in model?.stopSubagent(target, from: session.id) },
                                                         openAgentSource: { [weak model] reference in Task { await model?.openAgentSource(reference, from: session.id) } }), environment: environment, reduceMotion: piReducesMotion)
     }

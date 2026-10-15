@@ -417,7 +417,7 @@ import XCTest
         }
     }
 
-    /// Pinning the sides panel resizes RightPane without rebuilding the
+    /// Moving the divider resizes RightPane without rebuilding the
     /// selected side. Its composer must try its forms at the new allocation,
     /// before those fixed controls determine the transcript's minimum.
     func testVisibleSideRefreshesTheComposerProposalWhenItsColumnResizes() async throws {

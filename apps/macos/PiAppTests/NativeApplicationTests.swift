@@ -98,6 +98,48 @@ final class NativeApplicationTests: XCTestCase, SerialTestLane {
         XCTAssertFalse(menus.validateMenuItem(newChat))
     }
 
+    @MainActor func testUnsavedSideSendMenusUseTheFocusedEditableRecord() async throws {
+        let (model, root) = try fixture()
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.reloadConfiguration()
+        model.workspaces = [WorkspaceRecord(id: "project", path: root.path, trusted: true)]
+        let parent = ChatRecord(id: "parent", workspaceID: "project", title: "Parent", path: nil, profileID: "fixture")
+        model.chats = [parent]
+        await model.select(parent.id)
+        model.openSide()
+        let side = try XCTUnwrap(model.sides[parent.id]), display = try XCTUnwrap(model.displays[side.id])
+        XCTAssertTrue(side.pending); XCTAssertNil(model.chatRecord(side.id)); XCTAssertNil(model.commandChat)
+        XCTAssertEqual(model.focusedSessionID, side.id)
+        let window = NSWindow(contentRect: .init(x: 0, y: 0, width: 640, height: 400), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        let previous = NSApp.mainMenu
+        defer { NSApp.mainMenu = previous; window.close() }
+        let menus = ApplicationMenus(model: model, updates: UpdateController(), workspaceWindow: { window }, revealWorkspace: {}, showSettings: {})
+        menus.install()
+        let conversation = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "Conversation" }?.submenu)
+        let send = try XCTUnwrap(conversation.items.first { $0.title == "Send / Queue Follow-up" })
+        let steer = try XCTUnwrap(conversation.items.first { $0.title == "Send / Steer Current Run" })
+        NSApp.unhide(nil); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        try await eventually("The main window owns the menu commands") { NSApp.keyWindow === window }
+        window.makeFirstResponder(window.contentView)
+        XCTAssertTrue(menus.validateMenuItem(send)); XCTAssertTrue(menus.validateMenuItem(steer))
+        // Exercise the real menu dispatch without starting a helper or writing
+        // a side: a rejected built-in and the steer's completion check.
+        display.draft = "/fork unexpected"; display.directCommand = true
+        conversation.performActionForItem(at: conversation.index(of: send))
+        XCTAssertEqual(model.error, "The fork command takes no arguments and cannot steer a run.")
+        model.error = nil; display.draft = "A draft"; display.completionVisible = true
+        let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "\r", charactersIgnoringModifiers: "\r", isARepeat: false, keyCode: 36))
+        XCTAssertTrue(NSApp.mainMenu?.performKeyEquivalent(with: key) == true)
+        XCTAssertEqual(display.notice, "Select or dismiss the skill suggestions before steering.")
+        XCTAssertTrue(model.sides[parent.id]?.pending == true); XCTAssertNil(model.chatRecord(side.id))
+        let saved = try await model.store?.get(ChatRecord.self, kind: "chat", id: side.id)
+        XCTAssertNil(saved); XCTAssertTrue(model.hosts.isEmpty)
+        model.page = .report
+        XCTAssertFalse(menus.validateMenuItem(send)); XCTAssertFalse(menus.validateMenuItem(steer))
+    }
+
     @MainActor func testMenusKeepShortcutsAndConversationFocus() async throws {
         let (model, root) = try fixture()
         defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }

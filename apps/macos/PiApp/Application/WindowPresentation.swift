@@ -327,3 +327,23 @@ extension NSWindow {
                       y: min(max(frame.minY, available.minY), available.maxY - size.height), width: size.width, height: size.height)
     }
 }
+
+/// Native responder transitions are the source of conversation command focus,
+/// including selectable reply text and keyboard/VoiceOver controls inside a
+/// reader. Only walk the responder's ancestors, never the transcript's rows.
+@MainActor class ConversationWindow: NSWindow {
+    @discardableResult override func makeFirstResponder(_ responder: NSResponder?) -> Bool {
+        let accepted = super.makeFirstResponder(responder)
+        if accepted { reconcileConversationFocus() }
+        return accepted
+    }
+    override func becomeKey() { super.becomeKey(); reconcileConversationFocus() }
+    private func reconcileConversationFocus() {
+        guard attachedSheet == nil else { return }
+        var view = firstResponder as? NSView
+        while let current = view {
+            if let pane = current as? ConversationPaneView { pane.noteNativeFocus(); return }
+            view = current.superview
+        }
+    }
+}

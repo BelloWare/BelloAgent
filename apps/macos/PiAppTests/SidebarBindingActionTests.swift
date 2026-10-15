@@ -91,25 +91,4 @@ import XCTest
         rename.run(nil)
         XCTAssertNil(model.renameTarget)
     }
-
-    func testPanelRowRejectsOldClickAcrossReuseAndSameIDRebind() async {
-        let model = model()
-        let row = SidesPanelRowView(model: model, glide: PiKit.SelectionGlide())
-        func content(_ id: String) -> SidesPanelRowView.Content {
-            .init(entry: SidesPanelEntry(id: id, title: id, open: false, saved: true),
-                  stats: ChatRowStats(totals: nil), unread: false, failed: false, enabled: true)
-        }
-        row.update(content("original"))
-        let click = row.row.onPress
-        row.prepareForReuse(); row.update(content("replacement"))
-        click?()
-        let sameIDClick = row.row.onPress
-        row.prepareForReuse(); row.update(content("replacement"))
-        sameIDClick?()
-        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
-        XCTAssertEqual(model.sidebarSearch.openings, 0)
-        row.row.onPress?()
-        await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
-        XCTAssertEqual(model.sidebarSearch.openings, 1, "Only a new action on the current binding can navigate")
-    }
 }

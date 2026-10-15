@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import XCTest
 @testable import PiApp
 
@@ -65,6 +66,16 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
                             && (scene != "side" || $0.usage.toolTip?.contains("Counts toward Review the parser") == true) }
                     }
                     try save(try XCTUnwrap(fixture.window.contentView), to: folder.appendingPathComponent("\(scene)-\(name)-\(Int(size.width)).png"))
+                    if scene == "completed" {
+                        let header = try XCTUnwrap(ConversationPaneTests.views(AgentFamilyHeaderView.self,in:fixture.content).first { !$0.isHidden })
+                        header.open(); await fixture.settle()
+                        let popup = try XCTUnwrap(header.popover.popover?.contentViewController?.view)
+                        let rows = ConversationPaneTests.views(FamilyPickerRow.self,in:popup)
+                        XCTAssertTrue(rows.contains { $0.accessibilityIdentifier() == "open-side-cost-side" && $0.secondary?.contains("$0.40") == true })
+                        XCTAssertTrue(rows.contains { $0.accessibilityIdentifier() == "open-agent-child-0" && $0.secondary?.contains("$0.15") == true })
+                        try savePopover(popup,to:folder.appendingPathComponent("family-cost-popover-\(name)-\(Int(size.width)).png"))
+                        header.popover.close()
+                    }
                 }
                 fixture.show("completed"); settleFixtureValues(fixture)
                 await fixture.model.refreshAccounting(fixture.parent, workspaceID: "pane-project", includeMessages: false)
@@ -230,6 +241,10 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
             fixture.model.chats.append(ChatRecord(id:"cost-side",workspaceID:"pane-project",title:title,path:"/fixture/side_cost-side.jsonl",profileID:fixture.model.record("chat-parent")!.profileID,parentSessionID:"chat-parent"))
         }
         PiKit.Motion.reducedOverride = true
+        for index in 0..<4 {
+            fixture.model.observeCost(["cost":.object(["spentUSD":.number(index < 3 ? 0.15 : 0),"reportedRequests":.number(index < 3 ? 1 : 0),"unreportedRequests":.number(0),"limitUSD":.number(5)])],sessionID:"child-\(index)")
+        }
+        fixture.model.observeCost(["cost":.object(["spentUSD":.number(0.4),"reportedRequests":.number(1),"unreportedRequests":.number(0),"limitUSD":.number(5)])],sessionID:"cost-side")
         fixture.parent.runState = .idle; fixture.parent.runStatus = "completed"
         // The shared gallery fixture has illustrative progress. Match this
         // scene's actual capture so the card, child and parent agree.
@@ -248,5 +263,18 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
         let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
         view.cacheDisplay(in: view.bounds, to: bitmap)
         try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: path)
+    }
+    /// The popover's material belongs to its window, not the transparent
+    /// content view. Capture that generated window so both themes are legible.
+    @MainActor private func savePopover(_ view: NSView, to path: URL) throws {
+        let window = try XCTUnwrap(view.window)
+        typealias ListImage = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        let symbol = try XCTUnwrap(dlsym(dlopen(nil,RTLD_NOW),"CGWindowListCreateImage"))
+        let capture = unsafeBitCast(symbol,to:ListImage.self)
+        let screen = NSScreen.screens.first?.frame ?? .zero, frame = window.frame
+        let bounds = CGRect(x:frame.minX,y:screen.height - frame.maxY,width:frame.width,height:frame.height)
+        let options = CGWindowImageOption.bestResolution.rawValue | CGWindowImageOption.boundsIgnoreFraming.rawValue
+        let image = try XCTUnwrap(capture(bounds,CGWindowListOption.optionIncludingWindow.rawValue,UInt32(window.windowNumber),options)?.takeRetainedValue())
+        try XCTUnwrap(NSBitmapImageRep(cgImage:image).representation(using:.png,properties:[:])).write(to:path)
     }
 }

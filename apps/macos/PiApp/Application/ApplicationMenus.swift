@@ -1,7 +1,7 @@
 import AppKit
 
 /// Native menus read their current titles and availability as they open.
-/// Conversation shortcuts belong to the workspace window that owns the chat.
+/// Conversation commands belong to the key workspace or hosted reader window.
 @MainActor final class ApplicationMenus: NSObject, NSMenuDelegate, NSMenuItemValidation {
     private let model: WorkspaceModel
     private let updates: UpdateController
@@ -24,7 +24,9 @@ import AppKit
         super.init()
     }
     var conversationCommands: Bool {
-        NSApp.keyWindow != nil && NSApp.keyWindow === workspaceWindow() && model.conversationCommandsEnabled
+        guard let window = model.conversationWindow(), window === workspaceWindow() || model.hostedConversationReader(in: window) != nil,
+              window.attachedSheet == nil, !(window.childWindows ?? []).contains(where: { $0.isVisible && $0.canBecomeKey }) else { return false }
+        return model.conversationCommandsEnabled
     }
     /// A sheet or a picker is over the workspace window: one of the model's
     /// sheets, a question's, or a popover that can take the keyboard (hover
@@ -111,8 +113,8 @@ import AppKit
         command(file, "Open Project…", key: "o", action: model.pickWorkspace)
         command(file, "Open File…", key: "p", enabled: { [model] in model.canQuickOpen }) { [model] in model.showQuickOpen(in: NSApp.keyWindow) }
         command(file, "Import Pi Session…", action: model.importChat)
-        command(file, "Rename Chat…", enabled: { [model] in model.conversationCommandsEnabled }, action: model.rename)
-        command(file, "Delete Chat…", enabled: { [model] in model.conversationCommandsEnabled }, action: model.deleteChat)
+        command(file, "Rename Chat…", enabled: { [model] in model.conversationCommandsEnabled && model.commandChat.map { !$0.isSubagent } == true }, action: model.rename)
+        command(file, "Delete Chat…", enabled: { [model] in model.canDeleteCommandChat }, action: model.deleteChat)
         file.addItem(.separator())
         command(file, title: { [model] in model.commandChat?.isArchived == true ? "Restore Chat" : "Archive Chat" },
                 enabled: { [model] in model.commandChat != nil }, action: model.archiveCommandChat)
@@ -146,9 +148,10 @@ import AppKit
         command(view, title: { [model] in model.page == .report ? "Back to Chats" : "Usage Report" }, key: "r", modifiers: [.command, .shift], action: model.toggleReport)
         command(view, title: { [model] in model.page == .background ? "Back to Chats" : "Background Requests" }, key: "b", modifiers: [.command, .shift], action: model.toggleBackgroundRequests)
         command(view, title: { [model] in model.sidebarShowsArchived ? "Hide Archived Chats" : "Show Archived Chats" }, action: model.toggleArchivedChats)
+        command(view, "Sides and Agents…", enabled: { [model] in model.canShowAgentFamily }, action: model.showAgentFamily)
         command(view, "Session Inspector…", key: "i", modifiers: [.command, .option],
-                enabled: { [model] in !model.presentsSheet && (model.focusedSessionID ?? model.selectedID).flatMap(model.record) != nil }) { [model] in
-            if let id = model.focusedSessionID ?? model.selectedID { model.inspect(id) }
+                enabled: { [model] in !model.presentsSheet && model.conversationCommandID().flatMap(model.record) != nil }) { [model] in
+            if let id = model.conversationCommandID() { model.inspect(id) }
         }
         command(view, "Changes and History…", key: "g", modifiers: [.command, .shift], enabled: { [model] in !model.workspaces.isEmpty && !model.presentsSheet }) { [weak self, model] in
             if model.showChanges()?.container?.isPane == true { self?.revealWorkspace() }
@@ -163,20 +166,23 @@ import AppKit
         command(view, "Narrow Sidebar", key: String(UnicodeScalar(NSLeftArrowFunctionKey)!), modifiers: [.command, .control]) { WindowChrome.adjustStoredSidebarWidth(by: -WindowChrome.widthStep) }
 
         let conversation = menu("Conversation")
+        command(conversation, "Sides and Agents…", enabled: { [model] in model.canShowAgentFamily }, action: model.showAgentFamily)
         let active = { [weak self] in self?.conversationCommands ?? false }
-        let editable = { [weak self, model] in (self?.conversationCommands ?? false) && model.commandChat?.isSubagent != true }
+        let editable = { [weak self, model] in
+            (self?.conversationCommands ?? false) && model.conversationCommandID().flatMap(model.record).map { !$0.isSubagent } == true
+        }
         command(conversation, "Send / Queue Follow-up", enabled: editable, action: { [model] in model.send() })
         command(conversation, "Open Side", enabled: editable, action: { [model] in model.openSide() })
         command(conversation, "Send / Steer Current Run", key: "\r", enabled: editable) { [model] in model.submitFocusedComposer(intent: .steer) }
-        command(conversation, "Stop", key: ".", enabled: active, action: { [model] in model.stopFocused() })
+        command(conversation, "Stop", key: ".", enabled: { [model] in active() && model.canStopConversation }, action: { [model] in model.stopFocused() })
         // Resume goes on with a run that stopped before it finished; Resume
         // Follow-ups sends only what waits in the queue.
         command(conversation, "Resume", enabled: { [weak self, model] in
-            (self?.conversationCommands ?? false) && model.commandChat?.isSubagent != true && (model.focusedSessionID.flatMap { model.displays[$0] }?.offersResume ?? false)
+            (self?.conversationCommands ?? false) && model.commandChat.map { !$0.isSubagent } == true && (model.focusedSessionID.flatMap { model.displays[$0] }?.offersResume ?? false)
         }) { [model] in model.resumeRun(sessionID: model.focusedSessionID) }
         command(conversation, "Resume Follow-ups", enabled: editable) { [model] in model.action("queue.resume", sessionID: model.focusedSessionID) }
         command(conversation, "Compact Now", enabled: editable) { [model] in model.action("context.compact", sessionID: model.focusedSessionID) }
-        command(conversation, "Latest Messages", enabled: active) { [model] in model.latest(sessionID: model.focusedSessionID) }
+        command(conversation, "Latest Messages", enabled: active) { [model] in model.latest(sessionID: model.conversationCommandID()) }
         conversation.addItem(.separator())
         command(conversation, "Fold This Turn", key: "[", modifiers: [.command, .option], enabled: { [model] in model.canFoldTurns }) { [model] in model.setFocusedTurnFolded(true) }
         command(conversation, "Unfold This Turn", key: "]", modifiers: [.command, .option], enabled: { [model] in model.canFoldTurns }) { [model] in model.setFocusedTurnFolded(false) }

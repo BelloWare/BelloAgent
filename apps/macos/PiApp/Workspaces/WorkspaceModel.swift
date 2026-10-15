@@ -1,14 +1,15 @@
 import Foundation
 import Combine
+import AppKit
 
 enum WorkspacePage: String, Sendable { case chats, report, background }
 
 @MainActor final class WorkspaceModel: ObservableObject {
-    @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged(); tabs.projectsChanged() } }
+    @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged(); tabs.projectsChanged(); refreshOriginalAvailability() } }
     /// The tabs beside the chats and in windows of their own: the window's,
     /// publishing on their own (`TabHost`). Kept across launches in the app;
     /// in tests, nothing is kept.
-    let tabs = TabHost(defaults: ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard)
+    let tabs: TabHost
     /// ⌘P's list: its own to publish, so the window is not drawn again for it.
     let quickOpen = QuickOpen(defaults: ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard)
     let replyFileResolver = ReplyFileResolver()
@@ -20,7 +21,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Every sidebar row, unread badge and menu-bar row looks a chat up by id.
     /// A linear scan made those lookups O(chats) each and the sidebar O(chats²).
     /// The sidebar index rebuilds its id table at most once per mutation, lazily.
-    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); chatsRevision &+= 1; readBadgeCache = nil; noteActivityChanged(); forgetKeptTranscriptRows() } }
+    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); subagentFamilies.removeAll(); familySideRecords = nil; chatsRevision &+= 1; readBadgeCache = nil; noteActivityChanged(); forgetKeptTranscriptRows(); refreshOriginalAvailability() } }
     /// A duplicate id keeps the first entry, matching `chats.first`.
     func chatRecord(_ id: String) -> ChatRecord? { sidebarIndex.chat(id, in: chats) }
     @Published var unreadStates: [String: SessionReadState] = [:] { didSet { readBadgeCache = nil; noteActivityChanged() } }
@@ -31,9 +32,19 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         didSet { menuBarProjection.dirty.formUnion(oldValue.keys); menuBarProjection.dirty.formUnion(runHolds.keys); activityChanged.send() }
     }
     var dirtyRunHolds: Set<String> = []
-    /// Changes only at delegation lifecycle boundaries, never streamed tokens.
+    /// An external destination being opened, not navigation inside other readers.
+    var pendingSubagentOpening: HostedReaderToken?
+    /// Native command ownership has one window source. Tests can nominate an
+    /// actual fixture window without competing with other processes for focus.
+    var conversationWindow: () -> NSWindow? = { NSApp.keyWindow }
     var subagentReturnTargets: [String: SubagentTarget] = [:]
-    @Published var subagentSummaries: [String: SubagentSummary] = [:]
+    var inheritedSubagents: [String: [InheritedSubagent]] = [:]
+    @Published var subagentSummaries: [String: SubagentSummary] = [:] { didSet { subagentFamilies.removeAll(); invalidateConversationFamily() } }
+    var subagentFamilies: [String: SubagentFamily] = [:]
+    var subagentEfforts: [String: SubagentEffort] = [:]
+    var conversationFamilies: [String: ConversationFamily] = [:]
+    var familySideRecords: [String: [ChatRecord]]?
+    let agentFamilyRequests = PassthroughSubject<String, Never>()
     var deletingFamilies: Set<String> = []
     var familyFileRecycler: (([URL]) async throws -> Void)?
     var familyDeletionStep: ((String) throws -> Void)?
@@ -55,12 +66,19 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var applicationIsActiveOverride: Bool?
     var dirtyReadStates: Set<String> = []
     var readStateWrites: [String: Task<Void, Never>] = [:]
-    @Published var profiles: [ProfileRecord] = [] { didSet { noteActivityChanged() } }
+    @Published var profiles: [ProfileRecord] = [] { didSet { subagentFamilies.removeAll(); noteActivityChanged() } }
     @Published var selectedID: String? {
-        didSet { if selectedID != oldValue { messageNavigationRevision += 1; organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } }
+        didSet { if selectedID != oldValue { messageNavigationRevision += 1; mainSelectionChangedDuringReaderOpening(); organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } }
     }
     /// Invalidates delayed report-to-message navigation when another target wins.
-    var messageNavigationRevision = 0
+    var messageNavigationRevision = 0 {
+        didSet {
+            guard messageNavigationRevision != oldValue else { return }
+            selected?.findHost?.retireFindNavigation()
+            if let id = selectedID, let side = sides[id] { displays[side.id]?.findHost?.retireFindNavigation() }
+            resumeVisibleReaders()
+        }
+    }
     /// Counts `revealInTranscript` requests (`TranscriptReveal.serial`).
     var revealSerial = 0
     var sessionReferenceCopyRevision = 0
@@ -73,6 +91,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var historyWindowLoader: (@Sendable (String, ConversationCursor?, Bool, String?) async throws -> ConversationHistoryPage)?
     /// Test seam: an earlier version's rows (`readVersionPage`) without a helper.
     var versionPageLoader: (@Sendable (String, String) async throws -> (rows: [TranscriptMessage], tasks: [TaskPresentationRecord]))?
+    /// Read-only lookup seams for deterministic navigation races.
+    var conversationSearchLoader: (@Sendable (String, String, Int) async throws -> ContentSearch)?
+    var agentCoordinationLoader: (@Sendable (URL, String) async throws -> AgentCoordination)?
+    var subagentVersionsLoader: (@Sendable (String, String) async throws -> [String: WireValue])?
+    var subagentTurnMessageLoader: (@Sendable (URL, String, Int?, String?) async throws -> String?)?
     /// Chats a "Fork from here" is being made from, so a second press waits for the first.
     var forkingReplies: Set<String> = []
     var organizationNavigationRevision = 0
@@ -155,13 +178,6 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// archived chats after its active ones (`SidebarGroups.swift`). One
     /// switch for the whole sidebar, remembered with the selection.
     @Published var showArchivedSessions = false { didSet { if showArchivedSessions != oldValue { sidebarIndex.invalidate(); noteSelectionChanged() } } }
-    /// The sides panel at the window's right edge stands open as a column of
-    /// its own, rather than hiding until the pointer rests at the edge
-    /// (`SidesPanel.swift`). Remembered with the selection.
-    @Published var sidesPanelPinned = false { didSet { if sidesPanelPinned != oldValue { noteSelectionChanged() } } }
-    /// Whether the sides panel is out over the window while it is not pinned.
-    /// Its own object: the panel coming and going redraws nothing else.
-    let sidesPanelReveal = SidesPanelReveal()
     /// Answers the sidebar's own queries once per change: chat lookups, per
     /// group entry lists, the project groups and the keyboard order.
     let sidebarIndex = SidebarIndex()
@@ -235,7 +251,14 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var page: WorkspacePage = .chats {
         didSet {
             if page != oldValue { organizationNavigationRevision &+= 1; noteSelectionChanged() }
-            if page == .report && page != oldValue { messageNavigationRevision += 1 }
+            if page != oldValue { messageNavigationRevision += 1 }
+            if page == .chats && page != oldValue { resumeVisibleReaders() }
+            if page != .chats && page != oldValue {
+                selected?.retireInitialPresentation()
+                if let id = selectedID, let side = sides[id] { displays[side.id]?.retireInitialPresentation() }
+                if pendingSubagentOpening?.reader.container?.isPane != false { retirePendingSubagentOpening() }
+                (tabs.pane.activeTab as? SubagentTab)?.didHide()
+            }
         }
     }
     /// Report page state survives navigation so filters, selection and results come back intact.
@@ -253,7 +276,12 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     func openReport() { page = .report }
     func closeReport() { page = .chats }
     func toggleReport() { page = page == .report ? .chats : .report }
-    var conversationCommandsEnabled: Bool { page == .chats && !presentsSheet && !quickOpen.isOpen && (focusedSessionID ?? selectedID).flatMap(record) != nil }
+    var conversationReaderIsAvailable: Bool {
+        !presentsSheet && !quickOpen.isOpen && (page == .chats || hostedConversationReader(in: conversationWindow()) != nil)
+    }
+    var conversationCommandsEnabled: Bool {
+        conversationReaderIsAvailable && conversationCommandID().flatMap(record) != nil
+    }
     /// First-run setup fills the window: the vault has answered, and there is
     /// no connection or no chat yet. Its steps end with the project, so
     /// nothing else offers one meanwhile.
@@ -272,7 +300,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var resourceCatalogWorkspaceID: String?
     @Published var resourceCatalogSessionID: String?
     @Published var resourceTargetSessionID: String?
-    @Published var sides: [String: SideRecord] = [:] { didSet { sidebarIndex.invalidate(); readBadgeCache = nil; noteActivityChanged(); sidesChanged(from: oldValue) } }
+    @Published var sides: [String: SideRecord] = [:] { didSet { sidebarIndex.invalidate(); familySideRecords = nil; readBadgeCache = nil; noteActivityChanged(); sidesChanged(from: oldValue) } }
     @Published var resourceLoading = false
     @Published var resourceNotice = ""
     var editTargetRead: (@MainActor (String, String) async throws -> [String: WireValue])?
@@ -317,6 +345,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var activityProjectionCount: Int { menuBarProjection.count }
     var menuBarActivityChanges: AnyPublisher<Void, Never> { activityChanged.eraseToAnyPublisher() }
     func noteActivityChanged(_ id: String? = nil) {
+        invalidateConversationFamily(id)
         if let id { menuBarProjection.dirty.insert(id) }
         else {
             menuBarProjection.dirty.formUnion(displays.keys); menuBarProjection.dirty.formUnion(unreadStates.keys)
@@ -352,7 +381,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         noteActivityChanged()
     }
     var displays: [String: SessionDisplay] = [:] {
-        didSet { syncActivityObservers(); SessionInspectorWindows.shared.displaysChanged(); forgetKeptTranscriptRows() }
+        didSet { seedSubagentNumbers(replacing: oldValue); syncActivityObservers(); SessionInspectorWindows.shared.displaysChanged(); forgetKeptTranscriptRows() }
         willSet {
             // Rows switch between retained accounting and a live display only
             // when display identity changes. Stream/status refreshes keep that
@@ -498,7 +527,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let pastedImages: PastedImageStorage
     /// Test seam: pause a journal read without slowing unrelated metadata.
     var pastedImageRead: @Sendable (String) throws -> Set<String> = PastedImageStorage.names(inJournal:)
-    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false, modelCatalog: ModelCatalog? = nil) {
+    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false, modelCatalog: ModelCatalog? = nil, tabDefaults: UserDefaults? = ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard) {
+        tabs = TabHost(defaults: tabDefaults)
         self.launching = launching
         self.modelCatalog = modelCatalog ?? ModelCatalog()
         self.vault = vault
@@ -512,7 +542,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         report.attach(self)
         observeDraftWrites()
         TranscriptKeptRows.policy = self
-        tabs.configureTab = { [weak self] tab in self?.configureFileNavigation(tab) }
+        tabs.sideAvailable = { [weak self] in self?.paneSideAvailable == true }
+        tabs.configureTab = { [weak self] tab in self?.configureFileNavigation(tab); self?.configureSubagentTab(tab) }
+        tabs.paneVisibilityChanged = { [weak self] in self?.readerPaneVisibilityChanged() }
+        tabs.navigationChanged = { [weak self] tab, container in self?.tabNavigationChanged(tab, in: container) }
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
         FileTab.activate = { [weak self] tab in self?.tabs.activate(tab) }
         FileTab.openHistory = { [weak self] tab in self?.showFileHistory(from: tab) }

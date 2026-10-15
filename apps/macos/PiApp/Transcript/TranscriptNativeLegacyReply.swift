@@ -469,8 +469,7 @@ import AppKit
                 : ["cancelled", "interrupted"].contains(outcome ?? "") ? .stopped : .ok
             let legacy = block.key.hasPrefix("legacy:")
             let label = Self.workLabel(block)
-            let summary = legacy ? "Legacy response · part order unavailable"
-                : block.presentation == .work ? label
+            let summary = !legacy && block.presentation == .work ? label
                 : ToolCallSummary(rows: block.replies).label(reasoned: TranscriptActivity.blockReasoned(block)) ?? "Working"
             let key = block.key
             header.update(TranscriptNativeWorkLine.Content(icon: "list.bullet", title: legacy ? "Work" : block.presentation == .work ? "Task" : "Work",

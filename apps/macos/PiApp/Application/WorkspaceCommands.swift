@@ -27,12 +27,14 @@ extension WorkspaceModel {
     /// screen. A side conversation's own row actions live in its header, so
     /// only a saved chat answers here.
     var commandChat: ChatRecord? {
-        guard page == .chats else { return nil }
-        return (focusedSessionID ?? selectedID).flatMap { chatRecord($0) }
+        guard conversationCommandsEnabled, conversationCommandID().map({ !isOriginalSubagentReader($0) }) == true else { return nil }
+        return conversationCommandID().flatMap { chatRecord($0) }
     }
     /// The conversation the fold commands act on.
     var commandSession: SessionDisplay? {
-        guard page == .chats, !quickOpen.isOpen, let id = focusedSessionID ?? selectedID else { return nil }
+        // Folding belongs to the retained display; it does not need a saved
+        // chat record like chat lifecycle or helper commands do.
+        guard conversationReaderIsAvailable, let id = conversationCommandID() else { return nil }
         return displays[id]
     }
 

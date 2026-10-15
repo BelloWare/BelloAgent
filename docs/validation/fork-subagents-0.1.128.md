@@ -13,6 +13,10 @@ All log/gallery paths below are relative to that build root.
 
 APFS clone, fixed-length header rewriting, truncate-at-reply, incremental replay and checkpoint paths remain in use. Tests assert the clone reset record and checkpoint acceptance; no new full-journal scan was added. The UI computes historical status from two identities when configuring a visible row. No transcript-sized work was added to view bodies/layout.
 
+> The history-only UI decision below was superseded by the owner’s round-9
+> “Open original read-only” decision. The fork isolation and journal guarantees
+> remain unchanged; see [the sub-display round-9 record](sub-display-0.1.128.md#lead-review-round-9-reader-recovery-and-original-references).
+
 ## Fork contract and decisions
 
 - A parent fork is an independent ordinary chat. It keeps the chosen transcript/context, including accepted sub-agent receipts and delivered agent messages. It starts with zero spend and no inherited child execution, budget ledger, pending deliveries or child journals. Source journal and child journal bytes are unchanged by fork/open/Resume/new work/reopen.

@@ -105,6 +105,10 @@ extension WorkspaceModel {
         let reading = costReading(for:id)
         if let budget = budgetStates[id], budget.reading != reading { budget.reading = reading }
         displays[id]?.applyCostReading(reading)
+        if let owner = record(id)?.delegation?.budgetOwnerSessionID, let display = displays[owner] {
+            let value = reading.spentUSD == nil ? nil : SubagentCostPresentation(reading)
+            if display.subagentCosts[id] != value { display.subagentCosts[id] = value }
+        }
     }
     func budgetState(for id: String) -> SessionBudgetState {
         if let state = budgetStates[id] { return state }
@@ -246,6 +250,7 @@ extension WorkspaceModel {
     func observeCost(_ snapshot: [String: WireValue], sessionID id: String) {
         guard let cost = snapshot["cost"]?.object else { return }
         let state = budgetState(for:id)
+        let previous = state.reading
         var reading = costReading(for:id)
         reading.spentUSD = cost["spentUSD"]?.number
         reading.reportedRequests = cost["reportedRequests"]?.nonnegativeInteger ?? 0
@@ -253,6 +258,13 @@ extension WorkspaceModel {
         if state.reading != reading { state.reading = reading }
         displays[id]?.applyCostReading(reading)
         refreshBudgetFamily(id)
+        if reading.spentUSD != previous.spentUSD || reading.reportedRequests != previous.reportedRequests || reading.unreportedRequests != previous.unreportedRequests {
+            if let owner = record(id)?.delegation?.budgetOwnerSessionID {
+                subagentFamilies.removeValue(forKey:owner)
+                displays[owner]?.subagentCosts[id] = SubagentCostPresentation(reading)
+            }
+            noteActivityChanged(id)
+        }
         guard let item = record(id), budgetOwner(for: item).id == item.id else { return }
         let helper: CostLimit = cost["limitUSD"]?.number.map(CostLimit.usd) ?? .unlimited
         if helper != reading.limit, state.limitSent != reading.limit {

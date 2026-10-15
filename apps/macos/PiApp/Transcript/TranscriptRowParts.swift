@@ -82,9 +82,9 @@ enum TranscriptToolRow {
         let summary = summary(of: tool, object: description.object)
         if SubagentToolView.isControl(tool.name) {
             let child = SubagentToolView(tool)
-            return Model(icon: "person.2", title: "Sub-agent", summary: child.description, suffix: child.label,
+            return Model(icon: "person.2", title: child.name, summary: child.description, suffix: child.label,
                          state: child.summary.map { $0.status.terminal ? state(of: tool) : .running } ?? state(of: tool), trailing: child.summary?.progress.map { TranscriptActivity.formatDuration($0.elapsedMs) } ?? elapsed(of: tool),
-                         help: child.task, linksSummary: true, description: description, outcome: outcome, file: nil)
+                         help: child.title + "\n" + child.task, linksSummary: true, description: description, outcome: outcome, file: nil)
         }
         return Model(icon: actionSymbol(description.kind), title: title(parts, outcome: outcome), summary: summary,
                      suffix: suffix(of: tool), state: state(of: tool), trailing: elapsed(of: tool),
@@ -330,7 +330,7 @@ struct TranscriptTimelinePart {
         // thought, not the name of the channel it arrived on.
         case "reasoningSummary", "reasoningText": return "Think"
         case "toolArguments": return "Preparing \(part.part.name ?? "tool")"
-        case "opaque": return "Opaque provider item"
+        case "opaque": return "Additional response data"
         case "correction": return "Corrected response content"
         case "status": return part.text
         default: return "Response part"

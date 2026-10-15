@@ -26,6 +26,8 @@ struct SideActions {
     private(set) var side: SideRecord?
     private var sideActions: SideActions?
 
+    let agentFamilyHeader = AgentFamilyHeaderView()
+    var showsAgentFamily = true { didSet { refresh() } }
     private let subagentHeader = SubagentHeaderView()
     private let sideHeader: SideHeaderView
     private let sideLine = CALayer()
@@ -84,6 +86,9 @@ struct SideActions {
         var sideBoundaryDetail: String
         var sideLoading: Bool
         /// The window's disabled state, which the bridged SwiftUI roots take too.
+        var original: String?
+        var originalBackTitle: String?
+        var subagentEffort: String?
         var enabled: Bool
     }
 
@@ -96,7 +101,7 @@ struct SideActions {
         // What stands out past the pane (a composer wider than a narrow
         // pane) is cut at its edges, as the SwiftUI pane cut it.
         clipsToBounds = true
-        for view in [recovered, transcript, starter, cover, missingFolder, footer] as [NSView] { addSubview(view) }
+        for view in [recovered, transcript, starter, cover, missingFolder, footer, agentFamilyHeader] as [NSView] { addSubview(view) }
         // The composer last: its slash-command list floats over everything above it.
         addSubview(composer)
         layer?.addSublayer(sideLine)
@@ -109,9 +114,18 @@ struct SideActions {
     override var isFlipped: Bool { true }
 
     override var acceptsFirstResponder: Bool { chat?.isSubagent == true }
+    func noteNativeFocus() {
+        guard window != nil, !isHiddenOrHasHiddenAncestor, let id = chat?.id,
+              model.selectedID == id || model.subagentTabIsShown(id) ||
+              (model.sides[model.selectedID ?? ""]?.id == id && model.tabs.pane.shownTab(sideAvailable: true) == nil) else { return }
+        if model.focusedSessionID != id { model.focusPane(id) }
+    }
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder(); if accepted { noteNativeFocus() }; return accepted
+    }
     var canBackToSubagentParent: Bool {
-        guard side == nil, let chat, let link = chat.delegation, model.selectedID == chat.id,
-              model.record(link.budgetOwnerSessionID) != nil, model.conversationCommandsEnabled,
+        guard side == nil, let chat, let link = chat.delegation, (model.selectedID == chat.id || model.subagentTabIsShown(chat.id)),
+              model.record(link.budgetOwnerSessionID) != nil, model.subagentReaderCommandsEnabled(chat.id),
               let window, window.isKeyWindow, window.attachedSheet == nil,
               !(window.childWindows ?? []).contains(where: { $0.isVisible && $0.canBecomeKey }),
               let responder = window.firstResponder as? NSView else { return false }
@@ -204,12 +218,12 @@ struct SideActions {
             && !current.isSubagent && !current.imported && !current.isBackgroundTask && projectAvailable && (side == nil || side?.pending == true)
         var failure: String?
         if case .failed(let error) = session.historyState { failure = error }
-        let terminalWorkspace = model.terminalVisible && side == nil ? model.workspace(for: current.workspaceID).flatMap { $0.isScratch ? nil : $0 } : nil
+        let terminalWorkspace = model.terminalVisible && side == nil && !current.isSubagent ? model.workspace(for: current.workspaceID).flatMap { $0.isScratch ? nil : $0 } : nil
         let kind: PaneFooterView.Kind
         if current.isSubagent {
             let parent = current.delegation.flatMap { model.record($0.budgetOwnerSessionID) }
             kind = .subagent(status: (session.heldAgentChildren.contains(session.id) ? "Stopped by you" : session.subagentStatus?.label ?? (session.busy ? "Running" : "Saved sub-agent")) + (session.subagentTurn.map { " · turn \($0)" } ?? ""),
-                             busy: session.subagentStatus.map { !$0.terminal } ?? session.busy, parent: parent?.title ?? "Parent unavailable")
+                             busy: !model.isOriginalSubagentReader(session.id) && (session.subagentStatus.map { !$0.terminal } ?? session.busy), parent: parent?.title ?? "Parent unavailable")
         } else if !projectAvailable { kind = .projectUnavailable(retry: !model.configurationLoaded) }
         else if current.isBackgroundTask {
             kind = .backgroundTask(busy: session.busy, source: current.sourceSessionID.flatMap { model.record($0) != nil ? $0 : nil })
@@ -228,12 +242,16 @@ struct SideActions {
                      canQuote: model.canQuoteReply(session.id),
                      contextWindow: current.contextWindow ?? profile?.contextWindow, outputReserve: current.maxOutputTokens ?? profile?.maxOutputTokens,
                      sideBoundary: side.map { Self.boundary($0, model: model) } ?? "", sideBoundaryDetail: side.map { Self.boundaryDetail($0) } ?? "",
-                     sideLoading: session.loading, enabled: inheritedEnabled)
+                     sideLoading: session.loading, original: model.subagentTab(session.id)?.originalLabel,
+                     originalBackTitle: model.subagentTab(session.id)?.originalForkID.flatMap { model.record($0)?.title },
+                     subagentEffort: current.isSubagent ? model.subagentEffortLabel(current.id) : nil, enabled: inheritedEnabled)
     }
 
     /// Reads the chat and the workspace again and changes only what differs.
     func refresh() {
         guard let session, let chat else { return }
+        agentFamilyHeader.update(model: model, sessionID: chat.id, enabled: inheritedEnabled,
+                                 allowsDisplay: side == nil && showsAgentFamily)
         let now = read(session, chat)
         guard now != shown else { return }
         let before = shown
@@ -261,7 +279,7 @@ struct SideActions {
         }
         if let link = chat.delegation {
             if subagentHeader.superview !== self { addSubview(subagentHeader) }
-            subagentHeader.update(chat: chat, parent: model.record(link.budgetOwnerSessionID), back: { [weak model] in
+            subagentHeader.update(chat: chat, parent: model.record(link.budgetOwnerSessionID), effort: state.subagentEffort, original: state.original, backTitle: state.originalBackTitle, back: { [weak model] in
                 Task { await model?.backToSubagentParent(chat.id) }
             })
         } else { subagentHeader.removeFromSuperview() }
@@ -464,6 +482,9 @@ struct SideActions {
             let height = subagentHeader.height(forWidth: width)
             frames.append((subagentHeader, CGRect(x: 0, y: top, width: width, height: height))); top += height
         }
+        if !agentFamilyHeader.isHidden {
+            frames.append((agentFamilyHeader, CGRect(x: 0, y: top, width: width, height: 34))); top += 34
+        }
         if !recovered.isHidden {
             let height = recovered.height(forWidth: width)
             frames.append((recovered, CGRect(x: 0, y: top, width: width, height: height)))
@@ -621,6 +642,9 @@ enum ConversationActionsMenu {
             }
         }
         if !chat.isSubagent && !model.isEphemeral(session.id) {
+            if !model.conversationFamily(chat.id).isEmpty {
+                PiMenuEntry.button("Sides and Agents…", systemImage: "person.crop.rectangle.stack") { model.showAgentFamily() }
+            }
             SessionOrganizationActions.entries(model: model, chat: chat)
             PiMenuEntry.divider
         }

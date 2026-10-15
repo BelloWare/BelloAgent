@@ -568,11 +568,11 @@ final class SidebarListedOrderTests: XCTestCase {
                      chat("loose", title: "Loose", order: 3)]
         let fixture = try fixture(chats)
         defer { fixture.teardown() }
-        XCTAssertEqual(rows(fixture.hosted).count, 3)
+        XCTAssertEqual(rows(fixture.hosted).count, 2)
 
         fixture.model.collapsedSidebarSides.insert("parent")
         fixture.settle()
-        XCTAssertEqual(rows(fixture.hosted).count, 2, "The child row folds away")
+        XCTAssertEqual(rows(fixture.hosted).count, 2, "Legacy folds do not add child rows")
 
         // Collapsing the project throws the group away and builds a new one.
         fixture.model.setProjectExpanded("project", expanded: false)
@@ -580,13 +580,13 @@ final class SidebarListedOrderTests: XCTestCase {
         XCTAssertTrue(rows(fixture.hosted).isEmpty)
         fixture.model.setProjectExpanded("project", expanded: true)
         fixture.settle()
-        XCTAssertEqual(rows(fixture.hosted).count, 2, "The fold is still there when the project comes back")
+        XCTAssertEqual(rows(fixture.hosted).count, 2, "The child stays in the picker when the project comes back")
 
         // Selecting the folded child reveals it again, as it always did.
         fixture.model.selectedID = "child"
         fixture.settle()
         XCTAssertFalse(fixture.model.collapsedSidebarSides.contains("parent"),
                        "Opening a folded child unfolds the branch that hides it")
-        XCTAssertEqual(rows(fixture.hosted).count, 3)
+        XCTAssertEqual(rows(fixture.hosted).count, 2)
     }
 }

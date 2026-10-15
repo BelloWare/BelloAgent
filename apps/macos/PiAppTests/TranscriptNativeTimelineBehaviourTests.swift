@@ -179,6 +179,20 @@ final class TranscriptNativeTimelineBehaviourTests: XCTestCase {
 
     typealias P = TranscriptNativeRowParityTests
 
+    @MainActor func testExpandedPartsKeepUsefulWarningsWithoutInternalOrderLabels() throws {
+        for evidence in ["observed", "canonical", "legacy"] {
+            let stage = Stage(P.partItem(P.segment("part", "opaque", "Saved response data", truncated:true, evidence:evidence)), opened:[.work("part:part")])
+            defer { stage.close() }
+            let line = try XCTUnwrap(stage.views(TranscriptNativeWorkLine.self).first)
+            XCTAssertEqual(line.content.title, "Additional response data")
+            let labels = stage.views(TranscriptPlainTextView.self).map { $0.string.lowercased() }
+            for word in ["observed delivery order", "canonical", "legacy", "arrival timing"] {
+                XCTAssertFalse(labels.contains { $0.contains(word) }, word)
+            }
+            XCTAssertTrue(labels.contains { $0.contains("saved without its remaining text") })
+            XCTAssertNotNil(stage.views(TranscriptLinkButton.self).first { $0.label.text == "Request details" })
+        }
+    }
     @MainActor func testAThoughtOpensAndItsDetailsAct() throws {
         var actions = TranscriptActions()
         var inspected: String?
@@ -287,7 +301,7 @@ final class TranscriptNativeTimelineBehaviourTests: XCTestCase {
         XCTAssertTrue(stage.disclosure.isOpen(.compaction("e1")))
         stage.refresh()
         XCTAssertEqual(row.parts.count, 2)
-        XCTAssertNotNil(stage.views(TranscriptPlainTextView.self).first { $0.string == "No terminal receipt yet" })
+        XCTAssertNotNil(stage.views(TranscriptPlainTextView.self).first { $0.string == "Completion not recorded" })
         XCTAssertEqual(row.parts.first?.line?.content.open, true, "an execution's parts are open")
     }
 
@@ -298,6 +312,10 @@ final class TranscriptNativeTimelineBehaviourTests: XCTestCase {
     @MainActor func testTheWorkHeaderFoldsItsListByFrame() throws {
         let stage = Stage(Self.legacy); defer { stage.close() }
         let row = try XCTUnwrap(stage.content as? TranscriptNativeLegacyRow)
+        guard case .block(let block) = Self.legacy else { return XCTFail("Missing work block") }
+        let expected = ToolCallSummary(rows:block.replies).label(reasoned:TranscriptActivity.blockReasoned(block)) ?? "Working"
+        XCTAssertEqual(row.header.content.summary, expected)
+        XCTAssertFalse(row.header.accessibilityLabel()?.lowercased().contains("legacy") == true)
         XCTAssertEqual(stage.row.frame.height, 24 + 2 + 10, "a folded list takes no room")
         try stage.click(row.header)
         XCTAssertTrue(stage.disclosure.isOpen(.work("legacy:l1")))

@@ -51,6 +51,15 @@ final class SubagentSteeringPresentationTests: XCTestCase {
         tool.subagent = SubagentSummary(link: SubagentTranscriptTests.link, description: "Check the parser", model: "fixture", status: .running, revision: 3, turn: 1, deliveryState: "pending")
         return tool
     }
+    func testWaitLabelsUsePlainWordsWithoutExposingInternalWakeReasons() {
+        var tool = Self.tool; tool.name = "subagent_wait"; tool.subagent = nil; tool.nativeSubagent = nil
+        for (reason,label) in [("settled","agents finished"),("empty","no agents to wait for"),("timeout","wait time elapsed"),("future_internal_state","")] {
+            tool.output = "{\"wake_reason\":\"" + reason + "\"}"
+            let source = tool.output
+            XCTAssertEqual(SubagentToolView(tool).label, "Wait ended" + (label.isEmpty ? "" : " · " + label))
+            XCTAssertEqual(tool.output,source)
+        }
+    }
     @MainActor func testAcceptedBackgroundReceiptIsALiveChildCard() throws {
         let tool = Self.tool, value = SubagentToolView(tool)
         XCTAssertEqual(value.label, "Running in background · turn 1")

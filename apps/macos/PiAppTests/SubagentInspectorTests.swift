@@ -97,6 +97,9 @@ final class SubagentInspectorTests: XCTestCase {
             usageLoader: { scope, until, offset in try await archive.sessionMetrics(sessionID: scope.sessionID, workspaceID: scope.workspaceID, until: until, offset: offset, includeFamily: scope.includeFamily) }, cache: InspectorDocumentCache())
         model.setVisible(true); defer { model.setVisible(false) }
         try await eventually("long-title cost group") { model.groups.count == 1 }
+        model.numberSubagentGroups(["child": 12])
+        let displayedTitle = "Sub-agent 12 · " + title
+        XCTAssertEqual(model.groups[0].title, displayedTitle)
         let page = InspectorOverviewPage(inspector: model, compact: true)
         for width in [CGFloat(420), 680] {
             page.frame = CGRect(x: 0, y: 0, width: width, height: 600); page.layoutSubtreeIfNeeded()
@@ -106,7 +109,7 @@ final class SubagentInspectorTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(bounds.minX, 0); XCTAssertLessThanOrEqual(bounds.maxX, card.bounds.width, "Long titles stay within the available card width")
             XCTAssertTrue(button.accessibilityLabel()?.contains(title) == true, "VoiceOver retains the full title")
             let labels = ConversationPaneTests.views(ShellText.self, in: card)
-            let heading = try XCTUnwrap(labels.first(where: { $0.text == title }))
+            let heading = try XCTUnwrap(labels.first(where: { $0.text == displayedTitle }))
             let detail = try XCTUnwrap(labels.first(where: { $0.text == model.groups[0].detail }))
             XCTAssertEqual(heading.convert(heading.bounds, to: card).minX, detail.convert(detail.bounds, to: card).minX, accuracy: 0.5)
             XCTAssertLessThanOrEqual(heading.frame.width, button.bounds.width)

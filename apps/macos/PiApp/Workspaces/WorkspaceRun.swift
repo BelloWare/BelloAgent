@@ -101,6 +101,7 @@ extension WorkspaceModel {
     /// suspends: what it says, whether its chat can still send it, and the
     /// row drawn for it at once.
     private func acceptSubmission(_ item: ChatRecord, view: SessionDisplay, store: MetadataStore, steer: Bool) -> Submission {
+        view.queueEditNotice = ""
         let attachments = view.attachments, skills = view.skills, directCommand = view.directCommand
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString
         // Authorization is read before anything suspends. A chat whose
@@ -321,7 +322,7 @@ extension WorkspaceModel {
         draftChanged(view)
     }
     func action(_ method: String, params: [String: WireValue] = [:], sessionID: String? = nil) {
-        guard !installPreparing, let id = sessionID ?? selectedID, let item = record(id) else { return }
+        guard !installPreparing, let id = sessionID ?? selectedID, !isOriginalSubagentReader(id), let item = record(id) else { return }
         guard !item.isSubagent || method == "turn.stop" else { return }
         // Nothing runs in an archived chat; stopping is the one command it still takes.
         guard !item.isArchived || method == "turn.stop" else { displays[id]?.notice = Self.archivedNotice; return }
@@ -362,7 +363,7 @@ extension WorkspaceModel {
     /// ask. Callers that merely forward a stop (archiving a chat, say) pass
     /// false: they must not invent an interruption for a run they cannot see.
     func stop(sessionID: String? = nil, userInitiated: Bool = true) {
-        guard let id = sessionID ?? selectedID, let item = record(id), let view = displays[id] else { return }
+        guard let id = sessionID ?? selectedID, !isOriginalSubagentReader(id), let item = record(id), let view = displays[id] else { return }
         if let link = item.delegation { stopSubagent(SubagentTarget(link), from: link.budgetOwnerSessionID); return }
         // Nothing is running and nothing is queued: there is nothing to stop.
         // Asking anyway showed "Stopping" and left the chat "Paused".

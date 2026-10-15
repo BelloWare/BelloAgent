@@ -76,7 +76,7 @@ extension WorkspaceModel {
             @MainActor func current() -> Bool { snapshotApplies(id: id, view: view, item: item, host: host, connection: connection) }
             do {
                 guard current() else { return }
-                let visible = id == selectedID || sides[selectedID ?? ""]?.id == id
+                let visible = id == selectedID || sides[selectedID ?? ""]?.id == id || subagentTabIsShown(id)
                 let generation = view.presentationGeneration
                 let requestedViewport = view.viewportRequest
                 let requestedRevision = view.projectionRevision
@@ -209,7 +209,7 @@ extension WorkspaceModel {
     /// and capture mode, on the chat's display. Returns the helper's queue,
     /// which the pending submissions are settled against.
     private func applySnapshotState(_ result: [String: WireValue], to view: SessionDisplay, id: String, item: ChatRecord,
-                                    wantsMetrics: Bool, clockOffset: Double) -> [[String: WireValue]] {
+                                    wantsMetrics: Bool, clockOffset: Double) -> [[String: WireValue]]? {
         view.isManagedSubagent = item.isSubagent
         if item.isSubagent { view.subagentStatus = result["subagentStatus"]?.string.flatMap(SubagentStatus.init(rawValue:)) }
         observeAssistantOutputs(sessionID: id, snapshot: result)
@@ -220,10 +220,8 @@ extension WorkspaceModel {
         observeCost(result, view: view)
         if wasBusy, view.runState == .error { markRunFailed(sessionID: id) }
         view.observeRetry(result)
-        let queued = result["queue"]?.array?.compactMap(\.object) ?? []
-        view.observeQueueEdit(result)
-        let queue = view.panelQueue(queued); if view.queue != queue { view.queue = queue }
-        view.queueCount = Int(result["queueCount"]?.number ?? 0)
+        let queued = view.applyQueueSnapshot(result)
+        if queued == nil { view.dirty = true }
         let now = ProcessInfo.processInfo.systemUptime
         // Phase changes cannot wait for the footer throttle: a
         // quiet tool may have no subsequent event until it ends.
@@ -354,11 +352,17 @@ extension WorkspaceModel {
     /// The line under the composer that says what the chat's tools may do,
     /// unless something the reader has to review is there instead.
     private func applyToolNotice(_ result: [String: WireValue], to view: SessionDisplay, id: String, item: ChatRecord) {
-        let notice = item.isBackgroundTask ? (record(id)?.backgroundTaskNotice ?? "Tools disabled · Title generation") : item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID ? "Tools disabled · Connection test" : item.toolMode == ChatRecord.readOnlyTools ? "Read-only tools" : ""
+        let toolNotice = item.isBackgroundTask ? (record(id)?.backgroundTaskNotice ?? "Tools disabled · Title generation") : item.connectionTest == true || item.workspaceID == WorkspaceRecord.scratchID ? "Tools disabled · Connection test" : item.toolMode == ChatRecord.readOnlyTools ? "Read-only tools" : ""
+        let preflight = result["preflightError"]?.string
+        view.preflightNotice = view.failureMessage == nil ? preflight ?? "" : ""
+        if preflight != nil { view.uncertain = true }
+        if !view.queueEditNotice.isEmpty || (preflight != nil && view.failureMessage == nil) {
+            view.updateComposedNotice()
+            return
+        }
         // An interruption or preflight explanation stays until the
         // user has reviewed it; the static tool notice must not replace it.
-        if view.notice != notice, !view.uncertain, view.failureMessage == nil { view.notice = notice }
-        if let preflight = result["preflightError"]?.string { if view.failureMessage == nil { view.notice = preflight }; view.uncertain = true }
+        if view.notice != toolNotice, !view.uncertain, view.failureMessage == nil { view.notice = toolNotice }
     }
     /// The chat's receipts, its messages still drawn as sending, and its
     /// pending submissions, settled against what the snapshot says. Returns
@@ -391,8 +395,9 @@ extension WorkspaceModel {
         // A message sent from here that the helper took elsewhere —
         // refused at delivery, removed, or held by a paused queue —
         // leaves the transcript, and the panel shows it at once.
-        if view.settleSending(receipts: receipts, queued: Set((helperQueue ?? []).compactMap { $0["turnId"]?.string })), let helperQueue {
-            let queue = view.panelQueue(helperQueue); if view.queue != queue { view.queue = queue }
+        let currentQueue = view.queueSnapshotIsCurrent(result) ? helperQueue : nil
+        if view.settleSending(receipts: receipts, queued: Set((currentQueue ?? []).compactMap { $0["turnId"]?.string })), let currentQueue {
+            let queue = view.panelQueue(currentQueue); if view.queue != queue { view.queue = queue }
         }
         let revision = view.pendingIntentRevision
         var intents: [CommandIntent]

@@ -249,6 +249,7 @@ extension WorkspaceModel {
         let changed = chatStats[id] != totals
         chatAccounting.publish(totals, sessionID: id)
         if changed {
+            if let owner = record(id)?.delegation?.budgetOwnerSessionID { subagentFamilies.removeValue(forKey:owner) }
             noteActivityChanged(id)
             for child in displays.keys where child != id {
                 if let item = record(child), budgetOwner(for: item).id == id { refreshCostReading(child) }
