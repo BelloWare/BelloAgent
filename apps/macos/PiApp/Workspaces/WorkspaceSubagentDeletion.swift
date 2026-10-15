@@ -118,7 +118,7 @@ extension WorkspaceModel {
                 }
             }
             forgetReadState(member.id); forgetRunHold(member.id)
-            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: member.id) }
+            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: member.id) }
             try await store.removeAll(kind: "receipt:\(member.id)")
             try await store.removeAll(kind: "pending:\(member.id)")
             contextReadings.removeValue(forKey: member.id); subagentSummaries.removeValue(forKey: member.id)

@@ -44,10 +44,10 @@ final class HistoryReaderCheckpointTests: XCTestCase {
     }
     /// Four turns, a compaction keeping the last two, two turns after it; with
     /// `edit`, an edit of the last question after those.
-    private func journal(edit: Bool = false) throws -> (path: URL, checkpoint: JournalCheckpoint) {
+    private func journal(edit: Bool = false, marker: String = "pi-app.native.v1") throws -> (path: URL, checkpoint: JournalCheckpoint) {
         var journal = Journal()
         try journal.append("chat", ["type": .string("session"), "version": .number(3)], timestamp: false); journal.parent = nil
-        try journal.append("native", ["type": .string("custom"), "customType": .string("pi-app.native.v1"), "data": .object(["version": .number(1)])])
+        try journal.append("native", ["type": .string("custom"), "customType": .string(marker), "data": .object(["version": .number(1)])])
         for turn in 0..<4 { try journal.append("q\(turn)", message("user", "Question \(turn)")); try journal.append("a\(turn)", message("assistant", "Answer \(turn)")) }
         let kept = ["q2", "a2", "q3", "a3"]
         try journal.append("summary", ["type": .string("compaction"), "summary": .string("Four questions were answered."),
@@ -86,6 +86,19 @@ final class HistoryReaderCheckpointTests: XCTestCase {
         let older = try await reader.read(path: path.path, before: "q2")
         XCTAssertEqual(older.messages.map(\.id), ["q0", "a0", "q1", "a1"], "Reaching past the checkpoint indexes the whole journal")
         XCTAssertNil(older.older)
+    }
+
+    func testPromotedCompactedChatRegistersAndReadsWithAndWithoutItsCheckpoint() async throws {
+        let (path, checkpoint) = try journal(marker: "pi-app.native.v3")
+        let bytes = try Data(contentsOf: path)
+        let full = try await HistoryReader().window(path: path.path)
+        try checkpoint.write(for: path)
+        let reader = HistoryReader()
+        try await reader.validateIdentity(path: path.path, id: "chat")
+        let partial = try await reader.window(path: path.path)
+        XCTAssertNil(full.notice); XCTAssertNil(partial.notice)
+        XCTAssertEqual(partial.messages.map(\.id), full.messages.suffix(partial.messages.count).map(\.id))
+        XCTAssertEqual(try Data(contentsOf: path), bytes)
     }
 
     func testTheSelectionPathPagesPastTheCheckpoint() async throws {
