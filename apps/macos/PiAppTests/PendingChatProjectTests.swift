@@ -281,6 +281,202 @@ final class PendingChatProjectTests: XCTestCase {
         }
     }
 
+    @MainActor func testChoosingCurrentProjectSupersedesSuspendedSwitchInFlatAndTopics() async throws {
+        for flat in [false, true] {
+            let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+            model.setSidebarFlat(flat)
+            view.draft = "Keep this draft in Orchard."
+            let original = model.record(view.id), gate = AsyncGate(), profile = model.profileChoice
+            model.overrideWrites[profile] = (UUID(), Task { await gate.wait() })
+            var entered = false
+            let older = Task { entered = true; try await model.setPendingChatProject("Harbor", for: view.id) }
+            try await eventually("older project choice waiting") { entered }
+            do { try await model.setPendingChatProject("Orchard", for: view.id) }
+            catch { await gate.open(); _ = await older.result; throw error }
+            await gate.open()
+            let result = await older.result
+            if case .success = result { XCTFail("Choosing the current project must supersede the suspended switch") }
+            model.overrideWrites.removeValue(forKey: profile)
+            XCTAssertEqual(model.record(view.id), original)
+            XCTAssertTrue(model.selected === view)
+            XCTAssertEqual(model.selected?.draft, "Keep this draft in Orchard.")
+        }
+    }
+
+    @MainActor func testLatestProjectChoiceWinsInEitherReadCompletionOrder() async throws {
+        for oldestFirst in [true, false] {
+            let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+            try addThirdProject(to: model)
+            view.draft = "Keep the latest draft."
+            let olderGate = AsyncGate(), newerGate = AsyncGate(), profile = model.profileChoice
+            model.overrideWrites[profile] = (UUID(), Task { await olderGate.wait() })
+            var olderEntered = false, newerEntered = false
+            let older = Task { olderEntered = true; try await model.setPendingChatProject("Harbor", for: view.id) }
+            try await eventually("older project choice waiting") { olderEntered }
+            model.overrideWrites[profile] = (UUID(), Task { await newerGate.wait() })
+            let newer = Task { newerEntered = true; try await model.setPendingChatProject("Meadow", for: view.id) }
+            try await eventually("newer project choice waiting") { newerEntered }
+            if oldestFirst {
+                await olderGate.open()
+                if case .success = await older.result { XCTFail("An older choice committed while a newer choice was waiting") }
+                XCTAssertEqual(model.record(view.id)?.workspaceID, "Orchard")
+                XCTAssertTrue(model.selected === view)
+            }
+            view.draft = "Edited while the choices were waiting."
+            await newerGate.open()
+            let newerResult = await newer.result
+            await olderGate.open()
+            if case .success = await older.result { XCTFail("A superseded choice succeeded") }
+            model.overrideWrites.removeValue(forKey: profile)
+            if case .failure(let error) = newerResult { XCTFail("The newest choice lost ownership: \(error)") }
+            XCTAssertEqual(model.record(view.id)?.workspaceID, "Meadow")
+            XCTAssertEqual(model.selected?.draft, "Edited while the choices were waiting.")
+            XCTAssertTrue(model.pendingChatIDs.contains(view.id))
+        }
+    }
+
+    @MainActor func testFailedOrCancelledNewerChoiceDoesNotReviveOlderSwitch() async throws {
+        for cancel in [false, true] {
+            let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+            try addThirdProject(to: model)
+            view.draft = "A failed latest choice leaves the original project intact."
+            let original = model.record(view.id), olderGate = AsyncGate(), newerGate = AsyncGate(), profile = model.profileChoice
+            model.overrideWrites[profile] = (UUID(), Task { await olderGate.wait() })
+            var olderEntered = false, newerEntered = false
+            let older = Task { olderEntered = true; try await model.setPendingChatProject("Harbor", for: view.id) }
+            try await eventually("older project choice waiting") { olderEntered }
+            model.overrideWrites[profile] = (UUID(), Task { await newerGate.wait() })
+            let newer = Task { newerEntered = true; try await model.setPendingChatProject("Meadow", for: view.id) }
+            try await eventually("newer project choice waiting") { newerEntered }
+            if cancel { newer.cancel() }
+            else { try FileManager.default.removeItem(atPath: XCTUnwrap(model.workspaces.first { $0.id == "Meadow" }).path) }
+            await newerGate.open()
+            if case .success = await newer.result { XCTFail("The unavailable or cancelled latest choice succeeded") }
+            await olderGate.open()
+            if case .success = await older.result { XCTFail("An unsuccessful latest choice revived an obsolete one") }
+            model.overrideWrites.removeValue(forKey: profile)
+            XCTAssertEqual(model.record(view.id), original)
+            XCTAssertTrue(model.selected === view)
+            XCTAssertEqual(model.selected?.draft, "A failed latest choice leaves the original project intact.")
+        }
+    }
+
+    @MainActor func testMenuChoicesRegisterBeforeTasksAndSilenceSupersededFailures() async throws {
+        for target in ["Orchard", "Meadow"] {
+            let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+            try addThirdProject(to: model)
+            view.draft = "The last menu action owns this draft."
+            view.notice = "Keep the current draft's notice."
+            let gate = AsyncGate(), profile = model.profileChoice
+            model.overrideWrites[profile] = (UUID(), Task { await gate.wait() })
+            // The chip calls this synchronous entry point. Both actions are
+            // accepted before either task runs; task scheduling cannot choose
+            // the winner or allow an old completion to clear the new owner.
+            let older = model.choosePendingChatProject("Harbor", for: view.id)
+            let newer = model.choosePendingChatProject(target, for: view.id)
+            await older.value
+            XCTAssertEqual(model.record(view.id)?.workspaceID, "Orchard")
+            XCTAssertEqual(view.notice, "Keep the current draft's notice.", "A superseded error is silent, even while the newest choice is waiting")
+            await gate.open(); await newer.value
+            model.overrideWrites.removeValue(forKey: profile)
+            XCTAssertEqual(model.record(view.id)?.workspaceID, target)
+            XCTAssertEqual(model.selected?.draft, "The last menu action owns this draft.")
+            XCTAssertTrue(model.pendingChatProjectChoices.isEmpty, "Finished choices release their ownership without retaining per-chat history")
+        }
+    }
+
+    @MainActor func testMenuChoiceCannotPublishFailureAfterNavigationCancellationOrSave() async throws {
+        for supersession in ["report", "return", "cancel", "save"] {
+            let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+            view.draft = "Keep the draft across navigation."
+            view.notice = "The current draft's notice."
+            let original = model.record(view.id)
+            let choice = model.choosePendingChatProject("Harbor", for: view.id)
+            if supersession == "cancel" { choice.cancel() }
+            else if supersession == "save" { try await model.materializeChat(view.id) }
+            else {
+                model.openReport()
+                if supersession == "return" { await model.select(view.id) }
+            }
+            let page = model.page
+            await choice.value
+            XCTAssertEqual(model.page, page); XCTAssertEqual(model.record(view.id), original)
+            XCTAssertTrue(model.selected === view)
+            XCTAssertEqual(view.notice, "The current draft's notice.", "The same ownership guard must protect error delivery")
+            XCTAssertTrue(model.pendingChatProjectChoices.isEmpty)
+        }
+    }
+
+    @MainActor func testLatestMenuChoiceStillReportsAnUnavailableProject() async throws {
+        let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+        try addThirdProject(to: model)
+        try FileManager.default.removeItem(atPath: XCTUnwrap(model.workspaces.first { $0.id == "Meadow" }).path)
+        view.draft = "Keep the draft when a project becomes unavailable."
+        await model.choosePendingChatProject("Meadow", for: view.id).value
+        XCTAssertEqual(model.record(view.id)?.workspaceID, "Orchard"); XCTAssertTrue(model.selected === view)
+        XCTAssertEqual(view.draft, "Keep the draft when a project becomes unavailable.")
+        XCTAssertFalse(view.notice.isEmpty, "Failures of the current choice still explain why the project did not change")
+        XCTAssertTrue(model.pendingChatProjectChoices.isEmpty)
+    }
+
+    @MainActor func testNewChatSupersedesAProjectChoiceBeforeReuseOrCreation() async throws {
+        for reuse in [true, false] {
+            let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+            try addThirdProject(to: model)
+            view.draft = reuse ? "" : "Keep this draft in its original project when creating another chat."
+            let original = model.record(view.id), olderGate = AsyncGate(), creationGate = AsyncGate(), profile = model.profileChoice
+            model.overrideWrites[profile] = (UUID(), Task { await olderGate.wait() })
+            var entered = false
+            let older = Task { entered = true; try await model.setPendingChatProject("Harbor", for: view.id) }
+            try await eventually("project choice waiting before New Chat") { entered }
+            model.overrideWrites[profile] = (UUID(), Task { await creationGate.wait() })
+            model.newChat(in: reuse ? "Orchard" : "Meadow")
+            await olderGate.open()
+            if case .success = await older.result { XCTFail("An older project choice survived a newer New Chat action") }
+            XCTAssertEqual(model.record(view.id), original)
+            XCTAssertTrue(model.selected === view, "New Chat has either reused this draft or is still reading its defaults")
+            await creationGate.open()
+            model.overrideWrites.removeValue(forKey: profile)
+            if reuse { XCTAssertEqual(model.selectedID, view.id) }
+            else {
+                try await eventually("new chat created in the later destination") { model.selectedID != view.id && model.selected?.draftReady == true }
+                XCTAssertEqual(model.record(try XCTUnwrap(model.selectedID))?.workspaceID, "Meadow")
+                XCTAssertEqual(model.displays[view.id]?.draft, "Keep this draft in its original project when creating another chat.")
+            }
+        }
+    }
+
+    @MainActor func testFailedFirstSaveDoesNotReviveAnEarlierProjectChoice() async throws {
+        let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+        view.draft = "A first-save attempt supersedes the older project choice."
+        let original = model.record(view.id)
+        let gate = AsyncGate(), profile = model.profileChoice
+        model.overrideWrites[profile] = (UUID(), Task { await gate.wait() })
+        var entered = false
+        let older = Task { entered = true; try await model.setPendingChatProject("Harbor", for: view.id) }
+        try await eventually("project choice waiting before save") { entered }
+        // Reject the actual first write in this generated database, then
+        // restore storage while the old project choice is still waiting.
+        try RecoveredDraftTests.sql("CREATE TRIGGER refuse_first_chat BEFORE INSERT ON records WHEN NEW.kind='chat' BEGIN SELECT RAISE(ABORT, 'fixture failure'); END", root: model.root)
+        do { try await model.materializeChat(view.id); XCTFail("The unavailable store accepted the first save") }
+        catch { XCTAssertEqual(error as? StoreError, .unavailable) }
+        try RecoveredDraftTests.sql("DROP TRIGGER refuse_first_chat", root: model.root)
+        XCTAssertTrue(model.pendingChatIDs.contains(view.id)); XCTAssertNil(model.pendingProjectBlocker(view.id))
+        view.notice = "The first save failed; retry when ready."
+        await gate.open()
+        if case .success = await older.result { XCTFail("A failed save revived the older project choice") }
+        model.overrideWrites.removeValue(forKey: profile)
+        XCTAssertEqual(model.record(view.id), original); XCTAssertTrue(model.selected === view)
+        XCTAssertEqual(model.selected?.draft, "A first-save attempt supersedes the older project choice.")
+        XCTAssertEqual(model.selected?.notice, "The first save failed; retry when ready.")
+    }
+
+    @MainActor private func addThirdProject(to model: WorkspaceModel) throws {
+        let path = model.root.appendingPathComponent("Meadow").path
+        try FileManager.default.createDirectory(atPath: path, withIntermediateDirectories: true)
+        model.workspaces.append(WorkspaceRecord(id: "Meadow", path: path, trusted: true))
+    }
+
     @MainActor private func assertSwitchRejectsNavigation(_ navigate: @MainActor (WorkspaceModel, SessionDisplay) async throws -> Void) async throws {
         let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
         let draft = "Keep this nonempty draft when navigating away and back."

@@ -39,32 +39,80 @@ extension WorkspaceModel {
         return nil
     }
 
+    private struct PendingProjectChoice {
+        let generation = UUID()
+        let navigation: Int
+        let item: ChatRecord?
+        let display: SessionDisplay?
+    }
+
+    /// Register intent in the menu action, before its task can be scheduled.
+    /// Even choosing the current project or a choice that later fails retires
+    /// all earlier choices; their completion must not change the chat or notice.
+    @discardableResult func choosePendingChatProject(_ projectID: String, for id: String) -> Task<Void, Never> {
+        let choice = beginPendingProjectChoice(id)
+        return Task {
+            defer { finishPendingProjectChoice(choice, for: id) }
+            do { try await applyPendingChatProject(projectID, for: id, choice: choice) }
+            catch {
+                guard !(error is CancellationError), !Task.isCancelled,
+                      isCurrentPendingProjectChoice(choice, for: id) else { return }
+                choice.display?.notice = error.localizedDescription
+            }
+        }
+    }
+
+    func setPendingChatProject(_ projectID: String, for id: String) async throws {
+        let choice = beginPendingProjectChoice(id)
+        defer { finishPendingProjectChoice(choice, for: id) }
+        try await applyPendingChatProject(projectID, for: id, choice: choice)
+    }
+
+    private func beginPendingProjectChoice(_ id: String) -> PendingProjectChoice {
+        let choice = PendingProjectChoice(navigation: organizationNavigationRevision, item: record(id), display: displays[id])
+        pendingChatProjectChoices[id] = choice.generation
+        return choice
+    }
+
+    private func finishPendingProjectChoice(_ choice: PendingProjectChoice, for id: String) {
+        if pendingChatProjectChoices[id] == choice.generation { pendingChatProjectChoices[id] = nil }
+    }
+
+    private func isCurrentPendingProjectChoice(_ choice: PendingProjectChoice, for id: String) -> Bool {
+        pendingChatProjectChoices[id] == choice.generation && page == .chats
+            && organizationNavigationRevision == choice.navigation && selectedID == id
+            && displays[id] === choice.display && record(id) == choice.item
+            && pendingProjectBlocker(id) == nil
+    }
+
+    private func requirePendingProjectChoice(_ choice: PendingProjectChoice, for id: String) throws {
+        try Task.checkCancellation()
+        guard isCurrentPendingProjectChoice(choice, for: id) else { throw CancellationError() }
+    }
+
     /// Uses precisely the ordinary New Chat seed, then carries only deliberate
     /// user input. No session, journal, capture or permission state is moved.
-    func setPendingChatProject(_ projectID: String, for id: String) async throws {
+    private func applyPendingChatProject(_ projectID: String, for id: String, choice: PendingProjectChoice) async throws {
         if let reason = pendingProjectBlocker(id) { throw HostError.failure(reason) }
-        guard page == .chats, let item = record(id), let view = displays[id], selectedID == id else {
+        guard page == .chats, let item = choice.item, let view = choice.display, selectedID == id else {
             throw HostError.failure("Open the new chat before changing its project.")
         }
+        try requirePendingProjectChoice(choice, for: id)
         guard item.workspaceID != projectID else { return }
         guard let target = pendingChatProjects.first(where: { $0.id == projectID }) else {
             throw HostError.failure("Choose an available, trusted project.")
         }
         let profileID = requestProfiles.contains(where: { $0.id == profileChoice }) ? profileChoice : requestProfiles.first?.id
         guard let profileID else { throw HostError.failure("Choose a saved Responses connection first.") }
-        // This revision already tracks page, chat-selection and side-focus
-        // changes, including a trip away and back to the same draft.
-        let navigation = organizationNavigationRevision
         await overrideWrites[profileID]?.task.value
+        try requirePendingProjectChoice(choice, for: id)
         var fresh = try await newChatRecord(workspaceID: projectID, profileID: profileID, previousChatID: id, topicID: nil)
+        try requirePendingProjectChoice(choice, for: id)
         let available = await Self.availableChatProjects([target])
-        try Task.checkCancellation()
+        try requirePendingProjectChoice(choice, for: id)
         // A send, rename, navigation, folder edit or loss of trust during the
         // reads wins. The old chat and draft remain untouched on every refusal.
-        if let reason = pendingProjectBlocker(id) { throw HostError.failure(reason) }
-        guard page == .chats, organizationNavigationRevision == navigation,
-              selectedID == id, displays[id] === view, record(id) == item,
-              pendingChatProjects.contains(target), available == [target],
+        guard pendingChatProjects.contains(target), available == [target],
               requestProfiles.contains(where: { $0.id == profileID }),
               let index = chats.firstIndex(where: { $0.id == id }) else {
             throw HostError.failure("The chat, project or page changed. Choose its project again.")

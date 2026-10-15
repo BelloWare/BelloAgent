@@ -56,10 +56,7 @@ import AppKit
                         identifier: project.id, help: project.path) { [weak self] in
                     guard let self else { return }
                     self.close()
-                    Task {
-                        do { try await self.model.setPendingChatProject(project.id, for: id) }
-                        catch { self.model.displays[id]?.notice = error.localizedDescription }
-                    }
+                    self.model.choosePendingChatProject(project.id, for: id)
                 }
             }
             let picker = PendingChatProjectPicker(entries: entries) { [weak self] in self?.close() }

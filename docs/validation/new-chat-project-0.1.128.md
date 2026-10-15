@@ -304,3 +304,98 @@ confined to the pending-project operation and shared navigation is unchanged.
 No layout or gallery scene changed; the 22 inspected `gallery-review1/` images
 remain the current visual evidence. No installed app, paid provider, real
 preferences or Keychain was used. Remaining handoff: lead re-review/integration.
+
+## Lead review round 3
+
+Date: 2026-10-15. The reported same-project race and the additional ordering
+cases found in this switch path are fixed. A single per-chat UUID generation
+owns each accepted project choice. The menu registers that generation and its
+navigation/record/display snapshot synchronously, before scheduling the task
+and before the same-project return. The shared ownership check runs after
+each defaults/availability suspension and protects both commit and error
+delivery. It retains the active-page, navigation-revision, source identity and
+pending-chat eligibility checks. Only the owning completion removes its token;
+finished operations retain no per-chat generation history.
+
+Root causes and decisions:
+
+- Reselecting the current project never invalidated the earlier task. Different
+  target choices also raced by completion order: the older one could commit
+  first and cause the newer one to fail its identity checks. Latest accepted
+  intent now wins, including when it chooses the current project, later fails,
+  or is cancelled. An unsuccessful latest choice never restores an older one.
+- The chip registered choices inside asynchronously scheduled tasks and wrote
+  every error into whichever display currently had the chat ID. Acceptance now
+  happens in the menu action; superseded/cancelled errors are silent. An error
+  from the current, still-eligible choice still explains why switching failed.
+- New Chat can reuse an empty placeholder without changing navigation, or wait
+  on its own defaults before creating a different chat. Both accepted actions
+  now invalidate the selected draft's old project-choice token immediately.
+- A first metadata save can fail and restore all pending-chat eligibility
+  checks. First-save entry now invalidates the same token before its write, so
+  an earlier project choice cannot resume after storage recovers. This also
+  covers first send, rename and helper opening through their existing save path.
+
+The two lifecycle invalidations are six additive lines, including comments.
+They do not change selection/navigation mechanics, storage format, helper
+tools, permissions, capture, vault behavior or model-visible context. Ordinary
+draft edits and explicit image attachments remain safe inputs to retain. The
+picker layout, current-project check and search/keyboard behavior are unchanged.
+
+Eight new behavioral tests cover 16 scenarios: current-project re-selection
+in Topics and Flat; both read-completion orders; failed and cancelled newer
+choices; two menu actions accepted before their tasks run; obsolete error
+delivery after navigation, return, cancellation and saving; useful errors for
+the current unavailable target; New Chat reuse and delayed creation; and a
+failed first save followed by storage recovery. That last test uses a temporary
+SQLite trigger in the generated fixture database to reject the actual write,
+then removes it before releasing the older project choice. No production test
+hook or real data is involved.
+
+Failing-first evidence, all under this stream's evidence root:
+
+| Evidence | Result before its fix |
+| --- | --- |
+| `validation/review3-choices-red.log` | 3 ordering tests fail with 19 assertions |
+| `validation/review3-notices-red.log` | 2 notice tests fail with 5 assertions; the other 4 targeted tests pass |
+| `validation/review3-save-notice-red.log` | Extended notice test fails in all 4 navigation/cancel/save scenarios |
+| `validation/review3-lifecycle-red.log` | 2 lifecycle tests fail with 10 assertions across 3 scenarios |
+
+The first lifecycle fixture attempt tried to replace the read-only store
+property and did not compile. `validation/review3-lifecycle-fixture-diagnostic.log`
+preserves that diagnostic separately; the corrected trigger-based failing run
+has no unexpected failures.
+
+Mutation: removing only the UUID equality from the real shared ownership guard
+leaves the page, navigation, record, display and eligibility guards active.
+`validation/review3-generation-mutation.log` records all 3 ordering tests failing
+again with 19 assertions. The generation equality was restored before final
+validation. The lifecycle red run separately proves that current-state checks
+alone do not cover New Chat acceptance or a failed first-save attempt.
+
+All native runs use this stream's `PI_BUILD_ROOT` and both scratch-root
+environment names. `python3 scripts/test-lanes.py list` classifies all selected
+classes as parallel. The initial affected run passed 40 tests; final validation
+after the lifecycle additions is `validation/review3-final.log`: **53 passed,
+zero failures, zero skips** (34.622 seconds), comprising PendingChatProject
+(24), ReportNavigation (3), BackgroundRequests (6), OrganizationBatch (9),
+DeferredCreation (4) and WorkspaceDurability (7). The native summary is saved
+as `validation/review3-final-summary.json`.
+
+The standalone `PendingChatProjectGalleryTests` run also passed: 1 test in
+11.765 seconds, recorded in `validation/review3-gallery.log` and
+`validation/review3-gallery-summary.json`. All 22 refreshed captures in
+`gallery-review3/` were opened and inspected: Topics/Flat, 1240×800 and 920×600,
+light/dark, closed/open; narrow 420×600 with long names; and searchable picker
+light/dark. Checked and unchecked names/paths remain aligned, the chip and
+chevron fit, and text/search remain legible. The gallery exercises the actual
+menu action and verifies the destination composer keeps the draft. Final
+validation covers **54 distinct tests including the gallery**. Per-run counts
+are preserved in `validation/review3-selected-summary.json`.
+
+No full lane was run for this review, following the affected-classes-only
+instruction. Shared navigation was not changed broadly; the only lifecycle
+additions retire this feature's pending token. No Swift host package changed,
+so helper tests were not needed. The previous successful full lane remains
+recorded under round 1. Remaining handoff: lead re-review and branch integration;
+the historical ContextReading timeout follow-up remains unchanged.

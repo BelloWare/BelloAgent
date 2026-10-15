@@ -130,6 +130,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// A first metadata save fixes the project before its actor write returns.
     /// Count overlapping callers so one completion cannot release another save.
     @Published var pendingChatSaveCounts: [String: Int] = [:]
+    /// Latest accepted project choice per pending chat, owned until it finishes.
+    var pendingChatProjectChoices: [String: UUID] = [:]
     @Published var showProfiles = false
     @Published var profileChoice = ""
     @Published var selectedWorkspaceID: String? { didSet { if selectedWorkspaceID != oldValue { noteSelectionChanged() } } }

@@ -30,6 +30,9 @@ extension WorkspaceModel {
         if let topicID, !topics.contains(where: { $0.id == topicID && $0.workspaceID == workspaceID }) {
             error = "This topic is no longer available. Choose another topic or the project."; return
         }
+        // New Chat supersedes the old draft's project choice even when it
+        // reuses that draft or waits for defaults before changing selection.
+        if let current = selectedID { pendingChatProjectChoices[current] = nil }
         if let current = selectedID, isPendingEmpty(current), let item = record(current), item.workspaceID == workspaceID, item.profileID == profileChoice, effectiveTopicID(for: item) == topicID {
             displays[current]?.composerFocusRequest += 1; return
         }
@@ -66,6 +69,9 @@ extension WorkspaceModel {
     /// archive, connection change or helper session needs it.
     func materializeChat(_ id: String) async throws {
         guard pendingChatIDs.contains(id), let item = chats.first(where: { $0.id == id }) else { return }
+        // A first use owns the project even if its write fails and the chat
+        // becomes eligible again. Never revive a choice made before that use.
+        pendingChatProjectChoices[id] = nil
         guard let store else { throw StoreError.unavailable }
         pendingChatSaveCounts[id, default: 0] += 1
         defer {
