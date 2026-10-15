@@ -128,6 +128,52 @@ final class FamilyLimitStopTests: XCTestCase {
         await nested.close(); await side.close(); await owner.close()
     }
 
+    func testRaisedBudgetStopsResumedSideToolsAgainWithoutLaunchingTheOwner() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), tools = LimitHeldTools()
+        let side = try await side("side",parent:owner,root:root)
+        let nested = try await self.side("nested",parent:side,root:root,client:LimitRunClient(mode:"side-tool"),tools:tools)
+        for cycle in 1...2 {
+            await owner.setCostLimit(cycle == 1 ? 0.5 : 1.5)
+            _ = try await nested.submit(Submission(commandID:"command-\(cycle)",turnID:"turn-\(cycle)",text:"Work"),steer:false)
+            try await eventually { await tools.starts == cycle }
+            let sibling = try await self.side("sibling-\(cycle)",parent:owner,root:root)
+            let held = try await start(sibling,"held-\(cycle)"), crossing = try await start(sibling,"crossing-\(cycle)")
+            try await finish(crossing.0,"crossing-\(cycle)",cost:0.9)
+            let cancellations = await tools.cancellations
+            XCTAssertEqual(cancellations,cycle - 1,"The new budget still drains dispatched work before stopping tools")
+            XCTAssertNoThrow(try held.1.check())
+            try await finish(held.0,"held-\(cycle)",cost:0.1)
+            do { try await eventually(timeout:.seconds(2)) { !(await nested.isRunning) } }
+            catch { await sibling.close(); await nested.close(); await side.close(); await owner.close(); throw error }
+            let stops = await owner.stopCount, cancelled = await tools.cancellations, code = await nested.errorCode
+            XCTAssertEqual(stops,cycle,"The owner never launched; raising its limit must rearm the shared stop")
+            XCTAssertEqual(cancelled,cycle); XCTAssertEqual(code,"cost_limit")
+            await sibling.close()
+        }
+        await nested.close(); await side.close(); await owner.close()
+    }
+
+    func testBudgetChangesRearmOnlyWhenWorkIsPermittedAndNeverReviveOldPermits() async throws {
+        for (limit, damaged, permitsWork) in [(0.5,false,false),(0.8,false,false),(1.5,false,true),(nil,false,true),(1.5,true,false)] as [(Double?,Bool,Bool)] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let owner = try familyFixture(root:root)
+            await owner.enableFamilyBudget(); await owner.setCostLimit(0.5)
+            let request = try await start(owner,"paid")
+            try await finish(request.0,"paid",cost:0.9)
+            if damaged { await owner.failFamilyAccounting(AgentError("accounting_persistence","Fixture failure")) }
+            let generation = await owner.stopCount
+            await owner.setCostLimit(limit)
+            let issued = await owner.budgetStopIssued, reason = await owner.familyStopReason, paused = await owner.queuePaused
+            let after = await owner.stopCount
+            XCTAssertEqual(issued,!permitsWork); XCTAssertEqual(after,generation); XCTAssertTrue(paused)
+            XCTAssertEqual(reason?.code,damaged ? "accounting_persistence" : permitsWork ? nil : "cost_limit")
+            do { _ = try await request.0.admitAttempt("stale"); XCTFail("A raised limit must not revive the old run") }
+            catch { if permitsWork { XCTAssertTrue(error is CancellationError) } }
+            await owner.close()
+        }
+    }
+
     func testRetryBackoffIsNotAnInFlightRequest() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let owner = try familyFixture(root:root,client:LimitRunClient(mode:"retry"))
@@ -237,10 +283,11 @@ private actor LimitRunClient: ModelClient {
 
 private actor LimitHeldTools: ToolExecuting {
     var started = false, cancelled = false
+    var starts = 0, cancellations = 0
     func definitions(readOnly:Bool) -> [ToolDefinition] { [ToolDefinition("first","Held fixture tool",[:])] }
     func invoke(_ call:ToolCall,readOnly:Bool) async throws -> JSON {
-        started = true
+        started = true; starts += 1
         do { while true { try await Task.sleep(for:.milliseconds(2)) } }
-        catch { cancelled = true; throw error }
+        catch { cancelled = true; cancellations += 1; throw error }
     }
 }

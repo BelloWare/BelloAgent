@@ -106,6 +106,13 @@ extension AgentSession {
         guard !isSubagent, sideBudgetIDs.isEmpty else { return }
         guard costLimitUSD != usd else { return }
         costLimitUSD = usd
+        // Sides can resume without launching their budget owner. Rearm its
+        // next exhaustion as soon as the new limit permits work, keeping the
+        // old run/permits cancelled and any accounting failure intact.
+        if !costLimitReached, accountingFailure == nil {
+            if familyStopReason?.code == Self.costLimitCode { familyStopReason = nil }
+            budgetStopIssued = false
+        }
         event("cost.limit", costSnapshot)
         stopFamilyAtLimit()
     }

@@ -2,6 +2,44 @@ import XCTest
 @testable import PiAgentCore
 
 final class SideBudgetTests: XCTestCase {
+    func testFailedSettlementDrainsEveryAncestorAndPreservesTerminalEvidence() async throws {
+        for failedWriters in [["main"], ["side"], ["main","side"]] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let main = try await session("main",root:root,failSettlement:failedWriters.contains("main"))
+            let sideFile = root.appendingPathComponent("side_side.jsonl"), seed = await main.sideSeed()
+            do {
+                let writer = try SessionJournal(url:sideFile,id:"side",cwd:root,binding:fixtureProfile().binding,create:true)
+                try writer.append(["type":"custom","customType":JSON(JournalRecordKind.sideOrigin),"data":seed.info])
+            }
+            let side = try await session("side",root:root,parent:main,path:sideFile.path,failSettlement:failedWriters.contains("side"))
+            let nested = try await session("nested",root:root,parent:side)
+            _ = try await nested.keep(whenFinished:false)
+            let request = try await start(nested,attempt:"settling")
+            for member in [main,side,nested] {
+                let pending = await member.inFlightBudgetAttempts
+                XCTAssertEqual(pending,["settling"])
+            }
+            do { try await finish(request,attempt:"settling",cost:0.7); XCTFail("The injected append must fail") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"accounting_persistence","Preserve the original failure") }
+            let evidence = await nested.accounting.attempts["settling"]?.contribution
+            XCTAssertEqual(evidence?["usd"].double,0.7)
+            XCTAssertEqual(evidence?["usage"]["total"].int,120)
+            for member in [nested,side,main] {
+                let pending = await member.inFlightBudgetAttempts, permits = await member.requestPermits
+                XCTAssertTrue(pending.isEmpty,"\(failedWriters): finished requests cannot pin an ancestor")
+                XCTAssertTrue(permits.isEmpty)
+                let unloaded = await member.unloadIfIdle()
+                XCTAssertTrue(unloaded,"\(failedWriters): every finished runtime must be releasable")
+                if !unloaded { await member.close() }
+            }
+            let recovered = try await session("main",root:root,path:root.appendingPathComponent("main.jsonl").path)
+            let spend = await recovered.spend, usage = await recovered.familyUsage
+            XCTAssertEqual(spend.usd,0.7); XCTAssertEqual(spend.reported,1); XCTAssertEqual(spend.unreported,0)
+            XCTAssertEqual(usage["total"].int,120,"Saved terminal evidence repairs the failed ancestor without captures")
+            await recovered.close()
+        }
+    }
+
     func testRecoveredSavedSideIsIndependentWithItsOwnLimitAndUntouchedOriginal() async throws {
         for withChild in [false,true] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
@@ -514,11 +552,15 @@ final class SideBudgetTests: XCTestCase {
         await reopenedHost.shutdown()
     }
 
-    private func session(_ id: String, root: URL, parent: AgentSession? = nil, path: String? = nil) async throws -> AgentSession {
+    private func session(_ id: String, root: URL, parent: AgentSession? = nil, path: String? = nil, failSettlement: Bool = false) async throws -> AgentSession {
         let seed = await parent?.sideSeed()
         let value = try AgentSession(id: id, profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
             readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]), tools: DisabledTools(), traces: TraceStore(),
-            resumePath: path, seed: path == nil ? seed?.messages : nil, parent: seed?.info ?? .null)
+            resumePath: path, seed: path == nil ? seed?.messages : nil, parent: seed?.info ?? .null,
+            beforeJournalAppend: { record in
+                if failSettlement, record["customType"].text == JournalRecordKind.cost,
+                   record["data"]["attemptId"].text == "settling" { throw AgentError("fixture_append","Injected \(id) settlement failure") }
+            })
         if let parent { try await value.bindSideBudget(to: parent) }
         return value
     }

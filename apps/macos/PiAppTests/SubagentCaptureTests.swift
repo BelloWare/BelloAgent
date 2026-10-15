@@ -87,7 +87,14 @@ final class SubagentCaptureTests: XCTestCase {
             filter.workspaceID = "workspace"; filter.status = "all"; filter.sessionID = "parent"
             let report = try await log.dashboard(filter), footer = try await log.gatewayAccounting(sessionID:"parent",workspaceID:"workspace",messages:[])
             let sidebar = try await log.allSessionTotals(), scope = SessionUsageScope(sessionID:"parent",workspaceID:"workspace")
-            let references = try await log.sessionReferenceTotals(scopes:[scope])
+            let scopes = requests.map { SessionUsageScope(sessionID:$0.0,workspaceID:"workspace") }
+                + [SessionUsageScope(sessionID:"parent",workspaceID:"foreign")]
+            let references = try await log.sessionReferenceTotals(scopes:scopes)
+            for selected in scopes where selected.workspaceID == "workspace" {
+                let ownScope = try await log.gatewayAccounting(sessionID:selected.sessionID,workspaceID:selected.workspaceID,messages:[])
+                XCTAssertEqual(references[selected],ownScope.session,"Overlapping parent/side/child references each use their own population and breakdown")
+            }
+            XCTAssertEqual(references[SessionUsageScope(sessionID:"parent",workspaceID:"foreign")],GatewayTotals(),"An empty reference retains unknown coverage rather than borrowing the other project's family")
             let inspector = try await log.sessionMetrics(sessionID:"parent",workspaceID:"workspace",until:filter.until,includeFamily:true)
             for total in [report.gateway,footer.session,try XCTUnwrap(sidebar["workspace\u{0}parent"]),try XCTUnwrap(references[scope]),inspector.gateway] {
                 XCTAssertEqual(total.requests,5); XCTAssertEqual(try XCTUnwrap(total.costUSD),2,accuracy:1e-9)

@@ -128,15 +128,18 @@ extension AgentSession {
     func settleSharedAttempt(_ settlement: AttemptSettlement) async throws -> JSON? {
         // The outermost owner commits first. A child mirror may be repaired
         // from its owner's admission after interruption, just like sub-agents.
-        do {
-            for parent in sideBudgetParents.reversed() { _ = try await parent.settleOwnedAttempt(settlement) }
-            return try settleOwnedAttempt(settlement)
-        } catch {
-            // Keep numeric evidence in the source-side journal if an owner
-            // write fails; cold-open recovery repairs the missing owner charge.
-            _ = try? settleOwnedAttempt(settlement)
-            throw error
+        // A failed append must not skip another ancestor's settlement cleanup
+        // or its terminal evidence. Visit every writer and report the first
+        // error; cold recovery can repair failed mirrors from surviving ones.
+        var firstError: Error?, result: JSON?
+        for parent in sideBudgetParents.reversed() {
+            do { _ = try await parent.settleOwnedAttempt(settlement) }
+            catch { if firstError == nil { firstError = error } }
         }
+        do { result = try settleOwnedAttempt(settlement) }
+        catch { if firstError == nil { firstError = error } }
+        if let firstError { throw firstError }
+        return result
     }
 
     private func importSideRecord(_ incoming: SideBudgetRecovery.AccountingRecord, side: String, parents: [String]) throws {

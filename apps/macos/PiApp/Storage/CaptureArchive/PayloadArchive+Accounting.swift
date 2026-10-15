@@ -146,14 +146,25 @@ extension PayloadArchive {
         for start in stride(from: 0, to: scopes.count, by: 200) {
             try Task.checkCancellation()
             let batch = scopes[start..<min(start + 200, scopes.count)]
-            let wanted = "WITH wanted(wanted_session,wanted_workspace) AS (VALUES " + batch.map { _ in "(?,?)" }.joined(separator: ",") + ") "
+            // Enumerate each scope's indexed own/family membership once. A
+            // correlated IN under an OR rebuilds the recipient population for
+            // every candidate attempt, blocking capture work on this actor.
+            let wanted = "WITH wanted(wanted_session,wanted_workspace) AS (VALUES " + batch.map { _ in "(?,?)" }.joined(separator: ",") + """
+            ), members AS (
+              SELECT wanted_session,wanted_workspace,id AS attempt,NULL AS family_kind,NULL AS family_child
+              FROM wanted CROSS JOIN attempts ON session=wanted_session AND workspace=wanted_workspace
+              UNION ALL
+              SELECT wanted_session,wanted_workspace,attempt,kind,child
+              FROM wanted CROSS JOIN family_recipients ON owner=wanted_session
+            )
+            """
             let args = batch.flatMap { [CaptureSQLValue.text($0.sessionID), .text($0.workspaceID)] }
-            let join = "FROM wanted CROSS JOIN attempts ON (attempts.session=wanted.wanted_session OR attempts.id IN (SELECT attempt FROM family_recipients WHERE owner=wanted.wanted_session)) AND attempts.workspace=wanted.wanted_workspace LEFT JOIN family_recipients f ON f.attempt=attempts.id AND f.owner=wanted.wanted_session"
-            for row in try db.rows("\(wanted) SELECT wanted.wanted_session AS session,wanted.wanted_workspace AS workspace,\(Self.scopedGatewayAggregateSQL(subagents: "f.kind='subagent'", sides: "f.kind='side'", sideID: "f.child")) \(join) WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY wanted.wanted_workspace,wanted.wanted_session", args) {
+            let join = "FROM members CROSS JOIN attempts ON id=members.attempt AND workspace=wanted_workspace AND (family_kind IS NULL OR session!=wanted_session)"
+            for row in try db.rows("\(wanted) SELECT wanted_session AS session,wanted_workspace AS workspace,\(Self.familyGatewayAggregateSQL) \(join) WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY wanted_workspace,wanted_session", args) {
                 guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
                 totals[SessionUsageScope(sessionID: session, workspaceID: workspace)] = Self.gatewayTotals(row, sessionID: session)
             }
-            for row in try db.rows("\(wanted) SELECT wanted.wanted_session AS session,wanted.wanted_workspace AS workspace,COUNT(*) AS n \(join) WHERE metrics_retained=0 GROUP BY wanted.wanted_workspace,wanted.wanted_session", args) {
+            for row in try db.rows("\(wanted) SELECT wanted_session AS session,wanted_workspace AS workspace,COUNT(*) AS n \(join) WHERE metrics_retained=0 GROUP BY wanted_workspace,wanted_session", args) {
                 guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
                 totals[SessionUsageScope(sessionID: session, workspaceID: workspace), default: GatewayTotals()].expiredRecords = Int(row["n"]?.number ?? 0)
             }

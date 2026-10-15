@@ -791,6 +791,7 @@ actor PayloadArchive {
     }
     /// Full-scan rows this archive's database has visited so far (tests only).
     func scannedRows() throws -> Int { try ready().scannedRows }
+    func virtualMachineSteps() throws -> Int { try ready().virtualMachineSteps }
     /// Statements prepared and top-level transactions opened (tests only).
     func statementCount() throws -> Int { try ready().statements }
     func commitCount() throws -> Int { try ready().commits }
