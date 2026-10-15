@@ -191,6 +191,8 @@ import Combine
 
     func refresh() {
         let enabled = inheritedEnabled && !model.installPreparing
+        let windowTitle = model.chat.flatMap { $0.isSubagent ? $0.displayTitle + " — Bello Agent" : nil } ?? "Bello Agent"
+        if window?.title != windowTitle { window?.title = windowTitle }
         let onChats = model.page == .chats
         applySidebarWidth()
         chromeController.focusedSessionID = model.focusedSessionID ?? model.selectedID

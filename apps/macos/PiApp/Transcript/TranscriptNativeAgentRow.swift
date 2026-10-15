@@ -6,8 +6,10 @@ struct AgentMessagePresentation: Equatable {
     struct Event: Equatable {
         var childID: String, turn: Int, author: String, kind: String, task: String, text: String
         var eventID: String?, replyTo: String?
+        var number: Int? = nil
+        var childName: String { SubagentLabel.name(number) }
         var title: String {
-            let name = author == "parent" ? "Parent" : "Sub-agent"
+            let name = author == "parent" ? "Parent → " + childName : childName
             return name + (task.isEmpty ? "" : " · " + task) + " · turn \(turn)"
         }
         var label: String {
@@ -41,7 +43,7 @@ struct AgentMessagePresentation: Equatable {
             return Event(childID: child, turn: turn, author: author, kind: row["kind"]?.string ?? "note",
                          task: row["task"]?.string ?? metadata["task"]?.string ?? "", text: text,
                          eventID: row["event_id"]?.string ?? metadata["eventIds"]?.array?.first?.string,
-                         replyTo: row["reply_to"]?.string ?? metadata["replyTo"]?.string)
+                         replyTo: row["reply_to"]?.string ?? metadata["replyTo"]?.string, number: message.agentNumbers?[child])
         }
     }
 }
@@ -62,19 +64,25 @@ struct AgentMessagePresentation: Equatable {
         var items: [ShellItem] = []
         for event in presentation.events {
             let heading = PiKit.WrappedText(event.title, font: PiKit.Font.caption, color: .piInkSecondary)
+            heading.toolTip = event.title
             let words = AgentDeliveryText(event.text, environment: inputs.environment)
             let badge = PiKit.Badge(text: event.label, tone: event.kind == "blocker" ? .danger : .neutral)
             let inspect = PiKit.Button("Inspect delivery", style: .ghost, compact: true) { actions.inspect(id) }
-            let source = PiKit.Button(event.author == "parent" ? "Source in parent" : "Source in sub-agent", symbol: "arrow.up.right", style: .ghost, compact: true) {
+            let source = PiKit.Button(event.author == "parent" ? "Source in parent" : "Source in " + event.childName, symbol: "arrow.up.right", style: .ghost, compact: true) {
                 actions.openAgentSource?(.init(childID: event.childID, turn: event.turn, eventID: event.eventID))
             }
             source.setAccessibilityIdentifier("agent-message-source")
-            let body = ShellStack(.vertical, spacing: 8, [.view(heading, .fill), .view(badge), .view(words, .fill), .view(ShellStack(.horizontal, spacing: 8, [.view(source), .view(inspect)]))])
+            source.toolTip = "Source of " + event.title; source.setAccessibilityLabel(source.toolTip)
+            inspect.toolTip = "Inspect delivery for " + event.title; inspect.setAccessibilityLabel(inspect.toolTip)
+            let buttons = PiKit.FlowView(); buttons.spacing = 8
+            buttons.addSubview(source); buttons.addSubview(inspect)
+            let body = ShellStack(.vertical, spacing: 8, [.view(heading, .fill), .view(badge), .view(words, .fill), .view(buttons, .fill)])
             items.append(.view(PiKit.card(body, padding: 12, sunken: true), .fill))
         }
         if items.isEmpty { items = [.view(PiKit.Note("Agent message attribution is unavailable. Inspect the saved row for details.", tone: .neutral), .fill)] }
         column.items = items
         setAccessibilityLabel(presentation.events.map { $0.title + " · " + $0.label }.joined(separator: "; "))
+        toolTip = accessibilityLabel()
     }
     override func contentHeight(width: CGFloat) -> CGFloat { column.height(forWidth: max(1, width - 16)) }
     override func place(in rect: CGRect) { column.frame = CGRect(x: rect.minX + 8, y: rect.minY, width: max(1, rect.width - 16), height: rect.height) }

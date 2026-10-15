@@ -5,6 +5,25 @@ import XCTest
 @testable import PiApp
 
 final class SubagentNavigationTests: XCTestCase, SerialTestLane {
+    @MainActor func testNativeWindowAndTabTitleFollowTheNumberedChildAndReturnToParent() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let bench = try ConversationPaneTests.workbench(root: root, chats: ["parent", "child"])
+        registerWorkspaceFixtureTeardown(bench.model, root: root)
+        var child = bench.chats[1]; child.delegation = SubagentTranscriptTests.link; child.subagentNumber = 2
+        bench.model.chats[1] = child
+        let session = SessionDisplay(id: child.id); session.historyState = .ready
+        bench.model.displays[child.id] = session; bench.model.selectedID = child.id; bench.model.selected = session
+        let view = WorkspaceRootView(model: bench.model)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 920, height: 600), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = view
+        defer { window.contentView = nil; window.close() }
+        view.refresh()
+        XCTAssertEqual(window.title, child.displayTitle + " — Bello Agent")
+        let parent = SessionDisplay(id: bench.chats[0].id); parent.historyState = .ready
+        bench.model.displays[parent.id] = parent; bench.model.selectedID = parent.id; bench.model.selected = parent
+        view.refresh()
+        XCTAssertEqual(window.title, "Bello Agent")
+    }
     @MainActor func testFollowUpReturnAndTypedSourceKeepTheIssuingSendInAnEarlierVersion() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let bench = try ConversationPaneTests.workbench(root: root, chats: ["parent", "child"])

@@ -2,6 +2,11 @@
 
 **Released 2026-10-15:** 0.1.127 (build 131, tag `v0.1.127`) is the latest release; record `docs/validation/Bello-Agent-0.1.127-2026-10-15.md`.
 
+## 0.1.128
+
+- [x] Collapsed sub-agent work (`dev/a128-sub-display`): a finished compact turn hides typed parent/child messages, reports, control cards and child counts; the main agent's answer remains visible. Expanding restores the original rows and navigation. [Validation](docs/validation/sub-display-0.1.128.md).
+- [x] Stable sub-agent numbers (`dev/a128-sub-display`): `Sub-agent N · description` across cards, sidebar/search, child headers, Back to Parent labels, native window/tab titles and family Inspector. Numbers derive from unique accepted starts in the parent journal, including legacy and missing-child starts, with an optional rebuildable desktop cache. Follow-ups retain their number; journals, model-facing text and tool contracts are unchanged. [Validation and limits](docs/validation/sub-display-0.1.128.md).
+
 ## 0.1.127
 
 - [x] Branches and stash (`dev/a127-git-branches`, stream 5): searchable Recent/Local/Remote branch popup with a separate current check, remote icons and cached upstream/ahead/behind metadata; tracking checkout, create/rename/delete with reviewed unmerged confirmation; read-only comparison sharing History rows and Show in History through the live browser’s removable ref chip; stash list, lazy saved-index/worktree/untracked previews, Apply/Pop/Drop and New Stash options. Native checkout protects local/ignored files; stash recovery is explicit; conflicts retain the stash. Native branch/stash deletion preserves Git’s operation reservations and packed-ref handling, stale stash choices refresh, and rename/delete retarget or clear the live History ref while preserving other filters. Integrated with current Git safety/History and the Staged-changes default. [Validation and integration handoff](docs/validation/git-branches-0.1.127.md).

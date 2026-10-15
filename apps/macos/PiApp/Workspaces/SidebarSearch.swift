@@ -313,7 +313,7 @@ extension WorkspaceModel {
     }
     /// Whether a chat is listed by the filter: its title, or its messages.
     func sidebarMatches(_ chat: ChatRecord, query: String) -> Bool {
-        chat.title.localizedCaseInsensitiveContains(query) || chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || sidebarSearchHit(chat.id) != nil
+        chat.displayTitle.localizedCaseInsensitiveContains(query) || chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || sidebarSearchHit(chat.id) != nil
     }
     /// After a chat the filter listed opened, its match is shown — unless
     /// the reader has opened something else meanwhile (`opening` is what
@@ -361,7 +361,7 @@ struct SidebarSearchSnippetState: Equatable {
     var indent: CGFloat
 
     init(chat: ChatRecord, hit: ChatSearchHit, indent: CGFloat) {
-        chatID = chat.id; title = chat.title; kind = hit.kind; excerpt = hit.excerpt; highlight = hit.highlight; self.indent = indent
+        chatID = chat.id; title = chat.displayTitle; kind = hit.kind; excerpt = hit.excerpt; highlight = hit.highlight; self.indent = indent
     }
     var symbol: String {
         switch kind {

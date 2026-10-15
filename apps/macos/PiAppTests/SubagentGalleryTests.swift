@@ -114,12 +114,13 @@ extension UIScreenshotTests {
         model.chats[0].title = "Review the parser"
         for index in 0..<4 {
             var link = SubagentTranscriptTests.link; link.childSessionID = "child-\(index)"; link.delegationID = "delegation-\(index)"; link.call.toolCallID = "call-\(index)"
-            model.chats.append(ChatRecord(id: link.childSessionID, workspaceID: "pane-project", title: ["Check token boundaries", "Audit cancellation", "Review error recovery", "Compare fixture coverage"][index], profileID: bench.profile.id, parentSessionID: "chat-parent", delegation: link))
+            model.chats.append(ChatRecord(id: link.childSessionID, workspaceID: "pane-project", title: ["Check token boundaries", "Audit cancellation", "Review error recovery", "Compare fixture coverage"][index], profileID: bench.profile.id, parentSessionID: "chat-parent", delegation: link, subagentNumber: index + 1))
         }
         records = model.chats
         parent = SessionDisplay(id: "chat-parent"); child = SessionDisplay(id: "child-0")
         for session in [parent, child] {
             session.historyState = .ready; session.draftReady = true; session.runStateKnown = true
+            session.subagentNumbers = Dictionary(model.chats.compactMap { chat in chat.subagentNumber.map { (chat.id, $0) } }, uniquingKeysWith: { first, _ in first })
             model.displays[session.id] = session
         }
         content = SubagentGalleryContent(model: model)

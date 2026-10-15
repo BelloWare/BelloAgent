@@ -175,7 +175,7 @@ enum ConversationSearchPaging {
         guard work.isActive, !busy, inheritedEnabled, result.total > 0 else { return }
         let panel = NSSavePanel(); panel.canCreateDirectories = true
         panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText, .plainText]
-        panel.nameFieldStringValue = (model.record(sessionID)?.title ?? "Conversation").replacingOccurrences(of: "/", with: "-") + ".md"
+        panel.nameFieldStringValue = (model.record(sessionID)?.displayTitle ?? "Conversation").replacingOccurrences(of: "/", with: "-") + ".md"
         panel.message = "Save the retained conversation as Markdown text."
         let source = source, revision = result.revision, total = result.total, window = window
         busy = true

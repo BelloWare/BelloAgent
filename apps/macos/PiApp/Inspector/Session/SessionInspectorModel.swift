@@ -18,6 +18,12 @@ import AppKit
     @Published private(set) var indexLoaded = false
     @Published var coordination: [AgentCoordinationEntry] = []
     @Published private(set) var groups: [InspectorSubagentGroup] = []
+    func numberSubagentGroups(_ numbers: [String: Int]) {
+        let numbered = groups.map { value in
+            var group = value; group.number = numbers[group.summary.link.childSessionID] ?? group.number; return group
+        }
+        if numbered != groups { groups = numbered }
+    }
     @Published private(set) var familyFilter: InspectorFamilyFilter = .family
     private var linkedRow: InspectorRequestRow?
     private var lookedUpRequest: String?
@@ -348,7 +354,9 @@ import AppKit
                 self.signature = key
                 let groups = try await archive.inspectorSubagents(owner: scope.sessionID, workspaceID: scope.workspaceID)
                 guard !Task.isCancelled else { return }
-                self.groups = groups
+                self.groups = groups.map { value in
+                    var group = value; group.number = self.workspace?.record(value.summary.link.childSessionID)?.subagentNumber; return group
+                }
                 await self.readAgentCoordination()
                 guard !Task.isCancelled else { return }
                 self.lastRead = (read.rows, live, read.older)

@@ -65,7 +65,7 @@ import Combine
         model.$chats.combineLatest(model.$sides).sink { [weak self] chats, sides in
             let record = chats.first { $0.id == scope.sessionID && $0.workspaceID == scope.workspaceID }
                 ?? sides.values.first { $0.id == scope.sessionID && $0.workspaceID == scope.workspaceID }?.chat
-            if let record { self?.updateTitle(record.title) }
+            if let record { self?.updateTitle(record.displayTitle) }
         }.store(in: &observations)
         if let display = model.displays[scope.sessionID] { inspector.observe(footer: display.footer, display: display) }
     }

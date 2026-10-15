@@ -11,14 +11,14 @@ extension WorkspaceModel {
             error = "That chat is no longer available. It was deleted or was an unkept side conversation; its retained requests remain in the usage report."
             return
         }
-        openInspector(session: sessionID, workspaceID: record.workspaceID, title: record.title, focus: focus)
+        openInspector(session: sessionID, workspaceID: record.workspaceID, title: record.displayTitle, focus: focus)
     }
 
     /// A request from the usage report: its chat may be gone, its project and log are not.
     func openInspector(session sessionID: String, workspaceID: String, title: String?, focus: InspectorFocus) {
         lastInspectorFocus = focus
         SessionInspectorWindows.shared.show(model: self, sessionID: sessionID, workspaceID: workspaceID,
-                                            title: title ?? record(sessionID)?.title ?? "Deleted chat", focus: focus)
+                                            title: title ?? record(sessionID)?.displayTitle ?? "Deleted chat", focus: focus)
     }
 
     /// The focus of a turn the transcript reports: the message that started it.

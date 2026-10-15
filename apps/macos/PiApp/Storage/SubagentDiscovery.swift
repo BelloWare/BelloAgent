@@ -9,6 +9,8 @@ struct DiscoveredSubagent: Sendable {
     var hasTerminalRecord = false
     var turn: Int? = nil
     var executionID: String? = nil
+    /// Rebuildable UI ordinal in the owner's persisted acceptance order.
+    var number: Int? = nil
 }
 
 extension HistoryReader {
@@ -31,16 +33,24 @@ extension HistoryReader {
     }
     /// The owning journal is the authority even before a child file exists.
     func subagentPlans(path: URL, ownerID: String, childID: String? = nil) throws -> [DiscoveredSubagent] {
-        var found: [DiscoveredSubagent] = []
+        var found: [DiscoveredSubagent] = [], starts: [String: SubagentLink] = [:]
         try subagentRecords(path) { row, line in
             if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == ownerID, row["version"]?.number == 3 else { throw StoreError.invalidRecord } }
             if let data = Self.subagentPlan(row),
                let raw = data["origin"], let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)),
-               origin.link.valid, origin.link.budgetOwnerSessionID == ownerID, UUID(uuidString: origin.link.childSessionID) != nil,
-               childID == nil || childID == origin.link.childSessionID {
+               origin.link.valid, origin.link.budgetOwnerSessionID == ownerID, UUID(uuidString: origin.link.childSessionID) != nil {
+                let id = origin.link.childSessionID
+                if let previous = starts[id] {
+                    guard previous == origin.link else { throw StoreError.invalidRecord }
+                    return true
+                }
+                starts[id] = origin.link
+                // Count every unique start, even when filtering or when its
+                // child file is missing. Follow-ups never contain a new plan.
+                guard childID == nil || childID == id else { return true }
                 let child = path.deletingLastPathComponent().appendingPathComponent(origin.link.childSessionID + ".jsonl")
                 guard child.resolvingSymlinksInPath().deletingLastPathComponent() == path.resolvingSymlinksInPath().deletingLastPathComponent() else { throw StoreError.invalidRecord }
-                found.append(DiscoveredSubagent(header: origin, path: child.path, task: data["task"]?.string ?? "", status: .interrupted))
+                found.append(DiscoveredSubagent(header: origin, path: child.path, task: data["task"]?.string ?? "", status: .interrupted, number: starts.count))
                 if childID != nil { return false }
             }
             return true
@@ -77,6 +87,7 @@ extension HistoryReader {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let byID = Dictionary(parents.filter { !$0.isSubagent && !$0.imported }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var plans: [String: [String: WireValue]] = [:], checked: Set<String> = []
+        var numbers: [String: [String: Int]] = [:]
         func plan(_ owner: String) throws -> [String: WireValue] {
             if checked.insert(owner).inserted {
                 guard let parent = byID[owner], let saved = parent.path else { return [:] }
@@ -89,6 +100,7 @@ extension HistoryReader {
                        origin.link.valid, origin.link.budgetOwnerSessionID == owner {
                         let id = origin.link.childSessionID
                         if let previous = plans[owner]?[id], previous != .object(data) { throw StoreError.invalidRecord }
+                        if numbers[owner]?[id] == nil { numbers[owner, default: [:]][id] = (numbers[owner]?.count ?? 0) + 1 }
                         plans[owner, default: [:]][id] = .object(data)
                     }
                     return true
@@ -127,7 +139,7 @@ extension HistoryReader {
                 _ = try subagentHeader(path: path, directory: directory, expected: SubagentTarget(header.link))
                 let accepted = (try? plan(header.link.budgetOwnerSessionID))?[header.link.childSessionID]?.object
                 let issue = accepted?["origin"] == raw ? nil : "The parent’s matching delegation is unavailable. This saved sub-agent is view-only."
-                found.append(DiscoveredSubagent(header: header, path: path.path, task: accepted?["task"]?.string ?? "", status: status, issue: issue, hasTerminalRecord: terminal, turn: latestTurn, executionID: executionID))
+                found.append(DiscoveredSubagent(header: header, path: path.path, task: accepted?["task"]?.string ?? "", status: status, issue: issue, hasTerminalRecord: terminal, turn: latestTurn, executionID: executionID, number: numbers[header.link.budgetOwnerSessionID]?[header.link.childSessionID]))
             } catch is CancellationError { throw CancellationError() }
             catch { continue } // Invalid headers remain untouched; helper recovery reports their exact error.
         }

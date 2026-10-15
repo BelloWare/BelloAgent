@@ -84,7 +84,11 @@ import AppKit
         let title = position.map { "Request \($0.index) of \($0.count)" } ?? "Request"
         let turn = inspector.index.turn(containing: row.id)
         var context = [row.route.label]
-        if let childTurn = row.childTurn { context.append("Sub-agent turn \(childTurn)") }
+        if let childTurn = row.childTurn {
+            let number = inspector.groups.first { $0.summary.link.childSessionID == row.sessionID }?.number
+                ?? row.sessionID.flatMap { inspector.workspace?.record($0)?.subagentNumber }
+            context.append(SubagentLabel.name(number) + " · turn \(childTurn)")
+        }
         else if let turn, !turn.isOther { context.append("Turn \(turn.number)") }
         if row.wall > 0 { context.append(Date(timeIntervalSince1970: row.wall).formatted(date: .omitted, time: .standard)) }
         let kind = PiKit.Badge(text: inspector.summaryLabel(row.id).map { "compaction · " + $0 } ?? inspector.index.kind(of: row.id), tone: .neutral)

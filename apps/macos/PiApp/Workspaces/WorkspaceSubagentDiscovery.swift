@@ -1,6 +1,17 @@
 import Foundation
 
 extension WorkspaceModel {
+    /// Side panes and copied transcript views also need the cached child names.
+    /// Only seed newly inserted displays; progress updates keep their identity.
+    func seedSubagentNumbers(replacing previous: [String: SessionDisplay]) {
+        let added = displays.filter { previous[$0.key] !== $0.value }
+        guard !added.isEmpty else { return }
+        let numbers = Dictionary(chats.compactMap { chat in chat.subagentNumber.map { (chat.id, $0) } }, uniquingKeysWith: { first, _ in first })
+        for display in added.values {
+            display.subagentNumbers.merge(numbers, uniquingKeysWith: { _, saved in saved })
+        }
+    }
+
     /// Recover child metadata without starting a helper or resuming any run.
     /// The scan is actor-isolated; only validated small identities reach UI.
     func reconcileSubagents(parentID: String? = nil) async {
@@ -52,6 +63,11 @@ extension WorkspaceModel {
             if chats[at] != current { chats[at] = current }
         }
         else { chats.append(child) }
+        if let number = child.subagentNumber {
+            for display in displays.values where display.subagentNumbers[child.id] != number {
+                display.subagentNumbers[child.id] = number
+            }
+        }
     }
 
     func interruptSubagents(workspaceID: String) {

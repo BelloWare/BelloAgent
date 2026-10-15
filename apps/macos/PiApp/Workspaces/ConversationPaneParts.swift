@@ -421,6 +421,7 @@ import QuartzCore
         case imported(choice: String, profiles: [Profile])
     }
     private var kind: Kind?
+    private var subagentNumber: Int?
     private var content: NSView?
     private var importedDropdown: PiKit.Dropdown<String>?
     /// The chat its buttons act on: whichever is shown now.
@@ -438,8 +439,9 @@ import QuartzCore
             self.kind = kind
             return
         }
-        guard kind != self.kind else { return }
+        guard kind != self.kind || subagentNumber != chat.subagentNumber else { return }
         self.kind = kind
+        subagentNumber = chat.subagentNumber
         content?.removeFromSuperview()
         importedDropdown = nil
         let view: NSView
@@ -449,10 +451,14 @@ import QuartzCore
         case .subagent(let status, let busy, let parent):
             var items: [ShellItem] = [.view(shellBodySymbol("person.2", color: .piAccent)),
                 .view(shellLine(status + " · Usage charged to " + parent, font: PiKit.Font.caption, color: .piInkSecondary), .flexible)]
-            if busy { items.append(.view(PiKit.Button("Stop sub-agent", symbol: "stop.fill", style: .danger, compact: true) { [weak self] in
-                guard let self, let link = model.record(self.chatID)?.delegation else { return }
-                model.stopSubagent(SubagentTarget(link), from: link.budgetOwnerSessionID)
-            })) }
+            if busy {
+                let stop = PiKit.Button("Stop " + chat.subagentName, symbol: "stop.fill", style: .danger, compact: true) { [weak self] in
+                    guard let self, let link = model.record(self.chatID)?.delegation else { return }
+                    model.stopSubagent(SubagentTarget(link), from: link.budgetOwnerSessionID)
+                }
+                stop.toolTip = "Stop " + chat.displayTitle; stop.setAccessibilityLabel(stop.toolTip)
+                items.append(.view(stop))
+            }
             view = ShellStack(.horizontal, spacing: PiSpacing.sm, padding: Self.padding, items)
         case .projectUnavailable(let retry):
             let button = retry ? PiKit.Button("Retry", style: .secondary, compact: true) { model.retryConfiguration() }

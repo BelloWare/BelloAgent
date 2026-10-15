@@ -33,10 +33,15 @@ struct SubagentTarget: Equatable, Sendable {
 struct SubagentToolView: Equatable, Sendable {
     static func isControl(_ name: String) -> Bool { name == "subagent" || ["subagent_start", "subagent_send", "subagent_wait", "subagent_status", "subagent_stop", "subagent_report"].contains(name) }
     let operation: String
+    let number: Int?
+    let childID: String?
+    var name: String { SubagentLabel.name(number) }
+    var title: String { SubagentLabel.title(number, description) }
     let route: String?
     let receiptTurn: Int?
     let accepted: Bool?
     let messageReference: AgentMessageReference?
+    let receiptMessageID: String?
     let messageState: String?
     let heldByUser: Bool
     let wakeReason: String?
@@ -48,6 +53,7 @@ struct SubagentToolView: Equatable, Sendable {
     let truncated: Bool
     init(_ tool: ToolView) {
         operation = tool.name
+        number = tool.subagentNumber
         let input = tool.input.data(using: .utf8).flatMap { try? JSONDecoder().decode(WireValue.self, from: $0) }?.object ?? [:]
         let output = tool.output.data(using: .utf8).flatMap { try? JSONDecoder().decode(WireValue.self, from: $0) }?.object ?? [:]
         accepted = output["accepted"]?.bool
@@ -55,6 +61,7 @@ struct SubagentToolView: Equatable, Sendable {
         heldByUser = tool.agentHeldByUser == true
         wakeReason = output["wake_reason"]?.string
         messageKind = input["kind"]?.string
+        receiptMessageID = output["message_id"]?.string
         messageReference = output["child_id"]?.string.flatMap { child in
             output["turn"]?.nonnegativeInteger.map { AgentMessageReference(childID: child, turn: $0, eventID: output["message_id"]?.string, recipient: true) }
         }
@@ -67,6 +74,7 @@ struct SubagentToolView: Equatable, Sendable {
            reference.childID == destination?.sessionID, reference.turn == destination?.turn,
            let id = reference.eventID, !id.isEmpty, id.utf8.count <= 512 { destination?.messageID = id }
         target = destination
+        childID = destination?.sessionID ?? output["child_id"]?.string ?? input["child_id"]?.string
         task = input["task"]?.string ?? input["message"]?.string ?? input["reason"]?.string ?? (tool.name == "subagent_wait" ? "Wait for selected child turns to settle." : tool.input)
         description = summary?.description ?? input["description"]?.string ?? String(task.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(120))
         let savedState = (output["status"]?.string == "accepted" || output["accepted"]?.bool == true) ? SubagentStatus.queued : tool.state == "unknown" ? SubagentStatus.interrupted : SubagentStatus(rawValue: tool.state) ?? .queued

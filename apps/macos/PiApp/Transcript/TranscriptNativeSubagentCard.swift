@@ -11,7 +11,11 @@ import AppKit
     private let open = PiKit.Button("Open", symbol: "arrow.up.right", style: .secondary, compact: true)
     private let inspect = PiKit.Button("Inspect Requests", style: .secondary, compact: true)
     private let stop = PiKit.Button("Stop", symbol: "stop.fill", style: .danger, compact: true)
-    private lazy var buttons = ShellStack(.horizontal, spacing: 8, [.view(open), .view(inspect), .spacer(0), .view(stop)])
+    private lazy var buttons: PiKit.FlowView = {
+        let flow = PiKit.FlowView(); flow.spacing = 8; flow.rowSpacing = 8
+        for button in [open, inspect, stop] { flow.addSubview(button) }
+        return flow
+    }()
     private var hasResult = false
 
     override init(frame: NSRect) {
@@ -31,6 +35,12 @@ import AppKit
     override func configure(_ card: TranscriptToolRow.Card) {
         guard case .subagent(let value) = card else { return }
         self.value = value
+        setAccessibilityLabel(value.title + " · " + value.label)
+        toolTip = value.title
+        open.toolTip = value.operation == "subagent_report" ? "Open parent of " + value.title : "Open " + value.title
+        open.setAccessibilityLabel(open.toolTip)
+        inspect.toolTip = "Inspect requests for " + value.title; inspect.setAccessibilityLabel(inspect.toolTip)
+        stop.toolTip = "Stop " + value.title; stop.setAccessibilityLabel(stop.toolTip)
         var lines: [String] = []
         if value.heldByUser { lines.append("Held until a new parent task or explicit Resume.") }
         if let summary = value.summary {
@@ -55,7 +65,7 @@ import AppKit
         inspect.isEnabled = environment.isEnabled && value.target != nil
         stop.isHidden = value.status.terminal || value.heldByUser || value.target?.ownerID != environment.sessionID || value.operation == "subagent_report"
         stop.isEnabled = environment.isEnabled && value.status != .stopping
-        buttons.relayoutAll()
+        buttons.invalidateIntrinsicContentSize(); buttons.needsLayout = true
     }
     override func plan(width: CGFloat) -> Plan {
         let inner = max(1, width - 32)

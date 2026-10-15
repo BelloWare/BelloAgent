@@ -15,6 +15,7 @@ extension SessionInspectorModel {
             let state = try await workspace.history.agentCoordination(path: URL(fileURLWithPath: path), ownerID: owner)
             let linked = try await archive.coordinationRequests(state.entries, ownerID: owner, workspaceID: scope.workspaceID)
             guard !Task.isCancelled else { return }
+            numberSubagentGroups(state.subagentNumbers)
             coordination = linked.map { value in
                 var entry = value
                 if workspace.displays[owner]?.busy != true && entry.disposition == "pending" { entry.disposition = "held" }

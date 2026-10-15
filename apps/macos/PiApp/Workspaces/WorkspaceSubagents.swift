@@ -113,7 +113,7 @@ extension WorkspaceModel {
         let plans: [DiscoveredSubagent]
         if let path = record(parent.id)?.path { plans = try await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: parent.id) }
         else { plans = [] }
-        let tasks = Dictionary(plans.map { ($0.header.link.childSessionID, $0.task) }, uniquingKeysWith: { first, _ in first })
+        let byChild = Dictionary(plans.map { ($0.header.link.childSessionID, $0) }, uniquingKeysWith: { first, _ in first })
         var cursor = 0
         repeat {
             let page = try await host.request("subagent.list", sessionID: parent.id, params: ["cursor":.number(Double(cursor))]).object ?? [:]
@@ -121,7 +121,8 @@ extension WorkspaceModel {
                   record(parent.id)?.workspaceID == parent.workspaceID else { throw CancellationError() }
             for value in page["children"]?.array ?? [] {
                 let summary = try JSONDecoder().decode(SubagentSummary.self, from: JSONEncoder().encode(value))
-                try await registerListedSubagent(summary, parent: parent, task: tasks[summary.link.childSessionID] ?? "", connection: connection)
+                let plan = byChild[summary.link.childSessionID]
+                try await registerListedSubagent(summary, parent: parent, task: plan?.task ?? "", connection: connection, number: plan?.number)
             }
             guard let next = page["cursor"]?.nonnegativeInteger else { break }
             guard next > cursor else { throw StoreError.invalidRecord }; cursor = next
@@ -136,12 +137,16 @@ extension WorkspaceModel {
         let entries = Dictionary(projection.entries.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         displays[parentID]?.agentCoordination = entries
         displays[parentID]?.heldAgentChildren = projection.heldChildren
+        // Include accepted starts without a child file, and retain numbers of
+        // copied provenance from other families already known to the display.
+        displays[parentID]?.subagentNumbers.merge(projection.subagentNumbers, uniquingKeysWith: { _, current in current })
         for child in subagentChildren(of: parentID) where displays[child.id] != nil {
             displays[child.id]?.agentCoordination = entries.filter { $0.value.childID == child.id }
             displays[child.id]?.heldAgentChildren = projection.heldChildren
+            displays[child.id]?.subagentNumbers.merge(projection.subagentNumbers, uniquingKeysWith: { _, current in current })
         }
     }
-    func registerListedSubagent(_ summary: SubagentSummary, parent: ChatRecord, task: String, connection: UUID? = nil) async throws {
+    func registerListedSubagent(_ summary: SubagentSummary, parent: ChatRecord, task: String, connection: UUID? = nil, number: Int? = nil) async throws {
         guard summary.link.budgetOwnerSessionID == parent.id else { throw StoreError.invalidRecord }
         try await traces.recordSubagent(summary, workspaceID: parent.workspaceID)
         let directory = try subagentDirectory(parent.workspaceID)
@@ -155,7 +160,11 @@ extension WorkspaceModel {
             // or registering an unvalidated transcript path.
             return
         }
-        let found = DiscoveredSubagent(header: header, path: path.path, task: task, status: summary.status)
+        var ordinal = number
+        if ordinal == nil, let path = parent.path {
+            ordinal = try await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: parent.id, childID: summary.link.childSessionID).first?.number
+        }
+        let found = DiscoveredSubagent(header: header, path: path.path, task: task, status: summary.status, number: ordinal)
         try await registerDiscoveredSubagent(found, workspaceID: parent.workspaceID, live: summary, connection: connection)
     }
 

@@ -122,7 +122,7 @@ import Combine
             image: token.guardValue { [weak self] in
                 guard let self else { return nil }
                 return TopicSessionDragPreview.image(count: model.dragSessionIDs(for: id, in: projectID).count,
-                                                      title: model.record(id)?.title ?? "Chat", appearance: self.effectiveAppearance)
+                                                      title: model.record(id)?.displayTitle ?? "Chat", appearance: self.effectiveAppearance)
             }, click: click, doubleClick: rename, dragging: { held in
                 if held {
                     guard token.isCurrent else { return }
@@ -196,7 +196,7 @@ import Combine
             ?? ChatRowStats(totals: (retained ?? model.chatAccounting.row(for: chat.id)).totals, now: now)
         // Paused before a restart, and not opened since: the saved hold says so.
         if display?.runStateKnown != true, let held = state.heldRun { stats.updateActivity(state: held, loading: false, activity: [:]) }
-        return ChatRowBodyView.Content(stats: stats, title: chat.title, subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
+        return ChatRowBodyView.Content(stats: stats, title: chat.displayTitle, subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
                                        unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
                                        markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft,
                                        projectTag: state.projectTag, projectTagFullName: state.projectTagFullName, topicTag: state.topicTag, hasSide: state.hasSide,

@@ -20,7 +20,7 @@ enum SidebarSessionPresentation {
         var kept: Set<Int> = [], ancestors: [Int] = []
         for (index, entry) in entries.enumerated() {
             while let last = ancestors.last, entries[last].depth >= entry.depth { ancestors.removeLast() }
-            if entry.chat.title.localizedCaseInsensitiveContains(query) || entry.chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || contentMatches.contains(entry.chat.id) { kept.formUnion(ancestors); kept.insert(index) }
+            if entry.chat.displayTitle.localizedCaseInsensitiveContains(query) || entry.chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || contentMatches.contains(entry.chat.id) { kept.formUnion(ancestors); kept.insert(index) }
             ancestors.append(index)
         }
         return entries.enumerated().compactMap { kept.contains($0.offset) ? $0.element : nil }

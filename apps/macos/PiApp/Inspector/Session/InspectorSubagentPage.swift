@@ -16,7 +16,9 @@ import AppKit
         let focus = InspectorButtonFocus(in: self); defer { focus?.restore(in: self) }
         guard let group = inspector.groups.first(where: { $0.id == delegationID }) else { return }
         let link = group.summary.link
-        var actions: [NSView] = [PiKit.Button("Open sub-agent", symbol: "text.bubble", style: .ghost) { [weak inspector] in inspector?.showInChat() }]
+        let open = PiKit.Button("Open " + SubagentLabel.name(group.number), symbol: "text.bubble", style: .ghost) { [weak inspector] in inspector?.showInChat() }
+        open.toolTip = "Open " + group.title; open.setAccessibilityLabel(open.toolTip)
+        var actions: [NSView] = [open]
         if let parent = link.parentAttemptID {
             actions.append(PiKit.Button("Parent request", symbol: "arrow.turn.up.left", style: .ghost) { [weak inspector] in inspector?.focus(.request(parent)) })
         }

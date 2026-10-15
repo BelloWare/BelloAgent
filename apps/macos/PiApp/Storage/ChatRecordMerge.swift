@@ -39,6 +39,7 @@ extension ChatRecord {
         // Origin is immutable; an older update cannot erase or reassign it.
         if let delegation = previous.delegation {
             chat.delegation = delegation
+            if chat.subagentNumber == nil { chat.subagentNumber = previous.subagentNumber }
             if chat.delegationTask == nil { chat.delegationTask = previous.delegationTask }
             if chat.delegationIssue == nil { chat.delegationIssue = previous.delegationIssue }
             chat.parentSessionID = chat.delegationIssue == nil ? delegation.call.parentSessionID : nil

@@ -19,6 +19,8 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
     var nativeSubagent: WireValue? = nil
     var agentDeliveryState: String? = nil
     var agentHeldByUser: Bool? = nil
+    /// App-only presentation cache, never sent to the helper or model.
+    var subagentNumber: Int? = nil
 }
 struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     var id: String; var role: String; var text: String
@@ -31,6 +33,8 @@ struct TranscriptMessage: Codable, Sendable, Identifiable, Equatable {
     /// its human-readable caption. History projection leaves both nil.
     var kind: String? = nil
     var nativeAgentDelivery: WireValue? = nil
+    /// Only the children named by this delivery batch, not the whole family.
+    var agentNumbers: [String: Int]? = nil
     var detail: String? = nil
     /// Milliseconds since 1970 when the host appended the message.
     var at: Double? = nil
