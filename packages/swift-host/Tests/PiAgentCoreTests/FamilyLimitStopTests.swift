@@ -1,0 +1,246 @@
+import XCTest
+@testable import PiAgentCore
+
+final class FamilyLimitStopTests: XCTestCase {
+    enum Phase: String, CaseIterable { case idle, ownRequest, childrenDispatched, preLedgerRequest, tools }
+    enum Crosser: String, CaseIterable { case own, backgroundChild, waitedChild, nestedSide, sideChild }
+
+    func testEveryPhaseAndChargeSourceDrainsBeforeOneBudgetStop() async throws {
+        for phase in Phase.allCases { for crosser in Crosser.allCases {
+            let label = "\(phase)/\(crosser)", root = try temporaryDirectory()
+            defer { try? FileManager.default.removeItem(at:root) }
+            let owner = try familyFixture(root:root)
+            await owner.enableFamilyBudget(); await owner.beginPresentedTask("turn"); await owner.setCostLimit(0.5)
+            let side = try await self.side("side",parent:owner,root:root)
+            let nested = try await self.side("nested",parent:side,root:root)
+            let child = try await self.child("child",parent:owner,root:root)
+            let sideChild = try await self.child("side-child",parent:side,root:root)
+            let source: AgentSession
+            switch crosser {
+            case .own: source = owner
+            case .backgroundChild, .waitedChild: source = child
+            case .nestedSide: source = nested
+            case .sideChild: source = sideChild
+            }
+            let crossing = try await start(source,"crossing")
+            var held: (RequestLifecycle,RequestPermit)?
+            if phase == .ownRequest { held = try await start(owner,"held") }
+            if phase == .childrenDispatched { held = try await start(child,"held") }
+            await owner.limitFixturePhase(model:phase == .ownRequest || phase == .preLedgerRequest,
+                tools:phase == .tools || crosser == .waitedChild)
+            try await finish(crossing.0,"crossing",cost:0.6)
+            let pending = phase == .ownRequest || phase == .childrenDispatched || phase == .preLedgerRequest
+            let before = await owner.stopCount
+            XCTAssertEqual(before,pending ? 0 : 1,label)
+            if let held {
+                XCTAssertNoThrow(try held.1.check(),label)
+                try await finish(held.0,"held",cost:0.1)
+            }
+            if phase == .ownRequest || phase == .preLedgerRequest {
+                let beforeClear = await owner.stopCount
+                XCTAssertEqual(beforeClear,0,"\(label): settlement precedes completion of the model callback")
+                await owner.limitFixturePhase(model:false,tools:false)
+            }
+            let stopped = await owner.stopCount
+            XCTAssertEqual(stopped,1,"\(label): the last request/model-active clear must stop")
+            await owner.stopFamilyAtLimit()
+            let again = await owner.stopCount, spend = await owner.spend
+            XCTAssertEqual(again,1,"\(label): one stop per exhausted run")
+            XCTAssertEqual(spend.usd,held == nil ? 0.6 : 0.7,accuracy:1e-9,label)
+            do { _ = try await crossing.0.admitAttempt("denied"); XCTFail("\(label): admitted past the limit") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit",label) }
+            await sideChild.close(); await child.close(); await nested.close(); await side.close(); await owner.close()
+        } }
+    }
+
+    func testBackgroundAndWaitedResultsCannotCancelAnotherDispatchedRequest() async throws {
+        for mode in ["background","wait","tool-reply","queued"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let client = LimitRunClient(mode:mode), coordinator = AgentSteeringCoordinator()
+            let tools = RecordingTools()
+            let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore())
+            await parent.enableFamilyBudget(); await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+            await parent.setCostLimit(0.5)
+            _ = try await parent.submit(Submission(commandID:"command",turnID:"turn",text:"Two workers"),steer:false)
+            let expectedChildren = mode == "queued" ? 16 : 2
+            try await eventually { let n = await client.children.count, running = await parent.isRunning; return n == expectedChildren || !running }
+            let started = await client.children.count, initial = await parent.snapshot()
+            XCTAssertEqual(started,expectedChildren,initial.encoded())
+            if started != expectedChildren { await parent.close(); continue }
+            if mode == "queued" { try await eventually { await client.parentCount == 2 } }
+            await client.releaseFirst()
+            try await eventually {
+                let state = await parent.state
+                return state == .stopping || state == .error
+            }
+            let cancelledBeforeRelease = await client.cancelled
+            XCTAssertTrue(cancelledBeforeRelease.isEmpty,"\(mode): a budget error must wait for dispatched HTTP work")
+            await client.releaseAll()
+            try await eventually { !(await parent.isRunning) }
+            let cancelled = await client.cancelled, spend = await parent.spend, code = await parent.errorCode
+            XCTAssertTrue(cancelled.isEmpty,mode)
+            XCTAssertEqual(spend.usd,mode == "queued" ? 3.62 : mode == "wait" ? 0.81 : 0.82,accuracy:1e-9,mode)
+            XCTAssertEqual(spend.unreported,0,mode); XCTAssertEqual(code,"cost_limit",mode)
+            let calls = await tools.calls; XCTAssertTrue(calls.isEmpty,"No new tool may run while other requests drain")
+            if mode == "queued" {
+                let family = await parent.agentState()
+                XCTAssertEqual(family.turns.count,18)
+                XCTAssertEqual(family.turns.values.filter { $0.status == .notExecuted }.count,2,"Queued requests never dispatch after crossing")
+            }
+            await coordinator.drain(); await parent.close()
+        }
+    }
+
+    func testLastOwnedSettlementKeepsTheReplyButExecutesNoTools() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let tools = RecordingTools(), client = LimitRunClient(mode:"own")
+        let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+            readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore())
+        await parent.enableFamilyBudget(); await parent.setCostLimit(0.5)
+        _ = try await parent.submit(Submission(commandID:"command",turnID:"turn",text:"Work"),steer:false)
+        try await eventually { !(await parent.isRunning) }
+        let calls = await tools.calls, code = await parent.errorCode, history = await parent.history, spend = await parent.spend
+        XCTAssertTrue(calls.isEmpty,"The settled reply must not start a tool after exhausting the family budget")
+        XCTAssertEqual(code,"cost_limit"); XCTAssertEqual(spend.usd,0.6)
+        XCTAssertTrue(history.contains { $0.role == "assistant" && $0.content.contains { $0["type"].text == "toolCall" } })
+        XCTAssertTrue(history.contains { $0.role == "toolResult" && $0.isError == true },"Keep the assistant/tool pairing without invoking it")
+        await parent.close()
+    }
+
+    func testNestedSideToolStopsOnlyAfterTheRootsDispatchedRequestSettles() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), tools = LimitHeldTools()
+        await owner.enableFamilyBudget(); await owner.setCostLimit(0.5)
+        let side = try await side("side",parent:owner,root:root)
+        let nested = try await self.side("nested",parent:side,root:root,client:LimitRunClient(mode:"side-tool"),tools:tools)
+        _ = try await nested.submit(Submission(commandID:"command",turnID:"turn",text:"Work"),steer:false)
+        try await eventually { await tools.started }
+        let held = try await start(owner,"held"), crossing = try await start(side,"crossing")
+        try await finish(crossing.0,"crossing",cost:0.6)
+        let cancelled = await tools.cancelled; XCTAssertFalse(cancelled)
+        XCTAssertNoThrow(try held.1.check())
+        try await finish(held.0,"held",cost:0.1)
+        do { try await eventually(timeout:.seconds(2)) { !(await nested.isRunning) } }
+        catch { await nested.close(); await side.close(); await owner.close(); throw error }
+        let stopped = await tools.cancelled, code = await nested.errorCode
+        XCTAssertTrue(stopped); XCTAssertEqual(code,"cost_limit")
+        await nested.close(); await side.close(); await owner.close()
+    }
+
+    func testRetryBackoffIsNotAnInFlightRequest() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root,client:LimitRunClient(mode:"retry"))
+        let side = try await side("side",parent:owner,root:root)
+        await owner.setCostLimit(0.5); await owner.useRetrySettings(.init(maxRetries:1,baseDelayMs:30_000))
+        _ = try await owner.submit(Submission(commandID:"command",turnID:"turn",text:"Retry"),steer:false)
+        try await eventually { await owner.runStatus == .retrying }
+        let crossing = try await start(side,"crossing")
+        try await finish(crossing.0,"crossing",cost:0.6)
+        do { try await eventually(timeout:.seconds(2)) { !(await owner.isRunning) } }
+        catch { await side.close(); await owner.close(); throw error }
+        let code = await owner.errorCode; XCTAssertEqual(code,"cost_limit")
+        await side.close(); await owner.close()
+    }
+
+    private func side(_ id: String, parent: AgentSession, root: URL, client: any ModelClient = ScriptClient([]), tools: any ToolExecuting = DisabledTools()) async throws -> AgentSession {
+        let seed = await parent.sideSeed()
+        let side = try AgentSession(id:id,profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore(),seed:seed.messages,parent:seed.info)
+        try await side.bindSideBudget(to:parent); await side.beginPresentedTask("turn")
+        return side
+    }
+    private func child(_ id: String, parent: AgentSession, root: URL) async throws -> AgentSession {
+        var origin = subagentFixtureOrigin()
+        let parentID = await parent.id
+        origin.link.childSessionID = id; origin.link.budgetOwnerSessionID = parentID
+        origin.link.call.parentSessionID = parentID
+        origin.link.parentExecutionID = await parent.activeTaskPresentation!.executionID
+        try await parent.installAdmissionFixturePlan(SubagentPlan(origin:origin,task:"Task",resultMessageID:"result-\(id)"))
+        let child = try AgentSession(id:id,profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),prepared:nil,subagentOrigin:origin)
+        try await child.bindBudgetOwner(parent,generation:0)
+        return child
+    }
+    private func start(_ session: AgentSession, _ attempt: String) async throws -> (RequestLifecycle,RequestPermit) {
+        let value = try await session.requestLifecycle(turnID:"turn",purpose:"turn"), hooks = try XCTUnwrap(value)
+        let permit = try await hooks.admitAttempt(attempt); try await hooks.willDispatch(attempt)
+        return (hooks,permit)
+    }
+    private func finish(_ hooks: RequestLifecycle, _ attempt: String, cost: Double) async throws {
+        let observation = billingObservation(profile:try fixtureProfile(),session:hooks.scope.sourceSessionID,attempt:attempt,cost:cost)
+        try await hooks.settleAttempt(.init(scope:hooks.scope,observation:observation,dispatched:true))
+    }
+}
+
+private extension AgentSession {
+    func limitFixturePhase(model: Bool, tools: Bool) { modelActive = model; runStatus = tools ? .waitingTool : .running }
+}
+
+private actor LimitRunClient: ModelClient {
+    let mode: String
+    var parentCount = 0, children: [String] = [], cancelled: [String] = []
+    var firstReleased = false, allReleased = false, firstSettled = false
+    init(mode: String) { self.mode = mode }
+    private func observation(_ profile: Profile, _ session: String, _ turn: String, _ attempt: String, cost: Double?) -> RequestObservation {
+        var observation = RequestObservation(sessionID:session,turnID:turn,attemptID:attempt,purpose:"turn",fingerprint:"fixture",profile:profile)
+        observation.monitoring = ["outcome":"completed","gateway":["cost":["status":JSON(cost == nil ? "unreported" : "reported"),"usd":cost.map { JSON($0) } ?? .null]]]
+        return observation
+    }
+    func releaseFirst() { firstReleased = true }
+    func releaseAll() { allReleased = true }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
+        throw AgentError("fixture_unscoped","Expected admission")
+    }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,cacheSessionID:String,turnID:String,purpose:String,lifecycle:RequestLifecycle?,onObservation:@escaping @Sendable(RequestObservation) async -> Void,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
+        let hooks = try XCTUnwrap(lifecycle), attempt = UUID().uuidString
+        let permit = try await hooks.admitAttempt(attempt); defer { permit.finish() }
+        try await hooks.willDispatch(attempt)
+        var reply = answer("Finished"), cost = 0.01
+        if mode == "side-tool" { reply = toolReply(["first"]) }
+        else if sessionID == "parent" {
+            parentCount += 1
+            if mode == "own" { reply = toolReply(["first"]); cost = 0.6 }
+            else if parentCount == 1 {
+                reply = ModelReply(message:ChatMessage(role:"assistant",content:[]))
+                for n in 0..<(mode == "queued" ? 18 : 2) {
+                    let start = agentCallReply("start-\(n)","subagent_start",["task":JSON("Worker \(n)"),"mode":JSON(mode == "wait" && n == 1 ? "wait" : "background")])
+                    reply.calls += start.calls; reply.message.content += start.message.content
+                }
+            }
+            else if mode == "tool-reply" {
+                while !firstSettled { try await Task.sleep(for:.milliseconds(2)) }
+                reply = toolReply(["first"])
+            }
+        } else {
+            children.append(sessionID)
+            let first = mode == "wait" ? messages.contains { $0.role == "user" && $0.text == "Worker 1" } : children.count == 1
+            do {
+                while !(allReleased || (first && firstReleased)) { try await Task.sleep(for:.milliseconds(2)) }
+                try permit.check(); try Task.checkCancellation()
+            } catch {
+                cancelled.append(sessionID)
+                let final = observation(profile,sessionID,turnID,attempt,cost:nil)
+                try await hooks.settleAttempt(.init(scope:hooks.scope,observation:final,dispatched:true))
+                throw error
+            }
+            cost = first ? 0.6 : 0.2
+        }
+        let observation = observation(profile,sessionID,turnID,attempt,cost:cost)
+        try await hooks.settleAttempt(.init(scope:hooks.scope,observation:observation,dispatched:true))
+        if cost == 0.6 { firstSettled = true }
+        await onObservation(observation); reply.message.requestAttemptIDs = [attempt]
+        if mode == "retry" { throw AgentError("provider_http","HTTP 503 server unavailable",attemptID:attempt) }
+        return reply
+    }
+}
+
+private actor LimitHeldTools: ToolExecuting {
+    var started = false, cancelled = false
+    func definitions(readOnly:Bool) -> [ToolDefinition] { [ToolDefinition("first","Held fixture tool",[:])] }
+    func invoke(_ call:ToolCall,readOnly:Bool) async throws -> JSON {
+        started = true
+        do { while true { try await Task.sleep(for:.milliseconds(2)) } }
+        catch { cancelled = true; throw error }
+    }
+}

@@ -845,6 +845,7 @@ public actor NativeHostService {
         let id=try identity(params["newSessionId"]), destination=sessions.appendingPathComponent(id+".jsonl")
         let reader=try JournalRecordReader(source,allowIncompleteTail:true)
         guard var header=try reader.next(), header["type"].text == "session", header["version"].int == 3 else { throw AgentError("legacy_session","Only a native chat can be recovered this way") }
+        let sourceID = try identity(header["id"])
         header["id"]=JSON(id)
         var copy=try header.data(); copy.append(10)
         // Every record after the header moves by the difference in its length.
@@ -857,17 +858,31 @@ public actor NativeHostService {
         let file=FileHandle(fileDescriptor:fd,closeOnDealloc:true)
         defer { try? file.close(); try? FileManager.default.removeItem(at:temporary) }
         try file.write(contentsOf:copy)
-        var branch=JournalChainCheck(), count=0, native=false
+        var branch=JournalChainCheck(), count=0, native=false, parentInfo: JSON = .null
         while var line=try reader.nextLine() {
             if !line.isEmpty {
                 let item=try JSON.parse(line), rid=try identity(item["id"])
                 guard branch.extend(rid, parent: item["parentId"].text) else { throw AgentError("session_damaged","The journal is damaged before its last record; nothing was recovered") }
                 count += 1
-                if item["customType"].text == JournalRecordKind.marker { native=true }
+                let kind = item["customType"].text
+                if kind == JournalRecordKind.marker || kind == JournalRecordKind.steeringMarker { native=true }
+                if kind == JournalRecordKind.subagentOrigin { throw AgentError("subagent_managed", "A managed child cannot be recovered as an independent chat") }
+                if kind == JournalRecordKind.sideOrigin || kind == JournalRecordKind.forkOrigin { parentInfo = item["data"] }
             }
             line.append(10); try file.write(contentsOf:line)
         }
         guard native else { throw AgentError("legacy_session","Only a native chat can be recovered this way") }
+        if parentInfo["parentSessionId"].text != nil, parentInfo["relationship"].text != "fork" {
+            // Recovery creates an independent chat with the desktop's own
+            // default limit. Keep every complete historical byte, then retire
+            // the old side relationship before the copy becomes discoverable.
+            // Reusing it would duplicate old attempts in the original family.
+            let provenance: JSON = ["type":"custom","customType":JSON(JournalRecordKind.sideOrigin),
+                "id":JSON(UUID().uuidString),"parentId":branch.last.map { JSON($0) } ?? .null,
+                "data":["relationship":"recovered-copy","sourceSessionId":JSON(sourceID)]]
+            var line = try provenance.data(); line.append(10); try file.write(contentsOf:line); count += 1
+        }
+        try reader.checkUnchanged()
         try file.synchronize(); try file.close()
         guard link(temporary.path,destination.path) == 0 else { throw AgentError("session_exists","A chat with that identity already exists") }
         // A reply the helper was streaming goes with the copy, which then

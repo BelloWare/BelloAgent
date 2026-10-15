@@ -180,7 +180,11 @@ actor AgentSteeringCoordinator {
             job.turn.result = await child.agentResult(job.turn,plan:job.plan,cancelled:jobs[id]?.cancelled == true)
             job.turn.status = job.turn.result!.status
         } catch {
-            if let child { await child.stop(); await child.waitForSubagent() }
+            if let child {
+                if let budget = error as? AgentError, budget.code == AgentSession.costLimitCode { await child.stopFamilyAtLimit(budget) }
+                else { await child.stop() }
+                await child.waitForSubagent()
+            }
             job.turn.status = child == nil ? .notExecuted : .interrupted
             job.turn.result = SubagentToolResult(plan:job.plan,status:job.turn.status,error:(error as? AgentError) ?? AgentError("subagent_interrupted", "The turn did not finish and was not restarted"),began:child != nil)
         }
@@ -217,5 +221,18 @@ actor AgentSteeringCoordinator {
         let current = jobs.values.filter { owner == nil || $0.owner.id == owner }
         for job in current { await stop(owner:job.owner.id,target:job.turn.target,human:false) }
         for job in Array(jobs.values) where owner == nil || job.owner.id == owner { await job.task?.value }
+    }
+    /// Budget exhaustion closes admission but is not permission to cancel a
+    /// dispatched request. The owner's single stop path cancels remaining
+    /// queued/tool work only once the accounting drain fence is clear.
+    func finishAtLimit(owner: String) async {
+        let wake = signal(owner)
+        while true {
+            let revision = await wake.revision
+            guard jobs.values.contains(where: { $0.owner.id == owner }) else { return }
+            // Queued jobs need not have a task yet. Waiting on the signal
+            // releases this actor so dispatched jobs can finish and pump them.
+            await wake.wait(after:revision)
+        }
     }
 }

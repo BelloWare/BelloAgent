@@ -128,15 +128,21 @@ extension AgentSession {
         familyStopReason = accountingFailure
         stop()
     }
-    func stopFamilyAtLimit() {
-        guard familyBudgetEnabled, costLimitReached else { return }
-        do { try enforceCostLimit() } catch { familyStopReason = error as? AgentError }
-        // A limit closes the next admission. Stop queued/tool work only
-        // after every already-dispatched family request has settled.
-        guard inFlightBudgetAttempts.isEmpty else { return }
-        // A parent request may predate the first side's ledger binding. Its
-        // transport has no family permit, but must still finish and be charged.
-        guard !modelActive || !requestPermits.isEmpty else { return }
+    /// The only budget-induced Stop. Admission/tool gates close immediately;
+    /// cancellation waits for every dispatched request and the model callback
+    /// (including requests begun before the family ledger existed). Rechecked
+    /// on settlement, modelActive clearing, corrections and budget errors.
+    func stopFamilyAtLimit(_ inherited: AgentError? = nil) {
+        if inherited?.code == Self.costLimitCode { familyStopReason = inherited }
+        if familyBudgetEnabled, costLimitReached {
+            do { try enforceCostLimit() } catch { familyStopReason = error as? AgentError }
+        }
+        guard familyStopReason?.code == Self.costLimitCode, !budgetStopIssued,
+              inFlightBudgetAttempts.isEmpty, !modelActive else { return }
+        budgetStopIssued = true
         stop()
+        // Sides retain their ancestors, so callbacks hold only weak runtimes.
+        // A side with a running tool must stop too; it has no local USD limit.
+        for notify in sideBudgetStops.values { Task { await notify() } }
     }
 }

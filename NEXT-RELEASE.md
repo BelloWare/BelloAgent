@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Shared-budget stops finish every dispatched request, including when child results wake the parent. One guarded stop path rechecks settlement and model completion, blocks later tools, and stops nested-side tools after draining. Retry backoff is no longer mistaken for a live request. Recovered saved sides become independent copies with retained historical spend and their own editable default limit. [Round 11 validation and limit state machine](docs/validation/sub-cost-0.1.128.md#lead-review-round-11-request-draining-and-recovered-sides).
+
 - [x] Upgraded 0.1.127 saved sides reopen with their original identity-less cost rows. Cold nested membership comes from persisted origins; unpriced terminal tokens survive live/disk mirrors and owner deletion. Recorded legacy seed amounts remain stable across settlement and old checkpoints. Tagged-writer fixtures drive a 3,600-case family/usage/crash/lifecycle matrix. [Round 10 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-10-real-upgrade-shapes-and-unpriced-usage).
 
 - [x] Crash and legacy side charges use one compatibility/merge rule across recovery, adoption, settlement, reconciliation and deletion mirrors. Fallback evidence retains immutable scope; opening main recovers validated child-journal costs before enforcing its budget. Loaded and unloaded mirrors honor accepted legacy origins and reject conflicting authority. [Round 9 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-9-one-charge-compatibility-rule).

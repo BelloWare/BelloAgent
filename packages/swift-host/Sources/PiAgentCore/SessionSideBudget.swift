@@ -12,7 +12,7 @@ extension AgentSession {
         sideBudgetIDs = sideBudgetParents.map(\.id)
         familyBudgetEnabled = true; costLimitUSD = nil
         for ancestor in sideBudgetParents {
-            try await ancestor.registerSideBudget(id, parents: sideBudgetIDs)
+            try await ancestor.registerSideBudget(self, id: id, parents: sideBudgetIDs)
         }
         // Old saved sides and a lost owner acknowledgement are repaired from
         // numeric accounting only. No side messages, titles or prompts travel.
@@ -62,15 +62,29 @@ extension AgentSession {
         return true
     }
 
-    private func registerSideBudget(_ side: String, parents: [String]) throws {
+    private func registerSideBudget(_ runtime: AgentSession, id side: String, parents: [String]) throws {
         guard !closed, parents.contains(id), side != id else { throw AttemptAccounting.damaged() }
         if !familyBudgetEnabled { accounting.restoreUsageCoverage(spend:spend) }
         sideBudgetMembers[side] = parents; familyBudgetEnabled = true
+        sideBudgetStops[side] = { [weak self, weak runtime] in
+            guard let self, let runtime else { return }
+            // A raised limit/new run may retire a scheduled stop before it is
+            // delivered. Read the current authority instead of a stale flag.
+            do { try await self.enforceSharedCostLimit() }
+            catch let error as AgentError where error.code == AgentSession.costLimitCode { await runtime.stopFamilyAtLimit(error) }
+            catch { }
+        }
     }
 
     func enforceSharedCostLimit() async throws {
         for parent in sideBudgetParents.reversed() { try await parent.enforceCostLimit() }
         try enforceCostLimit()
+    }
+
+    func enforceToolBudget() async throws {
+        guard familyBudgetEnabled || isSubagent else { return }
+        if let budgetOwner { try await budgetOwner.enforceSharedCostLimit() }
+        else { try await enforceSharedCostLimit() }
     }
 
     func sharedRequestScope(_ scope: RequestScope) -> RequestScope {

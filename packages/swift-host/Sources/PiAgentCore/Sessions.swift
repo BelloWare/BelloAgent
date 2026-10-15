@@ -98,11 +98,13 @@ public actor AgentSession {
     var sideBudgetParents: [AgentSession] = []
     var sideBudgetIDs: [String] = []
     var sideBudgetMembers: [String: [String]] = [:]
+    var sideBudgetStops: [String: @Sendable () async -> Void] = [:]
     weak var budgetOwner: AgentSession?
     var budgetOwnerGeneration = 0
     var requestPermits: [String: RequestPermit] = [:]
     var inFlightBudgetAttempts = Set<String>()
     var familyStopReason: AgentError?
+    var budgetStopIssued = false
     var familyCancelled: (@Sendable (Int) -> Void)?
     var subagentCoordinator: SubagentCoordinator?
     var agentCoordinator: AgentSteeringCoordinator?
@@ -231,7 +233,9 @@ public actor AgentSession {
     var pendingRequestLinks: [String: [String]] = [:]
     var toolHistory = ToolHistoryIndex()
     var toolStateOwners: [String: String] = [:]
-    var modelActive = false
+    var modelActive = false {
+        didSet { if oldValue && !modelActive { stopFamilyAtLimit() } }
+    }
     var assistantMessageCount = 0
     var latestAssistantMessageID: String?
     let autoCompaction: Bool

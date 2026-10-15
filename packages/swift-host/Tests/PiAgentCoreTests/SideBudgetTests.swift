@@ -2,6 +2,61 @@ import XCTest
 @testable import PiAgentCore
 
 final class SideBudgetTests: XCTestCase {
+    func testRecoveredSavedSideIsIndependentWithItsOwnLimitAndUntouchedOriginal() async throws {
+        for withChild in [false,true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let main = try await session("main",root:root), side = try await session("side",root:root,parent:main)
+            let request = try await start(side,attempt:"paid")
+            try await finish(request,attempt:"paid",cost:0.4)
+            _ = try await side.keep(whenFinished:false)
+            var childPath: String?
+            if withChild {
+                await side.beginPresentedTask("turn")
+                try await side.appendAgentRecord(JournalRecordKind.familyRun,AgentFamilyRun(epoch:"old-run"))
+                var origin = subagentFixtureOrigin(child:"managed",parent:"side")
+                origin.link.parentExecutionID = await side.activeTaskPresentation!.executionID
+                try await side.installAdmissionFixturePlan(SubagentPlan(origin:origin,task:"Old task",resultMessageID:"old-result"))
+                let child = try AgentSession(id:"managed",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                    resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),prepared:nil,subagentOrigin:origin)
+                try await child.bindBudgetOwner(side,generation:0)
+                let delegated = try await start(child,attempt:"delegated")
+                try await finish(delegated,attempt:"delegated",cost:0.2)
+                childPath = await child.path; await child.close()
+            }
+            let expected = withChild ? 0.6 : 0.4
+            let maybePath = await side.path, maybeMainPath = await main.path
+            let path = try XCTUnwrap(maybePath), mainPath = try XCTUnwrap(maybeMainPath)
+            await side.close(); await main.close()
+            let source = URL(fileURLWithPath:path), writer = try FileHandle(forWritingTo:source)
+            try writer.seekToEnd(); try writer.write(contentsOf:Data("{\"type\":\"message\"".utf8)); try writer.close()
+            let damaged = try Data(contentsOf:source), mainBytes = try Data(contentsOf:URL(fileURLWithPath:mainPath))
+            let childBytes = try childPath.map { try Data(contentsOf:URL(fileURLWithPath:$0)) }
+            let service = try await host(root)
+            let recovered = try await service.command("session.recover",sessionID:nil,params:["path":JSON(path),"newSessionId":"recovered"])
+            let copyPath = try XCTUnwrap(recovered["sessionFile"].text)
+            let copy = try await open(service,"recovered",path:copyPath,limit:0.3)
+            let isSide = await copy.isSideChat, parents = await copy.sideBudgetIDs, spend = await copy.spend
+            XCTAssertFalse(isSide); XCTAssertTrue(parents.isEmpty); XCTAssertEqual(spend.usd,expected,accuracy:1e-9)
+            let copiedPlans = await copy.subagents.plans
+            XCTAssertTrue(copiedPlans.isEmpty,"Historical children retain the original side as their direct owner")
+            let originalParent = await service.loadedSession("main")
+            XCTAssertNil(originalParent,"Recovery must not need an unloaded original budget owner")
+            do { try await copy.enforceSharedCostLimit(); XCTFail("The copy has its own enforced limit") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit") }
+            await copy.setCostLimit(1); try await copy.enforceSharedCostLimit()
+            let provenance = await copy.parentInfo
+            XCTAssertEqual(provenance["relationship"].text,"recovered-copy")
+            XCTAssertEqual(provenance["sourceSessionId"].text,"side"); XCTAssertNil(provenance["parentSessionId"].text)
+            XCTAssertEqual(try Data(contentsOf:source),damaged)
+            XCTAssertEqual(try Data(contentsOf:URL(fileURLWithPath:mainPath)),mainBytes,"No duplicate adoption into the original family")
+            if let childPath { XCTAssertEqual(try Data(contentsOf:URL(fileURLWithPath:childPath)),childBytes) }
+            await service.shutdown()
+            let again = try await host(root), reopened = try await open(again,"recovered",path:copyPath,limit:0.3)
+            let againSpend = await reopened.spend; XCTAssertEqual(againSpend.usd,expected,accuracy:1e-9)
+            await again.shutdown()
+        }
+    }
+
     func testBudgetStatusReadsNumericStateWithoutTranscriptOrCaptureContext() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let host = try await host(root), owner = try await open(host,"main",seed:1.2)

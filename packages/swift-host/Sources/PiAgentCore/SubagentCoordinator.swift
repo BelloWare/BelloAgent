@@ -134,7 +134,9 @@ actor SubagentCoordinator {
             let result = await runtime.child.subagentResult(job.plan, cancelled: jobs[key]?.cancelled == true)
             await finish(key, result: result)
         } catch {
-            await runtime.child.stop(); await runtime.child.waitForSubagent()
+            if let budget = error as? AgentError, budget.code == AgentSession.costLimitCode { await runtime.child.stopFamilyAtLimit(budget) }
+            else { await runtime.child.stop() }
+            await runtime.child.waitForSubagent()
             let result = SubagentToolResult(plan: job.plan, status: error is CancellationError || ["submission_stopped", AgentSession.costLimitCode].contains((error as? AgentError)?.code ?? "") ? .notExecuted : .failed,
                                            error: (error as? AgentError) ?? AgentError("subagent_not_started", "The delegated task did not start"))
             await finish(key, result: result)

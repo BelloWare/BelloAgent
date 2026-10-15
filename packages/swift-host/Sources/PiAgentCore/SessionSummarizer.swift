@@ -59,9 +59,11 @@ extension AgentSession {
                 requestMs=nowMS()-start
                 return try await received(reply,cap:profile.maxOutput,revision:revision,originalProfile:originalProfile)
             } catch let cancelled as UnexplainedIncompleteCancellation {
+                modelActive = false
                 try discardIncompleteSummary(attempt:cancelled.attemptID)
                 throw CancellationError()
             } catch let error as AgentError {
+                modelActive = false
                 requestMs=nowMS()-start
                 if error.code == "provider_incomplete_unexplained" || error.discardIncompleteReply {
                     try discardIncompleteSummary(attempt:error.attemptID ?? compactionAttemptIDs.last)
