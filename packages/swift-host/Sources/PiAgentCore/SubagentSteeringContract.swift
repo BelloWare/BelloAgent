@@ -6,7 +6,10 @@ enum SubagentSteeringContract {
     static let parentNames = ["subagent_start", "subagent_send", "subagent_wait", "subagent_status", "subagent_stop"]
     static let names = Set(parentNames + ["subagent_report"])
     static func definitions(child: Bool, models: [SubagentModelGrant] = [], profile: Profile? = nil, connectionSupportsReasoning: Bool) -> [ToolDefinition] {
-        (child ? ["subagent_report"] : parentNames).map { name in
+        // Catalog refresh order is not authority. Canonicalize the app-owned
+        // enums, including members of capability branches, for prompt caching.
+        let models = models.sorted { $0.model < $1.model }
+        return (child ? ["subagent_report"] : parentNames).map { name in
             var schema = schemas[name]!
             if name == "subagent_start", !models.isEmpty { schema["properties"]["model"]["enum"] = .array(models.map { JSON($0.model) }) }
             if let profile, name == "subagent_start" {

@@ -34,7 +34,7 @@ public struct CompactionPolicy: Sendable {
         var raw = original.raw
         raw["maxOutputTokens"] = JSON(cap)
         raw["outputCap"] = JSON(cap)
-        return try Profile(raw)
+        return try original.replacing(raw)
     }
     /// Reserve the appended instruction, summary generation, dispatch margin,
     /// and a growth buffer before the next complete model/tool boundary.

@@ -19,6 +19,20 @@ public struct Profile: Sendable {
     /// The gateway's declared metadata headers and reasoning replay policy,
     /// validated here so no request path has to parse them again.
     let routing: RoutingContract
+    /// Managed conversations keep the instruction role selected by their
+    /// immutable origin. Effort changes affect generation options, not the
+    /// beginning of their saved prompt. Runtime-only; no profile/journal field.
+    private var fixedInstructionRole: String?
+    var instructionRole: String {
+        fixedInstructionRole ?? (raw["reasoning"].flag == true && raw["compat"]["supportsDeveloperRole"].flag != false ? "developer" : "system")
+    }
+    func fixingInstructionRole() -> Profile {
+        var copy = self; copy.fixedInstructionRole = instructionRole; return copy
+    }
+    /// Generation-budget copies (including summaries) retain runtime context.
+    func replacing(_ value: JSON) throws -> Profile {
+        var copy = try Profile(value); copy.fixedInstructionRole = fixedInstructionRole; return copy
+    }
     public init(_ value: JSON) throws {
         guard value.isObject else { throw AgentError("invalid_profile", "Profile must be an object") }
         id = try required(value["id"], "profile id", maximum: 128)
@@ -70,7 +84,7 @@ public struct Profile: Sendable {
     }
     /// The same profile with an explicit cap for one bounded request.
     public func capped(_ cap: Int) throws -> Profile {
-        var value = raw; value["outputCap"] = JSON(max(1, cap)); return try Profile(value)
+        var value = raw; value["outputCap"] = JSON(max(1, cap)); return try replacing(value)
     }
     /// A per-turn override changes the model, thinking and declared capacity.
     /// A different alias leaves the configured pinned route, so opaque
@@ -106,7 +120,7 @@ public struct Profile: Sendable {
             guard Self.validInput(input) else { throw AgentError("invalid_params", "Invalid turn input override") }
             value["input"] = .array(input.map(JSON.string))
         }
-        return try Profile(value)
+        return try replacing(value)
     }
     /// The profile a submission's turn runs with.
     public func overriding(_ submission: Submission) throws -> Profile {
