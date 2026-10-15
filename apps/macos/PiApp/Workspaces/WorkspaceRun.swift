@@ -101,6 +101,7 @@ extension WorkspaceModel {
     /// suspends: what it says, whether its chat can still send it, and the
     /// row drawn for it at once.
     private func acceptSubmission(_ item: ChatRecord, view: SessionDisplay, store: MetadataStore, steer: Bool) -> Submission {
+        view.queueEditNotice = ""
         let attachments = view.attachments, skills = view.skills, directCommand = view.directCommand
         let text = view.draft, commandID = UUID().uuidString, turnID = UUID().uuidString
         // Authorization is read before anything suspends. A chat whose

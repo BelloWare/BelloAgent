@@ -20,13 +20,13 @@ def require(condition, description):
 def validate_schema(schema, name="tool parameters"):
     if isinstance(schema, dict) and "oneOf" in schema:
         branches = schema["oneOf"]
-        require(isinstance(branches, list) and len(branches) >= 2,
-                name + " union must describe at least two object branches")
+        require(isinstance(branches, list) and len(branches) >= 1,
+                name + " union must describe at least one object branch")
         for branch in branches:
             validate_schema(branch, name)
-        # Model-specific effort keeps a provider-compatible object envelope.
-        # Its sibling constraints apply in addition to exactly one branch.
-        if set(schema) == {"oneOf"}:
+        # The shared object constraints still apply alongside the one matching branch.
+        schema = {key: value for key, value in schema.items() if key != "oneOf"}
+        if not schema:
             return
     require(isinstance(schema, dict) and schema.get("type") == "object", name + " must be an object schema")
     properties, required = schema.get("properties"), schema.get("required", [])
@@ -52,7 +52,9 @@ def validate_arguments(arguments, schema):
             except FixtureContractError:
                 pass
         require(matches == 1, "tool call must match exactly one schema branch")
-        if set(schema) == {"oneOf"}:
+        # The shared object constraints still apply alongside the one matching branch.
+        schema = {key: value for key, value in schema.items() if key != "oneOf"}
+        if not schema:
             return
     require(set(schema.get("required", [])) <= set(arguments), "tool call is missing a required argument")
     if schema.get("additionalProperties") is False:

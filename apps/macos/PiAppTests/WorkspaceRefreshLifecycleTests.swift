@@ -59,6 +59,62 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
         return value
     }
 
+    @MainActor private func showNoticeSnapshot(_ f: RefreshFixture, preflight: String?, state: String = "paused") async throws {
+        let index = f.commands.frames.count
+        f.model.refresh(f.chat.id)
+        try await wait { f.commands.frames.count == index + 1 }
+        var result = snapshot(sequence: Double(index + 1), revision: "notice:\(index + 1)", text: "Question")
+        result["state"] = .string(state); result["runStatus"] = .string(state)
+        if let preflight { result["preflightError"] = .string(preflight) }
+        try reply(f.commands.frames[index], on: f.host, result: result)
+        try await wait { !f.view.snapshotInFlight }
+    }
+
+    @MainActor func testClearingQueueEditNoticeImmediatelyKeepsThePreflightPart() async throws {
+        let f = try await fixture()
+        f.view.queueEditNotice = "Cancellation is not confirmed."
+        try await showNoticeSnapshot(f, preflight: "Run stopped.")
+        XCTAssertEqual(f.view.notice, "Cancellation is not confirmed.\nRun stopped.")
+        let requests = f.commands.frames.count
+        f.view.queueEditNotice = ""
+        XCTAssertEqual(f.view.notice, "Run stopped.", "A cleared component must not await another snapshot")
+        XCTAssertEqual(f.commands.frames.count, requests)
+    }
+
+    @MainActor func testReplacingQueueEditNoticeImmediatelyKeepsThePreflightPart() async throws {
+        let f = try await fixture()
+        f.view.queueEditNotice = "Cancellation is not confirmed."
+        try await showNoticeSnapshot(f, preflight: "Run stopped.")
+        f.view.queueEditNotice = "The rewrite is in the composer."
+        XCTAssertEqual(f.view.notice, "The rewrite is in the composer.\nRun stopped.")
+        try await showNoticeSnapshot(f, preflight: nil)
+        XCTAssertEqual(f.view.notice, "The rewrite is in the composer.", "Removing preflight keeps the queued-edit component")
+        f.view.queueEditNotice = ""
+        XCTAssertEqual(f.view.notice, "", "Removing both parts leaves no stale composition")
+    }
+
+    @MainActor func testClearingPreflightThenQueueEditNoticeRemovesBothParts() async throws {
+        let f = try await fixture()
+        f.view.queueEditNotice = "Keep the rewrite."
+        try await showNoticeSnapshot(f, preflight: "Run stopped.")
+        try await showNoticeSnapshot(f, preflight: nil)
+        XCTAssertEqual(f.view.notice, "Keep the rewrite.")
+        f.view.queueEditNotice = ""
+        XCTAssertEqual(f.view.notice, "")
+    }
+
+    @MainActor func testFailedRunNoticeIsNotDuplicatedInTheComposerComposition() async throws {
+        let f = try await fixture()
+        f.view.queueEditNotice = "Keep the rewrite."
+        try await showNoticeSnapshot(f, preflight: "Provider failed.", state: "failed")
+        XCTAssertEqual(f.view.failureMessage, "Provider failed.")
+        XCTAssertEqual(f.view.notice, "Keep the rewrite.", "The transcript already presents a failed run's explanation")
+        try await showNoticeSnapshot(f, preflight: "Run stopped.")
+        XCTAssertNil(f.view.failureMessage)
+        f.view.queueEditNotice = ""
+        XCTAssertEqual(f.view.notice, "Run stopped.")
+    }
+
     @MainActor func testCompletionFetchesFinalMetricsEvenInsideTheLiveThrottle() async throws {
         let f = try await fixture()
         defer { f.host.shutdown() }

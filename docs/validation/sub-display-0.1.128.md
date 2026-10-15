@@ -1891,3 +1891,82 @@ the native Markdown/Find class passed all 17. After the tail-validation refineme
 and restored mutations, `premerge-search` passed all 11 ContentSearch/StateTail
 tests and standalone `premerge-live-find` passed all 17 again. The integration
 and final native lane are recorded below after merging `origin/dev/next`.
+
+### Integration
+
+Merged fetched `origin/dev/next` at
+`bd9a1a94769897ebfc7e1263ba5f38039baf7f95`, retaining the queue-edit work
+(`152725f0`) and sub-agent prompt-cache fix (`bd9a1a94`). Existing release commit
+identities are preserved. Conflicts and resolutions:
+
+- `NEXT-RELEASE.md`: retained every item from both branches.
+- `fixtures/native/litellm_contract.py`: retained shared object constraints for
+  effort unions and incoming support for one valid `oneOf` branch. Both schema
+  validation and argument validation still require the intended object shape and
+  exactly one matching branch. Removed a duplicate test import from the automatic
+  merge and updated the older test's now-obsolete two-branch minimum assertion.
+- The project file merged automatically and was regenerated with XcodeGen.
+  SessionDisplay, WorkspaceRefresh and WorkspaceRun merged without conflicts;
+  hosted-reader behavior and the new queue notice/acknowledgement logic are retained.
+
+The first merged gateway run caught the outdated single-branch rejection (23
+passed, one failed). After updating that assertion while retaining its shared-field
+checks, `review11-gateway-final.log` records **24 passed, zero failures**.
+
+`review11-helper-affected.log` records **291 affected helper tests passed, zero
+failures**, including all four SubagentCacheTests, steering/family, ordinary pi
+parity, routing, request context, provider streaming, capacity and compaction.
+`review11-helper-affected-arguments.txt` records the exact `swift test` command,
+using this stream's existing release scratch directory with three jobs.
+
+The actual rebuilt helper's generated loopback workflow also passed: **26 requests,
+22 prefix comparisons, zero breaks**. Existing prompt prefixes with unchanged
+request settings are fully retained. These are fixture measurements, not claims
+about upstream provider cache hits. Evidence:
+`review11-cache-loopback.log` and `cache-review11-integrated/{summary.json,measurements.json,measurements.md}`.
+No new helper behavior or model-facing text change was introduced by this merge
+resolution; the incoming, authorized prompt-cache implementation is preserved.
+
+### Final affected native validation
+
+**314 unique tests passed across 21 affected classes, one existing opt-in skip,
+zero failures.** `review11-final-affected-counts.json` records the union by test
+identifier. Serial classes ran alone; the refreshed lane inventory is saved as
+`review11-lanes.txt`.
+
+| Run (`review11-<name>`) | Pass | Skip | Scope |
+| --- | ---: | ---: | --- |
+| `affected-parallel` | 139 | 1 | Fifteen search, history, queue presentation/refresh, discovery, model-grant and effort classes |
+| `affected-markdown` | 17 | 0 | SubagentMarkdownTests, including actual live `setQuery` pagination |
+| `affected-reader` | 47 | 0 | SubagentReaderTests |
+| `affected-original` | 1 | 0 | InheritedSubagentReaderTests matrix |
+| `affected-opening` | 12 | 0 | SubagentOpeningTests with the rebuilt helper |
+| `affected-queue` | 17 | 0 | QueueEditInteractionTests |
+| `affected-pane` | 81 | 0 | ConversationPaneTests |
+
+The skipped HistoryIndexFiles test is its opt-in large-journal measurement. This
+round adds no UI text/layout change and no gallery scene; round 10's inspected
+gallery remains the display baseline. The queue-edit branch's existing gallery
+and validation record are retained by the merge.
+
+### One full native parallel lane and handoff
+
+The **one full native parallel lane passed: 2,561 passed, 38 skipped, zero
+failures (2,599 total)**. It ran after all affected classes, with four workers
+and the current lane script's serial exclusions. Exact arguments are in
+`review11-full-native-parallel-arguments.txt`; the log and extracted summary/tests
+JSON use the same prefix. No second full lane was run.
+
+`git diff --check` passes. XcodeGen regeneration retained both branches' source
+and test membership. All tests used generated fixtures, MemoryVault/isolated test
+storage and loopback gateways; no installed app, real preferences, Keychain,
+paid-provider calls or `xctrace --launch` were used. Builds, logs, retained fixture
+evidence and the automatically named latest result bundle stayed in this stream's
+own build root; disposable test data used isolated fixture scratch directories.
+No named result bundles or source-journal migrations were introduced.
+
+The Find fix was committed separately before the merge. The merge preserves
+existing upstream commit identities and incorporates its queue-edit and prompt-cache
+behavior without additional helper changes. Round 11 has no known remaining
+implementation or validation failures. Lead review and integration into `dev/next`
+remain with the lead; only `dev/a128-sub-display` is pushed.
