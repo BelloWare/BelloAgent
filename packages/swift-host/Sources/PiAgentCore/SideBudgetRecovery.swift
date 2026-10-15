@@ -30,15 +30,16 @@ enum SideBudgetRecovery {
             var counted = SessionSpend(); counted.add(record: entry.effective)
             remainder.usd -= counted.usd; remainder.reported -= counted.reported; remainder.unreported -= counted.unreported
         }
+        if let amount = accounting.unkeyedUSD { remainder.usd = amount }
         guard remainder.reported > 0 || remainder.unreported > 0 || remainder.usd > 0.000000000001 else { return nil }
         var seed = remainder.record
         seed["usd"] = JSON(max(0,remainder.usd)); seed["attemptId"] = JSON("side-history:" + side)
         seed["source"] = "side-history"; seed["outcome"] = "completed"; seed["purpose"] = "legacy"
         return charge(seed,side:side,parents:parents)
     }
-    static func charges(owner: String, directory: URL) throws -> [AccountingRecord] {
+    static func charges(owner: String, directory: URL, family: [(origin: Origin, parents: [String])]? = nil) throws -> [AccountingRecord] {
         var result: [AccountingRecord] = []
-        for (origin, parents) in try savedFamily(owner:owner,directory:directory) {
+        for (origin, parents) in try family ?? savedFamily(owner:owner,directory:directory) {
             // Only this family's ledger can affect opening its owner. An
             // unrelated side's damaged tail must not prevent other chats
             // opening; damage in a related ledger must still fail closed.

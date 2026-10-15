@@ -368,7 +368,11 @@ public actor AgentSession {
             try accounting.consume(kind:JournalRecordKind.cost,data:data,spend:&spend); spendTracked = true
         }
         if resumePath != nil, subagents.origin == nil {
-            for incoming in try SideBudgetRecovery.charges(owner: id, directory: directory) {
+            let family = try SideBudgetRecovery.savedFamily(owner:id,directory:directory)
+            // Recovery imports nested ledgers before their runtimes bind. The
+            // same validated persisted origins authorize those cold mirrors.
+            sideBudgetMembers = Dictionary(uniqueKeysWithValues:family.map { ($0.origin.id,$0.parents) })
+            for incoming in try SideBudgetRecovery.charges(owner: id, directory: directory, family:family) {
                 guard var record = try SideBudgetRecovery.adoption(incoming,accounting:accounting) else { continue }
                 record.data["accountingRevision"] = JSON(accounting.revision + 1)
                 var next = accounting, total = spend

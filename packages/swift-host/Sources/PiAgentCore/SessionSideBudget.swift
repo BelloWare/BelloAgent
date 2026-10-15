@@ -41,7 +41,7 @@ extension AgentSession {
     func sharedCharges(_ attempts: [String]) -> [JSON] { attempts.compactMap { accounting.attempts[$0]?.contribution } }
     func committedSideCharges() -> [JSON] { accounting.sideCharges(owner:id) }
     @discardableResult func mirrorSharedCharge(_ cost: JSON, acceptedOrigin: SubagentOrigin? = nil) throws -> Bool {
-        guard let attempt = cost["attemptId"].text, cost["reported"].int == 1 else { return false }
+        guard let attempt = cost["attemptId"].text else { return false }
         let entry = accounting.attempts[attempt]
         let child: FamilyCharge.Child?
         if let origin = subagents.origin {
@@ -55,7 +55,8 @@ extension AgentSession {
             }
             child = nil
         }
-        guard let update = try FamilyCharge.merge(cost,into:entry,revision:accounting.revision,child:child) else { return false }
+        guard let update = try FamilyCharge.merge(cost,into:entry,revision:accounting.revision,child:child,
+            legacySession:isSideChat ? id : nil) else { return false }
         try appendAccounting(kind:update.kind,data:update.data)
         stopFamilyAtLimit()
         return true

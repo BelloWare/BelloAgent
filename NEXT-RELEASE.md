@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Upgraded 0.1.127 saved sides reopen with their original identity-less cost rows. Cold nested membership comes from persisted origins; unpriced terminal tokens survive live/disk mirrors and owner deletion. Recorded legacy seed amounts remain stable across settlement and old checkpoints. Tagged-writer fixtures drive a 3,600-case family/usage/crash/lifecycle matrix. [Round 10 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-10-real-upgrade-shapes-and-unpriced-usage).
+
 - [x] Crash and legacy side charges use one compatibility/merge rule across recovery, adoption, settlement, reconciliation and deletion mirrors. Fallback evidence retains immutable scope; opening main recovers validated child-journal costs before enforcing its budget. Loaded and unloaded mirrors honor accepted legacy origins and reject conflicting authority. [Round 9 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-9-one-charge-compatibility-rule).
 
 - [x] Saved-side adoption preserves unresolved dispatched requests, unknown cost and token coverage through cold recovery and live binding. The replay/recovery matrix now covers 3,060 legacy/attempt-state combinations; later settlements, non-dispatch proof, old checkpoints and capture authority remain correct. [Round 8 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-8-unresolved-saved-side-attempts).

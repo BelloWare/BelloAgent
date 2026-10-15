@@ -758,7 +758,7 @@ public actor NativeHostService {
         }
         try SideBudgetRecovery.mirrorCapturedCosts(costs,owner:id,directory:directory,loaded:Set(sessions.keys))
         for owner in sessions.values {
-            for cost in costs where cost["reported"].int == 1 {
+            for cost in costs {
                 guard let delegation = cost["delegationId"].text,
                       let plan = await owner.subagents.plans[delegation], sessions[plan.origin.link.childSessionID] == nil else { continue }
                 try SubagentRecovery.mirrorCapturedCost(cost,plan:plan,directory:owner.directory)

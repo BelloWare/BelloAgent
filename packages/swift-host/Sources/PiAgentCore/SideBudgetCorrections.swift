@@ -23,7 +23,6 @@ extension SideBudgetRecovery {
     /// deleted and the capture has expired. The host holds its runtime gate;
     /// live mirrors retain their own writers and are handled by the host.
     static func mirrorCapturedCosts(_ costs: [JSON], owner: String, directory: URL, loaded: Set<String>) throws {
-        let costs = costs.filter { $0["reported"].int == 1 }
         guard !costs.isEmpty else { return }
         let family = try savedFamily(owner:owner,directory:directory)
         for (origin, _) in family where !loaded.contains(origin.id) {
@@ -42,13 +41,10 @@ extension SideBudgetRecovery {
             }
             guard children.origin == nil else { throw AttemptAccounting.damaged() }
             for cost in relevant {
-                guard let attempt = cost["attemptId"].text, let entry = accounting.attempts[attempt],
-                      let previous = entry.contribution ?? entry.admission else { continue }
-                guard previous["sourceSessionId"] == cost["sourceSessionId"],
-                      previous["budgetOwnerSessionId"] == cost["budgetOwnerSessionId"], previous["delegationId"] == cost["delegationId"],
-                      let logicalOwner = cost["budgetOwnerSessionId"].text,
+                guard let attempt = cost["attemptId"].text, let entry = accounting.attempts[attempt] else { continue }
+                guard let logicalOwner = cost["budgetOwnerSessionId"].text,
                       logicalOwner == origin.id || family.contains(where: { $0.origin.id == logicalOwner && $0.parents.contains(origin.id) }) else { throw AttemptAccounting.damaged() }
-                if let update = try FamilyCharge.merge(cost,into:entry,revision:accounting.revision) {
+                if let update = try FamilyCharge.merge(cost,into:entry,revision:accounting.revision,legacySession:origin.id) {
                     try accounting.consume(kind:update.kind,data:update.data,spend:&spend)
                     try writer.append(["type":"custom","customType":JSON(update.kind),"data":update.data],flush:true)
                 }
@@ -68,7 +64,7 @@ extension SideBudgetRecovery {
 extension AttemptAccounting {
     func sideCharges(owner: String) -> [JSON] {
         attempts.values.compactMap { entry in
-            guard let cost = entry.contribution, cost["reported"].int == 1,
+            guard let cost = entry.contribution,
                   cost["sideParents"].list.contains(JSON(owner)) else { return nil }
             return cost
         }

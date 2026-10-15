@@ -17,6 +17,10 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
     var usageTotals: [String: Double] = [:]
     var usageReported: [String: Int] = [:]
     var usageUnknownRequests = 0
+    /// Keep the original seed sum. Subtracting keyed dollars from the running
+    /// total changes its low bits when a later mirror settles. nil identifies
+    /// an older checkpoint that must replay a saved side's seed records.
+    var unkeyedUSD: Double? = 0
 
     /// Older checkpoints omitted unkeyed history from usage coverage. Restore
     /// this cheap cached count once on load, never while serving snapshots.
@@ -62,6 +66,7 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
         if kind == JournalRecordKind.cost, data[SessionSpend.resetKey].flag == true {
             attempts = [:]; revision = 0; spend = SessionSpend()
             usageTotals = [:]; usageReported = [:]; usageUnknownRequests = 0
+            unkeyedUSD = 0
         }
         guard let id = data["attemptId"].text, !id.isEmpty else {
             guard kind == JournalRecordKind.cost else { throw Self.damaged() }
@@ -69,6 +74,7 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
             // Unkeyed history has no per-attempt token coverage, regardless of
             // whether it arrived as an app seed, carried spend or adoption.
             var counted = SessionSpend(); counted.add(record:data)
+            if let total = unkeyedUSD { unkeyedUSD = total + counted.usd }
             usageUnknownRequests += counted.reported + counted.unreported
             return true // Existing seed/carried records.
         }

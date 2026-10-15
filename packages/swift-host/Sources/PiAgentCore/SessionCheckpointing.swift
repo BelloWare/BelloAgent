@@ -58,9 +58,12 @@ extension AgentSession {
     static func loadCheckpoint(_ checkpoint: JournalCheckpoint, url: URL) -> (rows: [ChatMessage], context: [ChatMessage], state: JSON?, stateLine: Data?)? {
         guard let saved = try? JSON.parse(Data(checkpoint.helper.utf8)),
               let subagents = try? JSONDecoder().decode(SubagentJournalState.self, from: saved["subagents"].data()),
-              (try? JSONDecoder().decode(AttemptAccounting.self, from: saved["accounting"].data())) != nil,
+              let accounting = try? JSONDecoder().decode(AttemptAccounting.self, from: saved["accounting"].data()),
               let file = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? file.close() }
+        // Old caches reconstructed carried seed dollars by subtraction. Read
+        // the original numeric records once, then retain their exact sum.
+        if saved["parentInfo"]["parentSessionId"].text != nil, saved["parentInfo"]["relationship"].text != "fork", accounting.unkeyedUSD == nil { return nil }
         // An older helper's cache decodes away effort/capabilities even when
         // their original journal rows survive. Replay those families in full;
         // ordinary chats and current caches retain the checkpoint shortcut.
