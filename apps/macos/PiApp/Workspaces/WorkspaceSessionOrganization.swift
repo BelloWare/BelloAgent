@@ -4,6 +4,7 @@ struct SidebarChatEntry: Identifiable {
     let chat: ChatRecord
     let depth: Int
     let hasChildren: Bool
+    var isFamilyChild = false
     var id: String { chat.id }
 }
 
@@ -119,21 +120,21 @@ extension WorkspaceModel {
                 }
             }
             return sidebarProjects.filter { !query.isEmpty || projectIsExpanded($0.id) }.flatMap { project -> [String] in
-                @MainActor func listed(_ topicID: String?, matching query: String) -> [String] {
+                @MainActor func listed(_ topicID: String?, includingMainChats: Bool = false) -> [String] {
                     let lists = archive ? [false, true] : [false]
                     return lists.flatMap { archived in
                         SidebarSessionPresentation
                             .filtered(sidebarEntries(in: project.id, topicID: topicID, archived: archived, collapsed: []), by: query,
-                                      contentMatches: query.isEmpty ? [] : sidebarContentMatches)
+                                      contentMatches: query.isEmpty ? [] : sidebarContentMatches, includingMainChats: includingMainChats)
                             .filter { !$0.chat.isSubagent || !query.isEmpty || $0.chat.delegationIssue != nil || $0.chat.delegation.map { record($0.budgetOwnerSessionID) == nil || subagentGroupExpanded($0.budgetOwnerSessionID) } == true }
                             .map(\.chat.id)
                     }
                 }
                 let grouped = topics(in: project.id).filter { !query.isEmpty || topicIsExpanded($0) }.flatMap { topic -> [String] in
                     // A topic whose own title matches lists all of its chats.
-                    listed(topic.id, matching: topic.title.localizedCaseInsensitiveContains(query) ? "" : query)
+                    listed(topic.id, includingMainChats: topic.title.localizedCaseInsensitiveContains(query))
                 }
-                return grouped + listed(nil, matching: query)
+                return grouped + listed(nil)
             }
         }
     }
@@ -236,7 +237,7 @@ extension WorkspaceModel {
             while let (chat, depth, shown) = stack.popLast() {
                 guard visited.insert(chat.id).inserted else { continue }
                 let descendants = children[chat.id] ?? []
-                if shown { result.append(SidebarChatEntry(chat: chat, depth: depth, hasChildren: descendants.contains { !$0.isSubagent })) }
+                if shown { result.append(SidebarChatEntry(chat: chat, depth: depth, hasChildren: descendants.contains { !$0.isSubagent }, isFamilyChild: sideFamilyOwner(chat) != nil)) }
                 for child in descendants.reversed() { stack.append((child, depth + 1, shown && (child.isSubagent || !collapsed.contains(chat.id)))) }
             }
         }

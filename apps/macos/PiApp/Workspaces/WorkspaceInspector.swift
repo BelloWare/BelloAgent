@@ -6,19 +6,19 @@ import Foundation
 
 extension WorkspaceModel {
     /// Opens a chat's Session Inspector at a page, or brings it forward there.
-    func openInspector(session sessionID: String, focus: InspectorFocus = .overview) {
+    func openInspector(session sessionID: String, focus: InspectorFocus = .overview, originalForkID: String? = nil) {
         guard let record = record(sessionID) else {
             error = "That chat is no longer available. It was deleted or was an unkept side conversation; its retained requests remain in the usage report."
             return
         }
-        openInspector(session: sessionID, workspaceID: record.workspaceID, title: record.title, focus: focus)
+        openInspector(session: sessionID, workspaceID: record.workspaceID, title: record.displayTitle, focus: focus, originalForkID: originalForkID ?? subagentTab(sessionID)?.originalForkID)
     }
 
     /// A request from the usage report: its chat may be gone, its project and log are not.
-    func openInspector(session sessionID: String, workspaceID: String, title: String?, focus: InspectorFocus) {
+    func openInspector(session sessionID: String, workspaceID: String, title: String?, focus: InspectorFocus, originalForkID: String? = nil) {
         lastInspectorFocus = focus
         SessionInspectorWindows.shared.show(model: self, sessionID: sessionID, workspaceID: workspaceID,
-                                            title: title ?? record(sessionID)?.title ?? "Deleted chat", focus: focus)
+                                            title: title ?? record(sessionID)?.displayTitle ?? "Deleted chat", focus: focus, originalForkID: originalForkID)
     }
 
     /// The focus of a turn the transcript reports: the message that started it.

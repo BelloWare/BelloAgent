@@ -10,6 +10,37 @@ import SwiftUI
 /// the reader cannot get back with one click. The rows behind it keep their
 /// identities and everything opened inside them.
 final class TranscriptTurnFoldTests: XCTestCase {
+    @MainActor func testCollapsedTurnHidesTypedAgentDeliveriesAndEveryControlWithoutChangingExpandedContent() throws {
+        let previous = TranscriptDisplay.mode; TranscriptDisplay.use(.compact)
+        defer { TranscriptDisplay.use(previous) }
+        var rows = [TranscriptMessage(id: "u1", role: "user", text: "Review", turn: "u1")]
+        for (index, name) in ["subagent", "subagent_start", "subagent_send", "subagent_wait", "subagent_status", "subagent_stop", "subagent_report"].enumerated() {
+            rows.append(reply(id: "call-\(index)", turn: "u1", at: Double(index + 1), text: "", call: (id: "c-\(index)", name: name)))
+        }
+        for author in ["parent", "subagent"] {
+            var delivery = SubagentSteeringPresentationTests.delivery.object!
+            delivery["author"] = .string(author)
+            rows.append(TranscriptMessage(id: author, role: "user", text: "Agent-only content", kind: "agent_message", nativeAgentDelivery: .object(delivery), turn: "u1"))
+        }
+        rows.append(reply(id: "answer", turn: "u1", at: 20, text: "Main agent response"))
+        rows.append(TranscriptMessage(id: "late-report", role: "user", text: "Agent result", kind: "agent_message", nativeAgentDelivery: SubagentSteeringPresentationTests.delivery, turn: "u1"))
+        rows.append(TranscriptMessage(id: "family-pending:parent", role: "system", text: "Pending for parent Resume · 1 agent message", kind: "notice"))
+        let items = TaskTranscriptPlan.items(rows, lifecycle: nil)
+        let fold = try XCTUnwrap(control(items))
+        XCTAssertFalse(fold.foldSummary!.label.lowercased().contains("subagent"))
+        XCTAssertFalse(fold.foldSummary!.label.contains("message"))
+        let disclosure = TranscriptDisclosure()
+        let hidden = items.filter { TranscriptRowDisclosure.of($0, in: disclosure).foldedAway }
+        for id in ["parent", "subagent", "late-report", "family-pending:parent"] {
+            XCTAssertTrue(hidden.contains { if case .message(let row) = $0 { return row.id == id }; return false }, "Typed provider user rows are work, not human inputs")
+        }
+        for case .block(let block) in items where block.part?.part.kind == "toolArguments" {
+            XCTAssertTrue(TranscriptRowDisclosure.of(.block(block), in: disclosure).foldedAway)
+        }
+        disclosure.setOpen(true, .turnFold("u1"))
+        XCTAssertTrue(items.allSatisfy { !TranscriptRowDisclosure.of($0, in: disclosure).foldedAway })
+        XCTAssertEqual(rows.filter { $0.kind == "agent_message" }.map(\.text), ["Agent-only content", "Agent-only content", "Agent result"])
+    }
     /// The planner's mode is app-wide, so every case that depends on it says
     /// which transcript it means and puts the process back as it found it.
     @MainActor private func withDisplay<T>(_ mode: TranscriptDisplayMode, _ body: () throws -> T) rethrows -> T {
@@ -449,9 +480,9 @@ final class TranscriptTurnFoldTests: XCTestCase {
                        "Folding changes what is drawn, never which rows exist")
     }
 
-    func testTheLineCountsCallsRepliesAndSubagents() {
+    func testTheLineCountsOnlyMainAgentCallsAndReplies() {
         XCTAssertEqual(TurnFoldSpec(group: "t", answerResponseID: "a", toolCalls: 3, messages: 1).label, "3 tool calls · 1 message")
-        XCTAssertEqual(TurnFoldSpec(group: "t", answerResponseID: "a", subagents: 2).label, "2 subagents")
+        XCTAssertEqual(TurnFoldSpec(group: "t", answerResponseID: "a", subagents: 2).label, "Work details")
         XCTAssertEqual(TurnFoldSpec(group: "t", answerResponseID: "a", toolCalls: 1).label, "1 tool call")
         XCTAssertEqual(TurnFoldSpec(group: "t", answerResponseID: "a").label, "Thought for a while",
                        "A turn that only thought says so rather than counting nothing")
@@ -470,7 +501,7 @@ final class TranscriptTurnFoldTests: XCTestCase {
         }
         rows[1].responseTimeline?.segments = renamed
         let fold = try XCTUnwrap(control(withDisplay(.compact) { TaskTranscriptPlan.items(rows, lifecycle: nil) }))
-        XCTAssertEqual(fold.foldSummary?.label, "1 tool call · 1 message · 1 subagent")
+        XCTAssertEqual(fold.foldSummary?.label, "1 tool call · 1 message")
     }
 
     // MARK: What the reader does with it

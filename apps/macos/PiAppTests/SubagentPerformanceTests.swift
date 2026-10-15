@@ -3,6 +3,77 @@ import XCTest
 @testable import PiApp
 
 final class SubagentPerformanceTests: XCTestCase, SerialTestLane {
+    @MainActor func testFiftyKilobyteMarkdownResultInALongChatKeepsTheMainThreadResponsive() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("agent-markdown-performance-" + UUID().uuidString)
+        let fixture = try SubagentGalleryFixture(root: root)
+        registerWorkspaceFixtureTeardown(fixture.model, root: root)
+        defer { fixture.close(); TranscriptLayoutClock.recording = false }
+        fixture.show("completed")
+        let history = (0..<200).flatMap { index in [TranscriptMessage(id: "user-\(index)", role: "user", text: "Question \(index)"),
+            TranscriptMessage(id: "answer-\(index)", role: "assistant", text: "A settled reply.")] }
+        fixture.parent.messages = history + fixture.parent.messages
+        await fixture.settle()
+        _ = await fixture.model.revealInTranscript(sessionID: fixture.parent.id, messageID: "reply", toolCallID: "call-0")
+        await fixture.settle()
+        let source = "# Cold result \(UUID().uuidString)\n\n" + String(repeating: "- The **parser** keeps `token` boundaries and [references](https://example.test).\n", count: 680)
+        let output = WireValue.object(["status": .string("completed"), "text": .string(source)]).pretty
+        XCTAssertGreaterThan(source.utf8.count, 50_000)
+        let computations = fixture.model.sidebarIndex.computations
+        TranscriptLayoutClock.reset(); TranscriptLayoutClock.recording = true
+        var heartbeat = ProcessInfo.processInfo.systemUptime, worstGap = 0.0
+        var markdownSeconds = 0.0, worstMarkdownBatch = 0.0
+        let monitor = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(2))
+                let now = ProcessInfo.processInfo.systemUptime
+                worstGap = max(worstGap, (now - heartbeat) * 1000); heartbeat = now
+                let markdown = TranscriptLayoutClock.markdownUpdateSeconds + TranscriptLayoutClock.markdownLayoutSeconds
+                worstMarkdownBatch = max(worstMarkdownBatch, (markdown - markdownSeconds) * 1000); markdownSeconds = markdown
+            }
+        }
+        defer { monitor.cancel() }
+        await Task.yield(); heartbeat = ProcessInfo.processInfo.systemUptime
+        let before = ProcessInfo.processInfo.systemUptime
+        var message = fixture.parent.messages.last!
+        message.tools![0].output = output
+        fixture.parent.messages[fixture.parent.messages.count - 1] = message
+        var worst = 0.0, iterations = 0
+        try await eventually("Prepared large Markdown result", timeout: .seconds(20)) {
+            let start = ProcessInfo.processInfo.systemUptime
+            fixture.content.layoutSubtreeIfNeeded(); fixture.window.displayIfNeeded()
+            worst = max(worst, (ProcessInfo.processInfo.systemUptime - start) * 1000); iterations += 1
+            return ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: fixture.content.pane).contains { $0.source == source && $0.prepared }
+        }
+        let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: fixture.content.pane).first { $0.source == source })
+        let coldUpdate = TranscriptLayoutClock.markdownUpdateSeconds * 1000
+        let coldLayout = TranscriptLayoutClock.markdownLayoutSeconds * 1000
+        let layouts = body.markdown.layoutPasses
+        TranscriptLayoutClock.reset(); TranscriptLayoutClock.recording = true
+        for _ in 0..<30 { fixture.content.needsLayout = true; fixture.content.layoutSubtreeIfNeeded(); fixture.window.displayIfNeeded() }
+        XCTAssertEqual(body.markdown.layoutPasses, layouts, "A settled result keeps its width layout")
+        XCTAssertEqual(fixture.model.sidebarIndex.computations, computations)
+        XCTAssertLessThan(TranscriptLayoutClock.measuredRows, 5, "The 400 settled messages are not remeasured")
+        XCTAssertLessThan(worstGap, 100, "The main run loop, including the fixture window, stays responsive")
+        XCTAssertLessThan(worstMarkdownBatch, 50, "Markdown adoption and layout yield within the frame budget")
+        XCTAssertLessThan(worst, 50, "A 50 KB result must not block a frame for parsing or full text layout")
+        print("PERF agent-markdown bytes=\(source.utf8.count) coldMs=\((ProcessInfo.processInfo.systemUptime - before) * 1000) worstDrawMs=\(worst) heartbeatMs=\(worstGap) markdownBatchMs=\(worstMarkdownBatch) updateMs=\(coldUpdate) layoutMs=\(coldLayout) draws=\(iterations) measures=\(body.markdown.layoutPasses)")
+        await Task.yield(); heartbeat = ProcessInfo.processInfo.systemUptime; worstGap = 0; worst = 0; worstMarkdownBatch = 0
+        let expanding = ProcessInfo.processInfo.systemUptime
+        body.setExpanded(true)
+        try await eventually("Complete expanded Markdown", timeout: .seconds(30)) {
+            let start = ProcessInfo.processInfo.systemUptime
+            fixture.content.layoutSubtreeIfNeeded(); fixture.window.displayIfNeeded()
+            worst = max(worst, (ProcessInfo.processInfo.systemUptime - start) * 1000)
+            return body.isComplete
+        }
+        monitor.cancel(); await monitor.value
+        XCTAssertEqual(body.markdown.textView.string, Self.rendered(source))
+        XCTAssertLessThan(worstGap, 100, "Expanding the entire result must yield between native text batches")
+        XCTAssertLessThan(worstMarkdownBatch, 50)
+        XCTAssertLessThan(worst, 50)
+        print("PERF agent-markdown-expanded ms=\((ProcessInfo.processInfo.systemUptime - expanding) * 1000) worstDrawMs=\(worst) heartbeatMs=\(worstGap) markdownBatchMs=\(worstMarkdownBatch)")
+    }
+    @MainActor private static func rendered(_ source: String) -> String { SubagentMarkdownTests.assistant(source).textView.string }
     @MainActor func testFourProgressCardsDoNotRebuildTheSidebarOrSettledTranscript() async throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("subagent-performance-" + UUID().uuidString)
         let fixture = try SubagentGalleryFixture(root: root)

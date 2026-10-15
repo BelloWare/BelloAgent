@@ -1,5 +1,40 @@
 # Sub-agent steering and follow-ups — design v3 delta
 
+## 0.1.128 presentation amendment
+
+The owner's 2026-10-15 display changes replace child and side sidebar rows and the
+hover sides panel with one [main-column Sides and Agents picker](subagents.md#01128-display-update--owner-decision-2026-10-15).
+The parent badge distinguishes working sides, running agents and queued agents.
+Saved-side and child search results name their parent. The picker and restored child
+tabs preserve numbering, view/Stop, typed-message links and family Inspector.
+Embedded Back only focuses the parent; delayed history reads preserve that decision.
+Full child windows have sibling access and route their own Find/Stop shortcuts.
+Saved sides and reply forks retain their own delegation families, indented under
+their actual parents in the main picker at every depth; Stop and Inspector still address the actual delegation owner. Each hosted
+reader has one navigation token for opens, reveals, Find, paging and version reads,
+retained across pane/window moves. Back, hide, close or a newer destination retires
+its pending work; unrelated main-window selection and Reports leave popped-out
+reads intact. Native responder changes and the key child window determine menu
+availability and command targets as well as keyboard shortcuts. The
+[reader navigation ownership rule](subagents.md#reader-navigation-ownership) also
+applies to every stage of Source and Inspector reveals and sidebar search hits.
+Task, result and report prose uses the assistant Markdown reader, with bounded
+previews, ordinary assistant selection copy, full-source Copy buttons and
+rendered-text Find. Typed authorship and
+delivery metadata stay separate from the Markdown source. Managed readers cannot
+invoke Delete Chat on their selected main chat; family menus use a visible anchor.
+Picker metadata, card headers/details, child headers and family Inspector show
+the turn's accepted effort. Inherited effort uses its actual level, `default`
+reads “model default”, and models without effort controls omit it. The accepted
+model grant supplies legacy values; later follow-ups update current surfaces
+while older send receipts retain their own turn's effort. This is display metadata
+derived from the policy stream's saved fields, without new journal writes.
+Original sub-agents reached from a fork remain read-only through tab restore,
+Inspector navigation and source links. Their copied starts reserve numbers before
+the fork’s own agents, without granting steering or charging the fork.
+Unsent side drafts remain memory-only. No steering, model-visible or journal
+contract changes accompany this UI amendment.
+
 **Status:** Proposed; implementation has not started. Two owner choices are recorded at the end.
 
 **Date:** 2026-10-14

@@ -24,6 +24,7 @@ def validate_schema(schema, name="tool parameters"):
                 name + " union must describe at least one object branch")
         for branch in branches:
             validate_schema(branch, name)
+        # The shared object constraints still apply alongside the one matching branch.
         schema = {key: value for key, value in schema.items() if key != "oneOf"}
         if not schema:
             return
@@ -51,6 +52,7 @@ def validate_arguments(arguments, schema):
             except FixtureContractError:
                 pass
         require(matches == 1, "tool call must match exactly one schema branch")
+        # The shared object constraints still apply alongside the one matching branch.
         schema = {key: value for key, value in schema.items() if key != "oneOf"}
         if not schema:
             return

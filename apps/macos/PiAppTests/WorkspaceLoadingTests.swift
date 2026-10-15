@@ -67,6 +67,44 @@ final class WorkspaceLoadingTests: XCTestCase {
         try await close(model)
     }
 
+    @MainActor func testLargeCachedChatReopenReadsNoJournalBodies() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("large.jsonl")
+        try journal(20_001, text: String(repeating: "Generated ordinary reply. ", count: 48), path: path)
+        let bytes = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: path.path)[.size] as? Int)
+        XCTAssertGreaterThan(bytes, 20_000_000)
+        let model = try await fixture(root: root, path: path)
+        let coldStart = ProcessInfo.processInfo.systemUptime
+        await model.select("a")
+        let cold = (ProcessInfo.processInfo.systemUptime - coldStart) * 1_000
+        let display = try XCTUnwrap(model.selected), messages = display.messages.map(\.id)
+        model.historyViewportReady("a", generation: display.presentationGeneration)
+        XCTAssertEqual(display.historyState, .ready)
+        let scans = await model.history.subagentScannedBytes
+        let indexed = await model.history.indexedBytes, decoded = await model.history.decodedRecords
+        let acceptance = await model.history.acceptanceScannedBytes
+        var timings: [Double] = []
+        for _ in 0..<5 {
+            await model.select("b")
+            let start = ProcessInfo.processInfo.systemUptime
+            await model.select("a")
+            timings.append((ProcessInfo.processInfo.systemUptime - start) * 1_000)
+            model.historyViewportReady("a", generation: display.presentationGeneration)
+            XCTAssertTrue(model.selected === display)
+            XCTAssertEqual(display.messages.map(\.id), messages)
+            XCTAssertEqual(display.historyState, .ready)
+        }
+        let extraScans = await model.history.subagentScannedBytes - scans
+        let extraIndexed = await model.history.indexedBytes - indexed
+        let extraDecoded = await model.history.decodedRecords - decoded
+        let extraAcceptance = await model.history.acceptanceScannedBytes - acceptance
+        XCTAssertEqual(extraScans, 0, "Cached revisits must not rescan delegation plans, including chats without agents")
+        XCTAssertEqual(extraIndexed, 0); XCTAssertEqual(extraDecoded, 0); XCTAssertEqual(extraAcceptance, 0)
+        XCTAssertTrue(model.hosts.isEmpty)
+        print("PERF cached-chat bytes=\(bytes) rows=20001 coldMs=\(cold) reopenMs=\(timings) extraSubagentBytes=\(extraScans) extraIndexedBytes=\(extraIndexed) extraDecoded=\(extraDecoded) extraAcceptanceBytes=\(extraAcceptance)")
+        try await close(model)
+    }
+
     @MainActor func testChangedJournalReloadsWhenReturningToCachedTab() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let path = root.appendingPathComponent("history.jsonl"); try journal(120, path: path)

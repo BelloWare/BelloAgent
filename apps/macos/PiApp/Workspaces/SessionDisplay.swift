@@ -40,6 +40,8 @@ import Combine
 /// one: which version, the rows read of it so far, and the tasks their turn
 /// cards read.
 struct TranscriptVersionView: Equatable, Sendable {
+    /// In-memory ownership of this version read, including same-index retries.
+    var loadID = UUID()
     /// The latest version's message: the row of `messages` whose switcher was used.
     var latestID: String
     /// The version shown, 1-based, of `count`; every version's message id,
@@ -87,6 +89,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     var agentCoordination: [String: AgentCoordinationEntry] = [:] { didSet { if agentCoordination != oldValue { publishTranscript() } } }
     @Published var heldAgentChildren: Set<String> = [] { didSet { if heldAgentChildren != oldValue { publishTranscript() } } }
     var childSummaries: [String: SubagentSummary] = [:] { didSet { if childSummaries != oldValue { publishTranscript() } } }
+    var originalSubagentAvailability: [String: OriginalSubagentAvailability] = [:] { didSet { if originalSubagentAvailability != oldValue { publishTranscript() } } }
+    var subagentNumbers: [String: Int] = [:] { didSet { if subagentNumbers != oldValue { publishTranscript() } } }
+    var subagentEfforts: [String: SubagentEffort] = [:] { didSet { if subagentEfforts != oldValue { publishTranscript() } } }
     @Published var familyWaiting = false { didSet { if familyWaiting != oldValue { publishTranscript() } } }
     @Published var agentInboxPending = 0 { didSet { if agentInboxPending != oldValue { publishTranscript() } } }
     @Published var delegatedTask: String?
@@ -249,7 +254,7 @@ struct TranscriptVersionView: Equatable, Sendable {
         // latest one and everything after it.
         if let version = versionView {
             let latest = Self.hidingBranchMarkers(messages)
-            if let at = latest.firstIndex(where: { $0.id == version.latestID }) { return Array(latest[..<at]) + version.presented }
+            if let at = latest.firstIndex(where: { $0.id == version.latestID }) { return (Array(latest[..<at]) + version.presented).map(presentAgentState) }
         }
         var rows = Self.hidingBranchMarkers(messages).map(presentAgentState)
         if isManagedSubagent, messages.isEmpty, let delegatedTask, !delegatedTask.isEmpty {

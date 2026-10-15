@@ -201,7 +201,8 @@ import AppKit
             let labels = inspectorColumn([inspectorText(group.title, font: .systemFont(ofSize: 12, weight: .medium)), inspectorText(group.detail, font: PiKit.Font.micro, color: .piInkTertiary)], spacing: 1)
             let pick = PiKit.SelectableRow(content: labels, selected: selected && !expanded, glide: glide) { [weak inspector] in inspector?.select(.subagent(group.id)) }
             pick.setAccessibilityIdentifier("inspector-subagent-" + group.id); pick.setAccessibilityLabel(group.title + ", " + group.detail)
-            let disclosure = InspectorDisclosure(expanded: expanded, symbolSize: 9, width: 18, height: 40, label: "Sub-agent requests") { [weak inspector] in inspector?.toggle(group.id) }
+            pick.toolTip = group.title + " · " + group.detail
+            let disclosure = InspectorDisclosure(expanded: expanded, symbolSize: 9, width: 18, height: 40, label: group.title + " requests") { [weak inspector] in inspector?.toggle(group.id) }
             return InspectorInset(inspectorRow([.view(disclosure, .fixed(18)), .view(pick, .fill)], spacing: 2), insets: NSEdgeInsets(top: 0, left: indent, bottom: 0, right: 0))
         case .overview(let subtitle, let selected): return navigation(symbol: "chart.bar.xaxis", title: "Overview", subtitle: subtitle, selected: selected) { [weak inspector] in inspector?.select(.overview) }
         case .next(let selected): return navigation(symbol: "square.stack.3d.up", title: "Next request", subtitle: "What the model receives next", selected: selected) { [weak inspector] in inspector?.select(.nextRequest) }

@@ -23,6 +23,7 @@ struct SidebarChatRowState: Equatable {
     /// Whether any bulk selection is up at all; it changes what the row's
     /// right-click menu offers.
     var anyMarked = false
+    var familyActivity = FamilyActivity()
     var unreadCount = 0
     var unreadFailure = false
     /// Only the reader's Mark as Unread makes it unread: the dot says
@@ -129,7 +130,7 @@ extension WorkspaceModel {
     /// A row's second line while it has no figures to show: its state, and the
     /// connection it runs on when there is more than one to tell apart.
     func sidebarRowSubtitle(_ chat: ChatRecord, namesConnection: Bool) -> String {
-        if let owner = chat.delegation?.budgetOwnerSessionID { return "Sub-agent · " + (record(owner)?.title ?? "Parent unavailable") }
+        if let owner = chat.delegation?.budgetOwnerSessionID { return chat.subagentName + " · " + (record(owner)?.title ?? "Parent unavailable") }
         let state = chat.isArchived ? "Archived" : chat.imported ? "Imported" : chat.toolMode == ChatRecord.readOnlyTools ? "Read-only" : "Ready"
         guard namesConnection, !chat.imported, let connection = profiles.first(where: { $0.id == chat.profileID }) else { return state }
         return state + " \u{b7} " + connection.name
@@ -159,7 +160,7 @@ extension WorkspaceModel {
         }
         let all = SidebarSessionPresentation.filtered(
             entries(archived: archived, collapsed: filtering ? [] : folded), by: filter,
-            contentMatches: filter.isEmpty ? [] : flat ? sidebarFlatMatches(query: filter) : sidebarContentMatches)
+            contentMatches: filter.isEmpty ? [] : flat ? sidebarFlatMatches(query: filter) : sidebarContentMatches, includingMainChats: showAllMatches)
         let shown = sidebarShownRoots(groupID)
         let selection = Set([focusedSessionID, selectedID].compactMap { $0 })
         let visible = SidebarSessionPresentation.page(all, roots: shown, selected: selection, filtering: filtering)
@@ -180,12 +181,13 @@ extension WorkspaceModel {
         rows.reserveCapacity(visible.count)
         for entry in visible {
             if let owner = entry.chat.delegation?.budgetOwnerSessionID, entry.chat.delegationIssue == nil, record(owner) != nil, !filtering, !subagentGroupExpanded(owner) { continue }
-            let chat = entry.chat, side = sides[chat.id]
+            let chat = entry.chat
             let selected = focusedSessionID == chat.id || selectedID == chat.id && focusedSessionID == nil
-            var row = SidebarGroupRow(chat: chat, state: SidebarChatRowState(
+            let row = SidebarGroupRow(chat: chat, state: SidebarChatRowState(
                 selected: selected,
                 marked: isSessionMarked(chat.id),
                 anyMarked: anyMarked,
+                familyActivity: chat.isSubagent || entry.isFamilyChild ? .init() : conversationFamily(chat.id).activity,
                 unreadCount: unreadOutputCount(sessionID: chat.id),
                 unreadFailure: unreadFailure(sessionID: chat.id),
                 markedUnreadOnly: markedUnreadOnly(sessionID: chat.id),
@@ -196,27 +198,12 @@ extension WorkspaceModel {
                 projectTagFullName: projectTags[chat.workspaceID]?.fullName,
                 topicTag: topicTag(project: chat.workspaceID, topic: chat.topicID),
                 liveIdentity: displays[chat.id].map(ObjectIdentifier.init),
-                hasSide: entry.hasChildren || side?.kept == false,
+                hasSide: false,
                 expanded: !folded.contains(chat.id),
                 draggable: projectDraggable && !chat.isUtilityChat && !chat.isSubagent,
                 subtitle: sidebarRowSubtitle(chat, namesConnection: namesConnection),
                 available: ChatRowMetrics.availableWidth(sidebar: sidebarWidth, indent: indent, depth: entry.depth),
                 indent: indent + CGFloat(min(entry.depth, 3) * 14)))
-            if let side, !side.kept, !folded.contains(chat.id) {
-                row.side = SidebarSideRowState(
-                    id: side.id,
-                    title: side.kept ? (record(side.id)?.title ?? side.title) : "Side conversation",
-                    kept: side.kept,
-                    selected: focusedSessionID == side.id,
-                    unreadCount: unreadOutputCount(sessionID: side.id),
-                    liveIdentity: displays[side.id].map(ObjectIdentifier.init),
-                    available: ChatRowMetrics.availableWidth(sidebar: sidebarWidth, indent: indent + 14, depth: entry.depth),
-                    indent: indent + CGFloat(14 + min(entry.depth, 3) * 14),
-                    recency: recencyRank(side.id),
-                    projectTag: projectTags[side.workspaceID]?.title,
-                    projectTagFullName: projectTags[side.workspaceID]?.fullName,
-                    topicTag: topicTag(project: side.workspaceID, topic: side.topicID ?? chat.topicID))
-            }
             rows.append(row)
         }
         var empty: String?
@@ -251,17 +238,17 @@ extension WorkspaceModel {
         let entries = sidebarEntries(in: project.id, topicID: topic.id, archived: false, collapsed: [])
         let expanded = topicIsExpanded(topic) || !filter.isEmpty
         // A topic whose own title matches lists all of its chats.
-        let inner = topic.title.localizedCaseInsensitiveContains(filter) ? "" : filter
+        let includesMainChats = !filter.isEmpty && topic.title.localizedCaseInsensitiveContains(filter)
         let header = TopicHeaderState(projectID: project.id, topicID: topic.id, title: topic.title, trusted: project.trusted,
                                       expanded: expanded, filtering: !filter.isEmpty,
                                       hasUnread: entries.contains { unreadOutputCount(sessionID: $0.id) > 0 || unreadFailure(sessionID: $0.id) },
-                                      chats: entries.count)
+                                      chats: entries.lazy.filter { !$0.chat.isSubagent && !$0.isFamilyChild }.count)
         guard expanded else { return TopicGroupContents(header: header, expanded: false, contents: SidebarGroupContents()) }
-        let archive = sidebarArchiveContents(in: project, topicID: topic.id, includesArchive: includesArchive, filter: inner,
-                                             showAllMatches: !filter.isEmpty, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
+        let archive = sidebarArchiveContents(in: project, topicID: topic.id, includesArchive: includesArchive, filter: filter,
+                                             showAllMatches: includesMainChats, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
         // The topic's archived chats stand where "No chats yet" would.
-        let contents = sidebarGroupContents(in: project, topicID: topic.id, archived: false, filter: inner, showEmpty: archive == nil,
-                                            showAllMatches: !filter.isEmpty, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
+        let contents = sidebarGroupContents(in: project, topicID: topic.id, archived: false, filter: filter, showEmpty: archive == nil,
+                                            showAllMatches: includesMainChats, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
         return TopicGroupContents(header: header, expanded: expanded, contents: contents, archive: archive)
     }
 }

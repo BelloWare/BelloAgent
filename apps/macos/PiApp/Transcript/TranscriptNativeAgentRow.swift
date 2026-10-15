@@ -6,8 +6,11 @@ struct AgentMessagePresentation: Equatable {
     struct Event: Equatable {
         var childID: String, turn: Int, author: String, kind: String, task: String, text: String
         var eventID: String?, replyTo: String?
+        var number: Int? = nil
+        var note: String? = nil
+        var childName: String { SubagentLabel.name(number) }
         var title: String {
-            let name = author == "parent" ? "Parent" : "Sub-agent"
+            let name = author == "parent" ? "Parent → " + childName : childName
             return name + (task.isEmpty ? "" : " · " + task) + " · turn \(turn)"
         }
         var label: String {
@@ -34,20 +37,23 @@ struct AgentMessagePresentation: Equatable {
                   let author = row["author"]?.string ?? metadata["author"]?.string, ["parent", "subagent"].contains(author),
                   let child = row["child_id"]?.string ?? metadata["childId"]?.string,
                   let turn = row["turn"]?.nonnegativeInteger ?? metadata["turn"]?.nonnegativeInteger, turn > 0 else { return nil }
-            var text = row["text"]?.string ?? ""
+            let text = row["text"]?.string ?? ""
             let result = row["result"]?.object
-            if result?["text_truncated"]?.bool == true || result?["result_truncated"]?.bool == true { text += "\n\nExcerpt — open the sub-agent for the saved response." }
-            if let error = result?["error"]?.object?["message"]?.string { text += "\n\n" + error }
+            var notes: [String] = []
+            if result?["text_truncated"]?.bool == true || result?["result_truncated"]?.bool == true { notes.append("Excerpt — open the sub-agent for the saved response.") }
+            if let error = result?["error"]?.object?["message"]?.string { notes.append(error) }
             return Event(childID: child, turn: turn, author: author, kind: row["kind"]?.string ?? "note",
                          task: row["task"]?.string ?? metadata["task"]?.string ?? "", text: text,
                          eventID: row["event_id"]?.string ?? metadata["eventIds"]?.array?.first?.string,
-                         replyTo: row["reply_to"]?.string ?? metadata["replyTo"]?.string)
+                         replyTo: row["reply_to"]?.string ?? metadata["replyTo"]?.string, number: message.agentNumbers?[child],
+                         note: notes.isEmpty ? nil : notes.joined(separator: "\n\n"))
         }
     }
 }
 
 @MainActor final class TranscriptNativeAgentRow: TranscriptNativeMessageRow {
     private let column = ShellStack(.vertical, spacing: 10)
+    private var prose: [String: TranscriptAgentMarkdown] = [:]
     override class func message(of item: TranscriptItem) -> TranscriptMessage? {
         guard case .message(let row) = item, row.kind == "agent_message" || row.nativeAgentDelivery != nil else { return nil }
         return row
@@ -60,35 +66,39 @@ struct AgentMessagePresentation: Equatable {
     override func configure() {
         let presentation = AgentMessagePresentation(message), actions = inputs.actions, id = message.id
         var items: [ShellItem] = []
-        for event in presentation.events {
+        var retained: [String: TranscriptAgentMarkdown] = [:]
+        for (index, event) in presentation.events.enumerated() {
             let heading = PiKit.WrappedText(event.title, font: PiKit.Font.caption, color: .piInkSecondary)
-            let words = AgentDeliveryText(event.text, environment: inputs.environment)
+            heading.toolTip = event.title
+            let key = event.eventID ?? "\(event.childID):\(event.turn):\(event.kind):\(index)"
+            let words = prose[key] ?? TranscriptAgentMarkdown(label: "", identity: key)
+            words.accessibilityName = event.label + " from " + event.title
+            words.changed = { [weak self] in self?.column.invalidateIntrinsicContentSize(); self?.column.needsLayout = true; self?.owner?.contentSizeChanged() }
+            words.update(event.text, environment: inputs.environment, actions: actions)
+            words.markdown.textView.setAccessibilityLabel(words.accessibilityName)
+            retained[key] = words
             let badge = PiKit.Badge(text: event.label, tone: event.kind == "blocker" ? .danger : .neutral)
             let inspect = PiKit.Button("Inspect delivery", style: .ghost, compact: true) { actions.inspect(id) }
-            let source = PiKit.Button(event.author == "parent" ? "Source in parent" : "Source in sub-agent", symbol: "arrow.up.right", style: .ghost, compact: true) {
+            let source = PiKit.Button(event.author == "parent" ? "Source in parent" : "Source in " + event.childName, symbol: "arrow.up.right", style: .ghost, compact: true) {
                 actions.openAgentSource?(.init(childID: event.childID, turn: event.turn, eventID: event.eventID))
             }
             source.setAccessibilityIdentifier("agent-message-source")
-            let body = ShellStack(.vertical, spacing: 8, [.view(heading, .fill), .view(badge), .view(words, .fill), .view(ShellStack(.horizontal, spacing: 8, [.view(source), .view(inspect)]))])
+            source.toolTip = "Source of " + event.title; source.setAccessibilityLabel(source.toolTip)
+            inspect.toolTip = "Inspect delivery for " + event.title; inspect.setAccessibilityLabel(inspect.toolTip)
+            let buttons = PiKit.FlowView(); buttons.spacing = 8
+            buttons.addSubview(source); buttons.addSubview(inspect)
+            var content: [ShellItem] = [.view(heading, .fill), .view(badge), .view(words, .fill)]
+            if let note = event.note { content.append(.view(PiKit.Note(note, tone: .neutral), .fill)) }
+            content.append(.view(buttons, .fill))
+            let body = ShellStack(.vertical, spacing: 8, content)
             items.append(.view(PiKit.card(body, padding: 12, sunken: true), .fill))
         }
         if items.isEmpty { items = [.view(PiKit.Note("Agent message attribution is unavailable. Inspect the saved row for details.", tone: .neutral), .fill)] }
         column.items = items
+        prose = retained
         setAccessibilityLabel(presentation.events.map { $0.title + " · " + $0.label }.joined(separator: "; "))
+        toolTip = accessibilityLabel()
     }
     override func contentHeight(width: CGFloat) -> CGFloat { column.height(forWidth: max(1, width - 16)) }
     override func place(in rect: CGRect) { column.frame = CGRect(x: rect.minX + 8, y: rect.minY, width: max(1, rect.width - 16), height: rect.height) }
-}
-
-/// Selectable delivery text with width-dependent height inside a Pi card.
-@MainActor private final class AgentDeliveryText: NSView, PiKit.WidthSizing {
-    let words = TranscriptPlainTextView()
-    init(_ text: String, environment: TranscriptRowEnvironment) {
-        super.init(frame: .zero); addSubview(words)
-        words.update(text: text, face: TranscriptCardFaces.note, environment: environment, swiftUILines: true)
-    }
-    required init?(coder: NSCoder) { nil }
-    override var isFlipped: Bool { true }
-    func height(forWidth width: CGFloat) -> CGFloat { words.exactHeight(width: max(1, width)) }
-    override func layout() { super.layout(); words.frame = bounds }
 }

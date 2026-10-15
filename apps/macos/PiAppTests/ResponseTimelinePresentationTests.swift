@@ -2,6 +2,17 @@ import XCTest
 @testable import PiApp
 
 final class ResponseTimelinePresentationTests: XCTestCase {
+    func testRequestDetailsOmitInternalOrderingAndExplainMissingResponseDetails() throws {
+        var reply = TranscriptMessage(id:"reply",role:"assistant",text:"Saved answer",thinking:"Reasoning",stopReason:"stop")
+        func detail() throws -> TranscriptMessage {
+            try XCTUnwrap(TaskTranscriptPlan.items([reply],lifecycle:nil).compactMap { item in
+                if case .message(let row) = item, row.kind == "requestInfo" { return row }; return nil
+            }.first)
+        }
+        XCTAssertNil(try detail().detail, "Older replies need no internal ordering disclaimer")
+        reply.responseTimeline = parts(); reply.responseTimeline?.omittedEvents = 12
+        XCTAssertEqual(try detail().detail, "Some response details are unavailable")
+    }
     private func parts() -> ResponseTimeline {
         var timeline=ResponseTimeline()
         for (i,kind) in ["text","reasoningSummary","text","toolArguments"].enumerated() {

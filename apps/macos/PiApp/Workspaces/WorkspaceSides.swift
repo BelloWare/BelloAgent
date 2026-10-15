@@ -360,12 +360,16 @@ extension WorkspaceModel {
     func showSide(_ id: String, revealInSidebar: Bool = true) async {
         guard !installPreparing, let child = chats.first(where: { $0.id == id }), !child.isSubagent, let parentID = child.parentSessionID, record(parentID) != nil, !child.imported else { return }
         if let shown = sides[parentID], shown.id == id { await selectSide(id, revealInSidebar: revealInSidebar); return }
+        tabs.showSide()
+        let paneIntent = tabs.navigationRevision, selection = selectionRevision, changesParent = selectedID != parentID
+        let revision = messageNavigationRevision, pageChange = page == .chats ? 0 : 1
         if let shown = sides[parentID], shown.pending, !(await discardPendingSide(shown)) { return }
+        guard !Task.isCancelled, messageNavigationRevision == revision, tabs.navigationRevision == paneIntent, selectionRevision == selection else { return }
         if let shown = sides[parentID], !shown.kept || shown.keeping { error = "Wait for the current side to finish opening before switching."; return }
         if revealInSidebar { quietSidebarReveal = [] }
         // This side is the one asked for, not the one the parent last showed.
         if selectedID != parentID { await passingThrough(parentID) { await select(parentID, revealInSidebar: revealInSidebar, reopensSide: false, focusesComposer: false) } }
-        guard selectedID == parentID else { return }
+        guard !Task.isCancelled, messageNavigationRevision == revision + (changesParent ? 1 + pageChange : 0), tabs.navigationRevision == paneIntent, selectionRevision == selection + (changesParent ? 1 : 0), selectedID == parentID else { return }
         let view = mountSide(child, beside: parentID)
         page = .chats; focusedSessionID = id
         if revealInSidebar { revealProjectChat(child) }
@@ -377,9 +381,7 @@ extension WorkspaceModel {
         if let previous = sides[parentID] { displays[previous.id]?.presentation.cancel() }
         let view = displays[child.id] ?? SessionDisplay(id: child.id); view.used = Date(); displays[child.id] = view
         adoptContextReading(view, item: child)
-        let cached = view.hasPresentedRows
-        view.presentation.begin(); view.presentationGeneration = view.presentation.generation
-        view.historyState = .loading; view.refreshingCachedRows = cached; view.draftReady = false
+        view.beginHistoryPresentation(); view.draftReady = false
         view.browsingHistory = true; view.publishTranscript()
         var info = SideRecord(id: child.id, parentID: parentID, workspaceID: child.workspaceID, profileID: child.profileID, title: child.title, kept: true, model: child.model, thinkingLevel: child.thinkingLevel, contextWindow: child.contextWindow, maxOutputTokens: child.maxOutputTokens, modelOutputLimit: child.modelOutputLimit, outputBudgetVersion: child.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: child)
@@ -390,11 +392,15 @@ extension WorkspaceModel {
     /// Restores a saved child's draft, anchor, pending intents and history into
     /// its display, mirroring what selecting a chat does for the main pane.
     func loadSideDisplay(_ child: ChatRecord, view: SessionDisplay) async {
-        let id = child.id, generation = view.presentationGeneration
+        let id = child.id, generation = view.presentationGeneration, navigation = transcriptNavigation(child.id)
+        let paneIntent = tabs.navigationRevision
         let task = Task { [weak self, weak view] in
             guard let self, let view else { return }
-            @MainActor func current() -> Bool { !Task.isCancelled && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentationGeneration == generation }
+            defer { view.finishHistoryPresentation(generation); self.resumeVisibleReaders() }
+            @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.tabs.navigationRevision == paneIntent && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentationGeneration == generation }
             do {
+                await self.readInheritedSubagents(child, current: current)
+                guard current() else { return }
                 let oldDraft = view.savedDraft
                 let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded && view.scrollAnchor == nil)
                 guard current() else { return }
@@ -415,7 +421,9 @@ extension WorkspaceModel {
                 guard current() else { return }
                 self.adoptInitialHistory(page, into: view)
                 if self.opened.contains(id) { self.refresh(id) }
-            } catch is CancellationError { }
+            } catch is CancellationError {
+                if current() { view.historyState = .failed("History reading was interrupted. Try loading it again.") }
+            }
             catch { if current() { view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false; view.notice = error.localizedDescription } }
         }
         view.presentation.navigation = task

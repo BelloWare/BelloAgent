@@ -1,5 +1,214 @@
 # Sub-agents in Bello Agent — Design v2
 
+## 0.1.128 display update — owner decision, 2026-10-15
+
+This supersedes the sidebar groups, hover sides panel and main-pane child navigation
+described below (including the owner's later addition for ordinary sides).
+Normal Topics/Flat, pinned and archived lists omit sides and managed children.
+Orphans and invalid cross-project side links remain ordinary main chats. Search
+still finds saved sides and children, labelled with their parent; managed children
+use “#N · description — in parent title”. Child unread/draft behavior is unchanged.
+
+The main conversation column reserves a 34-point row for one trailing Pi pill,
+**2 sides · 3 agents**, omitting absent parts and hiding when neither exists.
+Its quiet symbol becomes one spinner during activity. It remains left of the divider
+when the right pane opens. The popover aligns to the pill’s trailing edge and stays
+within the owning window. A Sides section lists open/kept sides, status (working,
+new reply, failed, saved or draft), existing spend and New Side.
+Each compact row opens on click or Return; arrows move between rows. Sub-agents
+follow in stable number order with status, model, effective effort, spend and a trailing Stop icon
+for running children. Rows use at most two lines; six fit without scrolling at
+1240×800. New Side shares their title inset. Spend uses the existing cents/sub-cent
+money formatter; the reported-usage caveat is in the tooltip. Running, queued and stopping counts are distinct.
+Section labels use the small uppercase style. New Side is an accent action with
+a plus icon and the same hover/pressed feedback and title alignment as the rows.
+An open picker remeasures its document when family membership changes.
+Stop All uses a custom Pi confirmation; Inspect Family uses the existing Inspector.
+View, Conversation and chat menus offer Sides and Agents. Tab/arrow keys and complete
+VoiceOver labels provide access. The parent sidebar row has one leading spinner and
+a passive “N working” badge (or “N queued” when only queued work remains); its tooltip
+and VoiceOver spell out working sides and running/queued/stopping sub-agents.
+
+The main picker includes every saved descendant as a depth-first tree: sides,
+reply forks and their sub-agents, with 14 points of indentation per parent. Each
+row stays at most two lines; archived branches remain available and are labelled
+Archived. A saved side's delegation family stays its own: numbers and Stop
+requests retain that actual owner. The main column and popped-out child picker
+resolve the complete original family; the current child remains highlighted.
+Opening a nested side uses its existing pane beside its immediate parent, without
+rewriting ancestry, and that main column still offers the complete family tree.
+Search retains all saved descendants and names their immediate parent.
+
+Sides keep their existing pane, draft and persistence paths. New Side reuses an
+unsent draft; no draft, chat, intent or journal is persisted until its first send.
+The hover panel, edge handle, pin state and former gallery are removed. Older saved
+selections containing the retired pin key remain readable; kept-side restoration is
+unchanged. Spend here reads existing usage and performs no accounting.
+At narrow side widths, a new draft's header puts its controls below the title and
+uses a compact Draft badge, keeping the main-column pill and divider clear.
+
+Children open as read-only `SubagentTab`s in the file/Git pane, without a human
+composer. Identity keys prevent duplicate tabs across pane/window moves and restore
+them after relaunch. Reopening revalidates saved history even if the hidden reader
+was already ready and its helper has expired. Loading completion never takes focus;
+Back to Parent and later tab choices win. Visibility follows the host’s actual side
+availability. Closing readers applies the existing eight-display eviction policy,
+protecting running sessions and open tabs. Cold readers do not start a helper.
+
+### Reader navigation ownership
+
+**Publication and recovery are separate.** Retiring an intent only prevents its
+operation from publishing. A still-selected reader that is visible again and
+still needs initial content restarts under a fresh token; cancellation must never
+leave it dormant or blank. Visibility transitions and canceled-load cleanup both
+reconcile that obligation, without changing focus or replaying an obsolete reveal.
+Recovery applies to a presentation that actually began loading, not an unrelated
+in-memory draft or live display. It waits for a newer explicit destination to finish
+and completes any still-pending draft initialization without replacing that destination.
+A retained Find query suspends during retirement and resumes when visible,
+without repeating its automatic first-match reveal. Re-clicking the selected
+tab/version is a no-op. An independent window's tab
+selection does not change the main pane's intent. Pane revisions describe only
+actual main-pane selections, not all tab-host activity.
+
+A hosted child has one UUID navigation token, retained across pane/window moves.
+Open/header validation, attachment, reload, history edges/position reads, versions,
+Find pages and reveals capture it before awaiting and recheck before publishing.
+Back, a new explicit open/reveal/Home/version/Latest, a real hide or close retires
+it. An unrelated main selection or page does not retire a visible child window.
+Changing keyboard focus alone never retires a content operation. Publication
+checks the reader token and actual visibility, never `focusedSessionID`. A Source
+reveal into the main/side transcript carries both its originating reader token
+and the destination's main intent; it may finish after focus moves, without
+refocusing either window. Focus-only attachment callbacks still preserve newer
+responder choices; they do not decide whether history may publish.
+Find's own match reveals share the query's reader intent; its controller separately
+cancels old queries and match requests. Only an unfinished external child opening
+is superseded by a newer external destination before it has attached.
+
+Main/ordinary-side reads use the workspace navigation revision, plus presentation
+identity and the selection/pane intent while opening. Selection, a page change,
+or a new explicit reveal retires that main intent. A Source action carries its
+originating child token through the destination's version lookup, anchor read,
+version pages and final reveal, together with the destination's token. Embedded
+Back therefore cancels the whole chain. Source and delivery actions that open the
+owning ordinary side replace an embedded child and transfer ownership to the main
+pane before awaiting its load; a popped-out origin remains independent. A destination
+already selected in the main column stays there, including a fork with saved
+ancestry or a remembered side slot. Owned-agent Open and Source resolve this
+selected-owner case before looking up side ancestry. The opening chooses focus;
+publishing a delivery after its side loads never overwrites a newer focus choice. Neither a
+chain's internal reveal nor its version switch creates a fresh intent.
+
+`transcriptShows` decides reveal visibility: Chats with the selected main or the
+actual shown Side, or `subagentTabIsShown` for a hosted reader. The latter uses
+`shownTab(sideAvailable:)`; only embedded readers require Chats. Sidebar hits also
+retain the search/open identity across awaits. Presentation loads may fill their
+still-owned mounted slot before viewport readiness; background metadata and
+standalone Inspector/search-copy reads use their own task scopes and do not scroll
+or focus a transcript. Pure storage/helper readers return data; their UI callers
+own and validate navigation. Canceled reads clear only their own loading flags,
+and reopening resets both boundaries while retaining reusable cursors.
+
+Rendered Find reads complete records up to the journal size captured at the start
+of each search page. A normal append, including a partially written last record,
+does not fail that read. A changed stamp requires the captured prefix's complete
+SHA-256 to match; truncation, replacement and damaged completed records still fail.
+The hash and offset caches are bounded together, and all I/O, hashing and Markdown
+projection remain off the main actor. Search keeps the captured live-text overlay;
+later pages/searches may see newly committed records. Source Copy retains its
+strict revision guard. These storage bounds do not retire any reader token.
+
+Native responder transitions update command focus. Deferred attachment and read
+completion never refocus a reader. Show in Chat requires a successful, current
+opening even if Back left the embedded reader visible.
+An original-reference reader's Back explicitly restores Chats before focusing its
+fork, including when that fork remains selected behind Reports or Background.
+
+Conversation menu validation and dispatch resolve the active reader of the key
+child window, including while the main window shows Reports. Embedded readers use
+native responder ancestry. Find, Previous/Next, Stop, Latest, Search and Copy,
+folding and Inspector target that reader; managed children cannot Delete Chat or
+use human composer commands. Native sheets and keyboard popovers retain their
+command boundaries.
+
+Effort is display metadata rebuilt from the accepted model grant and persisted
+turn records, with live accepted summaries taking precedence. The picker, card
+header/details, child header and family Inspector show the actual level (such as
+“high”), including when inherited. “default” reads as “model default”; models with
+an empty effort capability list show no effort. Unknown legacy capabilities do
+not invent a model-default label. The pane's comparison state includes resolved
+effort, so an accepted summary arriving after the child snapshot refreshes the
+header even when its turn and status are unchanged. Follow-ups update the current
+child's effort; older send receipts retain their own turn's value. No journal or model-facing
+text is changed by this presentation.
+
+Saved receipt effort comes from `nativeSubagent.effort`, then the output envelope,
+before legacy summary/grant fallback. The expanded card presents Model, Effort,
+Tools, Requests, Time, Cost and Tokens in a compact Pi label/value grid using the
+normal UI font. Cost uses the shared money formatter; only unknown request costs
+add a quiet note. Copy actions belong to Task and Result, not the metadata grid.
+
+Embedded Back to Parent focuses the existing parent without changing its draft,
+version or reading position. Source links still reveal their issuing message/version.
+Popped-out children have the same picker, highlighting the current child; only the
+active tab sets the native window title. In-chat Find/Next/Previous, Inspector Find
+and Stop shortcuts route to the hosted child, ignoring Caps Lock and excluding
+sheets and other popups.
+A child window keeps those commands and Back when the main window shows Reports;
+an embedded reader remains covered with its main chat.
+Delete Chat resolves the focused conversation and is disabled for managed readers;
+it never falls back to deleting the selected main chat. An embedded reader's Sides
+and Agents menu addresses the visible main-column picker (disabled if that main
+has no family). Its own window continues to address its actual delegation family.
+Saved-side actions use that same visible-picker route, including sides with their
+own delegation family; they never send a request to the hidden side header.
+
+Task and Result cards, typed parent/child deliveries, reports and the delegated
+task header share the assistant's cached native Markdown pipeline, including code
+highlighting, links, tables and quotes. Long prose starts with a 168-point preview;
+Show more/less preserves the reading position. Large sources parse away from the
+main thread and expanded native text is adopted in bounded batches. Find searches
+the rendered words and opens the matching preview before highlighting. Text
+selections use the ordinary assistant message's native copy path and pasteboard
+types, in folded previews and expanded views. Explicit Copy buttons retain the
+complete original Markdown, including text beyond a folded preview. The lead's
+round 16 scope decision replaces the earlier selection-to-source requirement;
+there is no agent-specific selection mapper. Error
+and truncation notices stay outside that source. Assistant link/image/HTML policy
+is unchanged, with no new network loads. Folding a finished turn still excludes
+all sub-agent content, and saved/model-facing text remains byte-for-byte unchanged.
+Find's initial query uses an app-only journal projection of the cached rendered
+agent prose, including unloaded rows, then opens matching cards/previews. Current
+streaming and unsaved display rows are searched off the main actor too; an
+abandoned journal record cannot be reintroduced as unsaved text. The retained-source
+search, Copy Conversation and helper search contract stay unchanged.
+Code-copy actions use the complete cached block even when its drawn preview ends
+partway through the fence. Hover and VoiceOver targets refresh together on expansion,
+folding and source changes, without laying out the undrawn code.
+
+Full identities retain **Sub-agent N · description**. Compact family/search/tab
+labels use **#N · description**; tabs truncate at the tail and native titles,
+tooltips and VoiceOver retain the full numbered identity. Finished collapsed turns
+show only the main response; expanding restores every original row. Numbers and
+filtering remain presentation-only: no model-visible text, permission, tool, capture,
+journal or accounting contract changes. Family membership and counts are cached at
+metadata/activity boundaries; views never derive them from transcripts.
+
+Coordination and discovery reserve ordinals for every unique accepted start,
+including inherited starts in a fork. Only owned starts admit message/delivery
+links or Stop holds; reserving a number never grants authority over an original.
+Family menu validation and dispatch require the visible main picker on Chats,
+or the active reader's independent window. Reports and Background have no main
+picker. An original-reference reader labels Back with its destination fork title,
+including the complete destination in the tooltip and VoiceOver. Its adjacent
+identity uses the compact `#N · description` so the number survives narrow panes.
+
+Transcript chrome omits reconstruction/order captions (legacy/canonical, delivery
+order and missing arrival timing). Work headers use their ordinary activity summary.
+Missing completion or saved text remains explicit in plain words, and Request
+details remains available. Prose, raw request evidence and saved data are unchanged.
+
 **Status:** Proposed implementation design, incorporating lead review  
 **Date:** 2026-10-13  
 **Source baseline:** `fb09bc70a257d1cc0f74644531d9ce32a26b58e9`  
@@ -1362,3 +1571,40 @@ Future implementation follows the repository’s commit/push workflow. This desi
 - Phase 2: only child journals use `pi-app.native.v2`. The derived `.meta` checkpoint version advances to 2 so it cannot omit delegation state; journal bytes are not migrated. An actual `v0.1.125` helper accepts the v1 parent and refuses the v2 child without writing it. The generated Xcode project also picks up phase 1's shared source and tests.
 - Phase 1: the shared `SubagentPolicy.enabled` constant is the single production rollout switch. There is no preference or IPC override. Model grants and origin types are shared source between the helper and app. Parent metadata keeps managed origin immutable across stale updates. The scheduling table now reflects the owner decisions in §15.
 - Base: `dev/a126-helper` already includes closing-session accounting; preserve and extend that implementation instead of reverting to the older lifecycle described in §4.5.
+
+### Forks: original sub-agents are read-only references (0.1.128)
+
+Inherited-plan discovery shares a bounded eight-journal revision cache, including
+empty plan sets for ordinary chats. Cached reopens check identity, size and change
+times without reading journal bodies. Full scans cache only an unchanged revision;
+appends, replacement and same-size rewrites invalidate it. Targeted scans never
+cache a partial plan set. Current project trust and original availability are
+still checked separately. Reusing an Inspector window replaces its provenance on
+every opening: a normal opening clears the fork context, restoring original-chat
+navigation and Fork from Here. Send menu validation uses the focused conversation
+record, including a memory-only side draft; managed/original readers remain read-only.
+
+Inherited receipts say “From the original chat”. Open reads the original child's
+validated journal in the existing side-pane tab, without attaching a helper. The
+tab and header name the original chat; Back focuses the fork. The fork picker puts
+inherited entries after its own agents in a separate “From the original chat”
+group. Their original owner remains authoritative; copied starts reserve ordinal
+slots before the fork's own new starts. New Side stays available in the fork's
+own picker scope. Both whole-chat `/fork` and Fork from here derive this cached
+index from persisted plans; sidebar ancestry is neither required nor evidence
+of delegation ownership. No new journal field is needed. Original project trust,
+reciprocal identities and file availability are checked before reading and after
+awaited validation. Missing originals remain visible as disabled entries with a reason.
+
+Original-reference Open resolves the saved turn and steering message/event through
+the same journal reader as an owned child. An explicit source-message target takes
+precedence. Header validation, opening, target lookup and reveal share the original
+reader's token and visibility checks; Back or hiding the reader retires the entire
+operation, while unrelated main-window focus leaves a visible reader's reveal intact.
+
+The original-reader mode survives tab moves and restore. It never grants Stop,
+send, follow-up, composer, helper-open or fork authority; Inspect Requests uses the
+existing read-only capture Inspector. No original journal, delegation, ledger or
+cost owner is changed. A tab opened this way stays read-only until closed, even if
+another navigation entry point reuses it. Family tree rows retain per-owner
+numbers and name non-main owners in secondary text, with faint per-depth guides.

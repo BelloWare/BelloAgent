@@ -8,7 +8,8 @@ struct AgentCoordinationEntry: Equatable, Sendable, Identifiable {
     var recipientID: String, recipientMessageID: String? = nil
     var disposition: String
     var sourceAttemptID: String? = nil, consumingAttemptID: String? = nil
-    var title: String { kind.replacingOccurrences(of: "_", with: " ").capitalized + " · turn \(turn)" }
+    var subagentNumber: Int? = nil
+    var title: String { SubagentLabel.name(subagentNumber) + " · " + kind.replacingOccurrences(of: "_", with: " ").capitalized + " · turn \(turn)" }
     var deliveryLabel: String {
         switch disposition {
         case "delivered": "Delivered"
@@ -21,6 +22,7 @@ struct AgentCoordinationEntry: Equatable, Sendable, Identifiable {
 struct AgentCoordination: Equatable, Sendable {
     var entries: [AgentCoordinationEntry] = []
     var heldChildren: Set<String> = []
+    var subagentNumbers: [String: Int] = [:]
 }
 
 extension HistoryReader {
@@ -30,6 +32,7 @@ extension HistoryReader {
         let cacheKey = ownerID + "|" + path.path
         if let cached = agentCoordinationCache[cacheKey], cached.fingerprint == fingerprint { return cached.value }
         var entries: [String: AgentCoordinationEntry] = [:], order: [String] = [], children: Set<String> = [], held: Set<String> = []
+        var numbers: [String: Int] = [:]
         func add(_ entry: AgentCoordinationEntry) {
             if entries[entry.id] == nil { order.append(entry.id) }
             entries[entry.id] = entry
@@ -37,8 +40,13 @@ extension HistoryReader {
         try subagentRecords(path) { row, line in
             if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == ownerID else { throw StoreError.invalidRecord } }
             if let plan = Self.subagentPlan(row), let raw = plan["origin"],
-               let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)), origin.link.valid,
-               origin.link.budgetOwnerSessionID == ownerID { children.insert(origin.link.childSessionID) }
+               let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)), origin.link.valid {
+                let id = origin.link.childSessionID
+                // Copied starts reserve their number without granting this
+                // fork ownership of the original child's messages or holds.
+                if numbers[id] == nil { numbers[id] = numbers.count + 1 }
+                if origin.link.budgetOwnerSessionID == ownerID { children.insert(id) }
+            }
             let data = row["data"]?.object ?? [:]
             switch row["customType"]?.string {
             case "pi-app.agent-operation.v1":
@@ -75,7 +83,9 @@ extension HistoryReader {
             }
             return true
         }
-        let value = AgentCoordination(entries: order.compactMap { entries[$0] }, heldChildren: held.intersection(children))
+        let value = AgentCoordination(entries: order.compactMap { id in
+            entries[id].map { value in var entry = value; entry.subagentNumber = numbers[entry.childID]; return entry }
+        }, heldChildren: held.intersection(children), subagentNumbers: numbers)
         if agentCoordinationCache.count >= 8 { agentCoordinationCache.removeAll(keepingCapacity: true) }
         agentCoordinationCache[cacheKey] = (fingerprint, value)
         return value

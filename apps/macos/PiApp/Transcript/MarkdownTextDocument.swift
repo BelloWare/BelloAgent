@@ -62,6 +62,8 @@ enum MarkdownInlineCodeAttribute: AttributedStringKey {
 /// One code block in the text. The same object stays with the block while it
 /// grows, so its characters keep equal attributes from token to token.
 final class MarkdownCodeMark: NSObject {
+    /// The complete copy target, which can outgrow a bounded preview's text.
+    /// Syntax highlighting retains its separate displayed `CodeReading.code`.
     var code: String
     var language: String?
     /// Where its panel begins, from the text's leading edge.

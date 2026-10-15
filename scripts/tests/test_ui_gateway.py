@@ -1,5 +1,6 @@
 """The UI gateway validates preserved history and checkpoints independent bytes."""
 import base64
+import copy
 import http.client
 import http.server
 import importlib.util
@@ -15,10 +16,10 @@ from unittest.mock import patch
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures/native"
 sys.path.insert(0, str(FIXTURES))
+from litellm_contract import FixtureContractError, validate_arguments, validate_schema
 spec = importlib.util.spec_from_file_location("ui_gateway", FIXTURES / "ui-gateway.py")
 gateway = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gateway)
-from litellm_contract import FixtureContractError, validate_arguments
 
 
 class UIGatewayTests(unittest.TestCase):
@@ -83,6 +84,59 @@ class UIGatewayTests(unittest.TestCase):
         if responses:
             return next(event["response"]["model"] for event in events if event["type"] == "response.completed")
         return next(event["message"]["model"] for event in events if event["type"] == "message_start")
+
+    @staticmethod
+    def effort_schema():
+        # The policy stream keeps an object envelope for provider compatibility,
+        # then narrows each chosen model's optional effort in disjoint branches.
+        common = {"type": "object", "properties": {
+            "task": {"type": "string"}, "mode": {"type": "string", "enum": ["wait", "background"]},
+            "description": {"type": "string"}, "model": {"type": "string", "enum": ["ui-fixture", "fixture-fast"]},
+            "effort": {"type": "string", "enum": ["default", "low", "high"]}},
+            "required": ["task", "mode"], "additionalProperties": False}
+        inherited, reasoning, plain = [copy.deepcopy(common) for _ in range(3)]
+        inherited["properties"].pop("model")
+        reasoning["properties"]["model"]["enum"] = ["ui-fixture"]
+        plain["properties"]["model"]["enum"] = ["fixture-fast"]
+        plain["properties"].pop("effort")
+        for branch in (reasoning, plain):
+            branch["required"].append("model")
+        return {**common, "oneOf": [inherited, reasoning, plain]}
+
+    def test_model_effort_branches_keep_the_object_envelope(self):
+        for responses in (True, False):
+            with self.subTest(responses=responses):
+                path, headers, body = self.request(responses)
+                tool = {"name": "subagent_start", "description": "Start a requested fixture child",
+                        "parameters" if responses else "input_schema": self.effort_schema()}
+                if responses:
+                    tool["type"] = "function"
+                body["tools"].append(tool)
+                status, _, received = self.send(path, headers, body)
+                self.assertEqual(status, 200, received.decode())
+
+    def test_effort_union_enforces_common_constraints_and_exactly_one_branch(self):
+        schema = self.effort_schema()
+        arguments = {"task": "Check the fixture", "mode": "background"}
+        for options in ({}, {"effort": "high"}, {"model": "ui-fixture", "effort": "low"}, {"model": "fixture-fast"}):
+            validate_arguments({**arguments, **options}, schema)
+        for options in ({"model": "fixture-fast", "effort": "high"}, {"model": "unknown"}, {"effort": "unsupported"}):
+            with self.assertRaises(FixtureContractError):
+                validate_arguments({**arguments, **options}, schema)
+        # Sibling object constraints still apply, even when one branch accepts.
+        schema["required"].append("description")
+        with self.assertRaises(FixtureContractError):
+            validate_arguments(arguments, schema)
+        validate_arguments({**arguments, "description": "Fixture review"}, schema)
+        validate_schema(schema)
+        single = {**schema, "oneOf": [schema["oneOf"][0]]}
+        validate_schema(single)
+        validate_arguments({**arguments, "description": "Fixture review"}, single)
+        with self.assertRaises(FixtureContractError):
+            validate_arguments(arguments, single)
+        for branches in ([], [schema["oneOf"][0], {"type": "string"}]):
+            with self.assertRaises(FixtureContractError):
+                validate_schema({**schema, "oneOf": branches})
 
     def test_default_model_preserves_existing_fixture_behavior(self):
         for responses in (True, False):

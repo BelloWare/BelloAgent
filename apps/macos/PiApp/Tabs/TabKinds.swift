@@ -8,6 +8,7 @@ extension TabHost {
     static let registeredKinds: [HostedTab.Type] = [
         FileTab.self,
         ChangesTab.self,
+        SubagentTab.self,
     ]
 
     /// ⌘W, and nothing else.

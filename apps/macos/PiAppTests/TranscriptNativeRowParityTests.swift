@@ -314,9 +314,9 @@ final class TranscriptNativeRowParityTests: XCTestCase {
         }
         return [
             Fixture(name: "info-accounting", item: info("i1")),
-            Fixture(name: "info-detail", item: info("i2", detail: "Canonical response order · arrival order unavailable")),
+            Fixture(name: "info-detail", item: info("i2", detail: "Some response details are unavailable")),
             Fixture(name: "info-length", item: info("i3", stop: "length")),
-            Fixture(name: "info-everything", item: info("i4", detail: "Partial event coverage · 12 further events omitted · " + String(repeating: "and more words ", count: 8),
+            Fixture(name: "info-everything", item: info("i4", detail: "Some response details are unavailable · " + String(repeating: "and more words ", count: 8),
                                                         stop: "content_filter", accounting: totals(model: "openrouter/anthropic/claude-sonnet-4.5", reasoning: 1_204))),
             Fixture(name: "info-no-model", item: info("i5", accounting: totals(model: nil))),
             Fixture(name: "info-empty", item: info("i6", accounting: nil)),

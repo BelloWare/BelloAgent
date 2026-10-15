@@ -107,7 +107,7 @@ import Combine
     func revealWorkspace() {
         menuBar.close()
         if workspaceWindow == nil {
-            let window = NSWindow(contentRect: NSRect(origin: .zero, size: WindowPresentationController.defaultSize),
+            let window = ConversationWindow(contentRect: NSRect(origin: .zero, size: WindowPresentationController.defaultSize),
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                                   backing: .buffered, defer: false)
             window.title = "Bello Agent"

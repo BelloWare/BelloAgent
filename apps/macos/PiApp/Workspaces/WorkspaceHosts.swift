@@ -166,6 +166,7 @@ extension WorkspaceModel {
         sessionClosings[id] = (token, task)
     }
     func open(_ item: ChatRecord, automaticContext: Bool = false) async throws -> HostSupervisor {
+        guard !isOriginalSubagentReader(item.id) else { throw HostError.failure("This original sub-agent is open read-only from a fork.") }
         guard !deletingFamilies.contains(item.delegation?.budgetOwnerSessionID ?? item.id) else { throw HostError.failure("This chat is being deleted.") }
         if try await store?.get(String.self, kind: "session-deleted", id: item.delegation?.budgetOwnerSessionID ?? item.id) != nil { throw HostError.failure("This chat is being deleted.") }
         if let issue = item.delegationIssue { throw HostError.failure(issue) }

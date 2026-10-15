@@ -342,31 +342,6 @@ import XCTest
             ParityFrame(size: size, WorkspaceWelcomeView(model: model))
         }
     }
-
-    /// The sides panel pinned beside a chat with two sides, and its handle.
-    func testSidesPanel() async throws {
-        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("sides-parity-" + UUID().uuidString)
-        let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
-        defer { model.shutdown(); try? FileManager.default.removeItem(at: root) }
-        model.workspaces = [WorkspaceRecord(id: "p", path: "/tmp/bello-agent", trusted: true)]
-        var parent = ChatRecord(id: "P", workspaceID: "p", title: "Retry budget for the payment worker", path: nil, profileID: "none")
-        parent.sidebarOrder = 1
-        var first = ChatRecord(id: "S1", workspaceID: "p", title: "Why does the worker stop after three attempts?", path: nil, profileID: "none")
-        first.parentSessionID = "P"; first.sidebarOrder = 2
-        var second = ChatRecord(id: "S2", workspaceID: "p", title: "Idempotency keys for refunds", path: nil, profileID: "none")
-        second.parentSessionID = "P"; second.sidebarOrder = 3
-        model.chats = [parent, first, second]
-        let size = NSSize(width: SidesPanelMetrics.width, height: 360)
-        try await check("sidespanel", canvas: .piWindow, width: size.width,
-                        RefSidesPanel(model: model, parentID: "P", pinned: true).frame(height: size.height)) {
-            ParityFrame(size: size, SidesPanelView(model: model, parentID: "P", pinned: true))
-        }
-        for (name, activity) in [("handle", SidesPanelActivity(sides: 2)), ("handle-unread", SidesPanelActivity(sides: 2, unread: true))] {
-            try await check("sidespanel-\(name)", RefSidesPanelHandle(activity: activity)) {
-                let handle = SidesPanelHandleView(); handle.activity = activity; return handle
-            }
-        }
-    }
 }
 
 /// An AppKit view at a fixed size, for comparing with a SwiftUI view framed the same.

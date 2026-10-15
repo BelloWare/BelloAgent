@@ -9,6 +9,9 @@ struct DiscoveredSubagent: Sendable {
     var hasTerminalRecord = false
     var turn: Int? = nil
     var executionID: String? = nil
+    /// Rebuildable UI ordinal in the owner's persisted acceptance order.
+    var number: Int? = nil
+    var effort: String? = nil
 }
 
 extension HistoryReader {
@@ -42,22 +45,53 @@ extension HistoryReader {
         if rows.count > 2 { _ = try subagentHeader(path: path, directory: directory, expected: expected) }
     }
     /// The owning journal is the authority even before a child file exists.
-    func subagentPlans(path: URL, ownerID: String, childID: String? = nil) throws -> [DiscoveredSubagent] {
-        var found: [DiscoveredSubagent] = []
+    func subagentPlans(path: URL, ownerID: String, childID: String? = nil, includeInherited: Bool = false) throws -> [DiscoveredSubagent] {
+        try Task.checkCancellation()
+        let revision = Self.currentRevision(path: path.path)
+        func matches(_ plan: DiscoveredSubagent) -> Bool {
+            (includeInherited || plan.header.link.budgetOwnerSessionID == ownerID) &&
+                (childID == nil || plan.header.link.childSessionID == childID)
+        }
+        if let revision, let cached = subagentPlanCache[path.path], cached.owner == ownerID, cached.revision == revision {
+            subagentPlanRecency.removeAll { $0 == path.path }; subagentPlanRecency.append(path.path)
+            return cached.plans.filter(matches)
+        }
+        var found: [DiscoveredSubagent] = [], starts: [String: SubagentLink] = [:]
         try subagentRecords(path) { row, line in
             if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == ownerID, row["version"]?.number == 3 else { throw StoreError.invalidRecord } }
             if let data = Self.subagentPlan(row),
                let raw = data["origin"], let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)),
-               origin.link.valid, origin.link.budgetOwnerSessionID == ownerID, UUID(uuidString: origin.link.childSessionID) != nil,
-               childID == nil || childID == origin.link.childSessionID {
+               origin.link.valid, UUID(uuidString: origin.link.childSessionID) != nil {
+                let id = origin.link.childSessionID
+                if let previous = starts[id] {
+                    guard previous == origin.link else { throw StoreError.invalidRecord }
+                    return true
+                }
+                starts[id] = origin.link
+                // Count every unique start, even when filtering or when its
+                // child file is missing. Follow-ups never contain a new plan.
+                // Full scans retain every start, so inheritance/filter choices
+                // share one revision cache. Targeted cold lookups still stop
+                // at their child and never cache a partial set of plans.
+                if let childID {
+                    guard (includeInherited || origin.link.budgetOwnerSessionID == ownerID), childID == id else { return true }
+                }
                 let child = path.deletingLastPathComponent().appendingPathComponent(origin.link.childSessionID + ".jsonl")
                 guard child.resolvingSymlinksInPath().deletingLastPathComponent() == path.resolvingSymlinksInPath().deletingLastPathComponent() else { throw StoreError.invalidRecord }
-                found.append(DiscoveredSubagent(header: origin, path: child.path, task: data["task"]?.string ?? "", status: .interrupted))
+                found.append(DiscoveredSubagent(header: origin, path: child.path, task: data["task"]?.string ?? "", status: .interrupted, number: starts.count))
                 if childID != nil { return false }
             }
             return true
         }
-        return found
+        try Task.checkCancellation()
+        if childID == nil, let revision, Self.currentRevision(path: path.path) == revision {
+            subagentPlanCache[path.path] = (ownerID, revision, found)
+            subagentPlanRecency.removeAll { $0 == path.path }; subagentPlanRecency.append(path.path)
+            while subagentPlanRecency.count > 8 {
+                subagentPlanCache.removeValue(forKey: subagentPlanRecency.removeFirst())
+            }
+        }
+        return found.filter(matches)
     }
     /// Streaming scan: retain only origins/plans/status, never transcript or
     /// capture bodies. A torn final line is left for the helper's recovery.
@@ -66,6 +100,7 @@ extension HistoryReader {
         var pending = Data(), line = 0
         let needles = ["pi-app.subagent-", "pi-app.agent-", "pi-app.family-run"].map { Data($0.utf8) }
         while let bytes = try file.read(upToCount: 65_536), !bytes.isEmpty {
+            subagentScannedBytes += bytes.count
             try Task.checkCancellation()
             var start = bytes.startIndex
             while let end = bytes[start...].firstIndex(of: 10) {
@@ -89,6 +124,7 @@ extension HistoryReader {
         guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
         let byID = Dictionary(parents.filter { !$0.isSubagent && !$0.imported }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var plans: [String: [String: WireValue]] = [:], checked: Set<String> = []
+        var numbers: [String: [String: Int]] = [:]
         func plan(_ owner: String) throws -> [String: WireValue] {
             if checked.insert(owner).inserted {
                 guard let parent = byID[owner], let saved = parent.path else { return [:] }
@@ -98,8 +134,10 @@ extension HistoryReader {
                     if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == owner, row["version"]?.number == 3 else { throw StoreError.invalidRecord } }
                     if let data = Self.subagentPlan(row),
                        let raw = data["origin"], let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)),
-                       origin.link.valid, origin.link.budgetOwnerSessionID == owner {
+                       origin.link.valid {
                         let id = origin.link.childSessionID
+                        if numbers[owner]?[id] == nil { numbers[owner, default: [:]][id] = (numbers[owner]?.count ?? 0) + 1 }
+                        guard origin.link.budgetOwnerSessionID == owner else { return true }
                         if let previous = plans[owner]?[id], previous != .object(data) { throw StoreError.invalidRecord }
                         plans[owner, default: [:]][id] = .object(data)
                     }
@@ -113,7 +151,7 @@ extension HistoryReader {
             guard UUID(uuidString: path.deletingPathExtension().lastPathComponent) != nil,
                   path.resolvingSymlinksInPath().deletingLastPathComponent() == directory.resolvingSymlinksInPath() else { continue }
             var prefix: [[String: WireValue]] = [], status: SubagentStatus = .interrupted, terminal = false
-            var latestTurn: Int?, executionID: String?
+            var latestTurn: Int?, executionID: String?, effort: String?
             do {
                 try subagentRecords(path) { row, line in
                     if line <= 3 { prefix.append(row) }
@@ -127,8 +165,11 @@ extension HistoryReader {
                     if ["pi-app.agent-operation.v1", "pi-app.subagent-turn.v1", "pi-app.subagent-turn-state.v1", "pi-app.subagent-turn-terminal.v1"].contains(kind),
                        let data = turnData, data["childID"]?.string == path.deletingPathExtension().lastPathComponent,
                        let number = data["turn"]?.nonnegativeInteger, number > 0, number >= (latestTurn ?? 0) {
-                        if number != latestTurn { terminal = false; status = .interrupted }
+                        if number != latestTurn { terminal = false; status = .interrupted; effort = nil }
                         latestTurn = number; executionID = data["executionID"]?.string
+                        // State/terminal mirrors need not repeat the accepted
+                        // turn's effort. Never replace it with an absent field.
+                        if let accepted = data["effort"]?.string { effort = accepted }
                         if kind == "pi-app.subagent-turn-terminal.v1", let value = data["status"]?.string.flatMap(SubagentStatus.init(rawValue:)), value.terminal {
                             status = value; terminal = true
                         }
@@ -139,7 +180,11 @@ extension HistoryReader {
                 _ = try subagentHeader(path: path, directory: directory, expected: SubagentTarget(header.link))
                 let accepted = (try? plan(header.link.budgetOwnerSessionID))?[header.link.childSessionID]?.object
                 let issue = Self.subagentOriginMatchesAccepted(raw,accepted:accepted?["origin"]) ? nil : "The parent’s matching delegation is unavailable. This saved sub-agent is view-only."
-                found.append(DiscoveredSubagent(header: header, path: path.path, task: accepted?["task"]?.string ?? "", status: status, issue: issue, hasTerminalRecord: terminal, turn: latestTurn, executionID: executionID))
+                var effective = header
+                if issue == nil, effective.model.reasoning == nil {
+                    effective.model.reasoning = accepted?["origin"]?.object?["model"]?.object?["reasoning"]?.array?.compactMap(\.string)
+                }
+                found.append(DiscoveredSubagent(header: effective, path: path.path, task: accepted?["task"]?.string ?? "", status: status, issue: issue, hasTerminalRecord: terminal, turn: latestTurn, executionID: executionID, number: numbers[header.link.budgetOwnerSessionID]?[header.link.childSessionID], effort: effort))
             } catch is CancellationError { throw CancellationError() }
             catch { continue } // Invalid headers remain untouched; helper recovery reports their exact error.
         }

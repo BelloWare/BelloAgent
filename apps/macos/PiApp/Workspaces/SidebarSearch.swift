@@ -290,9 +290,9 @@ import Combine
     /// Lands the open transcript on the match (reading its page in when the
     /// window does not hold it), opens the finished turn that folded it, and
     /// marks the excerpt's match there (`revealInTranscript`).
-    static func reveal(_ model: WorkspaceModel, chatID: String, messageID: String, mark: TranscriptReveal.Mark? = nil) async {
+    static func reveal(_ model: WorkspaceModel, chatID: String, messageID: String, mark: TranscriptReveal.Mark? = nil, reader: HostedReaderToken? = nil) async {
         if let override { await override(chatID, messageID); return }
-        await model.revealInTranscript(sessionID: chatID, messageID: messageID, mark: mark)
+        await model.revealInTranscript(sessionID: chatID, messageID: messageID, mark: mark, navigation: reader)
     }
 }
 
@@ -313,31 +313,35 @@ extension WorkspaceModel {
     }
     /// Whether a chat is listed by the filter: its title, or its messages.
     func sidebarMatches(_ chat: ChatRecord, query: String) -> Bool {
-        chat.title.localizedCaseInsensitiveContains(query) || chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || sidebarSearchHit(chat.id) != nil
+        chat.displayTitle.localizedCaseInsensitiveContains(query) || (chat.isSubagent && chat.subagentShortTitle.localizedCaseInsensitiveContains(query)) || chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || sidebarSearchHit(chat.id) != nil
     }
     /// After a chat the filter listed opened, its match is shown — unless
     /// the reader has opened something else meanwhile (`opening` is what
     /// `beginSidebarOpen` gave before the chat was opened).
-    func revealSidebarSearchHit(_ chatID: String, hit: ChatSearchHit?, opening: Int) async {
-        // Still the chats page, still this chat in front, still the match the
-        // field shows: the reader has not gone to the report, another chat or
-        // another search meanwhile.
-        guard let hit, !Task.isCancelled, !isShutDown, sidebarSearch.openings == opening, page == .chats,
-              (focusedSessionID ?? selectedID) == chatID, sidebarSearch.hit(for: chatID)?.messageID == hit.messageID else { return }
+    func revealSidebarSearchHit(_ chatID: String, hit: ChatSearchHit?, opening: Int, reader: HostedReaderToken? = nil) async {
+        guard let hit else { return }
+        func current() -> Bool {
+            guard !Task.isCancelled, !isShutDown, sidebarSearch.openings == opening,
+                  sidebarSearch.hit(for: chatID)?.messageID == hit.messageID else { return false }
+            if let reader { return reader.isCurrent && subagentTab(chatID) === reader.reader && subagentTabIsShown(chatID) }
+            return page == .chats && (focusedSessionID ?? selectedID) == chatID && transcriptShows(chatID)
+        }
+        guard current() else { return }
         // Cancelled by the next keystroke or open while it loads the page
         // around the match: the reveal stops at its next check.
         let reveal = Task {
             var messageID = hit.messageID
             if messageID == "subagent-task:" + chatID, let path = record(chatID)?.path,
                let first = try? await history.read(path: path, start: true).messages.first(where: { $0.role == "user" }) { messageID = first.id }
-            guard !Task.isCancelled else { return }
-            await SidebarSearchReveal.reveal(self, chatID: chatID, messageID: messageID, mark: .excerpt(hit.excerpt, highlight: hit.highlight))
+            guard current() else { return }
+            await SidebarSearchReveal.reveal(self, chatID: chatID, messageID: messageID, mark: .excerpt(hit.excerpt, highlight: hit.highlight), reader: reader)
         }
         sidebarSearch.revealing = reveal
         await withTaskCancellationHandler { await reveal.value } onCancel: { reveal.cancel() }
     }
     /// Counts sidebar opens, so a slow one cannot reveal over a newer one.
     func beginSidebarOpen() -> Int {
+        retirePendingSubagentOpening()
         sidebarSearch.revealing?.cancel(); sidebarSearch.revealing = nil
         sidebarSearch.openings &+= 1; return sidebarSearch.openings
     }
@@ -361,7 +365,7 @@ struct SidebarSearchSnippetState: Equatable {
     var indent: CGFloat
 
     init(chat: ChatRecord, hit: ChatSearchHit, indent: CGFloat) {
-        chatID = chat.id; title = chat.title; kind = hit.kind; excerpt = hit.excerpt; highlight = hit.highlight; self.indent = indent
+        chatID = chat.id; title = chat.displayTitle; kind = hit.kind; excerpt = hit.excerpt; highlight = hit.highlight; self.indent = indent
     }
     var symbol: String {
         switch kind {

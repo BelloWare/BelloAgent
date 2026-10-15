@@ -182,7 +182,7 @@ final class SidebarInteractionTests: XCTestCase {
         let row = try XCTUnwrap(document.views["chat|chat55"] as? SidebarChatRowView)
         let surface = try XCTUnwrap(surfaces(row).first)
         let release = Unchecked(try mouse(.leftMouseUp, window: window))
-        let heldRow = Unchecked((document, row))
+        let heldRow = Unchecked((document, row, surface))
         var movedDuringPress = false
         // A pin finishing while mouseDown tracks moves the pressed chat to
         // the top. Its control must stay out of the pool until mouse-up.
@@ -190,7 +190,7 @@ final class SidebarInteractionTests: XCTestCase {
             MainActor.assumeIsolated {
                 let pinned = entries.entries.remove(at: 55)
                 entries.entries.insert(pinned, at: 0)
-                let (document, row) = heldRow.value
+                let (document, row, surface) = heldRow.value
                 document.update(entries, width: 280, animated: false)
                 movedDuringPress = true
                 XCTAssertEqual(row.chat.id, "chat55", "A held row cannot be rebound to another chat")
@@ -568,11 +568,11 @@ final class SidebarListedOrderTests: XCTestCase {
                      chat("loose", title: "Loose", order: 3)]
         let fixture = try fixture(chats)
         defer { fixture.teardown() }
-        XCTAssertEqual(rows(fixture.hosted).count, 3)
+        XCTAssertEqual(rows(fixture.hosted).count, 2)
 
         fixture.model.collapsedSidebarSides.insert("parent")
         fixture.settle()
-        XCTAssertEqual(rows(fixture.hosted).count, 2, "The child row folds away")
+        XCTAssertEqual(rows(fixture.hosted).count, 2, "Legacy folds do not add child rows")
 
         // Collapsing the project throws the group away and builds a new one.
         fixture.model.setProjectExpanded("project", expanded: false)
@@ -580,13 +580,13 @@ final class SidebarListedOrderTests: XCTestCase {
         XCTAssertTrue(rows(fixture.hosted).isEmpty)
         fixture.model.setProjectExpanded("project", expanded: true)
         fixture.settle()
-        XCTAssertEqual(rows(fixture.hosted).count, 2, "The fold is still there when the project comes back")
+        XCTAssertEqual(rows(fixture.hosted).count, 2, "The child stays in the picker when the project comes back")
 
         // Selecting the folded child reveals it again, as it always did.
         fixture.model.selectedID = "child"
         fixture.settle()
         XCTAssertFalse(fixture.model.collapsedSidebarSides.contains("parent"),
                        "Opening a folded child unfolds the branch that hides it")
-        XCTAssertEqual(rows(fixture.hosted).count, 3)
+        XCTAssertEqual(rows(fixture.hosted).count, 2)
     }
 }

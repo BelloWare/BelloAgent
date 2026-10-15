@@ -73,6 +73,10 @@ struct HistoryRevision: Codable, Equatable, Sendable {
 // First index record offsets and parent links; decode only the requested page.
 actor HistoryReader {
     var agentCoordinationCache: [String: (fingerprint: String, value: AgentCoordination)] = [:]
+    /// Complete plan scans only. Keep metadata for the same number of journals
+    /// as transcript pages; a cached reopen must not rescan a large journal.
+    var subagentPlanCache: [String: (owner: String, revision: HistoryRevision, plans: [DiscoveredSubagent])] = [:]
+    var subagentPlanRecency: [String] = []
     /// Where offset indexes are built (`HistoryOffsetIndex`).
     private let indexDirectory: URL
     init(indexDirectory: URL = FileManager.default.temporaryDirectory) { self.indexDirectory = indexDirectory }
@@ -249,6 +253,40 @@ actor HistoryReader {
     private static let retainedIndexes = 8
     private var recency: [String] = []
     private var digests: [String: (stamp: Stamp, bytes: UInt64, digest: String)] = [:]
+    /// Find validates the entire captured prefix when a writer appends during
+    /// its read. Reuse the hash only for the exact same file stamp, bounded by
+    /// the offset-index LRU; no message bodies or extra journal copies are held.
+    private var searchDigests: [String: (stamp: Stamp, digest: SHA256.Digest)] = [:]
+    private func searchDigest(_ file: FileHandle, bytes: UInt64) throws -> SHA256.Digest {
+        try file.seek(toOffset: 0)
+        var hash = SHA256(), remaining = bytes
+        while remaining > 0 {
+            try Task.checkCancellation()
+            let count = Int(min(65_536, remaining))
+            guard let data = try file.read(upToCount: count), data.count == count else { throw StoreError.unreadableRecord }
+            hash.update(data: data); remaining -= UInt64(count)
+        }
+        return hash.finalize()
+    }
+    private func validateSearchSnapshot(_ file: FileHandle, path: String, identity: Stamp, digest: SHA256.Digest) throws {
+        try Task.checkCancellation()
+        let current = try stamp(file)
+        guard current.device == identity.device, current.inode == identity.inode, current.size >= identity.size else { throw StoreError.unreadableRecord }
+        if current != identity {
+            guard try searchDigest(file, bytes: UInt64(identity.size)) == digest else { throw StoreError.unreadableRecord }
+        }
+        // An unlinked descriptor can still read the old file after replacement.
+        // Do not publish it as the journal currently belonging to this chat.
+        let visible = try open(path); defer { try? visible.close() }
+        let shown = try stamp(visible)
+        guard shown.device == identity.device, shown.inode == identity.inode, shown.size >= identity.size else { throw StoreError.unreadableRecord }
+    }
+    private func retainIndex(_ path: String) {
+        recency.removeAll { $0 == path }; recency.append(path)
+        while recency.count > Self.retainedIndexes {
+            let evicted = recency.removeFirst(); indexes.removeValue(forKey: evicted); searchDigests.removeValue(forKey: evicted)
+        }
+    }
     /// What a page cursor records of the journal it was read from: its
     /// length, and its first and last 64 KiB up to there. A journal only ever
     /// grows; a replaced or rewritten one differs in these. Hashing the whole
@@ -280,16 +318,23 @@ actor HistoryReader {
     /// one page used to cost a full decode of its record, and `message()` a
     /// full decode of every record in the file before it.
     private(set) var decodedRecords = 0
+    var subagentScannedBytes = 0
     var acceptanceScannedBytes = 0
     private(set) var indexedRecordCount = 0
     private(set) var indexedBytes: UInt64 = 0
+    enum SearchReadStage: CaseIterable, Sendable { case captured, indexed, scanned }
+    private var searchReadObserver: (@Sendable (SearchReadStage) throws -> Void)?
+    func observeSearchReads(_ observer: (@Sendable (SearchReadStage) throws -> Void)?) { searchReadObserver = observer }
     /// Journals whose offset index is currently retained.
     var retainedIndexCount: Int { recency.count }
     /// What the retained offset indexes take, together.
     var retainedIndexBytes: Int { indexes.values.reduce(0) { $0 + $1.branch.bytes } }
     /// Lets go of every retained offset index, and with it its file: the app
     /// is quitting.
-    func releaseIndexes() { indexes.removeAll(); recency.removeAll(); digests.removeAll() }
+    func releaseIndexes() {
+        indexes.removeAll(); recency.removeAll(); digests.removeAll(); searchDigests.removeAll()
+        subagentPlanCache.removeAll(); subagentPlanRecency.removeAll()
+    }
     /// Progress/cancellation segment size, never a source EOF or record limit.
     /// Lowered in tests to exercise traversal across segment boundaries.
     private var indexRecordLimit = 100_000
@@ -323,13 +368,14 @@ actor HistoryReader {
     /// The searchable text of each record in `range`, in order: read in
     /// order from the file, decoded concurrently. A record that cannot be
     /// read or decoded carries its error, thrown when the search reaches it.
-    private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle) throws -> [(ref: Ref, text: Result<String, Error>)] {
+    private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle, renderedAgentProse: Bool, managedChild: Bool,
+                          streaming: [String: TranscriptMessage]) throws -> [(ref: Ref, text: Result<String, Error>)] {
         var refs: [Ref] = [], records: [Result<Data, Error>?] = []
         refs.reserveCapacity(range.count); records.reserveCapacity(range.count)
         for position in range {
             let ref = try branch.at(position)
             refs.append(ref)
-            if ref.type == "branch" { records.append(nil); continue }
+            if ref.type == "branch" || streaming[ref.id] != nil { records.append(nil); continue }
             decodedRecords += 1
             do {
                 try file.seek(toOffset: ref.offset)
@@ -338,16 +384,22 @@ actor HistoryReader {
             } catch { records.append(.failure(error)) }
         }
         var texts = [Result<String, Error>](repeating: .success(""), count: refs.count)
-        let edit = "## Edit\n\n" + Self.branchText + "\n\n", read = records
+        let edit = "## Edit\n\n" + Self.branchText + "\n\n", read = records, references = refs
         texts.withUnsafeMutableBufferPointer { buffer in
             // Each iteration writes its own element only.
             nonisolated(unsafe) let output = buffer
             DispatchQueue.concurrentPerform(iterations: read.count) { index in
+                if let current = streaming[references[index].id] {
+                    output[index] = .success(ConversationContent.transcriptText(current)); return
+                }
                 switch read[index] {
                 case nil: output[index] = .success(edit)
                 case .failure(let error)?: output[index] = .failure(error)
                 case .success(let bytes)?:
-                    output[index] = Result { ConversationContent.text(try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]) }
+                    output[index] = Result {
+                        let record = try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]
+                        return renderedAgentProse ? ConversationContent.transcriptText(record, managedChild: managedChild) : ConversationContent.text(record)
+                    }
                 }
             }
         }
@@ -387,17 +439,48 @@ actor HistoryReader {
         guard page.notice == nil, let index = indexes[path] else { return nil }
         return try index.branch.ref(id)?.role
     }
-    func searchContent(path: String, query: String, start: Int) throws -> ContentSearch {
+    func searchContent(path: String, query: String, start: Int, renderedAgentProse: Bool = false, managedChild: Bool = false,
+                       presented: [TranscriptMessage] = []) throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
-        let page = try read(path: path, whole: true)
-        guard page.notice == nil, let index = indexes[path] else { throw HostError.failure("Validate or recover damaged history before searching it") }
         let file = try open(path); defer { try? file.close() }
-        guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
+        let identity = try stamp(file), branch: HistoryOffsetIndex, prefix: SHA256.Digest?
+        var published = false
+        defer { if !published { indexes.removeValue(forKey: path); searchDigests.removeValue(forKey: path) } }
+        if renderedAgentProse {
+            // A running helper may append throughout this read. Index only the
+            // bytes captured at entry and ignore an unfinished last record.
+            // Verify that prefix before publishing; growth alone is harmless.
+            let cached = searchDigests[path]
+            prefix = try cached?.stamp == identity ? cached!.digest : searchDigest(file, bytes: UInt64(identity.size))
+            try searchReadObserver?(.captured)
+            let journal = try journalIndex(path: path, file: file, identity: identity, size: UInt64(identity.size),
+                before: nil, around: nil, after: nil, targetTurns: nil, progress: nil, whole: true, bounded: true)
+            guard journal.notice == nil || journal.incompleteTail else { throw HostError.failure("Validate or recover damaged history before searching it") }
+            branch = journal.branch
+        } else {
+            let page = try read(path: path, whole: true)
+            guard page.notice == nil, let index = indexes[path] else { throw HostError.failure("Validate or recover damaged history before searching it") }
+            guard try stamp(file) == index.stamp, identity == index.stamp else { throw StoreError.unreadableRecord }
+            branch = index.branch; prefix = nil
+            try searchReadObserver?(.captured)
+        }
+        try searchReadObserver?(.indexed)
+        // A live snapshot can be ahead of the journal. Keep its streaming
+        // revision and append only genuinely unsaved rows, without duplicating
+        // a saved tool result in its issuing assistant's resolved card.
+        var streaming: [String: TranscriptMessage] = [:], unsaved: [TranscriptMessage] = []
+        if renderedAgentProse {
+            for row in presented {
+                if try branch.ref(row.id) == nil { unsaved.append(row) }
+                else if row.state == "streaming", try branch.index(of: row.id) != nil { streaming[row.id] = row }
+            }
+        }
+        let total = branch.count + unsaved.count
         // A query that matches nothing used to decode every record in the
         // conversation before answering. Stop after a bounded window and let the
         // caller continue from `next`, exactly as a full page of hits does.
-        let limit = min(index.branch.count, min(start, index.branch.count) + 5_000)
-        var hits: [ContentHit] = [], cursor = min(start, index.branch.count)
+        let limit = min(total, min(start, total) + 5_000)
+        var hits: [ContentHit] = [], cursor = min(start, total)
         // Records are read in order and decoded a run at a time on every
         // core: decoding is nearly all a search costs, one record's text
         // never depends on another's, and the hits are taken in order from
@@ -405,18 +488,19 @@ actor HistoryReader {
         // hundred hits early decodes little past them, and grows.
         var run = 32
         let needle = ConversationContent.asciiNeedle(query)
-        while cursor < limit && hits.count < 100 {
+        while cursor < min(limit, branch.count) && hits.count < 100 {
+            try Task.checkCancellation()
             // A run holds every record it reads twice over (its bytes and its
             // text), so it is bounded by bytes as well as by count.
             var end = cursor, bytes = 0
-            while end < min(limit, cursor + run) {
-                let length = try index.branch.at(end).length
+            while end < min(branch.count, min(limit, cursor + run)) {
+                let length = try branch.at(end).length
                 // A record larger than a run is a run of its own.
                 guard end == cursor || bytes + length <= Self.searchRunBytes else { break }
                 bytes += length; end += 1
             }
             run = min(run * 2, 512)
-            let texts = try contents(cursor..<end, branch: index.branch, file: file)
+            let texts = try contents(cursor..<end, branch: branch, file: file, renderedAgentProse: renderedAgentProse, managedChild: managedChild, streaming: streaming)
             for (offset, decoded) in texts.enumerated() where hits.count < 100 {
                 let ref = decoded.ref, text = try decoded.text.get()
                 let position = cursor + offset
@@ -431,8 +515,34 @@ actor HistoryReader {
                 if offset == texts.count - 1 { cursor = end }
             }
         }
-        guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
-        return .init(hits: hits, total: index.branch.count, next: cursor < index.branch.count ? cursor : nil, revision: revision(index.stamp))
+        while cursor >= branch.count && cursor < limit && hits.count < 100 {
+            try Task.checkCancellation()
+            let row = unsaved[cursor - branch.count], text = ConversationContent.transcriptText(row)
+            let count = ConversationContent.occurrences(of: query, in: text)
+            if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
+            cursor += 1
+        }
+        try searchReadObserver?(.scanned)
+        if let prefix {
+            try validateSearchSnapshot(file, path: path, identity: identity, digest: prefix)
+            searchDigests[path] = (identity, prefix)
+        } else {
+            guard try stamp(file) == identity else { throw StoreError.unreadableRecord }
+        }
+        retainIndex(path); published = true
+        return .init(hits: hits, total: total, next: cursor < total ? cursor : nil, revision: revision(identity))
+    }
+    /// An unsent side or a delegated-task placeholder has no journal yet.
+    func searchPresented(_ rows: [TranscriptMessage], query: String, start: Int) throws -> ContentSearch {
+        guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
+        var hits: [ContentHit] = [], cursor = min(start, rows.count)
+        while cursor < rows.count && hits.count < 100 {
+            let row = rows[cursor], text = ConversationContent.transcriptText(row)
+            let count = ConversationContent.occurrences(of: query, in: text)
+            if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
+            cursor += 1
+        }
+        return .init(hits: hits, total: rows.count, next: cursor < rows.count ? cursor : nil, revision: "presented")
     }
     func copyContentPage(path: String, first: Int, last: Int, cursor: ContentCursor, revision expected: String) throws -> ContentPage {
         // Positions count every shown row, as the search that gave them did.
@@ -581,8 +691,7 @@ actor HistoryReader {
         let branch = journal.branch, notice = journal.notice, olderRows = journal.olderRows, versions = journal.versions
         let assistantCount = journal.assistantCount, latestAssistantID = journal.latestAssistantID, failureMessage = journal.failureMessage, failureCode = journal.failureCode
         let taskRecords = journal.taskRecords, retainedRun = journal.retainedRun, incompleteTail = journal.incompleteTail
-        recency.removeAll { $0 == path }; recency.append(path)
-        while recency.count > Self.retainedIndexes { indexes.removeValue(forKey: recency.removeFirst()) }
+        retainIndex(path)
         let incarnation = "file:\(identity.device):\(identity.inode)"
         let lineage = branch.lineage
         if let expected {
@@ -627,7 +736,7 @@ actor HistoryReader {
     /// kept from an earlier read while the file is unchanged, else one built
     /// now (`buildIndex`).
     private func journalIndex(path: String, file: FileHandle, identity: Stamp, size: UInt64, before: String?, around: String?, after: String?,
-                              targetTurns: Int?, progress: Progress?, whole: Bool) throws -> JournalFacts {
+                              targetTurns: Int?, progress: Progress?, whole: Bool, bounded: Bool = false) throws -> JournalFacts {
         // A page reaching past the rows an index built from the metadata
         // file holds needs the whole journal indexed.
         var wholeJournal = whole
@@ -640,13 +749,13 @@ actor HistoryReader {
                                 taskRecords: cached.taskRecords, retainedRun: cached.retainedRun, versions: cached.versions, olderRows: cached.olderRows)
         }
         return try buildIndex(path: path, file: file, identity: identity, size: size, before: before, around: around, after: after,
-                              targetTurns: targetTurns, progress: progress, wholeJournal: wholeJournal)
+                              targetTurns: targetTurns, progress: progress, wholeJournal: wholeJournal, bounded: bounded)
     }
     /// Indexes the journal: from its metadata file's checkpoint when one
     /// still matches the file, else every record from the start. The index
     /// is kept for the next read unless a record was damaged.
     private func buildIndex(path: String, file: FileHandle, identity: Stamp, size: UInt64, before: String?, around: String?, after: String?,
-                            targetTurns: Int?, progress: Progress?, wholeJournal: Bool) throws -> JournalFacts {
+                            targetTurns: Int?, progress: Progress?, wholeJournal: Bool, bounded: Bool) throws -> JournalFacts {
         var branch = try HistoryOffsetIndex(directory: indexDirectory)
         var notice: String?, assistantCount = 0, latestAssistantID: String?, failureMessage: String?, failureCode: String?
         var taskRecords: [TaskPresentationRecord] = [], retainedRun: RetainedRun?, incompleteTail = false
@@ -691,7 +800,11 @@ actor HistoryReader {
             if let work = seed.work { pendingWork = work.exists; failureMessage = work.failure; lastWork = work }
             try file.seek(toOffset: resume.start)
         } else { try file.seek(toOffset: 0) }
-        while let chunk = try file.read(upToCount: 65_536), !chunk.isEmpty {
+        var readOffset = offset
+        while true {
+            let count = bounded ? Int(min(65_536, size - min(size, readOffset))) : 65_536
+            guard count > 0, let chunk = try file.read(upToCount: count), !chunk.isEmpty else { break }
+            readOffset += UInt64(chunk.count)
             try Task.checkCancellation()
             var start = chunk.startIndex
             while let index = Self.newline(in: chunk, from: start) {
@@ -809,7 +922,10 @@ actor HistoryReader {
             let line = try file.read(upToCount: newest.length) ?? Data()
             if line.count == newest.length, let value = try? JSONDecoder().decode(IndexRecord.self, from: line) {
                 if let work = value.pendingWork { pendingWork = work.exists; failureMessage = work.failure; lastWork = work }
-            } else if notice == nil { notice = "Damaged history record preserved. Continue requires validation or an explicit recovered copy." }
+            } else if notice == nil || incompleteTail {
+                notice = "Damaged history record preserved. Continue requires validation or an explicit recovered copy."
+                incompleteTail = false
+            }
         }
         if targetTurns != nil && sessionID == nil && notice == nil { notice = "History has no valid session header. Its source was left untouched." }
         try branch.constructChain(leaf: leaf)
@@ -834,13 +950,14 @@ actor HistoryReader {
             return try branch.index(of:last) != nil
         }
         indexedRecordCount = branch.recordCount; indexedBytes = size
-        guard try stamp(file) == identity else { throw StoreError.unreadableRecord }
+        let current = try stamp(file)
+        if !bounded { guard current == identity else { throw StoreError.unreadableRecord } }
         let activeCalls = Set(contextIDs.flatMap { contextMessages[$0]?.calls ?? [] })
         let activeResults = Set(contextIDs.compactMap { contextMessages[$0]?.result })
         retainedRun = lastWork?.retained(unanswered: activeCalls.subtracting(activeResults))
         failureCode = failureMessage == nil ? nil : lastWork?.failureCode
         if resume != nil, try Self.reachesPast(branch, before: before, around: around, after: after) { continue build }
-        if notice == nil { indexes[path] = Index(stamp: identity, branch: branch, assistantCount: assistantCount, latestAssistantID: latestAssistantID,
+        if notice == nil, current == identity { indexes[path] = Index(stamp: identity, branch: branch, assistantCount: assistantCount, latestAssistantID: latestAssistantID,
                                                sessionID: sessionID, automaticContextSafe: native && linear && !pendingWork && contextSafe && activeCalls.isSubset(of: activeResults), failureMessage: failureMessage, taskRecords:taskRecords, retainedRun: retainedRun, olderRows: olderRows, partial: resume != nil, versions: versions,
                                                failureCode: failureCode) }
         break build

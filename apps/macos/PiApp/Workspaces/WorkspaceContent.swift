@@ -59,8 +59,27 @@ extension WorkspaceModel {
     }
 
     func inspectConversation(_ id: String) { contentSessionID = id; showConversationContent = true }
-    func searchConversation(_ id: String, query: String, start: Int) async throws -> ContentSearch {
+    func searchConversation(_ id: String, query: String, start: Int, renderedAgentProse: Bool = false) async throws -> ContentSearch {
+        let navigation = transcriptNavigation(id)
+        let result = try await searchConversationSource(id, query: query, start: start, renderedAgentProse: renderedAgentProse)
+        try Task.checkCancellation()
+        guard navigation.isCurrent(in: self) else { throw CancellationError() }
+        return result
+    }
+    private func searchConversationSource(_ id: String, query: String, start: Int, renderedAgentProse: Bool) async throws -> ContentSearch {
+        if let conversationSearchLoader { return try await conversationSearchLoader(id, query, start) }
         guard let item = record(id) else { throw StoreError.invalidRecord }
+        // The app owns Markdown rendering. Search its journal projection for
+        // Find, including unloaded rows, without changing the helper's source
+        // search or the source ranges used by Copy Conversation/Inspector.
+        if renderedAgentProse {
+            let view = displays[id]
+            let presented = view?.versionView == nil ? view?.presentedMessages ?? [] : []
+            if let path = item.path {
+                return try await history.searchContent(path: path, query: query, start: start, renderedAgentProse: true, managedChild: item.isSubagent, presented: presented)
+            }
+            return try await history.searchPresented(presented, query: query, start: start)
+        }
         if opened.contains(id), let host = hosts[item.workspaceID] {
             let value = try await host.request("session.content.search", sessionID: id, params: ["query": .string(query), "start": .number(Double(start))])
             return try JSONDecoder().decode(ContentSearch.self, from: JSONEncoder().encode(value))
@@ -79,11 +98,16 @@ extension WorkspaceModel {
     }
     func revealConversationHit(_ id: String, hit: ContentHit) async throws {
         guard let item = record(id), let view = displays[id] else { throw StoreError.invalidRecord }
+        let navigation = transcriptNavigation(id, advancing: true)
         let generation = view.presentationGeneration
+        revealSerial += 1
+        let read = revealSerial
+        view.revealRead = read; view.revealFailure = nil; view.abandonJump()
+        defer { if view.revealRead == read { view.revealRead = nil }; resumeVisibleReaders() }
         var page = try await readConversationWindow(item, cursor: nil, around: hit.id)
-        guard !Task.isCancelled, displays[id] === view, view.presentationGeneration == generation else { return }
+        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentationGeneration == generation, view.revealRead == read else { return }
         page.messages = await withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
-        guard !Task.isCancelled, displays[id] === view, view.presentationGeneration == generation else { return }
+        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentationGeneration == generation, view.revealRead == read else { return }
         adoptInitialHistory(page, into: view, around: hit.id)
         view.browsingHistory = true
         anchorChanged(view)
@@ -94,37 +118,61 @@ extension WorkspaceModel {
     /// message details sheet, which explains why it is not visible (edited
     /// away or outside the loaded page). Returns false when the chat is gone.
     @discardableResult
-    func revealMessage(sessionID: String, messageID: String?, historyLookup: (@Sendable (String, String) async throws -> HistoryPage)? = nil) async -> Bool {
-        guard !Task.isCancelled else { return false }
-        messageNavigationRevision += 1
+    func revealMessage(sessionID: String, messageID: String?, historyLookup: (@Sendable (String, String) async throws -> HistoryPage)? = nil, origin: HostedReaderToken? = nil) async -> Bool {
+        guard !Task.isCancelled, origin?.isCurrent != false else { return false }
+        retirePendingSubagentOpening()
+        if subagentTab(sessionID)?.container?.isPane != false { messageNavigationRevision += 1 }
         guard let item = record(sessionID) else {
             error = "That chat is no longer available. It was deleted or was an unkept side conversation; its retained requests remain in the report and inspector."
             return false
         }
-        let parentID = side(sessionID)?.parentID ?? item.id
+        if item.isSubagent {
+            let opening = beginSubagentOpening(sessionID)
+            defer { finishSubagentOpening(opening) }
+            guard await openSubagentTab(sessionID, opening: opening) != nil, opening.isCurrent, subagentTabIsShown(sessionID) else { return false }
+            guard let messageID else { return true }
+            return await revealInTranscript(sessionID: sessionID, messageID: messageID, navigation: opening)
+        }
+        // A fork may already occupy the main column, even with a remembered
+        // side slot. Reveals retain that visible destination instead of moving it.
+        let sideOwner = selectedID == sessionID ? nil : (side(sessionID)?.parentID ?? sideFamilyOwner(item))
+        let parentID = sideOwner ?? item.id
+        // Revealing a delivery intentionally uncovers its ordinary side. That
+        // hides an embedded child and transfers ownership to the main pane;
+        // a popped-out origin keeps its independent cancellation token.
+        let origin = sideOwner != nil && origin?.reader.container?.isPane == true ? nil : origin
         let changingSelection = selectedID != parentID
         // select changes selectedID synchronously before its first await, which
         // advances the revision once. Any additional navigation supersedes us.
-        let revision = messageNavigationRevision + (changingSelection ? 1 : 0)
+        let revision = messageNavigationRevision + (changingSelection ? 1 : 0) + (page == .chats ? 0 : 1)
+        let navigation = TranscriptNavigationToken(reader: nil, workspaceRevision: revision, origin: origin)
         // Reaching a side through its chat: the side is what is opened.
-        if changingSelection || item.isSubagent {
-            if parentID != sessionID { await passingThrough(parentID) { await select(parentID) } } else { await select(parentID) }
-        }
-        guard !Task.isCancelled, revision == messageNavigationRevision, selectedID == parentID,
-              !changingSelection || page == .chats, record(sessionID) != nil,
-              (side(sessionID)?.parentID ?? sessionID) == parentID,
+        if sideOwner != nil, side(sessionID) != nil { await selectSide(sessionID, revealInSidebar: false) }
+        else if sideOwner != nil { await showSide(sessionID, revealInSidebar: false) }
+        else if changingSelection { await select(parentID) }
+        else { page = .chats; focusedSessionID = sessionID }
+        guard !Task.isCancelled, navigation.isCurrent(in: self), selectedID == parentID,
+              transcriptShows(sessionID), record(sessionID) != nil,
+              (sideOwner == nil || side(sessionID)?.parentID == parentID),
               let view = displays[sessionID] else { return false }
-        focusedSessionID = sessionID
-        page = .chats
+        // Opening chose focus before loading. Publication neither depends on
+        // that focus nor overwrites a newer responder choice after the await.
         guard let messageID else { return true }
         var expectedMessageIDs = view.messages.map(\.id)
         if view.messages.contains(where: { $0.id == messageID }) {
+            view.abandonReveal(); view.abandonJump()
             view.scrollAnchor = .init(id: messageID, offset: 0, followsBottom: false); view.viewportRequestOpens = false; view.viewportRequest += 1; anchorChanged(view)
             return true
         }
+        // These legacy report/search reads own the destination just like the
+        // transcript's Find/Home path. Recovery must wait for their publication.
+        revealSerial += 1
+        let read = revealSerial
+        view.revealRead = read; view.revealFailure = nil; view.abandonJump()
+        defer { if view.revealRead == read { view.revealRead = nil }; resumeVisibleReaders() }
         func current() -> Bool {
-            !Task.isCancelled && revision == messageNavigationRevision && page == .chats && selectedID == parentID && focusedSessionID == sessionID &&
-            record(sessionID) != nil && record(sessionID)?.path == item.path && displays[sessionID] === view && view.messages.map(\.id) == expectedMessageIDs
+            !Task.isCancelled && navigation.isCurrent(in: self) && transcriptShows(sessionID) && selectedID == parentID &&
+            record(sessionID) != nil && record(sessionID)?.path == item.path && displays[sessionID] === view && view.revealRead == read && view.messages.map(\.id) == expectedMessageIDs
         }
         if historyLookup == nil {
             do {

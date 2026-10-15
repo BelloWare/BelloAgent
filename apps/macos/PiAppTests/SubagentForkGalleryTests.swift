@@ -5,6 +5,9 @@ import XCTest
 /// Standalone generated-history scenes; no helper, gateway or real settings.
 final class SubagentForkGalleryTests: XCTestCase, SerialTestLane {
     @MainActor func testHistoricalCardsInIndependentFork() async throws {
+        for kind in AgentForkKind.allCases { try await captureHistoricalCardsInIndependentFork(kind) }
+    }
+    @MainActor private func captureHistoricalCardsInIndependentFork(_ kind: AgentForkKind) async throws {
         guard let path = testEnvironment("PI_APP_FORK_GALLERY") else { throw XCTSkip("Set PI_APP_FORK_GALLERY for the fork gallery") }
         let folder = URL(fileURLWithPath:path)
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
@@ -21,6 +24,7 @@ final class SubagentForkGalleryTests: XCTestCase, SerialTestLane {
                     fixture.show("completed")
                     fixture.model.chats = [fixture.model.chats[0]]
                     fixture.model.chats[0].title = "Parser review — fork"
+                    fixture.model.chats[0].parentSessionID = kind.parentID("source-chat")
                     fixture.parent.childSummaries = [:]; fixture.parent.familyWaiting = false
                     fixture.parent.runState = .idle; fixture.parent.runStatus = "idle"; fixture.parent.continuable = false
                     fixture.parent.footer.cost = SessionCostReading(limit:.usd(25),spentUSD:0)
@@ -45,14 +49,14 @@ final class SubagentForkGalleryTests: XCTestCase, SerialTestLane {
                     }
                     let card = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeSubagentCard.self,in:fixture.content).first)
                     let open = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self,in:card).first { $0.accessibilityIdentifier() == "open-subagent" })
-                    XCTAssertEqual(open.title,"History"); XCTAssertFalse(open.isEnabled)
+                    XCTAssertEqual(open.title,"Open"); XCTAssertFalse(open.isEnabled)
                     for button in ConversationPaneTests.views(PiKit.Button.self,in:card) where !button.isHidden {
                         XCTAssertLessThanOrEqual(button.convert(button.bounds,to:card).maxX,card.bounds.width + 1)
                     }
                     fixture.content.layoutSubtreeIfNeeded(); fixture.window.displayIfNeeded()
                     let image = try XCTUnwrap(fixture.content.bitmapImageRepForCachingDisplay(in:fixture.content.bounds))
                     fixture.content.cacheDisplay(in:fixture.content.bounds,to:image)
-                    let name = "historical-\(complete ? "result" : "pending")-\(color)-\(width)x600.png"
+                    let name = "historical-\(kind.rawValue)-\(complete ? "result" : "pending")-\(color)-\(width)x600.png"
                     try XCTUnwrap(image.representation(using:.png,properties:[:])).write(to:folder.appendingPathComponent(name))
                 }
             }
