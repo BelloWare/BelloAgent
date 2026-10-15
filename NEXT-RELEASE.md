@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Cold owner deletion now starts the project helper and repairs surviving side ledgers before Trash, including resumed deletion intents outside the chat window. Startup or mirror failures preserve evidence for retry; no model connection or transcript runtime is needed. [Round 7 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-7-repair-before-cold-owner-deletion).
+
 - [ ] Sub-cost round-6 validation follow-up: the one full native lane passed 2,554 tests, skipped 37, and failed one Overview hover redraw-counter assertion. The unchanged class passed alone (seven passed, one skipped); the parallel failure is not yet attributed. [Evidence](docs/validation/sub-cost-0.1.128.md#round-6-full-lane-follow-up).
 
 - [x] Shared side-budget convergence: damaged unrelated side discovery is isolated; loaded child mirrors recover missing initial charges; archive ancestry uses the complete persisted graph, including unlisted orphan sides. Lightweight owner budget state keeps authoritative spend and editable limits without transcript displays, and fences retired runtime replies. [Shared budget invariants and round 6 validation](docs/validation/sub-cost-0.1.128.md#shared-budget-invariants).

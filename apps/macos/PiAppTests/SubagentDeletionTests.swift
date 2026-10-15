@@ -125,10 +125,13 @@ final class SubagentDeletionTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: family.path.path))
         let intents = try await store.list(SessionDeletionRecord.self, kind: SessionDeletionRecord.kind)
         XCTAssertEqual(Set(intents.map(\.id)), Set([parent.id, family.child]))
-        model.shutdown()
+        await model.stopHostsAndWait(); model.shutdown()
         try await model.traces.close(); await store.close()
-        let reopened = WorkspaceModel(stateRoot: model.root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        // A real relaunch retains the project's configuration. The recovery
+        // barrier can start its helper without opening any conversation.
+        let reopened = WorkspaceModel(stateRoot: model.root, vault: model.vault)
         defer { reopened.shutdown() }
+        addTeardownBlock { @MainActor in await reopened.stopHostsAndWait() }
         let nextStore = try XCTUnwrap(reopened.store)
         reopened.chats = try await nextStore.loadChats()
         try await reopened.traces.configure(quota: nil, bodyRetention: 86_400, metricRetention: 86_400)

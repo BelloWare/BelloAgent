@@ -21,13 +21,7 @@ extension WorkspaceModel {
         let owner = SessionDeletionRecord(id: parent.id, ownerID: parent.id, workspaceID: parent.workspaceID, path: parentPath)
         // Reject unsupported paths before detaching the runtime or committing
         // tombstones, which intentionally prevent this chat from reopening.
-        _ = try familyDeletionJournal(owner)
-        if let host = hosts[parent.workspaceID] {
-            // The helper knows queued/settling children which metadata may
-            // never have seen. It refuses to unload an unsettled owner.
-            if host.isReady { _ = try await host.request("session.forget", sessionID: parent.id) }
-            else { try await host.settleCaptureIfStopping() }
-        }
+        try await prepareFamilyDeletion(owner)
         helperSessionDidUnload(parent.id)
         // Read after the runtime is detached: no last-millisecond delegation
         // can escape the manifest. App opens are blocked during this operation.
@@ -55,7 +49,33 @@ extension WorkspaceModel {
             helperSessionDidUnload(member.id)
         }
         try await store.beginFamilyDeletion(members); durable = true
-        try await finishFamilyDeletion(members)
+        try await finishFamilyDeletion(members, repaired: true)
+    }
+
+    private func prepareFamilyDeletion(_ owner: SessionDeletionRecord) async throws {
+        let journal = try familyDeletionJournal(owner)
+        var host = hosts[owner.workspaceID]
+        if host?.isReady != true {
+            try await host?.settleCaptureIfStopping()
+            // A missing journal has no ledger left to repair. Inspection
+            // errors must not be mistaken for absence and permit cleanup.
+            guard let journal else { return }
+            do {
+                let values = try journal.resourceValues(forKeys: [.isRegularFileKey])
+                guard values.isRegularFile == true else { throw StoreError.invalidRecord }
+            } catch let error as NSError where error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) { return }
+            try await ensureConfiguration()
+            guard let workspace = workspace(for: owner.workspaceID) else { throw HostError.failure("Restore this chat's project before deleting it so saved side costs can be repaired.") }
+            host = try await self.host(for: workspace)
+        }
+        guard let host else { return }
+        cancelIdle(workspaceID: owner.workspaceID)
+        defer { scheduleIdle(workspaceID: owner.workspaceID, host: host) }
+        // The helper refuses unsettled work and repairs surviving side ledgers
+        // from the owner's committed charges, even with no loaded runtime or
+        // capture evidence. Await that durable repair before tombstones/Trash.
+        // Starting only the project helper needs no model profile/credential.
+        _ = try await host.request("session.forget", sessionID: owner.id)
     }
 
     func markPendingFamilyDeletions() async {
@@ -83,9 +103,18 @@ extension WorkspaceModel {
         return journal
     }
 
-    private func finishFamilyDeletion(_ members: [SessionDeletionRecord]) async throws {
+    private func finishFamilyDeletion(_ members: [SessionDeletionRecord], repaired: Bool = false) async throws {
         guard let store, let owner = members.first?.ownerID else { return }
         deletingFamilies.insert(owner)
+        if !repaired {
+            // An older app's intent is not proof that it repaired side mirrors.
+            // Retry before any cleanup, using the persisted owner even when it
+            // is absent from the current chat-list window.
+            guard let record = members.first(where: { $0.id == owner }),
+                  try await store.get(String.self, kind: "session-deleted", id: owner) == owner else { throw StoreError.invalidRecord }
+            try await prepareFamilyDeletion(record)
+            helperSessionDidUnload(owner)
+        }
         // Keep the parent until its children are gone, so a partial failure
         // still has an obvious entry from which the user can retry deletion.
         for member in members.sorted(by: { ($0.id == owner ? 1 : 0, $0.id) < ($1.id == owner ? 1 : 0, $1.id) }) {
