@@ -33,8 +33,6 @@ struct RememberedSelection: Codable, Sendable, Equatable {
     var backgroundRequestsOpen: Bool?
     /// True when the sidebar's archive switch was on.
     var showArchivedChats: Bool?
-    /// True when the sides panel was pinned open at the window's right edge.
-    var sidesPanelPinned: Bool?
     /// Chats by order of opening, the open one first (`WorkspaceRecency.swift`).
     var recentChats: [String]?
     var revision: Int64 = 0
@@ -123,7 +121,6 @@ extension WorkspaceModel {
         value.reportOpen = page == .report ? true : nil
         value.backgroundRequestsOpen = page == .background ? true : nil
         value.showArchivedChats = showArchivedSessions ? true : nil
-        value.sidesPanelPinned = sidesPanelPinned ? true : nil
         value.recentChats = recentChatsToRemember
         return value
     }
@@ -234,7 +231,6 @@ extension WorkspaceModel {
         selectionMemory.remembered = remembered
         adoptRecentChats(remembered?.recentChats)
         if remembered?.showArchivedChats == true { showArchivedSessions = true }
-        if remembered?.sidesPanelPinned == true { sidesPanelPinned = true }
         selectionMemory.savedRevision = remembered?.revision ?? 0
         selectionMemory.sides = (remembered?.shownSides ?? [:]).filter { parent, side in
             chatRecord(parent) != nil && chatRecord(side).map { $0.parentSessionID == parent && !$0.isSubagent && !$0.imported } == true

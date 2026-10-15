@@ -1,13 +1,15 @@
 # Bello Agent — Native Swift implementation and continuation design
 
-## Sub-agent navigation (0.1.128)
+## Sides and sub-agent navigation (0.1.128)
 
-Managed children live in the main chat's top-right Agents popover and in read-only
-right-pane tabs, with optional pop-out windows. Normal sidebar rows omit them;
-parents show only a running-count badge, and search results retain parent-labelled
-child access. The pill occupies its own conversation row, remaining left of the
-pane divider. See the [display amendment](docs/design/subagents.md#01128-display-update--owner-decision-2026-10-15)
-for cached family presentation, stable numbering, keyboard access and restoration.
+A single Pi pill at the main conversation column’s top right lists its open/kept
+sides and numbered sub-agents. Both leave normal sidebar lists; search retains
+parent-labelled results. The parent row shows one activity spinner and a compact
+working count, with running/queued agents and working sides distinguished in
+VoiceOver. The old hover sides panel and its pin preference are removed.
+The pill stays left of the pane divider; sides and read-only child tabs open beside
+the main chat. Unsent side drafts remain memory-only. See the
+[display amendment](docs/design/subagents.md#01128-display-update--owner-decision-2026-10-15).
 
 ## Webhook when a chat finishes (0.1.105)
 

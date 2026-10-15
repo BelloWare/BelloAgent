@@ -34,8 +34,9 @@ import QuartzCore
     private let keep = PiKit.Button("Keep", symbol: "pin", style: .secondary, compact: true)
     private var actionsMenu: ConversationActionsMenuView
     private let close = PiKit.IconButton(symbol: "xmark", label: "Close side", size: 26)
-    private let stack: ShellStack
+    private var stack = ShellStack(.horizontal)
     private var badgeKey = ""
+    private var compactDraft = false
 
     /// A kept side's title: a plain button that renames the chat.
     final class TitleButton: PiKit.ButtonBase, ShellCutting {
@@ -57,14 +58,8 @@ import QuartzCore
     init(model: WorkspaceModel) {
         self.model = model
         actionsMenu = ConversationActionsMenuView(model: model, sessionID: "")
-        let titleRow = ShellStack(.horizontal, spacing: 6, [.view(plainTitle), .view(titleButton, .flexible), .view(badgeSlot)])
-        stack = ShellStack(.horizontal, spacing: PiSpacing.sm, padding: NSEdgeInsets(top: 10, left: PiSpacing.lg, bottom: 8, right: PiSpacing.lg), [
-            .view(ShellStack(.vertical, spacing: 3, [.view(titleRow, .fill), .view(boundary, .fill)]), .flexible),
-            .spacer(PiSpacing.sm),
-            .view(bringBack), .view(keep), .view(actionsMenu), .view(close),
-        ])
         super.init(frame: .zero)
-        addSubview(stack)
+        configure(width: 0, force: true)
         bringBack.onPress = { [weak self] in self?.actions?.bringBack() }
         keep.onPress = { [weak self] in self?.actions?.keep() }
         close.onPress = { [weak self] in self?.actions?.close() }
@@ -82,7 +77,8 @@ import QuartzCore
         titleButton.isEnabled = !chat.isBackgroundTask
         titleButton.setAccessibilityLabel("Rename chat: " + chat.title)
         let key = side.pending ? "pending" : side.kept ? "kept" : "memory"
-        if key != badgeKey {
+        let badgeChanged = key != badgeKey
+        if badgeChanged {
             badgeKey = key
             badge = side.pending ? PiKit.Badge(text: "Created when you send", icon: "square.and.pencil")
                 : PiKit.Badge(text: side.kept ? "Saved · Read-only" : "In memory", tone: side.kept ? .success : .warning, icon: "arrow.triangle.branch")
@@ -93,13 +89,45 @@ import QuartzCore
         keep.title = side.keeping ? "Keeping…" : side.keepRequested ? "Keep Requested" : "Keep"
         keep.isEnabled = !(side.keeping || side.keepRequested || loading)
         close.isEnabled = !(side.keeping || loading)
+        configure(width: bounds.width, force: badgeChanged)
         stack.relayoutAll()
         PiKit.sizeChanged(self)
     }
-    func height(forWidth width: CGFloat) -> CGFloat { stack.height(forWidth: width) }
+    /// Pending drafts must fit the actual side allocation, including when no
+    /// tab strip is present. Move their actions below the labels at narrow widths.
+    private func configure(width: CGFloat, force: Bool = false) {
+        let compact = badgeKey == "pending" && width < 460
+        guard compact != compactDraft || force else { return }
+        compactDraft = compact
+        if badgeKey == "pending" {
+            badge.text = compact ? "Draft" : "Created when you send"
+            badge.toolTip = "Created when you send"
+            badge.setAccessibilityLabel("Draft side, created when you send")
+        }
+        let titleRow = ShellStack(.horizontal, spacing: 6, [
+            .view(plainTitle, compact ? .flexible : .natural), .view(titleButton, .flexible), .view(badgeSlot),
+        ])
+        let labels = ShellStack(.vertical, spacing: 3, [.view(titleRow, .fill), .view(boundary, .fill)])
+        let controls: [ShellItem] = [.view(bringBack), .view(keep), .view(actionsMenu), .view(close)]
+        stack.removeFromSuperview()
+        let padding = NSEdgeInsets(top: 10, left: PiSpacing.lg, bottom: 8, right: PiSpacing.lg)
+        stack = compact
+            ? ShellStack(.vertical, spacing: PiSpacing.sm, padding: padding, [
+                .view(labels, .fill), .view(ShellStack(.horizontal, spacing: PiSpacing.sm, [.spacer(0)] + controls), .fill),
+            ])
+            : ShellStack(.horizontal, spacing: PiSpacing.sm, padding: padding, [.view(labels, .flexible), .spacer(PiSpacing.sm)] + controls)
+        addSubview(stack)
+    }
+    func height(forWidth width: CGFloat) -> CGFloat {
+        configure(width: width)
+        return stack.height(forWidth: width)
+    }
     /// The kept title can truncate. The unsaved title was fixedSize, and
     /// badges and actions retain their widths and original stack spacing.
     var minimumWidth: CGFloat {
+        if badgeKey == "pending" {
+            return StackLayout.width([.fixed(bringBack), .fixed(actionsMenu), .fixed(close)], spacing: PiSpacing.sm, proposal: 0) + PiSpacing.lg * 2
+        }
         let titleWidth = (plainTitle.isHidden ? 0 : plainTitle.intrinsicContentSize.width) + 6 + badgeSlot.naturalWidth
         var items = [StackLayout.Item(view: nil, sizing: .fixed(CGSize(width: titleWidth, height: 0))), .spacer(PiSpacing.sm), .fixed(bringBack)]
         if !keep.isHidden { items.append(.fixed(keep)) }
@@ -107,7 +135,7 @@ import QuartzCore
         return StackLayout.width(items, spacing: stack.spacing, proposal: 0) + stack.padding.left + stack.padding.right
     }
     override func setFrameSize(_ newSize: NSSize) { super.setFrameSize(newSize); needsLayout = true }
-    override func layout() { super.layout(); stack.frame = bounds }
+    override func layout() { super.layout(); configure(width: bounds.width); stack.frame = bounds }
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() { layer?.backgroundColor = piCGColor(.piContent) }
 }

@@ -287,7 +287,7 @@ struct ChatRowStats: Equatable {
         var subtitle: String
         var symbol: String
         var selected: Bool
-        var runningAgents = 0
+        var familyActivity = FamilyActivity()
         var unreadCount = 0
         var unreadFailure = false
         var markedUnreadOnly = false
@@ -313,7 +313,7 @@ struct ChatRowStats: Equatable {
             if run.holdsQueue { words.append(run == .interrupted ? "paused, run interrupted" : "paused") }
             if unreadCount > 0 { words.append("unread") } else if unreadFailure { words.append("run failed") }
             if hasDraft { words.append("has a draft") }
-            if runningAgents > 0 { words.append("\(runningAgents) sub-agent\(runningAgents == 1 ? "" : "s") running") }
+            if familyActivity.active > 0 { words.append(familyActivity.label) }
             return words.joined(separator: ", ")
         }
         var help: String {
@@ -416,9 +416,9 @@ struct ChatRowStats: Equatable {
         let before = content
         guard new != before else { return }
         content = new
-        agentBadge.update(new.runningAgents)
+        agentBadge.update(new.familyActivity)
         // The icon, or a spinner while it works.
-        let working = new.stats.busy || new.stats.loading
+        let working = new.stats.busy || new.stats.loading || new.familyActivity.active > 0
         if working, spinner == nil {
             let view = PiSpinnerView(frame: NSRect(x: 0, y: 0, width: 11, height: 11))
             view.configure(lineWidth: 1.6, turning: !PiKit.Motion.reduced)

@@ -23,6 +23,8 @@ import Combine
     /// What opening the same thing again finds: one tab a key and kind,
     /// whichever pane or window it is in (a file's path, a repository).
     let key: String
+    var stripTitle: String { title }
+    var truncatesTitleAtEnd: Bool { false }
     @Published var title: String
     @Published var symbol: String
     /// Said when the pointer rests on the tab.

@@ -33,17 +33,25 @@ import AppKit
             pane.showsAgentFamily = container?.isPane == false
             pane.show(session: view, chat: child)
         }
-        if let container, let window = model.tabs.window(of: container) { window.title = title + " — Bello Agent" }
+        if let container, container.activeTab === self, let window = model.tabs.window(of: container) { window.title = title + " — Bello Agent" }
         if model.subagentTabIsShown(key), model.displays[key]?.historyState == nil || model.displays[key]?.historyState == .dormant { ensureLoaded() }
     }
+    override var stripTitle: String { model?.record(key)?.subagentShortTitle ?? title }
+    override var truncatesTitleAtEnd: Bool { true }
     override func makeAppKitContent() -> NSView {
         guard let model else { return NSView() }
         let pane = ConversationPaneView(model: model); self.pane = pane
         refresh(); return pane
     }
     override var focusView: NSView? { pane }
-    override func didShow() { focusOnAttachment = true; refresh(); ensureLoaded(); focusIfAttached() }
-    private func ensureLoaded() {
+    override func didShow() { refresh(); ensureLoaded(); focus() }
+    override func didHide() {
+        focusOnAttachment = false
+        if let model, !model.subagentTabIsShown(key), model.focusedSessionID == key {
+            model.focusedSessionID = model.selectedID
+        }
+    }
+    func ensureLoaded() {
         guard let model, loading == nil, model.record(key)?.isSubagent == true else { return }
         loading = Task { [weak self, weak model] in
             guard let self, let model else { return }
@@ -53,27 +61,58 @@ import AppKit
     }
     override func contentVisibilityChanged(_ shown: Bool) {
         refresh()
-        if shown { focusIfAttached() }
+        // The ordinary Side selection can uncover this tab without activate().
+        if shown { ensureLoaded(); focusIfAttached() }
     }
     private func focusIfAttached() {
         guard focusOnAttachment, let pane, pane.window != nil else { return }
         focusOnAttachment = false
         DispatchQueue.main.async { [weak self] in
-            guard let self, let model = self.model, model.subagentTabIsShown(self.key), !model.presentsSheet,
+            guard let self, let model = self.model, model.focusedSessionID == self.key,
+                  model.subagentTabIsShown(self.key), !model.presentsSheet,
                   self.pane?.isHiddenOrHasHiddenAncestor == false else { return }
             self.focus()
         }
     }
     func focus() {
-        refresh()
-        if let pane, let window = pane.window { window.makeFirstResponder(pane) }
-        model?.focusedSessionID = key
+        guard let model, model.subagentTabIsShown(key), model.record(key)?.isSubagent == true else { return }
+        focusOnAttachment = true
+        if let pane, let window = pane.window, !pane.isHiddenOrHasHiddenAncestor {
+            focusOnAttachment = false; window.makeFirstResponder(pane)
+        }
+        model.focusedSessionID = key
     }
-    override func performKeyEquivalent(with event: NSEvent) -> Bool { pane?.performKeyEquivalent(with: event) ?? false }
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if pane?.performKeyEquivalent(with: event) == true { return true }
+        guard let model, let pane, let window = pane.window, event.window === window,
+              window.attachedSheet == nil, !(window.childWindows ?? []).contains(where: { $0.isVisible && $0.canBecomeKey }),
+              model.subagentTabIsShown(key), !model.presentsSheet, !model.quickOpen.isOpen,
+              let responder = window.firstResponder as? NSView, responder === pane || responder.isDescendant(of: pane),
+              let display = model.displays[key] else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let text = event.charactersIgnoringModifiers?.lowercased()
+        let find: TranscriptFindCommand.Kind?
+        switch (text, flags) {
+        case ("f", .command): find = .show
+        case ("g", .command): find = .next
+        case ("g", [.command, .shift]) where display.findHost?.findIsOpen == true: find = .previous
+        case ("f", [.command, .option]): model.inspectConversation(key); return true
+        case (".", .command): model.stop(sessionID: key); return true
+        default: return false
+        }
+        if let find { model.revealSerial += 1; display.findCommand = .init(kind: find, serial: model.revealSerial) }
+        return true
+    }
     override func willClose() {
         loading?.cancel(); loading = nil
         model?.displays[key]?.presentation.cancel()
         if let model, model.focusedSessionID == key { model.focusedSessionID = model.selectedID }
+        // Window-close/teardown calls willClose before removing its tab array.
+        // Evict on the next turn, once closed tabs no longer hold their readers.
+        DispatchQueue.main.async { [weak model] in
+            guard let model, !model.isShutDown else { return }
+            model.releaseUnreadDisplays(keeping: model.selectedID ?? "")
+        }
     }
 }
 
@@ -82,7 +121,7 @@ extension WorkspaceModel {
     func subagentTab(_ id: String) -> SubagentTab? { tabs.tab(kind: SubagentTab.kind, key: id) as? SubagentTab }
     func subagentTabIsShown(_ id: String) -> Bool {
         guard let tab = subagentTab(id), let container = tab.container else { return false }
-        return container.activeID == tab.id && !container.sideShown && (!container.isPane || page == .chats)
+        return container.shownTab(sideAvailable: container.isPane && paneSideAvailable) === tab && (!container.isPane || page == .chats)
     }
     @discardableResult func openSubagentTab(_ id: String) async -> SubagentTab? {
         guard let child = record(id), child.isSubagent else { return nil }
@@ -99,6 +138,8 @@ extension WorkspaceModel {
         page = .chats
         let openingSelection = selectionRevision
         let tab = tabs.open(kind: SubagentTab.kind, key: id) { SubagentTab(childID: id) } as! SubagentTab
+        // Opening is the focus decision; finishing its asynchronous read is not.
+        tab.focus(); tab.ensureLoaded()
         if let loading = tab.loading { await loading.value }
         else {
             // Reopening an already shown viewer can reattach after recovery.
@@ -107,18 +148,13 @@ extension WorkspaceModel {
             catch { displays[id]?.notice = error.localizedDescription }
         }
         guard !Task.isCancelled, request == subagentNavigationRevision, selectionRevision == openingSelection, subagentTab(id) === tab else { return nil }
-        tab.focus()
         return tab
     }
     func loadSubagentTab(_ tab: SubagentTab) async {
         guard let child = record(tab.key), child.isSubagent, subagentTab(child.id) === tab else { return }
         let view = displays[child.id] ?? SessionDisplay(id: child.id)
-        if view.historyState != .dormant && view.historyState != .loading {
-            do { try await attachManagedSubagent(child) }
-            catch is CancellationError { }
-            catch { view.notice = error.localizedDescription }
-            tab.refresh(); return
-        }
+        // Hidden children receive status only. Reuse the journal revision check
+        // used by main-chat selection even if this display was already ready.
         let held = HeldRows(cached: view.hasPresentedRows, identity: view.presentation.identity, partialTurnInput: view.presentation.partialTurnInput)
         view.presentation.begin(); view.presentationGeneration = view.presentation.generation
         view.historyState = .loading; view.refreshingCachedRows = held.cached
@@ -128,6 +164,7 @@ extension WorkspaceModel {
         await loadSelectedChat(child.id, item: child, into: view, selection: selectionRevision,
                                generation: view.presentationGeneration, heldRows: held, focusesComposer: false, inTab: true)
         tab.refresh()
+        releaseUnreadDisplays(keeping: selectedID ?? "")
     }
     func focusSubagentParent(_ id: String) {
         focusedSessionID = id

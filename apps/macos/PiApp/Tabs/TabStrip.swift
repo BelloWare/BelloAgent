@@ -110,7 +110,7 @@ extension TabHost {
             let item = items[id] ?? TabStripItemView(closable: true)
             items[id] = item
             item.enabled = inheritedEnabled
-            item.apply(title: tab.title, symbol: tab.symbol, help: tab.help, selected: shown == id)
+            item.apply(title: tab.stripTitle, symbol: tab.symbol, help: tab.help, selected: shown == id, truncatesAtEnd: tab.truncatesTitleAtEnd, accessibleTitle: tab.title)
             item.events = events(for: tab)
             wanted.append(id)
             // The tab's own title and symbol change under it.
@@ -290,12 +290,12 @@ extension TabHost {
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var isFlipped: Bool { true }
 
-    func apply(title: String, symbol: String, help: String, selected: Bool) {
+    func apply(title: String, symbol: String, help: String, selected: Bool, truncatesAtEnd: Bool = false, accessibleTitle: String? = nil) {
         let changed = title != self.title || symbol != self.symbol || selected != self.selected
         self.title = title; self.symbol = symbol; self.selected = selected
         toolTip = help.isEmpty ? nil : help
-        label.set(title: title, symbol: symbol, selected: selected)
-        close.setAccessibilityLabel("Close " + title)
+        label.set(title: title, symbol: symbol, selected: selected, truncatesAtEnd: truncatesAtEnd, accessibleTitle: accessibleTitle)
+        close.setAccessibilityLabel("Close " + (accessibleTitle ?? title))
         if changed { measure(); needsLayout = true; refreshFace() }
     }
     private var labelPadding: (leading: CGFloat, trailing: CGFloat) { (10, closable ? 4 : 10) }
@@ -404,6 +404,8 @@ extension TabHost {
 /// middle; to VoiceOver a button named by the title, selected while chosen.
 @MainActor final class TabItemLabelView: NSView {
     private var title = "", symbol = "doc", selected = false
+    private(set) var truncatesAtEnd = false
+    private var accessibleTitle: String?
     var press: (() -> Void)?
     var enabled = true
     override var isFlipped: Bool { true }
@@ -412,8 +414,9 @@ extension TabHost {
     private var line: PiKit.Line {
         PiKit.Line(title, font: .systemFont(ofSize: 12.5, weight: selected ? .medium : .regular), color: selected ? .piInk : .piInkSecondary)
     }
-    func set(title: String, symbol: String, selected: Bool) {
-        guard title != self.title || symbol != self.symbol || selected != self.selected else { return }
+    func set(title: String, symbol: String, selected: Bool, truncatesAtEnd: Bool = false, accessibleTitle: String? = nil) {
+        guard title != self.title || symbol != self.symbol || selected != self.selected || truncatesAtEnd != self.truncatesAtEnd || accessibleTitle != self.accessibleTitle else { return }
+        self.truncatesAtEnd = truncatesAtEnd; self.accessibleTitle = accessibleTitle
         self.title = title; self.symbol = symbol; self.selected = selected
         needsDisplay = true
     }
@@ -424,11 +427,11 @@ extension TabHost {
         let x = icon.width + 6, size = line.size(scale: scale)
         // Cut in the middle by Core Text, which keeps a letter or so less than `Text` did.
         line.draw(in: CGRect(x: x, y: PiKit.round((bounds.height - size.height) / 2, scale), width: max(0, bounds.width - x), height: size.height),
-                  truncation: .middle, scale: scale)
+                  truncation: truncatesAtEnd ? .end : .middle, scale: scale)
     }
     override func isAccessibilityElement() -> Bool { true }
     override func accessibilityRole() -> NSAccessibility.Role? { .button }
-    override func accessibilityLabel() -> String? { title }
+    override func accessibilityLabel() -> String? { accessibleTitle ?? title }
     override func isAccessibilitySelected() -> Bool { selected }
     override func isAccessibilityEnabled() -> Bool { enabled }
     override func accessibilityPerformPress() -> Bool { guard enabled else { return false }; press?(); return true }

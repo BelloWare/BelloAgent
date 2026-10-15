@@ -143,7 +143,7 @@ extension WorkspaceModel {
     }
     /// The displays of chats nobody is reading are let go of, least recently
     /// used first, until no more than eight are kept.
-    private func releaseUnreadDisplays(keeping id: String) {
+    func releaseUnreadDisplays(keeping id: String) {
         // A new chat that was never sent has nothing written anywhere (see
         // `materializeChat`): its display is the only place its draft lives,
         // so it is not let go of while it holds one.

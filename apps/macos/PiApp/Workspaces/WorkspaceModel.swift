@@ -20,7 +20,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Every sidebar row, unread badge and menu-bar row looks a chat up by id.
     /// A linear scan made those lookups O(chats) each and the sidebar O(chats²).
     /// The sidebar index rebuilds its id table at most once per mutation, lazily.
-    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); subagentFamilies.removeAll(); chatsRevision &+= 1; readBadgeCache = nil; noteActivityChanged(); forgetKeptTranscriptRows() } }
+    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); subagentFamilies.removeAll(); familySideRecords = nil; chatsRevision &+= 1; readBadgeCache = nil; noteActivityChanged(); forgetKeptTranscriptRows() } }
     /// A duplicate id keeps the first entry, matching `chats.first`.
     func chatRecord(_ id: String) -> ChatRecord? { sidebarIndex.chat(id, in: chats) }
     @Published var unreadStates: [String: SessionReadState] = [:] { didSet { readBadgeCache = nil; noteActivityChanged() } }
@@ -34,8 +34,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Changes only at delegation lifecycle boundaries, never streamed tokens.
     var subagentNavigationRevision = 0
     var subagentReturnTargets: [String: SubagentTarget] = [:]
-    @Published var subagentSummaries: [String: SubagentSummary] = [:] { didSet { subagentFamilies.removeAll() } }
+    @Published var subagentSummaries: [String: SubagentSummary] = [:] { didSet { subagentFamilies.removeAll(); invalidateConversationFamily() } }
     var subagentFamilies: [String: SubagentFamily] = [:]
+    var conversationFamilies: [String: ConversationFamily] = [:]
+    var familySideRecords: [String: [ChatRecord]]?
     let agentFamilyRequests = PassthroughSubject<String, Never>()
     var deletingFamilies: Set<String> = []
     var familyFileRecycler: (([URL]) async throws -> Void)?
@@ -145,13 +147,6 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// archived chats after its active ones (`SidebarGroups.swift`). One
     /// switch for the whole sidebar, remembered with the selection.
     @Published var showArchivedSessions = false { didSet { if showArchivedSessions != oldValue { sidebarIndex.invalidate(); noteSelectionChanged() } } }
-    /// The sides panel at the window's right edge stands open as a column of
-    /// its own, rather than hiding until the pointer rests at the edge
-    /// (`SidesPanel.swift`). Remembered with the selection.
-    @Published var sidesPanelPinned = false { didSet { if sidesPanelPinned != oldValue { noteSelectionChanged() } } }
-    /// Whether the sides panel is out over the window while it is not pinned.
-    /// Its own object: the panel coming and going redraws nothing else.
-    let sidesPanelReveal = SidesPanelReveal()
     /// Answers the sidebar's own queries once per change: chat lookups, per
     /// group entry lists, the project groups and the keyboard order.
     let sidebarIndex = SidebarIndex()
@@ -261,7 +256,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var resourceCatalogWorkspaceID: String?
     @Published var resourceCatalogSessionID: String?
     @Published var resourceTargetSessionID: String?
-    @Published var sides: [String: SideRecord] = [:] { didSet { sidebarIndex.invalidate(); readBadgeCache = nil; noteActivityChanged(); sidesChanged(from: oldValue) } }
+    @Published var sides: [String: SideRecord] = [:] { didSet { sidebarIndex.invalidate(); familySideRecords = nil; readBadgeCache = nil; noteActivityChanged(); sidesChanged(from: oldValue) } }
     @Published var resourceLoading = false
     @Published var resourceNotice = ""
     var editTargetRead: (@MainActor (String, String) async throws -> [String: WireValue])?
@@ -304,6 +299,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var activityProjectionCount: Int { menuBarProjection.count }
     var menuBarActivityChanges: AnyPublisher<Void, Never> { activityChanged.eraseToAnyPublisher() }
     func noteActivityChanged(_ id: String? = nil) {
+        invalidateConversationFamily(id)
         if let id { menuBarProjection.dirty.insert(id) }
         else {
             menuBarProjection.dirty.formUnion(displays.keys); menuBarProjection.dirty.formUnion(unreadStates.keys)

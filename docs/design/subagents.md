@@ -2,34 +2,56 @@
 
 ## 0.1.128 display update — owner decision, 2026-10-15
 
-This supersedes the sidebar groups and main-pane child navigation described below.
-Normal Topics/Flat, pinned and archived lists omit managed children, including topic
-counts and unread indicators. A parent with queued/running children shows a compact
-spinner and “N agents” badge. Search still finds children, labelled
-“#N · description — in parent title”; choosing a result opens the child reader.
+This supersedes the sidebar groups, hover sides panel and main-pane child navigation
+described below (including the owner's later addition for ordinary sides).
+Normal Topics/Flat, pinned and archived lists omit sides and managed children.
+Orphans and invalid cross-project side links remain ordinary main chats. Search
+still finds saved sides and children, labelled with their parent; managed children
+use “#N · description — in parent title”. Child unread/draft behavior is unchanged.
 
-The main conversation column reserves a 34-point row for a trailing **Agents N** Pi
-pill. While children run it adds a spinner and active count (queued work included).
-It remains left of the divider when the right pane opens. Its keyboard-accessible
-Pi popover orders children by their stable number and shows status, model and the
-existing reported progress spend when available. Open reuses the child's tab;
-Stop appears on running rows. Stop All reviews the active family in a custom Pi
-confirmation, and Inspect Family uses the existing Inspector. View and Conversation
-menus, and the chat menu, reach the same popover.
+The main conversation column reserves a 34-point row for one trailing Pi pill,
+**2 sides · 3 agents**, omitting absent parts and hiding when neither exists.
+Its quiet symbol becomes one spinner during activity. It remains left of the divider
+when the right pane opens. The popover aligns to the pill’s trailing edge and stays
+within the owning window. A Sides section lists open/kept sides, status (working,
+new reply, failed, saved or draft), existing reported spend, Open and New Side.
+Sub-agents follow in stable number order with status, model, reported spend,
+Open and Stop for running children. Running, queued and stopping counts are distinct.
+Stop All uses a custom Pi confirmation; Inspect Family uses the existing Inspector.
+View, Conversation and chat menus offer Sides and Agents. Tab/arrow keys and complete
+VoiceOver labels provide access. The parent sidebar row has one leading spinner and
+a passive “N working” badge (or “N queued” when only queued work remains); its tooltip
+and VoiceOver spell out working sides and running/queued/stopping sub-agents.
 
-Children open as read-only `SubagentTab`s in the existing file/Git pane, without a
-human composer. The host's identity key prevents duplicate tabs across pane/window
-moves and persists them through relaunch. Saved tabs wait for metadata before
-loading; cold readers do not start a helper. Back to Parent from the embedded tab
-focuses the existing parent without changing its draft, version or reading position.
-Explicit source links still reveal their issuing message/version. A popped-out child
-has its own family pill, with the current child highlighted and siblings available.
+Sides keep their existing pane, draft and persistence paths. New Side reuses an
+unsent draft; no draft, chat, intent or journal is persisted until its first send.
+The hover panel, edge handle, pin state and former gallery are removed. Older saved
+selections containing the retired pin key remain readable; kept-side restoration is
+unchanged. Spend here reads existing usage and performs no accounting.
+At narrow side widths, a new draft's header puts its controls below the title and
+uses a compact Draft badge, keeping the main-column pill and divider clear.
 
-Full identities retain **Sub-agent N · description**. The compact family/search form
-is **#N · description**; tooltips and accessibility include the full numbered identity.
-Numbers and collapsed-turn filtering remain presentation-only. Model-facing text,
-permissions, tools, capture, journals and accounting are unchanged. Family rows/counts
-are cached at metadata/lifecycle boundaries, not derived from transcript layout.
+Children open as read-only `SubagentTab`s in the file/Git pane, without a human
+composer. Identity keys prevent duplicate tabs across pane/window moves and restore
+them after relaunch. Reopening revalidates saved history even if the hidden reader
+was already ready and its helper has expired. Loading completion never takes focus;
+Back to Parent and later tab choices win. Visibility follows the host’s actual side
+availability. Closing readers applies the existing eight-display eviction policy,
+protecting running sessions and open tabs. Cold readers do not start a helper.
+
+Embedded Back to Parent focuses the existing parent without changing its draft,
+version or reading position. Source links still reveal their issuing message/version.
+Popped-out children have the same picker, highlighting the current child; only the
+active tab sets the native window title. In-chat Find/Next/Previous, Inspector Find
+and Stop shortcuts route to the hosted child, excluding sheets and other popups.
+
+Full identities retain **Sub-agent N · description**. Compact family/search/tab
+labels use **#N · description**; tabs truncate at the tail and native titles,
+tooltips and VoiceOver retain the full numbered identity. Finished collapsed turns
+show only the main response; expanding restores every original row. Numbers and
+filtering remain presentation-only: no model-visible text, permission, tool, capture,
+journal or accounting contract changes. Family membership and counts are cached at
+metadata/activity boundaries; views never derive them from transcripts.
 
 **Status:** Proposed implementation design, incorporating lead review  
 **Date:** 2026-10-13  

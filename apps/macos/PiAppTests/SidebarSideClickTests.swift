@@ -83,8 +83,15 @@ final class SidebarSideClickTests: XCTestCase {
         ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { views(type, in: $0) }
     }
 
-    /// The row's own press, as the sidebar's press surface delivers a plain click.
+    /// A saved side's search-result press, as the sidebar delivers it.
     @MainActor private func click(_ id: String, in fixture: Fixture, file: StaticString = #filePath, line: UInt = #line) async throws {
+        let workspace = try XCTUnwrap(fixture.window.contentView as? WorkspaceRootView)
+        // Saved sides leave the normal list; their search-result press uses
+        // the same side-opening path without changing the sidebar's folds.
+        workspace.sidebar.setFilter(id)
+        await fixture.model.sidebarSearch.settleQuery()
+        try await draw(fixture)
+        defer { workspace.sidebar.setFilter("") }
         let root = try XCTUnwrap(fixture.window.contentView)
         let type = NSPasteboard.PasteboardType(TopicSessionDrag.type.identifier)
         let surface = views(TopicSessionDragSurfaceView.self, in: root).first { surface in
@@ -93,6 +100,7 @@ final class SidebarSideClickTests: XCTestCase {
             return drag.sessionIDs == [id]
         }
         try XCTUnwrap(surface, "The row of \(id) is on screen", file: file, line: line).actions.click([])
+        try await waitUntil("Search opens its side before the result is removed", { fixture.model.side(id) != nil }, file: file, line: line)
     }
 
     /// The composer that has the keyboard, by its chat.

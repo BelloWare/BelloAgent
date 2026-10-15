@@ -34,6 +34,7 @@ import Combine
     private var surface: TopicSessionDragSurfaceView?
     private var sourceWatch: AnyCancellable?
     private var minuteWatch: AnyCancellable?
+    private var familyWatch: AnyCancellable?
     /// The live page this row last read its figures from.
     private weak var watchedDisplay: SessionDisplay?
     /// The retained accounting this row draws, held while the row is: the
@@ -77,6 +78,9 @@ import Combine
         self.chat = chat; self.state = state; self.projectID = projectID
         if minuteWatch == nil {
             minuteWatch = SidebarMinute.shared.$tick.dropFirst().sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshBody() } }
+        }
+        if familyWatch == nil {
+            familyWatch = model.activityChanged.sink { [weak self] _ in MainActor.assumeIsolated { self?.refreshFamilyActivity() } }
         }
         row.selected = state.selected
         row.marked = state.marked
@@ -140,7 +144,7 @@ import Combine
     override func prepareForReuse() {
         super.prepareForReuse()
         actionBinding.invalidate()
-        sourceWatch = nil; minuteWatch = nil; watchedDisplay = nil; retained = nil
+        sourceWatch = nil; minuteWatch = nil; familyWatch = nil; watchedDisplay = nil; retained = nil
         bodyScheduled = false
         body.prepareForReuse()
         row.prepareForReuse(); row.marked = false; row.recencyTint = 0
@@ -197,7 +201,7 @@ import Combine
         // Paused before a restart, and not opened since: the saved hold says so.
         if display?.runStateKnown != true, let held = state.heldRun { stats.updateActivity(state: held, loading: false, activity: [:]) }
         return ChatRowBodyView.Content(stats: stats, title: model.subagentSearchTitle(chat), subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
-                                       runningAgents: state.runningAgents, unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
+                                       familyActivity: state.familyActivity, unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
                                        markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft,
                                        projectTag: state.projectTag, projectTagFullName: state.projectTagFullName, topicTag: state.topicTag, hasSide: state.hasSide,
                                        expanded: state.expanded, pinned: chat.isPinned, archived: chat.isArchived,
@@ -206,6 +210,14 @@ import Combine
     /// The live page a row in `state` reads its figures from, if any.
     static func liveDisplay(model: WorkspaceModel, chatID: String, state: SidebarChatRowState) -> SessionDisplay? {
         state.liveIdentity == nil ? nil : model.displays[chatID]
+    }
+    /// Family progress changes only these cached counts, never the parent's transcript.
+    private func refreshFamilyActivity() {
+        guard !chat.isSubagent, model.sideFamilyOwner(chat) == nil, var content = body.content else { return }
+        let activity = model.conversationFamily(chat.id).activity
+        guard activity != content.familyActivity else { return }
+        state.familyActivity = activity; content.familyActivity = activity
+        body.update(content); row.setAccessibilityLabel(content.accessibilityLabel)
     }
     private func refreshBody() {
         let height = bounds.width > 0 ? entryHeight(width: bounds.width) : nil

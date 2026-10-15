@@ -2,7 +2,7 @@ import XCTest
 @testable import PiApp
 
 final class SessionOrganizationTests: XCTestCase {
-    @MainActor func testAdjacentNavigationFocusesSavedSidesAndKeepsTheirWorkAcrossChats() async throws {
+    @MainActor func testAdjacentNavigationSkipsSidesAndKeepsTheirWorkAcrossChats() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
@@ -18,10 +18,10 @@ final class SessionOrganizationTests: XCTestCase {
         model.sides[parent.id] = SideRecord(id: child.id, parentID: parent.id, workspaceID: "w", profileID: "p", title: child.title, kept: true)
         model.selectedID = parent.id; model.selected = parentView; model.focusedSessionID = parent.id
         model.setProjectExpanded("w", expanded: true)
-        XCTAssertEqual(model.sidebarChatOrder, [parent.id, child.id, other.id])
+        XCTAssertEqual(model.sidebarChatOrder, [parent.id, other.id])
 
-        model.selectAdjacentChat(1)
-        try await eventually("the saved side focused") { model.focusedSessionID == child.id }
+        await model.openFamilySide(child.id)
+        XCTAssertEqual(model.focusedSessionID, child.id)
         XCTAssertEqual(model.selectedID, parent.id, "The child opens beside its parent")
         model.selectAdjacentChat(1)
         try await eventually("the next parent opened") { model.selectedID == other.id && model.selected?.draftReady == true }
@@ -29,9 +29,7 @@ final class SessionOrganizationTests: XCTestCase {
         XCTAssertTrue(model.displays[child.id] === childView)
         XCTAssertEqual(childView.draft, "Keep this side draft"); XCTAssertEqual(childView.state, "running")
         model.selectAdjacentChat(-1)
-        try await eventually("the retained side focused again") { model.selectedID == parent.id && model.focusedSessionID == child.id }
-        model.selectAdjacentChat(-1)
-        try await eventually("the parent focused") { model.focusedSessionID == parent.id }
+        try await eventually("the parent focused again") { model.selectedID == parent.id && model.focusedSessionID == parent.id }
         XCTAssertEqual(model.sides[parent.id]?.id, child.id)
         model.deleteChat(parent.id)
         XCTAssertEqual(model.error, "Close the side panel before deleting its parent.")

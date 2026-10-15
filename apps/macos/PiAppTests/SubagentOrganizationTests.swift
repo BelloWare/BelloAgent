@@ -59,7 +59,7 @@ final class SubagentOrganizationTests: XCTestCase {
             let entries = Self.contents(model).entries.map(\.id)
             XCTAssertFalse(entries.contains("subagents|chat-parent"))
             XCTAssertFalse(entries.contains("chat|chat-child"))
-            XCTAssertTrue(entries.contains("chat|chat-side"), "Ordinary sides keep their independent disclosure")
+            XCTAssertFalse(entries.contains("chat|chat-side"), "Sides and sub-agents are available from the shared picker")
             XCTAssertFalse(model.sidebarChatOrder.contains("chat-child"))
             XCTAssertTrue(Self.contents(model, filter: "child").entries.map(\.id).contains("chat|chat-child"))
             XCTAssertFalse(Self.contents(model).entries.map(\.id).contains("chat|chat-child"), "Search does not persist expansion")
@@ -178,7 +178,7 @@ final class SubagentOrganizationTests: XCTestCase {
             let ids = Self.contents(model).entries.map(\.id)
             XCTAssertFalse(ids.contains("subagents|chat-parent"))
             XCTAssertFalse(ids.contains("chat|chat-child"))
-            XCTAssertTrue(ids.contains("chat|chat-side"))
+            XCTAssertFalse(ids.contains("chat|chat-side"))
         }
         let finalFlush = await model.flushProjectSidebarState(); XCTAssertTrue(finalFlush)
         model.projectSidebarStates = [:]

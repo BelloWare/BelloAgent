@@ -236,9 +236,8 @@ struct SideActions {
     /// Reads the chat and the workspace again and changes only what differs.
     func refresh() {
         guard let session, let chat else { return }
-        agentFamilyHeader.update(model: model, sessionID: chat.id, enabled: inheritedEnabled)
-        let hideFamily = !showsAgentFamily || model.subagentFamily(chat.id).members.isEmpty
-        if agentFamilyHeader.isHidden != hideFamily { agentFamilyHeader.isHidden = hideFamily; needsLayout = true }
+        agentFamilyHeader.update(model: model, sessionID: chat.id, enabled: inheritedEnabled,
+                                 allowsDisplay: side == nil && showsAgentFamily)
         let now = read(session, chat)
         guard now != shown else { return }
         let before = shown
@@ -629,8 +628,8 @@ enum ConversationActionsMenu {
             }
         }
         if !chat.isSubagent && !model.isEphemeral(session.id) {
-            if !model.subagentFamily(chat.id).members.isEmpty {
-                PiMenuEntry.button("Agents…", systemImage: "person.crop.rectangle.stack") { model.agentFamilyRequests.send(model.subagentFamily(chat.id).ownerID) }
+            if !model.conversationFamily(chat.id).isEmpty {
+                PiMenuEntry.button("Sides and Agents…", systemImage: "person.crop.rectangle.stack") { model.agentFamilyRequests.send(model.conversationFamily(chat.id).ownerID) }
             }
             SessionOrganizationActions.entries(model: model, chat: chat)
             PiMenuEntry.divider

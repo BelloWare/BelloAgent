@@ -232,3 +232,163 @@ The lead still owns independent review and integration with sub-cost. Shared edi
 are limited to tab configuration/cache fields in `WorkspaceModel`, visible-reader
 guards in `WorkspaceHistory`/`WorkspaceRefresh`, navigation and conversation layout;
 retain the other stream's independent cost fields. No merge or push of `dev/next`.
+
+
+## Lead review round 1 and shared Sides picker
+
+Date: 2026-10-15. This section supersedes the Agents-only navigation described
+above. The original numbering and collapsed-turn work remains in place. This
+round implements every A/B review finding and the owner's later Sides addition.
+
+### Root causes and fixes
+
+- A ready child display was treated as current even after hidden status-only
+  updates and helper expiry. Every reopen now uses the existing saved-history
+  revision/reload path; no provider run is started to read a completed child.
+- Async child load completion made a second focus decision. Opening now records
+  the focus intent immediately; completion never refocuses. Back to Parent wins,
+  and hiding a child clears its stale focused-session identity. Deferred attachment
+  focus checks that the same child is still visible and intended.
+- Visibility tested the raw `sideShown` bit, unlike the host. It now uses
+  `shownTab(sideAvailable:)`, including the no-side fallback and page visibility.
+- Popped-out readers bypassed the main-window conversation command validator.
+  The hosted tab routes Find, Next/Previous, Inspector Find and Stop to its child,
+  with window, responder, sheet and popup guards. Back retains its existing guard.
+- Child open/close bypassed normal selection's eight-display eviction. Reader
+  lifecycle now applies that same policy after closing; running sessions, open
+  tabs, sides and pending drafts keep their existing protections.
+- Every child observer could overwrite its pop-out window title. Only the active
+  tab sets it. Compact tab labels use `#N · description` and truncate at the tail;
+  native titles, tooltips and VoiceOver keep `Sub-agent N · description`.
+- NSPopover constrained to the display rather than its owning window. The new
+  picker opts into a trailing-aligned, window-constrained frame and height, with
+  scrolling for longer lists. The main column reserves its own header row.
+- The previous generic pill face and row badge each added another activity
+  indicator, while the active count called queued work running. The pill swaps
+  its quiet symbol for one spinner; the sidebar uses its existing leading spinner
+  plus a passive count. Running, queued and stopping agent counts stay separate.
+  The incidental canonical/arrival-order caption is removed; actual missing-event
+  coverage warnings remain.
+- The owner's Sides addition replaces both navigation lists with one cached
+  conversation-family projection. Normal Topics/Flat, pinned, archived and keyboard
+  row lists omit sides and managed children. Search still finds saved family
+  members, labelled with their parent, and opens the existing side/tab path.
+  Orphaned or cross-project sides remain findable as main chats.
+- An activity-only update could unhide an embedded child header despite the
+  main-column-only rule. The header now retains its placement permission across
+  its own activity observer. A new draft's fixed header minimum also overflowed
+  a 310-point side pane in the gallery; narrow draft headers now put actions below
+  the labels, with a compact Draft badge and full accessibility text.
+
+The pill reads `2 sides · 3 agents`, with absent parts omitted. Its Sides section
+shows title, working/new reply/failed/saved/draft status, existing reported spend,
+Open and New Side; the ordered Sub-agents section retains model/status/spend,
+Open, running-only Stop, confirmed Stop All and Inspect Family. Side and agent
+activity is spelled out in tooltips and VoiceOver. The passive parent badge shows
+working work, or queued work when none is working. Tab/arrow navigation is retained.
+
+The former hover/edge SidesPanel, pinned column, pin preference, panel menus,
+tests, gallery helper and design document are removed. Old saved selections with
+the obsolete JSON pin key remain readable. New Side reuses the unsent draft;
+existing unkept-side ephemerality and kept-side restore paths are unchanged.
+Per-side and per-child spend comes only from existing reported usage. Model-facing
+text, tool behavior, permission/capture/vault boundaries, journal format and cost
+accounting are unchanged; accounting remains the sub-cost stream's responsibility.
+
+### Behavioral evidence
+
+All paths below are relative to the assigned build root. Generated fixtures,
+memory vaults and the isolated native host/loopback helper only; no installed app,
+real preferences, Keychain, paid-provider requests or named result bundles.
+No Swift helper source changed, so package tests were not required.
+
+| Failing-first check | Evidence |
+| --- | --- |
+| Six reader review findings | `review-reader-red2.log`: 7 tests, 13 failing assertions |
+| Switching tabs during load, without a fixture-injected parent focus | `review-reader-focus-red2.log`: 1 failing assertion |
+| Shared Sides/Agents projection and sidebar omission | `review-family-red.log`: 4 tests, 16 failing assertions |
+| Native popup owning-window bounds | `review-popover-red.log`: 1 gallery test, 8 failing assertions |
+| Embedded reader's second pill after activity | `review-family-visibility-red2.log`: 1 failing assertion |
+| Pending side header at 310/186 points | `review-side-width-red.log`: 3 failing assertions |
+| Mutation of the real empty-query side exclusion in `SidebarGroups.swift` | `review-mutation-sidebar.log`: 4 failing Topics/Flat row/keyboard-order assertions; production guard restored |
+
+Earlier affected runs also exposed obsolete tests that expected ordinary sides in
+sidebar/adjacent navigation. Those expectations now exercise the requested picker
+or search path. The search-click fixture waits for navigation before clearing the
+filter: retiring the binding first correctly rejects its queued click. No production
+binding guard was weakened. An early reader command fixture required key-window
+state despite using the tab host's event/responder routing; the final code and test
+use the same guarded host path as other hosted tabs.
+
+The latest affected-class selections total **343 passing tests across 29 classes**,
+without counting repeat runs. `review-affected-class-results.json` records each
+class's final selected result and exact log. This includes 204 tests in parallel-lane
+classes and the following standalone serial checks:
+
+| Standalone class | Passed | Log |
+| --- | ---: | --- |
+| SubagentReaderTests | 7 | `review-serial-SubagentReaderTests.log` |
+| SubagentNavigationTests | 7 | `review-serial-SubagentNavigationTests.log` |
+| SubagentOpeningTests | 9 | `review-serial-SubagentOpeningTests.log` |
+| SidebarNativeBindingTests | 4 | `review-serial-SidebarNativeBindingTests.log` |
+| WorkspaceRootTests | 7 | `review-serial-WorkspaceRootTests.log` |
+| ShellParityTests | 15 | `review-serial-ShellParityTests.log` |
+| ConversationPaneTests | 81 | `review-final-ConversationPaneTests.log` |
+| GitPanelNarrowParityTests | 8 | `review-final-GitPanelNarrowParityTests.log` |
+| SubagentPerformanceTests | 1 | `review-performance.log` |
+
+The performance fixture used 400 settled transcript rows and 20 progress updates:
+p50 63.878 ms, maximum 109.502 ms, 52 measured rows, 16 Markdown updates and **zero
+sidebar-index recomputations**; the switch round trip was 1284.05 ms. These are
+one Debug sample on a shared machine, not a release latency claim. Membership and
+activity projections do not scan transcripts. Focus/defaults/timing classes were
+run separately for their final checks; an earlier sequential 95-test selection
+included ConversationPaneTests, then its final 81-test run was repeated alone.
+
+### Final gallery
+
+Both standalone gallery tests pass, producing **100 captures**, all visually
+inspected via nine contact sheets plus full-size narrow/popup/draft images:
+
+- `gallery-review-verified/`: 60 picker scenes, with running/queued/done states,
+  closed/open/scrolled footer, child tab, saved side, pop-out siblings, long tab
+  labels, agents-only, new draft and sides-only. Light/dark at 920×600 and 1240×800;
+  pop-outs use the host's default 820×640 content size. Log:
+  `review-final-SubagentPanelGalleryTests.log`.
+- `gallery-display-review/`: 40 collapsed/expanded turns, numbered cards, typed
+  parent/child messages, reports and family Inspector scenes, light/dark at
+  920×600, 1240×800 and narrow 640×600. Log: `review-gallery-display.log`.
+
+Each folder contains `manifest.txt` and `review-contact-*.png`. Capture is limited
+to fixture-owned windows. Assertions cover popup bounds on all four sides, the
+main-column/divider boundary, one spinner per location, compact tail truncation,
+keyboard first focus, numbered accessibility labels, read-only child composer,
+tab reuse, embedded Back, side/draft placement and custom Stop All confirmation.
+Interactive VoiceOver operation is not claimed; native labels/actions are tested.
+
+Reproduce the picker gallery with:
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display \
+TEST_RUNNER_PI_APP_SUB_PANEL_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display/gallery-review-verified \
+scripts/test-macos.sh -only-testing:PiAppTests/SubagentPanelGalleryTests
+```
+
+Use `TEST_RUNNER_PI_APP_SUB_DISPLAY_GALLERY` and `SubagentDisplayGalleryTests` for
+the transcript/Inspector captures. The old `gallery-review-final` is an intermediate
+capture; `gallery-review-verified` includes the fixed narrow draft header.
+
+### One full native parallel lane
+
+The final lane uses four workers and `scripts/test-lanes.py parallel` exclusions;
+arguments are saved in `review-parallel-arguments.json`, console output in
+`review-full-parallel.log`. **Passed: 2,468 tests, zero failures, 37 skips**, in
+587.1 seconds. `review-full-parallel-summary.json` is the exported native result;
+`review-full-parallel-status.txt` records exit status 0. This was the one full lane
+for review round 1, after the final source and gallery changes; no source changes
+or test reruns followed it.
+
+The lead still owns independent branch review and integration with sub-cost.
+Shared edits are small/additive in WorkspaceModel (family caches/invalidation),
+conversation layout and tab navigation; keep the other stream's independent cost
+fields. No merge or push of `dev/next`; only `dev/a128-sub-display` is published.

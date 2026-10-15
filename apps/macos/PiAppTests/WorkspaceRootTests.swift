@@ -133,8 +133,7 @@ final class WorkspaceRootTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(welcome.projects.isEnabled)
     }
 
-    /// A side's row reads its title and what it shows under it, and goes
-    /// quiet with the window.
+    /// A side in the picker reads its title and status.
     @MainActor func testASideRowReadsWhatItShows() throws {
         let (model, _, _) = try root("sides")
         var parent = ChatRecord(id: "P", workspaceID: "p", title: "Parent", path: nil, profileID: "none"); parent.sidebarOrder = 1
@@ -142,13 +141,9 @@ final class WorkspaceRootTests: XCTestCase, SerialTestLane {
         side.parentSessionID = "P"; side.sidebarOrder = 2
         model.workspaces = [WorkspaceRecord(id: "p", path: "/tmp/p", trusted: true)]
         model.chats = [parent, side]
-        let panel = SidesPanelView(model: model, parentID: "P", pinned: true)
-        panel.frame = NSRect(x: 0, y: 0, width: SidesPanelMetrics.width, height: 400)
-        panel.layoutSubtreeIfNeeded()
-        let row = try XCTUnwrap(panel.subviewsOfType(SidesPanelRowView.self).first)
-        XCTAssertEqual(row.row.accessibilityLabel(), "Idempotency keys for refunds, Saved")
-        panel.inheritedEnabled = false
-        XCTAssertFalse(row.row.isEnabled); XCTAssertFalse(panel.pin.isEnabled); XCTAssertFalse(panel.newSide.isEnabled)
+        let picker = AgentFamilyPopoverView(model: model, sessionID: "P", close: {}, ownerWindow: nil)
+        let button = try XCTUnwrap(picker.subviewsOfType(PiKit.Button.self).first { $0.accessibilityIdentifier() == "open-side-S" })
+        XCTAssertEqual(button.accessibilityLabel(), "Open side Idempotency keys for refunds, Saved")
     }
 
     /// A sheet asked for follows the root out of its window and back: it goes

@@ -10,6 +10,11 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let fixture = try SubagentGalleryFixture(root: folder.appendingPathComponent("fixture-" + UUID().uuidString))
         let model = fixture.model, window = fixture.window
+        model.historyWindowLoader = { id, _, _, _ in
+            let reply = id.hasPrefix("child") ? "The tokenizer handles UTF-8 boundaries correctly. Preserve the diagnostic span before advancing the recovery cursor." : "The saved side keeps these review notes and its own draft beside the main chat."
+            return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture-" + id), "lineage": .string("root"),
+                "messages": .array([.object(["id": .string(id + "-reply"), "role": .string("assistant"), "text": .string(reply)])]), "older": .null, "newer": .null]))
+        }
         let root = WorkspaceRootView(model: model); window.contentView = root
         let previousMotion = PiKit.Motion.reducedOverride; PiKit.Motion.reducedOverride = true
         defer { PiKit.Motion.reducedOverride = previousMotion; fixture.close() }
@@ -21,18 +26,39 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
                 window.setContentSize(size)
                 for done in [false, true] {
                     for tab in model.tabs.allTabs { model.tabs.close(tab) }
+                    model.sides = [:]
                     fixture.show(done ? "completed" : "parallel-queued")
+                    for index in 0..<2 {
+                        let id = "saved-side-\(index)"
+                        let chat = ChatRecord(id: id, workspaceID: "pane-project", title: index == 0 ? "Review notes" : "Release checklist", profileID: fixture.records[0].profileID, sidebarOrder: Int64(2 - index), parentSessionID: fixture.parent.id)
+                        model.chats.append(chat)
+                        let display = SessionDisplay(id: id); display.historyState = .ready; display.draftReady = true
+                        display.runState = !done && index == 0 ? .running : .idle
+                        var totals = GatewayTotals(); totals.costSamples = 1; totals.costUSD = index == 0 ? 0.025 : 0.012
+                        display.footer.gateway = totals; model.displays[id] = display
+                    }
+                    model.readStatesRestored = true
+                    model.unreadStates["saved-side-1"] = .init(id: "saved-side-1", observedAssistantCount: 1, latestAssistantID: "side-reply", unreadOutputs: 1, unreadFailure: done)
+                    if done { fixture.parent.runState = .idle; fixture.parent.runStatus = "idle" }
                     fixture.child.subagentStatus = done ? .completed : .running
                     fixture.child.runState = done ? .idle : .running
                     fixture.child.runStatus = done ? "idle" : "streaming"
                     root.refresh(); await settle(window)
                     let main = try XCTUnwrap(root.conversation)
                     XCTAssertFalse(main.agentFamilyHeader.isHidden)
-                    XCTAssertEqual(main.agentFamilyHeader.button.title.hasPrefix("Agents 4"), true)
+                    XCTAssertEqual(main.agentFamilyHeader.button.title, "2 sides · 4 agents")
+                    XCTAssertEqual(ConversationPaneTests.views(PiSpinnerView.self, in: main.agentFamilyHeader).count, done ? 0 : 1)
+                    if let parentRow = root.sidebar.list.views["chat|chat-parent"] as? SidebarChatRowView {
+                        XCTAssertEqual(ConversationPaneTests.views(PiSpinnerView.self, in: parentRow).count, done ? 0 : 1)
+                    }
                     let base = "\(done ? "done" : "running")-\(theme)-\(Int(size.width))x\(Int(size.height))"
                     try capture([window], to: folder.appendingPathComponent(base + "-closed.png")); files.append(base + "-closed.png")
                     main.agentFamilyHeader.open(); await settle(window)
                     let popup = try XCTUnwrap(main.agentFamilyHeader.popover.popover?.contentViewController?.view.window)
+                    XCTAssertGreaterThanOrEqual(popup.frame.minX, window.frame.minX)
+                    XCTAssertLessThanOrEqual(popup.frame.maxX, window.frame.maxX, "The picker stays inside its owning window")
+                    XCTAssertGreaterThanOrEqual(popup.frame.minY, window.frame.minY)
+                    XCTAssertLessThanOrEqual(popup.frame.maxY, window.frame.maxY)
                     try capture([popup, window], to: folder.appendingPathComponent(base + "-open.png")); files.append(base + "-open.png")
                     let content = try XCTUnwrap(main.agentFamilyHeader.popover.popover?.contentViewController?.view)
                     let open = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: content).first { $0.accessibilityIdentifier() == "open-agent-child-0" })
@@ -41,7 +67,10 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
                     let tabKey = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                         windowNumber: popup.windowNumber, context: nil, characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48))
                     list.keyDown(with: tabKey)
-                    XCTAssertTrue(popup.firstResponder === open)
+                    XCTAssertEqual((popup.firstResponder as? PiKit.Button)?.accessibilityIdentifier(), "open-side-saved-side-0")
+                    let footer = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: content).first { $0.title == "Inspect Family" })
+                    footer.scrollToVisible(footer.bounds); await settle(window)
+                    try capture([popup, window], to: folder.appendingPathComponent(base + "-open-footer.png")); files.append(base + "-open-footer.png")
                     if !done {
                         let stop = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: content).first { $0.title == "Stop All…" })
                         var reviewed = false
@@ -66,6 +95,21 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
                     XCTAssertLessThanOrEqual(mainBounds.maxX, childBounds.minX)
                     XCTAssertGreaterThanOrEqual(main.transcript.frame.minY, main.agentFamilyHeader.frame.maxY)
                     try capture([window], to: folder.appendingPathComponent(base + "-side.png")); files.append(base + "-side.png")
+                    XCTAssertEqual(tab.stripTitle, "#1 · Check token boundaries")
+                    let tabLabels = ConversationPaneTests.views(TabItemLabelView.self, in: root).filter { $0.accessibilityLabel()?.contains("Sub-agent 1") == true }
+                    XCTAssertFalse(tabLabels.isEmpty); XCTAssertTrue(tabLabels.allSatisfy(\.truncatesAtEnd))
+                    main.agentFamilyHeader.open(); await settle(window)
+                    let sidePopup = try XCTUnwrap(main.agentFamilyHeader.popover.popover?.contentViewController?.view.window)
+                    XCTAssertGreaterThanOrEqual(sidePopup.frame.minX, window.frame.minX)
+                    XCTAssertLessThanOrEqual(sidePopup.frame.maxX, window.frame.maxX)
+                    XCTAssertGreaterThanOrEqual(sidePopup.frame.minY, window.frame.minY)
+                    XCTAssertLessThanOrEqual(sidePopup.frame.maxY, window.frame.maxY)
+                    try capture([sidePopup, window], to: folder.appendingPathComponent(base + "-side-open.png")); files.append(base + "-side-open.png")
+                    main.agentFamilyHeader.popover.close()
+                    await model.openFamilySide("saved-side-0"); root.refresh(); await settle(window)
+                    XCTAssertTrue(model.tabs.pane.sideShown)
+                    XCTAssertEqual(model.selectedID, fixture.parent.id)
+                    try capture([window], to: folder.appendingPathComponent(base + "-ordinary-side.png")); files.append(base + "-ordinary-side.png")
                     await model.openSubagentTab("child-0"); XCTAssertTrue(model.subagentTab("child-0") === tab)
                     XCTAssertTrue(window.firstResponder === pane)
                     await model.backToSubagentParent("child-0")
@@ -85,7 +129,37 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
                 }
             }
         }
-        XCTAssertEqual(files.count, 28)
+        for (appearance, theme) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+            window.appearance = NSAppearance(named: appearance); window.setContentSize(NSSize(width: 920, height: 600))
+            for tab in model.tabs.allTabs { model.tabs.close(tab) }
+            model.sides = [:]; fixture.show("completed")
+            fixture.parent.runState = .idle; fixture.child.runState = .idle
+            model.chats[1].title = "Check token boundaries across malformed escape sequences and Unicode recovery spans"
+            await model.openSubagentTab("child-0"); root.refresh(); await settle(window)
+            try capture([window], to: folder.appendingPathComponent("long-tab-" + theme + ".png")); files.append("long-tab-" + theme + ".png")
+            for tab in model.tabs.allTabs { model.tabs.close(tab) }
+            root.refresh(); await settle(window)
+            try capture([window], to: folder.appendingPathComponent("agents-only-" + theme + ".png")); files.append("agents-only-" + theme + ".png")
+            model.chats.removeAll { $0.isSubagent }; model.subagentSummaries = [:]
+            fixture.parent.messages = [.init(id: "side-question", role: "user", text: "Collect the review notes."), .init(id: "side-answer", role: "assistant", text: "The review notes are ready. Open a side to collect follow-up questions.")]
+            model.openNewFamilySide(fixture.parent.id)
+            root.refresh(); await settle(window)
+            let main = try XCTUnwrap(root.conversation)
+            XCTAssertEqual(main.agentFamilyHeader.button.title, "1 side")
+            let right = try XCTUnwrap(root.rightPane)
+            let draft = try XCTUnwrap(ConversationPaneTests.views(SidePaneView.self, in: right).first)
+            let draftFrame = draft.convert(draft.bounds, to: root)
+            let rightFrame = right.convert(right.bounds, to: root)
+            XCTAssertGreaterThanOrEqual(draftFrame.minX, rightFrame.minX)
+            XCTAssertLessThanOrEqual(draftFrame.maxX, rightFrame.maxX)
+            XCTAssertLessThanOrEqual(main.agentFamilyHeader.convert(main.agentFamilyHeader.bounds, to: root).maxX, draftFrame.minX)
+            try capture([window], to: folder.appendingPathComponent("side-draft-" + theme + ".png")); files.append("side-draft-" + theme + ".png")
+            main.agentFamilyHeader.open(); await settle(window)
+            let popup = try XCTUnwrap(main.agentFamilyHeader.popover.popover?.contentViewController?.view.window)
+            try capture([popup, window], to: folder.appendingPathComponent("sides-only-" + theme + ".png")); files.append("sides-only-" + theme + ".png")
+            main.agentFamilyHeader.popover.close()
+        }
+        XCTAssertEqual(files.count, 60)
         try (files.joined(separator: "\n") + "\n").write(to: folder.appendingPathComponent("manifest.txt"), atomically: true, encoding: .utf8)
     }
     @MainActor private func settle(_ window: NSWindow) async {

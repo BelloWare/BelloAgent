@@ -62,11 +62,11 @@ final class SidebarFlatTopicsTests: XCTestCase {
         model.setProjectExpanded("other", expanded: false)
         flat(model)
         let contents = build(model)
-        XCTAssertEqual(rows(contents).map(\.id), ["pinned", "retained", "b", "b-side", "o1", "c", "loose", "a", "o2", "d"])
+        XCTAssertEqual(rows(contents).map(\.id), ["pinned", "retained", "b", "o1", "c", "loose", "a", "o2", "d"])
         XCTAssertFalse(contents.entries.contains { if case .projectHeader = $0 { return true }; if case .topicHeader = $0 { return true }; return false })
         XCTAssertEqual(zip(contents.entries, contents.owners).compactMap { entry, owner in
             if case .chat(let chat, _, let project) = entry { return chat.workspaceID == owner.project && project == owner.project && owner.topic == nil }; return nil
-        }, Array(repeating: true, count: 10))
+        }, Array(repeating: true, count: 9))
         model.chats[model.chats.firstIndex { $0.id == "o2" }!].sidebarOrder = 95
         XCTAssertEqual(Array(ids(model).prefix(3)), ["pinned", "o2", "retained"], "Activity crosses project boundaries")
     }
@@ -83,9 +83,9 @@ final class SidebarFlatTopicsTests: XCTestCase {
             XCTAssertTrue(view.row.accessibilityLabel()?.contains("project " + name) == true, row.id)
         }
         let tagged = Dictionary(uniqueKeysWithValues: rows(build(model)).map { ($0.id, $0.state.topicTag) })
-        XCTAssertEqual(tagged["same-topic-side"], "Billing")
+        XCTAssertFalse(tagged.keys.contains("same-topic-side"))
         XCTAssertEqual(tagged["o1"], "Elsewhere")
-        XCTAssertEqual(tagged["b-side"], "Research")
+        XCTAssertFalse(tagged.keys.contains("b-side"))
         XCTAssertNil(tagged["loose"]!)
     }
 
@@ -100,8 +100,8 @@ final class SidebarFlatTopicsTests: XCTestCase {
         for width in [WindowChrome.sidebarWidth, WindowChrome.minimumSidebarWidth] {
             let sidebar = makeSidebar(model, width: width, height: 1400)
             let saved = try XCTUnwrap(sidebar.list.views["chat|retained"] as? SidebarChatRowView)
-            let side = try XCTUnwrap(sidebar.list.views["side|retained-side"] as? SidebarSideRowView)
-            for (body, row) in [(saved.body, saved.row), (side.body, side.row)] {
+            XCTAssertNil(sidebar.list.views["side|retained-side"])
+            for (body, row) in [(saved.body, saved.row)] {
                 XCTAssertEqual(body.projectTag.text, "Retained chats")
                 XCTAssertEqual(body.projectTag.toolTip, "Project: Retained chats · " + missing)
                 XCTAssertTrue(row.accessibilityLabel()?.contains("project Retained chats · " + missing) == true)
@@ -168,11 +168,11 @@ final class SidebarFlatTopicsTests: XCTestCase {
         let saved = await model.flushProjectSidebarState(); XCTAssertTrue(saved)
         model.sidebarPageSizes = [:]; try await model.restoreProjectSidebarStates()
         XCTAssertEqual(model.sidebarShownRoots(group), 15)
-        XCTAssertEqual(ids(model).count, 8)
+        XCTAssertEqual(ids(model).count, 7)
         XCTAssertTrue(model.projectSidebarStates.values.allSatisfy { $0.shownRoots?[group] == nil })
     }
 
-    @MainActor func testSidesAndManagedChildrenStayUnderTheirParentAndKeepFolds() throws {
+    @MainActor func testSidesAndManagedChildrenStayInThePickerRegardlessOfLegacyFolds() throws {
         let model = try fixture()
         var child = chat("agent", order: 100, topic: "research", parent: "b")
         child.delegation = SubagentLink(delegationID: "d", childSessionID: "agent", budgetOwnerSessionID: "b",
@@ -183,11 +183,10 @@ final class SidebarFlatTopicsTests: XCTestCase {
         XCTAssertFalse(ids(model).contains("agent"))
         model.setSubagentGroupExpanded("b", expanded: true)
         let contents = build(model)
-        XCTAssertEqual(Array(rows(contents).map(\.id).prefix(3)), ["pinned", "b", "b-side"])
+        XCTAssertEqual(Array(rows(contents).map(\.id).prefix(3)), ["pinned", "b", "o1"])
         let family = contents.entries.map(\.id)
         XCTAssertFalse(family.contains("subagents|b")); XCTAssertFalse(family.contains("chat|agent"))
-        let transient = try XCTUnwrap(contents.entries.compactMap { if case .side(let state) = $0 { return state }; return nil }.first)
-        XCTAssertEqual(transient.projectTag, "project")
+        XCTAssertFalse(contents.entries.contains { if case .side = $0 { return true }; return false })
         XCTAssertNil(rows(contents).first { $0.id == "agent" })
         model.setSidebarSideFolded("b", folded: true)
         XCTAssertFalse(ids(model).contains("b-side")); XCTAssertFalse(ids(model).contains("agent"))
@@ -250,7 +249,7 @@ final class SidebarFlatTopicsTests: XCTestCase {
         let model = try fixture(); flat(model)
         let sidebar = makeSidebar(model, width: 300, height: 1000)
         XCTAssertTrue(rows(sidebar.list.contents).allSatisfy { !$0.state.draggable })
-        for id in ["chat|a", "chat|b-side", "chat|o1"] {
+        for id in ["chat|a", "chat|b", "chat|o1"] {
             let frame = try XCTUnwrap(sidebar.list.frame(of: id))
             XCTAssertNil(sidebar.list.dropTarget(at: CGPoint(x: frame.midX, y: frame.midY)))
             XCTAssertNil(sidebar.list.dropTarget(at: CGPoint(x: 10, y: frame.maxY + 1)))

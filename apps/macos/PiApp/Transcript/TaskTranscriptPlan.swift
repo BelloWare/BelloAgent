@@ -180,7 +180,7 @@ enum TaskTranscriptPlan {
                     }
                     // Request accounting is separate from immutable part bodies.
                     var info = message; info.text = ""; info.thinking = nil; info.tools = nil; info.responseTimeline = nil
-                    info.kind = "requestInfo"; info.detail = timeline.omittedEvents > 0 ? "Partial event coverage · \(timeline.omittedEvents) further events omitted" : timeline.coverage == "canonical" ? "Canonical response order · arrival order unavailable" : nil
+                    info.kind = "requestInfo"; info.detail = timeline.omittedEvents > 0 ? "Partial event coverage · \(timeline.omittedEvents) further events omitted" : nil
                     result.append(.message(info))
                 } else {
                     // Flat legacy fields cannot establish intra-response order.

@@ -16,11 +16,11 @@ enum SidebarSessionPresentation {
     }
     /// `contentMatches`: chats whose messages match (`SidebarSearch`), listed as a title match is.
     static func filtered(_ entries: [SidebarChatEntry], by query: String, contentMatches: Set<String> = [], includingMainChats: Bool = false) -> [SidebarChatEntry] {
-        guard !query.isEmpty else { return entries.filter { !$0.chat.isSubagent } }
+        guard !query.isEmpty else { return entries.filter { !$0.chat.isSubagent && !$0.isFamilyChild } }
         var kept: Set<Int> = [], ancestors: [Int] = []
         for (index, entry) in entries.enumerated() {
             while let last = ancestors.last, entries[last].depth >= entry.depth { ancestors.removeLast() }
-            if (includingMainChats && !entry.chat.isSubagent) || entry.chat.displayTitle.localizedCaseInsensitiveContains(query) || (entry.chat.isSubagent && entry.chat.subagentShortTitle.localizedCaseInsensitiveContains(query)) || entry.chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || contentMatches.contains(entry.chat.id) { kept.formUnion(ancestors); kept.insert(index) }
+            if (includingMainChats && !entry.chat.isSubagent && !entry.isFamilyChild) || entry.chat.displayTitle.localizedCaseInsensitiveContains(query) || (entry.chat.isSubagent && entry.chat.subagentShortTitle.localizedCaseInsensitiveContains(query)) || entry.chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || contentMatches.contains(entry.chat.id) { kept.formUnion(ancestors); kept.insert(index) }
             ancestors.append(index)
         }
         return entries.enumerated().compactMap { kept.contains($0.offset) ? $0.element : nil }

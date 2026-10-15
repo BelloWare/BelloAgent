@@ -15,7 +15,7 @@ final class SubagentPanelTests: XCTestCase {
             XCTAssertFalse(ids.contains("chat|chat-child"))
             XCTAssertFalse(ids.contains("subagents|chat-parent"))
             XCTAssertTrue(ids.contains("chat|chat-parent"))
-            XCTAssertTrue(ids.contains("chat|chat-side"))
+            XCTAssertFalse(ids.contains("chat|chat-side"))
             XCTAssertFalse(model.sidebarChatOrder.contains("chat-child"))
             XCTAssertTrue(SubagentOrganizationTests.contents(model, filter: "child").entries.map(\.id).contains("chat|chat-child"))
         }
@@ -27,8 +27,8 @@ final class SubagentPanelTests: XCTestCase {
         for index in model.chats.indices { model.chats[index].topicID = topic.id }
         let project = try XCTUnwrap(model.workspaces.first)
         let group = model.topicGroupContents(in: project, topic: topic, includesArchive: false, filter: "child", sidebarWidth: 300, namesConnection: false)
-        XCTAssertEqual(group.header.chats, 2)
-        XCTAssertEqual(Set(group.contents.rows.map { $0.chat.id }), ["chat-parent", "chat-child", "chat-side"])
+        XCTAssertEqual(group.header.chats, 1)
+        XCTAssertEqual(Set(group.contents.rows.map { $0.chat.id }), ["chat-parent", "chat-child"])
         XCTAssertFalse(SubagentOrganizationTests.contents(model).entries.map(\.id).contains("chat|chat-child"))
     }
     @MainActor func testFamilyNeverBorrowsChildrenFromAnotherProject() throws {
@@ -59,6 +59,11 @@ final class SubagentPanelTests: XCTestCase {
             view.messages = [.init(id: chat.id + "-reply", role: "assistant", text: "Generated reply")]
             model.displays[chat.id] = view
         }
+        model.historyWindowLoader = { id, _, _, _ in
+            try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture"), "lineage": .string("root"),
+                "messages": .array([.object(["id": .string(id + "-reply"), "role": .string("assistant"), "text": .string("Generated reply")])]),
+                "older": .null, "newer": .null]))
+        }
         model.selectedID = "chat-parent"; model.selected = model.displays["chat-parent"]
         model.focusedSessionID = "chat-parent"
         return model
@@ -72,16 +77,16 @@ final class SubagentPanelTests: XCTestCase {
                 if case .chat(let chat, let state, _) = $0, chat.id == "chat-parent" { return state }; return nil
             }.first)
         }
-        XCTAssertEqual(try row().runningAgents, 1)
+        XCTAssertEqual(try row().familyActivity.active, 1)
         model.subagentSummaries["chat-child"]?.status = .running
-        XCTAssertEqual(try row().runningAgents, 1)
+        XCTAssertEqual(try row().familyActivity.active, 1)
         model.subagentSummaries["chat-child"]?.status = .completed
-        XCTAssertEqual(try row().runningAgents, 0)
+        XCTAssertEqual(try row().familyActivity.active, 0)
         XCTAssertEqual(model.subagentSearchTitle(try XCTUnwrap(model.record("chat-child"))), "#2 · child — in parent")
         XCTAssertTrue(SubagentOrganizationTests.contents(model, filter: "#2").entries.map(\.id).contains("chat|chat-child"))
-        let badge = AgentRunningBadge(); badge.update(2)
+        let badge = AgentRunningBadge(); badge.update(.init(runningAgents: 2))
         XCTAssertFalse(badge.isHidden); XCTAssertEqual(badge.accessibilityLabel(), "2 sub-agents running")
-        badge.update(0); XCTAssertTrue(badge.isHidden)
+        badge.update(.init()); XCTAssertTrue(badge.isHidden)
     }
     @MainActor func testFamilyIsNumberOrderedAndUpdatesWithoutReadingTranscript() throws {
         let model = try fixture()
@@ -92,7 +97,7 @@ final class SubagentPanelTests: XCTestCase {
         XCTAssertEqual(model.subagentFamily("chat-parent").members.map(\.label), ["#1 · child", "#2 · child"])
         let popover = AgentFamilyPopoverView(model: model, sessionID: "chat-child", close: {}, ownerWindow: nil)
         let buttons = ConversationPaneTests.views(PiKit.Button.self, in: popover)
-        XCTAssertEqual(buttons.filter { $0.title == "Open" }.map { $0.accessibilityIdentifier() }, ["open-agent-first", "open-agent-chat-child"])
+        XCTAssertEqual(buttons.filter { $0.title == "Open" }.map { $0.accessibilityIdentifier() }, ["open-side-chat-side", "open-agent-first", "open-agent-chat-child"])
         XCTAssertTrue(buttons.first { $0.title == "Stop All…" }?.isEnabled == false)
         XCTAssertTrue(model.sessionOpenings.isEmpty)
     }

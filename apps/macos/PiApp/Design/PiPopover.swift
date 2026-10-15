@@ -15,6 +15,7 @@ import Combine
     @Published private(set) var isShown = false
     private(set) var popover: NSPopover?
     private weak var anchor: NSView?
+    private var constraintObservers: [NSObjectProtocol] = []
     /// The control the open popover points at.
     var anchorView: NSView? { anchor }
 
@@ -43,12 +44,12 @@ import Combine
 
     /// The same for AppKit content: `view` at `width`, as tall as it needs
     /// up to the room there is, scrolling inside past that.
-    func toggle(from anchor: NSView, width: CGFloat, maximumHeight: CGFloat, animates: Bool, within wait: Duration = .zero,
+    func toggle(from anchor: NSView, width: CGFloat, maximumHeight: CGFloat, animates: Bool, withinWindow: Bool = false, within wait: Duration = .zero,
                 isReady: @escaping @MainActor () -> Bool = { true }, view: @escaping @MainActor () -> NSView) {
         if isShown || pending != nil { close(); return }
         let open = { [weak self, weak anchor] in
             guard let self, let anchor else { return }
-            self.present(from: anchor, maximumHeight: maximumHeight, animates: animates) { room in
+            self.present(from: anchor, maximumHeight: maximumHeight, animates: animates, withinWindow: withinWindow) { room in
                 let document = NativeDocument(content: view(), width: width, room: room)
                 let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: document.shownHeight))
                 scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
@@ -101,12 +102,13 @@ import Combine
         }
     }
 
-    func present(from anchor: NSView, maximumHeight: CGFloat, animates: Bool, controller: (CGFloat) -> NSViewController) {
+    func present(from anchor: NSView, maximumHeight: CGFloat, animates: Bool, withinWindow: Bool = false, controller: (CGFloat) -> NSViewController) {
         guard let window = anchor.window else { return }
         if let current = Self.current, current !== self { current.close() }
         close()
         let onScreen = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
-        let visible = (window.screen ?? NSScreen.main)?.visibleFrame ?? onScreen.insetBy(dx: -2_000, dy: -2_000)
+        let screen = (window.screen ?? NSScreen.main)?.visibleFrame ?? onScreen.insetBy(dx: -2_000, dy: -2_000)
+        let visible = withinWindow ? screen.intersection(window.frame.insetBy(dx: 8, dy: 8)) : screen
         let placement = Self.placement(anchor: onScreen, visible: visible, maximumHeight: maximumHeight)
         let host = controller(placement.height)
         let popover = NSPopover()
@@ -118,11 +120,31 @@ import Combine
         let edge: NSRectEdge = placement.above == !anchor.isFlipped ? .maxY : .minY
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: edge)
         PiPopoverSurface.install(under: host.view)
+        if withinWindow, let popup = host.view.window {
+            // NSPopover constrains to the display, not to its owning window.
+            // Keep this trailing header picker over its own conversation.
+            let fit: @MainActor () -> Void = { [weak popup, weak window, weak anchor] in
+                guard let popup, let window, let anchor else { return }
+                let bounds = window.frame.insetBy(dx: 8, dy: 8)
+                let target = window.convertToScreen(anchor.convert(anchor.bounds, to: nil))
+                let frame = popup.frame
+                popup.setFrameOrigin(NSPoint(x: max(bounds.minX, min(target.maxX, bounds.maxX) - frame.width),
+                    y: max(bounds.minY, min(frame.minY, bounds.maxY - frame.height))))
+            }
+            fit()
+            constraintObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: popup, queue: .main) { _ in
+                MainActor.assumeIsolated { fit() }
+            })
+            constraintObservers.append(NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.close() }
+            })
+        }
         isShown = true
     }
 
     func close() {
         pending?.cancel(); pending = nil
+        constraintObservers.forEach(NotificationCenter.default.removeObserver); constraintObservers = []
         guard let popover else { return }
         self.popover = nil; anchor = nil
         if Self.current === self { Self.current = nil }
@@ -141,6 +163,7 @@ import Combine
 
     func popoverDidClose(_ notification: Notification) {
         guard let closed = notification.object as? NSPopover, closed === popover else { return }
+        constraintObservers.forEach(NotificationCenter.default.removeObserver); constraintObservers = []
         self.popover = nil; anchor = nil
         if Self.current === self { Self.current = nil }
         if isShown { isShown = false }

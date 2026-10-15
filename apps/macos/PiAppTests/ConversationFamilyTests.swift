@@ -1,0 +1,172 @@
+import AppKit
+import XCTest
+@testable import PiApp
+
+final class ConversationFamilyTests: XCTestCase {
+    @MainActor private func fixture() throws -> WorkspaceModel {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        model.chats[1].subagentNumber = 2
+        let parent = SessionDisplay(id: "chat-parent"); parent.historyState = .ready
+        model.displays[parent.id] = parent; model.selected = parent
+        model.selectedID = parent.id; model.focusedSessionID = parent.id
+        model.automaticContextOperation = { _, _ in throw CancellationError() }
+        return model
+    }
+    @MainActor func testNormalTopicsAndFlatOmitSidesIncludingPinnedAndOpenDraftsButSearchFindsSavedSides() throws {
+        let model = try fixture()
+        model.chats[2].pinnedAt = Date()
+        model.openSide()
+        for flat in [false, true] {
+            model.setSidebarFlat(flat)
+            let rows = SubagentOrganizationTests.contents(model).entries
+            XCTAssertEqual(rows.compactMap { if case .chat(let chat, _, _) = $0 { return chat.id }; return nil }, ["chat-parent"])
+            XCTAssertFalse(rows.contains { if case .side = $0 { return true }; return false })
+            XCTAssertEqual(model.sidebarChatOrder, ["chat-parent"])
+            XCTAssertTrue(SubagentOrganizationTests.contents(model, filter: "side").entries.map(\.id).contains("chat|chat-side"))
+        }
+    }
+    @MainActor func testOneMainColumnPickerListsSidesAndAgentsAndOffersNewSide() throws {
+        let model = try fixture()
+        let header = AgentFamilyHeaderView(); header.update(model: model, sessionID: "chat-parent", enabled: true)
+        XCTAssertFalse(header.isHidden); XCTAssertEqual(header.button.title, "1 side · 1 agent")
+        let popover = AgentFamilyPopoverView(model: model, sessionID: "chat-parent", close: {}, ownerWindow: nil)
+        let buttons = ConversationPaneTests.views(PiKit.Button.self, in: popover)
+        XCTAssertEqual(buttons.filter { $0.title == "Open" }.map { $0.accessibilityIdentifier() }, ["open-side-chat-side", "open-agent-chat-child"])
+        XCTAssertNotNil(buttons.first { $0.title == "New Side" })
+        XCTAssertTrue(model.sessionOpenings.isEmpty)
+        model.chats.removeAll { $0.parentSessionID != nil }
+        header.update(model: model, sessionID: "chat-parent", enabled: true)
+        XCTAssertTrue(header.isHidden)
+    }
+    @MainActor func testQueuedAgentsAreNotLabelledRunningAndWorkingSidesAreIncluded() throws {
+        let model = try fixture()
+        let original = try XCTUnwrap(model.record("chat-child"))
+        for index in 0..<4 {
+            var child = original; child.id = "agent-\(index)"; child.delegation?.childSessionID = child.id; child.subagentNumber = index + 1
+            model.chats.append(child)
+            model.subagentSummaries[child.id] = .init(link: child.delegation!, description: child.title, model: "fixture",
+                status: index < 2 ? .running : .queued, revision: 1)
+        }
+        model.chats.removeAll { $0.id == original.id }
+        let side = SessionDisplay(id: "chat-side"); side.runState = .running; model.displays[side.id] = side
+        XCTAssertEqual(model.subagentFamily("chat-parent").runningCount, 2)
+        let header = AgentFamilyHeaderView(); header.update(model: model, sessionID: "chat-parent", enabled: true)
+        XCTAssertEqual(header.button.title, "1 side · 4 agents")
+        let label = header.button.accessibilityLabel() ?? ""
+        XCTAssertTrue(label.contains("1 side working"), label)
+        XCTAssertTrue(label.contains("2 sub-agents running"), label)
+        XCTAssertTrue(label.contains("2 sub-agents queued"), label)
+    }
+    @MainActor func testPickerKeepsNewSideDraftInMemoryOnly() throws {
+        let model = try fixture(), saved = model.chats
+        model.openSide()
+        let side = try XCTUnwrap(model.sides["chat-parent"])
+        model.displays[side.id]?.draft = "An unsent side draft"
+        let header = AgentFamilyHeaderView(); header.update(model: model, sessionID: "chat-parent", enabled: true)
+        XCTAssertEqual(header.button.title, "2 sides · 1 agent")
+        let popover = AgentFamilyPopoverView(model: model, sessionID: "chat-parent", close: {}, ownerWindow: nil)
+        let new = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: popover).first { $0.title == "New Side" })
+        new.onPress?()
+        XCTAssertEqual(model.sides["chat-parent"]?.id, side.id)
+        XCTAssertEqual(model.displays[side.id]?.draft, "An unsent side draft")
+        XCTAssertTrue(model.isEphemeral(side.id)); XCTAssertTrue(model.sides["chat-parent"]?.pending == true)
+        XCTAssertEqual(model.chats, saved); XCTAssertTrue(model.sessionOpenings.isEmpty)
+    }
+    @MainActor func testSidebarBadgeTracksLiveSidesWithoutRebuildingTheParentTranscript() async throws {
+        let model = try fixture(), parent = try XCTUnwrap(model.record("chat-parent"))
+        let sidebar = SidebarChatRowView(model: model, chat: parent, state: .init(available: 220), projectID: parent.workspaceID, glide: PiKit.SelectionGlide())
+        let side = SessionDisplay(id: "chat-side"); model.displays[side.id] = side
+        side.runState = .running
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertEqual(sidebar.body.content?.familyActivity.workingSides, 1)
+        XCTAssertTrue(sidebar.row.accessibilityLabel()?.contains("1 side working") == true)
+        XCTAssertEqual(ConversationPaneTests.views(PiSpinnerView.self, in: sidebar).count, 1)
+        let badge = try XCTUnwrap(ConversationPaneTests.views(AgentRunningBadge.self, in: sidebar).first)
+        XCTAssertEqual(badge.toolTip, "1 side working")
+        side.runState = .idle
+        for _ in 0..<5 { await Task.yield() }
+        XCTAssertTrue(badge.isHidden)
+        XCTAssertTrue(ConversationPaneTests.views(PiSpinnerView.self, in: sidebar).isEmpty)
+    }
+    @MainActor func testSideStatusesAndSpendRefreshFromExistingUsage() throws {
+        let model = try fixture()
+        XCTAssertEqual(model.conversationFamily("chat-parent").sides.first?.status, "Saved")
+        model.readStatesRestored = true
+        model.unreadStates["chat-side"] = .init(id: "chat-side", observedAssistantCount: 1, latestAssistantID: "reply", unreadOutputs: 1)
+        XCTAssertEqual(model.conversationFamily("chat-parent").sides.first?.status, "New reply")
+        model.unreadStates["chat-side"]?.unreadFailure = true
+        XCTAssertEqual(model.conversationFamily("chat-parent").sides.first?.status, "Failed")
+        var totals = GatewayTotals(); totals.costUSD = 0.123; totals.costSamples = 1
+        model.publishChatStats(totals, sessionID: "chat-side")
+        XCTAssertEqual(model.conversationFamily("chat-parent").sides.first?.spend, 0.123)
+        XCTAssertEqual(model.conversationFamily("chat-side").ownerID, "chat-parent")
+    }
+    @MainActor func testPickerOpensSavedSideAndReusesItBesideTheParent() async throws {
+        let model = try fixture()
+        model.historyWindowLoader = { _, _, _, _ in try ConversationHistoryPage(.object(["version": .number(2), "messages": .array([]), "incarnation": .string("fixture"), "lineage": .string("root"), "older": .null, "newer": .null])) }
+        model.tabs.open(kind: HostedTab.kind, key: "file") { HostedTab(key: "file", title: "File", symbol: "doc") }
+        await model.openFamilySide("chat-side")
+        XCTAssertEqual(model.selectedID, "chat-parent"); XCTAssertEqual(model.focusedSessionID, "chat-side")
+        XCTAssertEqual(model.sides["chat-parent"]?.id, "chat-side"); XCTAssertTrue(model.tabs.pane.sideShown)
+        let display = model.displays["chat-side"]
+        await model.openFamilySide("chat-side")
+        XCTAssertTrue(display === model.displays["chat-side"])
+        XCTAssertEqual(model.selectionToRemember.shownSides, ["chat-parent": "chat-side"])
+        XCTAssertTrue(model.sessionOpenings.isEmpty)
+    }
+    @MainActor func testLegacyPanelPinIsIgnoredAndUnsavedSideDraftNeverPersists() async throws {
+        let model = try fixture()
+        let old = Data(#"{"chatID":"chat-parent","projectID":"pane-project","shownSides":{"chat-parent":"chat-side"},"sidesPanelPinned":true,"revision":1}"#.utf8)
+        let remembered = try JSONDecoder().decode(RememberedSelection.self, from: old)
+        XCTAssertEqual(remembered.shownSides, ["chat-parent": "chat-side"])
+        XCTAssertFalse(String(decoding: try JSONEncoder().encode(remembered), as: UTF8.self).contains("sidesPanelPinned"))
+        model.openNewFamilySide("chat-parent")
+        let info = try XCTUnwrap(model.sides["chat-parent"]), view = try XCTUnwrap(model.displays[info.id])
+        view.draft = "Unsent ephemeral text"; model.draftChanged(view)
+        await model.flushSelection()
+        XCTAssertNil(model.selectionToRemember.shownSides?["chat-parent"])
+        let draft = try await model.store?.get(DraftRecord.self, kind: "draft", id: info.id)
+        let chat = try await model.store?.get(ChatRecord.self, kind: "chat", id: info.id)
+        XCTAssertNil(draft); XCTAssertNil(chat)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: model.root.appendingPathComponent("Workspaces/pane-project/Sessions/side_" + info.id + ".jsonl").path))
+    }
+    @MainActor func testOrphanedAndCrossProjectSidesRemainFindableAsMainChats() throws {
+        let model = try fixture()
+        model.chats[2].parentSessionID = "deleted"
+        XCTAssertTrue(SubagentOrganizationTests.contents(model).entries.map(\.id).contains("chat|chat-side"))
+        model.chats[2].parentSessionID = "chat-parent"; model.chats[2].workspaceID = "other-project"
+        XCTAssertTrue(model.conversationFamily("chat-parent").sides.isEmpty)
+        XCTAssertNil(model.sideFamilyOwner(model.chats[2]))
+    }
+
+    @MainActor func testEmbeddedReadersNeverRevealASecondPillOnFamilyActivity() async throws {
+        let model = try fixture(), chat = try XCTUnwrap(model.record("chat-child"))
+        let child = SessionDisplay(id: chat.id); child.historyState = .ready; model.displays[chat.id] = child
+        let side = SessionDisplay(id: "chat-side"); model.displays[side.id] = side
+        let pane = ConversationPaneView(model: model); pane.showsAgentFamily = false; pane.show(session: child, chat: chat)
+        XCTAssertTrue(pane.agentFamilyHeader.isHidden)
+        model.subagentSummaries[chat.id] = .init(link: chat.delegation!, description: chat.title, model: "fixture", status: .running, revision: 1)
+        for _ in 0..<20 { await Task.yield() }
+        side.runState = .running
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertTrue(pane.agentFamilyHeader.isHidden, "Only the main column owns the combined picker")
+    }
+
+    @MainActor func testNewSideHeaderFitsBesideTheMainPillAtNarrowWidths() throws {
+        let model = try fixture(); model.openNewFamilySide("chat-parent")
+        let info = try XCTUnwrap(model.sides["chat-parent"]), display = try XCTUnwrap(model.displays[info.id])
+        let header = SideHeaderView(model: model)
+        header.update(side: info, chat: info.chat, session: display, boundary: "Draft side · created when you send", detail: "Created when you send", loading: false)
+        for width: CGFloat in [310, 186, 600, 310] {
+            header.frame = CGRect(x: 0, y: 0, width: width, height: header.height(forWidth: width)); header.layoutSubtreeIfNeeded()
+            XCTAssertLessThanOrEqual(header.minimumWidth, width)
+            for control in ConversationPaneTests.views(PiKit.IconButton.self, in: header) where !control.isHiddenOrHasHiddenAncestor {
+                let frame = control.convert(control.bounds, to: header)
+                XCTAssertGreaterThanOrEqual(frame.minX, 0); XCTAssertLessThanOrEqual(frame.maxX, width)
+            }
+        }
+    }
+
+}
