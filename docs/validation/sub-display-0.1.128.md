@@ -2383,3 +2383,144 @@ was used.
 `git diff --check` passes. No implementation or validation failure remains for
 this round; independent lead review and integration remain with the lead.
 Only `dev/a128-sub-display` is committed/pushed.
+
+## Lead review round 15: preview Copy and selected-fork ownership
+
+### Causes and changes
+
+1. Selection Copy searched the rendered preview for each complete Foundation
+   Markdown run. A preview ending inside a run therefore omitted its visible
+   tail from the source mapping. The mapper now accepts a visible suffix that
+   matches the run's prefix, resolves the full run against its parser-owned
+   source range, then clips that mapping to the visible part. Complete selected
+   marked runs retain their Markdown delimiters; a clipped run cannot consume
+   hidden text. The caller explicitly supplies whether the presentation is
+   complete, so selecting all of a partial preview does not copy unseen source.
+   The Task/Result Copy button and complete-view Select All still copy the whole
+   original source, and code-copy targets keep their complete cached blocks.
+2. The property test also exposed two source-mapping mistakes: plain whitespace
+   between formatted runs could acquire adjacent formatting marks, and a rendered
+   ampersand could match only the literal prefix of its authored entity. Only
+   runs with actual inline formatting/link/image attributes now expand delimiters;
+   exact entity/escape transformation takes precedence over a literal substring.
+   Mapping remains confined to an explicit Copy action, with no parsing added to
+   layout, view updates or transcript traversal.
+3. `openSubagentTab` and `openSubagentParent` resolved saved side ancestry before
+   checking the selected main owner. Both now keep an already-selected owner in
+   the main column. Source navigation also ignores a remembered Side slot for
+   that selected owner. A genuine unselected side still opens beside its owner;
+   hosted-reader tokens, visibility checks and Source destination guards are
+   unchanged. `docs/design/subagents.md` makes this precedence explicit.
+
+### Failing-first and property evidence
+
+Artifacts are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`, prefix `review15-`.
+
+- `red-markdown`: **17 passed, 2 failed**. The native-card test selected “Lead
+  body” from a long result and lost the body text for plain, linked and inline-code
+  tails. The property test failed on the first single-character preview because
+  the old whole-selection fast path copied all hidden content.
+- `red-reader`: **52 passed, 2 failed**. Owned-agent Open and Source from a
+  popped-out child changed the selected fork/its selection revision or failed to
+  reveal its issuing call. Each regression covers both whole-chat forks and
+  Fork from here, each with and without a remembered Side slot, and asserts the
+  retained main display and reading position.
+- The first two copy-fix runs (`green-markdown`, `green-markdown2`) each had
+  **18 passed, 1 failed**: the property test found the adjacent formatting mark
+  and entity-prefix mistakes described above. After correcting both,
+  `green-markdown3` passed **19/19** and `green-reader` passed **54/54**.
+
+`SubagentMarkdownTests.testRandomMarkdownPreviewSelectionsPreserveTheirExactSource`
+uses deterministic seed **`0xB311015`**, generating **80 Markdown documents**:
+40 mixed prose documents plus 40 fenced-code documents. The prose grammar shuffles
+plain text, emphasis, bold, inline code, links, escaped punctuation and named/numeric
+entities; generated text includes repeated letters, accented characters, surrogate
+pairs and combining characters. Each document's expected rendered text is checked
+against the actual assistant Markdown surface. An independently authored source map
+(not Foundation source positions or the production mapper) then checks every
+nonempty contiguous selection at every grapheme truncation boundary, matching the
+preview's character-cutting behavior: **1,633 boundaries and 154,367 exact source
+comparisons**. The native-card regression additionally exercises the real
+1,200-character preview and its `textView.copyText` callback, including selections
+inside its final ten visible characters.
+
+`SubagentReaderTests.testAnOwnedAgentKeepsItsAlreadySelectedForkInTheMainColumn`
+covers embedded Open; `testSourceFromAChildWindowKeepsItsAlreadySelectedForkInTheMainColumn`
+covers the issuing-call reveal from a popped-out reader without moving its window
+or replacing the main transcript. No new navigation generation or focus policy
+was introduced.
+
+### Mutation checks and final validation
+
+`review15-mutate.py` changed each real production guard independently, ran the
+targeted regression, then restored the original file in `finally`:
+
+| Artifact | Mutation | Result |
+| --- | --- | --- |
+| `mutation-prefix` | Require a complete rendered run again | 1 failed; the native preview selection loses its tail |
+| `mutation-complete` | Allow the whole-source fast path for a partial preview | 1 failed; the property test copies hidden source at its first boundary |
+| `mutation-open-owner` | Resolve ancestry before the selected owner in `openSubagentTab` | 1 failed; Open replaces the selected fork |
+| `mutation-source-owner` | Restore ancestry/remembered-slot precedence in `openSubagentParent` | 1 failed; Source moves the owner or loses the reveal |
+
+All four mutations were detected, and the production fixes were restored before
+the final affected-class runs.
+
+Final affected-class runs passed **156 tests, zero failures, three skips**:
+
+| Class | Passed | Skipped |
+| --- | ---: | ---: |
+| ConversationFamilyTests | 16 | 0 |
+| InheritedSubagentReaderTests | 6 | 0 |
+| MarkdownSourceReconciliationTests | 5 | 0 |
+| MarkdownTextSurfaceTests | 6 | 3 |
+| ReportMessageNavigationTests | 9 | 0 |
+| SubagentMarkdownTests | 19 | 0 |
+| SubagentNavigationTests | 7 | 0 |
+| SubagentOpeningTests | 12 | 0 |
+| SubagentPerformanceTests | 2 | 0 |
+| SubagentReaderTests | 54 | 0 |
+| SubagentTranscriptTests | 11 | 0 |
+| TranscriptMarkdownTests | 9 | 0 |
+
+All serial-lane classes ran alone. The three existing `MarkdownTextSurfaceTests`
+skips are its two opt-in measurements and its opt-in screenshot scene. The
+55,812-byte Markdown performance fixture passed with 400 settled messages:
+worst cold draw **13.23 ms**, expanded draw **27.54 ms**, Markdown batch
+**15.61 ms**; the largest main-run-loop heartbeat gap was **89.08 ms** during
+expansion (under the existing 100 ms assertion). No sidebar recomputation or
+settled-history layout growth occurred.
+
+Each run used `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display
+scripts/test-macos.sh -only-testing:PiAppTests/<Class>` via `review15-run.py`.
+`review15-lanes.txt` retains the lane inventory. Final artifacts are
+`review15-final-{markdown,reader,opening,navigation,inherited,performance,related}`
+with arguments, logs and exact XCTest summary/tree JSON. `review15-affected.py`
+ran them sequentially, stopping on any failure.
+
+The **one full native parallel lane passed: 2,564 passed, 38 skipped, zero
+failed (2,602 total), in 577.2 seconds** by the XCTest summary's start/finish
+timestamps. `review15-full-parallel-arguments.txt` retains the exact selection
+from `python3 scripts/test-lanes.py parallel`, with native parallel execution
+enabled and four workers. Evidence is `review15-full-parallel.log` and
+`review15-full-parallel-{summary,tests}.json`. There were no full-lane failures,
+so no isolated failure rerun was required. Existing opt-in/host-dependent skips
+remain visible in the complete test tree.
+
+### Handoff
+
+No layout or visible-text change was made, so galleries were not regenerated;
+the previously inspected gallery remains the visual record. No helper package
+changed, so separate helper-package tests were not needed. The copy behavior is
+deliberate: a selection represents the visible source span, while the Task/Result
+Copy button represents its complete source. Selecting an already-visible owner
+takes precedence over ancestry; this does not change where an unselected side
+opens or introduce any new reader ownership token.
+
+Only generated fixtures, scratch journals and the memory vault were used. No
+journal format, model/tool text, cost attribution, permission, capture or vault
+boundary changed. No installed app, paid provider, real preferences/Keychain,
+named result bundle or `xctrace --launch` was used. `NEXT-RELEASE.md` and the design
+notes are updated and `git diff --check` passes. No implementation or validation
+failure remains for this round. Independent lead review/integration remains with
+the lead; only `dev/a128-sub-display` is committed/pushed.

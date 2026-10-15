@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Sub-agent review round 15 (`dev/a128-sub-display`): preview selections copy the visible part of a truncated Markdown run, preserving formatting, links, escapes and entities. Whole-result Copy still retains the complete source. Owned-agent opens and Source navigation keep an already-selected fork in the main column, including remembered side slots. Both fork kinds and an exhaustive selection property over generated Markdown cover the fixes. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-15-preview-copy-and-selected-fork-ownership).
+
 - [x] Sub-agent review round 14 (`dev/a128-sub-display`): cached chat reopens reuse delegation plans by exact journal revision without rescanning history; ordinary parent Inspector reopen clears fork provenance; unsent side drafts retain both Send menu commands, including Command-Return outside the composer. Large generated-journal, inherited-reference and native menu regressions cover the fixes. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-14-cached-reopens-inspector-context-and-side-send).
 
 - [x] Sub-agent review round 13 (`dev/a128-sub-display`): whole-chat forks and Fork from here discover inherited agents from saved plans. Original readers open the linked turn or steering message; report deliveries uncover their recipient side with explicit reader ownership, while an already-visible main fork stays in place. Child headers refresh when accepted effort arrives after the child snapshot. Both fork shapes cover inherited controls, numbering, read-only enforcement and galleries. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-13-fork-shapes-deliveries-and-live-effort).

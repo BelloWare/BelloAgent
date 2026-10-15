@@ -95,8 +95,9 @@ Back therefore cancels the whole chain. Source and delivery actions that open th
 owning ordinary side replace an embedded child and transfer ownership to the main
 pane before awaiting its load; a popped-out origin remains independent. A destination
 already selected in the main column stays there, including a fork with saved
-ancestry or a remembered side slot. The opening chooses focus; publishing a
-delivery after its side loads never overwrites a newer focus choice. Neither a
+ancestry or a remembered side slot. Owned-agent Open and Source resolve this
+selected-owner case before looking up side ancestry. The opening chooses focus;
+publishing a delivery after its side loads never overwrites a newer focus choice. Neither a
 chain's internal reveal nor its version switch creates a fresh intent.
 
 `transcriptShows` decides reveal visibility: Chats with the selected main or the
@@ -169,7 +170,11 @@ highlighting, links, tables and quotes. Long prose starts with a 168-point previ
 Show more/less preserves the reading position. Large sources parse away from the
 main thread and expanded native text is adopted in bounded batches. Find searches
 the rendered words and opens the matching preview before highlighting. Copy keeps
-the original Markdown; a selected span keeps its original source spelling. Error
+the original Markdown; a selected span keeps its original source spelling,
+including a run cut by the preview limit. Selecting the entire partial preview
+copies only that preview's source span; the Copy button still copies the complete
+Task or Result. Source mapping preserves entities and escapes, and includes
+formatting/link delimiters when the complete marked run is selected. Error
 and truncation notices stay outside that source. Assistant link/image/HTML policy
 is unchanged, with no new network loads. Folding a finished turn still excludes
 all sub-agent content, and saved/model-facing text remains byte-for-byte unchanged.

@@ -282,6 +282,77 @@ final class SubagentMarkdownTests: XCTestCase {
         body.setExpanded(false)
         try checkCopies(expected.prefix(2))
     }
+    @MainActor func testCopyIncludesTheVisibleTailOfATruncatedMarkdownRun() throws {
+        for source in ["**Lead** " + String(repeating: "body ", count: 400),
+                       "**Lead** [" + String(repeating: "body ", count: 400) + "](https://example.test)",
+                       "**Lead** `" + String(repeating: "body ", count: 400) + "`"] {
+            let row = try Self.card(task: "Task", result: source)
+            let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: row).last)
+            XCTAssertFalse(body.isComplete)
+            let text = body.markdown.textView
+            let selection = (text.string as NSString).range(of: "Lead body")
+            XCTAssertNotEqual(selection.location, NSNotFound)
+            let opening = source.contains("[") ? "[" : source.contains("`") ? "`" : ""
+            XCTAssertEqual(text.copyText([selection]), "**Lead** " + opening + "body")
+            let tail = NSRange(location: 1_190, length: 10)
+            XCTAssertEqual(text.copyText([tail]), (text.string as NSString).substring(with: tail))
+        }
+    }
+
+    /// The oracle is authored alongside a small random Markdown grammar; it
+    /// never asks Foundation's parser or the copy mapper for source positions.
+    /// Check every grapheme boundary and every nonempty visible selection,
+    /// including surrogate pairs and combining characters.
+    @MainActor func testRandomMarkdownPreviewSelectionsPreserveTheirExactSource() {
+        var random = MarkdownCopyRandom(seed: 0xB311015)
+        var checks = 0, boundaries = 0
+        for sample in 0..<40 {
+            var document = MarkdownCopyOracle()
+            var kinds = [0, 1, 2, 3, 4, 5, 6, 7]
+            for i in kinds.indices.reversed() { kinds.swapAt(i, random.next(i + 1)) }
+            for (index, kind) in kinds.enumerated() {
+                if index > 0 { document.append(body: " ") }
+                let body = (0..<(1 + random.next(3))).map { _ in String(["a", "b", "x", "a", "é", "😀", "e\u{301}"][random.next(7)]) }.joined()
+                switch kind {
+                case 0: document.append(body: body)
+                case 1: document.append(body: body, before: "**", after: "**")
+                case 2: document.append(body: body, before: "*", after: "*")
+                case 3: document.append(body: body, before: "`", after: "`")
+                case 4: document.append(body: body, before: "[", after: "](https://example.test/\(sample))")
+                case 5: document.append(body: "&", source: "&amp;")
+                case 6: document.append(body: "😀", source: "&#x1F600;")
+                default: document.append(body: "*", source: #"\*"#)
+                }
+            }
+            var fenced = MarkdownCopyOracle()
+            fenced.append(body: sample % 5 == 0 ? "swift" : document.rendered + " `*`", before: "```swift\n", after: "\n```", wraps: false)
+            for document in [document, fenced] {
+                XCTAssertEqual(Self.assistant(document.source).textView.string, document.rendered, "The oracle describes the actual native reader")
+                let visible = document.rendered as NSString
+                let offsets = document.rendered.indices.map { $0.utf16Offset(in: document.rendered) } + [visible.length]
+                for boundaryIndex in 1..<offsets.count {
+                    let boundary = offsets[boundaryIndex]
+                    boundaries += 1
+                    let preview = visible.substring(to: boundary)
+                    for startIndex in 0..<boundaryIndex {
+                        for endIndex in (startIndex + 1)...boundaryIndex {
+                            let start = offsets[startIndex], end = offsets[endIndex]
+                            let selected = NSRange(location: start, length: end - start)
+                            let expected = boundary == visible.length && start == 0 && end == boundary ? document.source : document.copy(selected)
+                            let actual = MarkdownSourceCopy.copy(document.source, rendered: preview, ranges: [selected], complete: boundary == visible.length)
+                            checks += 1
+                            if actual != expected {
+                                XCTFail("seed=0xB311015 sample=\(sample) boundary=\(boundary) selection=\(selected) source=\(document.source) expected=\(expected.debugDescription) actual=\(String(describing: actual))")
+                                return
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        print("PROPERTY Markdown preview: 80 random documents, \(boundaries) boundaries, \(checks) exact source selections")
+    }
+
     @MainActor func testSelectionCopiesTheSelectedMarkdownSpelling() throws {
         let source = "One **bold** word, `code`, and [reference](https://example.test). Same **bold** word."
         let row = try Self.card(task: "Task", result: source)
@@ -416,4 +487,37 @@ final class SubagentMarkdownTests: XCTestCase {
         XCTAssertEqual(body.convert(body.bounds, to: stage.document).minY - stage.scrollY, before, accuracy: 1)
     }
 
+}
+
+private struct MarkdownCopyRandom {
+    var seed: UInt64
+    mutating func next(_ upper: Int) -> Int {
+        seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        return Int((seed >> 32) % UInt64(upper))
+    }
+}
+private struct MarkdownCopyOracle {
+    var source = "", rendered = ""
+    var atoms: [(visible: NSRange, body: NSRange, whole: NSRange)] = []
+    mutating func append(body: String, source authored: String? = nil, before: String = "", after: String = "", wraps: Bool = true) {
+        let raw = authored ?? body, start = source.utf16.count, offset = rendered.utf16.count
+        source += before + raw + after; rendered += body
+        atoms.append((NSRange(location: offset, length: body.utf16.count),
+                      NSRange(location: start + before.utf16.count, length: raw.utf16.count),
+                      wraps ? NSRange(location: start, length: before.utf16.count + raw.utf16.count + after.utf16.count) : NSRange(location: start + before.utf16.count, length: raw.utf16.count)))
+    }
+    func copy(_ selection: NSRange) -> String {
+        var first: Int?, end = 0
+        for atom in atoms {
+            let common = NSIntersectionRange(selection, atom.visible)
+            guard common.length > 0 else { continue }
+            let range: NSRange
+            if common == atom.visible { range = atom.whole }
+            else if atom.body.length == atom.visible.length {
+                range = NSRange(location: atom.body.location + common.location - atom.visible.location, length: common.length)
+            } else { range = atom.body }
+            first = min(first ?? range.location, range.location); end = max(end, NSMaxRange(range))
+        }
+        return (source as NSString).substring(with: NSRange(location: first ?? 0, length: end - (first ?? 0)))
+    }
 }

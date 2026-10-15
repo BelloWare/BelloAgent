@@ -111,7 +111,8 @@ extension WorkspaceModel {
               record(childID).map({ $0.workspaceID == parent.workspaceID && $0.delegation == link }) ?? true else {
             displays[childID]?.notice = "The parent chat is unavailable. This saved sub-agent remains viewable."; return false
         }
-        let sideOwner = sideFamilyOwner(parent), mainID = sideOwner ?? parent.id
+        let sideOwner = selectedID == parent.id ? nil : (side(parent.id)?.parentID ?? sideFamilyOwner(parent))
+        let mainID = sideOwner ?? parent.id
         // Showing the owning ordinary side intentionally replaces an embedded
         // child. At that synchronous navigation boundary ownership transfers to
         // the main pane; an external child keeps its independent origin token.
@@ -124,7 +125,7 @@ extension WorkspaceModel {
         intent.workspaceRevision = revision + (changesMain ? 1 : 0)
         intent.origin = origin
         let paneIntent = tabs.navigationRevision + (sideOwner == nil || tabs.pane.sideShown ? 0 : 1)
-        if side(parent.id) != nil { await selectSide(parent.id, revealInSidebar: false) }
+        if sideOwner != nil, side(parent.id) != nil { await selectSide(parent.id, revealInSidebar: false) }
         else if sideOwner != nil { await showSide(parent.id, revealInSidebar: false) }
         else { await select(parent.id, revealInSidebar: false, reopensSide: false, focusesComposer: false) }
         func current() -> Bool {

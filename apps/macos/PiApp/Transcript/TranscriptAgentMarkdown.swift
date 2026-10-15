@@ -46,7 +46,7 @@ import AppKit
         }
         markdown.textView.sourceCopy = { [weak self] ranges in
             guard let self else { return nil }
-            return MarkdownSourceCopy.copy(self.source, rendered: self.markdown.textView.string, ranges: ranges)
+            return MarkdownSourceCopy.copy(self.source, rendered: self.markdown.textView.string, ranges: ranges, complete: self.isComplete)
         }
         markdown.onSizeInvalidated = { [weak self] in self?.sizeChanged() }
     }
@@ -202,28 +202,39 @@ private struct AgentMarkdownReading: Sendable {
 /// are exact; partial selections map parser source positions, never a search for
 /// repeated words in the source. This runs only for an explicit copy operation.
 enum MarkdownSourceCopy {
-    static func copy(_ source: String, rendered: String, ranges: [NSRange]) -> String? {
+    static func copy(_ source: String, rendered: String, ranges: [NSRange], complete: Bool) -> String? {
         let output = rendered as NSString, input = source as NSString
-        if ranges.contains(where: { $0.location == 0 && $0.length >= output.length }) { return source }
+        if complete, ranges.contains(where: { $0.location == 0 && $0.length >= output.length }) { return source }
         guard let parsed = try? AttributedString(markdown: source, options: .init(allowsExtendedAttributes: true,
             failurePolicy: .returnPartiallyParsedIfPossible, appliesSourcePositionAttributes: true)) else { return nil }
-        var spans: [(output: NSRange, input: NSRange, image: Bool)] = [], cursor = 0
+        var spans: [(output: NSRange, input: NSRange, image: Bool, whole: Bool, marked: Bool)] = [], cursor = 0
         for run in parsed.runs {
             guard let position = run.markdownSourcePosition, let indices = Range<String.Index>(position, in: source) else { continue }
             let raw = NSRange(indices, in: source)
+            let marked = run.inlinePresentationIntent?.intersection([.emphasized, .stronglyEmphasized, .strikethrough, .code]).isEmpty == false || run.link != nil || run.imageURL != nil
             let value = run.inlinePresentationIntent?.contains(.softBreak) == true ? " " : String(parsed.characters[run.range])
             guard !value.isEmpty, cursor <= output.length else { continue }
-            let found = output.range(of: value, range: NSRange(location: cursor, length: output.length - cursor))
-            guard found.location != NSNotFound else { continue }
+            guard let found = visibleRun(value, in: output, after: cursor) else { continue }
             cursor = NSMaxRange(found)
+            // Resolve the complete run's source first, then clip its mapping.
+            // Searching for a shortened code body in the source could match
+            // its fence's language, or another occurrence inside the run.
+            func append(_ shown: NSRange, _ authored: NSRange) {
+                let visible = NSIntersectionRange(shown, NSRange(location: 0, length: found.length))
+                guard visible.length > 0 else { return }
+                let input = shown.length == authored.length
+                    ? NSRange(location: authored.location + visible.location - shown.location, length: visible.length) : authored
+                spans.append((NSRange(location: found.location + visible.location, length: visible.length), input, run.imageURL != nil, visible == shown, marked))
+            }
             // A code run's position includes its fence. Locate its literal body
             // within that parser-owned range, not in another occurrence.
-            let literal = input.range(of: value, range: raw)
-            if literal.location != NSNotFound { spans.append((found, literal, run.imageURL != nil)) }
-            else if let mapped = transformedSpans(input.substring(with: raw), rendered: value) {
-                spans += mapped.map { (NSRange(location: found.location + $0.output.location, length: $0.output.length),
-                                        NSRange(location: raw.location + $0.input.location, length: $0.input.length), run.imageURL != nil) }
-            } else { spans.append((found, raw, run.imageURL != nil)) }
+            let literal = input.range(of: value, options: .literal, range: raw)
+            // A rendered run ending in "&" can also be a literal prefix of
+            // "&amp;". Prefer the exact authored-token mapping to that match.
+            if let mapped = transformedSpans(input.substring(with: raw), rendered: value) {
+                for span in mapped { append(span.output, NSRange(location: raw.location + span.input.location, length: span.input.length)) }
+            } else if literal.location != NSNotFound { append(NSRange(location: 0, length: value.utf16.count), literal) }
+            else { append(NSRange(location: 0, length: value.utf16.count), raw) }
         }
         var copied: [String] = []
         for selection in ranges {
@@ -235,12 +246,30 @@ enum MarkdownSourceCopy {
                 if span.input.length == span.output.length {
                     range = NSRange(location: span.input.location + common.location - span.output.location, length: common.length)
                 }
-                if common == span.output { range = enclosingMarks(range, in: input, image: span.image) }
+                if span.whole, span.marked, common == span.output { range = enclosingMarks(range, in: input, image: span.image) }
                 first = min(first ?? range.location, range.location); end = max(end ?? NSMaxRange(range), NSMaxRange(range))
             }
             if let first, let end { copied.append(input.substring(with: NSRange(location: first, length: end - first))) }
         }
         return copied.isEmpty ? nil : copied.joined(separator: "\n")
+    }
+    /// A bounded preview can end inside the final parser run. Its visible
+    /// suffix must match a prefix of that run, rather than a later run with
+    /// the same words. Native block/list markers may precede the run.
+    private static func visibleRun(_ value: String, in output: NSString, after cursor: Int) -> NSRange? {
+        let remaining = NSRange(location: cursor, length: output.length - cursor)
+        let full = output.range(of: value, options: .literal, range: remaining)
+        if full.location != NSNotFound { return full }
+        let first = String(value.prefix(1))
+        var search = remaining
+        while search.length > 0 {
+            let start = output.range(of: first, options: .literal, range: search)
+            guard start.location != NSNotFound else { return nil }
+            let suffix = output.substring(from: start.location)
+            if (value as NSString).hasPrefix(suffix) { return NSRange(location: start.location, length: output.length - start.location) }
+            search = NSRange(location: NSMaxRange(start), length: output.length - NSMaxRange(start))
+        }
+        return nil
     }
     /// Foundation gives a whole text run one source position even when an
     /// entity/escape inside it changes length. Map those authored tokens before

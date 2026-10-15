@@ -188,7 +188,7 @@ extension WorkspaceModel {
         // Keep the owner in the main column. An orphan's saved reader can
         // still open beside the currently selected chat.
         if reader.originalForkID == nil, reader.container?.isPane != false, let ownerID = child.delegation?.budgetOwnerSessionID, let owner = record(ownerID), owner.workspaceID == child.workspaceID, !owner.isSubagent {
-            let mainID = sideFamilyOwner(owner) ?? ownerID
+            let mainID = selectedID == ownerID ? ownerID : (sideFamilyOwner(owner) ?? ownerID)
             if selectedID != mainID {
                 await select(mainID, revealInSidebar: false, reopensSide: false, focusesComposer: false)
                 guard request.isCurrent, selectedID == mainID else { return nil }

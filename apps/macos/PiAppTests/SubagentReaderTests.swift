@@ -48,6 +48,65 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
     @MainActor private func otherTab(_ model: WorkspaceModel) -> HostedTab {
         model.tabs.open(kind: HostedTab.kind, key: "other") { HostedTab(key: "other", title: "Other reader", symbol: "doc") }
     }
+    @MainActor func testAnOwnedAgentKeepsItsAlreadySelectedForkInTheMainColumn() async throws {
+        for kind in AgentForkKind.allCases {
+            for remembered in [false, true] {
+                let (model, _) = try fixture()
+                var fork = model.chats[0]; fork.id = kind.id; fork.title = "Fork"; fork.parentSessionID = kind.parentID("chat-parent")
+                model.chats.append(fork)
+                model.chats[1].parentSessionID = fork.id
+                model.chats[1].delegation?.budgetOwnerSessionID = fork.id
+                model.chats[1].delegation?.call.parentSessionID = fork.id
+                await model.select(fork.id)
+                let view = try XCTUnwrap(model.selected)
+                view.messages = [.init(id: "reading", role: "assistant", text: "Keep this fork here")]
+                view.scrollAnchor = .init(id: "reading", offset: 17, followsBottom: false)
+                if remembered {
+                    model.sides["chat-parent"] = .init(id: fork.id, parentID: "chat-parent", workspaceID: fork.workspaceID,
+                        profileID: fork.profileID, title: fork.title, kept: true)
+                }
+                let revision = model.selectionRevision, anchor = view.scrollAnchor
+                let tab = try await open("chat-child", in: model)
+                XCTAssertEqual(model.selectedID, fork.id, kind.rawValue)
+                XCTAssertTrue(model.selected === view)
+                XCTAssertEqual(model.selectionRevision, revision, "Opening cannot move an already-visible owner into its ancestor's side slot")
+                XCTAssertEqual(view.scrollAnchor, anchor)
+                XCTAssertTrue(model.subagentTabIsShown(tab.key))
+                XCTAssertNil(model.sides[fork.id])
+            }
+        }
+    }
+    @MainActor func testSourceFromAChildWindowKeepsItsAlreadySelectedForkInTheMainColumn() async throws {
+        for kind in AgentForkKind.allCases {
+            for remembered in [false, true] {
+                let (model, _) = try fixture()
+                let tab = try await open("chat-child", in: model)
+                model.tabs.showsWindows = false; let container = model.tabs.popOut(tab)
+                var fork = model.chats[0]; fork.id = kind.id; fork.title = "Fork"; fork.parentSessionID = kind.parentID("chat-parent")
+                model.chats.append(fork)
+                model.chats[1].parentSessionID = fork.id
+                model.chats[1].delegation?.budgetOwnerSessionID = fork.id
+                model.chats[1].delegation?.call.parentSessionID = fork.id
+                await model.select(fork.id)
+                let view = try XCTUnwrap(model.selected), link = try XCTUnwrap(model.record(tab.key)?.delegation)
+                view.messages = [.init(id: link.call.assistantMessageID, role: "assistant", text: "The fork's issuing call")]
+                view.scrollAnchor = .init(id: "reading", offset: 17, followsBottom: false)
+                if remembered {
+                    model.sides["chat-parent"] = .init(id: fork.id, parentID: "chat-parent", workspaceID: fork.workspaceID,
+                        profileID: fork.profileID, title: fork.title, kept: true)
+                }
+                let revision = model.selectionRevision
+                let revealed = await model.openSubagentParent(link, origin: tab.renewNavigation())
+                XCTAssertTrue(revealed, kind.rawValue)
+                XCTAssertEqual(model.selectedID, fork.id, kind.rawValue)
+                XCTAssertTrue(model.selected === view)
+                XCTAssertEqual(model.selectionRevision, revision)
+                XCTAssertEqual(view.scrollAnchor?.id, link.call.assistantMessageID)
+                XCTAssertTrue(model.subagentTabIsShown(tab.key)); XCTAssertTrue(tab.container === container)
+            }
+        }
+    }
+
     @MainActor func testEarlierChildTurnOpeningSurvivesMainFocusDuringEveryRead() async throws {
         for stage in ["presentation", "turn lookup", "reveal"] {
             let (model, _) = try fixture()
