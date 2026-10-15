@@ -365,22 +365,15 @@ public actor AgentSession {
         if !spendTracked, let costSeed {
             var data = costSeed.record; data["source"] = "app-request-log"
             try opened.append(["type":"custom","customType":JSON(JournalRecordKind.cost),"data":data], flush:true)
-            spend.add(record:data); spendTracked = true
+            try accounting.consume(kind:JournalRecordKind.cost,data:data,spend:&spend); spendTracked = true
         }
         if resumePath != nil, subagents.origin == nil {
-            for var charge in try SideBudgetRecovery.charges(owner: id, directory: directory) {
-                guard let attempt = charge["attemptId"].text else { continue }
-                var kind = JournalRecordKind.cost
-                if let previous = accounting.attempts[attempt]?.contribution {
-                    guard previous["reported"].int != 1, charge["reported"].int == 1 else { continue }
-                    guard previous["sourceSessionId"] == charge["sourceSessionId"], previous["budgetOwnerSessionId"] == charge["budgetOwnerSessionId"],
-                          previous["delegationId"] == charge["delegationId"] else { throw AttemptAccounting.damaged() }
-                    kind = JournalRecordKind.costUpdate
-                }
-                charge["accountingRevision"] = JSON(accounting.revision + 1)
+            for incoming in try SideBudgetRecovery.charges(owner: id, directory: directory) {
+                guard var record = try SideBudgetRecovery.adoption(incoming,accounting:accounting) else { continue }
+                record.data["accountingRevision"] = JSON(accounting.revision + 1)
                 var next = accounting, total = spend
-                try next.consume(kind: kind, data: charge, spend: &total)
-                try opened.append(["type":"custom","customType":JSON(kind),"data":AttemptAccounting.journalData(charge)], flush:true)
+                try next.consume(kind:record.kind,data:record.data,spend:&total)
+                try opened.append(["type":"custom","customType":JSON(record.kind),"data":AttemptAccounting.journalData(record.data)],flush:true)
                 accounting = next; spend = total; spendTracked = true; familyBudgetEnabled = true
             }
         }

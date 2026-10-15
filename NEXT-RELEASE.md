@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Saved-side adoption preserves unresolved dispatched requests, unknown cost and token coverage through cold recovery and live binding. The replay/recovery matrix now covers 3,060 legacy/attempt-state combinations; later settlements, non-dispatch proof, old checkpoints and capture authority remain correct. [Round 8 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-8-unresolved-saved-side-attempts).
+
 - [x] Cold owner deletion now starts the project helper and repairs surviving side ledgers before Trash, including resumed deletion intents outside the chat window. Startup or mirror failures preserve evidence for retry; no model connection or transcript runtime is needed. [Round 7 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-7-repair-before-cold-owner-deletion).
 
 - [ ] Sub-cost round-6 validation follow-up: the one full native lane passed 2,554 tests, skipped 37, and failed one Overview hover redraw-counter assertion. The unchanged class passed alone (seven passed, one skipped); the parallel failure is not yet attributed. [Evidence](docs/validation/sub-cost-0.1.128.md#round-6-full-lane-follow-up).

@@ -9,7 +9,11 @@ extension AgentSession {
         if runTask != nil || !requestPermits.isEmpty || !inFlightBudgetAttempts.isEmpty { return ["attemptIds":[], "next":.null] }
         let ids = accounting.attempts.keys.filter { id in
             let entry = accounting.attempts[id]!
-            return id > (after ?? "") && entry.admission?["state"].text == "dispatched" && entry.contribution?["reported"].int != 1
+            // A legacy side's admission contributes to the new family totals,
+            // but its immutable scope may still authorize only the side to
+            // reconcile captures. Do not widen that scope through adoption.
+            let local = entry.admission?["budgetOwnerSessionId"].text == self.id || entry.admission?["scope"]["sideParents"].list.contains(JSON(self.id)) == true
+            return local && id > (after ?? "") && entry.admission?["state"].text == "dispatched" && entry.contribution?["reported"].int != 1
         }.sorted()
         let page = Array(ids.prefix(128))
         return ["attemptIds":.array(page.map { JSON($0) }), "next":ids.count > page.count ? JSON(page.last!) : .null]

@@ -18,6 +18,18 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
     var usageReported: [String: Int] = [:]
     var usageUnknownRequests = 0
 
+    /// Older checkpoints omitted unkeyed history from usage coverage. Restore
+    /// this cheap cached count once on load, never while serving snapshots.
+    mutating func restoreUsageCoverage(spend: SessionSpend) {
+        let known = attempts.values.reduce(0) { count, entry in
+            guard let cost = entry.contribution, cost["source"].text != "side-history" else { return count }
+            return count + (Self.usageFields.contains { key in
+                cost["usage"][key].double.map { $0.isFinite && $0 >= 0 } == true
+            } ? 1 : 0)
+        }
+        usageUnknownRequests = max(0,spend.reported + spend.unreported - known)
+    }
+
     /// Full replay and numeric-only side recovery must interpret the same
     /// ledger. The first delegation can replace older keyed charges with one
     /// adoption seed; copied foreign plans never reset this owner's spending.
@@ -54,7 +66,10 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
         guard let id = data["attemptId"].text, !id.isEmpty else {
             guard kind == JournalRecordKind.cost else { throw Self.damaged() }
             spend.add(record: data)
-            if data["source"].text == "family-adoption" { usageUnknownRequests += (data["reported"].int ?? 0) + (data["unreported"].int ?? 0) }
+            // Unkeyed history has no per-attempt token coverage, regardless of
+            // whether it arrived as an app seed, carried spend or adoption.
+            var counted = SessionSpend(); counted.add(record:data)
+            usageUnknownRequests += counted.reported + counted.unreported
             return true // Existing seed/carried records.
         }
         var entry = attempts[id] ?? Entry()
@@ -103,7 +118,7 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
         }
         guard let data = entry.contribution, !data["usage"].map.isEmpty else { usageUnknownRequests += sign; return }
         var observed = false
-        for key in ["input", "output", "cacheRead", "cacheWrite", "reasoning", "total"] {
+        for key in Self.usageFields {
             if let value = data["usage"][key].double, value.isFinite, value >= 0 {
                 observed = true
                 usageTotals[key, default: 0] += Double(sign) * value
@@ -113,6 +128,7 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
         }
         if !observed { usageUnknownRequests += sign }
     }
+    private static let usageFields = ["input", "output", "cacheRead", "cacheWrite", "reasoning", "total"]
 
     static func validatedCost(_ data: JSON) -> JSON {
         var value = data

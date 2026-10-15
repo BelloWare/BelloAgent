@@ -36,8 +36,8 @@ enum SideBudgetRecovery {
         seed["source"] = "side-history"; seed["outcome"] = "completed"; seed["purpose"] = "legacy"
         return charge(seed,side:side,parents:parents)
     }
-    static func charges(owner: String, directory: URL) throws -> [JSON] {
-        var result: [JSON] = []
+    static func charges(owner: String, directory: URL) throws -> [AccountingRecord] {
+        var result: [AccountingRecord] = []
         for (origin, parents) in try savedFamily(owner:owner,directory:directory) {
             // Only this family's ledger can affect opening its owner. An
             // unrelated side's damaged tail must not prevent other chats
@@ -51,11 +51,10 @@ enum SideBudgetRecovery {
             }
             for key in accounting.attempts.keys.sorted() {
                 let entry = accounting.attempts[key]!
-                guard let original = entry.contribution else { continue }
-                result.append(charge(original,side:origin.id,parents:parents))
+                if let record = record(entry,side:origin.id,parents:parents) { result.append(record) }
             }
             if let seed = unkeyedCharge(spend:remainder,accounting:accounting,side:origin.id,parents:parents) {
-                result.append(seed)
+                result.append(AccountingRecord(kind:JournalRecordKind.cost,data:seed))
             }
         }
         return result

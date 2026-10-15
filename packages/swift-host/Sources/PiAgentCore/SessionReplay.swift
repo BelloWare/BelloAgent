@@ -100,6 +100,7 @@ struct JournalReplayConsumer {
         r.subagents.retarget(id)
         r.accounting = (try? JSONDecoder().decode(AttemptAccounting.self, from: saved["accounting"].data())) ?? AttemptAccounting()
         r.spend.add(record: saved["spend"]); r.spendTracked=saved["spendTracked"].flag == true
+        r.accounting.restoreUsageCoverage(spend:r.spend)
         r.failedCompactionFingerprint=saved["failedCompactionFingerprint"].text
         r.contextRecovery=saved["contextRecovery"]; r.compactionState=saved["compactionState"]; r.parentInfo=saved["parentInfo"]
         ordinalMax=saved["presentationOrdinal"].int ?? 0

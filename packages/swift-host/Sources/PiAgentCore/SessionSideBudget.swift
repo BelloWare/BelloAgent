@@ -17,11 +17,12 @@ extension AgentSession {
         // Old saved sides and a lost owner acknowledgement are repaired from
         // numeric accounting only. No side messages, titles or prompts travel.
         for entry in accounting.attempts.values {
-            guard let cost = entry.contribution else { continue }
-            for ancestor in sideBudgetParents.reversed() { try await ancestor.importSideCharge(cost, side: id, parents: sideBudgetIDs) }
+            guard let record = SideBudgetRecovery.record(entry,side:id,parents:sideBudgetIDs) else { continue }
+            for ancestor in sideBudgetParents.reversed() { try await ancestor.importSideRecord(record, side:id, parents:sideBudgetIDs) }
         }
         if let seed = SideBudgetRecovery.unkeyedCharge(spend:spend,accounting:accounting,side:id,parents:sideBudgetIDs) {
-            for ancestor in sideBudgetParents.reversed() { try await ancestor.importSideCharge(seed, side:id, parents:sideBudgetIDs) }
+            let record = SideBudgetRecovery.AccountingRecord(kind:JournalRecordKind.cost,data:seed)
+            for ancestor in sideBudgetParents.reversed() { try await ancestor.importSideRecord(record, side:id, parents:sideBudgetIDs) }
         }
         try await refreshSideCharges()
     }
@@ -83,6 +84,7 @@ extension AgentSession {
 
     private func registerSideBudget(_ side: String, parents: [String]) throws {
         guard !closed, parents.contains(id), side != id else { throw AttemptAccounting.damaged() }
+        if !familyBudgetEnabled { accounting.restoreUsageCoverage(spend:spend) }
         sideBudgetMembers[side] = parents; familyBudgetEnabled = true
     }
 
@@ -143,14 +145,11 @@ extension AgentSession {
         }
     }
 
-    private func importSideCharge(_ original: JSON, side: String, parents: [String]) throws {
-        guard sideBudgetMembers[side] == parents, let attempt = original["attemptId"].text else { throw AttemptAccounting.damaged() }
-        var data = SideBudgetRecovery.charge(original, side: side, parents: parents)
-        if data["sourceSessionId"].isNull { data["sourceSessionId"] = JSON(side) }
-        if data["budgetOwnerSessionId"].isNull { data["budgetOwnerSessionId"] = JSON(side) }
-        data["sideParents"] = .array(parents.map { JSON($0) })
-        if accounting.attempts[attempt]?.contribution != nil { try mirrorSharedCharge(data); return }
-        data["accountingRevision"] = JSON(accounting.revision + 1)
-        try appendAccounting(kind: JournalRecordKind.cost, data: data)
+    private func importSideRecord(_ incoming: SideBudgetRecovery.AccountingRecord, side: String, parents: [String]) throws {
+        guard sideBudgetMembers[side] == parents else { throw AttemptAccounting.damaged() }
+        guard var record = try SideBudgetRecovery.adoption(incoming,accounting:accounting) else { return }
+        record.data["accountingRevision"] = JSON(accounting.revision + 1)
+        try appendAccounting(kind:record.kind,data:record.data)
+        stopFamilyAtLimit()
     }
 }
