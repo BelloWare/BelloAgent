@@ -294,7 +294,7 @@ extension WorkspaceModel {
         if remembered?.sideFocused == true, side != nil { await passingThrough(target.id) { await select(target.id, revealInSidebar: false) } }
         else { await select(target.id, revealInSidebar: false) }
         if launchFocus == target.id { launchFocus = nil }
-        if selectedID == target.id, selectionRevision == revision + 1 { reopenReport() }
+        if selectedID == target.id || (target.isSubagent && subagentTabIsShown(target.id)), selectionRevision == revision + 1 { reopenReport() }
         // The reader may have opened something else while the page loaded.
         guard let saved, selectedID == saved.id else { return true }
         if remembered?.sideFocused == true, let side, sides[saved.id]?.id == side.id, focusedSessionID == saved.id {

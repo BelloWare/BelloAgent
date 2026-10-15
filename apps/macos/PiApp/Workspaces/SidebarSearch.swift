@@ -313,7 +313,7 @@ extension WorkspaceModel {
     }
     /// Whether a chat is listed by the filter: its title, or its messages.
     func sidebarMatches(_ chat: ChatRecord, query: String) -> Bool {
-        chat.displayTitle.localizedCaseInsensitiveContains(query) || chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || sidebarSearchHit(chat.id) != nil
+        chat.displayTitle.localizedCaseInsensitiveContains(query) || (chat.isSubagent && chat.subagentShortTitle.localizedCaseInsensitiveContains(query)) || chat.delegationTask?.localizedCaseInsensitiveContains(query) == true || sidebarSearchHit(chat.id) != nil
     }
     /// After a chat the filter listed opened, its match is shown — unless
     /// the reader has opened something else meanwhile (`opening` is what

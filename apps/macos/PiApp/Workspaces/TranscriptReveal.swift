@@ -242,7 +242,7 @@ extension WorkspaceModel {
     /// Whether chat `id`'s transcript is what the reader has in front of them:
     /// the chats page, with the chat selected or open as the side beside it.
     private func transcriptShows(_ id: String) -> Bool {
-        page == .chats && (id == selectedID || sides[selectedID ?? ""]?.id == id)
+        subagentTabIsShown(id) || page == .chats && (id == selectedID || sides[selectedID ?? ""]?.id == id)
     }
     private func land(_ view: SessionDisplay, on messageID: String, landing: Double = TranscriptReveal.landing) {
         view.revealRead = nil; view.abandonJump()

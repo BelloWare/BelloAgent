@@ -287,6 +287,7 @@ struct ChatRowStats: Equatable {
         var subtitle: String
         var symbol: String
         var selected: Bool
+        var runningAgents = 0
         var unreadCount = 0
         var unreadFailure = false
         var markedUnreadOnly = false
@@ -312,6 +313,7 @@ struct ChatRowStats: Equatable {
             if run.holdsQueue { words.append(run == .interrupted ? "paused, run interrupted" : "paused") }
             if unreadCount > 0 { words.append("unread") } else if unreadFailure { words.append("run failed") }
             if hasDraft { words.append("has a draft") }
+            if runningAgents > 0 { words.append("\(runningAgents) sub-agent\(runningAgents == 1 ? "" : "s") running") }
             return words.joined(separator: ", ")
         }
         var help: String {
@@ -329,6 +331,7 @@ struct ChatRowStats: Equatable {
     /// The row's run is marked by its spinner, for tests.
     var showsSpinner: Bool { spinner != nil }
     private let title = PiKit.TextLine()
+    let agentBadge = AgentRunningBadge()
     private let pin = PiKit.SymbolView(PiKit.Symbol("pin.fill", size: 9), color: .piInkTertiary)
     /// Something unsent waits in the chat's composer.
     let draftMark = PiKit.SymbolView(PiKit.Symbol("pencil", size: 10, weight: .semibold), color: .piInkSecondary)
@@ -352,7 +355,7 @@ struct ChatRowStats: Equatable {
 
     override init(frame: NSRect) {
         controls = ShellStack(.horizontal, spacing: 4, [.view(archiveButton), .view(confirm), .view(keep), .view(chevron)])
-        row1 = ShellStack(.horizontal, spacing: 4, [.view(title, .flexible), .view(draftMark), .view(pin), .spacer(4), .view(dot), .view(controls)])
+        row1 = ShellStack(.horizontal, spacing: 4, [.view(title, .flexible), .view(agentBadge), .view(draftMark), .view(pin), .spacer(4), .view(dot), .view(controls)])
         tags = ShellStack(.horizontal, spacing: 4, [.view(projectTag), .view(topicTag)])
         super.init(frame: frame)
         title.truncation = .end; subtitle.truncation = .end
@@ -413,6 +416,7 @@ struct ChatRowStats: Equatable {
         let before = content
         guard new != before else { return }
         content = new
+        agentBadge.update(new.runningAgents)
         // The icon, or a spinner while it works.
         let working = new.stats.busy || new.stats.loading
         if working, spinner == nil {

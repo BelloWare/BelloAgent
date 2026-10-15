@@ -97,7 +97,7 @@ final class SubagentDisplayTests: XCTestCase {
         var stale = child; stale.subagentNumber = nil
         XCTAssertEqual(stale.merged(over: child).subagentNumber, 2)
         let content = SidebarChatRowView.content(model: model, chat: child, state: SidebarChatRowState(), display: nil, retained: nil)
-        XCTAssertEqual(content.title, child.displayTitle)
+        XCTAssertEqual(content.title, "#2 · child — in parent")
         let header = SubagentHeaderView(frame: .zero)
         header.update(chat: child, parent: model.chats[0], back: {})
         let back = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: header).first { $0.accessibilityIdentifier() == "back-to-subagent-parent" })

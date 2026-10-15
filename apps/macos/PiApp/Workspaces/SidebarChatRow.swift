@@ -23,6 +23,7 @@ struct SidebarChatRowState: Equatable {
     /// Whether any bulk selection is up at all; it changes what the row's
     /// right-click menu offers.
     var anyMarked = false
+    var runningAgents = 0
     var unreadCount = 0
     var unreadFailure = false
     /// Only the reader's Mark as Unread makes it unread: the dot says
@@ -159,7 +160,7 @@ extension WorkspaceModel {
         }
         let all = SidebarSessionPresentation.filtered(
             entries(archived: archived, collapsed: filtering ? [] : folded), by: filter,
-            contentMatches: filter.isEmpty ? [] : flat ? sidebarFlatMatches(query: filter) : sidebarContentMatches)
+            contentMatches: filter.isEmpty ? [] : flat ? sidebarFlatMatches(query: filter) : sidebarContentMatches, includingMainChats: showAllMatches)
         let shown = sidebarShownRoots(groupID)
         let selection = Set([focusedSessionID, selectedID].compactMap { $0 })
         let visible = SidebarSessionPresentation.page(all, roots: shown, selected: selection, filtering: filtering)
@@ -186,6 +187,7 @@ extension WorkspaceModel {
                 selected: selected,
                 marked: isSessionMarked(chat.id),
                 anyMarked: anyMarked,
+                runningAgents: chat.isSubagent ? 0 : subagentFamily(chat.id).runningCount,
                 unreadCount: unreadOutputCount(sessionID: chat.id),
                 unreadFailure: unreadFailure(sessionID: chat.id),
                 markedUnreadOnly: markedUnreadOnly(sessionID: chat.id),
@@ -251,17 +253,17 @@ extension WorkspaceModel {
         let entries = sidebarEntries(in: project.id, topicID: topic.id, archived: false, collapsed: [])
         let expanded = topicIsExpanded(topic) || !filter.isEmpty
         // A topic whose own title matches lists all of its chats.
-        let inner = topic.title.localizedCaseInsensitiveContains(filter) ? "" : filter
+        let includesMainChats = !filter.isEmpty && topic.title.localizedCaseInsensitiveContains(filter)
         let header = TopicHeaderState(projectID: project.id, topicID: topic.id, title: topic.title, trusted: project.trusted,
                                       expanded: expanded, filtering: !filter.isEmpty,
                                       hasUnread: entries.contains { unreadOutputCount(sessionID: $0.id) > 0 || unreadFailure(sessionID: $0.id) },
-                                      chats: entries.count)
+                                      chats: entries.lazy.filter { !$0.chat.isSubagent }.count)
         guard expanded else { return TopicGroupContents(header: header, expanded: false, contents: SidebarGroupContents()) }
-        let archive = sidebarArchiveContents(in: project, topicID: topic.id, includesArchive: includesArchive, filter: inner,
-                                             showAllMatches: !filter.isEmpty, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
+        let archive = sidebarArchiveContents(in: project, topicID: topic.id, includesArchive: includesArchive, filter: filter,
+                                             showAllMatches: includesMainChats, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
         // The topic's archived chats stand where "No chats yet" would.
-        let contents = sidebarGroupContents(in: project, topicID: topic.id, archived: false, filter: inner, showEmpty: archive == nil,
-                                            showAllMatches: !filter.isEmpty, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
+        let contents = sidebarGroupContents(in: project, topicID: topic.id, archived: false, filter: filter, showEmpty: archive == nil,
+                                            showAllMatches: includesMainChats, sidebarWidth: sidebarWidth, namesConnection: namesConnection)
         return TopicGroupContents(header: header, expanded: expanded, contents: contents, archive: archive)
     }
 }

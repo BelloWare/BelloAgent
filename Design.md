@@ -1,5 +1,14 @@
 # Bello Agent — Native Swift implementation and continuation design
 
+## Sub-agent navigation (0.1.128)
+
+Managed children live in the main chat's top-right Agents popover and in read-only
+right-pane tabs, with optional pop-out windows. Normal sidebar rows omit them;
+parents show only a running-count badge, and search results retain parent-labelled
+child access. The pill occupies its own conversation row, remaining left of the
+pane divider. See the [display amendment](docs/design/subagents.md#01128-display-update--owner-decision-2026-10-15)
+for cached family presentation, stable numbering, keyboard access and restoration.
+
 ## Webhook when a chat finishes (0.1.105)
 
 Settings → Chats & notifications → Webhook (`WebhookSettings`, kept in the Keychain vault as

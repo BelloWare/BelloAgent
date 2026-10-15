@@ -26,6 +26,8 @@ struct SideActions {
     private(set) var side: SideRecord?
     private var sideActions: SideActions?
 
+    let agentFamilyHeader = AgentFamilyHeaderView()
+    var showsAgentFamily = true { didSet { refresh() } }
     private let subagentHeader = SubagentHeaderView()
     private let sideHeader: SideHeaderView
     private let sideLine = CALayer()
@@ -96,7 +98,7 @@ struct SideActions {
         // What stands out past the pane (a composer wider than a narrow
         // pane) is cut at its edges, as the SwiftUI pane cut it.
         clipsToBounds = true
-        for view in [recovered, transcript, starter, cover, missingFolder, footer] as [NSView] { addSubview(view) }
+        for view in [recovered, transcript, starter, cover, missingFolder, footer, agentFamilyHeader] as [NSView] { addSubview(view) }
         // The composer last: its slash-command list floats over everything above it.
         addSubview(composer)
         layer?.addSublayer(sideLine)
@@ -110,7 +112,7 @@ struct SideActions {
 
     override var acceptsFirstResponder: Bool { chat?.isSubagent == true }
     var canBackToSubagentParent: Bool {
-        guard side == nil, let chat, let link = chat.delegation, model.selectedID == chat.id,
+        guard side == nil, let chat, let link = chat.delegation, (model.selectedID == chat.id || model.subagentTabIsShown(chat.id)),
               model.record(link.budgetOwnerSessionID) != nil, model.conversationCommandsEnabled,
               let window, window.isKeyWindow, window.attachedSheet == nil,
               !(window.childWindows ?? []).contains(where: { $0.isVisible && $0.canBecomeKey }),
@@ -204,7 +206,7 @@ struct SideActions {
             && !current.isSubagent && !current.imported && !current.isBackgroundTask && projectAvailable && (side == nil || side?.pending == true)
         var failure: String?
         if case .failed(let error) = session.historyState { failure = error }
-        let terminalWorkspace = model.terminalVisible && side == nil ? model.workspace(for: current.workspaceID).flatMap { $0.isScratch ? nil : $0 } : nil
+        let terminalWorkspace = model.terminalVisible && side == nil && !current.isSubagent ? model.workspace(for: current.workspaceID).flatMap { $0.isScratch ? nil : $0 } : nil
         let kind: PaneFooterView.Kind
         if current.isSubagent {
             let parent = current.delegation.flatMap { model.record($0.budgetOwnerSessionID) }
@@ -234,6 +236,9 @@ struct SideActions {
     /// Reads the chat and the workspace again and changes only what differs.
     func refresh() {
         guard let session, let chat else { return }
+        agentFamilyHeader.update(model: model, sessionID: chat.id, enabled: inheritedEnabled)
+        let hideFamily = !showsAgentFamily || model.subagentFamily(chat.id).members.isEmpty
+        if agentFamilyHeader.isHidden != hideFamily { agentFamilyHeader.isHidden = hideFamily; needsLayout = true }
         let now = read(session, chat)
         guard now != shown else { return }
         let before = shown
@@ -464,6 +469,9 @@ struct SideActions {
             let height = subagentHeader.height(forWidth: width)
             frames.append((subagentHeader, CGRect(x: 0, y: top, width: width, height: height))); top += height
         }
+        if !agentFamilyHeader.isHidden {
+            frames.append((agentFamilyHeader, CGRect(x: 0, y: top, width: width, height: 34))); top += 34
+        }
         if !recovered.isHidden {
             let height = recovered.height(forWidth: width)
             frames.append((recovered, CGRect(x: 0, y: top, width: width, height: height)))
@@ -621,6 +629,9 @@ enum ConversationActionsMenu {
             }
         }
         if !chat.isSubagent && !model.isEphemeral(session.id) {
+            if !model.subagentFamily(chat.id).members.isEmpty {
+                PiMenuEntry.button("Agents…", systemImage: "person.crop.rectangle.stack") { model.agentFamilyRequests.send(model.subagentFamily(chat.id).ownerID) }
+            }
             SessionOrganizationActions.entries(model: model, chat: chat)
             PiMenuEntry.divider
         }

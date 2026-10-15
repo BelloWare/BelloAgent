@@ -57,7 +57,7 @@ final class SubagentOrganizationTests: XCTestCase {
         for flat in [false, true] {
             model.setSidebarFlat(flat)
             let entries = Self.contents(model).entries.map(\.id)
-            XCTAssertTrue(entries.contains("subagents|chat-parent"))
+            XCTAssertFalse(entries.contains("subagents|chat-parent"))
             XCTAssertFalse(entries.contains("chat|chat-child"))
             XCTAssertTrue(entries.contains("chat|chat-side"), "Ordinary sides keep their independent disclosure")
             XCTAssertFalse(model.sidebarChatOrder.contains("chat-child"))
@@ -92,7 +92,7 @@ final class SubagentOrganizationTests: XCTestCase {
             let states = Self.contents(model).entries.compactMap { entry -> SidebarChatRowState? in
                 if case .chat(let chat, let state, _) = entry, chat.id == "chat-child" { return state }; return nil
             }
-            XCTAssertEqual(states.first?.selected, true)
+            XCTAssertTrue(states.isEmpty, "Even a restored full-pane child stays out of the sidebar")
             XCTAssertTrue(model.subagentGroupExpanded("chat-parent"))
             XCTAssertNotEqual(model.projectSidebarStates["pane-project"]?.expandedSubagents?.contains("chat-parent"), true)
             model.selectedID = "chat-parent"; model.focusedSessionID = "chat-parent"
@@ -176,9 +176,9 @@ final class SubagentOrganizationTests: XCTestCase {
         for flat in [false, true] {
             model.setSidebarFlat(flat)
             let ids = Self.contents(model).entries.map(\.id)
-            let group = try XCTUnwrap(ids.firstIndex(of: "subagents|chat-parent"))
-            XCTAssertEqual(ids[group + 1], "chat|chat-child")
-            XCTAssertGreaterThan(try XCTUnwrap(ids.firstIndex(of: "chat|chat-side")), group + 1)
+            XCTAssertFalse(ids.contains("subagents|chat-parent"))
+            XCTAssertFalse(ids.contains("chat|chat-child"))
+            XCTAssertTrue(ids.contains("chat|chat-side"))
         }
         let finalFlush = await model.flushProjectSidebarState(); XCTAssertTrue(finalFlush)
         model.projectSidebarStates = [:]

@@ -8,7 +8,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// The tabs beside the chats and in windows of their own: the window's,
     /// publishing on their own (`TabHost`). Kept across launches in the app;
     /// in tests, nothing is kept.
-    let tabs = TabHost(defaults: ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard)
+    let tabs: TabHost
     /// ⌘P's list: its own to publish, so the window is not drawn again for it.
     let quickOpen = QuickOpen(defaults: ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard)
     let replyFileResolver = ReplyFileResolver()
@@ -20,7 +20,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Every sidebar row, unread badge and menu-bar row looks a chat up by id.
     /// A linear scan made those lookups O(chats) each and the sidebar O(chats²).
     /// The sidebar index rebuilds its id table at most once per mutation, lazily.
-    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); chatsRevision &+= 1; readBadgeCache = nil; noteActivityChanged(); forgetKeptTranscriptRows() } }
+    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); subagentFamilies.removeAll(); chatsRevision &+= 1; readBadgeCache = nil; noteActivityChanged(); forgetKeptTranscriptRows() } }
     /// A duplicate id keeps the first entry, matching `chats.first`.
     func chatRecord(_ id: String) -> ChatRecord? { sidebarIndex.chat(id, in: chats) }
     @Published var unreadStates: [String: SessionReadState] = [:] { didSet { readBadgeCache = nil; noteActivityChanged() } }
@@ -32,8 +32,11 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     }
     var dirtyRunHolds: Set<String> = []
     /// Changes only at delegation lifecycle boundaries, never streamed tokens.
+    var subagentNavigationRevision = 0
     var subagentReturnTargets: [String: SubagentTarget] = [:]
-    @Published var subagentSummaries: [String: SubagentSummary] = [:]
+    @Published var subagentSummaries: [String: SubagentSummary] = [:] { didSet { subagentFamilies.removeAll() } }
+    var subagentFamilies: [String: SubagentFamily] = [:]
+    let agentFamilyRequests = PassthroughSubject<String, Never>()
     var deletingFamilies: Set<String> = []
     var familyFileRecycler: (([URL]) async throws -> Void)?
     var runHoldWrites: [String: Task<Void, Never>] = [:]
@@ -54,7 +57,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var applicationIsActiveOverride: Bool?
     var dirtyReadStates: Set<String> = []
     var readStateWrites: [String: Task<Void, Never>] = [:]
-    @Published var profiles: [ProfileRecord] = [] { didSet { noteActivityChanged() } }
+    @Published var profiles: [ProfileRecord] = [] { didSet { subagentFamilies.removeAll(); noteActivityChanged() } }
     @Published var selectedID: String? {
         didSet { if selectedID != oldValue { messageNavigationRevision += 1; organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } }
     }
@@ -475,7 +478,8 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let pastedImages: PastedImageStorage
     /// Test seam: pause a journal read without slowing unrelated metadata.
     var pastedImageRead: @Sendable (String) throws -> Set<String> = PastedImageStorage.names(inJournal:)
-    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false, modelCatalog: ModelCatalog? = nil) {
+    init(stateRoot: URL? = nil, vault: ConfigurationVault = .shared, completionSound: CompletionSound? = nil, launching: Bool = false, modelCatalog: ModelCatalog? = nil, tabDefaults: UserDefaults? = ProcessInfo.processInfo.environment["PI_APP_TESTING"] == "1" ? nil : .standard) {
+        tabs = TabHost(defaults: tabDefaults)
         self.launching = launching
         self.modelCatalog = modelCatalog ?? ModelCatalog()
         self.vault = vault
@@ -489,7 +493,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         report.attach(self)
         observeDraftWrites()
         TranscriptKeptRows.policy = self
-        tabs.configureTab = { [weak self] tab in self?.configureFileNavigation(tab) }
+        tabs.configureTab = { [weak self] tab in self?.configureFileNavigation(tab); self?.configureSubagentTab(tab) }
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
         FileTab.activate = { [weak self] tab in self?.tabs.activate(tab) }
         FileTab.openHistory = { [weak self] tab in self?.showFileHistory(from: tab) }

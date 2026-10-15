@@ -68,11 +68,11 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
                 try await eventually("Inspector never indexed the child") { value.index.requests.contains { $0.sessionID == target.sessionID } }
                 let request = try XCTUnwrap(value.index.requests.first { $0.sessionID == target.sessionID })
                 value.focus(.request(request.id)); value.showInChat()
-                try await eventually("Inspector never selected the child") { model.selectedID == target.sessionID && model.selected?.historyState != .loading }
+                try await eventually("Inspector never selected the child") { model.subagentTabIsShown(target.sessionID) && model.displays[target.sessionID]?.historyState != .loading }
                 await model.navigationTask?.value
             case "search":
                 await model.openFromSidebar(target.sessionID)
-                let row = try XCTUnwrap(model.selected?.messages.first)
+                let row = try XCTUnwrap(model.displays[target.sessionID]?.messages.first)
                 await SidebarSearchReveal.reveal(model, chatID: target.sessionID, messageID: row.id)
             case "launch", "cold launch":
                 if route == "cold launch" {
@@ -111,7 +111,14 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
         for route in ["Back", "standalone Inspector", "family Inspector", "standalone Parent request", "family Parent request"] {
             await model.openSubagent(target)
             model.latestVersion(sessionID: parent.id)
-            if route == "Back" { await model.backToSubagentParent(target.sessionID) }
+            if route == "Back" {
+                let before = model.displays[parent.id]?.reveal
+                await model.backToSubagentParent(target.sessionID)
+                XCTAssertEqual(model.focusedSessionID, parent.id)
+                XCTAssertNil(model.displays[parent.id]?.versionView)
+                XCTAssertEqual(model.displays[parent.id]?.reveal, before, "Side-pane Back only focuses the main chat")
+                continue
+            }
             else {
                 let inspector = SessionInspectorModel(scope: .init(sessionID: route.hasPrefix("family") ? parent.id : target.sessionID, workspaceID: parent.workspaceID), title: "Child", archive: model.traces, workspace: model, usageLoader: { _,_,_ in throw CancellationError() })
                 inspector.setVisible(true)

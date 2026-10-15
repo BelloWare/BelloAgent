@@ -1,5 +1,36 @@
 # Sub-agents in Bello Agent — Design v2
 
+## 0.1.128 display update — owner decision, 2026-10-15
+
+This supersedes the sidebar groups and main-pane child navigation described below.
+Normal Topics/Flat, pinned and archived lists omit managed children, including topic
+counts and unread indicators. A parent with queued/running children shows a compact
+spinner and “N agents” badge. Search still finds children, labelled
+“#N · description — in parent title”; choosing a result opens the child reader.
+
+The main conversation column reserves a 34-point row for a trailing **Agents N** Pi
+pill. While children run it adds a spinner and active count (queued work included).
+It remains left of the divider when the right pane opens. Its keyboard-accessible
+Pi popover orders children by their stable number and shows status, model and the
+existing reported progress spend when available. Open reuses the child's tab;
+Stop appears on running rows. Stop All reviews the active family in a custom Pi
+confirmation, and Inspect Family uses the existing Inspector. View and Conversation
+menus, and the chat menu, reach the same popover.
+
+Children open as read-only `SubagentTab`s in the existing file/Git pane, without a
+human composer. The host's identity key prevents duplicate tabs across pane/window
+moves and persists them through relaunch. Saved tabs wait for metadata before
+loading; cold readers do not start a helper. Back to Parent from the embedded tab
+focuses the existing parent without changing its draft, version or reading position.
+Explicit source links still reveal their issuing message/version. A popped-out child
+has its own family pill, with the current child highlighted and siblings available.
+
+Full identities retain **Sub-agent N · description**. The compact family/search form
+is **#N · description**; tooltips and accessibility include the full numbered identity.
+Numbers and collapsed-turn filtering remain presentation-only. Model-facing text,
+permissions, tools, capture, journals and accounting are unchanged. Family rows/counts
+are cached at metadata/lifecycle boundaries, not derived from transcript layout.
+
 **Status:** Proposed implementation design, incorporating lead review  
 **Date:** 2026-10-13  
 **Source baseline:** `fb09bc70a257d1cc0f74644531d9ce32a26b58e9`  

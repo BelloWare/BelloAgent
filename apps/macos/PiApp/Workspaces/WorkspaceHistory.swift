@@ -131,7 +131,7 @@ extension WorkspaceModel {
     func historyViewportReady(_ id: String, generation: UUID) {
         guard let view = displays[id], view.presentationGeneration == generation,
               view.historyState == .preparing || view.historyState == .empty,
-              id == selectedID || sides[selectedID ?? ""]?.id == id else { return }
+              id == selectedID || sides[selectedID ?? ""]?.id == id || subagentTabIsShown(id) else { return }
         if view.historyState != .empty { view.historyState = .ready }
         view.refreshingCachedRows = false
         view.presentation.readyAt = PerformanceProbe.now
@@ -146,7 +146,7 @@ extension WorkspaceModel {
                 try? await Task.sleep(for: .seconds(TranscriptIdleScheduler.shared.remainingInputQuietTime))
             }
             guard !Task.isCancelled, let self, let view, view.presentationGeneration == generation,
-                  let item = self.record(id), id == self.selectedID || self.sides[self.selectedID ?? ""]?.id == id else { return }
+                  let item = self.record(id), id == self.selectedID || self.sides[self.selectedID ?? ""]?.id == id || self.subagentTabIsShown(id) else { return }
             view.contextSelectionReady = true
             self.scheduleAutomaticContext(id)
             // Rows whose figures were read before they were shown are not read
@@ -160,7 +160,9 @@ extension WorkspaceModel {
         if !view.draftReady {
             // Retry must also check pending input. A successful history page
             // by itself cannot release a draft whose acceptance read failed.
-            if selectedID == id {
+            if let tab = subagentTab(id) {
+                view.historyState = .dormant; tab.didShow()
+            } else if selectedID == id {
                 view.historyState = .dormant
                 Task { await select(id, revealInSidebar: false) }
             } else if let parentID = item.parentSessionID, selectedID == parentID, sides[parentID]?.id == id {

@@ -14,12 +14,12 @@ extension WorkspaceModel {
             if record(target.sessionID) == nil { await reconcileSubagents(parentID: parent.id) }
             guard let child = record(target.sessionID), child.workspaceID == parent.workspaceID, child.delegation == header.link else { throw StoreError.invalidRecord }
             guard !Task.isCancelled, selectionRevision == navigation else { return false }
-            await select(target.sessionID, revealInSidebar: false, reopensSide: false, focusesComposer: false)
-            guard selectedID == target.sessionID, !Task.isCancelled else { return false }
+            await openSubagentTab(target.sessionID)
+            guard subagentTabIsShown(target.sessionID), !Task.isCancelled else { return false }
             subagentReturnTargets[target.sessionID] = target
             let message = try await history.subagentTurnMessage(path: path, childID: target.sessionID, turn: target.turn, messageID: target.messageID)
-            if let message, selectedID == target.sessionID { _ = await revealInTranscript(sessionID: target.sessionID, messageID: message) }
-            return !Task.isCancelled && selectedID == target.sessionID && page == .chats
+            if let message, subagentTabIsShown(target.sessionID) { _ = await revealInTranscript(sessionID: target.sessionID, messageID: message) }
+            return !Task.isCancelled && subagentTabIsShown(target.sessionID)
         } catch is CancellationError { }
         catch { self.error = error.localizedDescription }
         return false
@@ -36,7 +36,7 @@ extension WorkspaceModel {
         let directory = try subagentDirectory(item.workspaceID)
         guard let path = item.path else { throw StoreError.invalidRecord }
         _ = try await history.subagentHeader(path: URL(fileURLWithPath: path), directory: directory, expected: SubagentTarget(link))
-        guard !Task.isCancelled, selectedID == item.id, selectionRevision == navigation,
+        guard !Task.isCancelled, (selectedID == item.id || subagentTab(item.id) != nil), selectionRevision == navigation,
               record(item.id)?.delegation == link, record(item.id)?.path == path,
               hosts[item.workspaceID] === host, host.connectionID == connection, opened.contains(parent.id) else { throw CancellationError() }
         _ = try await open(item)
@@ -59,7 +59,11 @@ extension WorkspaceModel {
 
     func backToSubagentParent(_ childID: String) async {
         guard let link = record(childID)?.delegation else { return }
+        if subagentTab(childID)?.container?.isPane == true, selectedID == link.budgetOwnerSessionID {
+            focusSubagentParent(link.budgetOwnerSessionID); return
+        }
         await openSubagentParent(link, returningTo: subagentReturnTargets[childID])
+        focusSubagentParent(link.budgetOwnerSessionID)
     }
 
     func openSubagentParent(_ link: SubagentLink, returningTo target: SubagentTarget? = nil) async {

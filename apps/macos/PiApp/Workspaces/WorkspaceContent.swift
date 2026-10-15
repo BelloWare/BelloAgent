@@ -101,6 +101,12 @@ extension WorkspaceModel {
             error = "That chat is no longer available. It was deleted or was an unkept side conversation; its retained requests remain in the report and inspector."
             return false
         }
+        if item.isSubagent {
+            await openSubagentTab(sessionID)
+            guard subagentTabIsShown(sessionID) else { return false }
+            guard let messageID else { return true }
+            return await revealInTranscript(sessionID: sessionID, messageID: messageID)
+        }
         let parentID = side(sessionID)?.parentID ?? item.id
         let changingSelection = selectedID != parentID
         // select changes selectedID synchronously before its first await, which

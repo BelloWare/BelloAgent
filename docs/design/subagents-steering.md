@@ -1,5 +1,15 @@
 # Sub-agent steering and follow-ups — design v3 delta
 
+## 0.1.128 presentation amendment
+
+The owner's 2026-10-15 display change replaces child sidebar groups and navigation
+that replaced the main chat. Use the [main-column Agents pill and child side tabs](subagents.md#01128-display-update--owner-decision-2026-10-15).
+A parent sidebar badge counts running/queued children; child search results name
+their parent. The family popover and restored child tabs preserve numbering, read-only
+view/Stop, typed-message source links and family Inspector. Embedded Back to Parent
+only focuses the main conversation. Full child windows show the sibling picker too.
+No steering, model-visible or journal contract changes accompany this UI amendment.
+
 **Status:** Proposed; implementation has not started. Two owner choices are recorded at the end.
 
 **Date:** 2026-10-14

@@ -146,6 +146,7 @@ import AppKit
         command(view, title: { [model] in model.page == .report ? "Back to Chats" : "Usage Report" }, key: "r", modifiers: [.command, .shift], action: model.toggleReport)
         command(view, title: { [model] in model.page == .background ? "Back to Chats" : "Background Requests" }, key: "b", modifiers: [.command, .shift], action: model.toggleBackgroundRequests)
         command(view, title: { [model] in model.sidebarShowsArchived ? "Hide Archived Chats" : "Show Archived Chats" }, action: model.toggleArchivedChats)
+        command(view, "Agents…", enabled: { [model] in model.canShowAgentFamily }, action: model.showAgentFamily)
         command(view, "Session Inspector…", key: "i", modifiers: [.command, .option],
                 enabled: { [model] in !model.presentsSheet && (model.focusedSessionID ?? model.selectedID).flatMap(model.record) != nil }) { [model] in
             if let id = model.focusedSessionID ?? model.selectedID { model.inspect(id) }
@@ -163,6 +164,7 @@ import AppKit
         command(view, "Narrow Sidebar", key: String(UnicodeScalar(NSLeftArrowFunctionKey)!), modifiers: [.command, .control]) { WindowChrome.adjustStoredSidebarWidth(by: -WindowChrome.widthStep) }
 
         let conversation = menu("Conversation")
+        command(conversation, "Agents…", enabled: { [model] in model.canShowAgentFamily }, action: model.showAgentFamily)
         let active = { [weak self] in self?.conversationCommands ?? false }
         let editable = { [weak self, model] in (self?.conversationCommands ?? false) && model.commandChat?.isSubagent != true }
         command(conversation, "Send / Queue Follow-up", enabled: editable, action: { [model] in model.send() })

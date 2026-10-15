@@ -10,6 +10,7 @@ extension WorkspaceModel {
     func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveSwitch: Bool = false, reopensSide: Bool = true,
                 focusesComposer: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
+        if item.isSubagent { await openSubagentTab(id); return }
         let focusesComposer = focusesComposer && !item.isSubagent
         if revealInSidebar || preserveArchiveSwitch { quietSidebarReveal = [] }
         // A background request is listed on its own page, not the sidebar:
@@ -149,7 +150,7 @@ extension WorkspaceModel {
         // Imports belong to this exact composer; keep it until its images
         // have arrived, even off screen.
         for other in displays.values.sorted(by: { $0.used < $1.used }) where displays.count > 8 && other.id != id && !other.hasWork && !other.loading
-            && other.imageImports == 0 && other.id != record(id)?.delegation?.budgetOwnerSessionID
+            && subagentTab(other.id) == nil && other.imageImports == 0 && other.id != record(id)?.delegation?.budgetOwnerSessionID
             && !(pendingChatIDs.contains(other.id) && !isPendingEmpty(other.id)) && !sides.values.contains(where: { $0.id == other.id || $0.parentID == other.id }) {
             other.presentation.cancel(); displays.removeValue(forKey: other.id)
             releaseHelperSession(other.id)
@@ -158,12 +159,12 @@ extension WorkspaceModel {
     /// Reads the opened chat's saved draft and place, then its page, and shows
     /// it: the rows it held when they are still its newest, else the page read.
     /// It stops wherever the reader has moved on.
-    private func loadSelectedChat(_ id: String, item: ChatRecord, into view: SessionDisplay, selection: Int,
-                                  generation: UUID, heldRows: HeldRows, focusesComposer: Bool) async {
+    func loadSelectedChat(_ id: String, item: ChatRecord, into view: SessionDisplay, selection: Int,
+                                  generation: UUID, heldRows: HeldRows, focusesComposer: Bool, inTab: Bool = false) async {
         // However this ends, nothing is reading the chat any more.
         defer { if view.presentationGeneration == generation { view.presentation.navigation = nil } }
         @MainActor func current() -> Bool {
-            !Task.isCancelled && self.selectionRevision == selection && self.selectedID == id &&
+            !Task.isCancelled && (inTab ? self.subagentTab(id) != nil : self.selectionRevision == selection && self.selectedID == id) &&
                 self.displays[id] === view && view.presentationGeneration == generation
         }
         do {
@@ -312,7 +313,7 @@ extension WorkspaceModel {
 /// What a chat's display showed as it was opened again: rows kept on screen
 /// while its page is read, and what they were read under, should they turn
 /// out to be the chat's rows still.
-private struct HeldRows {
+struct HeldRows {
     /// The display had rows on screen.
     let cached: Bool
     let identity: (incarnation: String, lineage: String)?

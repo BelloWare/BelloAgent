@@ -4,8 +4,10 @@
 
 ## 0.1.128
 
+- [x] Main-column sub-agent picker (`dev/a128-sub-display`, owner 2026-10-15): normal sidebar lists omit children; a parent shows a compact running/queued count. The main chat's top-right Agents pill lists numbered children, status/model/reported spend, Open/Stop, confirmed Stop All and Inspect Family. Child readers use reusable, restorable file/Git-pane tabs, with Back focusing the parent and sibling access in pop-out windows. Search retains parent-labelled child results. [Validation](docs/validation/sub-display-0.1.128.md#owner-display-follow-up).
+
 - [x] Collapsed sub-agent work (`dev/a128-sub-display`): a finished compact turn hides typed parent/child messages, reports, control cards and child counts; the main agent's answer remains visible. Expanding restores the original rows and navigation. [Validation](docs/validation/sub-display-0.1.128.md).
-- [x] Stable sub-agent numbers (`dev/a128-sub-display`): `Sub-agent N · description` across cards, sidebar/search, child headers, Back to Parent labels, native window/tab titles and family Inspector. Numbers derive from unique accepted starts in the parent journal, including legacy and missing-child starts, with an optional rebuildable desktop cache. Follow-ups retain their number; journals, model-facing text and tool contracts are unchanged. [Validation and limits](docs/validation/sub-display-0.1.128.md).
+- [x] Stable sub-agent numbers (`dev/a128-sub-display`): `Sub-agent N · description` across cards, search results, child headers, Back to Parent labels, native window/tab titles and family Inspector. Numbers derive from unique accepted starts in the parent journal, including legacy and missing-child starts, with an optional rebuildable desktop cache. Follow-ups retain their number; journals, model-facing text and tool contracts are unchanged. [Validation and limits](docs/validation/sub-display-0.1.128.md).
 
 ## 0.1.127
 

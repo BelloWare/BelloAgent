@@ -196,8 +196,8 @@ import Combine
             ?? ChatRowStats(totals: (retained ?? model.chatAccounting.row(for: chat.id)).totals, now: now)
         // Paused before a restart, and not opened since: the saved hold says so.
         if display?.runStateKnown != true, let held = state.heldRun { stats.updateActivity(state: held, loading: false, activity: [:]) }
-        return ChatRowBodyView.Content(stats: stats, title: chat.displayTitle, subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
-                                       unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
+        return ChatRowBodyView.Content(stats: stats, title: model.subagentSearchTitle(chat), subtitle: state.subtitle, symbol: symbol(chat), selected: state.selected,
+                                       runningAgents: state.runningAgents, unreadCount: state.unreadCount, unreadFailure: state.unreadFailure,
                                        markedUnreadOnly: state.markedUnreadOnly, hasDraft: state.hasDraft,
                                        projectTag: state.projectTag, projectTagFullName: state.projectTagFullName, topicTag: state.topicTag, hasSide: state.hasSide,
                                        expanded: state.expanded, pinned: chat.isPinned, archived: chat.isArchived,

@@ -70,7 +70,7 @@ extension WorkspaceModel {
             @MainActor func current() -> Bool { snapshotApplies(id: id, view: view, item: item, host: host, connection: connection) }
             do {
                 guard current() else { return }
-                let visible = id == selectedID || sides[selectedID ?? ""]?.id == id
+                let visible = id == selectedID || sides[selectedID ?? ""]?.id == id || subagentTabIsShown(id)
                 let generation = view.presentationGeneration
                 let requestedViewport = view.viewportRequest
                 let requestedRevision = view.projectionRevision
