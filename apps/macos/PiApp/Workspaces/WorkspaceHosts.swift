@@ -181,7 +181,7 @@ extension WorkspaceModel {
         // A caller that read the chat before it moved may already have
         // written something naming the old connection (a fork's or a side's
         // record): it is refused, and opens again from the chat as it is.
-        if let current = record(item.id), current.profileID != item.profileID { throw connectionChanged }
+        if let current = record(item.id), current.profileID != item.profileID || current.workspaceID != item.workspaceID { throw connectionChanged }
         try Task.checkCancellation()
         guard !isShutDown else { throw CancellationError() }
         if automaticContext { try requireAutomaticContext(item.id) }

@@ -1,0 +1,243 @@
+import AppKit
+import XCTest
+@testable import PiApp
+
+extension XCTestCase {
+    @MainActor func pendingProjectModel(gateway: Bool = false) async throws -> WorkspaceModel {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("pending-project-" + UUID().uuidString)
+        let projects = ["Orchard", "Harbor", "Untrusted"].map { WorkspaceRecord(id: $0, path: root.appendingPathComponent($0).path, trusted: $0 != "Untrusted") }
+        for project in projects {
+            try FileManager.default.createDirectory(atPath: project.path, withIntermediateDirectories: true)
+            try Data("Instructions unique to \(project.id) project.\n".utf8).write(to: URL(fileURLWithPath: project.path).appendingPathComponent("AGENTS.md"))
+            try Data("Synthetic UI fixture file: read-tool round trip verified.\n".utf8).write(to: URL(fileURLWithPath: project.path).appendingPathComponent("README.md"))
+        }
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        var profile = ProfileRecord()
+        profile.name = "Fixture"; profile.api = LiteLLMConfiguration.supportedAPI
+        profile.baseUrl = "http://127.0.0.1:1"; profile.modelId = "fixture"
+        if gateway {
+            profile.baseUrl = try await startSyntheticGateway(in: root).base
+            profile.modelId = "ui-fixture"; profile.contextWindow = 2_000_000; profile.maxOutputTokens = 300_000; profile.modelOutputLimit = 300_000
+        }
+        profile.advancedJSON = "{\"input\":[\"text\",\"image\"]}"
+        var config = VaultConfiguration()
+        config.workspaces = projects; config.profiles = [VaultProfile(profile: profile, apiKey: "synthetic-loopback-only-key")]
+        // No real Codex instructions, skills, preferences or credentials.
+        for project in projects { config.resources[project.id] = .object(["codexHome": .string(root.appendingPathComponent("codex").path)]) }
+        let model = makeWorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage(try JSONEncoder().encode(config))))
+        model.prewarmsHelpers = false
+        await model.restore()
+        model.selectedWorkspaceID = "Orchard"; model.profileChoice = profile.id
+        return model
+    }
+
+    @MainActor func startPendingProjectChat(_ model: WorkspaceModel, project: String = "Orchard") async throws -> SessionDisplay {
+        let previous = model.selectedID
+        model.newChat(in: project)
+        try await eventually("pending chat ready") { model.selectedID != previous && model.selected?.draftReady == true && model.selected?.historyState == .empty && model.workspaceChangesInFlight.isEmpty }
+        return try XCTUnwrap(model.selected)
+    }
+
+}
+
+final class PendingChatProjectTests: XCTestCase {
+    @MainActor func testPendingProjectChipInFlatAndTopics() async throws {
+        let model = try await pendingProjectModel()
+        let session = try await startPendingProjectChat(model)
+        for flat in [false, true] {
+            model.setSidebarFlat(flat)
+            let composer = ComposerInputView(model: model)
+            composer.paneWidth = 600; composer.show(session)
+            let chip = ConversationPaneTests.views(NSButton.self, in: composer).first { $0.accessibilityIdentifier() == "pending-chat-project" }
+            XCTAssertNotNil(chip, "An unsent chat offers its project above the composer in both sidebar modes")
+            XCTAssertEqual(chip?.accessibilityLabel(), "Project: Orchard, change")
+            XCTAssertTrue(chip?.acceptsFirstResponder == true)
+        }
+    }
+
+    @MainActor func testSwitchUsesFreshNewChatDefaultsAndKeepsOnlyUserInput() async throws {
+        let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+        let store = try XCTUnwrap(model.store), id = view.id
+        var chosen = try XCTUnwrap(model.record(id))
+        chosen.model = "remembered-model"; chosen.thinkingLevel = "high"; chosen.contextWindow = 90_000
+        chosen.maxOutputTokens = 4_000; chosen.modelOutputLimit = 20_000
+        try await store.put(ChatModelDefaults(chat: chosen), kind: ChatModelDefaults.recordKind, id: chosen.profileID)
+        model.chats[0].toolMode = ChatRecord.readOnlyTools; model.chats[0].webhookOff = true
+        model.chats[0].topicID = "old-topic"; model.chats[0].model = "old-model"
+        let bytes = try XCTUnwrap(Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII="))
+        let image = try AttachmentRecord.inspect(model.pastedImages.write(bytes))
+        view.draft = "  Draft 🪴\nkeep indentation\n"; view.attachments = [image]; view.directCommand = true
+        let skill = SkillDescriptor(id: String(repeating: "a", count: 64), name: "old-project-skill", path: "/synthetic/SKILL.md", description: "Old", scope: "project", contentHash: "old", metadataHash: "old", policy: "explicitOnly", reasons: [], missingDependencies: [])
+        view.skills = [skill.chip]
+        view.skillCatalog = SkillCatalog(state: .ready, scope: "old", revision: "old", entries: [SkillSearch.Entry(skill)])
+        view.context = ["tokens": .number(123), "old-project": .bool(true)]
+        view.footer.contextState = ["old-project": .bool(true)]
+        view.metrics = ["old-project": .bool(true)]
+        view.captureAvailable = true
+        let oldLease = try model.connectionLease(for: XCTUnwrap(model.record(id)))
+
+        try await model.setPendingChatProject("Harbor", for: id)
+        let replacement = try XCTUnwrap(model.selected), switched = try XCTUnwrap(model.record(id))
+        XCTAssertFalse(view === replacement, "The old editor, resource selections and context caches must retire")
+        XCTAssertEqual(replacement.draft, view.draft); XCTAssertEqual(replacement.attachments, [image])
+        XCTAssertTrue(replacement.skills.isEmpty); XCTAssertTrue(replacement.skillCatalog.entries.isEmpty)
+        XCTAssertFalse(replacement.directCommand, "Old slash text cannot authorize a skill in the new project")
+        XCTAssertTrue(replacement.context.isEmpty); XCTAssertTrue(replacement.footer.contextState.isEmpty)
+        XCTAssertTrue(replacement.metrics.isEmpty); XCTAssertFalse(replacement.captureAvailable)
+        XCTAssertTrue(replacement.notice.contains("Selected skills were cleared"))
+        XCTAssertThrowsError(try model.requireConnection(oldLease))
+        XCTAssertEqual(switched.workspaceID, "Harbor"); XCTAssertNil(switched.topicID)
+        XCTAssertTrue(model.pendingChatIDs.contains(id)); XCTAssertTrue(model.hosts.isEmpty)
+        let storedChats = try await store.list(ChatRecord.self, kind: "chat"), drafts = try await store.list(DraftRecord.self, kind: "draft")
+        XCTAssertTrue(storedChats.isEmpty); XCTAssertTrue(drafts.isEmpty)
+
+        let freshView = try await startPendingProjectChat(model, project: "Harbor")
+        var fresh = try XCTUnwrap(model.record(freshView.id))
+        fresh.id = switched.id; fresh.sidebarOrder = switched.sidebarOrder
+        XCTAssertEqual(switched, fresh, "Project switch must use the same defaults as New Chat in the target")
+    }
+
+    @MainActor func testUntrustedMissingScratchAndChangingProjectsAreNotOfferedOrAccepted() async throws {
+        let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+        model.workspaces.append(WorkspaceRecord(id: "missing", path: model.root.appendingPathComponent("missing").path, trusted: true))
+        model.workspaces.append(WorkspaceRecord(id: WorkspaceRecord.scratchID, path: model.root.path, trusted: true))
+        model.workspaceChangesInFlight.insert("Harbor")
+        let choices = await WorkspaceModel.availableChatProjects(model.pendingChatProjects)
+        XCTAssertEqual(choices.map(\.id), ["Orchard"])
+        view.draft = "Keep this draft"
+        for target in ["Untrusted", "missing", WorkspaceRecord.scratchID, "Harbor", "removed"] {
+            do { try await model.setPendingChatProject(target, for: view.id); XCTFail("Accepted \(target)") }
+            catch { XCTAssertFalse(error.localizedDescription.isEmpty) }
+            XCTAssertEqual(model.record(view.id)?.workspaceID, "Orchard"); XCTAssertEqual(model.selected?.draft, "Keep this draft")
+        }
+        model.workspaceChangesInFlight.removeAll()
+    }
+
+    @MainActor func testSavedEmptyChatCannotChangeProjectAndChipDisappears() async throws {
+        let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+        let composer = ComposerInputView(model: model); composer.show(view)
+        XCTAssertFalse(composer.projectChip.isHidden)
+        try await model.materializeChat(view.id)
+        composer.refresh(); XCTAssertTrue(composer.projectChip.isHidden)
+        do { try await model.setPendingChatProject("Harbor", for: view.id); XCTFail("A saved chat changed project") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Only an unsaved new chat")) }
+        XCTAssertEqual(model.record(view.id)?.workspaceID, "Orchard")
+    }
+
+    @MainActor func testSavingDisablesProjectChoiceBeforeTheStoreReturns() async throws {
+        let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+        let store = try XCTUnwrap(model.store), composer = ComposerInputView(model: model)
+        composer.show(view)
+        let entered = DispatchSemaphore(value: 0), released = DispatchSemaphore(value: 0)
+        // Hold the actual store actor before its write, without adding a
+        // production delay or relying on disk timing.
+        let barrier = Task { try await store.put(PendingProjectStoreBarrier(entered: entered, released: released), kind: "fixture", id: "write-barrier") }
+        defer { released.signal() }
+        try await eventually("store actor occupied") { entered.wait(timeout: .now()) == .success }
+        var saving = false
+        let save = Task { saving = true; try await model.materializeChat(view.id) }
+        try await eventually("save reached the store") { saving }
+        try await eventually("project choice disabled while saving") { !composer.projectChip.isEnabled }
+        XCTAssertFalse(composer.projectChip.isEnabled, "A save already owns the chat's project before its store write returns")
+        XCTAssertNotNil(model.pendingProjectBlocker(view.id))
+        released.signal()
+        try await barrier.value; try await save.value
+        XCTAssertFalse(model.pendingChatIDs.contains(view.id))
+    }
+
+    @MainActor func testSendHidesChipAndFixesProjectUsingSyntheticGateway() async throws {
+        let model = try await pendingProjectModel(gateway: true), initial = try await startPendingProjectChat(model)
+        try await model.setPendingChatProject("Harbor", for: initial.id)
+        let view = try XCTUnwrap(model.selected), composer = ComposerInputView(model: model)
+        composer.show(view); XCTAssertFalse(composer.projectChip.isHidden)
+        view.draft = "Hello from the selected project."
+        model.submitComposer(intent: .followUp, sessionID: view.id)
+        composer.refresh(); XCTAssertTrue(composer.projectChip.isHidden, "Hidden synchronously when Send accepts the first message")
+        do { try await model.setPendingChatProject("Orchard", for: view.id); XCTFail("A submitting chat changed project") } catch { }
+        try await eventually("synthetic reply completed", timeout: .seconds(60)) { !view.loading && !view.busy && (view.messages.contains { $0.role == "assistant" } || view.sendFailure != nil || view.runState == .error) }
+        XCTAssertNotEqual(view.runState, .error, view.failureMessage ?? view.notice)
+        XCTAssertNil(view.sendFailure); XCTAssertEqual(model.record(view.id)?.workspaceID, "Harbor")
+        XCTAssertFalse(model.pendingChatIDs.contains(view.id)); XCTAssertNil(model.hosts["Orchard"])
+        composer.refresh(); XCTAssertTrue(composer.projectChip.isHidden)
+    }
+
+    @MainActor func testSwitchRechecksTrustAndMaterializationAfterAwait() async throws {
+        for materialize in [false, true] {
+            let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+            view.draft = "Keep while waiting"
+            let gate = AsyncGate(), profile = model.profileChoice
+            model.overrideWrites[profile] = (UUID(), Task { await gate.wait() })
+            var entered = false
+            let change = Task { entered = true; try await model.setPendingChatProject("Harbor", for: view.id) }
+            try await eventually("switch entered defaults wait") { entered }
+            if materialize { try await model.materializeChat(view.id) }
+            else { model.workspaces[1].trusted = false }
+            await gate.open()
+            do { try await change.value; XCTFail("A stale choice was committed") } catch { }
+            model.overrideWrites.removeValue(forKey: profile)
+            XCTAssertTrue(model.selected === view); XCTAssertEqual(view.draft, "Keep while waiting")
+            XCTAssertEqual(model.record(view.id)?.workspaceID, "Orchard")
+        }
+    }
+
+    @MainActor func testImportAndSideKeepTheirDestinationUntilFinished() async throws {
+        let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+        let importing = model.beginImageImport(sessionID: view.id)
+        do { try await model.setPendingChatProject("Harbor", for: view.id); XCTFail("An in-flight import changed destination") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("image")) }
+        XCTAssertTrue(importing.isCurrent()); importing.finish()
+        model.openSide(parentID: view.id)
+        do { try await model.setPendingChatProject("Harbor", for: view.id); XCTFail("A parent's pending side crossed projects") } catch { }
+        XCTAssertEqual(model.record(view.id)?.workspaceID, "Orchard")
+    }
+
+    @MainActor func testOldRecordCannotOpenPreviousProjectAfterSwitch() async throws {
+        let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+        let old = try XCTUnwrap(model.record(view.id))
+        try await model.setPendingChatProject("Harbor", for: view.id)
+        do { _ = try await model.open(old); XCTFail("A stale record opened the old project's helper") } catch { }
+        XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.pendingChatIDs.contains(view.id))
+    }
+
+    @MainActor func testPreparedRequestUsesOnlyTargetFoldersAndInstructions() async throws {
+        let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+        view.draft = "Inspect the target project."
+        let extra = model.root.appendingPathComponent("Harbor-extra")
+        try FileManager.default.createDirectory(at: extra, withIntermediateDirectories: true)
+        try await model.updateConfiguration { $0.workspaces[1].paths = [extra.path] }
+        try await model.setPendingChatProject("Harbor", for: view.id)
+        let preview = try await model.preparedContext(view.id)
+        XCTAssertEqual(preview["dispatched"]?.bool, false)
+        let request = try await model.readPreparedContext(view.id, revision: XCTUnwrap(preview["revision"]?.string), section: "request")
+        let body = try XCTUnwrap(request["text"]?.string)
+        XCTAssertTrue(body.contains("Instructions unique to Harbor")); XCTAssertFalse(body.contains("Instructions unique to Orchard"))
+        XCTAssertTrue(body.contains(extra.path)); XCTAssertTrue(body.contains("Inspect the target project."))
+        XCTAssertNil(model.hosts["Orchard"])
+        XCTAssertTrue(model.record(view.id)?.path?.contains("/Harbor/") == true)
+        let captures = try await model.traces.list(sessionID: view.id); XCTAssertTrue(captures.isEmpty)
+    }
+
+    @MainActor func testSearchAndKeyboardCommitUseCheckedPiMenuEntries() {
+        var chosen: Int?, cancelled = false
+        let entries: [PiMenuEntry] = (0..<12).map { index in
+            .button("Project \(index)", checked: index == 3, identifier: String(index), help: "/generated/project-\(index)") { chosen = index }
+        }
+        let picker = PendingChatProjectPicker(entries: entries) { cancelled = true }
+        XCTAssertFalse(picker.search.isHidden); XCTAssertEqual(picker.highlighted, "3")
+        picker.move(1); XCTAssertNil(chosen, "Arrow navigation never changes the project")
+        picker.activate(picker.highlighted); XCTAssertEqual(chosen, 4)
+        picker.filter("project-11"); XCTAssertEqual(picker.visible.map(\.identifier), ["11"])
+        picker.activate(picker.highlighted); XCTAssertEqual(chosen, 11)
+        picker.filter("absent"); XCTAssertTrue(picker.visible.isEmpty)
+        picker.cancelOperation(nil); XCTAssertTrue(cancelled)
+    }
+}
+
+private struct PendingProjectStoreBarrier: Encodable, Sendable {
+    let entered: DispatchSemaphore
+    let released: DispatchSemaphore
+    func encode(to encoder: Encoder) throws {
+        entered.signal(); released.wait()
+        var value = encoder.singleValueContainer(); try value.encode(true)
+    }
+}

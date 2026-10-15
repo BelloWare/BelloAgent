@@ -127,6 +127,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Nothing is written for them: no chat record, draft, journal or helper session.
     /// One that gains a record is a chat a relaunch can reopen.
     var pendingChatIDs: Set<String> = [] { didSet { noteSelectionChanged() } }
+    /// A first metadata save fixes the project before its actor write returns.
+    /// Count overlapping callers so one completion cannot release another save.
+    @Published var pendingChatSaveCounts: [String: Int] = [:]
     @Published var showProfiles = false
     @Published var profileChoice = ""
     @Published var selectedWorkspaceID: String? { didSet { if selectedWorkspaceID != oldValue { noteSelectionChanged() } } }
