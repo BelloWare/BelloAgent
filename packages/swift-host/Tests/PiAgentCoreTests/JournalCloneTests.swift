@@ -23,6 +23,17 @@ final class JournalCloneTests: XCTestCase {
     private func lines(_ url: URL) throws -> [Data] { try Data(contentsOf: url).split(separator: 10, omittingEmptySubsequences: false).dropLast().map { Data($0) } }
     private func leftovers() throws -> [String] { try FileManager.default.contentsOfDirectory(atPath: root.path).filter { !$0.hasPrefix("chat.jsonl") }.sorted() }
 
+    func testPromotedCloneKeepsItsMarkerIdentityAndPromotionIsANoOp() throws {
+        let journal = try chat()
+        try journal.promoteToSteering(managedChild:false)
+        let clone = try XCTUnwrap(journal.clone(to:root.appendingPathComponent("fork.jsonl"),id:forkID,cwd:root))
+        let before = try Data(contentsOf:clone.url)
+        XCTAssertEqual(clone.markerKind,JournalRecordKind.steeringMarker)
+        try clone.promoteToSteering(managedChild:false)
+        XCTAssertEqual(try Data(contentsOf:clone.url),before)
+        XCTAssertEqual(clone.markerCheck,journal.markerCheck)
+    }
+
     func testACloneIsTheJournalWithTheForksHeader() throws {
         let journal = try chat()
         let before = try Data(contentsOf: journal.url)

@@ -7,6 +7,9 @@ struct SubagentTarget: Equatable, Sendable {
     var turn: Int? = nil
     var messageID: String? = nil
     var receiptSource = false
+    func isHistorical(in sourceID: String?) -> Bool {
+        sourceID.map { $0 != ownerID && $0 != sessionID } ?? false
+    }
     init(_ link: SubagentLink) {
         delegationID = link.delegationID; sessionID = link.childSessionID; ownerID = link.budgetOwnerSessionID
         assistantID = link.call.assistantMessageID; toolCallID = link.call.toolCallID
@@ -31,6 +34,7 @@ struct SubagentTarget: Equatable, Sendable {
 }
 
 struct SubagentToolView: Equatable, Sendable {
+    static let historicalNotice = "Historical sub-agent. Open the source chat to view its children."
     static func isControl(_ name: String) -> Bool { name == "subagent" || ["subagent_start", "subagent_send", "subagent_wait", "subagent_status", "subagent_stop", "subagent_report"].contains(name) }
     let operation: String
     let route: String?
