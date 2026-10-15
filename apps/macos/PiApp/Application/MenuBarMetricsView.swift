@@ -214,9 +214,11 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
 
     private func refreshTiles(_ snapshot: MenuBarSnapshot) {
         let totals = snapshot.gateway, tokens = totals.tokens ?? GatewayTokenTotals()
+        let cost = dashStatTile(title: "Reported cost", value: gatewayUSD(totals.costUSD), caption: "\(totals.costSamples)/\(totals.requests) requests reported", symbol: "dollarsign.circle", tone: .success)
+        cost.toolTip = totals.costLabel; cost.setAccessibilityHelp(totals.costAttribution)
         tilesRow.items = [
             .view(dashStatTile(title: "Tokens consumed", value: menuBarTokens(tokens.total), caption: "\(tokens.samples)/\(totals.requests) requests reported", symbol: "number", tone: .accent), .fill),
-            .view(dashStatTile(title: "Reported cost", value: gatewayUSD(totals.costUSD), caption: "\(totals.costSamples)/\(totals.requests) requests reported", symbol: "dollarsign.circle", tone: .success), .fill),
+            .view(cost, .fill),
         ]
     }
 
@@ -241,7 +243,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
         switch chartMetric {
         case .requests: "\(snapshot.counts.dispatched) dispatched requests · tool rounds and compactions included"
         case .tokens: "Input + output; cached input and reasoning are included once. \(snapshot.gateway.tokens?.samples ?? 0)/\(snapshot.gateway.requests) requests reported both."
-        case .cost: "\(gatewayUSD(snapshot.gateway.costUSD)) reported · \(snapshot.gateway.costSamples)/\(snapshot.gateway.requests) requests reported cost"
+        case .cost: snapshot.gateway.costLabel
         case .rate: MenuBarRateText.caption(snapshot)
         }
     }
@@ -425,6 +427,7 @@ enum MenuBarChartMetric: String, CaseIterable { case requests, tokens, cost, rat
         resolution.line = PiKit.Line(item.resolutionLabel, font: PiKit.Font.caption, color: tone); resolution.toolTip = item.resolutionLabel
         arrow.color = tone
         bar.fraction = max(0, min(1, item.requestShare)); bar.tone = item.resolvedModel == nil ? .piWarning : .piAccent
+        cost.toolTip = item.gateway.costLabel; cost.setAccessibilityLabel(item.gateway.costLabel)
         cost.set("\(gatewayUSD(item.gateway.costUSD))\(item.costShare.map { " · \($0.formatted(.percent.precision(.fractionLength(1)))) of reported cost" } ?? "") · \(item.gateway.costSamples)/\(item.gateway.requests) cost reported", color: .piInkTertiary)
         rate.set(MenuBarRateText.model(item), color: .piInkSecondary)
         group.title = Self.label(item)

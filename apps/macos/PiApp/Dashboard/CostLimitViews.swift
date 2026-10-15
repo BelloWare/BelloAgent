@@ -51,13 +51,14 @@ enum CostLimitText {
         let warning = reading.warning
         figure.headline = PiKit.Line(headline, font: PiKit.Font.monospacedDigits(.systemFont(ofSize: 15, weight: .semibold)), color: warning ? .piWarning : .piInk)
         figure.percent = reading.fraction.map { PiKit.Line(Self.percent($0), font: PiKit.Font.monospacedDigits(.systemFont(ofSize: PiKit.Font.captionSize, weight: .medium)), color: warning ? .piWarning : .piInkSecondary) }
-        figure.setAccessibilityLabel(headline)
+        figure.toolTip = reading.costAttribution
+        figure.setAccessibilityLabel([headline, reading.costAttribution].compactMap { $0 }.joined(separator: " · "))
         bar.isHidden = reading.fraction == nil
         bar.fraction = reading.fraction ?? 0
         bar.warning = warning
         unreported.isHidden = unreportedText == nil
         unreported.text = unreportedText ?? ""
-        setAccessibilityLabel([headline, figure.percent?.text, unreportedText].compactMap { $0 }.joined(separator: ", "))
+        setAccessibilityLabel([headline, figure.percent?.text, unreportedText, reading.costAttribution].compactMap { $0 }.joined(separator: ", "))
         needsLayout = true
         PiKit.sizeChanged(self)
     }
@@ -454,10 +455,16 @@ enum CostLimitText {
         follow()
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
+    private func updateReading() {
+        var next = footer.cost
+        next.costAttribution = SessionStatsPresentation(gateway: footer.gateway, work: nil, cost: next).costAttribution
+        reading = next
+    }
     private func follow() {
-        reading = footer.cost
-        let observer = ShellObserver { [weak self] in guard let self else { return }; self.reading = self.footer.cost }
+        updateReading()
+        let observer = ShellObserver { [weak self] in self?.updateReading() }
         observer.observe(publisher: footer.$cost)
+        observer.observe(publisher: footer.$gateway)
         self.observer = observer
     }
 }

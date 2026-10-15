@@ -214,7 +214,7 @@ struct DashboardQueryEngine {
         // The aggregate row already counts the selected requests; a separate
         // COUNT(*) scanned the same rows again.
         let summaryRow = try db.rows("SELECT \(PayloadArchive.gatewayAggregateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first ?? [:]
-        let gateway = PayloadArchive.gatewayTotals(summaryRow)
+        let gateway = PayloadArchive.gatewayTotals(summaryRow, sessionID: filter.sessionID)
         let requestCount = gateway.requests
         let ttft = try percentile(db, column: "ttft_ms", predicate: selected)
         let streaming = try percentile(db, column: "stream_ms", predicate: selected)
@@ -227,7 +227,7 @@ struct DashboardQueryEngine {
         // bucket's request count too.
         for row in try db.rows("SELECT \(bucketSQL) AS bucket,\(PayloadArchive.gatewayAggregateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
             if let i = row["bucket"]?.number.map(Int.init), buckets.indices.contains(i) {
-                buckets[i].gateway = PayloadArchive.gatewayTotals(row)
+                buckets[i].gateway = PayloadArchive.gatewayTotals(row, sessionID: filter.sessionID)
                 buckets[i].requests = buckets[i].gateway.requests
             }
         }
@@ -301,7 +301,7 @@ struct DashboardQueryEngine {
             guard let api = row["api"]?.string, let alias = row["alias"]?.string, let status = row["resolution_status"]?.string else { throw CaptureFailure.corrupt }
             var summary = DashboardModelSummary(api: api, alias: alias, model: row["resolved_model"]?.string, status: status)
             summary.requests = Int(row["requests"]?.number ?? 0); summary.completed = Int(row["completed"]?.number ?? 0); summary.problems = Int(row["problems"]?.number ?? 0)
-            summary.gateway = PayloadArchive.gatewayTotals(row)
+            summary.gateway = PayloadArchive.gatewayTotals(row, sessionID: filter.sessionID)
             return summary
         }
         for column in ["ttft_ms", "http_ms"] where !summaries.isEmpty {
@@ -325,19 +325,25 @@ struct DashboardQueryEngine {
         try filter.validated()
         guard (0...100_000).contains(offset) else { throw CaptureFailure.unavailable }
         let selected = dashboardPredicate(filter, status: true)
-        let total = Int(try db.rows("SELECT COUNT(DISTINCT session) AS n FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first?["n"]?.number ?? 0)
+        // One physical attempt, charged to one chat. A selected child keeps
+        // its own identity; an unfiltered report groups children with the owner.
+        let recipient = filter.sessionID == nil ? "COALESCE(budget_owner,session)" : "?"
+        let args = (filter.sessionID.map { [CaptureSQLValue.text($0)] } ?? []) + selected.values
+        let normalized = "WITH selected AS (SELECT *,\(recipient) AS billed_session FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL)"
+        let total = Int(try db.rows("\(normalized) SELECT COUNT(*) AS n FROM (SELECT 1 FROM selected GROUP BY workspace,billed_session)", args).first?["n"]?.number ?? 0)
         let rows = try db.rows("""
-        SELECT session,MIN(workspace) AS workspace,MIN(wall) AS first_wall,MAX(wall) AS last_wall,
+        \(normalized)
+        SELECT billed_session,workspace,MIN(wall) AS first_wall,MAX(wall) AS last_wall,
         SUM(outcome='completed') AS completed,SUM(outcome IN ('failed','cancelled','truncated','interrupted')) AS problems,SUM(outcome='running') AS running,
         \(PayloadArchive.gatewayAggregateSQL)
-        FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY session ORDER BY last_wall DESC,session LIMIT ? OFFSET ?
-        """, selected.values + [.integer(Int64(Self.sessionPageSize)), .integer(Int64(offset))])
+        FROM selected GROUP BY workspace,billed_session ORDER BY last_wall DESC,workspace,billed_session LIMIT ? OFFSET ?
+        """, args + [.integer(Int64(Self.sessionPageSize)), .integer(Int64(offset))])
         var sessions = try rows.map { row -> DashboardSessionSummary in
-            guard let session = row["session"]?.string, let first = row["first_wall"]?.double, let last = row["last_wall"]?.double else { throw CaptureFailure.corrupt }
+            guard let session = row["billed_session"]?.string, let first = row["first_wall"]?.double, let last = row["last_wall"]?.double else { throw CaptureFailure.corrupt }
             var summary = DashboardSessionSummary(sessionID: session, workspaceID: row["workspace"]?.string ?? "", first: Date(timeIntervalSince1970: first), last: Date(timeIntervalSince1970: last))
             summary.requests = Int(row["requests"]?.number ?? 0); summary.completed = Int(row["completed"]?.number ?? 0)
             summary.problems = Int(row["problems"]?.number ?? 0); summary.running = Int(row["running"]?.number ?? 0)
-            summary.gateway = PayloadArchive.gatewayTotals(row)
+            summary.gateway = PayloadArchive.gatewayTotals(row, sessionID: session)
             return summary
         }
         guard !sessions.isEmpty else { return DashboardSessionPage(filter: filter, sessions: [], total: total, offset: offset) }
@@ -345,12 +351,12 @@ struct DashboardQueryEngine {
         let placeholders = ids.map { _ in "?" }.joined(separator: ",")
         for column in ["ttft_ms", "http_ms"] {
             let sql = """
-            WITH samples AS (SELECT session,\(column) AS value FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL AND \(column) IS NOT NULL AND session IN (\(placeholders))),
-            ranked AS (SELECT session,value,ROW_NUMBER() OVER(PARTITION BY session ORDER BY value) AS rank,COUNT(*) OVER(PARTITION BY session) AS n FROM samples)
-            SELECT session,MAX(CASE WHEN rank=(n+1)/2 THEN value END) AS p50 FROM ranked GROUP BY session
+            \(normalized), samples AS (SELECT workspace,billed_session,\(column) AS value FROM selected WHERE \(column) IS NOT NULL AND billed_session IN (\(placeholders))),
+            ranked AS (SELECT workspace,billed_session,value,ROW_NUMBER() OVER(PARTITION BY workspace,billed_session ORDER BY value) AS rank,COUNT(*) OVER(PARTITION BY workspace,billed_session) AS n FROM samples)
+            SELECT workspace,billed_session,MAX(CASE WHEN rank=(n+1)/2 THEN value END) AS p50 FROM ranked GROUP BY workspace,billed_session
             """
-            for row in try db.rows(sql, selected.values + ids.map(CaptureSQLValue.text)) {
-                guard let session = row["session"]?.string, let index = sessions.firstIndex(where: { $0.sessionID == session }) else { continue }
+            for row in try db.rows(sql, args + ids.map(CaptureSQLValue.text)) {
+                guard let index = sessions.firstIndex(where: { $0.sessionID == row["billed_session"]?.string && $0.workspaceID == row["workspace"]?.string }) else { continue }
                 if column == "ttft_ms" { sessions[index].ttftP50 = row["p50"]?.double } else { sessions[index].httpP50 = row["p50"]?.double }
             }
         }
@@ -377,8 +383,12 @@ struct DashboardQueryEngine {
     private func dashboardPredicate(_ filter: DashboardFilter, status: Bool, excluding excluded: String? = nil) -> (sql: String, values: [CaptureSQLValue]) {
         var clauses = ["metrics_retained=1", "wall>=?", "wall<?"]
         var values: [CaptureSQLValue] = [.real(filter.from.timeIntervalSince1970), .real(filter.until.timeIntervalSince1970)]
-        for (column, value) in [("workspace", filter.workspaceID), ("session", filter.sessionID), ("purpose", filter.purpose), ("api", filter.api), ("alias", filter.requestedAlias), ("model", filter.effectiveModel)] where column != excluded {
+        for (column, value) in [("workspace", filter.workspaceID), ("purpose", filter.purpose), ("api", filter.api), ("alias", filter.requestedAlias), ("model", filter.effectiveModel)] where column != excluded {
             if let value { clauses.append(column + "=?"); values.append(.text(value)) }
+        }
+        if let session = filter.sessionID {
+            clauses.append("(session=? OR budget_owner=?)")
+            values += [.text(session), .text(session)]
         }
         // The same "no resolved model" as the per-route grouping: unreported,
         // conflicting or incomplete evidence, or an echo of the alias.

@@ -24,7 +24,7 @@ final class SubagentTranscriptTests: XCTestCase {
         let row = TranscriptNativeActionRow()
         row.update(tool: tool, open: true, fetched: nil, environment: .init(), toggle: {}, openFile: nil)
         let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptPlainTextView.self, in: row.card!).first).string
-        XCTAssertEqual(body, "Model: fixture\nTools: read\n2 requests · 1 tools completed · 1s\nReported $0.04 · 2 reported · 1 cost unknown\nTokens: 100 input · 20 output\nChecking the parser")
+        XCTAssertEqual(body, "Model: fixture\nTools: read\n2 requests · 1 tools completed · 1s\nReported $0.04 · Counts toward parent chat · 2 reported · 1 cost unknown\nTokens: 100 input · 20 output\nChecking the parser")
         XCTAssertEqual(SessionCostReading(limit: .usd(1), spentUSD: 0.04).figure, "$0.04 of $1.00")
         XCTAssertEqual(InspectorSubagentGroup(summary: tool.subagent!, requests: 2, cost: 0.04, costSamples: 2).detail, "Running · 2 requests · $0.04")
         var totals = GatewayTotals(); totals.requests = 2; totals.costSamples = 2; totals.costUSD = 0.04

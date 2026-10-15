@@ -74,6 +74,7 @@ struct SessionCostReading: Equatable, Sendable {
     var spentUSD: Double? = nil
     var reportedRequests = 0
     var unreportedRequests = 0
+    var costAttribution: String?
 
     /// From this share of the limit on, the figure reads as a warning.
     static let warningFraction = 0.8

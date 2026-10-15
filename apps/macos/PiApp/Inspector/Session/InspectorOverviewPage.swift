@@ -6,6 +6,7 @@ import AppKit
     private let usage: SessionUsageController
     var compact: Bool { didSet { if compact != oldValue { refresh() } } }
     private var methodology = false
+    private var subagentPage = 0
     private let column = ShellStack(.vertical, spacing: 18)
     private lazy var scroll = PageScrollView(column: column)
     private lazy var observer = ShellObserver { [weak self] in self?.refresh() }
@@ -42,6 +43,7 @@ import AppKit
                 limitCard?.setAccessibilityIdentifier("inspector-cost-limit")
             } else { limitCard = nil }
         }
+        if inspector.familyFilter == .family, !inspector.groups.isEmpty { views.append(subagentCosts()) }
         if let link = inspector.workspace?.record(inspector.scope.sessionID)?.delegation {
             views.append(InspectorBanner(symbol: "person.2", text: "This sub-agent’s usage is included in its parent chat’s cost limit.", tone: .neutral))
             views.append(PiKit.Button("Parent budget", style: .ghost) { [weak inspector] in inspector?.workspace?.openInspector(session: link.budgetOwnerSessionID, focus: .overview) })
@@ -75,6 +77,7 @@ import AppKit
             let view: NSView
             if figure.id == "cost", inspector.familyFilter == .family, let footer = inspector.display?.footer { view = costFigure(figure, footer: footer) }
             else { view = PiKit.Figure(value: figure.value, title: figure.title, caption: figure.caption, partial: figure.partial, large: true) }
+            if figure.id == "cost" { view.toolTip = view.toolTip ?? inspector.inputs.gateway.costLabel; view.setAccessibilityHelp(view.toolTip) }
             view.setAccessibilityIdentifier("inspector-figure-" + figure.id); return view
         }
         let detailsGrid = GridView(columns: .adaptive(minimum: compact ? 110 : 130, maximum: .greatestFiniteMagnitude), spacing: PiSpacing.md, rowSpacing: 12)
@@ -85,14 +88,35 @@ import AppKit
     }
     private func costFigure(_ figure: SessionStatsFigure, footer: SessionMetrics) -> PiKit.Figure {
         let reading = footer.cost
-        let presentation = SessionStatsPresentation(gateway: footer.gateway, work: nil, cost: reading)
-        var value = figure.value, caption: [String] = []
+        let presentation = SessionStatsPresentation(gateway: inspector.inputs.gateway, work: nil, cost: reading)
+        let value = presentation.costFigure?.components(separatedBy: " of ").first ?? figure.value
+        var caption: [String] = []
         if let cap = reading.limit.usd {
-            if let spent = presentation.costFigure?.components(separatedBy: " of ").first { value = spent }
             caption.append("of " + CostLimit.dollars(cap) + " limit")
         } else if let own = figure.caption { caption.append(own) }
         if let unreported = reading.unreportedNote { caption.append(unreported) }
-        return PiKit.Figure(value: value, title: figure.title, caption: caption.joined(separator: " · "), partial: figure.partial || presentation.costWarning || reading.unreportedNote != nil, large: true, warning: presentation.costWarning)
+        if let attribution = presentation.costAttribution { caption.append(attribution) }
+        let view = PiKit.Figure(value: value, title: figure.title, caption: caption.joined(separator: " · "), partial: figure.partial || presentation.costWarning || reading.unreportedNote != nil, large: true, warning: presentation.costWarning)
+        view.toolTip = [presentation.costFigure, presentation.costAttribution, reading.unreportedNote].compactMap { $0 }.joined(separator: " · ")
+        return view
+    }
+    private func subagentCosts() -> NSView {
+        let groups = inspector.groups, size = 8
+        subagentPage = min(subagentPage, max(0, (groups.count - 1) / size))
+        let start = subagentPage * size, end = min(start + size, groups.count)
+        var views: [NSView] = [PiKit.SectionHeader("Sub-agent costs", subtitle: "Included in this chat · retained requests")]
+        for group in groups[start..<end] {
+            let button = PiKit.Button(group.title, style: .ghost) { [weak inspector] in inspector?.select(.subagent(group.id)) }
+            button.setAccessibilityIdentifier("subagent-cost-" + group.id)
+            button.setAccessibilityLabel(group.title + ", " + group.detail + ", counts toward this chat. Open sub-agent statistics")
+            views.append(inspectorColumn([inspectorRow([.view(button), .spacer(0)]), inspectorText(group.detail, font: PiKit.Font.micro, color: .piInkSecondary, lines: .max)], spacing: 2))
+        }
+        if groups.count > size {
+            views.append(PiKit.Pager(center: inspectorText("\(start + 1)–\(end) of \(groups.count)"), canPrevious: start > 0, canNext: end < groups.count,
+                previous: { [weak self] in self?.subagentPage -= 1; self?.refresh() }, next: { [weak self] in self?.subagentPage += 1; self?.refresh() }))
+        }
+        let card = PiKit.card(inspectorColumn(views, spacing: PiSpacing.sm), padding: PiSpacing.md)
+        card.setAccessibilityIdentifier("inspector-subagent-costs"); return card
     }
     private func charts() -> [NSView] {
         let time = inspector.timeCharts, tokens = inspector.tokenCharts
@@ -150,7 +174,7 @@ import AppKit
         var items: [ShellItem] = [.view(labels, .fill), .view(share("\(item.gateway.requests) req", item.requestShare, .piAccent), .fixed(96)), .view(share(compactGatewayUSD(item.gateway.costUSD), item.costShare ?? 0, .piSuccess), .fixed(96))]
         if !compact { items += [.view(figure(SessionUsagePresentation.rate(item.gateway.settledThroughput.tokensPerSecond) + " tok/s", "\(item.gateway.settledThroughput.samples)/\(item.gateway.requests) measured"), .fixed(118)), .view(figure(SessionUsagePresentation.milliseconds(item.ttftP50), item.ttftSamples > 0 ? "first token, median" : "not measured"), .fixed(118))] }
         row = inspectorRow(items, spacing: PiSpacing.md, alignment: .top)
-        super.init(frame: .zero); addSubview(row); setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel([item.requestedAlias, item.resolutionLabel, "\(item.gateway.requests) requests", compactGatewayUSD(item.gateway.costUSD)].joined(separator: ", "))
+        super.init(frame: .zero); addSubview(row); setAccessibilityElement(true); setAccessibilityRole(.group); setAccessibilityLabel([item.requestedAlias, item.resolutionLabel, "\(item.gateway.requests) requests", item.gateway.costLabel].joined(separator: ", "))
     }
     required init?(coder: NSCoder) { nil }
     func height(forWidth width: CGFloat) -> CGFloat { row.height(forWidth: width) + 10 }

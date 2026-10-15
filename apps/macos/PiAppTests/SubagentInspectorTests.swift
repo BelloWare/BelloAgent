@@ -130,6 +130,11 @@ final class SubagentInspectorTests: XCTestCase {
         for _ in 0..<300 where model.usage.loading || model.usage.snapshot == nil { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(model.usage.snapshot?.gateway.requests, 3)
         XCTAssertEqual(model.inputs.gateway.requests, 20, "The family overview retains the parent's complete live accounting")
+        parent.footer.cost = SessionCostReading(limit: .unlimited, spentUSD: 9, reportedRequests: 20)
+        overview.refresh()
+        let unlimited = try XCTUnwrap(ConversationPaneTests.views(PiKit.Figure.self, in: overview).first { $0.accessibilityIdentifier() == "inspector-figure-cost" })
+        XCTAssertEqual(unlimited.value, "$9.00", "Removing the limit must not replace the durable family spend with a retained/filtered amount")
+
         model.setVisible(false); try await archive.close(); await workspace.store?.close()
     }
 

@@ -171,7 +171,7 @@ extension DashboardQueryEngine {
         FROM attempts WHERE \(selected)
         """, values).first ?? [:]
         sessionCount = Int(try db.rows("SELECT COUNT(*) AS n FROM (SELECT workspace,session FROM attempts WHERE \(selected) GROUP BY workspace,session)", values).first?["n"]?.number ?? 0)
-        totals = PayloadArchive.gatewayTotals(summary)
+        totals = PayloadArchive.gatewayTotals(summary, sessionID: sessionID)
         totals.expiredRecords = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE metrics_retained=0 AND \(timeAndIdentity)", values).first?["n"]?.number ?? 0)
         counts = DashboardCounts(dispatched: totals.requests)
         counts.unobservedDispatch = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE \(scope) AND dispatch IS NULL", values).first?["n"]?.number ?? 0)
@@ -216,7 +216,7 @@ extension DashboardQueryEngine {
         """, values + [.integer(Int64(offset))])
         var models = try rows.map { row -> MenuBarModelDistribution in
             guard let api = row["api"]?.string, let alias = row["alias"]?.string, let status = row["resolution_status"]?.string else { throw CaptureFailure.corrupt }
-            let gateway = PayloadArchive.gatewayTotals(row)
+            let gateway = PayloadArchive.gatewayTotals(row, sessionID: sessionID)
             let share: Double?
             // A paged observation may be newer than its cached summary. Keep
             // each share's denominator from the same query as its numerator.
@@ -256,7 +256,7 @@ extension DashboardQueryEngine {
                 guard let raw = row["bucket"]?.number.map(Int.init) else { continue }
                 let index = min(raw, buckets.count - 1)
                 guard buckets.indices.contains(index) else { continue }
-                buckets[index].gateway = PayloadArchive.gatewayTotals(row)
+                buckets[index].gateway = PayloadArchive.gatewayTotals(row, sessionID: sessionID)
             }
         }
         return MenuBarSnapshot(period: period, from: from, until: until, counts: counts, gateway: totals,

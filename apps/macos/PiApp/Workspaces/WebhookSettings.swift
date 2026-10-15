@@ -132,7 +132,7 @@ enum OrderedJSONStrings {
 }
 
 /// The moment a chat finishes and waits for its user, read from the
-/// helper's command receipts and run state: a message's run ended, completed
+/// helper's task completion fence and run state: a message's run ended, completed
 /// or failed, and nothing else of the chat is queued or running. A tool
 /// round, a follow-up that starts at once, a manual compaction and a run the
 /// user stopped are not that moment. Opening a chat sets a silent baseline,
@@ -140,13 +140,50 @@ enum OrderedJSONStrings {
 struct WebhookFinishTracker {
     private var epoch: String?
     private var states: [String: String]?
+    private var finishedTasks: Set<String>?
+    private var taskActive = false
+    private var taskTimeline: String?
+    private var managedChild = false
     /// A run ended since the chat last waited: "completed" or "failed".
     private var pending: String?
 
     mutating func observe(_ snapshot: [String: WireValue], baseline: Bool = false) -> String? {
         let nextEpoch = snapshot["monitoring"]?.object?["epoch"]?.string
         defer { epoch = nextEpoch }
-        if baseline || epoch != nextEpoch { pending = nil }
+        if baseline || epoch != nextEpoch {
+            pending = nil; finishedTasks = nil; taskActive = false; taskTimeline = nil
+        }
+        // Runtime role arrives before desktop metadata repair, including when
+        // a child is opened in a tab/window. Keep it for delta-only snapshots.
+        if snapshot["subagentStatus"]?.string != nil { managedChild = true }
+        // Task terminals are emitted only after the helper's final family
+        // fence. Receipts may settle before children/reports and cannot start
+        // another notification. Inspect bounded identities, never transcripts.
+        if let tasks = snapshot["taskPresentation"]?.object,
+           tasks["version"]?.number == 1, tasks["epoch"]?.string == nextEpoch,
+           let recent = tasks["recent"]?.array, recent.count <= 64 {
+            let timeline = tasks["timeline"]?.string
+            if let taskTimeline, taskTimeline != timeline { finishedTasks = nil; pending = nil }
+            taskTimeline = timeline
+            var next = Set<String>()
+            for value in recent {
+                guard let record = value.object, let root = record["rootID"]?.string,
+                      let execution = record["executionID"]?.string, !root.isEmpty, !execution.isEmpty,
+                      let outcome = record["outcome"]?.string else { continue }
+                let key = "\(root.utf8.count):" + root + execution
+                next.insert(key)
+                if !baseline, let finishedTasks, !finishedTasks.contains(key) {
+                    switch outcome {
+                    case "failed": pending = "failed"
+                    case "completed", "output-limited": if pending != "failed" { pending = "completed" }
+                    default: break
+                    }
+                }
+            }
+            if finishedTasks == nil { pending = nil }
+            finishedTasks = next
+            taskActive = tasks["active"]?.object != nil
+        }
         // A snapshot carries receipts only when they changed.
         if let commands = snapshot["commands"]?.array {
             var next: [String: String] = [:]
@@ -156,7 +193,7 @@ struct WebhookFinishTracker {
                       let state = receipt["state"]?.string else { continue }
                 next[id] = state
             }
-            if !baseline, epoch == nextEpoch, let states {
+            if finishedTasks == nil, !baseline, epoch == nextEpoch, let states {
                 for (id, state) in next where states[id] != state {
                     switch state {
                     case "failed": pending = "failed"
@@ -167,10 +204,11 @@ struct WebhookFinishTracker {
             }
             states = next
         } else if epoch != nextEpoch { states = nil }
-        guard !baseline else { return nil }
+        guard !baseline, !managedChild else { pending = nil; return nil }
         let state = RunState(rawValue: snapshot["state"]?.string ?? "idle")
         if state.isBusy { return nil }
         if state.holdsQueue { pending = nil; return nil }
+        if taskActive || snapshot["familyWaiting"]?.bool == true || (state != .error && (snapshot["agentInboxPending"]?.number ?? 0) > 0) { return nil }
         guard let outcome = pending else { return nil }
         if state != .error, (snapshot["queueCount"]?.number ?? 0) > 0 { return nil }
         pending = nil

@@ -137,6 +137,98 @@ final class SubagentCaptureTests: XCTestCase {
         try await archive.close()
     }
 
+    func testReportsChargeEveryChildAttemptToTheParentAcrossReload() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        var log = try await archive(root)
+        for (source, owner, purpose, outcome, cost) in [
+            ("parent", nil, "turn", "completed", 0.10),
+            ("child-a", "parent", "turn", "failed", 0.20),
+            ("child-a", "parent", "turn", "cancelled", 0.30),
+            ("child-a", "parent", "compaction", "completed", 0.40),
+            ("child-a", "parent", "turn", "completed", 0.50),
+            ("child-b", "parent", "turn", "completed", 0.60),
+            ("side", nil, "turn", "completed", 0.70)
+        ] as [(String, String?, String, String, Double)] {
+            var attempt = try metadata(source, cost: cost, owner: owner, purpose: purpose)
+            attempt["outcome"] = .string(outcome)
+            try await save(attempt, to: log)
+            try await log.finish(attempt) // Repeated terminal evidence must not charge twice.
+        }
+        for reload in [false, true] {
+            if reload { try await log.close(); log = try await archive(root) }
+            var filter = DashboardFilter(from: Date(timeIntervalSince1970: 1900), until: Date(timeIntervalSince1970: 2001))
+            filter.workspaceID = "workspace"; filter.status = "all"
+            let global = try await log.dashboard(filter)
+            XCTAssertEqual(global.gateway.requests, 7)
+            XCTAssertEqual(try XCTUnwrap(global.gateway.costUSD), 2.80, accuracy: 1e-9)
+            let sessions = try await log.sessionSummaries(filter)
+            XCTAssertEqual(sessions.total, 2, "By chat groups by budget owner, without duplicate child rows")
+            let parent = try XCTUnwrap(sessions.sessions.first { $0.sessionID == "parent" })
+            XCTAssertEqual(parent.gateway.requests, 6)
+            XCTAssertEqual(try XCTUnwrap(parent.gateway.costUSD), 2.10, accuracy: 1e-9)
+            XCTAssertEqual(parent.gateway.tokens?.input, 120)
+            XCTAssertEqual(parent.gateway.tokens?.output, 30)
+            filter.sessionID = "parent"
+            let family = try await log.dashboard(filter)
+            XCTAssertEqual(family.gateway.requests, 6, "A parent filter includes retries, summaries, failed/stopped and resumed children")
+            XCTAssertEqual(try XCTUnwrap(family.gateway.costUSD), 2.10, accuracy: 1e-9)
+            XCTAssertEqual(Set(family.requests.map(\.sessionID)), ["parent", "child-a", "child-b"], "Request identities stay physical")
+            let footer = try await log.gatewayAccounting(sessionID: "parent", workspaceID: "workspace", messages: [])
+            let sidebar = try await log.allSessionTotals()
+            let scope = SessionUsageScope(sessionID: "parent", workspaceID: "workspace")
+            let references = try await log.sessionReferenceTotals(scopes: [scope])
+            let inspector = try await log.sessionMetrics(sessionID: "parent", workspaceID: "workspace", until: filter.until, includeFamily: true)
+            let routes = try await log.modelSummaries(filter)
+            let menu = try await log.menuBarMetrics(period: .retained, until: filter.until)
+            XCTAssertEqual(menu.gateway.requests, 7)
+            XCTAssertEqual(try XCTUnwrap(menu.gateway.costUSD), 2.8, accuracy: 1e-9)
+            for value in [footer.session, try XCTUnwrap(sidebar["workspace\u{0}parent"]), try XCTUnwrap(references[scope]), inspector.gateway, parent.gateway, family.gateway, try XCTUnwrap(routes.first?.gateway)] {
+                XCTAssertEqual(value.requests, 6)
+                XCTAssertEqual(try XCTUnwrap(value.costUSD), 2.1, accuracy: 1e-9)
+                XCTAssertEqual(value.tokens?.input, 120); XCTAssertEqual(value.tokens?.output, 30)
+                let portion = try XCTUnwrap(value.subagentCost)
+                XCTAssertEqual(portion.count, 2); XCTAssertEqual(portion.requests, 5); XCTAssertEqual(portion.reported, 5)
+                XCTAssertEqual(try XCTUnwrap(portion.usd), 2, accuracy: 1e-9)
+                XCTAssertTrue(value.costLabel.contains("Includes $2.00 from 2 sub-agents"))
+            }
+            let groups = try await log.inspectorSubagents(owner: "parent", workspaceID: "workspace")
+            XCTAssertEqual(groups.count, 2)
+            XCTAssertEqual(groups.reduce(0) { $0 + $1.requests }, 5)
+            XCTAssertEqual(groups.reduce(0) { $0 + ($1.cost ?? 0) }, 2, accuracy: 1e-9)
+            filter.sessionID = "child-a"
+            let own = try await log.dashboard(filter)
+            XCTAssertEqual(own.gateway.requests, 4); XCTAssertNil(own.gateway.subagentCost)
+            XCTAssertEqual(own.gateway.costAttribution, "Counts toward parent chat")
+            let ownRows = try await log.sessionSummaries(filter)
+            XCTAssertEqual(ownRows.sessions.map(\.sessionID), ["child-a"])
+
+        }
+        try await log.close()
+    }
+
+    func testAttributionKeepsMissingCostUnknownAndExcludesUndispatchedRequests() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        let log = try await archive(root)
+        try await save(metadata("child", cost: nil, owner: "parent"), to: log)
+        var prepared = try metadata("child", cost: 4, owner: "parent")
+        prepared["timings"] = .object([:])
+        try await save(prepared, to: log)
+        let parent = try await log.gatewayAccounting(sessionID: "parent", workspaceID: "workspace", messages: [])
+        XCTAssertEqual(parent.session.requests, 1); XCTAssertNil(parent.session.costUSD)
+        XCTAssertEqual(parent.session.costAttribution, "Includes 1 sub-agent · cost unreported · 1 request reported no cost")
+        let groups = try await log.inspectorSubagents(owner: "parent", workspaceID: "workspace")
+        XCTAssertEqual(groups.first?.requests, 1); XCTAssertNil(groups.first?.cost)
+        try await save(metadata("child", cost: 0, owner: "parent"), to: log)
+        let zero = try await log.gatewayAccounting(sessionID: "parent", workspaceID: "workspace", messages: [])
+        XCTAssertEqual(zero.session.costAttribution, "Includes $0.00 from 1 sub-agent · 1 request reported no cost")
+        let encoded = try JSONEncoder().encode(zero.session)
+        XCTAssertEqual(try JSONDecoder().decode(GatewayTotals.self, from: encoded), zero.session)
+        var old = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        old.removeValue(forKey: "subagentCost"); old.removeValue(forKey: "budgetOwnerID")
+        XCTAssertNil(try JSONDecoder().decode(GatewayTotals.self, from: JSONSerialization.data(withJSONObject: old)).subagentCost)
+        try await log.close()
+    }
+
     func testCaptureLineageCannotChangeOrDisappearAfterBegin() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await archive(root), original = try metadata("child", cost: 0.01, owner: "parent")

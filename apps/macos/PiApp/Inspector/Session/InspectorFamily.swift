@@ -89,7 +89,7 @@ extension PayloadArchive {
         guard Self.inspectorScope(owner, workspaceID) else { throw CaptureFailure.unavailable }
         return try await dashboardReader().run(consumer: "inspector") { engine in
             let args: [CaptureSQLValue] = [.text(owner),.text(workspaceID)]
-            let stats = try engine.db.rows("SELECT delegation,COUNT(*) AS requests,COUNT(cost_usd) AS samples,SUM(cost_usd) AS cost FROM attempts WHERE budget_owner=? AND workspace=? AND metrics_retained=1 GROUP BY delegation", args)
+            let stats = try engine.db.rows("SELECT delegation,COUNT(*) AS requests,COUNT(cost_usd) AS samples,SUM(cost_usd) AS cost FROM attempts WHERE budget_owner=? AND workspace=? AND metrics_retained=1 AND dispatch IS NOT NULL GROUP BY delegation", args)
             let byID = Dictionary(uniqueKeysWithValues: stats.compactMap { row in row["delegation"]?.string.map { ($0,row) } })
             return try engine.db.rows("SELECT summary FROM subagent_groups WHERE owner=? AND workspace=? ORDER BY rowid", args).map { row in
                 guard let bytes = row["summary"]?.data else { throw CaptureFailure.corrupt }

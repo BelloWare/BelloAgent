@@ -17,6 +17,7 @@ struct ChatRowStats: Equatable {
     var busy = false
     var loading = false
     var costUSD: Double?
+    var costHelp: String?
     var cacheHits = 0
     var cacheMisses = 0
     var requests = 0
@@ -39,6 +40,9 @@ struct ChatRowStats: Equatable {
     private(set) var recencyLabel: String?
     init(totals: GatewayTotals?, timing: SessionTimingHistory? = nil, now: Date = Date()) {
         self.timing = timing
+        // Ordinary and empty chats keep their existing row announcement.
+        // Only family attribution adds an explanation to the compact cost.
+        costHelp = totals.flatMap { $0.subagentCost != nil || $0.budgetOwnerID != nil ? $0.costLabel : nil }
         costUSD = totals?.costUSD; cacheHits = totals?.cacheHits ?? 0; cacheMisses = totals?.cacheMisses ?? 0; requests = totals?.requests ?? 0
         tokens = totals?.tokens?.total; tokenSamples = totals?.tokens?.samples ?? 0
         inputTokens = totals?.tokens?.input; outputTokens = totals?.tokens?.output; cachedTokens = totals?.cacheReadTokens
@@ -230,6 +234,7 @@ struct ChatRowStats: Equatable {
         if let state { stateLine.line = PiKit.Line(state.text, font: Self.stateFont, color: state.color) }
         costLine.isHidden = stats.costLabel == nil
         costLine.line = PiKit.Line(stats.costLabel ?? "", font: Self.font, color: .piInkTertiary)
+        costLine.toolTip = stats.costHelp; costLine.setAccessibilityLabel(stats.costHelp ?? stats.costLabel)
         rate.isHidden = stats.timing == nil
         rate.presentation = stats.timing.map(SessionRatePresentation.init(history:))
         let showsTokens = form.showsTokens && !stats.busy && stats.tokensLabel != nil && form != .stacked
@@ -312,10 +317,11 @@ struct ChatRowStats: Equatable {
             if run.holdsQueue { words.append(run == .interrupted ? "paused, run interrupted" : "paused") }
             if unreadCount > 0 { words.append("unread") } else if unreadFailure { words.append("run failed") }
             if hasDraft { words.append("has a draft") }
+            if let cost = stats.costHelp { words.append(cost) }
             return words.joined(separator: ", ")
         }
         var help: String {
-            subtitle + (stats.requests > 0 ? " · \(stats.requests) requests · cache \(stats.cacheHits) hit / \(stats.cacheMisses) miss" : "")
+            subtitle + (stats.costHelp.map { " · " + $0 } ?? "") + (stats.requests > 0 ? " · \(stats.requests) requests · cache \(stats.cacheHits) hit / \(stats.cacheMisses) miss" : "")
         }
     }
     private(set) var content: Content?

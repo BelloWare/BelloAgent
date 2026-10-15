@@ -479,6 +479,7 @@
 		5B67550A5F90243CD8CB167F /* FileFolderNavigation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D31B3CA543F5257646977A6B /* FileFolderNavigation.swift */; };
 		5BF11744F204FFEBB5A9F508 /* PiPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BD89112729344E0A365E08D /* PiPopover.swift */; };
 		5CDDD55C5EE091FBBB9B6EEF /* PayloadArchive+Accounting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 765CD1144B53B9CFCFE718D3 /* PayloadArchive+Accounting.swift */; };
+		5D13DC0D4B26BC222C4D600A /* SubagentCostGalleryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F138D9A5FD5DE9AF4BE05CB /* SubagentCostGalleryTests.swift */; };
 		5D290BEA86B20663135B6563 /* TabHostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B873E1CDA775BE10A9A3C25 /* TabHostTests.swift */; };
 		5D3D3EE381FCEB11ADD7F83C /* WorkspaceCaptures.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD1A5D449C8B852395332DC9 /* WorkspaceCaptures.swift */; };
 		5D562822FBCAE6BBD6A8C15E /* MarkdownTableWindowReference.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54CD9FCA3FE9DD2A5CB2E741 /* MarkdownTableWindowReference.swift */; };
@@ -958,6 +959,7 @@
 		C061CDE752BA94E6B8637232 /* SettingsFullDocumentGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10E20E76E16905D1A4D8CF7 /* SettingsFullDocumentGeometryTests.swift */; };
 		C08E467459F133FE540BB15A /* TranscriptNativeAgentRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92FA9421357F14E74AB8EC8C /* TranscriptNativeAgentRow.swift */; };
 		C0B9B5D192E2955F63673FB7 /* TranscriptRowChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 946EE9E994777E6A31726E6A /* TranscriptRowChrome.swift */; };
+		C12F9853355AC2DCAF0E424A /* SubagentCostTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 820A9EBABE3E3A8E232B67E2 /* SubagentCostTests.swift */; };
 		C15D248EC370F79E3887AEEB /* ConnectionSettingsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F9BB1166EDBB728FE7964F6 /* ConnectionSettingsController.swift */; };
 		C1BC7D83B4467CCA0ABD0995 /* ReportController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3C9DAEE6090421316663DC4 /* ReportController.swift */; };
 		C24FD45DA252D3F272AD85A7 /* BelloGitView in Frameworks */ = {isa = PBXBuildFile; productRef = 4E66E0F0C47568F08520309F /* BelloGitView */; };
@@ -1768,6 +1770,7 @@
 		7EABAE4AC073F4CD104BCE43 /* PiKitChoices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiKitChoices.swift; sourceTree = "<group>"; };
 		7EBFC0C683C3DDDC14A0D8FF /* SettingsRefreshRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsRefreshRegressionTests.swift; sourceTree = "<group>"; };
 		7EE3C88CFA59752678D1BAD0 /* WorkspaceCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCommands.swift; sourceTree = "<group>"; };
+		7F138D9A5FD5DE9AF4BE05CB /* SubagentCostGalleryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubagentCostGalleryTests.swift; sourceTree = "<group>"; };
 		7F38BF61DE8C8100C8E10022 /* GitHunkToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHunkToolbar.swift; sourceTree = "<group>"; };
 		7F57EC32050E8565C4AE7DAC /* WorkspaceCatalogSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceCatalogSources.swift; sourceTree = "<group>"; };
 		7F713C7BF568A767BE0B464B /* ModelCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelCatalog.swift; sourceTree = "<group>"; };
@@ -1778,6 +1781,7 @@
 		816F37316EAFBC1C7BF08CFB /* WindowVisibilityReference.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowVisibilityReference.swift; sourceTree = "<group>"; };
 		819F23100A52D0CD9E6FC308 /* ResourceInspector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResourceInspector.swift; sourceTree = "<group>"; };
 		81DA84DFD36128737DD53301 /* ShellTestBridges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShellTestBridges.swift; sourceTree = "<group>"; };
+		820A9EBABE3E3A8E232B67E2 /* SubagentCostTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubagentCostTests.swift; sourceTree = "<group>"; };
 		8238005BB4836ADC69C07AE1 /* WorkspaceWebhooks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWebhooks.swift; sourceTree = "<group>"; };
 		823C97B68569AFD2C989BA8D /* LiveMonitorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveMonitorView.swift; sourceTree = "<group>"; };
 		82AAB4E83E61653FBADB4264 /* WorkspaceConnectionSwitch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceConnectionSwitch.swift; sourceTree = "<group>"; };
@@ -3199,6 +3203,8 @@
 				132F619E0F44983F86A1167A /* StreamingDeliveryCostTests.swift */,
 				43782C74903D444E61FEA53D /* StreamingMarkdownStabilityTests.swift */,
 				8087FA0A6490A9F3269ECC4E /* SubagentCaptureTests.swift */,
+				7F138D9A5FD5DE9AF4BE05CB /* SubagentCostGalleryTests.swift */,
+				820A9EBABE3E3A8E232B67E2 /* SubagentCostTests.swift */,
 				3C2453A8DB2AA238E79553E3 /* SubagentDeletionTests.swift */,
 				4515172CBB73FD71605DC7BC /* SubagentDiscoveryTests.swift */,
 				8FDBA037244DD1E0392F741A /* SubagentGalleryTests.swift */,
@@ -4705,6 +4711,8 @@
 				AF1C86FBB2518B5DDEB99430 /* StreamingDeliveryCostTests.swift in Sources */,
 				F5661CF23ED21E6AD885EBBD /* StreamingMarkdownStabilityTests.swift in Sources */,
 				7BAB74A26BAE7EAECF6B97BE /* SubagentCaptureTests.swift in Sources */,
+				5D13DC0D4B26BC222C4D600A /* SubagentCostGalleryTests.swift in Sources */,
+				C12F9853355AC2DCAF0E424A /* SubagentCostTests.swift in Sources */,
 				3DA0BCE5A9828EE7185F6504 /* SubagentDeletionTests.swift in Sources */,
 				768960DED4B1CE0D0B00F173 /* SubagentDiscoveryTests.swift in Sources */,
 				C4D5C4B5592E15560069A37C /* SubagentGalleryTests.swift in Sources */,

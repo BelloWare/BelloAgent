@@ -219,7 +219,8 @@ struct SessionInfoTiming: Equatable {
         onPress = { [weak self] in guard let self else { return }; self.model.openInspector(session: self.chat.id, focus: .overview) }
         setAccessibilityLabel("Session Inspector: cost, tokens, time and every request")
         setAccessibilityIdentifier(costLabel == nil ? "sessionUsageButton" : "sessionUsageCostButton")
-        toolTip = "Open the Session Inspector: what this chat cost and used, how fast it ran, and every request it made"
+        toolTip = "Open the Session Inspector: what this chat cost and used, how fast it ran, and every request it made" + (footer.gateway.costAttribution.map { ". " + $0 } ?? "")
+        setAccessibilityHelp(toolTip)
         refreshFace(animated: false)
     }
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }

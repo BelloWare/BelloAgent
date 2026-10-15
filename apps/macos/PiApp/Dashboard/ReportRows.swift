@@ -226,6 +226,7 @@ func reportReasoningDetail(_ totals: GatewayTotals) -> String {
                                    detail: costShare.map { percent($0) + " of cost" } ?? (summary.gateway.costSamples < summary.requests ? "\(summary.gateway.costSamples)/\(summary.requests) reported" : "no cost reported"),
                                    share: costShare, tone: .piSuccess)
         cost.toolTip = summary.gateway.costLabel + "\n" + reportReasoningDetail(summary.gateway)
+        cost.setAccessibilityLabel(summary.gateway.costLabel)
         var tokenLines = [PiKit.Line(summary.gateway.tokens.map { "↓\(reportTokens($0.input)) ↑\(reportTokens($0.output))" } ?? "—", font: mono, color: .piInk)]
         if summary.gateway.tokens?.reasoning != nil { tokenLines.append(PiKit.Line("\(reportTokens(summary.gateway.tokens?.reasoning)) reasoning", font: mono, color: .piInkTertiary)) }
         if detailed { tokenLines.append(PiKit.Line("cached \(reportTokens(summary.gateway.cacheReadTokens))", font: mono, color: .piInkTertiary)) }
@@ -561,6 +562,7 @@ func reportReasoningDetail(_ totals: GatewayTotals) -> String {
         if detailed { costLines.append(PiKit.Line("reasoning " + reportUSD(summary.gateway.reasoningCostUSD), font: mono, color: .piInkTertiary)) }
         let cost = TextLines(costLines)
         cost.toolTip = summary.gateway.costLabel + "\n" + reportReasoningDetail(summary.gateway)
+        cost.setAccessibilityLabel(summary.gateway.costLabel)
         var tokenLines = [PiKit.Line(summary.gateway.tokens.map { "↓\(reportTokens($0.input)) ↑\(reportTokens($0.output))" } ?? "—", font: mono, color: .piInk)]
         if summary.gateway.tokens?.reasoning != nil { tokenLines.append(PiKit.Line("\(reportTokens(summary.gateway.tokens?.reasoning)) reasoning", font: mono, color: .piInkTertiary)) }
         if detailed { tokenLines.append(PiKit.Line("cached \(reportTokens(summary.gateway.cacheReadTokens))", font: mono, color: .piInkTertiary)) }

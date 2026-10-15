@@ -35,7 +35,13 @@ extension PayloadArchive {
     SUM(reasoning_cost_usd) AS reasoning_cost_usd,COUNT(reasoning_cost_usd) AS reasoning_cost_samples,
     \(settledThroughputSQL),
     SUM(ttft_ms) AS ttft_ms,COUNT(ttft_ms) AS ttft_samples,
-    MAX(wall) AS last_wall
+    MAX(wall) AS last_wall,
+    COUNT(DISTINCT CASE WHEN budget_owner!=session THEN workspace||char(0)||session END) AS subagent_count,
+    COUNT(CASE WHEN budget_owner!=session THEN 1 END) AS subagent_requests,
+    COUNT(CASE WHEN budget_owner!=session THEN cost_usd END) AS subagent_reported,
+    SUM(CASE WHEN budget_owner!=session THEN cost_usd END) AS subagent_usd,
+    CASE WHEN MIN(session)=MAX(session) THEN MIN(session) END AS only_session,
+    CASE WHEN COUNT(budget_owner)=COUNT(*) AND MIN(budget_owner)=MAX(budget_owner) THEN MIN(budget_owner) END AS only_owner
     """
 
     /// Same population and sums as `SettledThroughput.add`: valid TTFT and
@@ -49,7 +55,7 @@ extension PayloadArchive {
         return "SUM(CASE WHEN \(sample) THEN \(duration) END) AS decode_ms,SUM(CASE WHEN \(sample) THEN output_tokens END) AS decode_output_tokens,COUNT(CASE WHEN \(sample) THEN 1 END) AS decode_samples"
     }()
 
-    static func gatewayTotals(_ row: [String: CaptureSQLValue]) -> GatewayTotals {
+    static func gatewayTotals(_ row: [String: CaptureSQLValue], sessionID: String? = nil) -> GatewayTotals {
         func count(_ key: String) -> Int { Int(row[key]?.number ?? 0) }
         func value(_ key: String) -> Double? { row[key]?.double.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } }
         var totals = GatewayTotals(requests: count("requests"), costSamples: count("cost_samples"), costUSD: value("cost_usd"), cacheHits: count("cache_hits"), cacheMisses: count("cache_misses"), cacheUnreported: count("cache_unreported"), cacheConflicts: count("cache_conflicts"), cacheReadTokens: value("cache_read_tokens"), cacheWriteTokens: value("cache_write_tokens"), cacheReadSamples: count("cache_read_samples"), cacheWriteSamples: count("cache_write_samples"))
@@ -69,6 +75,13 @@ extension PayloadArchive {
             totals.tokens = GatewayTokenTotals(input: value("input_tokens"), output: value("output_tokens"), total: value("total_tokens"), inputSamples: count("input_samples"), outputSamples: count("output_samples"), samples: count("token_samples"))
             totals.tokens?.reasoning = value("reasoning_tokens"); totals.tokens?.reasoningSamples = count("reasoning_samples")
         }
+        if count("subagent_count") > 0 {
+            if let sessionID, row["only_session"]?.string == sessionID {
+                totals.budgetOwnerID = row["only_owner"]?.string
+            } else {
+                totals.subagentCost = GatewaySubagentCost(count: count("subagent_count"), requests: count("subagent_requests"), reported: count("subagent_reported"), usd: value("subagent_usd"))
+            }
+        }
         return totals
     }
 
@@ -83,7 +96,7 @@ extension PayloadArchive {
         let family = "WITH family AS (SELECT attempts.*,session AS recipient FROM attempts UNION ALL SELECT attempts.*,budget_owner AS recipient FROM attempts WHERE budget_owner IS NOT NULL AND budget_owner!=session) "
         for row in try db.rows("\(family) SELECT recipient AS session,workspace,\(Self.gatewayAggregateSQL) FROM family WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY workspace,recipient") {
             guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
-            totals[workspace + "\u{0}" + session] = Self.gatewayTotals(row)
+            totals[workspace + "\u{0}" + session] = Self.gatewayTotals(row, sessionID: session)
         }
         for row in try db.rows("\(family) SELECT recipient AS session,workspace,COUNT(*) AS n FROM family WHERE metrics_retained=0 GROUP BY workspace,recipient") {
             guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
@@ -106,14 +119,14 @@ extension PayloadArchive {
         for start in stride(from: 0, to: scopes.count, by: 200) {
             try Task.checkCancellation()
             let batch = scopes[start..<min(start + 200, scopes.count)]
-            let wanted = "WITH wanted(session,workspace) AS (VALUES " + batch.map { _ in "(?,?)" }.joined(separator: ",") + ") "
+            let wanted = "WITH wanted(wanted_session,wanted_workspace) AS (VALUES " + batch.map { _ in "(?,?)" }.joined(separator: ",") + ") "
             let args = batch.flatMap { [CaptureSQLValue.text($0.sessionID), .text($0.workspaceID)] }
-            let join = "FROM wanted CROSS JOIN attempts ON (attempts.session=wanted.session OR attempts.budget_owner=wanted.session) AND attempts.workspace=wanted.workspace"
-            for row in try db.rows("\(wanted) SELECT wanted.session AS session,wanted.workspace AS workspace,\(Self.gatewayAggregateSQL) \(join) WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY wanted.workspace,wanted.session", args) {
+            let join = "FROM wanted CROSS JOIN attempts ON (attempts.session=wanted.wanted_session OR attempts.budget_owner=wanted.wanted_session) AND attempts.workspace=wanted.wanted_workspace"
+            for row in try db.rows("\(wanted) SELECT wanted.wanted_session AS session,wanted.wanted_workspace AS workspace,\(Self.gatewayAggregateSQL) \(join) WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY wanted.wanted_workspace,wanted.wanted_session", args) {
                 guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
-                totals[SessionUsageScope(sessionID: session, workspaceID: workspace)] = Self.gatewayTotals(row)
+                totals[SessionUsageScope(sessionID: session, workspaceID: workspace)] = Self.gatewayTotals(row, sessionID: session)
             }
-            for row in try db.rows("\(wanted) SELECT wanted.session AS session,wanted.workspace AS workspace,COUNT(*) AS n \(join) WHERE metrics_retained=0 GROUP BY wanted.workspace,wanted.session", args) {
+            for row in try db.rows("\(wanted) SELECT wanted.wanted_session AS session,wanted.wanted_workspace AS workspace,COUNT(*) AS n \(join) WHERE metrics_retained=0 GROUP BY wanted.wanted_workspace,wanted.wanted_session", args) {
                 guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
                 totals[SessionUsageScope(sessionID: session, workspaceID: workspace), default: GatewayTotals()].expiredRecords = Int(row["n"]?.number ?? 0)
             }
@@ -137,7 +150,7 @@ extension PayloadArchive {
         let db = try dashboardDatabase()
         let scope: [CaptureSQLValue] = [.text(sessionID), .text(sessionID), .text(workspaceID)]
         let row = try db.rows("SELECT \(Self.gatewayAggregateSQL) FROM attempts WHERE (session=? OR budget_owner=?) AND workspace=? AND metrics_retained=1 AND dispatch IS NOT NULL", scope).first ?? [:]
-        var result = SessionGatewayAccounting(session: Self.gatewayTotals(row))
+        var result = SessionGatewayAccounting(session: Self.gatewayTotals(row, sessionID: sessionID))
         result.session.expiredRecords = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE (session=? OR budget_owner=?) AND workspace=? AND metrics_retained=0", scope).first?["n"]?.number ?? 0)
         if includeTiming {
             result.timing = try Self.sessionTimingHistory(sessionID: sessionID, workspaceID: workspaceID, until: Date(), db: db)
@@ -202,7 +215,7 @@ extension PayloadArchive {
         """
         for row in try db.rows(sql, args) {
             guard let id = row["message"]?.string else { throw CaptureFailure.corrupt }
-            var totals = Self.gatewayTotals(row)
+            var totals = Self.gatewayTotals(row, sessionID: sessionID)
             totals.missingUsage = GatewayMissingUsage(packed: row["missing_usage"], stopped: row["missing_stopped"])
             result.messages[id] = totals
         }
