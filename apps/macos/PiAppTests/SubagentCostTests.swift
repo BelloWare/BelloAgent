@@ -231,6 +231,68 @@ final class SubagentCostTests: XCTestCase {
         XCTAssertEqual(model.record("side")?.costLimit,.usd(99),"Legacy values remain stored but ignored")
     }
 
+    @MainActor func testColdSideKeepFinishesBeforeTheArchiveAndProjectsCostsWhenItOpens() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("side-keep-budget-" + UUID().uuidString)
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        let parent = ChatRecord(id: "main", workspaceID: "w", title: "Main", profileID: "p")
+        let file = root.appendingPathComponent("side_side.jsonl")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try SideKeepRecoveryTests.journal(id: "side").write(to: file)
+        let side = ChatRecord(id: "side", workspaceID: "w", title: "Side", path: file.path, profileID: "p", parentSessionID: "main")
+        model.chats = [parent]
+        try await model.store?.put(parent, kind: "chat", id: parent.id)
+        try await model.store?.put(SideKeepIntent(chat: side), kind: "side-keep", id: side.id)
+        try await model.registerKeptSide(id: side.id, path: file.path)
+        XCTAssertNotNil(model.record(side.id)); XCTAssertTrue(model.sideKeepIssues.isEmpty); XCTAssertNil(model.error)
+        let initial = await model.traces.savedSideBudgets
+        XCTAssertTrue(initial.isEmpty)
+        let opened = await model.openConfiguredArchive(VaultConfiguration())
+        XCTAssertTrue(opened)
+        let projected = await model.traces.savedSideBudgets
+        XCTAssertEqual(projected["w\u{0}side"], ["main"])
+    }
+
+    @MainActor func testLateSideChildLinksRefreshEveryCurrentFamilyRecipient() async throws {
+        for legacyScope in [false, true] {
+            let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("side-links-" + UUID().uuidString)
+            let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+            registerWorkspaceFixtureTeardown(model, root: root)
+            let main = ChatRecord(id: "main", workspaceID: "w", title: "Main", profileID: "p")
+            let side = ChatRecord(id: "side", workspaceID: "w", title: "Side", path: "/fixture/side_side.jsonl", profileID: "p", parentSessionID: "main")
+            model.chats = [main, side]
+            model.displays[side.id] = SessionDisplay(id: side.id)
+            try await model.traces.configure(quota: nil, bodyRetention: 86400, metricRetention: 86400)
+            try await model.restoreSideBudgets()
+            try await eventually("Initial empty accounting settles") { model.accountingTasks.isEmpty }
+            var scope = try XCTUnwrap(subagentCaptureScope(source: "child", owner: "side").object)
+            if !legacyScope { scope["sideParents"] = .array([.string("main")]) }
+            let attempt = UUID().uuidString
+            let metadata: [String: WireValue] = ["attemptId": .string(attempt), "sessionId": .string("child"), "turnId": .string("turn"), "purpose": .string("turn"),
+                "api": .string("openai-responses"), "mode": .string("off"), "outcome": .string("completed"), "wallTimestamp": .number(Date().timeIntervalSince1970),
+                "timingVersion": .number(2), "timings": .object(["dispatch": .number(100)]), "requestScope": .object(scope),
+                "gateway": .object(["version": .number(1), "cost": .object(["status": .string("reported"), "usd": .number(0.2)])])]
+            try await model.traces.begin(metadata, workspace: "w"); try await model.traces.finish(metadata)
+            await model.captureDidPersist(["type": .string("links"), "attemptId": .string(attempt)], workspaceID: "w")
+            try await eventually("Late link refreshes the direct owner and main without child discovery", timeout: .seconds(3)) {
+                model.displays["side"]?.footer.gateway.costUSD == 0.2 && model.chatStats["main"]?.costUSD == 0.2
+            }
+            XCTAssertNil(model.record("child"))
+            model.chats.removeAll { $0.id == "main" }
+            try await model.restoreSideBudgets()
+            let target = try await model.traces.accountingTarget(attemptID: attempt, workspaceID: "w")
+            XCTAssertEqual(target?.budgetOwnerSessionID, "side", "The orphan projection replaces historical ancestry")
+            XCTAssertEqual(target?.familySessionIDs, ["side"])
+            // An old scope on a metadata-only update uses current desktop
+            // ancestry without a body read or an unrelated transcript scan.
+            model.chats.append(main)
+            try await model.restoreSideBudgets()
+            try await eventually("Projection refresh settles") { model.accountingTasks.isEmpty }
+            model.publishChatStats(GatewayTotals(), sessionID: "main")
+            await model.captureDidPersist(["type": .string("finish"), "metadata": .object(metadata)], workspaceID: "w")
+            try await eventually("Metadata invalidates the current root") { model.chatStats["main"]?.costUSD == 0.2 }
+        }
+    }
+
     @MainActor func testChildCaptureBeforeDiscoveryUpdatesParentFooterSidebarAndMenu() async throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("sub-cost-" + UUID().uuidString)
         let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

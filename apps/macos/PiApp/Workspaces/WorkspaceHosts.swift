@@ -39,7 +39,7 @@ extension WorkspaceModel {
             if frame["type"]?.string == "session.changed" { self?.refresh(id) }
             if frame["type"]?.string == "session.unloaded" {
                 self?.sessionOpenings[id]?.task.cancel()
-                self?.opened.remove(id); self?.displays[id]?.notice = "Saved history · Host runtime unloaded"; self?.displays[id]?.captureAvailable = false
+                self?.helperSessionDidUnload(id); self?.displays[id]?.notice = "Saved history · Host runtime unloaded"; self?.displays[id]?.captureAvailable = false
             }
         }
         host.onLoss = { [weak self, weak host] in
@@ -53,7 +53,7 @@ extension WorkspaceModel {
             self.liveActivity.disconnect(workspace.id)
             self.discardLostSides(workspaceID: workspace.id)
             for chat in self.chats where chat.workspaceID == workspace.id {
-                self.opened.remove(chat.id); self.displays[chat.id]?.captureAvailable = false
+                self.opened.remove(chat.id); self.budgetDependencySessions.remove(chat.id); self.releasedHelperSessions.remove(chat.id); self.displays[chat.id]?.captureAvailable = false
                 self.displays[chat.id]?.lastSequence = -1
                 if !retired, let view = self.displays[chat.id] {
                     view.observeContext([:],baseline:true)
@@ -154,20 +154,67 @@ extension WorkspaceModel {
     /// next `session.open` is answered by it. A chat an Inspector window is
     /// open on keeps its session, which that window reads.
     func releaseHelperSession(_ id: String) {
-        guard opened.contains(id), sessionOpenings[id] == nil, sessionClosings[id] == nil, !isEphemeral(id),
-              SessionInspectorWindows.shared.controller(sessionID: id) == nil,
-              let item = record(id), let host = hosts[item.workspaceID], host.isReady else { return }
-        let token = UUID()
-        let task = Task { [weak self] in
-            do {
-                _ = try await host.request("session.close", sessionID: id)
-                self?.opened.remove(id)
-            } catch { /* A busy runtime remains loaded, including its tool mode. */ }
-            if self?.sessionClosings[id]?.token == token { self?.sessionClosings.removeValue(forKey: id) }
-        }
-        sessionClosings[id] = (token, task)
+        releasedHelperSessions.insert(id)
+        releaseUnusedBudgetSessions()
     }
-    func open(_ item: ChatRecord, automaticContext: Bool = false) async throws -> HostSupervisor {
+    /// Only currently loaded/opening sides pin a writer. Pane placement and
+    /// fork provenance never do. The helper remains the final busy authority.
+    func releaseUnusedBudgetSessions() {
+        guard !isShutDown, !budgetDependencySessions.isEmpty || !releasedHelperSessions.isEmpty else { return }
+        var pinned = Set<String>()
+        for id in opened.union(budgetOpenCallers.keys) {
+            guard var item = record(id) else { continue }
+            var seen: Set<String> = [id]
+            while let parentID = sideBudgetParent(item), seen.insert(parentID).inserted,
+                  let parent = record(parentID), parent.workspaceID == item.workspaceID {
+                pinned.insert(parentID); item = parent
+            }
+        }
+        for id in budgetDependencySessions.union(releasedHelperSessions) {
+            guard budgetOpenCallers[id] == nil, sessionOpenings[id] == nil, sessionClosings[id] == nil else { continue }
+            guard opened.contains(id) else {
+                budgetDependencySessions.remove(id); releasedHelperSessions.remove(id); continue
+            }
+            guard !pinned.contains(id), !isEphemeral(id),
+                  (releasedHelperSessions.contains(id) || displays[id] == nil),
+                  SessionInspectorWindows.shared.controller(sessionID: id) == nil,
+                  let item = record(id), !deletingFamilies.contains(id),
+                  let host = hosts[item.workspaceID], host.isReady else { continue }
+            let token = UUID(), connection = host.connectionID
+            let task = Task { [weak self] in
+                var unloaded = false
+                do {
+                    _ = try await host.request("session.close", sessionID: id)
+                    if let self, self.hosts[item.workspaceID] === host, host.connectionID == connection {
+                        self.opened.remove(id); self.budgetDependencySessions.remove(id); self.releasedHelperSessions.remove(id)
+                        unloaded = true
+                    }
+                } catch { /* A busy runtime remains loaded, including its tool mode. */ }
+                if self?.sessionClosings[id]?.token == token { self?.sessionClosings.removeValue(forKey: id) }
+                // Release deepest ancestors first. A rejected close never spins.
+                if unloaded { self?.releaseUnusedBudgetSessions() }
+            }
+            sessionClosings[id] = (token, task)
+        }
+    }
+    func helperSessionDidUnload(_ id: String) {
+        opened.remove(id); budgetDependencySessions.remove(id); releasedHelperSessions.remove(id)
+        releaseUnusedBudgetSessions()
+    }
+    func open(_ item: ChatRecord, automaticContext: Bool = false, budgetDependency: Bool = false) async throws -> HostSupervisor {
+        if !budgetDependency { releasedHelperSessions.remove(item.id) }
+        var accepted = false
+        // Pin before the first await, including metadata/credential reads and
+        // waiting for an earlier close. A failed open releases its ancestors.
+        budgetOpenCallers[item.id, default: 0] += 1
+        defer {
+            // A successful direct open owns its runtime even if it shared an
+            // ancestor open already in flight. Failed callers claim nothing.
+            if accepted, !budgetDependency { budgetDependencySessions.remove(item.id) }
+            if budgetOpenCallers[item.id, default: 0] <= 1 { budgetOpenCallers.removeValue(forKey: item.id) }
+            else { budgetOpenCallers[item.id, default: 0] -= 1 }
+            releaseUnusedBudgetSessions()
+        }
         guard !deletingFamilies.contains(item.delegation?.budgetOwnerSessionID ?? item.id) else { throw HostError.failure("This chat is being deleted.") }
         if try await store?.get(String.self, kind: "session-deleted", id: item.delegation?.budgetOwnerSessionID ?? item.id) != nil { throw HostError.failure("This chat is being deleted.") }
         if let issue = item.delegationIssue { throw HostError.failure(issue) }
@@ -179,6 +226,9 @@ extension WorkspaceModel {
             if let closing = sessionClosings[item.id] { await closing.task.value }
             else if let change = connectionSwitches[item.id] { await change.task.value }
             else { break }
+        }
+        if budgetDependency, !opened.contains(item.id), displays[item.id] == nil {
+            budgetDependencySessions.insert(item.id)
         }
         // A caller that read the chat before it moved may already have
         // written something naming the old connection (a fork's or a side's
@@ -192,18 +242,19 @@ extension WorkspaceModel {
         let lease = try connectionLease(for: item)
         guard let profile = profiles.first(where: { $0.id == item.profileID }) else { throw connectionUnavailable }
         try LiteLLMConfiguration.requireSupportedAPI(profile.api)
+        try await retainBudgetAncestors(for: item)
         // Open authoritative budget writers before a kept side after relaunch.
         // Parent selection and model context are unchanged.
         if let parentID = sideBudgetParent(item), let parent = record(parentID), parent.id != item.id {
             let owner = budgetOwner(for: item)
             guard parent.workspaceID == item.workspaceID, owner.id != item.id,
                   sideBudgetParent(owner).flatMap({ record($0) }) == nil, !owner.isSubagent else { throw HostError.failure("The side’s budget ancestry is inconsistent.") }
-            _ = try await open(parent, automaticContext: false)
+            _ = try await open(parent, automaticContext: false, budgetDependency: true)
         }
-        if sessionOpenings[item.id] == nil, opened.contains(item.id), let host = hosts[item.workspaceID], host.isReady { idleTasks[item.workspaceID]?.cancel(); return host }
+        if sessionOpenings[item.id] == nil, opened.contains(item.id), let host = hosts[item.workspaceID], host.isReady { idleTasks[item.workspaceID]?.cancel(); accepted = true; return host }
         if isEphemeral(item.id) { throw HostError.failure("This unkept side lost its host. Open a new side from the parent; nothing was replayed.") }
-        // Include credential/journal reads before the shared helper operation:
-        // a connection switch cannot overtake an automatic context cold open.
+        // Preserve the opening contract used by connection switching. A caller
+        // waiting behind a switch pins its budget but has not begun this open.
         sessionOpenCallers[item.id, default: 0] += 1
         defer {
             if sessionOpenCallers[item.id, default: 0] <= 1 { sessionOpenCallers.removeValue(forKey: item.id) }
@@ -291,6 +342,7 @@ extension WorkspaceModel {
             }
         }
         try requireConnection(lease)
+        accepted = true
         return host
     }
 }

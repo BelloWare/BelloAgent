@@ -13,9 +13,7 @@ extension WorkspaceModel {
     /// Only actual sides inherit budgets; forks also have parentSessionID.
     func sideBudgetParent(_ item: ChatRecord) -> String? {
         guard !item.isSubagent else { return nil }
-        if let path = item.path {
-            return URL(fileURLWithPath: path).lastPathComponent == "side_" + item.id + ".jsonl" ? item.parentSessionID : nil
-        }
+        if item.path != nil { return item.persistedBudgetParentID }
         // Only an unpublished side draft lacks a journal. A mounted saved
         // fork is pane placement, never an accounting relationship.
         return side(item.id).flatMap { !$0.kept ? $0.parentID : nil }
@@ -29,7 +27,32 @@ extension WorkspaceModel {
     func costLimit(for item: ChatRecord) -> CostLimit { budgetOwner(for: item).costLimit ?? defaultCostLimit }
     func costLimit(for id: String) -> CostLimit { record(id).map(costLimit(for:)) ?? defaultCostLimit }
 
+    /// Metadata is read at restore/open boundaries, never during view layout.
+    /// Recheck the chat generation after the actor hop so deletion cannot be
+    /// undone by a stale ancestor read. Tombstones are checked by the store.
+    func retainBudgetAncestors(for additional: ChatRecord? = nil) async throws {
+        guard let store else { return }
+        while true {
+            let revision = chatsRevision
+            var records = chats
+            if let additional, record(additional.id) == nil { records.append(additional) }
+            let ids = Set(records.map(\.id))
+            guard records.contains(where: { $0.persistedBudgetParentID.map { !ids.contains($0) } == true }) else { return }
+            let ancestors = try await store.loadBudgetAncestors(of: records, profiles: profiles)
+            try Task.checkCancellation()
+            guard !isShutDown else { throw CancellationError() }
+            if revision != chatsRevision { continue }
+            let added = ancestors.filter { record($0.id) == nil && !deletingFamilies.contains($0.id) }
+            if !added.isEmpty { chats.append(contentsOf: added) }
+            return
+        }
+    }
+
     func restoreSideBudgets() async throws {
+        try await retainBudgetAncestors()
+        // Keep recovery precedes archive startup. Registration is already
+        // durable; the projection is rebuilt when the archive opens below.
+        guard await traces.isOpen else { return }
         var workspaces: [String: [String: [String]]] = [:]
         for item in chats where !item.isSubagent && (item.parentSessionID != nil || sideBudgetParent(item) != nil) {
             var current = item, parents: [String] = [], seen: Set<String> = [item.id]
@@ -245,4 +268,13 @@ extension WorkspaceModel {
         }
     }
     func close() { presenter.close(); sessionID = nil }
+}
+
+// A durable relationship, independent of which pane displays the chat.
+extension ChatRecord {
+    var persistedBudgetParentID: String? {
+        if let delegation { return delegation.budgetOwnerSessionID }
+        guard let path, URL(fileURLWithPath: path).lastPathComponent == "side_" + id + ".jsonl" else { return nil }
+        return parentSessionID
+    }
 }

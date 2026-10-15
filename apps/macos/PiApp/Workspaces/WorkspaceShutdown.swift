@@ -59,6 +59,7 @@ extension WorkspaceModel {
         for task in webhookTasks.values { task.cancel() }
         webhookTasks.removeAll()
         isShutDown = true
+        budgetDependencySessions.removeAll(); releasedHelperSessions.removeAll()
         for task in accountingTasks.values { task.cancel() }
         accountingTasks.removeAll(); dirtyAccounting.removeAll()
         for host in hosts.values { host.shutdown() }

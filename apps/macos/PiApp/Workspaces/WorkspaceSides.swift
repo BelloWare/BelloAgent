@@ -374,6 +374,7 @@ extension WorkspaceModel {
     /// Puts a saved child chat in its parent's side pane, waiting to be read.
     /// The side shown there before keeps its display and any running work.
     func mountSide(_ child: ChatRecord, beside parentID: String) -> SessionDisplay {
+        releasedHelperSessions.remove(child.id)
         if let previous = sides[parentID] { displays[previous.id]?.presentation.cancel() }
         let view = displays[child.id] ?? SessionDisplay(id: child.id); view.used = Date(); displays[child.id] = view
         adoptContextReading(view, item: child)
@@ -532,11 +533,12 @@ extension WorkspaceModel {
                 chats[index].applyOrganization(from: retained)
             }
         } else { chats.insert(retained, at: 0) }
-        try await restoreSideBudgets()
         if let info = side(id) { sides[info.parentID]?.kept = true; sides[info.parentID]?.keeping = false; sides[info.parentID]?.keepRequested = false; sides[info.parentID]?.topicID = chats.first(where: { $0.id == id })?.topicID }
         await retainSideReadState(id)
         sideKeepResolutionRevision &+= 1
         sideKeepIssues.removeAll { $0.chat == expected }
+        do { try await restoreSideBudgets() }
+        catch { self.error = "The chat was saved, but its family cost totals could not be refreshed: " + error.localizedDescription }
     }
     func reconcileSideKeeps() async {
         guard !reconcilingSideKeeps else { return }
@@ -658,7 +660,7 @@ extension WorkspaceModel {
         for info in sides.values.filter({ $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) {
             let view = displays[info.id]
             let typed = view.map { !Self.unsentDraft(of: $0, to: info.parentID).isBlank } ?? false
-            sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id); opened.remove(info.id)
+            sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id); helperSessionDidUnload(info.id)
             forgetReadState(info.id)
             // The side is gone, but nothing the user typed into it is: the
             // draft moves as a closed side's does, from the display kept here.
@@ -712,7 +714,7 @@ extension WorkspaceModel {
         defer { view?.loading = false }
         if opened.contains(id) {
             guard let host = hosts[item.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing tools.") }
-            _ = try await host.request("session.close", sessionID: id); opened.remove(id)
+            _ = try await host.request("session.close", sessionID: id); helperSessionDidUnload(id)
         }
         item.toolMode = ChatRecord.editingTools
         try await store.put(item, kind: "chat", id: id)

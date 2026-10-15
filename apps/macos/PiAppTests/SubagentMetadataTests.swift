@@ -71,6 +71,53 @@ final class SubagentMetadataTests: XCTestCase {
         await store.close()
     }
 
+    func testListedSidesAndManagedChildrenRetainBudgetAncestorsOutsideTheRootWindow() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent(UUID().uuidString)
+        let store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
+        defer { try? FileManager.default.removeItem(at: root) }
+        let main = ChatRecord(id: "main", workspaceID: "project", title: "Main", profileID: "profile", sidebarOrder: 1)
+        let side = ChatRecord(id: "side", workspaceID: "project", title: "Side", path: "/fixture/side_side.jsonl", profileID: "profile", sidebarOrder: 2, parentSessionID: "main")
+        let unrelated = ChatRecord(id: "unrelated", workspaceID: "project", title: "Unrelated", profileID: "profile", sidebarOrder: 3)
+        let nested = ChatRecord(id: "nested", workspaceID: "project", title: "Nested", path: "/fixture/side_nested.jsonl", profileID: "profile", sidebarOrder: 20_001, parentSessionID: "side")
+        let fork = ChatRecord(id: "fork", workspaceID: "project", title: "Fork", path: "/fixture/fork_fork.jsonl", profileID: "profile", sidebarOrder: 20_002, parentSessionID: "unrelated")
+        var agent = try JSONDecoder().decode(ChatRecord.self, from: Data(child.utf8))
+        agent.parentSessionID = "side"; agent.delegation?.budgetOwnerSessionID = "side"; agent.delegation?.call.parentSessionID = "side"
+        var records = [main, side, unrelated]
+        records += (0..<10_000).map { ChatRecord(id: "ordinary-\($0)", workspaceID: "project", title: "Chat", profileID: "profile", sidebarOrder: Int64($0 + 4)) }
+        records += [nested, fork, agent]
+        try await store.putChats(records)
+        let loaded = try await store.loadChats(), ids = Set(loaded.map(\.id))
+        XCTAssertTrue(Set(["main", "side", "nested", "fork", "child"]).isSubset(of: ids))
+        XCTAssertFalse(ids.contains("unrelated"), "A fork's source is not its budget owner")
+        XCTAssertEqual(loaded.count, 10_003, "Keep the existing ordinary window plus its required ancestors and managed children")
+        let unlisted = await store.unlistedChats
+        XCTAssertEqual(unlisted, records.count - loaded.count)
+        await store.close()
+    }
+
+    func testAncestorRecoveryHonorsDeletionProjectAndForkBoundaries() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent(UUID().uuidString)
+        let store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))
+        defer { try? FileManager.default.removeItem(at: root) }
+        let main = ChatRecord(id: "main", workspaceID: "project", title: "Main", profileID: "profile")
+        let side = ChatRecord(id: "side", workspaceID: "project", title: "Side", path: "/fixture/side_side.jsonl", profileID: "profile", parentSessionID: "main")
+        let dead = ChatRecord(id: "dead", workspaceID: "project", title: "Deleted", profileID: "profile")
+        try await store.putChats([main, side, dead])
+        try await store.put("dead", kind: "session-deleted", id: "dead")
+        var agent = try JSONDecoder().decode(ChatRecord.self, from: Data(child.utf8))
+        agent.parentSessionID = "side"; agent.delegation?.budgetOwnerSessionID = "side"; agent.delegation?.call.parentSessionID = "side"
+        let foreign = ChatRecord(id: "foreign", workspaceID: "other", title: "Foreign", path: "/fixture/side_foreign.jsonl", profileID: "profile", parentSessionID: "main")
+        let orphan = ChatRecord(id: "orphan", workspaceID: "project", title: "Orphan", path: "/fixture/side_orphan.jsonl", profileID: "profile", parentSessionID: "dead")
+        let fork = ChatRecord(id: "fork", workspaceID: "project", title: "Fork", path: "/fixture/fork_fork.jsonl", profileID: "profile", parentSessionID: "dead")
+        let restored = try await store.loadBudgetAncestors(of: [agent, orphan, fork, foreign])
+        XCTAssertEqual(Set(restored.map(\.id)), ["main", "side"])
+        let durable = try await store.get(ChatRecord.self, kind: "chat", id: main.id)
+        XCTAssertNotNil(durable?.sidebarOrder, "An ancestor receives the same stable metadata migration as a listed root")
+        let repeated = try await store.loadBudgetAncestors(of: [agent, orphan, fork, foreign] + restored)
+        XCTAssertTrue(repeated.isEmpty)
+        await store.close()
+    }
+
     func testDamagedDeletionIntentCannotDisappearFromRecovery() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = MetadataStore(url: root.appendingPathComponent("desktop.sqlite"))

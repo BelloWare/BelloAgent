@@ -60,7 +60,7 @@ extension WorkspaceModel {
             if let closing = sessionClosings[chatID] { await closing.task.value }
             if opened.contains(chatID) {
                 guard let host = hosts[updated.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing the connection.") }
-                _ = try await host.request("session.close", sessionID: chatID); opened.remove(chatID)
+                _ = try await host.request("session.close", sessionID: chatID); helperSessionDidUnload(chatID)
             }
             try await connectionSwitchSteps?("closed")
             // A chat never sent has no record yet (`materializeChat`): writing

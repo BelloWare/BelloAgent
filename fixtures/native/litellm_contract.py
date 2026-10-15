@@ -20,10 +20,13 @@ def require(condition, description):
 def validate_schema(schema, name="tool parameters"):
     if isinstance(schema, dict) and "oneOf" in schema:
         branches = schema["oneOf"]
-        require(set(schema) == {"oneOf"} and isinstance(branches, list) and len(branches) >= 2,
+        require(isinstance(branches, list) and len(branches) >= 2,
                 name + " union must describe at least two object branches")
         for branch in branches:
             validate_schema(branch, name)
+        common = {key: value for key, value in schema.items() if key != "oneOf"}
+        if common:
+            validate_schema(common, name)
         return
     require(isinstance(schema, dict) and schema.get("type") == "object", name + " must be an object schema")
     properties, required = schema.get("properties"), schema.get("required", [])
@@ -49,6 +52,9 @@ def validate_arguments(arguments, schema):
             except FixtureContractError:
                 pass
         require(matches == 1, "tool call must match exactly one schema branch")
+        common = {key: value for key, value in schema.items() if key != "oneOf"}
+        if common:
+            validate_arguments(arguments, common)
         return
     require(set(schema.get("required", [])) <= set(arguments), "tool call is missing a required argument")
     if schema.get("additionalProperties") is False:

@@ -790,6 +790,32 @@ extension WorkspaceRefreshLifecycleTests {
         try await f.host.shutdownAndWait()
     }
 
+    @MainActor func testEightDisplayCacheAlsoReleasesEvictedSideBudgetWriters() async throws {
+        let f = try await fixture()
+        for index in 0..<9 {
+            let parent = "owner-\(index)", side = "side-\(index)"
+            f.model.chats.append(ChatRecord(id: parent, workspaceID: "project", title: parent, profileID: "profile"))
+            f.model.chats.append(ChatRecord(id: side, workspaceID: "project", title: side, path: "/fixture/side_" + side + ".jsonl", profileID: "profile", parentSessionID: parent))
+            let display = SessionDisplay(id: side); display.used = Date(timeIntervalSince1970: Double(index))
+            f.model.displays[side] = display; f.model.opened.formUnion([parent, side]); f.model.budgetDependencySessions.insert(parent)
+        }
+        let selection = Task { await f.model.select("side-8", reopensSide: false) }
+        defer { selection.cancel() }
+        try await wait { f.commands.frames.filter { $0["method"]?.string == "session.close" }.count == 2 }
+        let sides = f.commands.frames.filter { $0["method"]?.string == "session.close" }
+        XCTAssertEqual(Set(sides.compactMap { $0["sessionId"]?.string }), ["side-0", "side-1"])
+        for frame in sides { try reply(frame, on: f.host, result: ["accepted": .bool(true)]) }
+        try await wait { f.commands.frames.filter { $0["method"]?.string == "session.close" }.count == 4 }
+        let owners = f.commands.frames.filter { $0["method"]?.string == "session.close" && $0["sessionId"]?.string?.hasPrefix("owner-") == true }
+        XCTAssertEqual(Set(owners.compactMap { $0["sessionId"]?.string }), ["owner-0", "owner-1"])
+        for frame in owners { try reply(frame, on: f.host, result: ["accepted": .bool(true)]) }
+        try await wait { f.model.sessionClosings.isEmpty }
+        XCTAssertEqual(f.model.displays.count, 8)
+        XCTAssertEqual(f.model.opened.count, 15, "Seven retained sides, their seven writers, and the original directly opened chat")
+        XCTAssertEqual(f.model.budgetDependencySessions.count, 7)
+        try await f.host.shutdownAndWait()
+    }
+
     /// ⌘. on a chat with nothing running has nothing to stop. It used to show
     /// "Stopping" and ask the helper anyway, which left the chat "Paused".
     @MainActor func testStopOnAnIdleChatAsksNothingAndLeavesItIdle() async throws {

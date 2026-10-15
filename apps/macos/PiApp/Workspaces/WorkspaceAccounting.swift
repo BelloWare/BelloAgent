@@ -78,10 +78,19 @@ extension WorkspaceModel {
            let target = try? await traces.accountingTarget(attemptID: attempt, workspaceID: workspaceID, visibleMessageIDs: inheritedVisible.values.reduce(into: Set<String>()) { $0.formUnion($1) }) {
             if record(target.sessionID)?.workspaceID == workspaceID { sessions.insert(target.sessionID) }
             if let owner = target.budgetOwnerSessionID, record(owner)?.workspaceID == workspaceID { sessions.insert(owner) }
+            sessions.formUnion(target.familySessionIDs.filter { record($0)?.workspaceID == workspaceID })
             outputs.formUnion(target.outputMessageIDs)
         } else if type == "interrupted" {
             for id in displays.keys where record(id)?.workspaceID == workspaceID {
                 sessions.insert(id)
+            }
+        }
+        for id in Array(sessions) {
+            guard var item = record(id) else { continue }
+            var seen: Set<String> = [id]
+            while let parentID = item.delegation?.budgetOwnerSessionID ?? sideBudgetParent(item), seen.insert(parentID).inserted,
+                  let parent = record(parentID), parent.workspaceID == workspaceID {
+                sessions.insert(parentID); item = parent
             }
         }
         guard !isShutDown, !Task.isCancelled else { return }

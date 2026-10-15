@@ -28,7 +28,7 @@ extension WorkspaceModel {
             if host.isReady { _ = try await host.request("session.forget", sessionID: parent.id) }
             else { try await host.settleCaptureIfStopping() }
         }
-        opened.remove(parent.id)
+        helperSessionDidUnload(parent.id)
         // Read after the runtime is detached: no last-millisecond delegation
         // can escape the manifest. App opens are blocked during this operation.
         var plans: [DiscoveredSubagent] = []
@@ -52,7 +52,7 @@ extension WorkspaceModel {
         for member in members where member.id != parent.id {
             _ = try familyDeletionJournal(member)
             if let host = hosts[parent.workspaceID], host.isReady { _ = try await host.request("session.forget", sessionID: member.id) }
-            opened.remove(member.id)
+            helperSessionDidUnload(member.id)
         }
         try await store.beginFamilyDeletion(members); durable = true
         try await finishFamilyDeletion(members)
@@ -122,7 +122,7 @@ extension WorkspaceModel {
             try await store.removeAll(kind: "receipt:\(member.id)")
             try await store.removeAll(kind: "pending:\(member.id)")
             contextReadings.removeValue(forKey: member.id); subagentSummaries.removeValue(forKey: member.id)
-            chats.removeAll { $0.id == member.id }; displays.removeValue(forKey: member.id); opened.remove(member.id)
+            chats.removeAll { $0.id == member.id }; displays.removeValue(forKey: member.id); helperSessionDidUnload(member.id)
             forgetOpened(member.id)
             if selectedID == member.id { selectedID = nil; selected = nil }
             if focusedSessionID == member.id { focusedSessionID = nil }

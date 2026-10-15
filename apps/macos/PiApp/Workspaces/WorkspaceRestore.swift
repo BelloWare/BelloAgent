@@ -59,7 +59,6 @@ extension WorkspaceModel {
             var archiveOpen = false
             if let loaded { archiveOpen = await openConfiguredArchive(loaded) }
             if archiveOpen {
-                try await restoreSideBudgets()
                 await resumeFamilyDeletions()
                 for summary in subagentSummaries.values where record(summary.link.childSessionID)?.delegationIssue == nil {
                     if let workspace = record(summary.link.childSessionID)?.workspaceID { try await traces.recordSubagent(summary, workspaceID: workspace) }

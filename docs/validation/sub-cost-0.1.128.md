@@ -281,3 +281,73 @@ Evidence is under `/Users/admin/Library/Caches/BelloSwiftWork/build-sub-cost/log
 Inspected the orphan variants in both appearances at all three widths, `side-shared-overview-light-920.png`, `breakdown-light-1240.png` and `sides-breakdown-narrow-dark.png`. Rechecked the shared 920-point light scene and orphan 920-point light/420-point dark scenes after tightening the render waits. The shared side names its parent; the orphan retains $0.40, gains the $5.00 default editor and loses the parent caption. Controls wrap within the narrow card; the existing side/sub-agent titles and detail lines remain aligned.
 
 All round-4 fixes and the final audit finding are addressed. No full native lane ran, as explicitly requested. Remaining work is the lead’s independent review/integration; the two historical round-3 parallel-lane follow-ups above remain unchanged.
+
+
+## Lead review round 5: ancestry consumers and runtime lifetime
+
+Merged `origin/dev/next` at `e13e1462` with merge commit `ef285a99`, retaining the fork/project work already integrated and the new side-keep recovery and sub-agent policy/effort work. The release-note conflict retains both streams. No model-facing tool schema, prompt, permission, capture policy or helper journal semantics were changed by the review fixes.
+
+### Root causes and corrections
+
+- Coordination source/consumer queries compared a side ID to the root `budget_owner`. They now compare `local_owner`, keeping the exact physical session, workspace and retained message/delivery links. Side-owned sub-agents retain both directions of Inspector navigation before and after orphaning.
+- The 10,000 ordinary-chat window could omit an old budget owner. `MetadataStore.loadChats` now retains the actual ancestors required by listed sides and managed children, outside that window. Targeted restore/open reads use the same store traversal. It rejects cross-project and managed-parent adoption, respects deletion tombstones, preserves stored ordering revisions, deduplicates ancestor reads and excludes fork provenance. Desktop publication rechecks the chat generation after the store actor hop. Missing in-memory metadata is no longer evidence of deletion.
+- Recursive side opens created helper runtimes without a display, leaving no eviction path. Budget-only opens are tracked separately from direct uses; loaded and opening sides pin their ancestors before the first await. A completed direct open claims its own lifetime even when sharing an in-flight dependency open. Last-dependent unload cascades through idle ancestors, while the helper retains final authority over running, queued and settling work. Failed side opens and concurrent sibling opens are covered. Budget-only events do not manufacture transcript displays.
+- Explicit eviction/close, editing changes, connection changes, family deletion, helper unload/loss and shutdown update the same release bookkeeping. Inspector windows pin a runtime until they close. A settings fallback formerly forgot an owner even when its close was rejected as busy; it now keeps the loaded runtime and a pending release. Re-selecting a retained display clears an earlier eviction request. The eight-display cache regression verifies that evicted side displays release their implicit writers too.
+- A late capture-link update resolved only the physical child and root, omitting the coordinating side before child metadata discovery. The archive now returns all current `family_recipients`. Metadata updates also invalidate current ancestor records when the immutable request scope predates side adoption. No transcript scan or additional per-chunk query is introduced; orphaning replaces historical ancestry in the rebuildable projection.
+
+### Integration findings
+
+The broader affected-class run reproduced two upstream integration issues before the full native lane:
+
+1. Upstream keep registration moved completion into a non-throwing helper and runs recovery before the request archive opens. The merged call initially did not compile; merely restoring propagation then exposed three upstream keep-test failures and a new cold-registration regression. A completed registration now settles normally. An unopened archive defers projection, and every successful archive open restores side ancestry before reading totals. An actual later projection error says that the chat was saved and its cost refresh failed; it does not mislabel a committed copy as an unkept one.
+2. The synthetic gateway's schema oracle required `oneOf` to be the only key. The policy stream correctly combines an object schema with conditional model/effort branches. Ordinary native turns therefore received HTTP 400 from the loopback fixture. The oracle now validates the common object constraints and exactly one branch. Its new HTTP and argument regression rejects unsupported effort, extra arguments and violations of the common constraints. The actual helper/tool schema is unchanged.
+
+The initial broader run was stopped after those causes were established (89 passing tests, five behavioral failures, one cancellation in its partial summary). It is not the full native lane. Its evidence remains in `logs/review5-native-affected.log`; the corrected affected run is separate.
+
+### Consumer audit
+
+The grep inventories are retained under the build root as `logs/review5-all-consumers.txt`, `logs/review5-ancestry-consumers.txt` and `logs/review5-final-ancestry-inventory.txt`.
+
+| Consumer | Ownership used / result |
+| --- | --- |
+| Capture lineage and body reads | Physical source and immutable scope remain unchanged. `local_owner` identifies the direct coordinator; `budget_owner` identifies the current root. `family_recipients` supplies all current accounting recipients. |
+| Coordination and Inspector navigation | Direct owner for source/consumer matching and journal coordination. Request/body readers retain physical session + project checks. Family lists and older-row navigation already use the recipient table. Parent navigation now has retained ancestor metadata even outside the root window. |
+| Footer, row caches and Inspector ownership caches | Current ancestor metadata plus the round-4 ownership-key invalidation. Late link/metadata updates reach direct sides and roots. Existing orphan displays continue to gain independent limit editors and lose former-parent attribution. |
+| Sidebar, dashboard, menu bar and Usage Report | Current family membership for explicit chat totals; one root grouping per physical request for unfiltered chat reports. Global sums still count physical requests once. No total is added to an already aggregated parent total. |
+| Open, release and display eviction | Actual saved-side relationship, never pane placement or fork provenance. Opening calls pin the chain; direct uses, existing displays and Inspector windows retain their own lifetime. Busy close rejection never claims success. |
+| Restore, kept-side registration and chat windowing | Persisted metadata ancestors retained before orphan decisions; tombstones and project checks preserved. Archive projection can wait for archive startup without invalidating a completed keep. |
+| Helper admissions, mirrors and recovery | Root admission/settlement plus direct-owner mirror identity remain unchanged. Side journal recovery, adoption/count-once replay, orphan correction mirrors and migration-only ancestry normalization retain the previous rounds' guards. Full merged helper suite passes, including fork isolation and policy/effort recovery. |
+
+Unkept side content remains ephemeral; these changes read/write metadata relationships and numeric capture projections only. Existing per-side limit values retain the round-2 behavior: ignored while sharing a live parent, available again if a surviving saved side becomes independent. Forks still own their budget and children. No edit was made to `SidesPanel.swift` or the other stream's collapsed transcript/numbering work.
+
+### Validation
+
+All native invocations used `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-cost` through `scripts/test-macos.sh`. Test scratch roots and gallery paths were forwarded into the test host. Serial classes ran alone; no named result bundles were requested. Only generated fixtures, MemoryVault and synthetic/loopback requests were used.
+
+| Check | Result | Evidence under build root |
+| --- | --- | --- |
+| Original review regressions | Five tests fail: direct coordination links, cold unlisted ancestors, restore ancestry, metadata window and last-dependent release | `logs/review5-native-red-behavior.log` |
+| Additional audit regressions | Late side-child capture links and rejected settings unload both fail | `logs/review5-native-audit-red.log` |
+| Concurrent sibling open regression | Fails tracking and final release before correction | `logs/review5-native-concurrent-red.log` |
+| Keep before archive startup | Fails with unavailable before correction | `logs/review5-native-keep-startup-red.log` |
+| Conditional effort fixture regression | New HTTP case fails with 400; corrected oracle passes all 19 tests | `logs/review5-gateway-red.log`, `logs/review5-gateway-green.log` |
+| Full merged Swift helper suite | 912 executed: 905 passed, 7 skipped, zero failures | `logs/review5-helper-full.log` |
+| Affected native classes after integration fixes | 201 passed, zero failures | `logs/review5-native-affected-final.log` and `-summary.json` |
+| Real guard mutation | All seven selected regressions fail (13 assertions); direct-owner query, metadata ancestry guard, implicit-runtime tracking, recipient invalidation and rejected-unload handling mutated; sources restored in `finally` | `logs/review5-native-mutation.log` and `-summary.json` |
+| Restored native guards | 60 passed, zero failures | `logs/review5-native-restored.log` and `-summary.json` |
+| Standalone opening, Inspector lifetime and galleries | 10 + 1 + 1 + 1 passed, zero failures; each serial class ran alone | `logs/review5-native-opening-serial.log`, `review5-native-inspector-serial.log`, `review5-native-gallery.log`, `review5-native-keep-gallery.log`, and their summaries |
+| One full native parallel lane | 2,586 executed: 2,547 passed, 37 skipped, two failed; see follow-up below | `logs/review5-full-parallel.log` and `-summary.json` |
+
+Gallery roots: `gallery/review5-sub-cost` (46 PNGs) and `gallery/review5-side-keep` (10 PNGs). Inspected `breakdown-light-1240.png`, `sides-breakdown-narrow-dark.png`, `side-shared-overview-light-920.png`, `side-orphan-overview-dark-420.png`, `notice-dark-300.png` and `dismiss-light-920.png`. Cost titles/details align and narrow titles truncate within the card. The shared side names its parent; after orphaning the same Overview gains its independent limit editor with matching $5.00 header/chip values. The merged keep notice and dismissal controls fit at narrow and 920-point widths. The gallery harness also checks geometry, keyboard focus and accessible attribution labels.
+
+### Full-lane follow-up
+
+The full lane exposed a regression in `WorkspaceConcurrencyTests.testAnOpenThatReadTheOldConnectionWaitsForTheSwitchAndOpensTheNewOne`: the early dependency pin reused `sessionOpenCallers`, making `isSessionOpening` true while an open was still waiting behind a connection switch. Budget pins now use a separate caller count; the existing session-opening counter retains its original position and meaning. The unchanged false-state assertion remains, and its fixture now waits for the budget pin explicitly instead of yielding an arbitrary number of times. Concurrent side/direct opens and pending ancestor release still use the earlier budget pin.
+
+The other full-lane failure was `FileHiddenReadTests.testHidingSuspendsDocumentAndFindAndShowingResumesWithoutMovingSelection`, timing out at the `resumed` condition (document reading plus find count 500). Neither that test nor its production code changed in this round or the upstream merge. The unchanged class passed **5/5 alone** in `logs/review5-native-file-followup.log` and its summary; the parallel timeout's cause remains unconfirmed. No second full lane ran; targeted results below are separate evidence, not a clean full-lane claim.
+
+Mutating the real `isSessionOpening` guard to include budget-only waiters reproduced the exact connection-switch assertion (**one test, one failure**) in `logs/review5-native-opening-mutation.log`. The source was restored in `finally`. The subsequent affected run passed **82/82** across WorkspaceConcurrencyTests, SideBudgetIntegrationTests, WorkspaceRefreshLifecycleTests, ConnectionSettingsFlowTests, ConnectionSwitchJournalTests, AutomaticContextTests, PreparedContextLifecycleTests, JournalSlimmingTriggerTests and SubagentCostTests (`logs/review5-native-postgate.log` and its summary).
+
+After that correction, SubagentOpeningTests passed **10/10 alone** and SideBudgetInspectorLifetimeTests passed **1/1 alone** (`logs/review5-native-opening-serial-postgate.log`, `logs/review5-native-inspector-serial-postgate.log`, and their summaries). No helper or rendered UI change followed the helper suite or gallery inspections.
+
+All three round-5 review findings, the ancestry-audit findings and the full-lane opening-state regression are addressed. Remaining work is the lead's independent review/integration and the unconfirmed file-viewer parallel timeout above; historical validation follow-ups remain recorded separately. This stream commits and pushes only `dev/a128-sub-cost`, with a clean worktree after pushing.

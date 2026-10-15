@@ -241,7 +241,7 @@ final class WorkspaceConcurrencyTests: XCTestCase {
         await fulfillment(of: [entered], timeout: 5)
         XCTAssertFalse(model.opened.contains(chat.id))
         let opening = Task { try await model.open(stale) }
-        for _ in 0..<20 { await Task.yield() }
+        try await eventually("The waiting open pins its budget") { model.budgetOpenCallers[chat.id] == 1 }
         XCTAssertFalse(model.isSessionOpening(chat.id), "An open waits for the switch before it starts")
         XCTAssertFalse(model.opened.contains(chat.id))
         release.finish()

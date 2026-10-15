@@ -403,7 +403,14 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `WorkspaceHosts.swift`: how many callers are waiting on that
     /// open, so the last one out cleans up.
     var sessionOpenCallers: [String: Int] = [:]
+    /// Budget dependencies pin ancestors even while an open waits behind a
+    /// close or connection switch, before session opening itself begins.
+    var budgetOpenCallers: [String: Int] = [:]
     var opened: Set<String> = []
+    /// Runtimes opened solely to supply a saved side's budget, and explicit
+    /// display releases that the helper may have refused while a side pinned it.
+    var budgetDependencySessions: Set<String> = []
+    var releasedHelperSessions: Set<String> = []
     /// Owned by `WorkspaceConnectionSwitch.swift`: a chat's move to another
     /// connection under way, which every open of the chat waits for, and how
     /// many times each chat has moved, so an open begun before is known stale.

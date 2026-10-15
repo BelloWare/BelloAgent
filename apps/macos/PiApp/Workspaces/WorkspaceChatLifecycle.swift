@@ -100,7 +100,7 @@ extension WorkspaceModel {
     /// Drops a pending chat that never received a message. Nothing was written.
     func discardPendingChat(_ id: String) {
         guard pendingChatIDs.remove(id) != nil else { return }
-        chats.removeAll { $0.id == id }; displays.removeValue(forKey: id); opened.remove(id)
+        chats.removeAll { $0.id == id }; displays.removeValue(forKey: id); helperSessionDidUnload(id)
         forgetOpened(id)
         if selectedID == id { selectedID = nil; selected = nil }
         if focusedSessionID == id { focusedSessionID = nil }
@@ -239,7 +239,7 @@ extension WorkspaceModel {
                 if host.isReady { _ = try await host.request("session.forget", sessionID: item.id) }
                 else { try await host.settleCaptureIfStopping() }
             }
-            opened.remove(item.id)
+            helperSessionDidUnload(item.id)
             try removeRetiredCaptureSpools(sessionID: item.id)
             try await traces.clear(sessionID: item.id)
             forgetReadState(item.id); forgetRunHold(item.id)

@@ -223,7 +223,40 @@ actor MetadataStore {
             }
             guard result == SQLITE_DONE else { throw StoreError.unavailable }
         }
+        values += try budgetAncestorRecords(of: values.map(\.0))
         unlistedChats = max(0, try count(kind: "chat") - values.count)
+        return try migrateLoadedChats(values, profiles: profiles)
+    }
+
+    /// Loaded sides and managed children retain their actual budget ancestry
+    /// outside the ordinary chat window. A fork source is only provenance.
+    func loadBudgetAncestors(of chats: [ChatRecord], profiles: [ProfileRecord] = []) throws -> [ChatRecord] {
+        try migrateLoadedChats(budgetAncestorRecords(of: chats), profiles: profiles)
+    }
+    private func budgetAncestorRecords(of chats: [ChatRecord]) throws -> [(ChatRecord, Int64)] {
+        let database = try ready()
+        var seen = Set(chats.map(\.id)), checked = Set<String>(), pending = chats, values: [(ChatRecord, Int64)] = []
+        while let child = pending.popLast() {
+            guard let id = child.persistedBudgetParentID, !seen.contains(id), checked.insert(child.workspaceID + "\u{0}" + id).inserted,
+                  try get(String.self, kind: "session-deleted", id: id) == nil else { continue }
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, "SELECT value,revision FROM records WHERE kind='chat' AND id=?", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, id, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { continue }
+            guard result == SQLITE_ROW else { throw StoreError.unavailable }
+            let size = Int(sqlite3_column_bytes(statement, 0))
+            guard size <= Self.recordByteLimit("chat"), let bytes = sqlite3_column_blob(statement, 0) else { continue }
+            decodedChats += 1
+            guard let parent = try? JSONDecoder().decode(ChatRecord.self, from: Data(bytes: bytes, count: size)),
+                  parent.id == id, !parent.isSubagent, parent.workspaceID == child.workspaceID else { continue }
+            seen.insert(id); values.append((parent, sqlite3_column_int64(statement, 1))); pending.append(parent)
+        }
+        return values
+    }
+    private func migrateLoadedChats(_ records: [(ChatRecord, Int64)], profiles: [ProfileRecord]) throws -> [ChatRecord] {
+        var values = records
         var upgraded: [(ChatRecord, Int64)] = []
         for index in values.indices {
             let previous = values[index].0

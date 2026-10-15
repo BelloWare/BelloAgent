@@ -11,6 +11,7 @@ actor PayloadArchive {
     // of unpublished chunk tails across 64 simultaneous attempts.
     let root: URL
     private var database: CaptureDatabase?
+    var isOpen: Bool { database != nil && closeTask == nil }
     /// Identity-only legacy side ancestry, loaded once and updated with its
     /// durable projection. Ordinary capture starts need no ancestry SQL reads.
     var savedSideBudgets: [String: [String]] = [:]
@@ -153,12 +154,16 @@ actor PayloadArchive {
     /// Resolve the owner plus output links on at most two 500-row visible
     /// pages. Final metadata omits link arrays; never materialize the attempt's
     /// entire retained context or scan unrelated sessions to route its update.
-    func accountingTarget(attemptID: String, workspaceID: String, visibleMessageIDs: Set<String> = []) throws -> (sessionID: String, budgetOwnerSessionID: String?, outputMessageIDs: Set<String>)? {
+    func accountingTarget(attemptID: String, workspaceID: String, visibleMessageIDs: Set<String> = []) throws -> (sessionID: String, budgetOwnerSessionID: String?, familySessionIDs: Set<String>, outputMessageIDs: Set<String>)? {
         guard UUID(uuidString: attemptID) != nil else { return nil }
         let db = try ready()
         guard let row = try db.rows("SELECT session,budget_owner FROM attempts WHERE id=? AND workspace=?", [.text(attemptID), .text(workspaceID)]).first, let session = row["session"]?.string else { return nil }
         let owner = row["budget_owner"]?.string
-        guard !visibleMessageIDs.isEmpty else { return (session, owner, []) }
+        // Current, rebuildable recipients include the direct coordinating side
+        // and every budget ancestor. The physical scope can predate adoption or
+        // parent deletion; root ownership alone loses intermediate recipients.
+        let family = Set(try db.rows("SELECT owner FROM family_recipients WHERE attempt=?", [.text(attemptID)]).compactMap { $0["owner"]?.string })
+        guard !visibleMessageIDs.isEmpty else { return (session, owner, family, []) }
         // Any number of visible messages, a batch of SQL variables at a time.
         var outputs = Set<String>(), pending = Array(visibleMessageIDs)
         while !pending.isEmpty {
@@ -167,7 +172,7 @@ actor PayloadArchive {
             let rows = try db.rows("SELECT message FROM message_links INDEXED BY accounting_outputs WHERE role='output' AND attempt=? AND message IN (\(placeholders))", [.text(attemptID)] + batch.map(CaptureSQLValue.text))
             outputs.formUnion(rows.compactMap { $0["message"]?.string })
         }
-        return (session, owner, outputs)
+        return (session, owner, family, outputs)
     }
     func begin(_ metadata: [String: WireValue], workspace: String) throws {
         let db = try ready()
