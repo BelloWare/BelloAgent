@@ -12,6 +12,18 @@ struct DiscoveredSubagent: Sendable {
 }
 
 extension HistoryReader {
+    /// Match helper recovery's SubagentOrigin.matchesAccepted rule without
+    /// dropping fields absent from the desktop's smaller SubagentHeader type.
+    /// Older helpers omit optional model capabilities; no other origin field
+    /// or explicit capability difference is compatible.
+    static func subagentOriginMatchesAccepted(_ mirror: WireValue, accepted: WireValue?) -> Bool {
+        guard let accepted, let owner = accepted.object, var child = mirror.object,
+              let ownerModel = owner["model"]?.object, var childModel = child["model"]?.object else { return false }
+        if childModel["reasoning"] == nil || childModel["reasoning"] == .null { childModel["reasoning"] = ownerModel["reasoning"] }
+        child["model"] = .object(childModel)
+        return .object(child) == accepted
+    }
+
     static func subagentPlan(_ row: [String: WireValue]) -> [String: WireValue]? {
         switch row["customType"]?.string {
         case "pi-app.subagent-call.v1": row["data"]?.object
@@ -126,7 +138,7 @@ extension HistoryReader {
                 guard prefix.count == 3, let raw = prefix[2]["data"], let header = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)) else { continue }
                 _ = try subagentHeader(path: path, directory: directory, expected: SubagentTarget(header.link))
                 let accepted = (try? plan(header.link.budgetOwnerSessionID))?[header.link.childSessionID]?.object
-                let issue = accepted?["origin"] == raw ? nil : "The parent’s matching delegation is unavailable. This saved sub-agent is view-only."
+                let issue = Self.subagentOriginMatchesAccepted(raw,accepted:accepted?["origin"]) ? nil : "The parent’s matching delegation is unavailable. This saved sub-agent is view-only."
                 found.append(DiscoveredSubagent(header: header, path: path.path, task: accepted?["task"]?.string ?? "", status: status, issue: issue, hasTerminalRecord: terminal, turn: latestTurn, executionID: executionID))
             } catch is CancellationError { throw CancellationError() }
             catch { continue } // Invalid headers remain untouched; helper recovery reports their exact error.

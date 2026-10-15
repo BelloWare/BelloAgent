@@ -15,8 +15,8 @@ Owner scope: 2026-10-15. Build/log root: `/Users/admin/Library/Caches/BelloSwift
 
 - This is a prompt rule, not a new runtime permission or switch. The helper still accepts an otherwise valid start; the model is instructed to delegate only on an explicit user request.
 - Omitted effort on **each new turn**, including a finished child's follow-up, inherits the parent's **current effective** effort. This follows the owner's stated default. A supported explicit follow-up choice can differ from the previous turn. Running/queued steering validates a supplied value but keeps the turn's existing effort and reports that unchanged value in its receipt.
-- If the child model cannot support the inherited parent choice, omission uses `default`, matching the existing picker fallback. Explicit unsupported values are errors; they are never silently clamped. `default` is offered alongside supported levels only when that model has effort control. Profile map entries explicitly set to null are unavailable; a different model does not inherit another model's map.
-- Schemas put supported values in an enum. When model capabilities differ, disjoint branches bind the enum to the selected model (or existing child); no-effort branches omit the property. Models/children with the same capability set share a branch, and uniform sets keep a compact schema.
+- If the child model cannot support the inherited parent choice, omission uses `default`, matching the existing picker fallback. Explicit unsupported values are errors; they are never silently clamped. The start schema offers `default` alongside supported levels only when that model has effort control. Profile map entries explicitly set to null are unavailable; a different model does not inherit another model's map.
+- Start schemas put supported values in an enum. When model capabilities differ, disjoint branches bind the enum to the selected model; no-effort branches omit the property. Models with the same capability set share a branch. Following review round 2, send always advertises the fixed full effort vocabulary without child IDs or a retained-plan scan; the coordinator validates the addressed child's frozen capabilities before acceptance. Thus send's size is independent of family history, including for models without effort control.
 - No journal version, marker or record kind changed. New optional fields are `reasoning` inside the saved model grant and `effort` on existing child-turn records. Older records without them decode normally; missing turn effort inherits the saved model grant. Cold recovery settles accepted work without executing it, and subsequent explicitly requested follow-ups use the same saved conversation.
 - No UI layout or controls changed. The app edit only forwards model capabilities, and the shared wire type gains an optional field. Gallery paths: **not applicable; no scenes changed**. Effort display belongs to the separate UI stream.
 
@@ -30,9 +30,13 @@ The following sentence is added to the `subagent_send` description:
 
 > Optional effort applies only to a follow-up; steering keeps the running turn's effort.
 
-The new `effort` property's description is:
+The `subagent_start` effort property's description is:
 
 > Reasoning effort for the chosen child model. Omit to inherit the parent's current effort; use "default" for the model's own default.
+
+The `subagent_send` effort property's description (review round 2) is:
+
+> Reasoning effort for a follow-up; the child's model must support it. Omit to inherit the parent's current effort; use "default" for the model's own default.
 
 Unsupported explicit values return tool error code `subagent_effort` with:
 
@@ -116,3 +120,42 @@ swift test --package-path packages/swift-host \
 ```
 
 Round 1 touches helper code only. Native results remain the original 19 passing affected tests above; no new native build or full lane was run. Gallery paths remain **not applicable; no UI scenes changed**. The lead's independent review, UI integration and release gate remain outside this branch.
+
+## Lead review round 2
+
+Baseline: `6b726a8d751437c0f9ec9f62860cafd62ea89217`. Both P2 findings are addressed.
+
+- **Desktop reciprocal validation:** helper recovery normalized missing origin capabilities, but desktop discovery compared the raw origins literally. A valid older-helper mirror was therefore registered with a persistent recovery issue and no parent relationship. Discovery now fills only absent/null `model.reasoning` from the accepted parent origin before comparing the complete raw values. It does not compare only the desktop's smaller decoded header, which would discard tools, frozen resources and unknown fields. Explicit capability differences and all other origin differences remain invalid. Generated tests verify discovery, persisted metadata and repeated live follow-up registration retain the parent relationship without modifying either journal or opening a helper.
+- **Unbounded send schema:** each request built a dictionary of all saved child plans, then included every child ID in capability-dependent schema branches. Lifetime family membership is unbounded. The send schema now always advertises the fixed vocabulary `default`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; it has no child-ID enum or capability branches, and preparing tool definitions no longer reads saved plans. The existing coordinator still validates the addressed child's frozen grant before accepting work or sending a request, including rejecting explicit values for a model without effort control. The error remains `subagent_effort`: “Effort is not supported by the chosen child model”. Start schemas still use their model-specific capability enums.
+- **Model-facing wording:** only the send effort property's description changes in this round, to the exact text above. It explains that the addressed child's model must support the selected value. The policy, start description, send tool description, start effort description and error text are unchanged.
+
+Two helper tests exercise byte-for-byte identical send schemas and prepared tool definitions at 0, 1, 3 and 2,048 retained children (a 16,384-token parent), plus child-specific validation for low-only, high-only and no-control models. The schema stays below 1,024 bytes. Two native tests cover omitted/null capability lists and ten conflicting origin cases, including permissions, resources and fields the desktop header does not decode. Existing quarantine and attachment authority rules are unchanged.
+
+| Check | Result | Log under `$PI_BUILD_ROOT/logs` |
+|---|---|---|
+| Helper baseline | 2 tests: schema regression fails with 22 assertions; existing per-child validation passes | `review2-helper-red.log` |
+| Native discovery baseline | 13 tests: compatibility regression fails with 14 assertions; conflict checks pass | `review2-native-red.log` |
+| Policy/effort after fix | 25 passed | `review2-helper-green.log` |
+| Actual per-child effort guard bypassed | 1 test fails with 20 assertions; restored | `review2-mutation-send-validation.log` |
+| Final helper regression selection | 320 passed, 1 intentional fixture-writer skip, zero failures (321 total) | `review2-helper-final.log` |
+| Discovery, metadata and steering workspace classes after fix | 23 passed | `review2-native-green.log` |
+| Missing-field normalization removed from the desktop guard | 13 tests: compatibility test fails with 7 assertions; source restored | `review2-mutation-missing-origin.log` |
+| Desktop guard made to overwrite explicit capability conflicts | 13 tests: conflict test fails with 4 assertions; source restored | `review2-mutation-explicit-origin.log` |
+| Restored discovery, metadata and steering workspace classes | 23 passed, zero failures | `review2-native-final.log` |
+| Serial opening class, run alone | 10 passed, zero failures; real generated loopback attachment/navigation paths | `review2-native-opening.log` |
+
+The first desktop mutation removed the normalization statement entirely, which produced unused-variable warnings under the native warnings-as-errors setting before tests ran. `review2-mutation-missing-origin-compile.log` is diagnostic only. The corrected mutation removes the missing-field case from the real guard while retaining its null case; the behavioral failure above is the evidence. All mutations are restored.
+
+Helper commands use the same scratch root and final class filter recorded in round 1. Native commands use `PI_BUILD_ROOT` and `scripts/test-macos.sh`; `python3 scripts/test-lanes.py list` classifies discovery, metadata and steering workspace as parallel, and opening as serial. Opening is run alone. No full native lane, installed app, real preferences, Keychain or paid-provider request is involved. Gallery paths: **not applicable; no UI scenes changed**.
+
+```sh
+PI_BUILD_ROOT="$PI_BUILD_ROOT" scripts/test-macos.sh \
+  -only-testing:PiAppTests/SubagentDiscoveryTests \
+  -only-testing:PiAppTests/SubagentMetadataTests \
+  -only-testing:PiAppTests/SubagentSteeringWorkspaceTests
+
+PI_BUILD_ROOT="$PI_BUILD_ROOT" scripts/test-macos.sh \
+  -only-testing:PiAppTests/SubagentOpeningTests
+```
+
+Final round-2 totals: **320 helper tests passed, one intentional skip; 33 native tests passed**. The lead's independent review and release gate remain separate; this stream does not merge or push `dev/next`.

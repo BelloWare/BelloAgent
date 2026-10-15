@@ -5,8 +5,7 @@ enum SubagentSteeringContract {
     static let delegationPolicy = "Start sub-agents only when the user explicitly asks for sub-agents/agents, delegation, or parallel work; otherwise do the work yourself, even for large tasks."
     static let parentNames = ["subagent_start", "subagent_send", "subagent_wait", "subagent_status", "subagent_stop"]
     static let names = Set(parentNames + ["subagent_report"])
-    static func definitions(child: Bool, models: [SubagentModelGrant] = [], profile: Profile? = nil, connectionSupportsReasoning: Bool,
-                            children: [String:SubagentModelGrant] = [:]) -> [ToolDefinition] {
+    static func definitions(child: Bool, models: [SubagentModelGrant] = [], profile: Profile? = nil, connectionSupportsReasoning: Bool) -> [ToolDefinition] {
         (child ? ["subagent_report"] : parentNames).map { name in
             var schema = schemas[name]!
             if name == "subagent_start", !models.isEmpty { schema["properties"]["model"]["enum"] = .array(models.map { JSON($0.model) }) }
@@ -30,20 +29,12 @@ enum SubagentSteeringContract {
                     variants.append(variant)
                 }
                 schema = effortVariants(schema,variants)
-            } else if let profile, name == "subagent_send" {
-                // Group children with the same capabilities, keeping schema
-                // growth bounded by capability sets rather than turn count.
-                let groups = Dictionary(grouping:children.keys.sorted()) { children[$0]!.supportedEfforts(parent:profile,connectionSupportsReasoning:connectionSupportsReasoning) }
-                if groups.count <= 1 {
-                    schema = effortVariant(schema,levels:groups.keys.first ?? [])
-                    return ToolDefinition(name, descriptions[name]!, schema)
-                }
-                let variants = groups.keys.sorted { $0.joined() < $1.joined() }.map { levels -> JSON in
-                    var variant = effortVariant(schema,levels:levels)
-                    variant["properties"]["child_id"]["enum"] = .array(groups[levels]!.map(JSON.string))
-                    return variant
-                }
-                schema = effortVariants(schema,variants)
+            } else if name == "subagent_send" {
+                // Lifetime family membership is unbounded. Keep every request
+                // independent of history; the coordinator validates the chosen
+                // child's frozen capabilities before accepting the operation.
+                schema = effortVariant(schema,levels:Profile.thinkingLevels)
+                schema["properties"]["effort"]["description"] = "Reasoning effort for a follow-up; the child's model must support it. Omit to inherit the parent's current effort; use \"default\" for the model's own default."
             }
             return ToolDefinition(name, descriptions[name]!, schema)
         }

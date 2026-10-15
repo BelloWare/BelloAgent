@@ -90,8 +90,7 @@ extension SubagentPolicyEffortTests {
         let models = [SubagentModelGrant(model:profile.model,reasoning:["low","high","max"]),
                       SubagentModelGrant(model:"other",reasoning:["medium","max"]),
                       SubagentModelGrant(model:"plain",reasoning:[])]
-        let definitions = SubagentSteeringContract.definitions(child:false,models:models,profile:profile,connectionSupportsReasoning:true,
-            children:["first":models[0],"second":models[1],"third":models[2]])
+        let definitions = SubagentSteeringContract.definitions(child:false,models:models,profile:profile,connectionSupportsReasoning:true)
         let start = try XCTUnwrap(definitions.first { $0.name == "subagent_start" }).schema
         let variants = start["oneOf"].list
         XCTAssertEqual(variants.count,4)
@@ -101,10 +100,8 @@ extension SubagentPolicyEffortTests {
         let plainModel = try XCTUnwrap(variants.first { $0["properties"]["model"]["enum"].list.contains("plain") })
         XCTAssertNil(plainModel["properties"].map["effort"])
         let send = try XCTUnwrap(definitions.first { $0.name == "subagent_send" }).schema
-        let plain = try XCTUnwrap(send["oneOf"].list.first { $0["properties"]["child_id"]["enum"].list.contains("third") })
-        XCTAssertNil(plain["properties"].map["effort"])
-        let other = try XCTUnwrap(send["oneOf"].list.first { $0["properties"]["child_id"]["enum"].list.contains("second") })
-        XCTAssertEqual(other["properties"]["effort"]["enum"],["default","medium","max"])
+        XCTAssertTrue(send["oneOf"].isNull)
+        XCTAssertEqual(send["properties"]["effort"]["enum"].list.compactMap(\.text),Profile.thinkingLevels)
     }
 
     func testOmittedEffortInheritsEffectiveParentTurnAndClampsOnlyInheritance() async throws {
@@ -329,6 +326,77 @@ private extension AgentSession {
         turnSubagentModels = models
     }
     func effortPreviewBody() -> JSON? { preparedContext?.body }
+    func effortFixtureRetainedChildren(_ count: Int) {
+        subagents.plans = Dictionary(uniqueKeysWithValues:(0..<count).map { index in
+            let child = "retained-child-\(index)"
+            var origin = subagentFixtureOrigin(child:child)
+            origin.model.reasoning = [["low"], ["high"], []][index % 3]
+            return (child, SubagentPlan(origin:origin,task:"Retained task",resultMessageID:"receipt-\(index)"))
+        })
+    }
+}
+
+extension SubagentPolicyEffortTests {
+    func testSendSchemaAndPreviewStayFixedAcrossRetainedFamilyHistory() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        var raw = try fixtureProfile().raw; raw["contextWindow"] = 16_384
+        let parent = try effortFixture(root:root,profile:Profile(raw))
+        await parent.enableSubagents(SubagentCoordinator())
+        var baseline: String?, previewBaseline: String?
+        for count in [0, 1, 3, 2_048] {
+            await parent.effortFixtureRetainedChildren(count)
+            let definitions = await parent.sessionDefinitions()
+            let send = try XCTUnwrap(definitions.first { $0.name == "subagent_send" }).schema
+            let encoded = send.encoded()
+            if baseline == nil { baseline = encoded }
+            XCTAssertEqual(encoded.utf8.count,baseline?.utf8.count,"Schema bytes must not grow with \(count) retained children")
+            XCTAssertEqual(sha256(Data(encoded.utf8)),sha256(Data(baseline!.utf8)))
+            XCTAssertLessThan(encoded.utf8.count,1_024)
+            XCTAssertEqual(send["properties"]["effort"]["enum"].list.compactMap(\.text),Profile.thinkingLevels)
+            XCTAssertNil(send["properties"]["child_id"].map["enum"])
+            XCTAssertTrue(send.map["oneOf"] == nil)
+            XCTAssertFalse(encoded.contains("retained-child-"))
+            _ = try await parent.prepareContext([:])
+            let body = await parent.effortPreviewBody(), tools = try XCTUnwrap(body)["tools"].encoded()
+            if previewBaseline == nil { previewBaseline = tools }
+            XCTAssertEqual(tools.utf8.count,previewBaseline?.utf8.count)
+            XCTAssertEqual(sha256(Data(tools.utf8)),sha256(Data(previewBaseline!.utf8)),"The actual prepared request must also stay fixed")
+        }
+        await parent.close()
+    }
+
+    func testSendValidatesEachFrozenChildCapabilityBeforeAcceptanceOrRequest() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = AccountedAgentScript([answer("low"),answer("high"),answer("plain"),answer("follow-up")]), coordinator = AgentSteeringCoordinator()
+        let parent = try effortFixture(root:root,client:client)
+        let models = [SubagentModelGrant(model:"low-model",reasoning:["low"]),SubagentModelGrant(model:"high-model",reasoning:["high"]),SubagentModelGrant(model:"plain-model",reasoning:[])]
+        await parent.effortFixtureTurn(models:models)
+        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        var children: [String] = []
+        for model in models {
+            let receipt = try await accept("subagent_start",["task":"Task","mode":"background","model":JSON(model.model)],parent:parent,coordinator:coordinator)
+            let child = try XCTUnwrap(receipt["child_id"].text); children.append(child)
+            try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
+        }
+        for (index, effort) in [(0,"high"),(1,"low"),(2,"low"),(2,"default"),(0,"ultra")] {
+            let call = ToolCall(id:UUID().uuidString,name:"subagent_send",arguments:["child_id":JSON(children[index]),"message":"Invalid effort","effort":JSON(effort)])
+            _ = try await parent.agentFixtureCall(call,newTask:true)
+            try await parent.runToolBatch([call])
+            let result = await parent.history.last { $0.toolCallId == call.id }
+            XCTAssertTrue(result?.isError == true)
+            let envelope = try JSON.parse(Data((result?.text ?? "{}").utf8))
+            XCTAssertEqual(envelope["accepted"],false)
+            XCTAssertEqual(envelope["error"]["code"],"subagent_effort")
+            XCTAssertEqual(envelope["error"]["message"],"Effort is not supported by the chosen child model")
+        }
+        let state = await parent.agentState(), requests = await client.requests
+        XCTAssertEqual(state.operations.count,3); XCTAssertEqual(state.turns.count,3); XCTAssertEqual(requests.count,3)
+        _ = try await accept("subagent_send",["child_id":JSON(children[1]),"message":"Valid follow-up","effort":"high"],parent:parent,coordinator:coordinator)
+        try await eventually { await parent.agentState().latest(children[1])?.status.terminal == true }
+        let profiles = await client.profiles
+        XCTAssertEqual(profiles.last?.raw["thinkingLevel"],"high")
+        await coordinator.drain(); await parent.close()
+    }
 }
 
 extension SubagentPolicyEffortTests {
