@@ -1,6 +1,6 @@
-# Next release: 0.1.127
+# Next release: 0.1.128
 
-**Released 2026-10-14:** 0.1.126 (build 130, tag `v0.1.126`) is the latest release; record `docs/validation/Bello-Agent-0.1.126-2026-10-14.md`.
+**Released 2026-10-15:** 0.1.127 (build 131, tag `v0.1.127`) is the latest release; record `docs/validation/Bello-Agent-0.1.127-2026-10-15.md`.
 
 ## 0.1.127
 
