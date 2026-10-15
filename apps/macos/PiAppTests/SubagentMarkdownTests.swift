@@ -217,7 +217,7 @@ final class SubagentMarkdownTests: XCTestCase {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name("subagent-markdown-" + UUID().uuidString)); defer { pasteboard.releaseGlobally() }
         surface.textView.setSelectedRange(NSRange(location: 0, length: surface.textLength))
         XCTAssertTrue(surface.textView.writeSelection(to: pasteboard, type: .string))
-        XCTAssertEqual(pasteboard.string(forType: .string), source)
+        XCTAssertEqual(pasteboard.string(forType: .string), Self.assistant(source).textView.copyText([NSRange(location: 0, length: surface.textLength)]))
         more.onPress?(); XCTAssertEqual(row.height(width: 620), before)
     }
     @MainActor func testBoundedCodePreviewCopiesTheWholeFenceThroughBothNativeActions() async throws {
@@ -282,87 +282,97 @@ final class SubagentMarkdownTests: XCTestCase {
         body.setExpanded(false)
         try checkCopies(expected.prefix(2))
     }
-    @MainActor func testCopyIncludesTheVisibleTailOfATruncatedMarkdownRun() throws {
-        for source in ["**Lead** " + String(repeating: "body ", count: 400),
-                       "**Lead** [" + String(repeating: "body ", count: 400) + "](https://example.test)",
-                       "**Lead** `" + String(repeating: "body ", count: 400) + "`"] {
-            let row = try Self.card(task: "Task", result: source)
-            let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: row).last)
-            XCTAssertFalse(body.isComplete)
-            let text = body.markdown.textView
-            let selection = (text.string as NSString).range(of: "Lead body")
-            XCTAssertNotEqual(selection.location, NSNotFound)
-            let opening = source.contains("[") ? "[" : source.contains("`") ? "`" : ""
-            XCTAssertEqual(text.copyText([selection]), "**Lead** " + opening + "body")
-            let tail = NSRange(location: 1_190, length: 10)
-            XCTAssertEqual(text.copyText([tail]), (text.string as NSString).substring(with: tail))
-        }
+    private static var copySample: String {
+        "1. **1** apple\n\nBefore [A &amp; B](https://example.test) after.\n\nBefore **C &amp; D** after.\n\n" + rich +
+        "\n\n**Lead** " + String(repeating: "body ", count: 500) + "hidden **ending**."
     }
-
-    /// The oracle is authored alongside a small random Markdown grammar; it
-    /// never asks Foundation's parser or the copy mapper for source positions.
-    /// Check every grapheme boundary and every nonempty visible selection,
-    /// including surrogate pairs and combining characters.
-    @MainActor func testRandomMarkdownPreviewSelectionsPreserveTheirExactSource() {
-        var random = MarkdownCopyRandom(seed: 0xB311015)
-        var checks = 0, boundaries = 0
-        for sample in 0..<40 {
-            var document = MarkdownCopyOracle()
-            var kinds = [0, 1, 2, 3, 4, 5, 6, 7]
-            for i in kinds.indices.reversed() { kinds.swapAt(i, random.next(i + 1)) }
-            for (index, kind) in kinds.enumerated() {
-                if index > 0 { document.append(body: " ") }
-                let body = (0..<(1 + random.next(3))).map { _ in String(["a", "b", "x", "a", "é", "😀", "e\u{301}"][random.next(7)]) }.joined()
-                switch kind {
-                case 0: document.append(body: body)
-                case 1: document.append(body: body, before: "**", after: "**")
-                case 2: document.append(body: body, before: "*", after: "*")
-                case 3: document.append(body: body, before: "`", after: "`")
-                case 4: document.append(body: body, before: "[", after: "](https://example.test/\(sample))")
-                case 5: document.append(body: "&", source: "&amp;")
-                case 6: document.append(body: "😀", source: "&#x1F600;")
-                default: document.append(body: "*", source: #"\*"#)
-                }
-            }
-            var fenced = MarkdownCopyOracle()
-            fenced.append(body: sample % 5 == 0 ? "swift" : document.rendered + " `*`", before: "```swift\n", after: "\n```", wraps: false)
-            for document in [document, fenced] {
-                XCTAssertEqual(Self.assistant(document.source).textView.string, document.rendered, "The oracle describes the actual native reader")
-                let visible = document.rendered as NSString
-                let offsets = document.rendered.indices.map { $0.utf16Offset(in: document.rendered) } + [visible.length]
-                for boundaryIndex in 1..<offsets.count {
-                    let boundary = offsets[boundaryIndex]
-                    boundaries += 1
-                    let preview = visible.substring(to: boundary)
-                    for startIndex in 0..<boundaryIndex {
-                        for endIndex in (startIndex + 1)...boundaryIndex {
-                            let start = offsets[startIndex], end = offsets[endIndex]
-                            let selected = NSRange(location: start, length: end - start)
-                            let expected = boundary == visible.length && start == 0 && end == boundary ? document.source : document.copy(selected)
-                            let actual = MarkdownSourceCopy.copy(document.source, rendered: preview, ranges: [selected], complete: boundary == visible.length)
-                            checks += 1
-                            if actual != expected {
-                                XCTFail("seed=0xB311015 sample=\(sample) boundary=\(boundary) selection=\(selected) source=\(document.source) expected=\(expected.debugDescription) actual=\(String(describing: actual))")
-                                return
-                            }
+    @MainActor private func copySurfaces(_ source: String) throws -> [(String, TranscriptAgentMarkdown)] {
+        let card = try Self.card(task: source, result: source)
+        var surfaces = ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: card).map { ("Card " + $0.title, $0) }
+        XCTAssertEqual(surfaces.count, 2)
+        for kind in ["note", "blocker", "question"] {
+            var report = SubagentTranscriptTests.tool
+            report.name = "subagent_report"; report.nativeSubagent = nil; report.subagent = nil; report.output = "{}"
+            report.input = String(decoding: try JSONEncoder().encode(["kind": kind, "message": source]), as: UTF8.self)
+            let row = TranscriptNativeActionRow()
+            row.update(tool: report, open: true, fetched: nil, environment: .init(), toggle: {}, openFile: nil)
+            let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: row).first { $0.source == source })
+            surfaces.append((kind + " report", body))
+        }
+        for (author, kind) in [("subagent", "result"), ("subagent", "note"), ("subagent", "blocker"), ("subagent", "question"),
+                               ("parent", "task"), ("parent", "follow_up"), ("parent", "steer")] {
+            var message = TranscriptMessage(id: "delivery", role: "user", text: source, kind: "agent_message")
+            message.nativeAgentDelivery = .object(["author": .string(author), "childId": .string("child"), "turn": .number(1),
+                "events": .array([.object(["kind": .string(kind), "text": .string(source)])])])
+            let row = TranscriptNativeAgentRow(inputs: .init(item: .message(message), fresh: false, actions: .init(), width: 620,
+                environment: .init(), disclosure: .init(), toggle: { _ in }))
+            let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: row).first)
+            surfaces.append((author + " " + kind + " delivery", body))
+        }
+        let session = SessionDisplay(id: "child")
+        session.isManagedSubagent = true; session.delegatedTask = source
+        let task = try XCTUnwrap(session.presentedMessages.first)
+        let row = TranscriptNativeAgentRow(inputs: .init(item: .message(task), fresh: false, actions: .init(), width: 620,
+            environment: .init(), disclosure: .init(), toggle: { _ in }))
+        let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: row).first)
+        surfaces.append(("Delegated task header", body))
+        return surfaces
+    }
+    @MainActor func testAgentSelectionsUseAssistantCopyAndPasteboardTypes() async throws {
+        let assistant = Self.assistant(Self.copySample).textView
+        let actualBoard = NSPasteboard(name: .init("agent-selection-" + UUID().uuidString))
+        let expectedBoard = NSPasteboard(name: .init("assistant-selection-" + UUID().uuidString))
+        defer { actualBoard.releaseGlobally(); expectedBoard.releaseGlobally() }
+        for (name, body) in try copySurfaces(Self.copySample) {
+            for expanded in [false, true, false] {
+                body.setExpanded(expanded)
+                if expanded { try await eventually("Expanded " + name) { body.isComplete } }
+                else { XCTAssertFalse(body.isComplete, name + " has a bounded preview") }
+                let text = body.markdown.textView, visible = body.markdown.textLength
+                XCTAssertEqual(text.string, (assistant.string as NSString).substring(to: visible), name)
+                XCTAssertEqual(text.writablePasteboardTypes, assistant.writablePasteboardTypes)
+                let needles = ["1 apple", "A & B", "C & D", "token boundary", "inline code", "let token", "Unicode", "Lead body"]
+                var ranges = needles.map { (text.string as NSString).range(of: $0) }
+                ranges += [NSRange(location: visible - 10, length: 10), NSRange(location: 0, length: visible)]
+                for range in ranges {
+                    XCTAssertNotEqual(range.location, NSNotFound, name)
+                    guard range.location != NSNotFound else { continue }
+                    text.setSelectedRange(range); assistant.setSelectedRange(range)
+                    let expected = assistant.copyText([range])
+                    XCTAssertEqual(text.copyText([range]), expected, name + " expanded=\(expanded) range=\(range)")
+                    for typed in [false, true] {
+                        actualBoard.clearContents(); expectedBoard.clearContents()
+                        if typed {
+                            XCTAssertTrue(text.writeSelection(to: actualBoard, type: .string))
+                            XCTAssertTrue(assistant.writeSelection(to: expectedBoard, type: .string))
+                        } else {
+                            XCTAssertTrue(text.writeSelection(to: actualBoard, types: text.writablePasteboardTypes))
+                            XCTAssertTrue(assistant.writeSelection(to: expectedBoard, types: assistant.writablePasteboardTypes))
+                        }
+                        XCTAssertEqual(actualBoard.types, expectedBoard.types, name)
+                        for type in expectedBoard.types ?? [] {
+                            XCTAssertEqual(actualBoard.data(forType: type), expectedBoard.data(forType: type), name)
                         }
                     }
                 }
             }
         }
-        print("PROPERTY Markdown preview: 80 random documents, \(boundaries) boundaries, \(checks) exact source selections")
     }
-
-    @MainActor func testSelectionCopiesTheSelectedMarkdownSpelling() throws {
-        let source = "One **bold** word, `code`, and [reference](https://example.test). Same **bold** word."
-        let row = try Self.card(task: "Task", result: source)
-        let surface = try XCTUnwrap(ConversationPaneTests.views(NativeMarkdownContainer.self, in: row).last)
-        for (text, copied) in [("bold", "**bold**"), ("code", "`code`"), ("reference", "[reference](https://example.test)")] {
-            let range = (surface.textView.string as NSString).range(of: text)
-            XCTAssertEqual(surface.textView.copyText([range]), copied)
+    @MainActor func testAgentCopyButtonsKeepFullMarkdownWhenFoldedAndExpanded() async throws {
+        let source = Self.copySample
+        for (name, body) in try copySurfaces(source) {
+            for expanded in [false, true, false] {
+                body.setExpanded(expanded)
+                if expanded { try await eventually("Expanded " + name) { body.isComplete } }
+                else {
+                    XCTAssertFalse(body.isComplete)
+                    XCTAssertFalse(body.markdown.textView.string.contains("hidden ending."))
+                }
+                NSPasteboard.general.clearContents()
+                XCTAssertTrue(body.copy.accessibilityPerformPress(), name)
+                XCTAssertEqual(NSPasteboard.general.string(forType: .string), source, name)
+            }
         }
-        let last = (surface.textView.string as NSString).range(of: "bold", options: .backwards)
-        XCTAssertEqual(surface.textView.copyText([last]), "**bold**")
     }
     @MainActor func testReportedTruncationNotesDoNotBecomeCopiedMarkdown() throws {
         var tool = try Self.tool(task: "Task", result: Self.rich); tool.truncated = true
@@ -370,22 +380,6 @@ final class SubagentMarkdownTests: XCTestCase {
         row.update(tool: tool, open: true, fetched: nil, environment: .init(), toggle: {}, openFile: nil)
         let copy = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: row).first { $0.accessibilityIdentifier() == "agent-markdown-copy-result" })
         copy.onPress?(); XCTAssertEqual(NSPasteboard.general.string(forType: .string), Self.rich)
-    }
-    @MainActor func testPartialSelectionsKeepEntitiesEscapesAndImageSource() throws {
-        for (source, needle, expected) in [
-            ("One &amp; word.", "word", "word"), ("One &amp; word.", "&", "&amp;"),
-            (#"One \*literal\* word."#, "literal", "literal"), (#"One \*literal\* word."#, "*literal*", #"\*literal\*"#),
-            ("One &#x1F600; word.", "😀", "&#x1F600;"),
-            ("![private](https://example.test/pic)", "private", "![private](https://example.test/pic)"),
-            (#"Before [reference](https://example.test/a\)b). After."#, "reference", #"[reference](https://example.test/a\)b)"#),
-            (#"Before [reference](https://example.test "A ) title"). After."#, "reference", #"[reference](https://example.test "A ) title")"#)
-        ] {
-            let row = try Self.card(task: "Task", result: source)
-            let surface = try XCTUnwrap(ConversationPaneTests.views(NativeMarkdownContainer.self, in: row).last)
-            let range = (surface.textView.string as NSString).range(of: needle)
-            XCTAssertNotEqual(range.location, NSNotFound)
-            XCTAssertEqual(surface.textView.copyText([range]), expected)
-        }
     }
     @MainActor func testFindExpandsTheResultAndKeepsItsRenderedMatchOnScreen() async throws {
         let source = Self.rich + "\n\n" + String(repeating: "A **retained** observation.\n\n", count: 120) + "Last **unique** result."
@@ -487,37 +481,4 @@ final class SubagentMarkdownTests: XCTestCase {
         XCTAssertEqual(body.convert(body.bounds, to: stage.document).minY - stage.scrollY, before, accuracy: 1)
     }
 
-}
-
-private struct MarkdownCopyRandom {
-    var seed: UInt64
-    mutating func next(_ upper: Int) -> Int {
-        seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
-        return Int((seed >> 32) % UInt64(upper))
-    }
-}
-private struct MarkdownCopyOracle {
-    var source = "", rendered = ""
-    var atoms: [(visible: NSRange, body: NSRange, whole: NSRange)] = []
-    mutating func append(body: String, source authored: String? = nil, before: String = "", after: String = "", wraps: Bool = true) {
-        let raw = authored ?? body, start = source.utf16.count, offset = rendered.utf16.count
-        source += before + raw + after; rendered += body
-        atoms.append((NSRange(location: offset, length: body.utf16.count),
-                      NSRange(location: start + before.utf16.count, length: raw.utf16.count),
-                      wraps ? NSRange(location: start, length: before.utf16.count + raw.utf16.count + after.utf16.count) : NSRange(location: start + before.utf16.count, length: raw.utf16.count)))
-    }
-    func copy(_ selection: NSRange) -> String {
-        var first: Int?, end = 0
-        for atom in atoms {
-            let common = NSIntersectionRange(selection, atom.visible)
-            guard common.length > 0 else { continue }
-            let range: NSRange
-            if common == atom.visible { range = atom.whole }
-            else if atom.body.length == atom.visible.length {
-                range = NSRange(location: atom.body.location + common.location - atom.visible.location, length: common.length)
-            } else { range = atom.body }
-            first = min(first ?? range.location, range.location); end = max(end, NSMaxRange(range))
-        }
-        return (source as NSString).substring(with: NSRange(location: first ?? 0, length: end - (first ?? 0)))
-    }
 }

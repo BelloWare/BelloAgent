@@ -19,7 +19,8 @@ availability and command targets as well as keyboard shortcuts. The
 [reader navigation ownership rule](subagents.md#reader-navigation-ownership) also
 applies to every stage of Source and Inspector reveals and sidebar search hits.
 Task, result and report prose uses the assistant Markdown reader, with bounded
-previews, source-preserving copy and rendered-text Find. Typed authorship and
+previews, ordinary assistant selection copy, full-source Copy buttons and
+rendered-text Find. Typed authorship and
 delivery metadata stay separate from the Markdown source. Managed readers cannot
 invoke Delete Chat on their selected main chat; family menus use a visible anchor.
 Picker metadata, card headers/details, child headers and family Inspector show

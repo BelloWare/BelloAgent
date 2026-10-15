@@ -169,12 +169,12 @@ task header share the assistant's cached native Markdown pipeline, including cod
 highlighting, links, tables and quotes. Long prose starts with a 168-point preview;
 Show more/less preserves the reading position. Large sources parse away from the
 main thread and expanded native text is adopted in bounded batches. Find searches
-the rendered words and opens the matching preview before highlighting. Copy keeps
-the original Markdown; a selected span keeps its original source spelling,
-including a run cut by the preview limit. Selecting the entire partial preview
-copies only that preview's source span; the Copy button still copies the complete
-Task or Result. Source mapping preserves entities and escapes, and includes
-formatting/link delimiters when the complete marked run is selected. Error
+the rendered words and opens the matching preview before highlighting. Text
+selections use the ordinary assistant message's native copy path and pasteboard
+types, in folded previews and expanded views. Explicit Copy buttons retain the
+complete original Markdown, including text beyond a folded preview. The lead's
+round 16 scope decision replaces the earlier selection-to-source requirement;
+there is no agent-specific selection mapper. Error
 and truncation notices stay outside that source. Assistant link/image/HTML policy
 is unchanged, with no new network loads. Folding a finished turn still excludes
 all sub-agent content, and saved/model-facing text remains byte-for-byte unchanged.

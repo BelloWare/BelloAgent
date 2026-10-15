@@ -2524,3 +2524,141 @@ named result bundle or `xctrace --launch` was used. `NEXT-RELEASE.md` and the de
 notes are updated and `git diff --check` passes. No implementation or validation
 failure remains for this round. Independent lead review/integration remains with
 the lead; only `dev/a128-sub-display` is committed/pushed.
+
+## Lead review round 16: ordinary assistant selection Copy
+
+### Scope decision and changes
+
+The lead explicitly withdrew the custom partial-selection-to-Markdown-source
+requirement: it came from the lead's specification, not the owner, and its
+heuristics kept producing edge cases. This decision supersedes the earlier source
+selection behavior and the round 15 property test; those historical validation
+results remain above as the record of the previous scope.
+
+The two review examples share the removed mapper as their cause: substring
+matching could mistake a generated list marker for authored text, and entity
+transformation split a formatted run before delimiter expansion. Neither heuristic
+is repaired or retained. `MarkdownSourceCopy`, its run/token/delimiter helpers,
+the agent `sourceCopy` closure, and the optional override in `MarkdownTextView`
+are deleted. The randomized source-map property and its oracle/generator are
+deleted as requested, together with the obsolete source-selection expectations.
+
+Task, result, report and delegated-task selections now use the ordinary assistant
+`MarkdownTextView.copyText` / `writeSelection` implementation and pasteboard types,
+in folded previews and expanded text. Explicit Copy buttons still write the
+complete original Markdown, including the hidden preview suffix. Complete code
+copy through hover/VoiceOver remains intact. The renderer, preview bounds, Find
+projection and reader-navigation behavior are unchanged. No replacement mapping
+or parsing is introduced.
+
+### Failing-first and parity coverage
+
+Artifacts are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`, prefix `review16-`.
+
+- The initial `red-markdown` run had **14 passed, 3 failed**. Two failures were
+  the intended assistant-selection parity changes; the new Copy-button test also
+  exposed an overly strict test assumption about macOS's automatic legacy string
+  pasteboard alias. The fixture now compares actual assistant pasteboard types
+  and bytes instead of assuming the OS advertises only one spelling.
+- With that fixture corrected and production still unchanged, `red-parity` had
+  **15 passed, 2 failed**. The new parity test reproduced `1 apple` copying as
+  ` apple` and formatted entities copying source spelling rather than the
+  assistant's rendered text. The expanded Select All check also exposed the
+  agent-only source override. Full-source button checks already passed.
+
+`testAgentSelectionsUseAssistantCopyAndPasteboardTypes` compares ten selections
+through both native `writeSelection` overloads, the advertised writable types,
+all resulting pasteboard types and their bytes, and the shared `copyText` path.
+Its inputs include both review examples, bold entities, inline/fenced code, table
+text, a truncated final run, the preview's last ten characters and Select All.
+The reference is an actual ordinary assistant-message surface, not a second copy
+implementation or a handcrafted source map.
+
+Both new tests cover **13 surfaces**: card Task and Result; note/blocker/question
+report cards; typed result/note/blocker/question deliveries; typed parent
+task/follow-up/steering deliveries; and the child's delegated-task header. Each
+runs in preview, expanded and refolded states. The Copy-button test uses the real
+Pi button's accessibility press and verifies the complete source, including its
+hidden ending. The existing long-result, truncation-notice, code-copy, Find and
+reading-position tests remain.
+
+### Mutation checks and final validation
+
+After removal, `green-markdown` passed **17/17**. Two independent mutations then
+changed the real production code and ran the corresponding regression alone;
+`review16-mutate.py` restored both source files in `finally`:
+
+| Artifact | Mutation | Result |
+| --- | --- | --- |
+| `mutation-mapper` | Restore the previous mapper, agent closure and native override from the committed baseline | 1 failed; generated-marker and formatted-text selections differ from the assistant |
+| `mutation-copy-button` | Copy the rendered text instead of the complete stored source | 1 failed; both preview content and Markdown spelling differ from the full source |
+
+The mapper, override hook, property-test method and property helpers have no
+remaining matches under `apps/macos` after restoration. The ordinary assistant
+copy implementation itself is unchanged apart from removing the unused override.
+
+Affected runs (`review16-final-*`) reported **69 passed, 1 failed, 3 skipped**:
+
+| Class | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| MarkdownSourceReconciliationTests | 4 | 1 | 0 |
+| MarkdownTextSurfaceTests | 6 | 0 | 3 |
+| NativeMarkdownSizingTests | 4 | 0 | 0 |
+| NativeMarkdownSurfaceStreamingTests | 4 | 0 | 0 |
+| NativeMarkdownViewportTests | 4 | 0 | 0 |
+| SubagentMarkdownTests | 17 | 0 | 0 |
+| SubagentPerformanceTests | 2 | 0 | 0 |
+| SubagentTranscriptTests | 11 | 0 | 0 |
+| TranscriptMarkdownTests | 9 | 0 | 0 |
+| TranscriptQuoteSelectionTests | 8 | 0 | 0 |
+
+The reference-reconciliation failure is
+`testLateReferenceDefinitionKeepsUnselectedMiddleCharacterAtDrawTime`: its reading
+position was displaced **16.5 points** against a 0.5-point allowance. The unchanged
+class's isolated rerun (`isolated-reconciliation`) reported **4 passed, 1 failed**
+with the identical assertion. A production-baseline comparison then restored both
+changed production files from `67dd9dfc`, reran the same unchanged class and again
+reported **4 passed, 1 failed**, with the same 16.5-point displacement
+(`baseline-reconciliation`). `review16-baseline.py` restored the removal in
+`finally`. The test performs no copy operation. This comparison reproduces the
+failure independently of the copy removal; its underlying drawing-position cause
+remains unconfirmed. No geometry code or tolerance was changed to mask it.
+
+The three skips are the existing opt-in measurements/screenshot in
+`MarkdownTextSurfaceTests`. Serial classes ran alone. The 55,812-byte result in a
+400-message chat passed its responsiveness assertions: worst cold draw **24.25 ms**,
+expanded draw **26.13 ms**, Markdown batch **14.38 ms**, and heartbeat **77.76 ms**.
+
+Each run used `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display
+scripts/test-macos.sh -only-testing:PiAppTests/<Class>` via `review16-run.py`.
+`review16-lanes.txt` retains the lane inventory; `review16-affected.py` ran the
+affected classes sequentially and stopped at the failed related-class group.
+Arguments, logs and exact summary/test-tree JSON are retained for every run.
+
+The **one full native parallel lane passed: 2,564 passed, 38 skipped, zero
+failed (2,602 total), in 589.4 seconds** by the XCTest summary's timestamps.
+`MarkdownSourceReconciliationTests` passed **5/5** in this lane, including the
+draw-time test that failed in the affected/isolated/baseline checks. The differing
+results remain recorded separately; no cause is claimed. There was no full-lane
+failure requiring another isolated rerun.
+
+`review16-full-parallel-arguments.txt` retains the exact selection from
+`python3 scripts/test-lanes.py parallel`, with native parallel execution enabled
+and four workers. The log and exact XCTest summary/test tree are
+`review16-full-parallel.log` and `review16-full-parallel-{summary,tests}.json`.
+
+### Handoff
+
+No layout or visible labels changed, so no gallery was regenerated. The current
+gallery remains the previously inspected record. No helper package changed;
+separate helper-package tests were not needed. Generated fixtures, scratch
+journals and the memory vault only were used. No installed app, real preferences
+or Keychain, paid provider, named result bundle or `xctrace --launch` was used.
+Journal formats, stored/model-facing text, cost accounting, permissions and
+capture boundaries are unchanged. `NEXT-RELEASE.md`, `Design.md` and both sub-agent
+design amendments record the decision. Only `dev/a128-sub-display` is the push
+target; independent review/integration and the baseline drawing-position finding
+remain with the lead. `NEXT-RELEASE.md` explicitly tracks that validation follow-up.
+`git diff --check` passes; no copy-specific implementation or validation failure
+remains for this round.
