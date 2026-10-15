@@ -145,18 +145,9 @@ private struct AgentMarkdownReading: Sendable {
     var characters: Int
     static func make(_ source: String) -> Self {
         let blocks = TranscriptMarkdown.blocks(source)
-        let text = blocks.map(plain).joined(separator: "\n")
+        let text = TranscriptMarkdown.plainText(blocks)
         return .init(blocks: blocks, headings: TranscriptCopy.targets(in: source).filter { if case .section = $0.kind { return true }; return false },
                      searchText: text, characters: max(1, text.utf16.count))
-    }
-    private static func plain(_ block: MarkdownBlock) -> String {
-        switch block {
-        case .paragraph(let text), .heading(_, let text, _): return String(text.characters)
-        case .code(_, let text): return text
-        case .list(_, _, let items): return items.flatMap { $0 }.map(plain).joined(separator: "\n")
-        case .quote(let blocks): return blocks.map(plain).joined(separator: "\n")
-        case .table(_, let header, let rows): return ([header] + rows).flatMap { $0 }.map { String($0.characters) }.joined(separator: "\n")
-        }
     }
     func prefix(_ count: Int) -> [MarkdownBlock] {
         guard count < characters else { return blocks }

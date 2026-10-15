@@ -11,6 +11,54 @@ struct ContentCursor: Codable, Sendable { var index: Int; var offset: Int }
 struct ContentPage: Codable, Sendable { var text: String; var next: ContentCursor? }
 
 enum ConversationContent {
+    /// Find's display projection is separate from retained-source search and
+    /// Copy Conversation. Tool receipts keep their own record identity, even
+    /// when the transcript draws their prose in the issuing call's card.
+    static func transcriptText(_ entry: [String: WireValue], managedChild: Bool = false) -> String {
+        let message = entry["message"]?.object ?? [:]
+        func prose(_ source: String) -> String { TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(source)) }
+        if message["nativeAgentDelivery"]?.object != nil {
+            return transcriptText(.project(id: entry["id"]?.string ?? "", message: message))
+        }
+        if managedChild, message["role"]?.string == "user" {
+            return prose(TranscriptMessage.project(id: "", message: message).text)
+        }
+        if let name = message["toolName"]?.string, SubagentToolView.isControl(name), let result = ToolResultRecord.of(message) {
+            let value = SubagentToolView(ToolView(id: result.call, name: name, state: result.record.cardState, input: "", output: result.record.output, durationMs: nil, truncated: false))
+            return [prose(value.result), value.error ?? ""].joined(separator: "\n")
+        }
+        let blocks = message["content"]?.array ?? []
+        guard blocks.contains(where: { $0.object?["type"]?.string == "toolCall" && SubagentToolView.isControl($0.object?["name"]?.string ?? "") }) else {
+            return text(entry)
+        }
+        var plain = message
+        // Preserve ordinary text/tools, but replace agent argument envelopes
+        // with exactly the Task/Message prose drawn by the native card.
+        plain.removeValue(forKey: "nativeResponseTimeline")
+        plain["content"] = .array(blocks.map { block in
+            guard let fields = block.object, fields["type"]?.string == "toolCall", let name = fields["name"]?.string, SubagentToolView.isControl(name) else { return block }
+            let value = SubagentToolView(ToolView(id: fields["id"]?.string ?? "", name: name, state: "recorded", input: ToolInputDisplay.encoded(fields["arguments"] ?? .null), output: "", durationMs: nil, truncated: false))
+            return .object(["type": .string("text"), "text": .string("\n" + value.title + "\n" + prose(value.task) + "\n")])
+        })
+        var projected = entry; projected["message"] = .object(plain)
+        return text(projected)
+    }
+    /// Current streaming text and rows that have not reached the journal yet.
+    /// Called by the history actor, never by a layout or paint pass.
+    static func transcriptText(_ message: TranscriptMessage) -> String {
+        func prose(_ source: String) -> String { TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(source)) }
+        if message.nativeAgentDelivery != nil {
+            return AgentMessagePresentation(message).events.map {
+                [$0.title, $0.label, prose($0.text), $0.note ?? ""].joined(separator: "\n")
+            }.joined(separator: "\n\n")
+        }
+        let tools = (message.tools ?? []).map { tool in
+            guard SubagentToolView.isControl(tool.name) else { return [tool.input, tool.output].joined(separator: "\n") }
+            let value = SubagentToolView(tool)
+            return [value.title, prose(value.task), prose(value.result), value.error ?? ""].joined(separator: "\n")
+        }
+        return ([message.text, message.thinking ?? ""] + tools).joined(separator: "\n")
+    }
     /// Case-insensitive occurrences of `query` in `text`, as the find bar
     /// and the content search count them.
     static func occurrences(of query: String, in text: String) -> Int {

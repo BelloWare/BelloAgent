@@ -88,7 +88,8 @@ struct TranscriptFindCommand: Equatable {
 /// (`revealInTranscript`).
 ///
 /// A match is an occurrence in the text the transcript shows. The search
-/// counts occurrences in each message's source; once a message's rows have
+/// counts occurrences in each message's source (rendered prose for agent
+/// tasks, results and deliveries); once a message's rows have
 /// been on screen, its count is what its text shows (`reconcile`), so a
 /// link's address or a heading the source has and the page does not draw
 /// is never stepped to.

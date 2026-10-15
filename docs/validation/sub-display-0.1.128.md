@@ -740,3 +740,97 @@ No installed app, real preferences, Keychain, paid provider or `xctrace --launch
 was used. The lead owns independent review, integration with sub-cost and any
 follow-up on the old intermittent retention failure. This stream publishes only
 `dev/a128-sub-display`; it does not merge or push `dev/next`.
+
+## Lead review round 4: rendered Find and side menu routing
+
+2026-10-15, `dev/a128-sub-display`, following `6f69c44a`. Both review findings
+are fixed. Only affected classes ran in this round, as requested; no full lane
+or gallery was run. There are no layout changes. The round 3 gallery paths and
+its explicitly recorded validation ordering remain the visual evidence.
+
+### Root causes and changes
+
+- The renderer's `contains` check ran only after Find had obtained a hit. The
+  initial `searchConversation` still searched source/JSON, so a visible phrase
+  such as `Last unique result` in `Last **unique** result` never reached it.
+  The transcript bridge now requests an app-only search projection. The history
+  actor searches agent Task/Result, reports and typed deliveries using the same
+  cached Markdown blocks as the native renderer, including unloaded history and
+  legacy child task headers. Source search, Copy Conversation, journal records
+  and the helper search API retain their previous contracts.
+- Opening a matching card also checked only its raw arguments/output. The real
+  Find tests exposed this second stage: card disclosure now recognizes the
+  rendered phrase using the shared parse. The previous test that injected
+  highlights directly now calls `TranscriptFindController.setQuery` through a
+  real pane and workspace, and checks automatic opening, expansion and the
+  highlighted phrase's visible rectangle.
+- Searching the app's saved projection must retain current streaming and unsaved
+  text. A bounded display snapshot supplies streaming revisions and unsaved rows
+  to the history actor; memory-only delegated-task placeholders use the same
+  projection. Saved records keep their own hit IDs, avoiding a second result
+  hit through an issuer's resolved card. A retained but abandoned record is not
+  an unsaved row: the journal's full reference index guards that boundary.
+- The saved-side actions menu bypassed `showAgentFamily` and sent the side's
+  family ID to its hidden header. It now uses the existing visible-picker route,
+  which addresses the main column while retaining actual delegation ownership.
+
+### Failing-first and mutation evidence
+
+All logs are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`.
+
+| Evidence | Result |
+| --- | --- |
+| `review4-red-SubagentMarkdownTests.log` | 12 tests; four failed assertions for rendered card task/result, report and typed-delivery queries through `setQuery` |
+| `review4-red-ConversationFamilyTests.log` | 14 tests; the actual side menu action emitted `chat-side` instead of `chat-parent` |
+| `review4-find-navigation-SubagentMarkdownTests.log` | Query hits worked, but the rendered task's card did not open; also corrected the test to invalidate the actual timeline row holding the result, rather than another row of the same reply |
+| `review4-red-live-SubagentMarkdownTests.log` | Three failed assertions for current streaming text, an unsaved typed report and a memory-only delegated-task header |
+| `review4-red-boundary-ContentSearchTests.log` | Abandoned saved text was incorrectly treated as an unsaved display row; full reference lookup fixed it |
+| `review4-mutation-search.log` | Turning off the production bridge's rendered-search option failed the Find regressions (14 tests, 11 failures including expected reveal timeouts) |
+| `review4-mutation-menu.log` | Restoring the old production side-ID send failed the real menu-action assertion (14 tests, one failure) |
+
+Both mutations returned exit 65 and were restored in `finally` before final
+validation. `review4-mutations-status.json` records their exit codes. The saved
+Find fixture starts with its agent rows outside the loaded page; it checks hit
+IDs, repeated occurrence counts, automatic reveal and actual rendered highlights.
+The search boundary fixture crosses the 100-hit page, checks source Copy, rejects
+abandoned rows and verifies the generated journal's bytes remain unchanged.
+
+### Final affected validation
+
+**113 passing executions across 99 distinct tests; zero failures or skips.**
+
+| Classes / log | Passed |
+| --- | ---: |
+| `ContentSearchTests` | 3 |
+| `ConversationFamilyTests` | 14 |
+| `ConversationSearchPagingTests` | 1 |
+| `TranscriptFindTests` | 11 |
+| `TranscriptMarkdownTests` | 9 |
+| `TranscriptTurnFoldTests` | 24 |
+| Above six classes: `review4-affected-parallel.log` | **62** |
+| `review4-final-SubagentMarkdownTests.log` (serial, alone) | 14 |
+| `review4-final-SubagentReaderTests.log` (serial, alone) | 21 |
+| `review4-final-SubagentPerformanceTests.log` (serial, alone) | 2 |
+| `review4-final-ConversationFamilyTests.log` (restored menu after mutation) | 14 |
+
+Commands used `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`
+and `TEST_RUNNER_PI_APP_SCRATCH_ROOT` within that root, with
+`scripts/test-macos.sh -only-testing:PiAppTests/<Class>`. Lane assignments were
+checked with `python3 scripts/test-lanes.py list`. Results are summarized in
+`review4-final-status.json` and `review4-final-summary.json`. Only the normal
+automatic result bundle was retained; no named `.xcresult` was created.
+
+The unchanged 55,812-byte/400-message Markdown performance fixture passed:
+cold maximum draw **24.25 ms**, native Markdown batch **4.65 ms** and whole-window
+heartbeat **51.85 ms**; expanded maximum draw **24.70 ms**, native batch
+**15.16 ms**, heartbeat **89.19 ms**, within the existing 50/100 ms budgets.
+These measure rendering/expansion, not a search throughput benchmark. Progress
+updates still caused **zero sidebar recomputations**.
+
+No helper package, model-facing content, journal format, cost/webhook accounting,
+permission/capture/tool/vault boundary or side-draft persistence changed. All
+fixtures and native test hosts were isolated; no installed app, real preferences,
+Keychain, paid provider or `xctrace --launch` was used. Remaining work is the lead's
+independent review and integration. This round does not claim to resolve the
+earlier, non-reproduced full-lane retention flake.

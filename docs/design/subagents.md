@@ -72,6 +72,8 @@ Delete Chat resolves the focused conversation and is disabled for managed reader
 it never falls back to deleting the selected main chat. An embedded reader's Sides
 and Agents menu addresses the visible main-column picker (disabled if that main
 has no family). Its own window continues to address its actual delegation family.
+Saved-side actions use that same visible-picker route, including sides with their
+own delegation family; they never send a request to the hidden side header.
 
 Task and Result cards, typed parent/child deliveries, reports and the delegated
 task header share the assistant's cached native Markdown pipeline, including code
@@ -83,6 +85,11 @@ the original Markdown; a selected span keeps its original source spelling. Error
 and truncation notices stay outside that source. Assistant link/image/HTML policy
 is unchanged, with no new network loads. Folding a finished turn still excludes
 all sub-agent content, and saved/model-facing text remains byte-for-byte unchanged.
+Find's initial query uses an app-only journal projection of the cached rendered
+agent prose, including unloaded rows, then opens matching cards/previews. Current
+streaming and unsaved display rows are searched off the main actor too; an
+abandoned journal record cannot be reintroduced as unsaved text. The retained-source
+search, Copy Conversation and helper search contract stay unchanged.
 
 Full identities retain **Sub-agent N · description**. Compact family/search/tab
 labels use **#N · description**; tabs truncate at the tail and native titles,

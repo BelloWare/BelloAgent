@@ -6,6 +6,40 @@ import XCTest
 /// text finds, in the same order and counts, with its ASCII shortcut and its
 /// records decoded a run at a time.
 final class ContentSearchTests: XCTestCase {
+    func testRenderedSearchKeepsSourceCopyPagingAndAbandonedRowsSeparate() async throws {
+        let root = scratchRoot("rendered-agent-search")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var data = Data(), parent: String?
+        func add(_ record: WireValue) throws { data.append(try JSONEncoder().encode(record)); data.append(10) }
+        try add(.object(["type": .string("session"), "version": .number(3), "id": .string("fixture")]))
+        try add(.object(["type": .string("message"), "id": .string("abandoned"), "parentId": .null,
+            "message": .object(["role": .string("assistant"), "content": .string("Abandoned stale reply")])]))
+        // A new root abandons the old reply, but retains its record in the journal.
+        for index in 0..<110 {
+            try add(.object(["type": .string("message"), "id": .string("agent-\(index)"), "parentId": parent.map(WireValue.string) ?? .null,
+                "message": .object(["role": .string("user"), "content": .string("A **rendered** phrase. A **rendered** phrase."),
+                    "nativeAgentDelivery": .object(["author": .string("subagent"), "childId": .string("child"), "turn": .number(1)])])]))
+            parent = "agent-\(index)"
+        }
+        let file = root.appendingPathComponent("fixture.jsonl"); try data.write(to: file)
+        let reader = HistoryReader()
+        var hits: [ContentHit] = [], start = 0
+        repeat {
+            let found = try await reader.searchContent(path: file.path, query: "A rendered phrase", start: start, renderedAgentProse: true)
+            hits += found.hits; start = found.next ?? -1
+        } while start >= 0
+        XCTAssertEqual(hits.map(\.id), (0..<110).map { "agent-\($0)" })
+        XCTAssertTrue(hits.allSatisfy { $0.count == 2 })
+        let raw = try await reader.searchContent(path: file.path, query: "**rendered**", start: 0)
+        XCTAssertEqual(raw.hits.count, 100)
+        let copy = try await reader.copyContentPage(path: file.path, first: 1, last: 1, cursor: .init(index: 1, offset: 0), revision: raw.revision)
+        XCTAssertTrue(copy.text.contains("A **rendered** phrase."))
+        let stale = try await reader.searchContent(path: file.path, query: "Abandoned stale reply", start: 0, renderedAgentProse: true,
+            presented: [.init(id: "abandoned", role: "assistant", text: "Abandoned stale reply")])
+        XCTAssertTrue(stale.hits.isEmpty, "A stale display must not append an abandoned journal row as unsaved text")
+        XCTAssertEqual(try Data(contentsOf: file), data)
+    }
     func testTheASCIIShortcutOnlyExcludesWhatCannotMatch() {
         let needle = try! XCTUnwrap(ConversationContent.asciiNeedle("Zephyr C"))
         XCTAssertTrue(ConversationContent.excludes(needle, from: "nothing here at all"))

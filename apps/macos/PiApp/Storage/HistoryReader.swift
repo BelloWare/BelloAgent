@@ -312,13 +312,14 @@ actor HistoryReader {
     /// The searchable text of each record in `range`, in order: read in
     /// order from the file, decoded concurrently. A record that cannot be
     /// read or decoded carries its error, thrown when the search reaches it.
-    private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle) throws -> [(ref: Ref, text: Result<String, Error>)] {
+    private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle, renderedAgentProse: Bool, managedChild: Bool,
+                          streaming: [String: TranscriptMessage]) throws -> [(ref: Ref, text: Result<String, Error>)] {
         var refs: [Ref] = [], records: [Result<Data, Error>?] = []
         refs.reserveCapacity(range.count); records.reserveCapacity(range.count)
         for position in range {
             let ref = try branch.at(position)
             refs.append(ref)
-            if ref.type == "branch" { records.append(nil); continue }
+            if ref.type == "branch" || streaming[ref.id] != nil { records.append(nil); continue }
             decodedRecords += 1
             do {
                 try file.seek(toOffset: ref.offset)
@@ -327,16 +328,22 @@ actor HistoryReader {
             } catch { records.append(.failure(error)) }
         }
         var texts = [Result<String, Error>](repeating: .success(""), count: refs.count)
-        let edit = "## Edit\n\n" + Self.branchText + "\n\n", read = records
+        let edit = "## Edit\n\n" + Self.branchText + "\n\n", read = records, references = refs
         texts.withUnsafeMutableBufferPointer { buffer in
             // Each iteration writes its own element only.
             nonisolated(unsafe) let output = buffer
             DispatchQueue.concurrentPerform(iterations: read.count) { index in
+                if let current = streaming[references[index].id] {
+                    output[index] = .success(ConversationContent.transcriptText(current)); return
+                }
                 switch read[index] {
                 case nil: output[index] = .success(edit)
                 case .failure(let error)?: output[index] = .failure(error)
                 case .success(let bytes)?:
-                    output[index] = Result { ConversationContent.text(try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]) }
+                    output[index] = Result {
+                        let record = try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]
+                        return renderedAgentProse ? ConversationContent.transcriptText(record, managedChild: managedChild) : ConversationContent.text(record)
+                    }
                 }
             }
         }
@@ -376,17 +383,29 @@ actor HistoryReader {
         guard page.notice == nil, let index = indexes[path] else { return nil }
         return try index.branch.ref(id)?.role
     }
-    func searchContent(path: String, query: String, start: Int) throws -> ContentSearch {
+    func searchContent(path: String, query: String, start: Int, renderedAgentProse: Bool = false, managedChild: Bool = false,
+                       presented: [TranscriptMessage] = []) throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
         let page = try read(path: path, whole: true)
         guard page.notice == nil, let index = indexes[path] else { throw HostError.failure("Validate or recover damaged history before searching it") }
         let file = try open(path); defer { try? file.close() }
         guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
+        // A live snapshot can be ahead of the journal. Keep its streaming
+        // revision and append only genuinely unsaved rows, without duplicating
+        // a saved tool result in its issuing assistant's resolved card.
+        var streaming: [String: TranscriptMessage] = [:], unsaved: [TranscriptMessage] = []
+        if renderedAgentProse {
+            for row in presented {
+                if try index.branch.ref(row.id) == nil { unsaved.append(row) }
+                else if row.state == "streaming", try index.branch.index(of: row.id) != nil { streaming[row.id] = row }
+            }
+        }
+        let total = index.branch.count + unsaved.count
         // A query that matches nothing used to decode every record in the
         // conversation before answering. Stop after a bounded window and let the
         // caller continue from `next`, exactly as a full page of hits does.
-        let limit = min(index.branch.count, min(start, index.branch.count) + 5_000)
-        var hits: [ContentHit] = [], cursor = min(start, index.branch.count)
+        let limit = min(total, min(start, total) + 5_000)
+        var hits: [ContentHit] = [], cursor = min(start, total)
         // Records are read in order and decoded a run at a time on every
         // core: decoding is nearly all a search costs, one record's text
         // never depends on another's, and the hits are taken in order from
@@ -394,18 +413,18 @@ actor HistoryReader {
         // hundred hits early decodes little past them, and grows.
         var run = 32
         let needle = ConversationContent.asciiNeedle(query)
-        while cursor < limit && hits.count < 100 {
+        while cursor < min(limit, index.branch.count) && hits.count < 100 {
             // A run holds every record it reads twice over (its bytes and its
             // text), so it is bounded by bytes as well as by count.
             var end = cursor, bytes = 0
-            while end < min(limit, cursor + run) {
+            while end < min(index.branch.count, min(limit, cursor + run)) {
                 let length = try index.branch.at(end).length
                 // A record larger than a run is a run of its own.
                 guard end == cursor || bytes + length <= Self.searchRunBytes else { break }
                 bytes += length; end += 1
             }
             run = min(run * 2, 512)
-            let texts = try contents(cursor..<end, branch: index.branch, file: file)
+            let texts = try contents(cursor..<end, branch: index.branch, file: file, renderedAgentProse: renderedAgentProse, managedChild: managedChild, streaming: streaming)
             for (offset, decoded) in texts.enumerated() where hits.count < 100 {
                 let ref = decoded.ref, text = try decoded.text.get()
                 let position = cursor + offset
@@ -420,8 +439,26 @@ actor HistoryReader {
                 if offset == texts.count - 1 { cursor = end }
             }
         }
+        while cursor >= index.branch.count && cursor < limit && hits.count < 100 {
+            let row = unsaved[cursor - index.branch.count], text = ConversationContent.transcriptText(row)
+            let count = ConversationContent.occurrences(of: query, in: text)
+            if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
+            cursor += 1
+        }
         guard try stamp(file) == index.stamp else { throw StoreError.unreadableRecord }
-        return .init(hits: hits, total: index.branch.count, next: cursor < index.branch.count ? cursor : nil, revision: revision(index.stamp))
+        return .init(hits: hits, total: total, next: cursor < total ? cursor : nil, revision: revision(index.stamp))
+    }
+    /// An unsent side or a delegated-task placeholder has no journal yet.
+    func searchPresented(_ rows: [TranscriptMessage], query: String, start: Int) throws -> ContentSearch {
+        guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
+        var hits: [ContentHit] = [], cursor = min(start, rows.count)
+        while cursor < rows.count && hits.count < 100 {
+            let row = rows[cursor], text = ConversationContent.transcriptText(row)
+            let count = ConversationContent.occurrences(of: query, in: text)
+            if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
+            cursor += 1
+        }
+        return .init(hits: hits, total: rows.count, next: cursor < rows.count ? cursor : nil, revision: "presented")
     }
     func copyContentPage(path: String, first: Int, last: Int, cursor: ContentCursor, revision expected: String) throws -> ContentPage {
         // Positions count every shown row, as the search that gave them did.

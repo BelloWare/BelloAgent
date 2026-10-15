@@ -638,7 +638,7 @@ enum ConversationActionsMenu {
         }
         if !chat.isSubagent && !model.isEphemeral(session.id) {
             if !model.conversationFamily(chat.id).isEmpty {
-                PiMenuEntry.button("Sides and Agents…", systemImage: "person.crop.rectangle.stack") { model.agentFamilyRequests.send(model.conversationFamily(chat.id).ownerID) }
+                PiMenuEntry.button("Sides and Agents…", systemImage: "person.crop.rectangle.stack") { model.showAgentFamily() }
             }
             SessionOrganizationActions.entries(model: model, chat: chat)
             PiMenuEntry.divider

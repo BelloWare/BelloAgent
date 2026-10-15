@@ -206,6 +206,16 @@ final class ConversationFamilyTests: XCTestCase {
         XCTAssertEqual(model.subagentFamily("chat-parent").members.map(\.chat.id), ["chat-child"], "The side's agents are displayed together without changing delegation ownership")
         model.focusedSessionID = "chat-side"
         XCTAssertTrue(model.canShowAgentFamily, "The side's menu reaches the main column picker")
+        let side = try XCTUnwrap(model.record("chat-side")), session = SessionDisplay(id: side.id)
+        let entries = ConversationActionsMenu.entries(model: model, session: session, chat: side)
+        let action = try XCTUnwrap(entries.compactMap { entry -> PiMenuItem? in
+            if case .item(let item) = entry, item.title == "Sides and Agents…" { return item }; return nil
+        }.first)
+        var owners: [String] = []
+        let subscription = model.agentFamilyRequests.sink { owners.append($0) }
+        defer { subscription.cancel() }
+        action.perform()
+        XCTAssertEqual(owners, ["chat-parent"], "The side actions menu must address the visible main picker, not its hidden header")
     }
     @MainActor func testPickerFitsSixCompactRowsAndFormatsSpendInCents() throws {
         let model = try fixture(), original = try XCTUnwrap(model.record("chat-child"))

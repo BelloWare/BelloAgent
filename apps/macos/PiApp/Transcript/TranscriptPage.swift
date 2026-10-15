@@ -769,19 +769,28 @@ struct ContentGeometry: Equatable {
         var changed = false
         func open(_ part: TranscriptDisclosure.Part) { if !disclosure.isOpen(part) { disclosure.setOpen(true, part); changed = true } }
         func has(_ text: String?) -> Bool { !needle.isEmpty && text.map { !transcriptRanges(of: needle, in: $0 as NSString, flexible: true).isEmpty } ?? false }
+        func has(_ tool: ToolView) -> Bool {
+            if has(tool.output) || has(tool.input) { return true }
+            guard SubagentToolView.isControl(tool.name) else { return false }
+            let value = SubagentToolView(tool)
+            // The search already warmed these shared parses off the main
+            // actor. A phrase crossing Markdown marks must also open its card.
+            return has(TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(value.task))) ||
+                has(TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(value.result)))
+        }
         // A result drawn as a row of its own (its call is not on the page)
         // opens under its own line.
         if message.kind == "toolResult", drawing == message.id, has(message.text) { open(.compaction(message.id)) }
         let call = scoped ?? message.toolCallID
         if blocks.isEmpty, let drawn = snapshot.messages.first(where: { $0.id == drawing }) {
             // A row of one message: its cards are keyed by call.
-            for tool in drawn.tools ?? [] where tool.id == call || has(tool.output) || has(tool.input) { open(.tool(tool.id)) }
+            for tool in drawn.tools ?? [] where tool.id == call || has(tool) { open(.tool(tool.id)) }
             if has(drawn.thinking) { open(.reasoning(drawn.id)) }
         }
         for block in blocks {
             for reply in block.replies {
                 // Cards are keyed as the row draws them (`TranscriptRowDisclosure`).
-                for tool in reply.tools ?? [] where tool.id == call || has(tool.output) || has(tool.input) {
+                for tool in reply.tools ?? [] where tool.id == call || has(tool) {
                     open(.tool(block.presentation == .work ? ToolOccurrence.key(reply.id, tool.id) : tool.id))
                     if block.activity.contains(where: { $0.id == reply.id }) || block.presentation == .work { open(.work(block.key)) }
                 }

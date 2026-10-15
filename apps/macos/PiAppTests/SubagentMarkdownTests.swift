@@ -43,6 +43,101 @@ final class SubagentMarkdownTests: XCTestCase {
             actions: .init(), width: 620, environment: .init(), disclosure: .init(), toggle: { _ in }))
         return ConversationPaneTests.views(NativeMarkdownContainer.self, in: row).first!
     }
+    @MainActor private func findFixture(_ messages: [(String, [String: WireValue])]) async throws -> (WorkspaceModel, NativeTranscriptPane, NSWindow) {
+        let root = scratchRoot("agent-markdown-find")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        var bytes = try JSONEncoder().encode(WireValue.object(["type": .string("session"), "version": .number(3), "id": .string("agent-find")])); bytes.append(10)
+        var parent: String?
+        for (id, message) in messages {
+            bytes.append(try JSONEncoder().encode(WireValue.object(["type": .string("message"), "id": .string(id), "parentId": parent.map(WireValue.string) ?? .null, "message": .object(message)])))
+            bytes.append(10); parent = id
+        }
+        let path = root.appendingPathComponent("find.jsonl"); try bytes.write(to: path)
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("state"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        try await model.reloadConfiguration()
+        model.chats = [ChatRecord(id: "agent-find", workspaceID: "project", title: "Find", path: path.path, profileID: "profile")]
+        await model.select("agent-find")
+        let session = try XCTUnwrap(model.selected)
+        let pane = NativeTranscriptPane()
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 620, height: 560), styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.contentView = pane; window.makeKeyAndOrderFront(nil)
+        addTeardownBlock { @MainActor in pane.closeFind(focusing: false); window.contentView = nil; window.close() }
+        pane.showTranscript(model: model, session: session, state: "idle", canFork: false, canQuote: false, enabled: true)
+        return (model, pane, window)
+    }
+    @MainActor func testFindQuerySearchesRenderedAgentProseInSavedUnloadedRows() async throws {
+        let delivered: WireValue = .object(["version": .number(1), "author": .string("subagent"), "childId": .string("child"), "turn": .number(1),
+            "events": .array([.object(["kind": .string("note"), "text": .string("A **typed** observation.")])])])
+        var messages: [(String, [String: WireValue])] = [
+            ("question", ["role": .string("user"), "content": .string("Review")]),
+            ("call-reply", ["role": .string("assistant"), "content": .array([
+                .object(["type": .string("toolCall"), "id": .string("call"), "name": .string("subagent"), "arguments": .object(["task": .string("Check **task** boundaries.")])])])]),
+            ("result", ["role": .string("toolResult"), "toolName": .string("subagent"), "toolCallId": .string("call"), "content": .string(try Self.tool(result: "Last **unique** result. Last **unique** result.").output)]),
+            ("report", ["role": .string("assistant"), "content": .array([
+                .object(["type": .string("toolCall"), "id": .string("report-call"), "name": .string("subagent_report"), "arguments": .object(["kind": .string("note"), "message": .string("A **reported** observation.")])])])]),
+            ("delivery", ["role": .string("user"), "nativeAgentDelivery": delivered, "content": .string("agent_events")])
+        ]
+        for index in 0..<80 {
+            messages.append(("later-user-\(index)", ["role": .string("user"), "content": .string("Later question \(index)")]))
+            messages.append(("later-reply-\(index)", ["role": .string("assistant"), "content": .string("Later reply \(index)")]))
+        }
+        let (model, pane, window) = try await findFixture(messages)
+        XCTAssertFalse(try XCTUnwrap(model.selected).messages.contains { $0.id == "result" }, "Search must include unmounted, unloaded agent prose")
+        pane.showFind()
+        for (query, ids) in [("Check task boundaries", ["call-reply"]), ("Last unique result", ["result", "result"]),
+                             ("A reported observation", ["report"]), ("A typed observation", ["delivery"])] {
+            pane.find.setQuery(query)
+            try await eventually("Find query finished: \(query)") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+            XCTAssertFalse(pane.find.failed)
+            XCTAssertEqual(pane.find.matches.map(\.messageID), ids, query)
+            try await eventually("Rendered match is revealed: \(query)") {
+                pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+                guard !pane.document.focusPending, let text = pane.document.focusText else { return false }
+                return (text.string as NSString).substring(with: pane.document.focusRange) == query
+            }
+        }
+    }
+    @MainActor func testFindQueryKeepsLiveTextAndUnsavedDelegatedTasksSearchable() async throws {
+        let (model, pane, window) = try await findFixture([
+            ("question", ["role": .string("user"), "content": .string("Review")]),
+            ("live", ["role": .string("assistant"), "content": .string("Earlier saved text")])
+        ])
+        let session = try XCTUnwrap(model.selected)
+        session.messages[1].text = "Current streaming text"; session.messages[1].state = "streaming"
+        var pending = TranscriptMessage(id: "pending", role: "user", text: "A **live** report.")
+        pending.nativeAgentDelivery = .object(["author": .string("subagent"), "childId": .string("child"), "turn": .number(1)])
+        session.messages.append(pending)
+        for (query, expected) in [("Current streaming text", ["live"]), ("A live report", ["pending"])] {
+            pane.find.setQuery(query)
+            try await eventually("Live Find finished") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+            XCTAssertEqual(pane.find.matches.map(\.messageID), expected)
+        }
+        session.isManagedSubagent = true; session.delegatedTask = "An **unsaved** delegated task."; session.messages = []
+        model.chats[0].path = nil
+        pane.find.setQuery("An unsaved delegated task")
+        try await eventually("Unsaved task Find finished") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+        XCTAssertEqual(pane.find.matches.map(\.messageID), ["subagent-task:agent-find"])
+    }
+    @MainActor func testFindQuerySearchesALegacyChildsRenderedDelegatedTask() async throws {
+        let (model, pane, window) = try await findFixture([
+            ("question", ["role": .string("user"), "content": .string("Check **legacy** task boundaries.")]),
+            ("reply", ["role": .string("assistant"), "content": .string("Done.")])
+        ])
+        var link = SubagentTranscriptTests.link; link.childSessionID = "agent-find"
+        model.chats[0].delegation = link
+        let session = try XCTUnwrap(model.selected); session.isManagedSubagent = true
+        let rows = session.messages; session.messages = rows
+        pane.showTranscript(model: model, session: session, state: "idle", canFork: false, canQuote: false, enabled: true)
+        pane.showFind(); pane.find.setQuery("Check legacy task boundaries")
+        try await eventually("Legacy child task Find finished") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+        XCTAssertEqual(pane.find.matches.map(\.messageID), ["question"])
+        try await eventually("Legacy child task is marked") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            guard !pane.document.focusPending, let text = pane.document.focusText else { return false }
+            return (text.string as NSString).substring(with: pane.document.focusRange) == "Check legacy task boundaries"
+        }
+    }
     @MainActor func testCardTaskAndResultRenderExactlyLikeAssistantMarkdown() throws {
         let row = try Self.card(), expected = Self.assistant(Self.rich)
         let surfaces = ConversationPaneTests.views(NativeMarkdownContainer.self, in: row)
@@ -128,32 +223,34 @@ final class SubagentMarkdownTests: XCTestCase {
     }
     @MainActor func testFindExpandsTheResultAndKeepsItsRenderedMatchOnScreen() async throws {
         let source = Self.rich + "\n\n" + String(repeating: "A **retained** observation.\n\n", count: 120) + "Last **unique** result."
-        let session = SessionDisplay(id: "agent-find")
-        var reply = TranscriptMessage(id: "reply", role: "assistant", text: "Done.", turn: "question")
-        reply.tools = [try Self.tool(task: "Short task", result: source)]
-        session.messages = [TranscriptMessage(id: "question", role: "user", text: "Review"), reply]
-        let stage = TranscriptStressTestCase.Stage(session, width: 620); defer { stage.close() }
-        await stage.settleUntilExact()
-        let work = try XCTUnwrap(stage.workRow)
-        work.toggleDisclosure(try XCTUnwrap(stage.workPart(work))); stage.draw()
-        work.toggleDisclosure(.tool(ToolOccurrence.key("reply", "call"))); stage.draw()
-        let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: stage.document).first { $0.accessibilityIdentifier() == "agent-markdown-result" })
-        XCTAssertFalse(body.expanded)
-        stage.document.highlights = .init(query: "Last unique result", focus: .init(messageID: "reply", needle: "Last unique result", occurrence: 0, serial: 1, fromFind: true, scopeCall: "call"))
+        let (_, pane, window) = try await findFixture([
+            ("question", ["role": .string("user"), "content": .string("Review")]),
+            ("reply", ["role": .string("assistant"), "content": .array([
+                .object(["type": .string("toolCall"), "id": .string("call"), "name": .string("subagent"), "arguments": .object(["task": .string("Short task")])])])]),
+            ("result", ["role": .string("toolResult"), "toolName": .string("subagent"), "toolCallId": .string("call"), "content": .string(try Self.tool(result: source).output)]),
+            ("done", ["role": .string("assistant"), "content": .string("Done.")])
+        ])
+        let document = pane.document
+        pane.showFind(); pane.find.setQuery("Last unique result")
         try await eventually("The Markdown result's Find match") {
-            stage.draw(); stage.document.revealFocusIfPending()
-            return body.expanded && stage.document.focusText != nil && !stage.document.focusPending
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return !pane.find.searching && document.focusText != nil && !document.focusPending
         }
-        let text = try XCTUnwrap(stage.document.focusText), range = stage.document.focusRange
-        await stage.settle()
+        XCTAssertEqual(pane.find.matches.map(\.messageID), ["result"])
+        let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: document).first { $0.accessibilityIdentifier() == "agent-markdown-result" })
+        XCTAssertTrue(body.expanded)
+        let text = try XCTUnwrap(document.focusText), range = document.focusRange
         XCTAssertEqual((text.string as NSString).substring(with: range), "Last unique result")
         let manager = try XCTUnwrap(text.layoutManager), container = try XCTUnwrap(text.textContainer)
         var glyph = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)
         glyph.origin.x += text.textContainerOrigin.x; glyph.origin.y += text.textContainerOrigin.y
-        let rect = text.convert(glyph, to: stage.scroll.contentView)
-        XCTAssertTrue(stage.scroll.contentView.bounds.intersects(rect), "clip=\(stage.scroll.contentView.bounds) match=\(rect) text=\(text.frame) body=\(body.frame)")
+        let rect = text.convert(glyph, to: pane.scrollView.contentView)
+        XCTAssertTrue(pane.scrollView.contentView.bounds.intersects(rect), "clip=\(pane.scrollView.contentView.bounds) match=\(rect)")
+        var owner: NSView? = body
+        while owner != nil && !(owner is TranscriptRowContainer) { owner = owner?.superview }
+        let work = try XCTUnwrap(owner as? TranscriptRowContainer)
         work.contentSizeChanged()
-        XCTAssertNil(stage.document.resolveFocus()?.target, "A pending native height validation must defer the Find destination")
+        XCTAssertNil(document.resolveFocus()?.target, "A pending native height validation must defer the Find destination")
     }
     @MainActor func testFindUsesRenderedWordsAndUntrustedMarkdownKeepsAssistantRules() throws {
         let source = "A **searchable** conclusion.\n\n[Unsafe](javascript:alert(1)) ![private](https://example.test/image.png)\n\n<b>Raw HTML</b>"

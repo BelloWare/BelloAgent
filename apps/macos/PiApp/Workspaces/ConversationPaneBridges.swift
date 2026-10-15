@@ -16,7 +16,7 @@ extension NativeTranscriptPane {
         onStart = { [weak model] id in Task { await model?.revealStartOfChat(sessionID: id) } }
         find.search = { [weak model] id, query, start in
             guard let model else { throw CancellationError() }
-            return try await model.searchConversation(id, query: query, start: start)
+            return try await model.searchConversation(id, query: query, start: start, renderedAgentProse: true)
         }
         find.reveal = { [weak model] id, messageID in await model?.revealInTranscript(sessionID: id, messageID: messageID, fromFind: true) ?? false }
         isFocusedConversation = { [weak model, weak self] in

@@ -59,8 +59,19 @@ extension WorkspaceModel {
     }
 
     func inspectConversation(_ id: String) { contentSessionID = id; showConversationContent = true }
-    func searchConversation(_ id: String, query: String, start: Int) async throws -> ContentSearch {
+    func searchConversation(_ id: String, query: String, start: Int, renderedAgentProse: Bool = false) async throws -> ContentSearch {
         guard let item = record(id) else { throw StoreError.invalidRecord }
+        // The app owns Markdown rendering. Search its journal projection for
+        // Find, including unloaded rows, without changing the helper's source
+        // search or the source ranges used by Copy Conversation/Inspector.
+        if renderedAgentProse {
+            let view = displays[id]
+            let presented = view?.versionView == nil ? view?.presentedMessages ?? [] : []
+            if let path = item.path {
+                return try await history.searchContent(path: path, query: query, start: start, renderedAgentProse: true, managedChild: item.isSubagent, presented: presented)
+            }
+            return try await history.searchPresented(presented, query: query, start: start)
+        }
         if opened.contains(id), let host = hosts[item.workspaceID] {
             let value = try await host.request("session.content.search", sessionID: id, params: ["query": .string(query), "start": .number(Double(start))])
             return try JSONDecoder().decode(ContentSearch.self, from: JSONEncoder().encode(value))

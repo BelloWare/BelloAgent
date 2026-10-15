@@ -55,6 +55,19 @@ enum TranscriptMarkdown {
     static func blocks(_ source: String, style: MarkdownStyle = .prose) -> [MarkdownBlock] {
         locatedBlocks(source, style: style).map(\.block)
     }
+    /// The words shown by the native reader, using the same cached parse and
+    /// untrusted-content policy. Search calls this off the main actor.
+    static func plainText(_ blocks: [MarkdownBlock]) -> String {
+        blocks.map { block in
+            switch block {
+            case .paragraph(let text), .heading(_, let text, _): return String(text.characters)
+            case .code(_, let text): return text
+            case .list(_, _, let items): return items.map(plainText).joined(separator: "\n")
+            case .quote(let blocks): return plainText(blocks)
+            case .table(_, let header, let rows): return ([header] + rows).map { $0.map { String($0.characters) }.joined(separator: "\t") }.joined(separator: "\n")
+            }
+        }.joined(separator: "\n")
+    }
     /// Blocks for a reply that is still arriving. The text is cut wherever a
     /// delta can no longer change how the parts parse; each settled part is
     /// remembered by the cache, so a delta parses only the tail still growing.
