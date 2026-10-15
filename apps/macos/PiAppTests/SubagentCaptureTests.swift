@@ -33,6 +33,84 @@ final class SubagentCaptureTests: XCTestCase {
         try await archive.begin(value, workspace: workspace); try await archive.finish(value)
     }
 
+    func testSidesAndTheirSubagentsRollUpOnceAcrossEveryAccountingSurfaceAndReload() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
+        var log = try await archive(root)
+        let requests: [(String,String?,[String]?,Double)] = [
+            ("parent",nil,nil,1), ("side",nil,["parent"],0.4), ("nested",nil,["side","parent"],0.2),
+            ("side-agent","side",["parent"],0.3), ("main-agent","parent",nil,0.1)]
+        for (session, owner, parents, cost) in requests {
+            var value = try metadata(session,cost:cost,owner:owner)
+            if let parents {
+                var scope = value["requestScope"]?.object ?? ["sourceSessionID":.string(session),"budgetOwnerSessionID":.string(session),"turnID":.string("turn"),"executionID":.string("execution"),"purpose":.string("turn"),"ownerGeneration":.number(0)]
+                scope["sideParents"] = .array(parents.map(WireValue.string)); value["requestScope"] = .object(scope)
+            }
+            try await save(value,to:log); try await log.finish(value)
+        }
+        for reload in [false,true] {
+            if reload { try await log.close(); log = try await archive(root) }
+            var filter = DashboardFilter(from:Date(timeIntervalSince1970:1900),until:Date(timeIntervalSince1970:2001))
+            filter.workspaceID = "workspace"; filter.status = "all"; filter.sessionID = "parent"
+            let report = try await log.dashboard(filter), footer = try await log.gatewayAccounting(sessionID:"parent",workspaceID:"workspace",messages:[])
+            let sidebar = try await log.allSessionTotals(), scope = SessionUsageScope(sessionID:"parent",workspaceID:"workspace")
+            let references = try await log.sessionReferenceTotals(scopes:[scope])
+            let inspector = try await log.sessionMetrics(sessionID:"parent",workspaceID:"workspace",until:filter.until,includeFamily:true)
+            for total in [report.gateway,footer.session,try XCTUnwrap(sidebar["workspace\u{0}parent"]),try XCTUnwrap(references[scope]),inspector.gateway] {
+                XCTAssertEqual(total.requests,5); XCTAssertEqual(try XCTUnwrap(total.costUSD),2,accuracy:1e-9)
+                XCTAssertEqual(total.tokens?.input,100); XCTAssertEqual(total.tokens?.output,25)
+                XCTAssertEqual(total.sideCost?.count,1); XCTAssertEqual(try XCTUnwrap(total.sideCost?.usd),0.9,accuracy:1e-9)
+                XCTAssertEqual(total.subagentCost?.count,1); XCTAssertEqual(total.subagentCost?.usd,0.1)
+                XCTAssertTrue(total.costAttribution?.contains("from 1 side") == true)
+            }
+            let side = try await log.gatewayAccounting(sessionID:"side",workspaceID:"workspace",messages:[])
+            XCTAssertEqual(side.session.requests,3); XCTAssertEqual(try XCTUnwrap(side.session.costUSD),0.9,accuracy:1e-9)
+            XCTAssertEqual(side.session.budgetOwnerID,"parent")
+            XCTAssertEqual(try XCTUnwrap(side.session.sideCost?.usd),0.2,accuracy:1e-9,"A side’s included-side subset excludes its own requests")
+            XCTAssertEqual(side.session.subagentCost?.usd,0.3)
+            let breakdown = try await log.inspectorSides(owner:"parent",workspaceID:"workspace")
+            XCTAssertEqual(breakdown.map(\.id),["side"]); XCTAssertEqual(try XCTUnwrap(breakdown.first?.cost),0.9,accuracy:1e-9)
+            let nested = try await log.inspectorSides(owner:"side",workspaceID:"workspace")
+            XCTAssertEqual(nested.map(\.id),["nested"])
+            let sideAgents = try await log.inspectorSubagents(owner:"side",workspaceID:"workspace")
+            XCTAssertEqual(sideAgents.first?.cost,0.3)
+            filter.sessionID = nil
+            let global = try await log.dashboard(filter), sessions = try await log.sessionSummaries(filter)
+            let menu = try await log.menuBarMetrics(period:.retained,until:filter.until)
+            XCTAssertEqual(global.gateway.requests,5); XCTAssertEqual(menu.gateway.requests,5)
+            XCTAssertEqual(sessions.total,1); XCTAssertEqual(sessions.sessions.first?.sessionID,"parent")
+        }
+        try await log.close()
+    }
+
+    func testLegacySideRelationshipsAdoptRetainedSpendWithoutChangingPhysicalRequests() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at:root) }
+        var log = try await archive(root)
+        try await save(metadata("side",cost:0.4),to:log)
+        try await save(metadata("agent",cost:0.2,owner:"side"),to:log)
+        for _ in 0..<2 { try await log.recordSideBudgets(["side":["parent"]],workspaceID:"workspace") }
+        let parent = try await log.gatewayAccounting(sessionID:"parent",workspaceID:"workspace",messages:[])
+        XCTAssertEqual(parent.session.requests,2); XCTAssertEqual(try XCTUnwrap(parent.session.costUSD),0.6,accuracy:1e-9)
+        let own = try await log.list(sessionID:"side",workspaceID:"workspace")
+        XCTAssertEqual(own.count,1)
+        for reload in [false, true] {
+            if reload { try await log.close(); log = try await archive(root) }
+            // Legacy helper captures still roll up after registration/reopen,
+            // without adding lookups to an unrelated ordinary request.
+            let ordinary = try metadata("unrelated",cost:0.1), before = try await log.statementCount()
+            try await log.begin(ordinary,workspace:"workspace")
+            let statements = try await log.statementCount() - before
+            XCTAssertLessThanOrEqual(statements,9)
+            try await log.finish(ordinary)
+            try await save(metadata("side",cost:0.4),to:log)
+            try await save(metadata("agent",cost:0.2,owner:"side"),to:log)
+            try await save(metadata("side",cost:0.7),to:log,workspace:"foreign")
+            let expected = reload ? 1.8 : 1.2
+            let family = try await log.gatewayAccounting(sessionID:"parent",workspaceID:"workspace",messages:[])
+            XCTAssertEqual(try XCTUnwrap(family.session.costUSD),expected,accuracy:1e-9)
+        }
+        try await log.close()
+    }
+
     func testBudgetEvidenceUsesRegisteredIDsOwnerWorkspaceAndRetainedTerminalMetadata() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at: root) }
         let archive = try await archive(root)

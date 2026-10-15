@@ -11,6 +11,9 @@ actor PayloadArchive {
     // of unpublished chunk tails across 64 simultaneous attempts.
     let root: URL
     private var database: CaptureDatabase?
+    /// Identity-only legacy side ancestry, loaded once and updated with its
+    /// durable projection. Ordinary capture starts need no ancestry SQL reads.
+    var savedSideBudgets: [String: [String]] = [:]
     private var reportReader: DashboardReader?
     var usageSnapshots: [UsageSnapshotKey: MenuBarSnapshot] = [:]
     var usageReadGeneration = 0
@@ -100,6 +103,7 @@ actor PayloadArchive {
         }
         try Self.prepareDashboardSchema(db, migrate: version < 4)
         try CaptureLineage.prepare(db, migrate: version < 6)
+        savedSideBudgets = try CaptureLineage.savedSideBudgets(db)
         try CaptureSubagents.prepare(db)
         try db.execute("CREATE INDEX IF NOT EXISTS attempts_filter ON attempts(wall,workspace,session,purpose,api,outcome)")
         try db.execute("CREATE TABLE IF NOT EXISTS bodies(attempt TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, observed INTEGER NOT NULL DEFAULT 0, length INTEGER NOT NULL DEFAULT 0, digest BLOB, PRIMARY KEY(attempt,kind))")
@@ -177,7 +181,7 @@ actor PayloadArchive {
         try reconcile()
         try db.transaction {
             try db.execute("INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,model,outcome,wall,updated,metadata) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [.text(id), .text(session), .text(workspace), .text(turn), .text(metadata["purpose"]?.string ?? "turn"), .text(metadata["api"]?.string ?? ""), .text(metadata["requestedModel"]?.string ?? ""), .null, .text("running"), .real(metadata["wallTimestamp"]?.number ?? now().timeIntervalSince1970), .real(now().timeIntervalSince1970), .blob(encoded)])
-            try CaptureLineage.project(lineage, id: id, db: db)
+            try CaptureLineage.project(lineage, id: id, session: session, savedParents: savedSideBudgets[workspace + "\u{0}" + (lineage?.budgetOwnerSessionID ?? session)], db: db)
             try CaptureSubagents.record(scope: lineage, metadata: metadata, workspace: workspace, db: db)
             for kind in ["request", "response"] {
                 try db.execute("INSERT INTO bodies(attempt,kind,state,reason,storage) VALUES(?,?,?,?,'plaintext-v2')", [.text(id), .text(kind), .text(mode == "persist" ? "recording" : "not-retained"), .text(mode == "off" ? "Capture was disabled" : mode == "memory" ? "Session-memory capture is not durable" : "")])

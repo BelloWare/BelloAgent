@@ -135,7 +135,7 @@ import AppKit
         let requests = inspector.index.requests.filter { $0.source != .record }.count, turns = inspector.index.turns.filter { !$0.isOther }.count
         let subtitle = requests > 0 ? "\(turns) turn" + (turns == 1 ? "" : "s") + " · \(requests) request" + (requests == 1 ? "" : "s") : "Cost, tokens and time"
         var built: [Descriptor] = [.overview(subtitle, inspector.page == .overview), .next(inspector.page == .nextRequest), .section(inspector.indexLoaded && inspector.index.turns.contains(where: \.running))]
-        if !inspector.groups.isEmpty { built.insert(.familyFilter(inspector.filterLabel), at: 1) }
+        if !inspector.groups.isEmpty || !inspector.sideGroups.isEmpty { built.insert(.familyFilter(inspector.filterLabel), at: 1) }
         var grouped = Set<String>()
         func group(_ group: InspectorSubagentGroup, indent: CGFloat) {
             guard inspector.familyFilter == .family, grouped.insert(group.id).inserted else { return }
@@ -194,7 +194,7 @@ import AppKit
             return PiKit.MenuButton(title: label, icon: "line.3.horizontal.decrease", identifier: "inspector-family-filter") { [weak inspector] in
                 guard let inspector else { return [] }
                 return [PiMenuEntry.button("This chat only", checked: inspector.familyFilter == .chat) { inspector.setFamilyFilter(.chat) },
-                        .button("This chat + sub-agents", checked: inspector.familyFilter == .family) { inspector.setFamilyFilter(.family) }]
+                        .button("This chat + sides and sub-agents", checked: inspector.familyFilter == .family) { inspector.setFamilyFilter(.family) }]
                     + inspector.groups.map { group in .button(group.title, checked: inspector.familyFilter == .child(group.summary.link.childSessionID)) { inspector.setFamilyFilter(.child(group.summary.link.childSessionID)) } }
             }
         case .subagent(let group, let indent, let expanded, let selected):

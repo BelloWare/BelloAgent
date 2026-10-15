@@ -213,7 +213,7 @@ struct DashboardQueryEngine {
         }
         // The aggregate row already counts the selected requests; a separate
         // COUNT(*) scanned the same rows again.
-        let summaryRow = try db.rows("SELECT \(PayloadArchive.gatewayAggregateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first ?? [:]
+        let summaryRow = try db.rows("SELECT \(PayloadArchive.gatewayAggregateSQL(sessionID: filter.sessionID)) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first ?? [:]
         let gateway = PayloadArchive.gatewayTotals(summaryRow, sessionID: filter.sessionID)
         let requestCount = gateway.requests
         let ttft = try percentile(db, column: "ttft_ms", predicate: selected)
@@ -225,7 +225,7 @@ struct DashboardQueryEngine {
         let bucketArgs: [CaptureSQLValue] = [.real(filter.from.timeIntervalSince1970), .real(width)]
         // One grouped read per bucket set: its aggregate rows carry each
         // bucket's request count too.
-        for row in try db.rows("SELECT \(bucketSQL) AS bucket,\(PayloadArchive.gatewayAggregateSQL) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
+        for row in try db.rows("SELECT \(bucketSQL) AS bucket,\(PayloadArchive.gatewayAggregateSQL(sessionID: filter.sessionID)) FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL GROUP BY bucket", bucketArgs + selected.values) {
             if let i = row["bucket"]?.number.map(Int.init), buckets.indices.contains(i) {
                 buckets[i].gateway = PayloadArchive.gatewayTotals(row, sessionID: filter.sessionID)
                 buckets[i].requests = buckets[i].gateway.requests
@@ -293,7 +293,7 @@ struct DashboardQueryEngine {
         let rows = try db.rows("""
         \(normalized)
         SELECT \(key),SUM(outcome='completed') AS completed,SUM(outcome IN ('failed','cancelled','truncated','interrupted')) AS problems,
-          \(PayloadArchive.gatewayAggregateSQL)
+          \(PayloadArchive.gatewayAggregateSQL(sessionID: filter.sessionID))
         FROM selected GROUP BY \(key)
         ORDER BY requests DESC,alias COLLATE BINARY,api COLLATE BINARY,resolution_status COLLATE BINARY,resolved_model COLLATE BINARY LIMIT ?
         """, selected.values + [.integer(Int64(Self.modelGroupLimit))])
@@ -335,7 +335,7 @@ struct DashboardQueryEngine {
         \(normalized)
         SELECT billed_session,workspace,MIN(wall) AS first_wall,MAX(wall) AS last_wall,
         SUM(outcome='completed') AS completed,SUM(outcome IN ('failed','cancelled','truncated','interrupted')) AS problems,SUM(outcome='running') AS running,
-        \(PayloadArchive.gatewayAggregateSQL)
+        \(PayloadArchive.gatewayAggregateSQL(sessionID: filter.sessionID))
         FROM selected GROUP BY workspace,billed_session ORDER BY last_wall DESC,workspace,billed_session LIMIT ? OFFSET ?
         """, args + [.integer(Int64(Self.sessionPageSize)), .integer(Int64(offset))])
         var sessions = try rows.map { row -> DashboardSessionSummary in
@@ -387,7 +387,7 @@ struct DashboardQueryEngine {
             if let value { clauses.append(column + "=?"); values.append(.text(value)) }
         }
         if let session = filter.sessionID {
-            clauses.append("(session=? OR budget_owner=?)")
+            clauses.append("(session=? OR id IN (SELECT attempt FROM family_recipients WHERE owner=?))")
             values += [.text(session), .text(session)]
         }
         // The same "no resolved model" as the per-route grouping: unreported,

@@ -68,6 +68,7 @@ extension WorkspaceModel {
         if let id = metadataSession, record(id)?.workspaceID == workspaceID { sessions.insert(id) }
         if let scope = try? CaptureLineage.scope(metadata), record(scope.budgetOwnerSessionID)?.workspaceID == workspaceID {
             sessions.insert(scope.budgetOwnerSessionID)
+            sessions.formUnion((scope.sideParents ?? []).filter { record($0)?.workspaceID == workspaceID })
         }
         let inheritedVisible = visible.filter { $0.key != metadataSession }
         // Metadata already names its owner. Only links need to resolve it;
@@ -238,7 +239,12 @@ extension WorkspaceModel {
         } else { _ = beginChatStatsQuery(id) }
         let changed = chatStats[id] != totals
         chatAccounting.publish(totals, sessionID: id)
-        if changed { noteActivityChanged(id) }
+        if changed {
+            noteActivityChanged(id)
+            for child in displays.keys where child != id {
+                if let item = record(child), budgetOwner(for: item).id == id { refreshCostReading(child) }
+            }
+        }
     }
 
     func refreshAccounting(_ view: SessionDisplay, workspaceID: String, includeMessages: Bool = true, query: (@MainActor () async throws -> SessionGatewayAccounting)? = nil) async {

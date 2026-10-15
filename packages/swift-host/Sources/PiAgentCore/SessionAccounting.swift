@@ -9,7 +9,7 @@ extension AgentSession {
             guard try next.consume(kind: kind, data: data, spend: &total) else { return false }
             if !ephemeral {
                 guard let journal else { throw AgentError("accounting_unavailable", "The accounting journal is closed") }
-                try journal.append(["type":"custom", "customType":JSON(kind), "data":data], flush: true)
+                try journal.append(["type":"custom", "customType":JSON(kind), "data":AttemptAccounting.journalData(data)], flush: true)
             }
             accounting = next; spend = total; spendTracked = true
             event("cost.spend", costSnapshot)

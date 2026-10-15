@@ -148,7 +148,7 @@ extension DashboardQueryEngine {
         var values: [CaptureSQLValue] = [.real(until.timeIntervalSince1970)]
         if let start = override ?? period.start(until: until) { timeAndIdentity += " AND wall>=?"; values.append(.real(start.timeIntervalSince1970)) }
         if let sessionID {
-            timeAndIdentity += includeFamily ? " AND (session=? OR budget_owner=?)" : " AND session=?"
+            timeAndIdentity += includeFamily ? " AND (session=? OR id IN (SELECT attempt FROM family_recipients WHERE owner=?))" : " AND session=?"
             values.append(.text(sessionID))
             if includeFamily { values.append(.text(sessionID)) }
         }
@@ -164,7 +164,7 @@ extension DashboardQueryEngine {
             sessionCount = cached.sessions; totals = cached.gateway; counts = cached.counts
         } else {
         summary = try db.rows("""
-        SELECT \(PayloadArchive.gatewayAggregateSQL),COUNT(DISTINCT workspace) AS workspaces,
+        SELECT \(PayloadArchive.gatewayAggregateSQL(sessionID: sessionID)),COUNT(DISTINCT workspace) AS workspaces,
           MIN(wall) AS first_wall,SUM(purpose='compaction') AS compactions,
           SUM(cost_status='unreported') AS cost_unreported,SUM(cost_status='invalid') AS cost_invalid,
           SUM(cost_status='conflict') AS cost_conflicts
@@ -207,7 +207,7 @@ extension DashboardQueryEngine {
         let groupCount = Int(try db.rows("\(normalized) SELECT COUNT(*) AS n FROM (SELECT 1 FROM selected \(grouping))", values).first?["n"]?.number ?? 0)
         let rows = try db.rows("""
         \(normalized)
-        SELECT api,alias,resolved_model,resolution_status,\(PayloadArchive.gatewayAggregateSQL),
+        SELECT api,alias,resolved_model,resolution_status,\(PayloadArchive.gatewayAggregateSQL(sessionID: sessionID)),
           SUM(COUNT(*)) OVER() AS route_all_requests,SUM(SUM(cost_usd)) OVER() AS route_all_cost,
           SUM(SUM(output_tokens)) OVER() AS route_all_output
         FROM selected \(grouping)
@@ -251,7 +251,7 @@ extension DashboardQueryEngine {
             let width = until.timeIntervalSince(from) / Double(period.bucketCount)
             buckets = (0..<period.bucketCount).map { MenuBarBucket(id: $0, start: from.addingTimeInterval(Double($0) * width), end: from.addingTimeInterval(Double($0 + 1) * width)) }
             let bucketArgs: [CaptureSQLValue] = [.real(from.timeIntervalSince1970), .real(width)]
-            for row in try db.rows("SELECT CAST((wall-?)/? AS INTEGER) AS bucket,\(PayloadArchive.gatewayAggregateSQL) FROM attempts WHERE \(selected) GROUP BY bucket", bucketArgs + values) {
+            for row in try db.rows("SELECT CAST((wall-?)/? AS INTEGER) AS bucket,\(PayloadArchive.gatewayAggregateSQL(sessionID: sessionID)) FROM attempts WHERE \(selected) GROUP BY bucket", bucketArgs + values) {
                 // The final slice is closed at `until`; an attempt exactly on it lands in the last bucket.
                 guard let raw = row["bucket"]?.number.map(Int.init) else { continue }
                 let index = min(raw, buckets.count - 1)

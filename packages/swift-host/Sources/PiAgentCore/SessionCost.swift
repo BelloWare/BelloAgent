@@ -103,7 +103,7 @@ extension AgentSession {
     /// request on, also to a run that is going: a request already sent is
     /// never cut, and nothing else about the run changes.
     public func setCostLimit(_ usd: Double?) {
-        guard !isSubagent else { return }
+        guard !isSubagent, !isSideChat else { return }
         guard costLimitUSD != usd else { return }
         costLimitUSD = usd
         event("cost.limit", costSnapshot)
@@ -123,12 +123,20 @@ extension AgentSession {
     /// request that reported none. Every attempt of this session passes
     /// here, whatever its purpose, before its request returns or throws.
     func countAttempt(_ observation: RequestObservation) {
-        guard !familyBudgetEnabled, !isSubagent else { return }
+        // A side can join while an ordinary parent request is already on
+        // the wire. That pre-ledger attempt still owns its terminal charge;
+        // admitted attempts settle through RequestLifecycle instead.
+        guard !isSubagent, accounting.attempts[observation.attemptID]?.admission == nil else { return }
         let outcome = observation.monitoring["outcome"].text
         // Closing refuses new work, but the admitted run can still receive
         // its terminal charge while cancellation settles. close() keeps the
         // journal attached until that run has returned.
         guard let outcome, outcome != "running", !closed || runTask != nil, countedAttempts.insert(observation.attemptID) else { return }
+        if familyBudgetEnabled {
+            do { try appendAccounting(kind: JournalRecordKind.cost, data: contribution(observation, owner: id)) }
+            catch { failFamilyAccounting(error) }
+            return
+        }
         let cost = observation.monitoring["gateway"]["cost"]
         var data: JSON = ["attemptId": JSON(observation.attemptID), "purpose": JSON(observation.purpose), "outcome": JSON(outcome)]
         if cost["status"].text == "reported", let usd = cost["usd"].double, usd.isFinite, usd >= 0 {

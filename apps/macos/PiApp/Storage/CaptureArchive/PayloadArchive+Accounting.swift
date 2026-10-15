@@ -36,13 +36,38 @@ extension PayloadArchive {
     \(settledThroughputSQL),
     SUM(ttft_ms) AS ttft_ms,COUNT(ttft_ms) AS ttft_samples,
     MAX(wall) AS last_wall,
-    COUNT(DISTINCT CASE WHEN budget_owner!=session THEN workspace||char(0)||session END) AS subagent_count,
-    COUNT(CASE WHEN budget_owner!=session THEN 1 END) AS subagent_requests,
-    COUNT(CASE WHEN budget_owner!=session THEN cost_usd END) AS subagent_reported,
-    SUM(CASE WHEN budget_owner!=session THEN cost_usd END) AS subagent_usd,
+    COUNT(DISTINCT CASE WHEN budget_owner!=session AND side_session IS NULL THEN workspace||char(0)||session END) AS subagent_count,
+    COUNT(CASE WHEN budget_owner!=session AND side_session IS NULL THEN 1 END) AS subagent_requests,
+    COUNT(CASE WHEN budget_owner!=session AND side_session IS NULL THEN cost_usd END) AS subagent_reported,
+    SUM(CASE WHEN budget_owner!=session AND side_session IS NULL THEN cost_usd END) AS subagent_usd,
+    COUNT(DISTINCT CASE WHEN side_session IS NOT NULL THEN workspace||char(0)||side_session END) AS side_count,
+    COUNT(CASE WHEN side_session IS NOT NULL THEN 1 END) AS side_requests,
+    COUNT(CASE WHEN side_session IS NOT NULL THEN cost_usd END) AS side_reported,
+    SUM(CASE WHEN side_session IS NOT NULL THEN cost_usd END) AS side_usd,
     CASE WHEN MIN(session)=MAX(session) THEN MIN(session) END AS only_session,
     CASE WHEN COUNT(budget_owner)=COUNT(*) AND MIN(budget_owner)=MAX(budget_owner) THEN MIN(budget_owner) END AS only_owner
     """
+
+    /// Explicit family filters classify each request relative to that chat.
+    /// The IN populations are indexed/materialized once per query; only the
+    /// distinct side-id expression needs an indexed lookup for a side request.
+    static func gatewayAggregateSQL(sessionID: String?) -> String {
+        guard let sessionID else { return gatewayAggregateSQL }
+        // This is a SQL string literal, never an identifier or shell text.
+        let owner = "'" + sessionID.replacingOccurrences(of: "'", with: "''") + "'"
+        let members = "SELECT attempt FROM family_recipients WHERE owner=\(owner)"
+        return scopedGatewayAggregateSQL(
+            subagents: "id IN (\(members) AND kind='subagent')",
+            sides: "id IN (\(members) AND kind='side')",
+            sideID: "(SELECT child FROM family_recipients WHERE attempt=id AND owner=\(owner) AND kind='side')")
+    }
+    static func scopedGatewayAggregateSQL(subagents: String, sides: String, sideID: String) -> String {
+        gatewayAggregateSQL
+            .replacingOccurrences(of: "budget_owner!=session AND side_session IS NULL", with: subagents)
+            .replacingOccurrences(of: "side_session IS NOT NULL", with: sides)
+            .replacingOccurrences(of: "workspace||char(0)||side_session", with: "workspace||char(0)||" + sideID)
+    }
+    static let familyGatewayAggregateSQL = scopedGatewayAggregateSQL(subagents: "family_kind='subagent'", sides: "family_kind='side'", sideID: "family_child")
 
     /// Same population and sums as `SettledThroughput.add`: valid TTFT and
     /// first-to-last-output span, total at least the floor, all N ≥ 1 output
@@ -75,13 +100,15 @@ extension PayloadArchive {
             totals.tokens = GatewayTokenTotals(input: value("input_tokens"), output: value("output_tokens"), total: value("total_tokens"), inputSamples: count("input_samples"), outputSamples: count("output_samples"), samples: count("token_samples"))
             totals.tokens?.reasoning = value("reasoning_tokens"); totals.tokens?.reasoningSamples = count("reasoning_samples")
         }
-        if count("subagent_count") > 0 {
-            if let sessionID, row["only_session"]?.string == sessionID {
-                totals.budgetOwnerID = row["only_owner"]?.string
-            } else {
-                totals.subagentCost = GatewaySubagentCost(count: count("subagent_count"), requests: count("subagent_requests"), reported: count("subagent_reported"), usd: value("subagent_usd"))
-            }
+        if let sessionID, row["only_session"]?.string == sessionID {
+            let owner = row["only_owner"]?.string
+            totals.budgetOwnerID = owner == sessionID ? nil : owner
+        } else {
+            if count("subagent_count") > 0 { totals.subagentCost = GatewaySubagentCost(count: count("subagent_count"), requests: count("subagent_requests"), reported: count("subagent_reported"), usd: value("subagent_usd")) }
+            if count("side_count") > 0 { totals.sideCost = GatewaySubagentCost(count: count("side_count"), requests: count("side_requests"), reported: count("side_reported"), usd: value("side_usd")) }
         }
+        if let sessionID, let owner = row["only_owner"]?.string, owner != sessionID { totals.budgetOwnerID = owner }
+
         return totals
     }
 
@@ -93,8 +120,8 @@ extension PayloadArchive {
         var totals: [String: GatewayTotals] = [:]
         // Each physical attempt appears once for its own chat and once for a
         // different budget owner. Global/project dashboards still query attempts.
-        let family = "WITH family AS (SELECT attempts.*,session AS recipient FROM attempts UNION ALL SELECT attempts.*,budget_owner AS recipient FROM attempts WHERE budget_owner IS NOT NULL AND budget_owner!=session) "
-        for row in try db.rows("\(family) SELECT recipient AS session,workspace,\(Self.gatewayAggregateSQL) FROM family WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY workspace,recipient") {
+        let family = "WITH family AS (SELECT attempts.*,session AS recipient,NULL AS family_kind,NULL AS family_child FROM attempts UNION ALL SELECT attempts.*,family_recipients.owner AS recipient,family_recipients.kind AS family_kind,family_recipients.child AS family_child FROM attempts JOIN family_recipients ON family_recipients.attempt=attempts.id WHERE family_recipients.owner!=session) "
+        for row in try db.rows("\(family) SELECT recipient AS session,workspace,\(Self.familyGatewayAggregateSQL) FROM family WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY workspace,recipient") {
             guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
             totals[workspace + "\u{0}" + session] = Self.gatewayTotals(row, sessionID: session)
         }
@@ -121,8 +148,8 @@ extension PayloadArchive {
             let batch = scopes[start..<min(start + 200, scopes.count)]
             let wanted = "WITH wanted(wanted_session,wanted_workspace) AS (VALUES " + batch.map { _ in "(?,?)" }.joined(separator: ",") + ") "
             let args = batch.flatMap { [CaptureSQLValue.text($0.sessionID), .text($0.workspaceID)] }
-            let join = "FROM wanted CROSS JOIN attempts ON (attempts.session=wanted.wanted_session OR attempts.budget_owner=wanted.wanted_session) AND attempts.workspace=wanted.wanted_workspace"
-            for row in try db.rows("\(wanted) SELECT wanted.wanted_session AS session,wanted.wanted_workspace AS workspace,\(Self.gatewayAggregateSQL) \(join) WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY wanted.wanted_workspace,wanted.wanted_session", args) {
+            let join = "FROM wanted CROSS JOIN attempts ON (attempts.session=wanted.wanted_session OR attempts.id IN (SELECT attempt FROM family_recipients WHERE owner=wanted.wanted_session)) AND attempts.workspace=wanted.wanted_workspace LEFT JOIN family_recipients f ON f.attempt=attempts.id AND f.owner=wanted.wanted_session"
+            for row in try db.rows("\(wanted) SELECT wanted.wanted_session AS session,wanted.wanted_workspace AS workspace,\(Self.scopedGatewayAggregateSQL(subagents: "f.kind='subagent'", sides: "f.kind='side'", sideID: "f.child")) \(join) WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY wanted.wanted_workspace,wanted.wanted_session", args) {
                 guard let session = row["session"]?.string, let workspace = row["workspace"]?.string else { continue }
                 totals[SessionUsageScope(sessionID: session, workspaceID: workspace)] = Self.gatewayTotals(row, sessionID: session)
             }
@@ -149,9 +176,9 @@ extension PayloadArchive {
         try reconcile()
         let db = try dashboardDatabase()
         let scope: [CaptureSQLValue] = [.text(sessionID), .text(sessionID), .text(workspaceID)]
-        let row = try db.rows("SELECT \(Self.gatewayAggregateSQL) FROM attempts WHERE (session=? OR budget_owner=?) AND workspace=? AND metrics_retained=1 AND dispatch IS NOT NULL", scope).first ?? [:]
+        let row = try db.rows("SELECT \(Self.gatewayAggregateSQL(sessionID: sessionID)) FROM attempts WHERE (session=? OR id IN (SELECT attempt FROM family_recipients WHERE owner=?)) AND workspace=? AND metrics_retained=1 AND dispatch IS NOT NULL", scope).first ?? [:]
         var result = SessionGatewayAccounting(session: Self.gatewayTotals(row, sessionID: sessionID))
-        result.session.expiredRecords = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE (session=? OR budget_owner=?) AND workspace=? AND metrics_retained=0", scope).first?["n"]?.number ?? 0)
+        result.session.expiredRecords = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE (session=? OR id IN (SELECT attempt FROM family_recipients WHERE owner=?)) AND workspace=? AND metrics_retained=0", scope).first?["n"]?.number ?? 0)
         if includeTiming {
             result.timing = try Self.sessionTimingHistory(sessionID: sessionID, workspaceID: workspaceID, until: Date(), db: db)
         }
@@ -335,7 +362,7 @@ extension PayloadArchive {
         guard attempts.count <= 128 else { throw CaptureFailure.unavailable }
         try reconcile()
         let db = try dashboardDatabase(), placeholders = attempts.map { _ in "?" }.joined(separator: ",")
-        let rows = try db.rows("SELECT metadata FROM attempts WHERE workspace=? AND budget_owner=? AND metrics_retained=1 AND dispatch IS NOT NULL AND outcome IN ('completed','truncated','failed','cancelled','interrupted') AND id IN (\(placeholders)) ORDER BY id", [.text(workspace), .text(owner)] + attempts.map(CaptureSQLValue.text))
+        let rows = try db.rows("SELECT metadata FROM attempts WHERE workspace=? AND (local_owner=? OR id IN (SELECT attempt FROM family_recipients WHERE owner=?)) AND metrics_retained=1 AND dispatch IS NOT NULL AND outcome IN ('completed','truncated','failed','cancelled','interrupted') AND id IN (\(placeholders)) ORDER BY id", [.text(workspace), .text(owner), .text(owner)] + attempts.map(CaptureSQLValue.text))
         return try rows.map { row in
             guard let data = row["metadata"]?.data else { throw CaptureFailure.corrupt }
             let value = try JSONDecoder().decode([String: WireValue].self, from: data)

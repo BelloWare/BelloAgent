@@ -328,10 +328,12 @@ final class SubagentCoordinatorTests: XCTestCase {
         _ = try await parent.submit(Submission(commandID: "command", turnID: "turn", text: "tasks"), steer: false)
         try await eventually { await client.active == 16 }
         await client.release(0, owner: "parent")
+        try await eventually { await parent.costLimitReached }
+        await client.releaseAll()
         try await eventually { !(await parent.isRunning) }
         let total = await parent.spend, count = await client.started["parent"]?.count, requests = await client.parents["parent"]
         XCTAssertEqual(count, 16); XCTAssertEqual(requests, 1)
-        XCTAssertEqual(total.usd, 0.02, accuracy: 1e-8); XCTAssertEqual(total.reported, 2); XCTAssertEqual(total.unreported, 15)
+        XCTAssertEqual(total.usd, 0.17, accuracy: 1e-8); XCTAssertEqual(total.reported, 17); XCTAssertEqual(total.unreported, 0)
         let results = await parent.history.filter { $0.toolName == "subagent" }, reason = await parent.familyStopReason
         XCTAssertEqual(results.count, 18); XCTAssertEqual(reason?.code, "cost_limit")
         XCTAssertEqual(results.filter { $0.nativeSubagent?["status"].text == "not_executed" }.count, 2)

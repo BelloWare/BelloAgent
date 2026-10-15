@@ -7,6 +7,7 @@ import AppKit
     var compact: Bool { didSet { if compact != oldValue { refresh() } } }
     private var methodology = false
     private var subagentPage = 0
+    private var sidePage = 0
     private let column = ShellStack(.vertical, spacing: 18)
     private lazy var scroll = PageScrollView(column: column)
     private lazy var observer = ShellObserver { [weak self] in self?.refresh() }
@@ -36,17 +37,22 @@ import AppKit
         var views: [NSView] = [InspectorPageHeader("Overview", subtitle: subtitle, actions: [InspectorShowInChat { [weak inspector] in inspector?.showInChat() }]), figures()]
         if followedFooter !== inspector.display?.footer {
             footerObserver.reset(); followedFooter = inspector.display?.footer
-            if let footer = followedFooter, let workspace = inspector.workspace, workspace.record(inspector.scope.sessionID)?.isSubagent != true {
+            if let footer = followedFooter, let workspace = inspector.workspace, workspace.record(inspector.scope.sessionID).map({ workspace.budgetOwner(for: $0).id == $0.id }) == true {
                 footerObserver.observe(footer)
                 let id = inspector.scope.sessionID
                 limitCard = PiKit.card(CostLimitLiveEditor(footer: footer, choose: { [weak workspace] limit in try await workspace?.setCostLimit(limit, for: id) }), padding: PiSpacing.lg)
                 limitCard?.setAccessibilityIdentifier("inspector-cost-limit")
             } else { limitCard = nil }
         }
+        if inspector.familyFilter == .family, !inspector.sideGroups.isEmpty { views.append(sideCosts()) }
         if inspector.familyFilter == .family, !inspector.groups.isEmpty { views.append(subagentCosts()) }
         if let link = inspector.workspace?.record(inspector.scope.sessionID)?.delegation {
             views.append(InspectorBanner(symbol: "person.2", text: "This sub-agent’s usage is included in its parent chat’s cost limit.", tone: .neutral))
             views.append(PiKit.Button("Parent budget", style: .ghost) { [weak inspector] in inspector?.workspace?.openInspector(session: link.budgetOwnerSessionID, focus: .overview) })
+        } else if let workspace = inspector.workspace, let chat = workspace.record(inspector.scope.sessionID), workspace.budgetOwner(for: chat).id != chat.id {
+            let parent = workspace.budgetOwner(for: chat)
+            views.append(InspectorBanner(symbol: "arrow.turn.up.left", text: "This side’s spend counts toward " + parent.title + ". It uses the main chat’s budget.", tone: .neutral))
+            views.append(PiKit.Button("Parent budget", style: .ghost) { [weak workspace] in workspace?.openInspector(session: parent.id, focus: .overview) })
         } else if let limitCard { views.append(limitCard) }
         if shownTime != inspector.timeCharts || shownTokens != inspector.tokenCharts || shownChartCompact != compact || (!inspector.timeCharts.historyLoaded && (shownFailure != inspector.failure || shownIndexLoaded != inspector.indexLoaded)) {
             shownTime = inspector.timeCharts; shownTokens = inspector.tokenCharts; shownChartCompact = compact; shownFailure = inspector.failure; shownIndexLoaded = inspector.indexLoaded
@@ -121,6 +127,31 @@ import AppKit
         let card = PiKit.card(inspectorColumn(views, spacing: PiSpacing.sm), padding: PiSpacing.md)
         card.setAccessibilityIdentifier("inspector-subagent-costs"); return card
     }
+    private func sideCosts() -> NSView {
+        let groups = inspector.sideGroups, size = 8
+        sidePage = min(sidePage, max(0, (groups.count - 1) / size))
+        let start = sidePage * size, end = min(start + size, groups.count)
+        var views: [NSView] = [PiKit.SectionHeader("Side costs", subtitle: "Included in this chat · retained requests")]
+        for group in groups[start..<end] {
+            let chat = inspector.workspace?.record(group.id)
+            let name = chat?.title ?? "Side · " + String(group.id.prefix(8))
+            let title = inspectorText(name, font: .systemFont(ofSize: 12.5, weight: .medium)); title.toolTip = name
+            let detail = inspectorText(group.detail, font: PiKit.Font.micro, color: .piInkSecondary, lines: .max)
+            let button = PiKit.SelectableRow(content: inspectorColumn([title, detail], spacing: 2)) { [weak inspector] in
+                guard chat != nil else { return }
+                inspector?.workspace?.openInspector(session: group.id, focus: .overview)
+            }
+            button.setAccessibilityIdentifier("side-cost-" + group.id)
+            button.setAccessibilityLabel(name + ", " + group.detail + ", counts toward this chat" + (chat == nil ? ". Side no longer retained" : ". Open side statistics"))
+            views.append(button)
+        }
+        if groups.count > size {
+            views.append(PiKit.Pager(center: inspectorText("\(start + 1)–\(end) of \(groups.count)"), canPrevious: start > 0, canNext: end < groups.count,
+                previous: { [weak self] in self?.sidePage -= 1; self?.refresh() }, next: { [weak self] in self?.sidePage += 1; self?.refresh() }))
+        }
+        let card = PiKit.card(inspectorColumn(views, spacing: PiSpacing.sm), padding: PiSpacing.md)
+        card.setAccessibilityIdentifier("inspector-side-costs"); return card
+    }
     private func charts() -> [NSView] {
         let time = inspector.timeCharts, tokens = inspector.tokenCharts
         let open: (String) -> Void = { [weak inspector] in inspector?.select(.request($0)) }
@@ -157,7 +188,7 @@ import AppKit
         toggle.setAccessibilityIdentifier("inspector-how-counted")
         var items: [ShellItem] = [.view(toggle, .natural)]
         if methodology {
-            let scope = inspector.familyFilter == .family ? "This chat and its sub-agents count toward the parent's budget." : "Only the selected chat's own requests count; inherited messages add no cost."
+            let scope = inspector.familyFilter == .family ? "This chat, its sides and sub-agents count toward the parent's budget." : "Only the selected chat's own requests count; inherited messages add no cost."
             let notes = inspectorColumn([SessionStatsNotes(notes: inspector.timeCharts.notes + inspector.tokenCharts.notes), inspectorText("Each dispatched request counts once, tool rounds included. \(scope) Reasoning is part of output and of the total cost; cached input is part of input. A missing figure stays missing, never a zero.", font: PiKit.Font.micro, color: .piInkTertiary, lines: .max), inspectorText(SettledThroughput.explanation, font: PiKit.Font.micro, color: .piInkTertiary, lines: .max)], spacing: 6)
             items.append(.view(notes, .fill, insets: NSEdgeInsets(top: 0, left: 15, bottom: 0, right: 0)))
         }

@@ -42,7 +42,7 @@ struct ChatRowStats: Equatable {
         self.timing = timing
         // Ordinary and empty chats keep their existing row announcement.
         // Only family attribution adds an explanation to the compact cost.
-        costHelp = totals.flatMap { $0.subagentCost != nil || $0.budgetOwnerID != nil ? $0.costLabel : nil }
+        costHelp = totals.flatMap { $0.sideCost != nil || $0.subagentCost != nil || $0.budgetOwnerID != nil ? $0.costLabel : nil }
         costUSD = totals?.costUSD; cacheHits = totals?.cacheHits ?? 0; cacheMisses = totals?.cacheMisses ?? 0; requests = totals?.requests ?? 0
         tokens = totals?.tokens?.total; tokenSamples = totals?.tokens?.samples ?? 0
         inputTokens = totals?.tokens?.input; outputTokens = totals?.tokens?.output; cachedTokens = totals?.cacheReadTokens

@@ -6,7 +6,7 @@ extension AgentSession {
     func budgetAttempts(after: String?) throws -> JSON {
         try requireIndependentSession()
         guard !closed else { throw AgentError("session_closed", "Session runtime is unloaded") }
-        if runTask != nil || !requestPermits.isEmpty { return ["attemptIds":[], "next":.null] }
+        if runTask != nil || !requestPermits.isEmpty || !inFlightBudgetAttempts.isEmpty { return ["attemptIds":[], "next":.null] }
         let ids = accounting.attempts.keys.filter { id in
             let entry = accounting.attempts[id]!
             return id > (after ?? "") && entry.admission?["state"].text == "dispatched" && entry.contribution?["reported"].int != 1
@@ -17,18 +17,18 @@ extension AgentSession {
 
     func reconcileCapturedAccounting(_ evidence: [JSON]) throws -> JSON {
         try requireIndependentSession()
-        guard !closed, runTask == nil, requestPermits.isEmpty else { throw AgentError("session_busy", "Wait for settlement before reconciling captured costs") }
+        guard !closed, runTask == nil, requestPermits.isEmpty, inFlightBudgetAttempts.isEmpty else { throw AgentError("session_busy", "Wait for settlement before reconciling captured costs") }
         guard evidence.count <= 128 else { throw AttemptAccounting.damaged() }
         do {
             for metadata in evidence {
                 guard let attempt = metadata["attemptId"].text, let entry = accounting.attempts[attempt], let admission = entry.admission,
                       admission["state"].text == "dispatched",
                       let scope = try? JSONDecoder().decode(RequestScope.self, from: metadata["requestScope"].data()), scope.valid,
-                      metadata["requestScope"] == admission["scope"], scope.budgetOwnerSessionID == id,
+                      metadata["requestScope"] == admission["scope"], scope.budgetOwnerSessionID == id || scope.sideParents?.contains(id) == true,
                       metadata["sessionId"].text == scope.sourceSessionID, metadata["turnId"].text == scope.turnID,
                       metadata["purpose"].text == scope.purpose,
                       ["completed", "truncated", "failed", "cancelled", "interrupted"].contains(metadata["outcome"].text ?? "") else { throw AttemptAccounting.damaged() }
-                if let link = scope.delegation {
+                if let link = scope.delegation, scope.budgetOwnerSessionID == id {
                     guard subagents.plans[link.delegationID]?.origin.link == link else { throw AttemptAccounting.damaged() }
                 }
                 let cost = metadata["gateway"]["cost"]
@@ -46,7 +46,9 @@ extension AgentSession {
                         let value = metadata["usage"][key == "input" ? "inputIncludingCache" : key]
                         if let number = value.double, number.isFinite, number >= 0 { observation.fields[key] = value; observation.fieldStatus[key] = "reported" }
                     }
-                    contribution = self.contribution(observation, owner: id, delegation: scope.delegation?.delegationID)
+                    var value = self.contribution(observation, owner: scope.budgetOwnerSessionID, delegation: scope.delegation?.delegationID)
+                    if let parents = scope.sideParents { value["sideParents"] = .array(parents.map { JSON($0) }); value["scope"] = try subagentJSON(scope) }
+                    contribution = value
                     try correctAccounting(contribution)
                 }
                 if let link = scope.delegation, let plan = subagents.plans[link.delegationID] {

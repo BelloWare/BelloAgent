@@ -92,6 +92,7 @@ struct SessionStatsPresentation: Equatable {
     /// Attribution uses the same retained attempts as the token figures. If
     /// the helper retains older spend, do not imply this subset is lifetime.
     var costAttribution: String? {
+        if let own = cost?.costAttribution, cost?.budgetOwnerID != nil { return gateway.costAttribution?.replacingOccurrences(of: "Counts toward parent chat", with: own) ?? own }
         guard let detail = gateway.costAttribution else { return nil }
         let olderSpend = cost.map { $0.reportedRequests + $0.unreportedRequests > gateway.requests } ?? false
         return detail + (olderSpend ? " (retained requests)" : "")

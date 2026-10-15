@@ -190,6 +190,13 @@ extension WorkspaceModel {
         let lease = try connectionLease(for: item)
         guard let profile = profiles.first(where: { $0.id == item.profileID }) else { throw connectionUnavailable }
         try LiteLLMConfiguration.requireSupportedAPI(profile.api)
+        // Open authoritative budget writers before a kept side after relaunch.
+        // Parent selection and model context are unchanged.
+        if let parentID = sideBudgetParent(item), let parent = record(parentID), parent.id != item.id {
+            let owner = budgetOwner(for: item)
+            guard owner.id != item.id, sideBudgetParent(owner) == nil, !owner.isSubagent else { throw HostError.failure("The side’s budget ancestry is inconsistent.") }
+            _ = try await open(parent, automaticContext: false)
+        }
         if sessionOpenings[item.id] == nil, opened.contains(item.id), let host = hosts[item.workspaceID], host.isReady { idleTasks[item.workspaceID]?.cancel(); return host }
         if isEphemeral(item.id) { throw HostError.failure("This unkept side lost its host. Open a new side from the parent; nothing was replayed.") }
         // Include credential/journal reads before the shared helper operation:

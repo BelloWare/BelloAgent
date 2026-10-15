@@ -3,6 +3,50 @@ import XCTest
 @testable import PiApp
 
 final class SubagentCostTests: XCTestCase {
+    @MainActor func testLegacyCostSeedUsesOnlyPhysicalSpendBeforeHelperAddsSavedSides() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("side-cost-seed-" + UUID().uuidString)
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let main = ChatRecord(id:"main",workspaceID:"w",title:"Main",path:"/fixture/main.jsonl",profileID:"p")
+        model.chats = [main]
+        try await model.traces.configure(quota:nil,bodyRetention:86400,metricRetention:86400)
+        for (id, amount) in [("main",0.5),("side",0.7)] {
+            let scope = RequestScope(sourceSessionID:id,budgetOwnerSessionID:id,turnID:"turn",executionID:"execution",purpose:"turn",ownerGeneration:0,delegation:nil,sideParents:id == "main" ? nil : ["main"])
+            let value: [String:WireValue] = ["attemptId":.string(UUID().uuidString),"sessionId":.string(id),"turnId":.string("turn"),"purpose":.string("turn"),"api":.string("openai-responses"),"mode":.string("off"),"outcome":.string("completed"),"wallTimestamp":.number(Date().timeIntervalSince1970),"timingVersion":.number(2),"timings":.object(["dispatch":.number(100)]),"requestScope":try JSONDecoder().decode(WireValue.self,from:JSONEncoder().encode(scope)),"gateway":.object(["version":.number(1),"cost":.object(["status":.string("reported"),"usd":.number(amount)])])]
+            try await model.traces.begin(value,workspace:"w"); try await model.traces.finish(value)
+        }
+        let totals = try await model.traces.gatewayAccounting(sessionID:"main",workspaceID:"w",messages:[]).session
+        model.publishChatStats(totals, sessionID:"main")
+        let params = await model.costLimitParams(for:main)
+        XCTAssertEqual(params["costSeed"]?.object?["usd"]?.number,0.5)
+        XCTAssertEqual(params["costSeed"]?.object?["reported"]?.number,1)
+    }
+
+    @MainActor func testSidesInheritTheMainLimitAndForksRemainIndependent() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("side-cost-" + UUID().uuidString)
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let parent = ChatRecord(id: "main", workspaceID: "w", title: "Main", profileID: "p", costLimit: .usd(3))
+        let side = ChatRecord(id: "side", workspaceID: "w", title: "Side", path: "/fixture/side_side.jsonl", profileID: "p", parentSessionID: "main", costLimit: .usd(99))
+        let nested = ChatRecord(id: "nested", workspaceID: "w", title: "Nested", path: "/fixture/side_nested.jsonl", profileID: "p", parentSessionID: "side", costLimit: .unlimited)
+        let fork = ChatRecord(id: "fork", workspaceID: "w", title: "Fork", path: "/fixture/fork.jsonl", profileID: "p", parentSessionID: "main", costLimit: .usd(7))
+        model.chats = [parent, side, nested, fork]
+        XCTAssertEqual(model.costLimit(for: side), .usd(3))
+        XCTAssertEqual(model.costLimit(for: nested), .usd(3))
+        XCTAssertEqual(model.costLimit(for: fork), .usd(7))
+        model.sides[parent.id] = SideRecord(id: "draft", parentID: parent.id, workspaceID: "w", profileID: "p", title: "Draft", costLimit: .usd(100))
+        XCTAssertEqual(model.costLimit(for: "draft"), .usd(3))
+        let parentView = SessionDisplay(id:"main"), sideView = SessionDisplay(id:"side")
+        model.displays = ["main":parentView,"side":sideView]
+        model.observeCost(["cost":.object(["spentUSD":.number(3.2),"reportedRequests":.number(4),"limitUSD":.number(3)])],view:parentView)
+        model.observeCost(["cost":.object(["spentUSD":.number(0.4),"reportedRequests":.number(1),"limitUSD":.null])],view:sideView)
+        XCTAssertTrue(sideView.footer.cost.reached)
+        XCTAssertEqual(sideView.footer.cost.figure,"$0.40")
+        XCTAssertEqual(SessionStatsPresentation(gateway:sideView.footer.gateway,work:nil,cost:sideView.footer.cost).costAttribution,"Counts toward Main")
+        do { try await model.setCostLimit(.usd(100),for:"side"); XCTFail("Sides cannot override the main budget") } catch { }
+        XCTAssertEqual(model.record("side")?.costLimit,.usd(99),"Legacy values remain stored but ignored")
+    }
+
     @MainActor func testChildCaptureBeforeDiscoveryUpdatesParentFooterSidebarAndMenu() async throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("sub-cost-" + UUID().uuidString)
         let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

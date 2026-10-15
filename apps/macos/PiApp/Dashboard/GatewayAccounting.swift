@@ -322,9 +322,13 @@ struct GatewayTotals: Codable, Sendable, Equatable {
     /// Wall time of the latest retained request, seconds since 1970, for the sidebar's recency stamp.
     var lastActivity: Double?
     var subagentCost: GatewaySubagentCost?
-    /// Set only for a single physical child's own figures.
+    var sideCost: GatewaySubagentCost?
+    /// The main budget owner for a child's own subtotal, including its family.
     var budgetOwnerID: String?
-    var costAttribution: String? { subagentCost?.detail ?? budgetOwnerID.map { _ in "Counts toward parent chat" } }
+    var costAttribution: String? {
+        let parts = [sideCost?.detail.replacingOccurrences(of: "sub-agents", with: "sides").replacingOccurrences(of: "sub-agent", with: "side"), subagentCost?.detail, budgetOwnerID.map { _ in "Counts toward parent chat" }].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 
     private enum CodingKeys: String, CodingKey {
         case inputSplit
@@ -357,6 +361,7 @@ struct GatewayTotals: Codable, Sendable, Equatable {
         case turnCount
         case lastActivity
         case subagentCost
+        case sideCost
         case budgetOwnerID
     }
 

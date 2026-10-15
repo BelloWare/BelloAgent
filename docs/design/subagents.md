@@ -64,11 +64,11 @@ Paths beginning with `Core/` refer to `packages/swift-host/Sources/PiAgentCore/`
 
 ### Why children are not sides
 
-Sides have different semantics: inherited conversation context, side-specific cache behavior, read-only execution policy, independent spending, and their own user interaction.
+Sides have different semantics: inherited conversation context, side-specific cache behavior, read-only execution policy and their own user interaction. Since 0.1.128, sides share the main chat’s spending and budget too (owner choice, 2026-10-15).
 
 Sub-agents need fresh context, automatic return to a waiting tool call, parent-owned spending, and a managed lifecycle. They therefore use ordinary `AgentSession` machinery through a new coordinator, without calling `side.open`.
 
-An ordinary kept side may itself delegate if it is a durable, eligible project chat. In that case, the side owns the budget. Its existing sidebar parent does not become the budget owner.
+An ordinary kept side may itself delegate if it is a durable, eligible project chat. The side remains the delegation/coordinator owner; optional helper-only `RequestScope.sideParents` forwards numeric admissions and charges through its side ancestry to the main budget. Provider session/cache identity and model-facing tool semantics are unchanged.
 
 ### Core invariants
 
@@ -599,7 +599,7 @@ The limit cannot be a guaranteed exact billing ceiling: concurrent requests alre
 
 The owner total includes previous turns and all delegated work, including interrupted tasks and earlier transcript versions. Editing, compaction, and archiving do not refund spend.
 
-Ordinary sides and ordinary forks retain their existing independent budgets.
+Since 0.1.128, ordinary sides share the main chat’s budget. Their legacy per-side limit values remain readable but are ignored; forks retain independent budgets. Already-dispatched requests finish before budget enforcement stops queued/tool work. Parent journals retain numeric side usage and attempt identities, including discarded ephemeral side spend, without side content. The native archive projects those identities into family recipients so filtered totals count each physical attempt once.
 
 Display:
 

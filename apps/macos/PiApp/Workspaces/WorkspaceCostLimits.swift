@@ -10,18 +10,47 @@ enum CostLimitNoticeAction: Sendable { case raise, continueRun }
 extension WorkspaceModel {
     /// The limit every chat without its own runs under.
     var defaultCostLimit: CostLimit { configuration.defaultChatCostLimit }
-    /// The limit a chat runs under: its own, else the Settings default.
-    func costLimit(for item: ChatRecord) -> CostLimit {
-        if let owner = item.delegation?.budgetOwnerSessionID, let parent = record(owner), !parent.isSubagent { return parent.costLimit ?? defaultCostLimit }
-        return item.costLimit ?? defaultCostLimit
+    /// Only actual sides inherit budgets; forks also have parentSessionID.
+    func sideBudgetParent(_ item: ChatRecord) -> String? {
+        if let side = side(item.id) { return side.parentID }
+        guard let parent = item.parentSessionID, item.path.map({ URL(fileURLWithPath: $0).lastPathComponent.hasPrefix("side_") }) == true else { return nil }
+        return parent
     }
+    func budgetOwner(for item: ChatRecord) -> ChatRecord {
+        var current = item, seen: Set<String> = [item.id]
+        while let id = current.delegation?.budgetOwnerSessionID ?? sideBudgetParent(current),
+              seen.insert(id).inserted, let parent = record(id), parent.workspaceID == item.workspaceID { current = parent }
+        return current
+    }
+    func costLimit(for item: ChatRecord) -> CostLimit { budgetOwner(for: item).costLimit ?? defaultCostLimit }
     func costLimit(for id: String) -> CostLimit { record(id).map(costLimit(for:)) ?? defaultCostLimit }
+
+    func restoreSideBudgets() async throws {
+        var workspaces: [String: [String: [String]]] = [:]
+        for item in chats where sideBudgetParent(item) != nil {
+            var current = item, parents: [String] = [], seen: Set<String> = [item.id]
+            while let id = sideBudgetParent(current), seen.insert(id).inserted,
+                  let parent = record(id), parent.workspaceID == item.workspaceID {
+                parents.append(id); current = parent
+            }
+            if !parents.isEmpty { workspaces[item.workspaceID, default: [:]][item.id] = parents }
+        }
+        for (workspace, sides) in workspaces { try await traces.recordSideBudgets(sides, workspaceID: workspace) }
+    }
 
     /// The chat's reading with its current limit and what its helper last
     /// said of its spend.
     func costReading(for id: String) -> SessionCostReading {
         var reading = displays[id]?.footer.cost ?? SessionCostReading()
-        reading.override = record(id)?.costLimit; reading.defaultLimit = defaultCostLimit; reading.limit = costLimit(for: id)
+        reading.override = record(id).map { budgetOwner(for: $0).costLimit } ?? nil; reading.defaultLimit = defaultCostLimit; reading.limit = costLimit(for: id)
+        if let item = record(id) {
+            let owner = budgetOwner(for: item)
+            if owner.id != id {
+                reading.budgetOwnerID = owner.id
+                reading.budgetSpentUSD = displays[owner.id]?.footer.cost.spentUSD ?? chatStats[owner.id]?.costUSD
+                reading.costAttribution = "Counts toward " + owner.title
+            }
+        }
         return reading
     }
     /// Puts a chat's limit on its display: the footer's figure and the stop notice.
@@ -33,7 +62,7 @@ extension WorkspaceModel {
     /// choice is saved with the chat and reaches its helper session at once:
     /// the next model request is checked against it, in a run that is going too.
     func setCostLimit(_ limit: CostLimit?, for id: String) async throws {
-        guard record(id)?.isSubagent != true else { throw HostError.failure("This sub-agent uses its parent chat’s cost limit. Change the limit in the parent.") }
+        guard let item = record(id), budgetOwner(for: item).id == id else { throw HostError.failure("This chat uses its parent’s cost limit. Change the limit in the parent.") }
         if let limit, !limit.isValid { throw HostError.failure("Enter an amount in US dollars above $0.00, up to $1,000,000.00.") }
         // An editor can choose again before the previous write finishes.
         // Compare with the saved value only after that choice settles, so
@@ -68,8 +97,6 @@ extension WorkspaceModel {
                     }
                 }
             }
-        } else if let side = side(id) {
-            sides[side.parentID]?.costLimit = limit
         } else { throw HostError.failure("This chat is no longer available.") }
         refreshCostReading(id); displays[id]?.costLimitChanged()
     }
@@ -90,7 +117,7 @@ extension WorkspaceModel {
     /// Tells a chat's loaded helper session the limit it runs under. A chat
     /// with no session loaded is told when one opens (`costLimitParams`).
     func sendCostLimit(_ id: String) async {
-        guard opened.contains(id), let item = record(id), !item.isSubagent, let host = hosts[item.workspaceID], host.isReady else { return }
+        guard opened.contains(id), let item = record(id), budgetOwner(for: item).id == id, let host = hosts[item.workspaceID], host.isReady else { return }
         let limit = costLimit(for: item)
         displays[id]?.costLimitSent = limit
         // A failed send is not retried from here: the next change sends again,
@@ -113,10 +140,9 @@ extension WorkspaceModel {
         if let costSeedRead { return await costSeedRead(item) }
         // A chat whose journal the helper creates records every cost from its first request.
         guard item.path != nil else { return nil }
-        var totals = displays[item.id]?.footer.gateway ?? chatStats[item.id]
-        if (totals?.requests ?? 0) == 0 {
-            totals = try? await traces.gatewayAccounting(sessionID: item.id, workspaceID: item.workspaceID, messages: []).session
-        }
+        // The helper adopts saved-side journals separately. A family footer
+        // here would seed those same physical attempts a second time.
+        let totals = try? await traces.sessionMetrics(sessionID: item.id, workspaceID: item.workspaceID, until: Date(), includeFamily: false).gateway
         guard let totals, totals.requests > 0 else { return nil }
         let reported = max(0, totals.costSamples)
         return .object(["usd": .number(reported > 0 ? max(0, totals.costUSD ?? 0) : 0), "reported": .number(Double(reported)),
@@ -132,7 +158,10 @@ extension WorkspaceModel {
         reading.reportedRequests = cost["reportedRequests"]?.nonnegativeInteger ?? 0
         reading.unreportedRequests = cost["unreportedRequests"]?.nonnegativeInteger ?? 0
         view.applyCostReading(reading)
-        guard record(view.id)?.isSubagent != true else { return }
+        for (id, _) in displays where id != view.id {
+            if let item = record(id), budgetOwner(for: item).id == view.id { refreshCostReading(id) }
+        }
+        guard let item = record(view.id), budgetOwner(for: item).id == item.id else { return }
         let helper: CostLimit = cost["limitUSD"]?.number.map(CostLimit.usd) ?? .unlimited
         if helper != reading.limit, view.costLimitSent != reading.limit {
             view.costLimitSent = reading.limit
@@ -147,8 +176,11 @@ extension WorkspaceModel {
         guard record(sessionID)?.isSubagent != true else { return }
         switch action {
         case .raise:
-            guard let anchor, let view = displays[sessionID] else { return }
-            CostLimitPopover.shared.toggle(model: self, footer: view.footer, sessionID: sessionID, anchor: anchor)
+            guard let anchor, let item = record(sessionID) else { return }
+            let owner = budgetOwner(for: item)
+            if owner.id != sessionID { openInspector(session: owner.id, focus: .overview); return }
+            guard let view = displays[owner.id] else { return }
+            CostLimitPopover.shared.toggle(model: self, footer: view.footer, sessionID: owner.id, anchor: anchor)
         case .continueRun: continueAfterCostLimit(sessionID)
         }
     }

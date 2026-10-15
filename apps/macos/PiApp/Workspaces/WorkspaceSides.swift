@@ -16,7 +16,7 @@ struct SideRecord: Identifiable, Equatable {
     var modelOutputLimit: Int? = nil
     var outputBudgetVersion: Int? = 1
     var topicID: String?
-    /// The side's own cost limit; nil runs it under the Settings default.
+    /// Legacy value retained for decoding only; sides follow the main budget.
     var costLimit: CostLimit? = nil
     /// What follows its chat's title in a new side's, until its first
     /// message names it.
@@ -174,8 +174,8 @@ extension WorkspaceModel {
         let result: [String: WireValue]
         var written = false
         do {
-            // A side is a session of its own, with its own spend and limit.
-            result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id), "costLimit": costLimit(for: info.chat).wire]).object ?? [:]
+            // Sides share the main chat’s budget.
+            result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id)]).object ?? [:]
             written = true
             guard result["sessionId"]?.string == id, sides[parentID]?.id == id else { throw HostError.failure("Side identity changed; reopen this project before creating another side.") }
             try await registerKeptSide(id: id, path: result["path"]?.string)
@@ -497,6 +497,7 @@ extension WorkspaceModel {
                 chats[index].applyOrganization(from: retained)
             }
         } else { chats.insert(retained, at: 0) }
+        try await restoreSideBudgets()
         if let info = side(id) { sides[info.parentID]?.kept = true; sides[info.parentID]?.keeping = false; sides[info.parentID]?.keepRequested = false; sides[info.parentID]?.topicID = chats.first(where: { $0.id == id })?.topicID }
         await retainSideReadState(id)
     }

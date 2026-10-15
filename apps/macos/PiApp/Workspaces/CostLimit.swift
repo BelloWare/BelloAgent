@@ -75,6 +75,8 @@ struct SessionCostReading: Equatable, Sendable {
     var reportedRequests = 0
     var unreportedRequests = 0
     var costAttribution: String?
+    var budgetOwnerID: String?
+    var budgetSpentUSD: Double?
 
     /// From this share of the limit on, the figure reads as a warning.
     static let warningFraction = 0.8
@@ -90,9 +92,9 @@ struct SessionCostReading: Equatable, Sendable {
         guard let cap = limit.usd, cap > 0, let spent, spent.isFinite, spent >= 0 else { return nil }
         return spent / cap
     }
-    var fraction: Double? { fraction(spent: spentUSD) }
+    var fraction: Double? { fraction(spent: budgetSpentUSD ?? spentUSD) }
     /// At 80% of the limit or more.
-    func warning(spent: Double?) -> Bool { (fraction(spent: spent) ?? 0) >= Self.warningFraction }
+    func warning(spent: Double?) -> Bool { (fraction(spent: budgetSpentUSD ?? spent) ?? 0) >= Self.warningFraction }
     var warning: Bool { warning(spent: spentUSD) }
     /// The next model request would not go.
     var reached: Bool { (fraction ?? 0) >= 1 }
@@ -100,7 +102,7 @@ struct SessionCostReading: Equatable, Sendable {
     func figure(spent: Double?) -> String? {
         guard let spent, spent.isFinite, spent >= 0 else { return nil }
         let amount = compactGatewayUSD(spent)
-        guard let cap = limit.usd else { return amount }
+        guard budgetOwnerID == nil, let cap = limit.usd else { return amount }
         return amount + " of " + CostLimit.dollars(cap)
     }
     var figure: String? { figure(spent: spentUSD) }

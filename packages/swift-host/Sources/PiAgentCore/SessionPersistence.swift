@@ -459,7 +459,21 @@ extension AgentSession {
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.context),"data":["ids":.array(context.map { JSON($0.id) })]],flush:false)
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.sideOrigin),"data":parentInfo],flush:false)
             // What the side spent before it was kept goes with it.
-            try prepared.append(carriedSpendRecord(),flush:false)
+            // Preserve physical identities and usage across Keep. A carried
+            // aggregate alone would lose deduplication and token accounting.
+            var carried = spend
+            for entry in accounting.attempts.values {
+                var amount = SessionSpend(); amount.add(record: entry.effective)
+                carried.usd -= amount.usd; carried.reported -= amount.reported; carried.unreported -= amount.unreported
+            }
+            carried.usd = max(0, carried.usd)
+            var seed = carried.record; seed["source"] = "carried"
+            try prepared.append(["type":"custom","customType":JSON(SessionSpend.recordType),"data":seed],flush:false)
+            for key in accounting.attempts.keys.sorted() {
+                let entry = accounting.attempts[key]!
+                if let admission = entry.admission { try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.budgetAttempt),"data":admission],flush:false) }
+                if let cost = entry.contribution { try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.cost),"data":AttemptAccounting.journalData(cost)],flush:false) }
+            }
             let state=try savedState()
             try prepared.append(["type":"custom","customType":JSON(JournalRecordKind.state),"data":state],flush:false)
             try prepared.publish(to:destination); journal=prepared; ephemeral=false; keepRequested=false

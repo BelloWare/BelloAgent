@@ -21,6 +21,10 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
     /// Returns false for repeated evidence. Unknown admitted work counts as
     /// unknown until a terminal cost or proof of non-dispatch replaces it.
     @discardableResult mutating func consume(kind: String, data: JSON, spend: inout SessionSpend) throws -> Bool {
+        var data = data
+        if data["source"].text == "side-history", data["attemptId"].isNull, let side = data["sourceSessionId"].text {
+            data["attemptId"] = JSON("side-history:" + side)
+        }
         guard [JournalRecordKind.budgetAttempt, JournalRecordKind.cost, JournalRecordKind.costUpdate].contains(kind) else { return false }
         if kind == JournalRecordKind.cost, data[SessionSpend.resetKey].flag == true {
             attempts = [:]; revision = 0; spend = SessionSpend()
@@ -73,6 +77,9 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
 
     private mutating func countUsage(_ entry: Entry, sign: Int) {
         guard entry.contribution != nil || entry.admission != nil && entry.admission?["state"].text != "not_dispatched" else { return }
+        if let data = entry.contribution, data["source"].text == "side-history" {
+            usageUnknownRequests += sign * ((data["reported"].int ?? 0) + (data["unreported"].int ?? 0)); return
+        }
         guard let data = entry.contribution, !data["usage"].map.isEmpty else { usageUnknownRequests += sign; return }
         var observed = false
         for key in ["input", "output", "cacheRead", "cacheWrite", "reasoning", "total"] {
@@ -88,6 +95,12 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
 
     static func validatedCost(_ data: JSON) -> JSON {
         var value = data
+        if data["source"].text == "side-history", data["attemptId"].text?.hasPrefix("side-history:") == true {
+            guard let amount = data["usd"].double, amount.isFinite, amount >= 0,
+                  let reported = data["reported"].int, reported >= 0,
+                  let unreported = data["unreported"].int, unreported >= 0 else { return ["usd":0,"unreported":1] }
+            return value
+        }
         if data["reported"].int == 1, let amount = data["usd"].double, amount.isFinite, amount >= 0, amount <= 1_000_000_000_000,
            (data["unreported"].int ?? 0) == 0 {
             value["reported"] = 1; value["unreported"] = 0
@@ -95,6 +108,9 @@ struct AttemptAccounting: Codable, Sendable, Equatable {
             value["usd"] = 0; value["reported"] = 0; value["unreported"] = 1
         }
         return value
+    }
+    static func journalData(_ data: JSON) -> JSON {
+        data["source"].text == "side-history" ? data.removing(["attemptId"]) : data
     }
     static func damaged() -> AgentError { AgentError("accounting_damaged", "Attempt accounting is inconsistent; no further family requests may be sent") }
 }

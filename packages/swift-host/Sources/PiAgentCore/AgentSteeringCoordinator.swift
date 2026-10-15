@@ -159,6 +159,7 @@ actor AgentSteeringCoordinator {
         do {
             try Task.checkCancellation()
             guard job.turn.generation > cancelledThrough[job.turn.runtimeID,default:-1], !job.cancelled else { throw CancellationError() }
+            try await job.owner.enforceSharedCostLimit()
             if let existing = job.child { child = existing } else { child = try await open(job.environment,job.plan) }
             guard let child else { throw SubagentRecovery.damaged() }
             jobs[id]?.child = child

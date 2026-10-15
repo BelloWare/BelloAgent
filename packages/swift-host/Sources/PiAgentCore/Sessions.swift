@@ -95,9 +95,13 @@ public actor AgentSession {
     var accounting = AttemptAccounting()
     var accountingFailure: AgentError?
     var familyBudgetEnabled = false
+    var sideBudgetParents: [AgentSession] = []
+    var sideBudgetIDs: [String] = []
+    var sideBudgetMembers: [String: [String]] = [:]
     weak var budgetOwner: AgentSession?
     var budgetOwnerGeneration = 0
     var requestPermits: [String: RequestPermit] = [:]
+    var inFlightBudgetAttempts = Set<String>()
     var familyStopReason: AgentError?
     var familyCancelled: (@Sendable (Int) -> Void)?
     var subagentCoordinator: SubagentCoordinator?
@@ -322,7 +326,7 @@ public actor AgentSession {
     }
     /// `prepared`: the replay of the journal at `resumePath`, made as a fork
     /// wrote it (`forked`); used only while it is the whole journal as it is.
-    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, resumePath: String? = nil, prepared: JournalReplayConsumer?, subagentOrigin: SubagentOrigin? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
+    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, resumePath: String? = nil, prepared: JournalReplayConsumer?, costSeed: SessionSpend? = nil, subagentOrigin: SubagentOrigin? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
         self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
             history=seed; context=seed; boundary=seed; visible=seed; toolHistory=ToolHistoryIndex(seed); parentInfo=parent; ephemeral=true
@@ -347,12 +351,32 @@ public actor AgentSession {
         let replayed=try consumer.finished(); durable=consumer
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
         spend=replayed.spend; spendTracked=replayed.spendTracked; accounting=replayed.accounting; subagents=replayed.subagents
-        familyBudgetEnabled = !subagents.plans.isEmpty
+        familyBudgetEnabled = !replayed.subagents.plans.isEmpty || replayed.accounting.attempts.values.contains {
+            $0.admission != nil || $0.contribution?["sideParents"].isNull == false
+        }
         guard opened.markerKind == JournalRecordKind.steeringMarker || (opened.markerKind == JournalRecordKind.childMarker) == (replayed.subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
         failedCompactionFingerprint=replayed.failedCompactionFingerprint; parentInfo=replayed.parentInfo
+        // Seed only the physical chat's pre-ledger history, before adopting
+        // saved-side charges. Otherwise side recovery would mark the ledger
+        // tracked and suppress the chat's own legacy cost seed.
+        if !spendTracked, let costSeed {
+            var data = costSeed.record; data["source"] = "app-request-log"
+            try opened.append(["type":"custom","customType":JSON(JournalRecordKind.cost),"data":data], flush:true)
+            spend.add(record:data); spendTracked = true
+        }
+        if resumePath != nil, subagents.origin == nil {
+            for var charge in try SideBudgetRecovery.charges(owner: id, directory: directory) {
+                guard let attempt = charge["attemptId"].text, accounting.attempts[attempt]?.contribution == nil else { continue }
+                charge["accountingRevision"] = JSON(accounting.revision + 1)
+                var next = accounting, total = spend
+                try next.consume(kind: JournalRecordKind.cost, data: charge, spend: &total)
+                try opened.append(["type":"custom","customType":JSON(JournalRecordKind.cost),"data":AttemptAccounting.journalData(charge)], flush:true)
+                accounting = next; spend = total; spendTracked = true; familyBudgetEnabled = true
+            }
+        }
         presentationOrdinal=replayed.presentationOrdinal; rowSpans=replayed.rowSpans; olderRows=replayed.olderRows
         if replayed.resumed { checkpointLineage=opened.resumedFrom?.lineage; partialHistory=true }
         liveStateSource=replayed.stateSource

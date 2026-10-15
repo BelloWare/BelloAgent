@@ -17,6 +17,7 @@ import AppKit
     @Published private(set) var index = InspectorIndex()
     @Published private(set) var indexLoaded = false
     @Published var coordination: [AgentCoordinationEntry] = []
+    @Published private(set) var sideGroups: [InspectorSideGroup] = []
     @Published private(set) var groups: [InspectorSubagentGroup] = []
     @Published private(set) var familyFilter: InspectorFamilyFilter = .family
     private var linkedRow: InspectorRequestRow?
@@ -24,7 +25,7 @@ import AppKit
     var filterLabel: String {
         switch familyFilter {
         case .chat: "This chat only"
-        case .family: "This chat + sub-agents"
+        case .family: "Whole chat family"
         case .child(let id): groups.first { $0.summary.link.childSessionID == id }?.title ?? "Sub-agent"
         }
     }
@@ -349,6 +350,7 @@ import AppKit
                 let groups = try await archive.inspectorSubagents(owner: scope.sessionID, workspaceID: scope.workspaceID)
                 guard !Task.isCancelled else { return }
                 self.groups = groups
+                self.sideGroups = try await archive.inspectorSides(owner: scope.sessionID, workspaceID: scope.workspaceID)
                 await self.readAgentCoordination()
                 guard !Task.isCancelled else { return }
                 self.lastRead = (read.rows, live, read.older)

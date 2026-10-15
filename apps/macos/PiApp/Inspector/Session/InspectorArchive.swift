@@ -14,9 +14,9 @@ extension PayloadArchive {
         return try await dashboardReader().run(consumer: "inspector") { engine in
             let db = engine.db, scope: [CaptureSQLValue] = [.text(sessionID), .text(includeFamily ? sessionID : ""), .text(workspaceID)]
             try Task.checkCancellation()
-            let total = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE (session=? OR budget_owner=?) AND workspace=?", scope).first?["n"]?.number ?? 0)
+            let total = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE (session=? OR id IN (SELECT attempt FROM family_recipients WHERE owner=?)) AND workspace=?", scope).first?["n"]?.number ?? 0)
             try Task.checkCancellation()
-            let rows = try db.rows("SELECT \(InspectorRequestRow.columns) FROM attempts WHERE (session=? OR budget_owner=?) AND workspace=? ORDER BY wall DESC,id DESC LIMIT ?",
+            let rows = try db.rows("SELECT \(InspectorRequestRow.columns) FROM attempts WHERE (session=? OR id IN (SELECT attempt FROM family_recipients WHERE owner=?)) AND workspace=? ORDER BY wall DESC,id DESC LIMIT ?",
                                    scope + [.integer(Int64(limit))])
             let decoded = try rows.reversed().map(InspectorRequestRow.archived)
             return (decoded, max(0, total - decoded.count))
@@ -28,7 +28,7 @@ extension PayloadArchive {
     func inspectorSignature(sessionID: String, workspaceID: String, includeFamily: Bool = true) async throws -> String {
         guard Self.inspectorScope(sessionID, workspaceID) else { throw CaptureFailure.unavailable }
         return try await dashboardReader().run(consumer: "inspector") { engine in
-            let row = try engine.db.rows("SELECT COUNT(*) AS n, MAX(updated) AS updated, TOTAL(length(metadata)) AS size, SUM(outcome='running') AS running FROM attempts WHERE (session=? OR budget_owner=?) AND workspace=?",
+            let row = try engine.db.rows("SELECT COUNT(*) AS n, MAX(updated) AS updated, TOTAL(length(metadata)) AS size, SUM(outcome='running') AS running FROM attempts WHERE (session=? OR id IN (SELECT attempt FROM family_recipients WHERE owner=?)) AND workspace=?",
                                          [.text(sessionID), .text(includeFamily ? sessionID : ""), .text(workspaceID)]).first ?? [:]
             let groups = try engine.db.rows("SELECT COUNT(*) AS n,TOTAL(updated) AS updated FROM subagent_groups WHERE owner=? AND workspace=?", [.text(sessionID),.text(workspaceID)]).first ?? [:]
             return "\(groups["n"]?.number ?? 0):\(groups["updated"]?.double ?? 0):\(row["n"]?.number ?? 0):\(row["updated"]?.double ?? 0):\(row["size"]?.double ?? 0):\(row["running"]?.number ?? 0)"
@@ -40,7 +40,7 @@ extension PayloadArchive {
     func inspectorRequest(_ id: String, sessionID: String, workspaceID: String) async throws -> InspectorRequestRow? {
         guard Self.inspectorScope(sessionID, workspaceID), UUID(uuidString: id) != nil else { return nil }
         return try await dashboardReader().run(consumer: "inspector") { engine in
-            try engine.db.rows("SELECT \(InspectorRequestRow.columns) FROM attempts WHERE id=? AND (session=? OR budget_owner=?) AND workspace=?",
+            try engine.db.rows("SELECT \(InspectorRequestRow.columns) FROM attempts WHERE id=? AND (session=? OR id IN (SELECT attempt FROM family_recipients WHERE owner=?)) AND workspace=?",
                                [.text(id),.text(sessionID),.text(sessionID),.text(workspaceID)]).first.map(InspectorRequestRow.archived)
         }
     }
