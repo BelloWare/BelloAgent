@@ -64,7 +64,7 @@ actor AgentSteeringCoordinator {
             let selected = spec.tools ?? available
             guard selected.isSubset(of:available) else { throw AgentError("subagent_tools", "Requested tools exceed parent permissions") }
             let grant = try SubagentModelGrant.childModel(spec.model,parent:env.profile,grants:env.models)
-                .selectingEffort(call.arguments["effort"].text,parent:env.profile)
+                .selectingEffort(call.arguments["effort"].text,parent:env.profile,connectionSupportsReasoning:env.connectionSupportsReasoning)
             let link = SubagentLink(delegationID:UUID().uuidString,childSessionID:UUID().uuidString,budgetOwnerSessionID:parent.id,call:key,parentTurnID:env.turnID,parentExecutionID:env.executionID,parentAttemptID:env.parentAttemptID)
             plan = SubagentPlan(origin:.init(link:link,description:spec.description,model:grant,tools:selected.sorted(),readOnly:env.readOnly,resourceRevision:env.resources.revision,mcpPolicy:env.mcpPolicy,frozenResources:env.resources),task:spec.task,resultMessageID:UUID().uuidString)
             turn = newTurn(child:link.childSessionID,number:1,text:spec.task,key:key,env:env)
@@ -73,7 +73,7 @@ actor AgentSteeringCoordinator {
         case "subagent_send":
             let child = call.arguments["child_id"].text!
             guard let savedPlan = await parent.subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) else { throw AgentError("subagent_scope", "Unknown child in this family") }
-            let grant = try savedPlan.origin.model.selectingEffort(call.arguments["effort"].text,parent:env.profile)
+            let grant = try savedPlan.origin.model.selectingEffort(call.arguments["effort"].text,parent:env.profile,connectionSupportsReasoning:env.connectionSupportsReasoning)
             if state.latest(child) == nil { try await adoptLegacy(savedPlan,parent:parent,environment:env); state = await parent.agentState() }
             guard let latest = state.latest(child) else { throw SubagentRecovery.damaged() }
             if latest.status != .notExecuted, !FileManager.default.fileExists(atPath:env.directory.appendingPathComponent(child + ".jsonl").path) { throw AgentError("subagent_missing", "The saved child conversation is missing; it cannot be resumed") }
@@ -167,7 +167,7 @@ actor AgentSteeringCoordinator {
             if let existing = job.child { child = existing } else { child = try await open(job.environment,job.plan) }
             guard let child else { throw SubagentRecovery.damaged() }
             jobs[id]?.child = child
-            guard await child.subagents.origin == job.plan.origin else { throw SubagentRecovery.damaged() }
+            guard await child.subagents.origin?.matchesAccepted(job.plan.origin) == true else { throw SubagentRecovery.damaged() }
             try await child.prepareAgentTurn(job.turn,owner:job.owner,coordinator:self)
             await child.useRetrySettings(job.environment.retry)
             try await job.environment.traces.inheritCapturePolicy(child:job.turn.childID,owner:job.owner.id)

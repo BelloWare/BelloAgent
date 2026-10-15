@@ -49,7 +49,7 @@ enum AgentFamilyRecovery {
                     if row["type"].text == "message", let id = row["id"].text { childRows[id] = try ChatMessage(id:id,pi:row["message"]) }
                 }
                 bytes = reader.size
-                guard childState.origin == plan.origin || childState.origin == nil && markerOnly else { throw SubagentRecovery.damaged() }
+                guard childState.origin?.matchesAccepted(plan.origin) == true || childState.origin == nil && markerOnly else { throw SubagentRecovery.damaged() }
             }
             func childWrite<T: Encodable>(_ kind: String, _ data: T) throws {
                 guard exists else { return }
@@ -102,7 +102,10 @@ enum AgentFamilyRecovery {
             let turns = state.family!.turns.values.filter { $0.childID == childID }.sorted { $0.turn < $1.turn }
             for original in turns {
                 var terminal = original
-                if let evidence = childState.family?.turns[original.id], evidence.status.terminal {
+                if var evidence = childState.family?.turns[original.id], evidence.status.terminal {
+                    // An older helper may seal a child before its accepted
+                    // turn was mirrored. The owner's acceptance retains effort.
+                    if evidence.effort == nil { evidence.effort = original.effort }
                     guard evidence.executionID == original.executionID, evidence.parentExecutionID == original.parentExecutionID,
                           let result = evidence.result, result.status == evidence.status,
                           result.metadata["sessionId"].text == childID, result.metadata["delegationId"].text == plan.origin.link.delegationID,

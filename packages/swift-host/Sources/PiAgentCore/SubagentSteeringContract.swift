@@ -5,7 +5,7 @@ enum SubagentSteeringContract {
     static let delegationPolicy = "Start sub-agents only when the user explicitly asks for sub-agents/agents, delegation, or parallel work; otherwise do the work yourself, even for large tasks."
     static let parentNames = ["subagent_start", "subagent_send", "subagent_wait", "subagent_status", "subagent_stop"]
     static let names = Set(parentNames + ["subagent_report"])
-    static func definitions(child: Bool, models: [SubagentModelGrant] = [], profile: Profile? = nil,
+    static func definitions(child: Bool, models: [SubagentModelGrant] = [], profile: Profile? = nil, connectionSupportsReasoning: Bool,
                             children: [String:SubagentModelGrant] = [:]) -> [ToolDefinition] {
         (child ? ["subagent_report"] : parentNames).map { name in
             var schema = schemas[name]!
@@ -13,8 +13,8 @@ enum SubagentSteeringContract {
             if let profile, name == "subagent_start" {
                 var inherited = SubagentModelGrant.inherited(profile)
                 inherited.reasoning = models.first { $0.model == profile.model }?.reasoning
-                let inheritedLevels = inherited.supportedEfforts(parent:profile)
-                let groups = Dictionary(grouping:models) { $0.supportedEfforts(parent:profile) }
+                let inheritedLevels = inherited.supportedEfforts(parent:profile,connectionSupportsReasoning:connectionSupportsReasoning)
+                let groups = Dictionary(grouping:models) { $0.supportedEfforts(parent:profile,connectionSupportsReasoning:connectionSupportsReasoning) }
                 // Most connections use one capability set. Keep their schema
                 // compact; only differing models need conditional branches.
                 if groups.keys.allSatisfy({ $0 == inheritedLevels }) {
@@ -33,7 +33,7 @@ enum SubagentSteeringContract {
             } else if let profile, name == "subagent_send" {
                 // Group children with the same capabilities, keeping schema
                 // growth bounded by capability sets rather than turn count.
-                let groups = Dictionary(grouping:children.keys.sorted()) { children[$0]!.supportedEfforts(parent:profile) }
+                let groups = Dictionary(grouping:children.keys.sorted()) { children[$0]!.supportedEfforts(parent:profile,connectionSupportsReasoning:connectionSupportsReasoning) }
                 if groups.count <= 1 {
                     schema = effortVariant(schema,levels:groups.keys.first ?? [])
                     return ToolDefinition(name, descriptions[name]!, schema)
@@ -60,7 +60,7 @@ enum SubagentSteeringContract {
         var result = schema
         if !levels.isEmpty {
             result["properties"]["effort"] = ["type":"string","enum":.array(levels.map(JSON.string)),
-                "description":"Reasoning effort for the chosen child model; omit to inherit the parent's current effort. default uses the model default."]
+                "description":"Reasoning effort for the chosen child model. Omit to inherit the parent's current effort; use \"default\" for the model's own default."]
         }
         return result
     }

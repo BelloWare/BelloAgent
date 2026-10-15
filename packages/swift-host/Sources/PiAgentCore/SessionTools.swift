@@ -69,7 +69,8 @@ extension AgentSession {
         // request, including after reopening before any turn has run.
         if agentCoordinator != nil, isSubagent || canDelegate {
             definitions += SubagentSteeringContract.definitions(child:isSubagent,models:runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants,
-                profile:profile ?? turnProfile,children:Dictionary(subagents.plans.values.map { ($0.origin.link.childSessionID,$0.origin.model) },uniquingKeysWith: { first, _ in first }))
+                profile:profile ?? turnProfile,connectionSupportsReasoning:self.profile.raw["reasoning"].flag == true,
+                children:Dictionary(subagents.plans.values.map { ($0.origin.link.childSessionID,$0.origin.model) },uniquingKeysWith: { first, _ in first }))
         } else if canDelegate { definitions.append(SubagentSpec.definition(models: runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants)) }
         return definitions
     }

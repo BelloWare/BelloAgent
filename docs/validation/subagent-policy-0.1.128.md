@@ -32,7 +32,7 @@ The following sentence is added to the `subagent_send` description:
 
 The new `effort` property's description is:
 
-> Reasoning effort for the chosen child model; omit to inherit the parent's current effort. default uses the model default.
+> Reasoning effort for the chosen child model. Omit to inherit the parent's current effort; use "default" for the model's own default.
 
 Unsupported explicit values return tool error code `subagent_effort` with:
 
@@ -76,3 +76,43 @@ PI_BUILD_ROOT="$PI_BUILD_ROOT" scripts/test-macos.sh \
 ```
 
 `python3 scripts/test-lanes.py list` marks all four selected native classes parallel; no serial-lane classes are combined. The lead owns separate Codex review, UI display integration and the full release gate. No merge or push to `dev/next` is part of this stream.
+
+## Lead review round 1
+
+Baseline: `0894e8ce96f21546df7d1f8af553a9a5cd6e0535`. Both P2 findings and the wording note are addressed.
+
+- **Mixed-version replay:** released 0.1.127 accepts v3 journals but its typed turn decoder discards the new optional effort field. Its recovery terminal consequently omits effort, which previously failed the new immutable-identity comparison. Replay now fills only a missing value from the previously accepted turn. If the child terminal precedes its first turn mirror, recovery takes the missing value from the owning parent's acceptance. Explicit effort conflicts, changed input/execution identity, and changed sealed terminal state remain errors. Saved result envelopes are preserved exactly.
+- **Related origin crash window:** 0.1.127 can finish publishing a marker-only child's origin without the new model capability list. Recovery and follow-up opening accept a missing list using the owner's accepted origin; explicit conflicting lists and altered tools/identity still fail. No permission or resource field is relaxed, and the parent's accepted grant remains authoritative.
+- **Related checkpoint shortcut:** an older helper's typed checkpoint can discard effort and capabilities even though the authoritative journal rows retain them. Checkpoint helper metadata now carries `subagentEffortVersion: 1`; old caches containing a family, child origin or plans force full journal replay. Ordinary chat caches and current family caches retain their shortcut. This is a disposable cache change: journal markers, versions and record kinds are unchanged, and no historical journal bytes are rewritten.
+- **Capability source:** manual/custom-catalog models with no reasoning list now use the saved connection's capability flag in schemas and admission, carried separately from the effective parent profile. Model default still inherits/sends default when effort is omitted, but no longer hides supported explicit levels or persists an empty capability list. Selecting an effort also cannot invent capabilities on an unsupported connection. Catalog lists and frozen child lists remain authoritative.
+- **Wording:** the effort property now uses the exact revised text recorded above. Policy and send-description sentences are unchanged.
+
+Eight added behavioral tests cover actual child start requests, omission, follow-ups after relaunch, live/preview schemas, eight mixed-journal crash combinations reopened twice without dispatch, missing/conflicting origin capabilities, immutable identity/terminal conflicts, and loss of typed fields in an older helper checkpoint. These tests generate 0.1.127-shaped records/caches; they do not launch an installed helper or app.
+
+| Check | Result | Log under `$PI_BUILD_ROOT/logs` |
+|---|---|---|
+| Corrected baseline for the two reported findings and wording | 6 tests fail, 34 assertions/errors | `review1-baseline-red.log` |
+| Origin publication regression before its fix | 1 test fails | `review1-origin-red.log` |
+| Older checkpoint regression before its fix | 1 test fails, 2 assertions/errors | `review1-checkpoint-red.log` |
+| Policy/effort plus checkpoint classes after fixes | 30 passed, including all 23 policy/effort tests | `review1-checkpoint-green.log` |
+| Real effort-membership guard bypassed | 1 test fails, 3 assertions | `review1-mutation-validation.log` |
+| Capability source reverted to the effective request flag | 1 test fails, 2 assertions | `review1-mutation-capability-source.log` |
+| Missing-effort inheritance removed from replay/recovery | 1 test fails, 16 assertions across crash/reopen cases | `review1-mutation-replay-inheritance.log` |
+| Replay allowed to overwrite explicit conflicting effort | 1 test fails | `review1-mutation-replay-conflict.log` |
+| Origin comparison allowed to overwrite conflicting capabilities | 1 test fails | `review1-mutation-origin-conflict.log` |
+| Old-family checkpoint guard bypassed | 1 test fails, 2 assertions/errors | `review1-mutation-checkpoint.log` |
+| Final restored regression selection, including checkpoint/replay/fork classes | 318 passed, 1 intentional fixture-writer skip, zero failures (319 total) | `review1-final.log` |
+
+All six mutations were restored before the final regression run. The initial `review1-red.log` also caught a test-fixture setup error: the generated child lacked `managedChild: true`. That fixture was corrected before the recorded baseline above; the initial log is not counted as valid recovery evidence.
+
+The first expanded regression run (`review1-regressions.log`) had 317 passed, one skip and one failure: the shared ordinary-chat fork fixture detected the new cache marker. Marker emission was narrowed to families/child origins/plans, preserving ordinary-chat metadata; the unchanged fixture then passed in the final run. The sole final skip is `ForkCloneTests.testWriteTheSharedForkFixture`, which intentionally requires `PI_WRITE_FORK_FIXTURE` to regenerate a fixture.
+
+Final command:
+
+```sh
+swift test --package-path packages/swift-host \
+  --scratch-path "$PI_BUILD_ROOT/swift-host" --jobs 4 \
+  --filter '(Subagent.*Tests|AgentSteering.*Tests|AgentFamilyRecoveryTests|ContextPreviewTests|ContextScopeTests|TurnCapacityTests|PiParityTests|ContinueRunTests|Compaction.*Tests|PausedFamilyCompactionTests|CaptureTraceTests|JournalCheckpointTests|DurableReplayTests|ReplayParityTests|ForkReplayHandoffTests|ForkCloneTests|ForkPointTests|ForkAtReplyTests|SideForkTests)'
+```
+
+Round 1 touches helper code only. Native results remain the original 19 passing affected tests above; no new native build or full lane was run. Gallery paths remain **not applicable; no UI scenes changed**. The lead's independent review, UI integration and release gate remain outside this branch.

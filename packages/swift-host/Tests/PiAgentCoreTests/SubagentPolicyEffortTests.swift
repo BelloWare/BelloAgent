@@ -90,7 +90,7 @@ extension SubagentPolicyEffortTests {
         let models = [SubagentModelGrant(model:profile.model,reasoning:["low","high","max"]),
                       SubagentModelGrant(model:"other",reasoning:["medium","max"]),
                       SubagentModelGrant(model:"plain",reasoning:[])]
-        let definitions = SubagentSteeringContract.definitions(child:false,models:models,profile:profile,
+        let definitions = SubagentSteeringContract.definitions(child:false,models:models,profile:profile,connectionSupportsReasoning:true,
             children:["first":models[0],"second":models[1],"third":models[2]])
         let start = try XCTUnwrap(definitions.first { $0.name == "subagent_start" }).schema
         let variants = start["oneOf"].list
@@ -329,6 +329,244 @@ private extension AgentSession {
         turnSubagentModels = models
     }
     func effortPreviewBody() -> JSON? { preparedContext?.body }
+}
+
+extension SubagentPolicyEffortTests {
+    func testModelDefaultKeepsUncataloguedEffortSchemaAndPreview() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let profile = try fixtureProfile(), parent = try effortFixture(root:root,profile:profile)
+        await parent.enableSubagents(SubagentCoordinator())
+        for models in [[], [SubagentModelGrant(model:profile.model)], [SubagentModelGrant(model:"custom-alias")]] {
+            await parent.effortFixtureTurn(level:"default",models:models)
+            let effective = await parent.turnProfile
+            XCTAssertEqual(effective.raw["reasoning"],false)
+            let definitions = await parent.sessionDefinitions(subagentModels:models)
+            let effort = try XCTUnwrap(definitions.first { $0.name == "subagent_start" }).schema["properties"]["effort"]
+            XCTAssertEqual(effort["enum"].list.compactMap(\.text),Profile.thinkingLevels)
+            XCTAssertEqual(effort["description"].text,"Reasoning effort for the chosen child model. Omit to inherit the parent's current effort; use \"default\" for the model's own default.")
+            _ = try await parent.prepareContext(["thinkingLevel":"default","subagentModels":try subagentJSON(models)])
+            let body = await parent.effortPreviewBody(), preview = try XCTUnwrap(body)
+            let schema = try XCTUnwrap(preview["tools"].list.first { $0["name"] == "subagent_start" })["parameters"]
+            XCTAssertEqual(schema["properties"]["effort"]["enum"].list.compactMap(\.text),Profile.thinkingLevels)
+        }
+        await parent.close()
+    }
+
+    func testModelDefaultAllowsExplicitEffortForManualAndCustomModels() async throws {
+        for model in [String?.none, "custom-alias"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let client = AccountedAgentScript([answer("done")]), coordinator = AgentSteeringCoordinator()
+            let parent = try effortFixture(root:root,client:client)
+            await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+            await parent.effortFixtureTurn(level:"default",models:model.map { [SubagentModelGrant(model:$0)] } ?? [])
+            var arguments: JSON = ["task":"Task","mode":"background","effort":"low"]
+            if let model { arguments["model"] = JSON(model) }
+            do {
+                let receipt = try await accept("subagent_start",arguments,parent:parent,coordinator:coordinator)
+                let child = try XCTUnwrap(receipt["child_id"].text)
+                try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
+                let profiles = await client.profiles
+                XCTAssertEqual(profiles.first?.raw["thinkingLevel"],"low")
+                XCTAssertEqual(profiles.first?.raw["reasoning"],true)
+                XCTAssertEqual(profiles.first?.model,model ?? "fixture-model")
+            } catch { XCTFail("Saved reasoning capability must permit explicit effort: \(error)") }
+            await coordinator.drain(); await parent.close()
+        }
+    }
+
+    func testModelDefaultFreezesCapabilitiesForFollowUpAfterRelaunch() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = AccountedAgentScript([answer("first")]), coordinator = AgentSteeringCoordinator()
+        let parent = try effortFixture(root:root,client:client)
+        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.effortFixtureTurn(level:"default")
+        let receipt = try await accept("subagent_start",["task":"Task","mode":"background"],parent:parent,coordinator:coordinator)
+        let child = try XCTUnwrap(receipt["child_id"].text)
+        try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
+        let state = await parent.subagents, profiles = await client.profiles
+        XCTAssertEqual(profiles.first?.raw["thinkingLevel"],"default")
+        XCTAssertEqual(profiles.first?.raw["reasoning"],false)
+        XCTAssertEqual(state.plans.values.first?.origin.model.reasoning,PiProviderRules.thinkingLevels)
+        await coordinator.drain(); await parent.close()
+        JournalCheckpoint.remove(for:root.appendingPathComponent("parent.jsonl"))
+        let nextClient = AccountedAgentScript([answer("second")]), nextCoordinator = AgentSteeringCoordinator()
+        let reopened = try effortFixture(root:root,client:nextClient,resume:true)
+        await reopened.enableSubagents(SubagentCoordinator()); await reopened.enableAgentSteering(nextCoordinator)
+        await reopened.effortFixtureTurn(level:"default")
+        let definitions = await reopened.sessionDefinitions()
+        XCTAssertEqual(definitions.first { $0.name == "subagent_send" }?.schema["properties"]["effort"]["enum"].list.compactMap(\.text),Profile.thinkingLevels)
+        do {
+            _ = try await accept("subagent_send",["child_id":JSON(child),"message":"Next","effort":"low"],parent:reopened,coordinator:nextCoordinator)
+            try await eventually { await reopened.agentState().latest(child)?.status.terminal == true }
+            let nextProfiles = await nextClient.profiles
+            XCTAssertEqual(nextProfiles.first?.raw["thinkingLevel"],"low")
+        } catch { XCTFail("Persisted capabilities must permit a follow-up effort: \(error)") }
+        await nextCoordinator.drain(); await reopened.close()
+    }
+
+    func testEffectiveEffortDoesNotInventConnectionCapabilities() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        var raw = try fixtureProfile().raw; raw["reasoning"] = false
+        let client = AccountedAgentScript([]), coordinator = AgentSteeringCoordinator()
+        let parent = try effortFixture(root:root,profile:Profile(raw),client:client)
+        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        await parent.effortFixtureTurn(level:"high")
+        let definitions = await parent.sessionDefinitions()
+        XCTAssertNil(definitions.first { $0.name == "subagent_start" }?.schema["properties"].map["effort"])
+        do {
+            _ = try await accept("subagent_start",["task":"Task","mode":"background","effort":"low"],parent:parent,coordinator:coordinator)
+            XCTFail("An effective request flag cannot grant an unsupported effort")
+        } catch { XCTAssertEqual((error as? AgentError)?.code,"subagent_effort") }
+        let state = await parent.agentState(), requests = await client.requests
+        XCTAssertTrue(state.operations.isEmpty); XCTAssertTrue(requests.isEmpty)
+        await coordinator.drain(); await parent.close()
+    }
+
+    func testOlderV3RecoveryWritesRetainEffortAcrossBothJournals() async throws {
+        for status in [SubagentStatus.queued, .running] {
+            for childTurnMirrored in [true, false] {
+                for ownerTerminalWritten in [true, false] {
+                    let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+                    let profile = try fixtureProfile()
+                    var plan = SubagentPlan(origin:subagentFixtureOrigin(),task:"Never replay",resultMessageID:"receipt")
+                    plan.origin.model.thinkingLevel = "low"; plan.origin.model.reasoning = ["low","high"]
+                    let turn = AgentChildTurn(childID:"child",turn:1,executionID:"child-execution",parentExecutionID:"execution",generation:0,runtimeID:"runtime",epoch:"epoch",inputID:"input",task:plan.task,call:plan.origin.link.call,status:status,effort:"low")
+                    let op = AgentOperation(key:turn.call,digest:"digest",receipt:["version":3,"accepted":true,"child_id":"child","turn":1,"effort":"low"],plan:plan,turn:turn,epoch:turn.epoch)
+                    var terminal = turn
+                    terminal.effort = nil // 0.1.127 decodes away this unknown optional field.
+                    terminal.status = status == .running ? .interrupted : .notExecuted
+                    terminal.result = SubagentToolResult(plan:plan,status:terminal.status,accountingRevision:0,began:status == .running)
+                    terminal.normalizeResult()
+                    let terminalRow: JSON = ["type":"custom","customType":JSON(JournalRecordKind.agentTerminal),"ownerID":"parent","data":try subagentJSON(terminal)]
+                    for id in ["parent","child"] {
+                        let journal = try SessionJournal(url:root.appendingPathComponent(id + ".jsonl"),id:id,cwd:root,binding:profile.binding,create:true,managedChild:id == "child")
+                        try journal.promoteToSteering(managedChild:id == "child")
+                        if id == "parent" {
+                            try journal.append(["type":"custom","customType":JSON(JournalRecordKind.agentOperation),"ownerID":"parent","data":try subagentJSON(op)])
+                            if ownerTerminalWritten { try journal.append(terminalRow) }
+                        } else {
+                            try journal.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"ownerID":"parent","data":try subagentJSON(plan.origin)])
+                            if childTurnMirrored { try journal.append(["type":"custom","customType":JSON(JournalRecordKind.agentTurn),"ownerID":"parent","data":try subagentJSON(turn)]) }
+                            try journal.append(terminalRow)
+                        }
+                    }
+                    let client = AccountedAgentScript([])
+                    for _ in 0..<2 {
+                        JournalCheckpoint.remove(for:root.appendingPathComponent("parent.jsonl"))
+                        do {
+                            let parent = try effortFixture(root:root,client:client,resume:true)
+                            let state = await parent.agentState()
+                            XCTAssertEqual(state.latest("child")?.status,terminal.status)
+                            XCTAssertEqual(state.latest("child")?.effort,"low")
+                            XCTAssertEqual(state.latest("child")?.result,terminal.result,"Keep the older helper's sealed result unchanged")
+                            let listing = await AgentSteeringCoordinator().list(parent:parent,cursor:0,limit:10)
+                            XCTAssertEqual(listing["children"].list.first?["effort"],"low")
+                            await parent.close()
+                        } catch { XCTFail("Mixed v3 recovery failed (\(status), mirrored=\(childTurnMirrored), ownerTerminal=\(ownerTerminalWritten)): \(error)") }
+                    }
+                    let requests = await client.requests; XCTAssertTrue(requests.isEmpty)
+                }
+            }
+        }
+    }
+
+    func testOlderV3ReplayStillRejectsExplicitEffortAndIdentityChanges() throws {
+        let turn = AgentChildTurn(childID:"child",turn:1,executionID:"child-execution",parentExecutionID:"execution",generation:0,runtimeID:"runtime",epoch:"epoch",inputID:"input",task:"Task",call:subagentFixtureOrigin().link.call,effort:"low")
+        func row(_ value: AgentChildTurn) throws -> JSON { ["customType":JSON(JournalRecordKind.agentTurnState),"data":try subagentJSON(value)] }
+        var state = AgentFamilyState(ownerID:"parent")
+        try state.consume(row(turn))
+        for changedField in ["effort","inputID","executionID"] {
+            var changed = try row(turn)
+            changed["data"][changedField] = "different"
+            XCTAssertThrowsError(try state.consume(changed)) { XCTAssertEqual(($0 as? AgentError)?.code,"subagent_recovery") }
+        }
+        var running = turn; running.effort = nil; running.status = .running
+        try state.consume(row(running))
+        XCTAssertEqual(state.latest("child")?.effort,"low")
+        var terminal = running; terminal.status = .interrupted
+        try state.consume(row(terminal)); try state.consume(row(terminal))
+        XCTAssertEqual(state.latest("child")?.effort,"low")
+        terminal.status = .completed
+        XCTAssertThrowsError(try state.consume(row(terminal))) { XCTAssertEqual(($0 as? AgentError)?.code,"subagent_recovery") }
+    }
+
+    func testOlderV3OriginMirrorAllowsFollowUpButRejectsConflictingCapabilitiesOrIdentity() async throws {
+        for mirror in ["missing-capabilities","conflicting-capabilities","changed-tools"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let profile = try fixtureProfile()
+            var plan = SubagentPlan(origin:subagentFixtureOrigin(),task:"Never replay",resultMessageID:"receipt")
+            plan.origin.model.thinkingLevel = "low"; plan.origin.model.reasoning = ["low","high"]
+            let turn = AgentChildTurn(childID:"child",turn:1,executionID:"child-execution",parentExecutionID:"execution",generation:0,runtimeID:"runtime",epoch:"epoch",inputID:"input",task:plan.task,call:plan.origin.link.call,effort:"low")
+            let op = AgentOperation(key:turn.call,digest:"digest",receipt:["version":3,"accepted":true,"child_id":"child","turn":1,"effort":"low"],plan:plan,turn:turn,epoch:turn.epoch)
+            var oldOrigin = plan.origin; oldOrigin.model.reasoning = mirror == "conflicting-capabilities" ? [] : nil
+            if mirror == "changed-tools" { oldOrigin.tools.append("not-granted") }
+            var terminal = turn; terminal.effort = nil; terminal.status = .notExecuted
+            terminal.result = SubagentToolResult(plan:plan,status:terminal.status,accountingRevision:0)
+            terminal.normalizeResult()
+            for id in ["parent","child"] {
+                let journal = try SessionJournal(url:root.appendingPathComponent(id + ".jsonl"),id:id,cwd:root,binding:profile.binding,create:true,managedChild:id == "child")
+                try journal.promoteToSteering(managedChild:id == "child")
+                if id == "parent" {
+                    try journal.append(["type":"custom","customType":JSON(JournalRecordKind.agentOperation),"ownerID":"parent","data":try subagentJSON(op)])
+                } else {
+                    // 0.1.127 completes publication for a marker-only child,
+                    // decoding away the capability list and turn effort.
+                    try journal.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":try subagentJSON(oldOrigin)])
+                    try journal.append(["type":"custom","customType":JSON(JournalRecordKind.agentTerminal),"ownerID":"parent","data":try subagentJSON(terminal)])
+                }
+            }
+            let client = AccountedAgentScript([answer("follow-up")]), coordinator = AgentSteeringCoordinator()
+            if mirror != "missing-capabilities" {
+                XCTAssertThrowsError(try effortFixture(root:root,client:client,resume:true)) { XCTAssertEqual(($0 as? AgentError)?.code,"subagent_recovery") }
+                continue
+            }
+            let parent = try effortFixture(root:root,client:client,resume:true)
+            await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+            let before = await client.requests; XCTAssertTrue(before.isEmpty)
+            _ = try await accept("subagent_send",["child_id":"child","message":"Continue","effort":"high"],parent:parent,coordinator:coordinator)
+            try await eventually { await parent.agentState().latest("child")?.status.terminal == true }
+            let state = await parent.agentState(), profiles = await client.profiles
+            XCTAssertEqual(state.latest("child")?.status,.completed)
+            XCTAssertEqual(state.latest("child")?.effort,"high")
+            XCTAssertEqual(profiles.first?.raw["thinkingLevel"],"high")
+            await coordinator.drain(); await parent.close()
+        }
+    }
+
+    func testOlderHelperCheckpointCannotDiscardAcceptedEffortOrCapabilities() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = AccountedAgentScript([answer("first")]), coordinator = AgentSteeringCoordinator()
+        let parent = try effortFixture(root:root,client:client)
+        await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
+        let receipt = try await accept("subagent_start",["task":"Task","mode":"background","effort":"low"],parent:parent,coordinator:coordinator)
+        let child = try XCTUnwrap(receipt["child_id"].text)
+        try await eventually { await parent.agentState().latest(child)?.status.terminal == true }
+        await coordinator.drain(); await parent.refreshCheckpoint(); await parent.close()
+        let path = root.appendingPathComponent("parent.jsonl")
+        var checkpoint = try XCTUnwrap(JournalCheckpoint.read(for:path))
+        XCTAssertNotNil(AgentSession.loadCheckpoint(checkpoint,url:path),"Current checkpoints remain usable")
+        var helper = try JSON.parse(Data(checkpoint.helper.utf8))
+        var state = try JSONDecoder().decode(SubagentJournalState.self,from:helper["subagents"].data())
+        // Model the released helper's typed decode/re-encode. JSON result
+        // envelopes stay intact, but unknown typed optional fields disappear.
+        for id in state.plans.keys { state.plans[id]?.origin.model.reasoning = nil }
+        for id in state.family!.operations.keys {
+            state.family?.operations[id]?.plan?.origin.model.reasoning = nil
+            state.family?.operations[id]?.turn?.effort = nil
+        }
+        for id in state.family!.turns.keys { state.family?.turns[id]?.effort = nil }
+        helper["subagents"] = try subagentJSON(state)
+        helper = helper.removing(["subagentEffortVersion"])
+        checkpoint.helper = helper.encoded(); try checkpoint.write(for:path)
+        XCTAssertNil(AgentSession.loadCheckpoint(checkpoint,url:path),"Replay the authoritative journal when an older cache omits effort")
+        let nextClient = AccountedAgentScript([])
+        let reopened = try effortFixture(root:root,client:nextClient,resume:true)
+        let recovered = await reopened.subagents, requests = await nextClient.requests
+        XCTAssertEqual(recovered.family?.latest(child)?.effort,"low")
+        XCTAssertEqual(recovered.plans.values.first?.origin.model.reasoning,PiProviderRules.thinkingLevels)
+        XCTAssertTrue(requests.isEmpty)
+        await reopened.close()
+    }
 }
 
 extension SubagentPolicyEffortTests {

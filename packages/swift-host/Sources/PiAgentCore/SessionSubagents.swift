@@ -6,6 +6,7 @@ struct SubagentEnvironment: Sendable {
     let parentAttemptID: String?
     let generation: Int, runtimeID: String
     let profile: Profile, apiKey: String
+    let connectionSupportsReasoning: Bool
     let models: [SubagentModelGrant]
     let definitions: [ToolDefinition], capabilities: [String]
     let mcpPolicy: JSON?
@@ -52,7 +53,7 @@ extension AgentSession {
 
     func delegationEnvironment() async throws -> SubagentEnvironment {
         guard canDelegate, !closed, !queuePaused, let execution = activeTaskPresentation?.executionID else { throw AgentError("tool_unavailable", "Delegation is unavailable in this session") }
-        let generation = stopCount, profile = turnProfile
+        let generation = stopCount, profile = turnProfile, connectionSupportsReasoning = self.profile.raw["reasoning"].flag == true
         let definitions = await tools.definitions(readOnly: readOnly), capabilities = await tools.capabilityIDs(readOnly: readOnly)
         let mcpPolicy = await tools.delegationMCPPolicy()
         let snapshot: ResourceSnapshot
@@ -60,7 +61,8 @@ extension AgentSession {
         try Task.checkCancellation()
         guard generation == stopCount else { throw CancellationError() }
         return SubagentEnvironment(parent: self, ownerID: id, turnID: currentTurnID, executionID: execution, parentAttemptID: currentAttemptIDs.last, generation: generation, runtimeID: displayEpoch,
-                                   profile: profile, apiKey: apiKey, models: turnSubagentModels, definitions: definitions, capabilities: capabilities,
+                                   profile: profile, apiKey: apiKey, connectionSupportsReasoning: connectionSupportsReasoning,
+                                   models: turnSubagentModels, definitions: definitions, capabilities: capabilities,
                                    mcpPolicy: mcpPolicy, tools: tools, client: client, resources: snapshot, cwd: cwd, directory: directory, readOnly: readOnly,
                                    traces: traces, retry: retrySettings, changed: changed)
     }

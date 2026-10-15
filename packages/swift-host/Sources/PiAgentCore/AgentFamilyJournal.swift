@@ -93,8 +93,11 @@ struct AgentFamilyState: Codable, Sendable, Equatable {
         case JournalRecordKind.agentOperation:
             try operation(JSONDecoder().decode(AgentOperation.self,from:data.data()))
         case JournalRecordKind.agentTurn, JournalRecordKind.agentTurnState, JournalRecordKind.agentTerminal:
-            let turn = try JSONDecoder().decode(AgentChildTurn.self,from:data.data())
+            var turn = try JSONDecoder().decode(AgentChildTurn.self,from:data.data())
             if let old = turns[turn.id] {
+                // Released v3 helpers omit unknown optional fields when they
+                // seal recovery. Absence cannot erase the accepted effort.
+                if turn.effort == nil { turn.effort = old.effort }
                 var identity = old; identity.status = turn.status; identity.result = turn.result
                 guard identity == turn, !old.status.terminal || old == turn else { throw SubagentRecovery.damaged() }
             }
