@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Evicted budget owners stay on cost-only refresh while a running saved side pins their runtime. Side activity updates authoritative spend without recreating a transcript; closing the last dependent releases the owner and retires late budget replies. Live-display counts cover eviction, activity and closure. [Round 16 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-16-released-owner-display-lifetime).
+
 - [x] Budget-rejected queued sub-agents seal their prepared child journal and release the runtime, retaining `not_executed` without cancelling other dispatched requests. The limit-stop table covers 18 accepted children across all five charge sources, exact terminal/release behavior, and a later follow-up after raising the budget. [Round 15 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-15-queued-child-finalization).
 
 - [x] Interrupted side-family deletion keeps durable repair proof and removes owner journals before managed children, so retries and cold main opens preserve accounting. Editing regression coverage now matches automatic idle-dependent release. Indexed direct-owner lookups and a deduplicated registration union keep both queries at indexed-owner cost on 30,000 attempts. [Round 14 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-14-retryable-deletion-and-indexed-direct-owners).
