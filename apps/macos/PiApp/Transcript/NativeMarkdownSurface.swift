@@ -107,6 +107,9 @@ import AppKit
     /// The copy actions assistive technology offers for the text: each
     /// fence's code, and each heading's section, as their buttons copy them.
     var copyTargets: () -> [MarkdownCopyTarget] = { [] }
+    /// A source-preserving reader can supply its original Markdown selection.
+    /// Ordinary assistant selection keeps its existing rendered-copy behavior.
+    var sourceCopy: (([NSRange]) -> String?)?
     override func accessibilityCustomActions() -> [NSAccessibilityCustomAction]? {
         var actions: [NSAccessibilityCustomAction] = []
         if let storage = textStorage {
@@ -148,6 +151,7 @@ import AppKit
     }
     /// The reply's text over `ranges`, as a copy gives it.
     func copyText(_ ranges: [NSRange]) -> String {
+        if let source = sourceCopy?(ranges) { return source }
         guard let storage = textStorage else { return "" }
         let text = storage.string as NSString
         var result = ""

@@ -562,3 +562,181 @@ The lead retains independent review and integration with sub-cost, plus follow-u
 on the unconfirmed parallel retention failure. Only `dev/a128-sub-display` is
 published; `dev/next` is not merged or pushed. No cost accounting, webhook, helper,
 tool-result text, journal format or side-draft persistence contract changed.
+
+## Lead review round 3: focused commands and Markdown
+
+Baseline: `6b52565564adc6fec1827604f90aab14eb6e4756` on
+`dev/a128-sub-display`. This round addresses all three independent review findings,
+the owner's rich-text addition, and the two picker gallery notes. All artifacts
+below are under `/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display/`.
+
+### Root causes and changes
+
+- Delete Chat still used the main selection after child navigation moved to hosted
+  readers. The command now resolves the focused conversation, and both menu
+  validation and invocation reject a managed child. Explicit parent focus retains
+  its ordinary confirmation. The regression cancels confirmations in its generated
+  fixture and asserts that child focus never even prepares the parent's deletion.
+- Picker refresh replaced its stack without notifying the enclosing native document.
+  It now propagates `PiKit.sizeChanged`, so added/removed family rows change document
+  height and the popover's preferred size without reopening it.
+- Embedded children have no header anchor of their own. Their family menu now
+  addresses the visible main-column picker; it is disabled when that main chat has
+  no family. Popped-out children continue to address their actual delegation family.
+- Task/Result cards and typed deliveries previously used plain monospaced text.
+  `TranscriptAgentMarkdown` now uses the same `TranscriptMarkdown` cache,
+  `NativeMarkdownContainer`, native text builder, syntax highlighter and link policy
+  as assistant replies. This includes parent-authored delegated tasks, child results,
+  and note/blocker/question reports. No model-facing text or journal bytes change.
+- Long prose uses a 168-point preview, Show more/less, and original-source Copy.
+  Full selection copies the original Markdown; selected runs map back to their
+  source spelling, including inline emphasis/code/links and repeated words.
+  Truncation/error notices are separate from copied content. Native selection,
+  rendered Find and existing reply file-link actions are retained. Images remain
+  inert notes, unsafe links remain non-actions, and HTML is not interpreted.
+- A source of at least 16 KiB parses off the main thread into immutable cached
+  blocks. Initial native text is bounded to 1,200 characters; expansion adds bounded
+  batches with a main-loop yield between them. Source/environment generations and
+  cancellation reject superseded preparation and expansion. Settled measurements
+  are reused; no transcript-wide work is introduced in layout.
+- Two implementation checks exposed additional issues before completion: downward
+  stack invalidation recursively invalidated Markdown, and Find could finish between
+  text adoption and the row's height validation. The first now invalidates upward
+  only; the second waits for native height validation before choosing/scrolling to
+  its target. The final tests verify both the on-screen match and this real guard.
+- Picker section labels use the small uppercase Pi style. New Side has an accent
+  plus icon and ordinary Pi hover/pressed feedback. A common title inset aligns it
+  with side/agent rows; current entries use the same leading gutter for a checkmark.
+
+### Failing-first and mutation evidence
+
+| Check | Observed result | Artifact |
+| --- | --- | --- |
+| Focused Delete and available family anchor, before fixes | 21 reader tests; four assertion failures in the two new regressions | `review3-red-SubagentReaderTests.log` |
+| Open picker document resizing, before fix | 14 family tests; five failed assertions | `review3-red-ConversationFamilyTests.log` |
+| Markdown renderer, preview, Copy and untrusted parity, before implementation | Four tests; 13 failed assertions | `review3-red-SubagentMarkdownTests.log` |
+| Unbounded native Markdown adoption | 95.65 ms main-loop gap; 55.69 ms native update plus 31.50 ms layout | `review3-second-SubagentPerformanceTests.log` |
+| Mutation: resolve Delete through selected main chat | Two assertions fail: menu incorrectly enabled and parent confirmation prepared | `review3-mutation-delete.log`, `.status` |
+| Mutation: remove pending-height guard from Markdown Find | Both visible-match and pending-target assertions fail | `review3-mutation-find.log`, `.status` |
+| Restored Markdown class, five iterations | 50 passed, zero failures | `review3-final-SubagentMarkdownTests.log` |
+
+Both real production mutations were restored in `finally` blocks. The first
+performance iteration also exposed an invalidation recursion in a typed message;
+its stack evidence is `review3-perf-crash.ips`. The upward-only notification fix
+passed the existing 400-message/progress-card test. The Find race was caught again
+by the affected-suite run before adding its deterministic pending-height assertion;
+removing the final guard reproduces both failures above.
+
+The original 50 ms whole-window heartbeat threshold also counted the fixture's
+AppKit/window work: even bounded Markdown recorded 54–64 ms gaps while its native
+update/layout took only 7–10 ms. The final check separately enforces a 50 ms native
+Markdown batch/draw budget and a 100 ms whole-window responsiveness budget. These
+are generated Debug-fixture measurements, not a claim about every machine or
+arbitrary result size. The 50 KB case expands the complete result, compares it to
+an assistant's rendering, verifies 30 unchanged layouts reuse geometry, and checks
+that the 400 settled messages and sidebar are not rebuilt.
+
+### Gallery
+
+The standalone fixture classes use only generated conversations, memory credentials
+and their own native windows; no helper/provider calls or desktop-wide captures.
+The refreshed sets are:
+
+- `gallery-review3-markdown/`: 28 PNGs, card Task/Result, report, delegated-task header,
+  folded/expanded and code/table detail views, light/dark at 1240×800 and 920×600.
+- `gallery-review3-panel/`: 68 PNGs, running/done, main pill closed/open, six compact
+  rows, side/child tabs, side-owned families, popped-out readers, narrow panes and
+  New Side. Popup bounds, six-row visibility, numbering and keyboard access are
+  asserted in the gallery class.
+- `gallery-review3-display/`: 40 PNGs, finished collapsed/expanded turns, numbered
+  cards, typed parent/child messages, reports and family Inspector, including a
+  376-point transcript pane.
+
+Each directory has `manifest.txt`; `review3-contact-*.jpg` sheets cover every PNG.
+The fixture captures rich folded results after scrolling their controls into view,
+so 920×600 shows the preview and Show more. Additional detail captures show the full
+code/table section. Native labels/actions and keyboard routing are checked; an
+interactive VoiceOver session is not claimed.
+
+Reproduce a gallery with its class alone (substitute the corresponding environment
+variable and class for the other sets):
+
+```sh
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display \
+TEST_RUNNER_PI_APP_SUB_MARKDOWN_GALLERY=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display/gallery-review3-markdown \
+scripts/test-macos.sh -only-testing:PiAppTests/SubagentMarkdownGalleryTests
+```
+
+### Final native validation
+
+Serial classes run alone. The affected parallel selection covers
+`ConversationFamilyTests`, `SubagentDeletionTests`, `SubagentDisplayTests`,
+`SubagentPanelTests`, `SubagentSteeringPresentationTests`, `SubagentTranscriptTests`,
+`MarkdownTextSurfaceTests`, `NativeMarkdownSizingTests`, `TranscriptFindTests`,
+`TranscriptTurnFoldTests` and `CompactTurnReportTests`.
+
+One existing geometry assertion needed a fixture correction: it checked a Copy
+button inside an entirely hidden, empty Result container. It now checks
+`isHiddenOrHasHiddenAncestor`, retaining all geometry assertions for visible
+controls at 320, 376 and 656 points. The preceding failed selection is retained as
+`review3-restored-affected-parallel.log` (one test, three assertions).
+
+| Final affected run | Passed | Skipped | Log |
+| --- | ---: | ---: | --- |
+| `SubagentReaderTests`, restored deletion guard | 21 | 0 | `review3-final-SubagentReaderTests.log` |
+| `NativeApplicationTests`, alone | 11 | 0 | `review3-final-NativeApplicationTests.log` |
+| `SubagentMarkdownTests`, final 11 methods × three iterations | 33 | 0 | `review3-final-copy-SubagentMarkdownTests.log` |
+| `SubagentPerformanceTests`, alone | 2 | 0 | `review3-restored-SubagentPerformanceTests.log` |
+| Eleven affected parallel-lane classes listed above | 112 | 4 | `review3-complete-affected-parallel.log` |
+| Standalone picker gallery | 1 | 0 | `review3-gallery-panel.log` |
+| Standalone Markdown gallery | 1 | 0 | `review3-complete-gallery-markdown.log` |
+| Standalone numbered/collapsed display gallery | 1 | 0 | `review3-complete-gallery-display.log` |
+| **Affected total, including repeated executions** | **182** | **4** | **160 distinct passing tests; 136 gallery PNGs** |
+
+The earlier five-iteration Markdown run (50 passed) is separate from this table.
+The final 55,812-byte/400-history-message performance fixture measured a 24.00 ms
+maximum draw, 48.81 ms whole-window heartbeat gap and 4.15 ms maximum native Markdown
+batch for cold preview preparation. Full expansion measured 23.17 ms maximum draw,
+78.77 ms whole-window gap and 13.10 ms maximum native Markdown batch. The 30 settled
+layouts reused the native geometry, and sidebar computations did not advance.
+The existing 20-progress-update case also passed, with zero sidebar recomputations.
+
+The **one full native parallel lane**, four workers with `test-lanes.py parallel`
+exclusions, passed **2,471 tests, zero failures, 37 skips** (2,508 total), exit 0,
+in 561.5 seconds including setup. Exact arguments, console output, status and native
+result summary are `review3-full-parallel-arguments.json`,
+`review3-full-parallel.log`, `review3-full-parallel-status.json` and
+`review3-full-parallel-summary.json`. The earlier round-2 retention failure did not
+recur; its historical cause is still unconfirmed. Automatic result bundles remain
+under this build root and are pruned by the normal script; no named bundle was used.
+
+**Validation ordering:** while that full lane was already running against its
+built binary, an additional source-copy audit found that partial selections near
+entities/escapes could include the whole parser run, image labels lost their `!`,
+and escaped parentheses or quoted titles could end copied links too early. The
+production copy function was extracted unchanged into a Foundation-only check:
+four cases failed in `review3-red-copy-provenance.log`, then two link cases failed
+in `review3-red-copy-link-spelling.log`. The final mapping preserves those authored
+tokens and uses the parser's image identity; all six checks pass in
+`review3-green-copy-provenance.log`. The native class then passed **33/33** after the
+full lane, covering eight corresponding cases (including UTF-16 entities) plus all
+rendering, Find, folding, generation and Copy regressions. Its native summary is
+`review3-final-copy-summary.json`. This final isolated copy change is covered by the
+post-lane class, not by the earlier full-lane binary. The full lane was not repeated.
+It changes no layout, drawing, session/tool behavior or model input, so the inspected
+gallery and rendering performance measurements remain applicable.
+
+All 136 captures and their contact sheets were inspected; representative full-size
+checks include `gallery-review3-panel/running-light-1240x800-open.png`,
+`gallery-review3-markdown/light-920x600-card-folded.png`,
+`gallery-review3-markdown/dark-920x600-card-details.png` and the child's delegated
+task. The palette, uppercase section hierarchy, action tint/alignment, code/table
+rendering, bounded previews and narrow controls remain legible. Finished compact
+turns still show only the main response; the separate family header remains available.
+
+No helper package, cost accounting, webhook, model-facing text, journal format,
+permission/capture/tool/vault boundary or ephemeral side-draft persistence changed.
+No installed app, real preferences, Keychain, paid provider or `xctrace --launch`
+was used. The lead owns independent review, integration with sub-cost and any
+follow-up on the old intermittent retention failure. This stream publishes only
+`dev/a128-sub-display`; it does not merge or push `dev/next`.

@@ -14,6 +14,27 @@ final class ConversationFamilyTests: XCTestCase {
         model.automaticContextOperation = { _, _ in throw CancellationError() }
         return model
     }
+    @MainActor func testOpenPickerRemeasuresItsDocumentWhenFamilyRowsChange() throws {
+        let model = try fixture(), child = try XCTUnwrap(model.record("chat-child"))
+        let picker = AgentFamilyPopoverView(model: model, sessionID: "chat-parent", close: {}, ownerWindow: nil)
+        let document = PiPopoverPresenter.NativeDocument(content: picker, width: 400, room: 480)
+        let controller = NSViewController(); document.controller = controller
+        document.layoutSubtreeIfNeeded(); let before = document.frame.height
+        document.needsLayout = false
+        for index in 0..<7 {
+            var next = child; next.id = "new-agent-\(index)"; next.delegation?.childSessionID = next.id; next.subagentNumber = index + 3
+            model.chats.append(next)
+        }
+        picker.refresh()
+        XCTAssertTrue(document.needsLayout, "The document, not only the rebuilt stack, must remeasure")
+        document.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(document.frame.height, before)
+        XCTAssertEqual(document.frame.height, picker.height(forWidth: 400))
+        XCTAssertEqual(controller.preferredContentSize.height, 480)
+        model.chats.removeAll { $0.id.hasPrefix("new-agent-") }; picker.refresh(); document.layoutSubtreeIfNeeded()
+        XCTAssertEqual(document.frame.height, before)
+        XCTAssertEqual(controller.preferredContentSize.height, before)
+    }
     @MainActor func testNormalTopicsAndFlatOmitSidesIncludingPinnedAndOpenDraftsButSearchFindsSavedSides() throws {
         let model = try fixture()
         model.chats[2].pinnedAt = Date()

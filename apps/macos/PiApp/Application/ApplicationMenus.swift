@@ -112,7 +112,7 @@ import AppKit
         command(file, "Open File…", key: "p", enabled: { [model] in model.canQuickOpen }) { [model] in model.showQuickOpen(in: NSApp.keyWindow) }
         command(file, "Import Pi Session…", action: model.importChat)
         command(file, "Rename Chat…", enabled: { [model] in model.conversationCommandsEnabled }, action: model.rename)
-        command(file, "Delete Chat…", enabled: { [model] in model.conversationCommandsEnabled }, action: model.deleteChat)
+        command(file, "Delete Chat…", enabled: { [model] in model.canDeleteCommandChat }, action: model.deleteChat)
         file.addItem(.separator())
         command(file, title: { [model] in model.commandChat?.isArchived == true ? "Restore Chat" : "Archive Chat" },
                 enabled: { [model] in model.commandChat != nil }, action: model.archiveCommandChat)

@@ -21,7 +21,9 @@ final class SubagentDisplayTests: XCTestCase {
         for width: CGFloat in [320, 376, 656] {
             card.frame = CGRect(x: 0, y: 0, width: width, height: card.height(width: width))
             card.layoutSubtreeIfNeeded()
-            for button in ConversationPaneTests.views(PiKit.Button.self, in: card) where !button.isHidden {
+            // An empty Result hides its entire Markdown container, including
+            // its Copy control. Check the controls actually presented to users.
+            for button in ConversationPaneTests.views(PiKit.Button.self, in: card) where !button.isHiddenOrHasHiddenAncestor {
                 let frame = card.convert(button.bounds, from: button)
                 XCTAssertGreaterThanOrEqual(frame.minX, card.panel.frame.minX)
                 XCTAssertLessThanOrEqual(frame.maxX, card.panel.frame.maxX, "\(button.title) is clipped at \(width)")

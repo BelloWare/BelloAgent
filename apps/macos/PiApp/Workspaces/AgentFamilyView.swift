@@ -72,6 +72,7 @@ import Combine
     let primary: String
     let secondary: String?
     let current: Bool
+    var leadingSymbol: String?
     var stop: PiKit.IconButton?
     var navigate: ((NSEvent) -> Void)?
     var focused: (() -> Void)?
@@ -85,12 +86,16 @@ import Combine
     override func cornerRadius(for size: CGSize) -> CGFloat { PiRadius.sm }
     override func layout() { super.layout(); stop?.frame = CGRect(x: max(0, bounds.width - 32), y: (bounds.height - 24) / 2, width: 24, height: 24) }
     override func drawContent(in rect: CGRect) {
-        let width = max(0, rect.width - (stop == nil ? 20 : 46))
-        PiKit.Line(primary, font: PiKit.Font.body, color: current ? .piAccent : .piInk)
-            .draw(in: CGRect(x: 10, y: secondary == nil ? 7 : 5, width: width, height: 20), truncation: .end, scale: piScale)
+        let inset: CGFloat = 30
+        let width = max(0, rect.width - inset - (stop == nil ? 10 : 36))
+        if let symbol = leadingSymbol ?? (current ? "checkmark" : nil) {
+            PiKit.Symbol(symbol, size: 12).drawPlaced(centredIn: CGRect(x: 10, y: 0, width: 12, height: rect.height), color: .piAccent, scale: piScale)
+        }
+        PiKit.Line(primary, font: PiKit.Font.body, color: current || leadingSymbol != nil ? .piAccent : .piInk)
+            .draw(in: CGRect(x: inset, y: secondary == nil ? 7 : 5, width: width, height: 20), truncation: .end, scale: piScale)
         if let secondary {
             PiKit.Line(secondary, font: PiKit.Font.caption, color: .piInkSecondary)
-                .draw(in: CGRect(x: 10, y: 25, width: width, height: 16), truncation: .end, scale: piScale)
+                .draw(in: CGRect(x: inset, y: 25, width: width, height: 16), truncation: .end, scale: piScale)
         }
     }
     override func styleFace() {
@@ -143,8 +148,8 @@ import Combine
         return row
     }
     private func heading(_ title: String) -> NSView {
-        ShellStack(.vertical, spacing: 0, padding: NSEdgeInsets(top: 5, left: 10, bottom: 3, right: 10),
-            [.view(shellLine(title, font: PiKit.Font.body, color: .piInk), .fill)])
+        ShellStack(.vertical, spacing: 0, padding: NSEdgeInsets(top: 5, left: 30, bottom: 3, right: 10),
+            [.view(PiKit.TextLine(PiKit.Line(title, font: PiKit.Font.micro, color: .piInkTertiary, tracking: 0.5, uppercased: true)), .fill)])
     }
     func refresh() {
         let value = model.conversationFamily(sessionID)
@@ -165,7 +170,7 @@ import Combine
             let newSide = row("New Side", id: "new-family-side", label: "New side beside the parent chat") { [weak model, close] in
                 close(); model?.openNewFamilySide(value.ownerID)
             }
-            newSide.isEnabled = value.canAddSide; rows.append(newSide)
+            newSide.leadingSymbol = "plus"; newSide.isEnabled = value.canAddSide; rows.append(newSide)
         }
         for group in value.agentFamilies where !group.members.isEmpty {
             let ownerTitle = model.record(group.ownerID)?.title ?? "Unavailable parent"
@@ -206,6 +211,7 @@ import Combine
         for (index, control) in enabled.enumerated() { control.nextKeyView = enabled[(index + 1) % enabled.count] }
         if !openButtons.contains(where: { $0.accessibilityIdentifier() == selectedID && $0.isEnabled }) { selectedID = openButtons.first(where: \.isEnabled)?.accessibilityIdentifier() }
         needsLayout = true
+        PiKit.sizeChanged(self)
         if restoreFocus { window?.makeFirstResponder(enabled.first { $0.accessibilityIdentifier() == focusID } ?? self) }
     }
     private func confirmStopAll() {

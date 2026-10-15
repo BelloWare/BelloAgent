@@ -184,6 +184,7 @@ extension TranscriptNativeDocument {
     static func isToolInput(_ text: NSView) -> Bool {
         var current = text.superview, capped = false
         while let ancestor = current, !(ancestor is TranscriptNativeActionRow) {
+            if let prose = ancestor as? TranscriptAgentMarkdown { return prose.isToolInput }
             if let section = ancestor as? TranscriptCardSection { return section.accessibilityLabel() == "Tool input" }
             if ancestor is TranscriptCappedText { capped = true }
             if ancestor is TranscriptNativeTerminalCard { return !capped }
@@ -197,11 +198,19 @@ extension TranscriptNativeDocument {
     /// a reader who folds it again afterwards keeps it folded.
     func expandCardsForFocus(in row: TranscriptRowContainer) {
         guard let focus = highlights.focus else { return }
+        func expandProse(_ view: NSView) {
+            guard let prose = view as? TranscriptAgentMarkdown, !prose.expanded,
+                  focus.scopeCall.map({ Self.card(holding: prose)?.tool?.id == $0 && (focus.scopeInput || !prose.isToolInput) }) ?? true,
+                  prose.contains(focus.needle, flexible: focus.flexibleSpace) else { return }
+            prose.setExpanded(true)
+        }
         func visit(_ view: NSView) {
+            expandProse(view)
             if let action = view as? TranscriptNativeActionRow, let tool = action.tool,
                focus.scopeCall.map({ $0 == tool.id }) ?? true,
                [tool.output, tool.input].contains(where: { !transcriptRanges(of: focus.needle, in: $0 as NSString, flexible: focus.flexibleSpace).isEmpty }) {
                 func expand(_ view: NSView) {
+                    expandProse(view)
                     if let read = view as? TranscriptNativeReadCard, !read.expanded { read.setExpanded(true) }
                     if let diff = view as? TranscriptNativeDiffCard, !diff.expanded { diff.setExpanded(true) }
                     for child in view.subviews { expand(child) }
@@ -275,6 +284,14 @@ extension TranscriptNativeDocument {
         let index = max(0, focus.occurrence)
         for row in rows {
             if row.superview === self, row.isHosted {
+                func preparing(_ view: NSView) -> Bool {
+                    // Text adoption precedes the row's asynchronous height
+                    // validation. Do not finish Find against the former frame
+                    // and clamp its destination to the old document height.
+                    if let prose = view as? TranscriptAgentMarkdown { return prose.awaitingFindText || row.needsMountedValidation }
+                    return view.subviews.contains { !$0.isHidden && preparing($0) }
+                }
+                if preparing(row) { if pending == nil { pending = row }; blocked = true; continue }
                 // Every occurrence in order, a card's lines counted from what
                 // they hold whether or not each line is built now.
                 var ranges: [(text: NSTextView?, range: NSRange, lines: TranscriptCardLines?, line: Int, source: String)] = []

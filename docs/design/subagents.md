@@ -20,6 +20,9 @@ follow in stable number order with status, model, spend and a trailing Stop icon
 for running children. Rows use at most two lines; six fit without scrolling at
 1240×800. New Side shares their title inset. Spend uses the existing cents/sub-cent
 money formatter; the reported-usage caveat is in the tooltip. Running, queued and stopping counts are distinct.
+Section labels use the small uppercase style. New Side is an accent action with
+a plus icon and the same hover/pressed feedback and title alignment as the rows.
+An open picker remeasures its document when family membership changes.
 Stop All uses a custom Pi confirmation; Inspect Family uses the existing Inspector.
 View, Conversation and chat menus offer Sides and Agents. Tab/arrow keys and complete
 VoiceOver labels provide access. The parent sidebar row has one leading spinner and
@@ -65,6 +68,21 @@ active tab sets the native window title. In-chat Find/Next/Previous, Inspector F
 and Stop shortcuts route to the hosted child, excluding sheets and other popups.
 A child window keeps those commands and Back when the main window shows Reports;
 an embedded reader remains covered with its main chat.
+Delete Chat resolves the focused conversation and is disabled for managed readers;
+it never falls back to deleting the selected main chat. An embedded reader's Sides
+and Agents menu addresses the visible main-column picker (disabled if that main
+has no family). Its own window continues to address its actual delegation family.
+
+Task and Result cards, typed parent/child deliveries, reports and the delegated
+task header share the assistant's cached native Markdown pipeline, including code
+highlighting, links, tables and quotes. Long prose starts with a 168-point preview;
+Show more/less preserves the reading position. Large sources parse away from the
+main thread and expanded native text is adopted in bounded batches. Find searches
+the rendered words and opens the matching preview before highlighting. Copy keeps
+the original Markdown; a selected span keeps its original source spelling. Error
+and truncation notices stay outside that source. Assistant link/image/HTML policy
+is unchanged, with no new network loads. Folding a finished turn still excludes
+all sub-agent content, and saved/model-facing text remains byte-for-byte unchanged.
 
 Full identities retain **Sub-agent N · description**. Compact family/search/tab
 labels use **#N · description**; tabs truncate at the tail and native titles,

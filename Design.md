@@ -10,6 +10,10 @@ VoiceOver. The old hover sides panel and its pin preference are removed.
 The pill stays left of the pane divider; sides and read-only child tabs open beside
 the main chat. Unsent side drafts remain memory-only. See the
 [display amendment](docs/design/subagents.md#01128-display-update--owner-decision-2026-10-15).
+Hosted readers keep command ownership: managed children cannot delete the selected
+main chat, and family menus always address a visible picker. Sub-agent tasks,
+results and reports share the assistant Markdown surface, with cached bounded
+previews, source Copy and rendered Find; large results parse off the main thread.
 
 ## Webhook when a chat finishes (0.1.105)
 

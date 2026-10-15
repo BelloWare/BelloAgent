@@ -183,7 +183,13 @@ extension WorkspaceModel {
             chats.insert(copy, at: 0); await select(copy.id)
         } catch { self.error = error.localizedDescription } }
     }
-    func deleteChat() { deleteChat(selectedID) }
+    var canDeleteCommandChat: Bool {
+        conversationCommandsEnabled && (focusedSessionID ?? selectedID).flatMap(record).map { !$0.isSubagent } == true
+    }
+    func deleteChat() {
+        guard canDeleteCommandChat else { return }
+        deleteChat(focusedSessionID ?? selectedID)
+    }
     /// Deletes any chat by id, so archived chats can go straight from the sidebar.
     func deleteChat(_ id: String?) {
         guard let id, let item = record(id), !item.isSubagent else { return }

@@ -40,6 +40,45 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
     @MainActor private func otherTab(_ model: WorkspaceModel) -> HostedTab {
         model.tabs.open(kind: HostedTab.kind, key: "other") { HostedTab(key: "other", title: "Other reader", symbol: "doc") }
     }
+    @MainActor func testDeleteCommandCannotDeleteTheMainChatFromAFocusedManagedReader() async throws {
+        let (model, _) = try fixture()
+        _ = try await open("chat-child", in: model)
+        let menus = ApplicationMenus(model: model, updates: UpdateController(), workspaceWindow: { nil }, revealWorkspace: {}, showSettings: {})
+        let old = NSApp.mainMenu; defer { NSApp.mainMenu = old }
+        menus.install()
+        let file = try XCTUnwrap(NSApp.mainMenu?.items.first { $0.title == "File" }?.submenu)
+        let delete = try XCTUnwrap(file.items.first { $0.title == "Delete Chat…" })
+        XCTAssertFalse(menus.validateMenuItem(delete), "A managed reader has no independent Delete Chat command")
+        var asked: [ChatQuestion] = []
+        model.questions.answer = { asked.append($0); return false }
+        model.deleteChat()
+        for _ in 0..<30 { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertTrue(asked.isEmpty, "The focused child must never prepare its main chat's deletion")
+        XCTAssertNotNil(model.record("chat-parent")); XCTAssertNotNil(model.record("chat-child"))
+        model.focusPane("chat-parent")
+        XCTAssertTrue(menus.validateMenuItem(delete))
+        model.deleteChat()
+        for _ in 0..<200 where asked.isEmpty { try await Task.sleep(for: .milliseconds(2)) }
+        XCTAssertEqual(asked.count, 1, "Explicit parent focus still offers its ordinary confirmation")
+    }
+    @MainActor func testEmbeddedReaderFamilyMenuTargetsTheVisibleMainHeader() async throws {
+        let (model, _) = try fixture()
+        let tab = try await open("chat-child", in: model)
+        var other = try XCTUnwrap(model.record("chat-parent")); other.id = "other-main"; other.title = "Other main"
+        model.chats.append(other)
+        await model.select(other.id); tab.focus()
+        XCTAssertFalse(model.canShowAgentFamily, "There is no picker anchor when the visible main chat has no family")
+        var side = try XCTUnwrap(model.record("chat-side")); side.id = "other-side"; side.parentSessionID = other.id; model.chats.append(side)
+        var owners: [String] = []
+        let subscription = model.agentFamilyRequests.sink { owners.append($0) }
+        defer { subscription.cancel() }
+        XCTAssertTrue(model.canShowAgentFamily)
+        model.showAgentFamily()
+        XCTAssertEqual(owners, [other.id], "Embedded commands use the main column's available picker")
+        model.tabs.popOut(tab)
+        model.showAgentFamily()
+        XCTAssertEqual(owners.last, "chat-parent", "A child window has its own family anchor")
+    }
     @MainActor func testReopeningAHiddenChildRevalidatesSavedHistoryWithoutALiveHelper() async throws {
         let (model, gate) = try fixture()
         model.displays["chat-child"]?.historyState = .dormant

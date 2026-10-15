@@ -62,6 +62,9 @@ extension WorkspaceModel {
     private var familyPickerSession: String? {
         guard let id = focusedSessionID ?? selectedID else { return nil }
         if subagentTab(id)?.container?.isPane == false { return id }
+        // Embedded readers have no header of their own. Their menu must use
+        // the visible main column's anchor, even after another chat is selected.
+        if subagentTab(id)?.container?.isPane == true { return selectedID }
         let owner = record(id)?.delegation?.budgetOwnerSessionID ?? id
         if let chat = record(owner), let main = sideFamilyOwner(chat), main == selectedID { return main }
         return id

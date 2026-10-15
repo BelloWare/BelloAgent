@@ -6,8 +6,9 @@ import AppKit
     var actions = TranscriptActions()
     private var value: SubagentToolView?
     private let information = TranscriptPlainTextView()
-    private let task = TranscriptCardSource(label: "Task")
-    private let result = TranscriptCardSource(label: "Result")
+    private let task = TranscriptAgentMarkdown(label: "Task", identity: "task")
+    private let result = TranscriptAgentMarkdown(label: "Result", identity: "result")
+    private let resultNote = TranscriptPlainTextView()
     private let open = PiKit.Button("Open", symbol: "arrow.up.right", style: .secondary, compact: true)
     private let inspect = PiKit.Button("Inspect Requests", style: .secondary, compact: true)
     private let stop = PiKit.Button("Stop", symbol: "stop.fill", style: .danger, compact: true)
@@ -17,11 +18,15 @@ import AppKit
         return flow
     }()
     private var hasResult = false
+    private var hasResultNote = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         setAccessibilityIdentifier("subagent-card")
-        for view in [information, task, result, buttons] as [NSView] { addSubview(view) }
+        for view in [information, task, result, resultNote, buttons] as [NSView] { addSubview(view) }
+        task.isToolInput = true
+        task.changed = { [weak self] in self?.invalidatePlans() }
+        result.changed = { [weak self] in self?.invalidatePlans() }
         open.setAccessibilityIdentifier("open-subagent")
         inspect.setAccessibilityIdentifier("inspect-subagent")
         stop.setAccessibilityIdentifier("stop-subagent")
@@ -56,10 +61,12 @@ import AppKit
         }
         information.update(text: lines.joined(separator: "\n"), face: TranscriptCardFaces.note, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
         task.title = value.operation == "subagent_report" ? value.messageKind?.capitalized ?? "Message" : value.operation == "subagent_send" ? "Message" : "Task"
-        task.update(value.task, environment: environment)
-        let text = [value.result, value.error, value.truncated ? "Result truncated. Open the sub-agent for the complete saved reply." : nil].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
-        hasResult = !text.isEmpty; result.isHidden = !hasResult
-        result.update(text, environment: environment)
+        task.update(value.task, environment: environment, actions: actions)
+        hasResult = !value.result.isEmpty; result.isHidden = !hasResult
+        result.update(value.result, environment: environment, actions: actions)
+        let note = [value.error, value.truncated ? "Result truncated. Open the sub-agent for the complete saved reply." : nil].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
+        hasResultNote = !note.isEmpty; resultNote.isHidden = !hasResultNote
+        resultNote.update(text: note, face: TranscriptCardFaces.note, environment: environment, swiftUILines: true, color: TranscriptNSPalette.muted)
         open.title = value.operation == "subagent_report" ? "Parent" : "Open"
         open.isEnabled = environment.isEnabled && (value.target != nil || value.operation == "subagent_report" && value.messageReference != nil)
         inspect.isEnabled = environment.isEnabled && value.target != nil
@@ -77,6 +84,7 @@ import AppKit
         place(information, information.exactHeight(width: inner))
         place(task, task.height(width: inner))
         if hasResult { place(result, result.height(width: inner)) }
+        if hasResultNote { place(resultNote, resultNote.exactHeight(width: inner)) }
         place(buttons, buttons.height(forWidth: inner))
         return Plan(frames: frames, height: y + 2)
     }

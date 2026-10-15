@@ -13,6 +13,10 @@ Saved sides retain their own delegation families, grouped by side in the main
 picker; Stop and Inspector still address the actual delegation owner. Reader
 loads belong to tab/display generations rather than unrelated main selections,
 and native responder changes keep command focus with the visible reader.
+Task, result and report prose uses the assistant Markdown reader, with bounded
+previews, source-preserving copy and rendered-text Find. Typed authorship and
+delivery metadata stay separate from the Markdown source. Managed readers cannot
+invoke Delete Chat on their selected main chat; family menus use a visible anchor.
 Unsent side drafts remain memory-only. No steering, model-visible or journal
 contract changes accompany this UI amendment.
 
