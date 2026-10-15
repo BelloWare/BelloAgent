@@ -6,6 +6,19 @@ import XCTest
 /// keyboard and for VoiceOver, Back to bottom, the live bar coming and
 /// going, and the pane drawing again only when what it shows changed.
 @MainActor final class TranscriptNativePaneBehaviourTests: XCTestCase {
+    func testAppearanceRefreshKeepsManagedSessionContext() {
+        let pane = NativeTranscriptPane()
+        var environment = TranscriptRowEnvironment(view:pane)
+        environment.sessionID = "managed-child"; environment.managedChild = true
+        environment.locale = Locale(identifier:"fr_FR"); environment.isEnabled = false
+        environment.forks = false; environment.opensFiles = true
+        pane.update(session:SessionDisplay(id:"managed-child"),state:"idle",actions:TranscriptActions(),environment:environment,reduceMotion:true)
+        pane.appearance = NSAppearance(named:.darkAqua)
+        pane.viewDidChangeEffectiveAppearance()
+        environment.colorScheme = .dark
+        XCTAssertEqual(pane.environment,environment)
+    }
+
     private func key(_ character: String) throws -> NSEvent {
         try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
                                        characters: character, charactersIgnoringModifiers: character, isARepeat: false, keyCode: character == " " ? 49 : 36))

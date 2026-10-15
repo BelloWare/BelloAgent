@@ -33,6 +33,16 @@ final class SubagentForkGalleryTests: XCTestCase, SerialTestLane {
                     await fixture.settle()
                     let revealed = await fixture.model.revealInTranscript(sessionID:fixture.parent.id,messageID:"reply",toolCallID:"call-0")
                     XCTAssertTrue(revealed); await fixture.settle()
+                    let pane = try XCTUnwrap(ConversationPaneTests.views(NativeTranscriptPane.self,in:fixture.content).first)
+                    // Switch the already-rendered fork away and back; a new
+                    // session update must not be needed to keep its identity.
+                    let opposite: NSAppearance.Name = appearance == .aqua ? .darkAqua : .aqua
+                    for style in [opposite,appearance] {
+                        fixture.window.appearance = NSAppearance(named:style)
+                        pane.viewDidChangeEffectiveAppearance()
+                        XCTAssertEqual(pane.environment.sessionID,fixture.parent.id)
+                        await fixture.settle()
+                    }
                     let card = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeSubagentCard.self,in:fixture.content).first)
                     let open = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self,in:card).first { $0.accessibilityIdentifier() == "open-subagent" })
                     XCTAssertEqual(open.title,"History"); XCTAssertFalse(open.isEnabled)

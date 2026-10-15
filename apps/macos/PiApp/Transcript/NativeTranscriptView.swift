@@ -136,9 +136,12 @@ final class TranscriptSurfaceMarker: NSView {
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
-        var current = TranscriptRowEnvironment(view: self)
-        current.locale = environment.locale; current.isEnabled = environment.isEnabled
-        current.forks = environment.forks; current.opensFiles = environment.opensFiles
+        let appearance = TranscriptRowEnvironment(view: self)
+        // An appearance notification changes presentation, not the chat's
+        // identity, managed-child boundary or input permissions.
+        var current = environment
+        current.colorScheme = appearance.colorScheme; current.increasedContrast = appearance.increasedContrast
+        current.layoutDirection = appearance.layoutDirection
         guard current != environment else { return }
         environment = current
         if session != nil { refresh() }

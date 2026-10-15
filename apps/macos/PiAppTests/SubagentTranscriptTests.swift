@@ -3,6 +3,47 @@ import XCTest
 @testable import PiApp
 
 final class SubagentTranscriptTests: XCTestCase {
+    @MainActor func testHistoricalForkCardSurvivesAppearanceChangesWithoutASessionUpdate() throws {
+        var tool = Self.tool; tool.nativeSubagent = Self.metadata
+        let session = SessionDisplay(id:"fork")
+        session.messages = [TranscriptMessage(id:"question",role:"user",text:"Review the parser"),
+                            TranscriptMessage(id:"reply",role:"assistant",text:"Delegating the review",tools:[tool])]
+        session.disclosure.setOpen(true,.work("reply"))
+        session.disclosure.setOpen(true,.tool(ToolOccurrence.key("reply",tool.id)))
+        let pane = NativeTranscriptPane(frame:NSRect(x:0,y:0,width:700,height:500))
+        let window = NSWindow(contentRect:pane.frame,styleMask:[.borderless],backing:.buffered,defer:false)
+        window.appearance = NSAppearance(named:.aqua); window.contentView = pane
+        defer { window.contentView = nil }
+        var environment = TranscriptRowEnvironment(view:pane); environment.sessionID = session.id
+        var called = false
+        let actions = TranscriptActions(openSubagent:{ _ in called = true },inspectSubagent:{ _ in called = true },stopSubagent:{ _ in called = true })
+        pane.update(session:session,state:"idle",actions:actions,environment:environment,reduceMotion:true)
+        func checkHistory(_ color: TranscriptColorScheme) throws {
+            pane.layoutSubtreeIfNeeded(); pane.document.layoutSubtreeIfNeeded()
+            XCTAssertEqual(pane.environment.colorScheme,color)
+            XCTAssertEqual(pane.environment.sessionID,session.id)
+            let card = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeSubagentCard.self,in:pane).first)
+            let buttons = ConversationPaneTests.views(PiKit.Button.self,in:card)
+            let open = try XCTUnwrap(buttons.first { $0.accessibilityIdentifier() == "open-subagent" })
+            XCTAssertEqual(open.title,"History")
+            XCTAssertEqual(open.accessibilityLabel(),SubagentToolView.historicalNotice)
+            for button in buttons {
+                XCTAssertTrue(button.isHidden || !button.isEnabled)
+                button.onPress?()
+            }
+            XCTAssertFalse(called)
+            XCTAssertTrue(ConversationPaneTests.views(TranscriptPlainTextView.self,in:card).contains { $0.string.contains("Historical sub-agent") })
+        }
+        try checkHistory(.light)
+        for (appearance,color) in [(NSAppearance.Name.darkAqua,TranscriptColorScheme.dark),(.aqua,.light)] {
+            window.appearance = NSAppearance(named:appearance)
+            // Deliver AppKit's notification explicitly for this offscreen
+            // window. No session update may restore the missing context.
+            pane.viewDidChangeEffectiveAppearance()
+            try checkHistory(color)
+        }
+    }
+
     @MainActor func testHistoricalForkCardHasNoSourceNavigationOrControls() throws {
         var tool = Self.tool; tool.nativeSubagent = Self.metadata; tool.state = "running"
         var environment = TranscriptRowEnvironment(); environment.sessionID = "fork"

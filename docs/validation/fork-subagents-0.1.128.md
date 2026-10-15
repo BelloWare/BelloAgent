@@ -66,6 +66,19 @@ Command: `PI_BUILD_ROOT=<build-root> TEST_RUNNER_PI_APP_FORK_GALLERY=<build-root
 
 All **12 images were opened and visually inspected**: `gallery/historical-{result,pending}-{light,dark}-{1240,920,684}x600.png`. The 684-wide window gives a 420-point conversation pane beside the sidebar. Historical notice/task/result wrap cleanly, disabled Pi buttons fit, source controls are absent, the sidebar has only the ordinary fork, and the ordinary composer remains available. History's accessible label/tooltip explains why the action is disabled; standard Pi keyboard behavior remains in use. No stock UI controls were added.
 
+## Lead review round 1 — appearance refresh
+
+The independent review of `12e8221e` found that `NativeTranscriptPane.viewDidChangeEffectiveAppearance()` rebuilt the row environment with default `sessionID = nil` and `managedChild = false`. A fork's inherited card then looked live after a light/dark switch, despite the pane's source-navigation guard rejecting clicks. The appearance callback now starts with the existing environment and refreshes only color scheme, contrast and layout direction. Session identity, managed-child state, locale, input availability and action permissions survive the refresh; the existing equality guard still avoids redundant work.
+
+Two failing-first tests cover the real pane callback: the same rendered fork changes light → dark → light without another session update, retaining its notice, disabled History/Inspect controls, inaccessible Stop, explanatory accessibility label and inert callbacks; a managed child retains all session context while its appearance changes. The initial run had **15 assertion failures across these two tests**, with 26 tests executed (`logs/review1-appearance-red.log`). No helper or journal changes are involved.
+
+Review validation is limited to the affected native classes, as requested; the full-suite counts above belong to the initial implementation. The standalone fork gallery now toggles each already-rendered scene to the opposite appearance and back before checking/capturing it.
+
+- Forcing `current.sessionID = nil` in the real appearance callback reproduced **15 assertion failures**, including the visible fork-card regression (`logs/review1-appearance-mutation.log`). Mutation restored.
+- Final restored run: **26 passed, 0 failures** — `SubagentTranscriptTests` (10) and `TranscriptNativePaneBehaviourTests` (16), using `PI_BUILD_ROOT=<build-root> scripts/test-macos.sh -only-testing:PiAppTests/SubagentTranscriptTests -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests` (`logs/review1-appearance-restored.log`; initial green also in `logs/review1-appearance-green.log`).
+- Standalone `SubagentForkGalleryTests`, run alone: **1 passed, 0 failures** (`logs/review1-appearance-gallery.log`). Set `TEST_RUNNER_PI_APP_FORK_GALLERY=<build-root>/gallery-review1` with the usual build root and class selection. All **12 refreshed images** were opened and visually inspected at `gallery-review1/historical-{result,pending}-{light,dark}-{1240,920,684}x600.png`; history notice, disabled controls and wrapping remain correct after toggling.
+- No helper tests or full native lane were rerun for this UI-only review fix. No additional production semantics or data changes.
+
 ## Handoff
 
-The lead's separate Codex review and release integration remain outstanding. Managed-child forks remain a future design item; damaged forks require a new fork from their intact source. This stream does not package a release or merge/push `dev/next`.
+The first independent review finding is addressed; lead re-review and release integration remain outstanding. Managed-child forks remain a future design item; damaged forks require a new fork from their intact source. This stream does not package a release or merge/push `dev/next`.

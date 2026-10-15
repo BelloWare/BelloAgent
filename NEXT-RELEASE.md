@@ -4,7 +4,7 @@
 
 ## 0.1.128
 
-- [x] Fork chats with sub-agents (`dev/a128-fork-subagents`): copy fallback now writes one marker at the source's required version; promoted APFS clones keep valid checkpoint hashes and replay parity. Forks retain sub-agent cards/results as history, with disabled History controls, their own budget and newly owned children. They never adopt or write the source's children. Existing duplicate-marker damage is rejected unchanged with instructions to fork again from the source; managed-child Fork remains deferred by design. [Root causes, tests, decisions and gallery](docs/validation/fork-subagents-0.1.128.md).
+- [x] Fork chats with sub-agents (`dev/a128-fork-subagents`): copy fallback now writes one marker at the source's required version; promoted APFS clones keep valid checkpoint hashes and replay parity. Forks retain sub-agent cards/results as history, with disabled History controls across appearance changes, their own budget and newly owned children. They never adopt or write the source's children. Existing duplicate-marker damage is rejected unchanged with instructions to fork again from the source; managed-child Fork remains deferred by design. [Root causes, tests, decisions and gallery](docs/validation/fork-subagents-0.1.128.md).
 
 ## 0.1.127
 
