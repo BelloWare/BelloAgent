@@ -91,10 +91,13 @@ identity and the selection/pane intent while opening. Selection, a page change,
 or a new explicit reveal retires that main intent. A Source action carries its
 originating child token through the destination's version lookup, anchor read,
 version pages and final reveal, together with the destination's token. Embedded
-Back therefore cancels the whole chain. Intentionally opening the owning ordinary
-side replaces an embedded child and transfers ownership to the main pane before
-awaiting its load; a popped-out origin remains independent. Neither a chain's
-internal reveal nor its version switch creates a fresh intent.
+Back therefore cancels the whole chain. Source and delivery actions that open the
+owning ordinary side replace an embedded child and transfer ownership to the main
+pane before awaiting its load; a popped-out origin remains independent. A destination
+already selected in the main column stays there, including a fork with saved
+ancestry or a remembered side slot. The opening chooses focus; publishing a
+delivery after its side loads never overwrites a newer focus choice. Neither a
+chain's internal reveal nor its version switch creates a fresh intent.
 
 `transcriptShows` decides reveal visibility: Chats with the selected main or the
 actual shown Side, or `subagentTabIsShown` for a hosted reader. The latter uses
@@ -133,8 +136,10 @@ turn records, with live accepted summaries taking precedence. The picker, card
 header/details, child header and family Inspector show the actual level (such as
 “high”), including when inherited. “default” reads as “model default”; models with
 an empty effort capability list show no effort. Unknown legacy capabilities do
-not invent a model-default label. Follow-ups update the current child's effort;
-older send receipts retain their own turn's value. No journal or model-facing
+not invent a model-default label. The pane's comparison state includes resolved
+effort, so an accepted summary arriving after the child snapshot refreshes the
+header even when its turn and status are unchanged. Follow-ups update the current
+child's effort; older send receipts retain their own turn's value. No journal or model-facing
 text is changed by this presentation.
 
 Saved receipt effort comes from `nativeSubagent.effort`, then the output envelope,
@@ -1570,10 +1575,17 @@ tab and header name the original chat; Back focuses the fork. The fork picker pu
 inherited entries after its own agents in a separate “From the original chat”
 group. Their original owner remains authoritative; copied starts reserve ordinal
 slots before the fork's own new starts. New Side stays available in the fork's
-own picker scope. The cached index comes from persisted
-plans, not a new journal field. Original project trust, reciprocal identities and
-file availability are checked before reading and after awaited validation. Missing
-originals remain visible as disabled entries with a reason.
+own picker scope. Both whole-chat `/fork` and Fork from here derive this cached
+index from persisted plans; sidebar ancestry is neither required nor evidence
+of delegation ownership. No new journal field is needed. Original project trust,
+reciprocal identities and file availability are checked before reading and after
+awaited validation. Missing originals remain visible as disabled entries with a reason.
+
+Original-reference Open resolves the saved turn and steering message/event through
+the same journal reader as an owned child. An explicit source-message target takes
+precedence. Header validation, opening, target lookup and reveal share the original
+reader's token and visibility checks; Back or hiding the reader retires the entire
+operation, while unrelated main-window focus leaves a visible reader's reveal intact.
 
 The original-reader mode survives tab moves and restore. It never grants Stop,
 send, follow-up, composer, helper-open or fork authority; Inspect Requests uses the

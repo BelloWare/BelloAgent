@@ -133,25 +133,30 @@ extension WorkspaceModel {
             guard let messageID else { return true }
             return await revealInTranscript(sessionID: sessionID, messageID: messageID, navigation: opening)
         }
-        let parentID = side(sessionID)?.parentID ?? item.id
+        // A fork may already occupy the main column, even with a remembered
+        // side slot. Reveals retain that visible destination instead of moving it.
+        let sideOwner = selectedID == sessionID ? nil : (side(sessionID)?.parentID ?? sideFamilyOwner(item))
+        let parentID = sideOwner ?? item.id
+        // Revealing a delivery intentionally uncovers its ordinary side. That
+        // hides an embedded child and transfers ownership to the main pane;
+        // a popped-out origin keeps its independent cancellation token.
+        let origin = sideOwner != nil && origin?.reader.container?.isPane == true ? nil : origin
         let changingSelection = selectedID != parentID
         // select changes selectedID synchronously before its first await, which
         // advances the revision once. Any additional navigation supersedes us.
         let revision = messageNavigationRevision + (changingSelection ? 1 : 0) + (page == .chats ? 0 : 1)
         let navigation = TranscriptNavigationToken(reader: nil, workspaceRevision: revision, origin: origin)
         // Reaching a side through its chat: the side is what is opened.
-        if changingSelection || item.isSubagent {
-            if parentID != sessionID { await passingThrough(parentID) { await select(parentID) } } else { await select(parentID) }
-        } else { page = .chats }
+        if sideOwner != nil, side(sessionID) != nil { await selectSide(sessionID, revealInSidebar: false) }
+        else if sideOwner != nil { await showSide(sessionID, revealInSidebar: false) }
+        else if changingSelection { await select(parentID) }
+        else { page = .chats; focusedSessionID = sessionID }
         guard !Task.isCancelled, navigation.isCurrent(in: self), selectedID == parentID,
               transcriptShows(sessionID), record(sessionID) != nil,
-              (side(sessionID)?.parentID ?? sessionID) == parentID,
+              (sideOwner == nil || side(sessionID)?.parentID == parentID),
               let view = displays[sessionID] else { return false }
-        // Selection already chose focus before loading. Only transfer that
-        // still-held focus to its side; a newer focus choice never blocks the
-        // reveal itself and must not be overwritten by its completion.
-        if !changingSelection || focusedSessionID == parentID { focusedSessionID = sessionID }
-        page = .chats
+        // Opening chose focus before loading. Publication neither depends on
+        // that focus nor overwrites a newer responder choice after the await.
         guard let messageID else { return true }
         var expectedMessageIDs = view.messages.map(\.id)
         if view.messages.contains(where: { $0.id == messageID }) {

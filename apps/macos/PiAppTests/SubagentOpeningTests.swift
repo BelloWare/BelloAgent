@@ -55,17 +55,23 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
     }
 
     @MainActor func testForkActionOnARunningFamilyCreatesAnIndependentChat() async throws {
+        for kind in AgentForkKind.allCases { try await checkForkActionOnARunningFamilyCreatesAnIndependentChat(kind) }
+    }
+    @MainActor private func checkForkActionOnARunningFamilyCreatesAnIndependentChat(_ kind: AgentForkKind) async throws {
         let (setup, model, host, parent, target) = try await fixture(background:true)
         await model.select(parent.id)
         try await eventually("Parent never reached its final family wait") { model.displays[parent.id]?.familyWaiting == true }
         let source = try XCTUnwrap(model.record(parent.id)?.path)
         let child = try XCTUnwrap(model.record(target.sessionID)?.path)
         let before = try [Data(contentsOf:URL(fileURLWithPath:source)),Data(contentsOf:URL(fileURLWithPath:child))]
-        model.forkSession(parent.id)
-        try await eventually("Fork action did not settle") { model.displays[parent.id]?.loading == false }
+        if kind == .wholeChat { model.forkSession(parent.id) }
+        else { model.forkFromReply(sessionID: parent.id, messageID: target.assistantID) }
+        try await eventually("Fork action did not settle") { model.displays[parent.id]?.loading == false && !model.forkingReplies.contains(parent.id) }
         XCTAssertNil(model.error)
         let fork = try XCTUnwrap(model.chats.first { $0.id != parent.id && !$0.isSubagent })
         XCTAssertEqual(model.selectedID,fork.id)
+        XCTAssertEqual(fork.parentSessionID, kind.parentID(parent.id))
+        XCTAssertEqual(model.inheritedSubagents[fork.id]?.map { $0.target.sessionID }, [target.sessionID])
         XCTAssertTrue(model.subagentChildren(of:fork.id).isEmpty)
         let state = try await host.request("session.snapshot",sessionID:fork.id)
         XCTAssertEqual(state.object?["cost"]?.object?["spentUSD"]?.number,0)
@@ -153,8 +159,12 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
                 try await eventually("Inspector never indexed the child") { value.index.requests.contains { $0.sessionID == target.sessionID } }
                 let request = try XCTUnwrap(value.index.requests.first { $0.sessionID == target.sessionID })
                 value.focus(.request(request.id)); value.showInChat()
-                try await eventually("Inspector never selected the child") { model.subagentTabIsShown(target.sessionID) && model.displays[target.sessionID]?.historyState != .loading }
-                await model.navigationTask?.value
+                // The Inspector owns its Task; navigationTask is unrelated.
+                // A tab can be visible before its scheduled load has begun.
+                try await eventually("Inspector never finished opening the child") {
+                    model.subagentTabIsShown(target.sessionID) && model.pendingSubagentOpening?.reader.key != target.sessionID &&
+                        model.subagentTab(target.sessionID)?.loading == nil && model.displays[target.sessionID]?.historyState != .loading
+                }
             case "search":
                 await model.openFromSidebar(target.sessionID)
                 let row = try XCTUnwrap(model.displays[target.sessionID]?.messages.first)

@@ -2,10 +2,20 @@ import AppKit
 import XCTest
 @testable import PiApp
 
+/// The two persisted fork shapes: whole-chat forks deliberately have no ancestry.
+enum AgentForkKind: String, CaseIterable {
+    case wholeChat = "whole-chat", fromReply = "from-reply"
+    var id: String { "fork-" + rawValue }
+    func parentID(_ source: String) -> String? { self == .fromReply ? source : nil }
+}
+
 final class SubagentTranscriptTests: XCTestCase {
     @MainActor func testHistoricalForkCardSurvivesAppearanceChangesWithoutASessionUpdate() throws {
+        for kind in AgentForkKind.allCases { try checkHistoricalForkCardSurvivesAppearanceChangesWithoutASessionUpdate(kind) }
+    }
+    @MainActor private func checkHistoricalForkCardSurvivesAppearanceChangesWithoutASessionUpdate(_ kind: AgentForkKind) throws {
         var tool = Self.tool; tool.nativeSubagent = Self.metadata
-        let session = SessionDisplay(id:"fork")
+        let session = SessionDisplay(id:kind.id)
         session.messages = [TranscriptMessage(id:"question",role:"user",text:"Review the parser"),
                             TranscriptMessage(id:"reply",role:"assistant",text:"Delegating the review",tools:[tool])]
         session.disclosure.setOpen(true,.work("reply"))
@@ -51,8 +61,11 @@ final class SubagentTranscriptTests: XCTestCase {
     }
 
     @MainActor func testHistoricalForkCardHasNoSourceNavigationOrControls() throws {
+        for kind in AgentForkKind.allCases { try checkHistoricalForkCardHasNoSourceNavigationOrControls(kind) }
+    }
+    @MainActor private func checkHistoricalForkCardHasNoSourceNavigationOrControls(_ kind: AgentForkKind) throws {
         var tool = Self.tool; tool.nativeSubagent = Self.metadata; tool.state = "running"
-        var environment = TranscriptRowEnvironment(); environment.sessionID = "fork"
+        var environment = TranscriptRowEnvironment(); environment.sessionID = kind.id
         var called = false
         let actions = TranscriptActions(openSubagent:{ _ in called = true },inspectSubagent:{ _ in called = true },stopSubagent:{ _ in called = true })
         let row = TranscriptNativeActionRow()
@@ -171,6 +184,9 @@ final class SubagentTranscriptTests: XCTestCase {
         XCTAssertFalse(bench.model.canOpenSide("chat-child"))
     }
     @MainActor func testCardActionsUseSavedIdentityAndCopiedCardsCannotStopTheOriginal() throws {
+        for kind in AgentForkKind.allCases { try checkCardActionsUseSavedIdentityAndCopiedCardsCannotStopTheOriginal(kind) }
+    }
+    @MainActor private func checkCardActionsUseSavedIdentityAndCopiedCardsCannotStopTheOriginal(_ kind: AgentForkKind) throws {
         var tool = Self.tool; tool.nativeSubagent = Self.metadata
         var environment = TranscriptRowEnvironment(); environment.sessionID = "chat-parent"
         var calls: [String] = []
@@ -187,7 +203,7 @@ final class SubagentTranscriptTests: XCTestCase {
         XCTAssertEqual(calls, ["open:chat-child", "inspect:delegation"])
         // A copied card is saved history and has no Stop affordance.
         tool.output = "{\"status\":\"running\",\"text\":\"\",\"truncated\":false}"; tool.state = "running"
-        environment.sessionID = "fork"
+        environment.sessionID = kind.id
         row.update(tool: tool, open: true, fetched: nil, environment: environment, toggle: {}, openFile: nil, actions: relay.forwarded)
         XCTAssertTrue(try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: row).first { $0.accessibilityIdentifier() == "stop-subagent" }).isHidden)
         environment.sessionID = "chat-parent"

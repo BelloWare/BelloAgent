@@ -522,6 +522,103 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(model.displays["chat-side"]?.scrollAnchor?.id, "issuing")
         XCTAssertFalse(model.subagentTabIsShown(tab.key))
     }
+    @MainActor func testReportDeliveryUncoversItsRecipientSideAndTransfersEmbeddedOwnership() async throws {
+        for mounted in [true, false] {
+            for popped in [false, true] {
+                for loaded in [true, false] {
+                    let (model, history) = try fixture()
+                    model.chats[1].parentSessionID = "chat-side"
+                    model.chats[1].delegation?.budgetOwnerSessionID = "chat-side"
+                    model.chats[1].delegation?.call.parentSessionID = "chat-side"
+                    model.chats[2].path = model.root.appendingPathComponent("side.jsonl").path
+                    if mounted { await model.openFamilySide("chat-side") }
+                    let tab = try await open("chat-child", in: model)
+                    model.tabs.showsWindows = false
+                    if popped { _ = model.tabs.popOut(tab) }
+                    let side = try XCTUnwrap(model.displays["chat-side"])
+                    side.messages = [.init(id: loaded ? "delivered-report" : "latest", role: "assistant", text: "Side history")]
+                    side.scrollAnchor = .init(id: "latest", offset: 18, followsBottom: false)
+                    await history.set("Delivered report", messageID: "delivered-report")
+                    model.agentCoordinationLoader = { _, _ in
+                        AgentCoordination(entries: [.init(id: "report", childID: "chat-child", turn: 1, kind: "note", author: "subagent",
+                            sourceSessionID: "chat-child", sourceMessageID: "report-call", sourceToolCallID: "report-tool", recipientID: "chat-side",
+                            recipientMessageID: "delivered-report", disposition: "delivered")])
+                    }
+                    await model.openAgentSource(.init(childID: tab.key, turn: 1, eventID: "report", recipient: true), from: tab.key)
+                    let label = "mounted=\(mounted), popped=\(popped), loaded=\(loaded)"
+                    XCTAssertEqual(model.selectedID, "chat-parent", label)
+                    XCTAssertEqual(model.focusedSessionID, "chat-side", label)
+                    XCTAssertTrue(model.transcriptShows("chat-side"), label)
+                    XCTAssertEqual(side.scrollAnchor?.id, "delivered-report", label)
+                    XCTAssertEqual(model.subagentTabIsShown(tab.key), popped, label)
+                }
+            }
+        }
+    }
+    @MainActor func testSideDeliveryFinishesLoadingWithoutOverwritingNewerMainFocus() async throws {
+        for mounted in [false, true] {
+            let (model, _) = try fixture()
+            model.chats[1].parentSessionID = "chat-side"; model.chats[1].delegation?.budgetOwnerSessionID = "chat-side"
+            model.chats[1].delegation?.call.parentSessionID = "chat-side"
+            model.chats[2].path = model.root.appendingPathComponent("side.jsonl").path
+            if mounted { await model.openFamilySide("chat-side") }
+            let tab = try await open("chat-child", in: model)
+            let side = try XCTUnwrap(model.displays["chat-side"])
+            side.historyState = .dormant
+            let gate = ReaderLookupGate()
+            model.historyWindowLoader = { _, _, _, _ in
+                await gate.wait()
+                return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture"), "lineage": .string("root"),
+                    "messages": .array([.object(["id": .string("delivered"), "role": .string("assistant"), "text": .string("Report")])]),
+                    "older": .null, "newer": .null]))
+            }
+            let origin = tab.renewNavigation()
+            let reveal = Task { await model.revealMessage(sessionID: side.id, messageID: "delivered", origin: origin) }
+            try await eventually("Uncovered recipient side awaits its initial history") { await gate.reads == 1 }
+            model.focusPane("chat-parent")
+            await gate.release()
+            let landed = await reveal.value
+            XCTAssertTrue(landed)
+            XCTAssertEqual(side.scrollAnchor?.id, "delivered")
+            XCTAssertEqual(model.focusedSessionID, "chat-parent", "Late delivery loading preserves the reader's newer focus")
+        }
+    }
+    @MainActor func testRetiredSideDeliveryCannotPublishAfterItsReaderHandoff() async throws {
+        for popped in [false, true] {
+            for action in ["file", "report", "new reveal"] {
+                let (model, _) = try fixture()
+                model.chats[1].parentSessionID = "chat-side"; model.chats[1].delegation?.budgetOwnerSessionID = "chat-side"
+                model.chats[1].delegation?.call.parentSessionID = "chat-side"
+                model.chats[2].path = model.root.appendingPathComponent("side.jsonl").path
+                await model.openFamilySide("chat-side")
+                let tab = try await open("chat-child", in: model)
+                model.tabs.showsWindows = false; if popped { _ = model.tabs.popOut(tab) }
+                let side = try XCTUnwrap(model.displays["chat-side"])
+                side.messages = [.init(id: "reading", role: "assistant", text: "Keep reading here")]
+                side.scrollAnchor = .init(id: "reading", offset: 27, followsBottom: false)
+                let gate = ReaderLookupGate()
+                model.historyWindowLoader = { _, _, _, _ in
+                    await gate.wait()
+                    return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture"), "lineage": .string("root"),
+                        "messages": .array([.object(["id": .string("delivered"), "role": .string("assistant"), "text": .string("Report")])]), "older": .null, "newer": .null]))
+                }
+                let origin = tab.renewNavigation()
+                let reveal = Task { await model.revealMessage(sessionID: side.id, messageID: "delivered", origin: origin) }
+                try await eventually("Delivery has uncovered its side and awaits history") { await gate.reads == 1 }
+                XCTAssertTrue(model.transcriptShows(side.id))
+                XCTAssertEqual(origin.isCurrent, popped, "Only embedded origins transfer ownership")
+                if action == "file" { _ = otherTab(model) }
+                else if action == "report" { model.page = .report }
+                else { let opened = await model.revealMessage(sessionID: side.id, messageID: "reading"); XCTAssertTrue(opened) }
+                await gate.release()
+                let landed = await reveal.value
+                XCTAssertFalse(landed, action)
+                XCTAssertEqual(side.messages.first?.id, "reading")
+                XCTAssertEqual(side.scrollAnchor?.id, "reading")
+                XCTAssertNil(side.revealRead)
+            }
+        }
+    }
     @MainActor func testSourceFromAPoppedChildRevealsItsAlreadyShownSide() async throws {
         let (model, _) = try fixture()
         model.chats[1].parentSessionID = "chat-side"; model.chats[1].delegation?.budgetOwnerSessionID = "chat-side"; model.chats[1].delegation?.call.parentSessionID = "chat-side"

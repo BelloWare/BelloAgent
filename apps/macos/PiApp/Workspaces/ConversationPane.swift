@@ -88,6 +88,7 @@ struct SideActions {
         /// The window's disabled state, which the bridged SwiftUI roots take too.
         var original: String?
         var originalBackTitle: String?
+        var subagentEffort: String?
         var enabled: Bool
     }
 
@@ -242,7 +243,8 @@ struct SideActions {
                      contextWindow: current.contextWindow ?? profile?.contextWindow, outputReserve: current.maxOutputTokens ?? profile?.maxOutputTokens,
                      sideBoundary: side.map { Self.boundary($0, model: model) } ?? "", sideBoundaryDetail: side.map { Self.boundaryDetail($0) } ?? "",
                      sideLoading: session.loading, original: model.subagentTab(session.id)?.originalLabel,
-                     originalBackTitle: model.subagentTab(session.id)?.originalForkID.flatMap { model.record($0)?.title }, enabled: inheritedEnabled)
+                     originalBackTitle: model.subagentTab(session.id)?.originalForkID.flatMap { model.record($0)?.title },
+                     subagentEffort: current.isSubagent ? model.subagentEffortLabel(current.id) : nil, enabled: inheritedEnabled)
     }
 
     /// Reads the chat and the workspace again and changes only what differs.
@@ -277,7 +279,7 @@ struct SideActions {
         }
         if let link = chat.delegation {
             if subagentHeader.superview !== self { addSubview(subagentHeader) }
-            subagentHeader.update(chat: chat, parent: model.record(link.budgetOwnerSessionID), effort: model.subagentEffortLabel(chat.id), original: state.original, backTitle: state.originalBackTitle, back: { [weak model] in
+            subagentHeader.update(chat: chat, parent: model.record(link.budgetOwnerSessionID), effort: state.subagentEffort, original: state.original, backTitle: state.originalBackTitle, back: { [weak model] in
                 Task { await model?.backToSubagentParent(chat.id) }
             })
         } else { subagentHeader.removeFromSuperview() }

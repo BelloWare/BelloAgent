@@ -4,6 +4,9 @@ import XCTest
 
 final class SubagentDiscoveryTests: XCTestCase {
     @MainActor func testForkOwnedNumbersFollowPersistedInheritedStarts() async throws {
+        for kind in AgentForkKind.allCases { try await checkForkOwnedNumbersFollowPersistedInheritedStarts(kind) }
+    }
+    @MainActor private func checkForkOwnedNumbersFollowPersistedInheritedStarts(_ kind: AgentForkKind) async throws {
         let root = scratchRoot("fork-numbers"), model = try SubagentOrganizationTests.fixture(scratchRoot("fork-numbers-model"))
         registerWorkspaceFixtureTeardown(model, root: model.root)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -38,9 +41,11 @@ final class SubagentDiscoveryTests: XCTestCase {
         XCTAssertEqual(coordination.heldChildren, [ownID], "Copied children remain outside the fork's authority")
         let cached = try await model.history.agentCoordination(path:path, ownerID:"fork")
         XCTAssertEqual(cached, coordination)
-        var fork = model.chats[0]; fork.id = "fork"; fork.path = path.path; fork.parentSessionID = "chat-parent"
+        var fork = model.chats[0]; fork.id = "fork"; fork.path = path.path; fork.parentSessionID = kind.parentID("chat-parent")
         model.chats.append(fork)
         let display = SessionDisplay(id:fork.id); model.displays[fork.id] = display
+        await model.readInheritedSubagents(fork, current: { true })
+        XCTAssertEqual(model.inheritedSubagents[fork.id]?.map { $0.target.sessionID }, [family.child], kind.rawValue)
         display.subagentNumbers = [family.child:1, ownID:2]
         model.applyAgentCoordination(coordination, parentID:fork.id)
         XCTAssertEqual(display.subagentNumbers[ownID], 2, "Coordination cannot replace the discovery ordinal")
@@ -316,6 +321,9 @@ final class SubagentDiscoveryTests: XCTestCase {
     }
 
     @MainActor func testForeignTerminalAndCopiedParentCannotClaimAChild() async throws {
+        for kind in AgentForkKind.allCases { try await checkForeignTerminalAndCopiedParentCannotClaimAChild(kind) }
+    }
+    @MainActor private func checkForeignTerminalAndCopiedParentCannotClaimAChild(_ kind: AgentForkKind) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
         model.chats.remove(at: 1)
@@ -330,7 +338,7 @@ final class SubagentDiscoveryTests: XCTestCase {
         await model.reconcileSubagents()
         XCTAssertEqual(model.subagentSummaries[family.child]?.status, .interrupted)
         let parent = model.chats[0], forkID = "copied-parent"
-        var fork = parent; fork.id = forkID
+        var fork = parent; fork.id = forkID; fork.parentSessionID = kind.parentID(parent.id)
         let forkPath = URL(fileURLWithPath: try XCTUnwrap(parent.path)).deletingLastPathComponent().appendingPathComponent(forkID + ".jsonl")
         let source = try String(contentsOfFile: try XCTUnwrap(parent.path), encoding: .utf8)
         var copied = source.split(separator: "\n").map(String.init)

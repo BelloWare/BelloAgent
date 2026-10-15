@@ -3,6 +3,33 @@ import XCTest
 @testable import PiApp
 
 final class SubagentEffortTests: XCTestCase {
+    @MainActor func testAcceptedEffortRefreshesAnAlreadyShownHeaderAfterTheChildSnapshot() async throws {
+        let (model, original) = try await fixture()
+        var found = original; found.header.model.thinkingLevel = "low"; found.header.model.reasoning = ["low", "high"]
+        try await model.registerDiscoveredSubagent(found, workspaceID: "pane-project", live: summary(found, effort: "low"))
+        let id = found.header.link.childSessionID, display = SessionDisplay(id: found.header.link.childSessionID)
+        display.historyState = .ready; display.subagentTurn = 2; display.subagentStatus = .running
+        model.displays[id] = display
+        let pane = ConversationPaneView(model: model)
+        pane.show(session: display, chat: try XCTUnwrap(model.record(id)))
+        let header = try XCTUnwrap(ConversationPaneTests.views(SubagentHeaderView.self, in: pane).first)
+        func text() -> String { ConversationPaneTests.views(PiKit.TextLine.self, in: header).map { $0.line.text }.joined(separator: " ") }
+        XCTAssertTrue(text().contains(" · low"))
+        let generation = display.presentationGeneration
+        for (accepted, expected) in [("high", "high"), ("default", "model default"), ("low", "low")] {
+            // The child's turn/status are already current; only its parent's
+            // later accepted-effort summary changes before this refresh.
+            model.subagentSummaries[id] = summary(found, effort: accepted, turn: 2)
+            pane.refresh()
+            XCTAssertTrue(text().contains(" · " + expected), text())
+            XCTAssertEqual(display.presentationGeneration, generation)
+            XCTAssertEqual(display.subagentTurn, 2)
+        }
+        model.subagentEfforts[id] = .init(initial: "default", reasoning: [])
+        pane.refresh()
+        XCTAssertFalse(text().contains(" · low"), "A model without effort controls removes the old label")
+        XCTAssertFalse(text().contains("model default"))
+    }
     @MainActor private func fixture() async throws -> (WorkspaceModel, DiscoveredSubagent) {
         let root = scratchRoot("subagent-effort")
         let model = try SubagentOrganizationTests.fixture(root)

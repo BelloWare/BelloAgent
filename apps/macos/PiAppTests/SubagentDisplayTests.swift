@@ -8,7 +8,7 @@ final class SubagentDisplayTests: XCTestCase {
         let model = try SubagentOrganizationTests.fixture(root)
         registerWorkspaceFixtureTeardown(model, root: root)
         model.chats[1].subagentNumber = 2
-        for id in ["chat-parent", "side-viewer", "copied-viewer", "chat-child"] {
+        for id in ["chat-parent", "side-viewer", "chat-child"] + AgentForkKind.allCases.map(\.id) {
             let view = SessionDisplay(id: id)
             model.displays[id] = view
             XCTAssertEqual(view.subagentNumbers["chat-child"], 2)
@@ -46,9 +46,12 @@ final class SubagentDisplayTests: XCTestCase {
         XCTAssertTrue(ConversationPaneTests.views(PiKit.TextLine.self, in: header).contains { $0.line.text.hasPrefix("Sub-agent 2 ·") })
     }
     @MainActor func testNamedForkBackFitsANarrowReaderAndSpeaksTheCompleteDestination() throws {
+        for kind in AgentForkKind.allCases { try checkNamedForkBackFitsANarrowReaderAndSpeaksTheCompleteDestination(kind) }
+    }
+    @MainActor private func checkNamedForkBackFitsANarrowReaderAndSpeaksTheCompleteDestination(_ kind: AgentForkKind) throws {
         let root = scratchRoot("fork-back-title"), model = try SubagentOrganizationTests.fixture(root)
         registerWorkspaceFixtureTeardown(model,root:root)
-        let header = SubagentHeaderView(frame:.zero), title = String(repeating:"W",count:100)
+        let header = SubagentHeaderView(frame:.zero), title = "W " + kind.rawValue + String(repeating:"W",count:100)
         var child = model.chats[1]; child.subagentNumber = 2
         header.update(chat:child,parent:model.chats[0],effort:"high",original:"From the original chat · parent",backTitle:title,back:{})
         header.frame = .init(x:0,y:0,width:320,height:header.height(forWidth:320)); header.layoutSubtreeIfNeeded()

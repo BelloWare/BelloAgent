@@ -21,9 +21,7 @@ extension WorkspaceModel {
             guard let tab = await openSubagentTab(target.sessionID, opening: opening),
                   currentOpening(), subagentTabIsShown(target.sessionID) else { return false }
             subagentReturnTargets[target.sessionID] = target
-            let message: String?
-            if let subagentTurnMessageLoader { message = try await subagentTurnMessageLoader(path, target.sessionID, target.turn, target.messageID) }
-            else { message = try await history.subagentTurnMessage(path: path, childID: target.sessionID, turn: target.turn, messageID: target.messageID) }
+            let message = try await subagentTurnMessage(target, path: path)
             guard currentOpening(),
                   subagentTab(target.sessionID) === tab, subagentTabIsShown(target.sessionID) else { return false }
             if let message = sourceMessage ?? message { _ = await revealInTranscript(sessionID: target.sessionID, messageID: message, toolCallID: sourceToolCall, navigation: opening) }
@@ -31,6 +29,13 @@ extension WorkspaceModel {
         } catch is CancellationError { }
         catch { if currentOpening() { self.error = error.localizedDescription } }
         return false
+    }
+
+    /// Owned and original-reference readers resolve the same persisted turn
+    /// and steering identities. This read never attaches a writable helper.
+    func subagentTurnMessage(_ target: SubagentTarget, path: URL) async throws -> String? {
+        if let subagentTurnMessageLoader { return try await subagentTurnMessageLoader(path, target.sessionID, target.turn, target.messageID) }
+        return try await history.subagentTurnMessage(path: path, childID: target.sessionID, turn: target.turn, messageID: target.messageID)
     }
 
     /// Every selection route (including restoration, notifications and a

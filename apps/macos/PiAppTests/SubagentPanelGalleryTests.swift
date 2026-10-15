@@ -5,6 +5,9 @@ import XCTest
 
 final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
     @MainActor func testOriginalReaderForkGallery() async throws {
+        for kind in AgentForkKind.allCases { try await captureOriginalReaderForkGallery(kind) }
+    }
+    @MainActor private func captureOriginalReaderForkGallery(_ kind: AgentForkKind) async throws {
         guard let path = testEnvironment("PI_APP_ORIGINAL_GALLERY") else { throw XCTSkip("Set PI_APP_ORIGINAL_GALLERY") }
         let folder = URL(fileURLWithPath:path)
         try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
@@ -19,7 +22,7 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
         var rows = try String(contentsOf:source,encoding:.utf8).split(separator:"\n").map { try JSONDecoder().decode([String:WireValue].self,from:Data($0.utf8)) }
         rows[0]["id"] = .string("fork")
         var bytes = Data(); for row in rows { bytes.append(try JSONEncoder().encode(row)); bytes.append(10) }; try bytes.write(to:forkPath)
-        var fork = parent; fork.id = "fork"; fork.title = "Parser review · fork"; fork.path = forkPath.path; fork.parentSessionID = parent.id
+        var fork = parent; fork.id = "fork"; fork.title = "Parser review · fork"; fork.path = forkPath.path; fork.parentSessionID = kind.parentID(parent.id)
         model.chats.append(fork)
         var tool = SubagentTranscriptTests.tool
         tool.name = "subagent_start"; tool.input = "{\"description\":\"Parser review\",\"task\":\"Check **token boundaries** and report any ambiguities.\"}"
@@ -49,7 +52,7 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
             for size in [NSSize(width:1240,height:800),NSSize(width:920,height:600)] {
                 window.setContentSize(size); root.refresh(); await settle(window)
                 _ = await model.revealInTranscript(sessionID:fork.id,messageID:"reply",toolCallID:tool.id); await settle(window)
-                let base = "original-\(theme)-\(Int(size.width))x\(Int(size.height))"
+                let base = "original-\(kind.rawValue)-\(theme)-\(Int(size.width))x\(Int(size.height))"
                 try capture([window],to:folder.appendingPathComponent(base + ".png")); files.append(base + ".png")
                 let header = try XCTUnwrap(root.conversation?.agentFamilyHeader)
                 header.open(); await settle(window)
@@ -59,7 +62,7 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
                 XCTAssertTrue(model.subagentTab(child.id)?.pane?.composer.isHidden == true)
             }
         }
-        try (files.joined(separator:"\n") + "\n").write(to:folder.appendingPathComponent("manifest.txt"),atomically:true,encoding:.utf8)
+        try (files.joined(separator:"\n") + "\n").write(to:folder.appendingPathComponent("manifest-" + kind.rawValue + ".txt"),atomically:true,encoding:.utf8)
     }
     @MainActor func testNestedFamilyPickerGallery() async throws {
         guard let path = testEnvironment("PI_APP_SUB_NESTED_GALLERY") else { throw XCTSkip("Set PI_APP_SUB_NESTED_GALLERY") }

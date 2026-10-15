@@ -39,7 +39,9 @@ extension WorkspaceModel {
         invalidateConversationFamily()
     }
     func readInheritedSubagents(_ item: ChatRecord, current: () -> Bool) async {
-        guard !item.isSubagent, !item.imported, item.parentSessionID != nil, let path = item.path else { return }
+        // Whole-chat forks have no sidebar ancestry. The copied plans, not
+        // parentSessionID, identify references to another chat's agents.
+        guard !item.isSubagent, !item.imported, let path = item.path else { return }
         let plans = (try? await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: item.id, includeInherited: true)) ?? []
         guard current(), record(item.id)?.path == path else { return }
         let entries = plans.filter { $0.header.link.budgetOwnerSessionID != item.id }.map {
@@ -63,11 +65,14 @@ extension WorkspaceModel {
             let directory = try subagentDirectory(child.workspaceID)
             _ = try await history.subagentHeader(path: URL(fileURLWithPath: path), directory: directory, expected: target)
             guard opening.isCurrent, !Task.isCancelled, originalAvailability(target).reason == nil else { return false }
-            guard await openSubagentTab(child.id, opening: opening) != nil else { return false }
-            if let sourceMessage {
-                _ = await revealInTranscript(sessionID: child.id, messageID: sourceMessage, navigation: opening)
+            guard let tab = await openSubagentTab(child.id, opening: opening), subagentTabIsShown(child.id) else { return false }
+            let message = try await subagentTurnMessage(target, path: URL(fileURLWithPath: path))
+            guard !Task.isCancelled, opening.isCurrent, subagentTab(child.id) === tab,
+                  subagentTabIsShown(child.id), originalAvailability(target).reason == nil else { return false }
+            if let message = sourceMessage ?? message {
+                _ = await revealInTranscript(sessionID: child.id, messageID: message, navigation: opening)
             }
-            return opening.isCurrent
+            return opening.isCurrent && subagentTabIsShown(child.id)
         } catch { if opening.isCurrent { self.error = error.localizedDescription } }
         return false
     }

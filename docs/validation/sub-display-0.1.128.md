@@ -2085,3 +2085,176 @@ bundles or `xctrace --launch` were used. Source journals and model/tool contract
 are unchanged. No implementation or validation failure remains in this round;
 the independent lead review and integration remain with the lead. Commit/push
 scope is only `dev/a128-sub-display`.
+
+
+## Lead review round 13: fork shapes, deliveries and live effort
+
+All four findings were reproduced with behavioral tests before their respective
+production changes. Work remains on `dev/a128-sub-display`, using only
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display` for build/test evidence.
+
+### Root causes and changes
+
+1. Inherited discovery incorrectly used sidebar ancestry as a prerequisite.
+   Whole-chat `/fork` deliberately has no `parentSessionID`; Fork from here does.
+   `readInheritedSubagents` now derives the reference index from saved acceptance
+   plans for either shape. Ownership, reciprocal original identity, project trust
+   and availability checks remain separate. No child is adopted or started, and
+   no journal format or model-facing text changes.
+2. Delivery navigation identified the side but did not uncover it before testing
+   visibility. `revealMessage` now selects/mounts the recipient side first. An
+   embedded child intentionally yields its navigation ownership at that boundary;
+   a popped-out child retains its originating token. The destination then checks
+   the main intent, selection and actual visibility before publishing. A destination
+   already selected in the main column stays there, even when it is a reply fork
+   with a remembered side slot. A new failing-first regression caught that edge
+   while auditing the broader routing change. Another catches newer main focus
+   during the side's initial load: opening chooses focus, and completion only
+   publishes content, preserving the newer responder choice.
+3. Original-reference opening used only an explicit source message, ignoring the
+   saved turn and steering message/event. Original and owned readers now use one
+   shared `subagentTurnMessage` adapter to the existing journal reader. The target
+   lookup and final reveal retain the opening token, tab identity, actual visibility
+   and original availability checks. An explicit source-message argument still
+   takes precedence. The operation neither attaches a helper nor refocuses a window.
+4. The pane's cached comparison state omitted resolved accepted effort. It now
+   includes that value and passes it to the header, so a later parent summary can
+   update the header without changing the child's turn/status. Values remain cheap
+   cached metadata, with the existing `model default` and no-control behavior.
+
+### Both fork kinds and navigation ownership
+
+`AgentForkKind` supplies both persisted shapes to every inherited-agent test:
+
+| Class | Coverage for whole-chat and reply forks |
+| --- | --- |
+| InheritedSubagentReaderTests | Card and picker Open, Inspector requests/provenance, named Back, native read-only menus, no Stop/send/helper attachment, restore, unavailable/deleted/untrusted originals, byte-identical source journals; Reports/Background Back; linked turn/event/message/explicit source targets; Back/hide versus main focus/popped Reports during the target read; Source into an already-selected fork |
+| SubagentOpeningTests | Both actual production fork actions against the generated loopback running family; independent budget/children, populated inherited index, original read-only opening, blocked source writes/Stop/send and continued fork execution |
+| SubagentDiscoveryTests | Inherited ordinal reservations before owned starts, coordination/Inspector numbering, inherited index and rejection of copied ownership claims |
+| SubagentTranscriptTests | Ancestry-independent leaf rendering for both fork identities: unavailable original actions, source/Stop authority and appearance changes |
+| SubagentDisplayTests | Number seeding for both copied display identities; long named Back labels/tooltips/VoiceOver at narrow width |
+| SubagentPanelGalleryTests / SubagentForkGalleryTests | Both persisted shapes, original reader/picker and unavailable original cards, light/dark and wide/narrow scenes |
+
+The behavioral ownership checks exercise real public navigation entry points:
+
+- `testReportDeliveryUncoversItsRecipientSideAndTransfersEmbeddedOwnership`
+  calls `openAgentSource` for a delivered report's Parent action, covering mounted
+  and unmounted saved sides, embedded and popped-out child readers, and loaded
+  versus off-page delivery messages.
+- `testRetiredSideDeliveryCannotPublishAfterItsReaderHandoff` holds the side read
+  after the handoff. A newer file tab, Reports page or explicit reveal rejects its
+  old result and clears only its own read flag; only an embedded origin is retired
+  by the intended Side transition.
+- `testOriginalTargetLookupKeepsReaderOwnershipAcrossBackHideAndMainFocus`
+  holds the saved-turn lookup. Back and hiding reject its result; main focus and
+  Reports beside a popped-out reader allow publication without taking focus back.
+- `testOriginalSourceKeepsAnAlreadySelectedForkInTheMainPane` preserves the fork
+  in the main column and keeps the child visible while Source reveals the copied
+  issuing message, including when the fork has a remembered Side slot.
+- `testSideDeliveryFinishesLoadingWithoutOverwritingNewerMainFocus` holds initial
+  recipient history for mounted/unmounted sides. A newer main-pane focus survives
+  the delivery reveal, and the requested message still publishes.
+- `testAcceptedEffortRefreshesAnAlreadyShownHeaderAfterTheChildSnapshot` publishes
+  only the later parent summary (high, model default, low and no effort control)
+  while the child turn/status/presentation generation remain unchanged.
+
+The design record documents the delivery handoff, visible-main preservation,
+both fork shapes and original-reader target lookup. Existing reader lifecycle,
+Back, page/selection races, Source version/history, report navigation and ordinary
+loading/concurrency tests are included in the affected validation below.
+
+### Failing-first and mutation evidence
+
+Each entry has `review13-<name>.log`, `-arguments.txt`, `-summary.json` and
+`-tests.json` under the stream build root. Numbers count XCTest methods; the fork
+and navigation matrices run within those methods.
+
+| Run | Passed | Failed | Evidence |
+| --- | ---: | ---: | --- |
+| `red-inherited` | 1 | 2 | Whole-chat inherited index/Open missing; original follow-up and steering targets ignored |
+| `red-fork-entry` | 11 | 1 | Actual whole-chat fork has no inherited index |
+| `red-readers` | 49 | 1 | Parent action leaves the recipient Side covered |
+| `red-effort` | 4 | 1 | Header retains low after the accepted high summary |
+| `red-main-fork` | 4 | 1 | Routing audit exposes remounting an already-visible reply fork under its original parent |
+| `red-side-focus` | 51 | 1 | Completion of the side's initial load overwrites newer main focus |
+| `mutation-ancestry` | 3 | 1 | Reinstating the real ancestry prerequisite loses whole-chat inherited discovery |
+| `mutation-target` | 2 | 2 | Removing the real original target lookup loses saved destinations and the suspended-lookup ownership boundary |
+| `mutation-transfer` | 49 | 2 | Retaining the embedded origin across Side replacement rejects the intended delivery and prevents the destination history read |
+| `mutation-effort` | 4 | 1 | Restoring the real old pane comparison state leaves the effort header stale |
+
+All four mutations were restored before final validation. Initial fixed runs
+passed 3 original-reader, 50 reader, 5 effort and 12 opening tests. Strengthened
+ownership runs passed 4 original-reader and 51 reader tests. These intermediate
+runs are separate evidence and are not added to the final unique-test count.
+
+
+The first final opening-class run (`review13-final-opening`) passed 11 tests and
+failed its existing family-Inspector attachment assertion. Its wait accepted any
+state other than `.loading`, including a not-yet-started child display, then
+awaited the unrelated workspace `navigationTask`. Inspector owns its own Task;
+the tab may already be visible while that Task is still attaching. The test now
+waits for the actual pending child opening and tab load to finish before asserting
+attachment. No production attachment rule was weakened or changed for this result.
+The revised whole-class result is recorded separately below.
+
+
+### Final affected validation
+
+The final implementation passes **224 unique behavioral native tests in 12 affected
+classes, zero failures and zero skips**. `review13-final-counts.json` records the
+per-class extraction from the retained result summaries. Serial-lane classes ran
+alone; only the seven related parallel-lane classes shared an invocation. The final focus change then reran the reader and original-reader
+classes separately and ReportMessageNavigationTests alone; these supersede their
+earlier results rather than adding duplicate tests to the count.
+
+| Final run | Class | Passed |
+| --- | --- | ---: |
+| `final-original-focus` | InheritedSubagentReaderTests | 5 |
+| `final-reader-focus` | SubagentReaderTests | 52 |
+| `final-opening-settled` | SubagentOpeningTests | 12 |
+| `final-navigation` | SubagentNavigationTests | 7 |
+| `final-pane` | ConversationPaneTests | 81 |
+| `final-related` | SubagentEffortTests | 5 |
+| `final-related` | SubagentDiscoveryTests | 14 |
+| `final-related` | SubagentTranscriptTests | 11 |
+| `final-related` | SubagentDisplayTests | 8 |
+| `final-reports-focus` | ReportMessageNavigationTests | 9 |
+| `final-related` | WorkspaceLoadingTests | 12 |
+| `final-related` | WorkspaceConcurrencyTests | 8 |
+
+Each class used `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display
+scripts/test-macos.sh -only-testing:PiAppTests/<Class>` via the retained
+`review13-run.py` wrapper. `review13-lanes.txt` records the lane inventory. No full
+native lane was run in this round, as requested. No helper package changed;
+SubagentOpeningTests exercises the generated real-helper/loopback fixture.
+
+
+### Gallery and handoff
+
+The two affected gallery classes also ran alone: `gallery-original` passed its
+original-reader test and skipped its two unrelated opt-in scenes; `gallery-unavailable`
+passed its one test. Together with the behavioral suites, final validation is
+**226 passed, zero failed, two unrelated gallery opt-in skips**.
+
+All **40 generated images were inspected** directly. Paths are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`:
+
+- `gallery-review13-original/`: 16 captures, with per-kind manifests. Both fork
+  shapes at 1240×800 and 920×600 in light/dark, picker closed/open. Original #1
+  remains in its own read-only group after owned #2; New Side remains an action;
+  original provenance, named Back and source content remain legible. The picker
+  stays inside the window beside the hosted reader. At 920×600, each transcript
+  scrolls within its column and the original reader has no composer or Stop.
+- `gallery-review13-unavailable/`: 24 captures. Both fork shapes, pending/result,
+  light/dark, at widths 1240, 920 and 684 with height 600. Copied Task/Result text
+  wraps within its card, unavailable Open/Inspect stay disabled, and action bounds
+  remain inside the narrow card. Theme round trips retain the inherited identity.
+- `review13-gallery-inventory.json`: exact filenames and pixel dimensions for all
+  40 images. Filenames include `whole-chat` or `from-reply` to distinguish shapes.
+
+`NEXT-RELEASE.md` and the design record are updated. `git diff --check` passes.
+No remaining implementation or validation failure is known for this round; the
+independent lead review and integration remain with the lead. Only this stream's
+branch is committed/pushed. No source journal writes, accounting adoption, new
+stored fields, model/tool changes, real preferences/Keychain, installed app,
+paid-provider calls, named result bundles or `xctrace --launch` were used.
