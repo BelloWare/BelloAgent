@@ -41,6 +41,71 @@ extension XCTestCase {
 }
 
 final class PendingChatProjectTests: XCTestCase {
+    @MainActor func testSwitchRebindsOpenInspectorAndReadsDestinationArchive() async throws {
+        let model = try await pendingProjectModel(gateway: true), initial = try await startPendingProjectChat(model)
+        defer { SessionInspectorWindows.shared.closeAll(owner: model) }
+        model.openInspector(session: initial.id)
+        let controller = try XCTUnwrap(SessionInspectorWindows.shared.controller(sessionID: initial.id))
+        let window = try XCTUnwrap(controller.window), frame = window.frame, old = controller.inspector
+        // Hold an old-scope read across the switch. It must retire along with
+        // the old model, even when its asynchronous work completes later.
+        old.setVisible(false)
+        let gate = AsyncGate(), reads = old.indexReads
+        var entered = false
+        old.beforeRead = { entered = true; await gate.wait() }
+        old.setVisible(true)
+        try await eventually("old inspector read started") { entered }
+        do { try await model.setPendingChatProject("Harbor", for: initial.id) }
+        catch { await gate.open(); throw error }
+        let inspector = controller.inspector
+        XCTAssertFalse(inspector === old)
+        XCTAssertFalse(old.visible); XCTAssertFalse(old.isReading)
+        XCTAssertEqual(inspector.scope, SessionUsageScope(sessionID: initial.id, workspaceID: "Harbor"))
+        XCTAssertEqual(inspector.usage.scope.workspaceID, "Harbor")
+        XCTAssertTrue(controller.window === window); XCTAssertEqual(window.frame, frame)
+        await gate.open()
+
+        model.openInspector(session: initial.id)
+        XCTAssertEqual(SessionInspectorWindows.shared.controllers.filter { $0.inspector.scope.sessionID == initial.id }.count, 1,
+                       "Opening Inspector again must reuse the retargeted window")
+        XCTAssertTrue(SessionInspectorWindows.shared.controller(sessionID: initial.id) === controller)
+        let view = try XCTUnwrap(model.selected)
+        view.footer.turnTiming = ["modelMs": .number(250)]
+        XCTAssertEqual(inspector.work["modelMs"], .number(250))
+        initial.footer.turnTiming = ["modelMs": .number(999)]
+        XCTAssertEqual(inspector.work["modelMs"], .number(250))
+        view.draft = "Hello from the inspector's destination project."
+        model.submitComposer(intent: .followUp, sessionID: view.id)
+        try await eventually("synthetic reply completed", timeout: .seconds(60)) {
+            !view.loading && !view.busy && (view.messages.contains { $0.role == "assistant" } || view.sendFailure != nil || view.runState == .error)
+        }
+        XCTAssertNotEqual(view.runState, .error, view.failureMessage ?? view.notice); XCTAssertNil(view.sendFailure)
+        try await eventually("destination request archived") {
+            try await model.traces.inspectorRows(sessionID: view.id, workspaceID: "Harbor").rows.contains { $0.source == .log }
+        }
+        inspector.setVisible(true); inspector.refresh()
+        try await eventually("inspector finished its destination read") { inspector.indexLoaded && !inspector.isReading && !inspector.usage.loading }
+        XCTAssertTrue(inspector.index.requests.contains { $0.source == .log }, "Destination archive requests belong in the already-open Inspector")
+        XCTAssertGreaterThan(inspector.usage.snapshot?.gateway.requests ?? 0, 0)
+        XCTAssertEqual(old.indexReads, reads, "The cancelled old-scope read cannot publish after the switch")
+    }
+
+    @MainActor func testSwitchKeepsInspectorHiddenAndDoesNotRetargetAnotherOwner() async throws {
+        let model = try await pendingProjectModel(), view = try await startPendingProjectChat(model)
+        let other = try await pendingProjectModel()
+        defer { SessionInspectorWindows.shared.closeAll(owner: model); SessionInspectorWindows.shared.closeAll(owner: other) }
+        let controller = SessionInspectorWindows.shared.show(model: model, sessionID: view.id, workspaceID: "Orchard", title: "New chat", focus: .overview)
+        let unrelated = SessionInspectorWindows.shared.show(model: other, sessionID: view.id, workspaceID: "Orchard", title: "Another owner's report", focus: .overview)
+        let window = try XCTUnwrap(controller.window), originalOther = unrelated.inspector
+        window.orderOut(nil); controller.inspector.setVisible(false)
+        try await model.setPendingChatProject("Harbor", for: view.id)
+        XCTAssertTrue(controller.window === window); XCTAssertFalse(window.isVisible)
+        XCTAssertFalse(controller.inspector.visible, "Switching projects must not reopen a hidden Inspector")
+        XCTAssertEqual(controller.inspector.scope.workspaceID, "Harbor")
+        XCTAssertTrue(unrelated.inspector === originalOther, "An inspector owned by another workspace window keeps its scope")
+        XCTAssertEqual(unrelated.inspector.scope.workspaceID, "Orchard")
+    }
+
     @MainActor func testPendingProjectChipInFlatAndTopics() async throws {
         let model = try await pendingProjectModel()
         let session = try await startPendingProjectChat(model)

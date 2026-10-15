@@ -91,6 +91,7 @@ extension WorkspaceModel {
         chats[index] = fresh
         displays[id] = replacement; selected = replacement
         selectedWorkspaceID = projectID; profileChoice = profileID
+        SessionInspectorWindows.shared.rebindPendingChat(model: self, previousWorkspaceID: item.workspaceID, chat: fresh)
         await select(id)
     }
 }

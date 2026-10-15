@@ -32,6 +32,14 @@ final class PendingChatProjectGalleryTests: XCTestCase {
                     let picker = try XCTUnwrap(chip.picker)
                     XCTAssertEqual(picker.visible.map(\.title), ["Orchard", "Harbor"])
                     XCTAssertEqual(picker.visible.filter(\.checked).map(\.title), ["Orchard"])
+                    let lines = ConversationPaneTests.views(PiKit.TextLine.self, in: picker)
+                    let titles = try picker.visible.map { item in try XCTUnwrap(lines.first { $0.line.text == item.title }) }
+                    let paths = try picker.visible.map { item in try XCTUnwrap(lines.first { $0.line.text == item.help }) }
+                    let leading = titles[0].convert(titles[0].bounds, to: picker).minX
+                    for line in titles + paths {
+                        XCTAssertEqual(line.convert(line.bounds, to: picker).minX, leading, accuracy: 0.01,
+                                       "Checked and unchecked project names and paths share one leading column")
+                    }
                     if let folder { try capture(window, popup: picker.window, at: folder.appendingPathComponent(prefix + "-open.png")) }
                     // Exercise the real menu command once, including the pane's
                     // replacement display/editor binding and retained draft.

@@ -49,7 +49,8 @@ No helper/package code, agent tool semantics, vault format, permission rules,
 capture protocol, data retention or journal format changed. Existing journals
 continue down their original read path. Shared-file edits are limited to the
 composer mount, the New Chat factory/save reservation, a model counter and the
-stale-open guard; sub-agent display/cost/webhook files are untouched.
+stale-open guard, plus Inspector window rebinding from review round 1;
+sub-agent display/cost/webhook files are untouched.
 
 ## Root causes and regression evidence
 
@@ -115,7 +116,7 @@ of this occurrence remains unconfirmed. All 11 new behavioral tests and the
 new gallery test passed in the full lane. The unchanged ContextReading class
 then passed 3/3 alone in 9.405 seconds, including the failing case in 2.485
 seconds. The failed full lane and passing isolated run remain separate
-evidence. There was no second full-lane run.
+evidence. There was no second full-lane run for the initial implementation.
 The machine-readable totals and failure are retained in
 `validation/full-parallel-summary.json` and `validation/full-parallel-issues.json`;
 the exact lane arguments are in `validation/full-parallel-arguments.txt`.
@@ -164,7 +165,88 @@ chat contract), not only a successful first send. A pending side is not moved
 with its parent; close it first. Accessibility labels and
 keyboard behavior are tested; a spoken VoiceOver walkthrough was not performed.
 
-The lead's separate Codex review and integration of this branch remain, along
-with the context-reading parallel-lane timeout follow-up. This
+At the initial handoff, the lead's separate Codex review and integration of
+this branch remained, along with the context-reading parallel-lane timeout
+follow-up. This
 stream does not merge or push `dev/next`, publish a release or modify the other
 streams' sub-agent work.
+
+## Lead review round 1
+
+Date: 2026-10-15. Both the independent review's P2 Inspector finding and the
+lead's project-picker alignment finding are addressed.
+
+The Inspector followed a replacement `SessionDisplay` but retained its original,
+immutable `SessionUsageScope`. Its archive index and usage queries therefore
+stayed in the old project. The window registry also stored that old scope, so
+opening Inspector again created another window. A successful pending-project
+swap now explicitly rebinds only the matching owner/session/old-project entry.
+It stops and disconnects the old Inspector model, replaces the model and view
+inside the existing window, and derives the registry scope from the current
+model. Archive queries, usage and display observation all start in the target
+project. Window identity, frame and hidden state are preserved; a switch does
+not present or deminiaturize the window. The new model starts on Overview so
+previous project previews and navigation state are retired together. Normal
+report entry points retain their exact owner/project/session matching.
+
+The picker used each SF Symbol's natural width. The gallery regression measured
+checked names/paths at 39.5 pt and unchecked names/paths at 42.5 pt. Both symbols
+now occupy a fixed 16 pt leading column, with unchanged Pi commands, accessible
+labels and keyboard behavior. The gallery checks the actual title and path
+coordinates in both sidebar modes, themes and window sizes.
+
+Failing-first and mutation evidence (paths relative to the evidence root):
+
+- `validation/review1-inspector-red.log`: both new behavioral tests failed,
+  with 10 assertions. They reproduce the stale scope, duplicate window,
+  missing destination archive requests/usage and old read surviving the swap.
+- `validation/review1-picker-red.log`: the standalone gallery failed with 16
+  assertions for the 3 pt title/path offset across eight open-picker scenes.
+- `validation/review1-owner-guard-mutation.log`: removing `entry.owner === model`
+  from the real rebind guard caused the isolation regression to fail with two
+  assertions: another owner's Inspector was replaced and changed project.
+  The guard was restored before final validation.
+
+The destination-archive regression uses the synthetic loopback gateway and
+verifies an actual first send appears as an archived request and in usage in
+the already-open Inspector. It also holds an old-scope read across the switch,
+checks that it cannot publish after cancellation, verifies the replacement
+footer subscription and proves that reopening reuses the same window. The
+second regression covers a hidden window and a different owner's matching
+session ID. No installed app, real credentials, real preferences, provider
+calls, helper changes or journal changes are involved.
+
+Review validation, with `PI_BUILD_ROOT` set to this stream's build root:
+
+| Evidence | Tests | Result |
+| --- | ---: | --- |
+| `validation/review1-affected.log`: PendingChatProject (13), InspectorEntryPoint (7), InspectorFollow (2), InspectorWindowControl (1), SessionUsage (14), SubagentInspector (6), SubagentSteeringInspector (5) | 48 | Passed |
+| `validation/review1-frame.log`: SessionUsageWindowFrame, serial class alone | 1 | Passed |
+| `validation/review1-restored.log`: PendingChatProject after restoring the mutated owner guard | 13 | Passed |
+| `validation/review1-gallery.log`: standalone PendingChatProjectGallery | 1 | Passed; 22 captures |
+| `validation/review1-full-parallel.log`: one complete native parallel lane, four workers | 2,505 | 2,468 passed; 37 skipped; zero failures |
+
+The selected runs cover 49 distinct behavioral/window tests plus the gallery.
+The initial compile required an explicit `@MainActor` annotation for the
+registry entry's computed scope; `validation/review1-build-diagnostic.log`
+records that compile diagnostic separately from the passing runs.
+
+Refreshed gallery: `gallery-review1/` under the evidence root. All 22 PNGs were
+opened and inspected: Topics and Flat at 1240×800 and 920×600, light/dark,
+closed/open; narrow 420×600 long names, light/dark, closed/open; and searchable
+picker light/dark. Names and paths align for checked and unchecked rows;
+long-name truncation, chevrons, draft wrapping and search remain legible.
+
+The one full parallel lane for this review round passed, including all 13
+PendingChatProject tests, the gallery test and all three unchanged
+ContextReading tests. The prior intermittent test,
+`testAChangedModelOrJournalCountsAgain`, passed in 2.419 seconds. This successful
+run does not establish the cause of the initial handoff's timeout; that earlier
+failed run remains recorded separately above. No second full lane was run for
+this review round. Exact arguments and fixture environment are preserved in
+`validation/review1-full-parallel-command.json`, authoritative totals in
+`validation/review1-full-parallel-summary.json`, and selected-run counts in
+`validation/review1-selected-summary.json`.
+
+Both review findings are resolved. Remaining handoff: lead re-review and branch
+integration; the historical ContextReading timeout remains a test follow-up.

@@ -118,7 +118,7 @@ import AppKit
             let path = PiKit.TextLine(PiKit.Line(item.help ?? "", font: PiKit.Font.caption, color: .piInkSecondary)); path.truncation = .middle
             let check = PiKit.SymbolView(PiKit.Symbol(item.checked ? "checkmark" : "folder", size: 12), color: item.checked ? .piAccent : .piInkTertiary)
             let text = ShellStack(.vertical, spacing: 3, [.view(name, .fill), .view(path, .fill)])
-            let content = ShellStack(.horizontal, spacing: 8, [.view(check), .view(text, .fill)])
+            let content = ShellStack(.horizontal, spacing: 8, [.view(check, .fixed(16)), .view(text, .fill)])
             let row = PiKit.SelectableRow(content: content, selected: item.identifier == self?.highlighted, action: { [weak self] in self?.activate(item.identifier) })
             row.setAccessibilityLabel(item.title + (item.checked ? ", current project" : "") + ", " + (item.help ?? ""))
             row.setAccessibilityIdentifier("pending-project-" + (item.identifier ?? item.title))

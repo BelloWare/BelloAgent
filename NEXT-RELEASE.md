@@ -5,7 +5,8 @@
 ## 0.1.128
 
 - [x] New-chat project choice (`dev/a128-new-chat-project`): an unsaved chat offers an accessible “in <Project>” chip above the composer in Flat and Topics. Its searchable Pi picker lists trusted, available projects; switching uses the target's ordinary New Chat defaults, keeps typed text and explicit image attachments, clears the topic and old resource/context state, and stops being available once the chat is saved or sent. Save/open races are guarded without changing helper tools, permissions, capture or journals. [Validation and gallery](docs/validation/new-chat-project-0.1.128.md).
-- [ ] Native validation follow-up: the new-chat stream's single full parallel lane had 2,465 passed, one known ContextReading timeout and 37 skips. The unchanged class passed 3/3 alone; the timeout's cause remains unconfirmed. [Evidence](docs/validation/new-chat-project-0.1.128.md).
+- [x] New-chat review fixes: an already-open Session Inspector follows the new project's archive scope in the same window, retiring old reads and previews without reopening hidden windows or rebinding another owner. Checked and unchecked project-picker names and paths share a fixed-width icon column. Review validation: 49 affected tests, 22 inspected gallery captures, full parallel lane 2,468 passed / 37 skipped / zero failures. [Review validation](docs/validation/new-chat-project-0.1.128.md#lead-review-round-1).
+- [ ] Native validation follow-up: the new-chat stream's initial full parallel lane had 2,465 passed, one known ContextReading timeout and 37 skips. The unchanged class passed 3/3 alone and again in the successful review-round lane; the original timeout's cause remains unconfirmed. [Evidence](docs/validation/new-chat-project-0.1.128.md).
 
 ## 0.1.127
 
