@@ -56,6 +56,39 @@ scripts/test-macos.sh -only-testing:PiAppTests/SideKeepGalleryTests
 
 All **10 PNGs were opened and inspected**: `gallery-side-keep/notice-{light,dark}-{1240x600,920x600,300}.png` and `gallery-side-keep/dismiss-{light,dark}-{920,300}.png`. The narrow notice stacks actions and scrolls the remaining items; all confirmation actions and its file-preservation text fit. Controls are custom Pi buttons with named VoiceOver labels and native keyboard activation.
 
+## Review round 1: dismissal and registration ordering (2026-10-15)
+
+The independent review identified two stale-snapshot bugs. Registration captured a pending copy, suspended for its header read, then committed chat/draft metadata unconditionally even if Dismiss had removed that copy. Dismissal removed the visible notice by full presentation equality, so a changed reason or parent title could leave a reminder behind after its saved pending record was removed.
+
+Eight generated-fixture ordering tests ran before the fix: **12 assertion failures in five methods**, with three existing safe orderings passing (`logs/side-keep-review-red.log`). A generated FIFO pauses the actual `HistoryReader.validateIdentity` read after the pending copy is captured; the test completes dismissal or replacement, publishes the valid fixture and releases the read. No production timing hook or fixed scheduling sleep substitutes for the race.
+
+The store now checks the exact captured `ChatRecord` inside the same `BEGIN IMMEDIATE` transaction that saves the chat/draft and consumes the pending record. The comparison uses the original snapshot, before canonical-path and organization changes, preserving alias registration and parent-topic moves. Dismissal also compares/removes within a transaction. Missing or replaced copies reject the old commit without any chat/draft writes. Existing topic tests now seed the pending records required by the real registration path.
+
+Notice removal compares the reviewed chat snapshot, independently of its reason or parent title. Successful registration likewise removes only its own snapshot's notice. Live failure reporting respects the resolution revision and ignores obsolete registration errors. Accepted dismissals retain process-local tokens for delayed live receipts; a failed confirmation removes only its own token. A new pending copy still gets its own notice. Nothing about an unkept side is persisted by those tokens.
+
+| Ordering audited | Required result |
+|---|---|
+| Dismiss during a captured registration's header read | No chat is registered; the existing draft and journal bytes remain unchanged; another reconciliation cannot resurrect it. |
+| Replacement during the old header read | The old commit is refused; the replacement remains pending and subsequently registers its own path. Both files remain unchanged. |
+| Registration before the confirmation answer | Dismiss removes only the reminder; the registered chat and newer typing remain saved. |
+| Reason/parent title refresh while confirmation is open | The same reviewed copy is dismissed and its refreshed notice disappears. |
+| Different copy replaces the reviewed one | The old confirmation is refused and the replacement's current notice remains. |
+| Dismiss an earlier failure while another file is being checked | The reconciliation resolution revision prevents the collected old notice from returning. |
+| Duplicate registration after a successful commit | The consumed intent cannot commit again or overwrite a newer draft. |
+| Live receipts after Dismiss | No automatic registration or renewed warning. An unexpected receipt that was never dismissed still reports its existing error. |
+
+The first affected run passed 69/70: the existing durability test exposed an overly broad suppression of unexpected live receipts (`logs/side-keep-review-green.log`). The final implementation distinguishes explicit dismissal with process-local tokens and retains that test's original warning assertion.
+
+| Real production mutation | Result (each run executes all 8 ordering tests) | Evidence |
+|---|---|---|
+| Remove the transaction's pending-copy guard | **Caught:** 10 assertion failures in 3 methods (dismissed registration, replacement consumption, newer-draft overwrite). | `logs/side-keep-review-mutation-registration.log` |
+| Keep presence checking but remove snapshot equality | **Caught:** 5 assertion failures in the replacement test. | `logs/side-keep-review-mutation-snapshot.log` |
+| Restore full `SideKeepIssue` equality for notice removal | **Caught:** 1 assertion failure after reason/parent-title refresh. | `logs/side-keep-review-mutation-notice.log` |
+
+Both mutated production files were restored byte-for-byte before final verification. This review changes no scene layout, journal/helper format, tool/capture/vault boundary or persisted side-draft policy. Per the review request, only affected native classes run; the earlier gallery and full-lane evidence above belongs to the initial implementation and is not claimed as a new review run.
+
+Final restored verification: **70 passed, 0 failed**, using `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-fork-subagents scripts/test-macos.sh` with seven `-only-testing:PiAppTests/<Class>` arguments: `SideKeepOrderingTests` (8), `SideKeepRecoveryTests` (15), `SideTests` (15), `WorkspaceDurabilityTests` (7), `TopicStorageTests` (17), `SideRelaunchTests` (3), and `ForkFromReplyTests` (5). All seven are in the parallel lane according to `python3 scripts/test-lanes.py list`. Evidence: `logs/side-keep-review-restored.log`. No review validation failures remain. No helper or gallery source changed, so those suites were not repeated.
+
 ## Remaining limits
 
 The particular cause in the owner's private file is unknown; no access was requested or used. Irrecoverable/mismatched identities are deliberately not guessed or silently adopted. The user can inspect their unchanged file, reveal its location, or dismiss the reminder. Missing files cannot be reconstructed by this change.

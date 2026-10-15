@@ -304,8 +304,9 @@ final class TopicStorageTests: XCTestCase {
             side.path = root.appendingPathComponent(side.id + ".jsonl").path
             let draft = DraftRecord(id: side.id, text: "Preserved side draft")
             try await store.put(parent, kind: "chat", id: parent.id)
+            try await store.put(SideKeepIntent(chat: side), kind: "side-keep", id: side.id)
             if keepFirst {
-                let kept = try await store.commitKeptSide(side, draft: draft)
+                let kept = try await store.commitKeptSide(side, draft: draft, expected: side)
                 XCTAssertEqual(kept.topicID, "before")
                 // Only the parent is supplied: the side is durable but its row
                 // has not yet been published to the caller's sidebar snapshot.
@@ -313,7 +314,7 @@ final class TopicStorageTests: XCTestCase {
                 XCTAssertEqual(Set(moved.map(\.id)), [parent.id, side.id])
             } else {
                 _ = try await store.moveChatsToTopic(ids: [parent.id], workspaceID: "project", topicID: "after")
-                let kept = try await store.commitKeptSide(side, draft: draft)
+                let kept = try await store.commitKeptSide(side, draft: draft, expected: side)
                 XCTAssertEqual(kept.topicID, "after", "The returned row must use the current persisted parent, not its captured topic")
             }
             let savedParent = try await store.get(ChatRecord.self, kind: "chat", id: parent.id)
@@ -336,20 +337,25 @@ final class TopicStorageTests: XCTestCase {
         var capturedSide = chat("side", topicID: "original"); capturedSide.parentSessionID = parent.id
         let draft = DraftRecord(id: capturedSide.id, text: "Kept draft")
         try await store.put(parent, kind: "chat", id: parent.id)
-        _ = try await store.commitKeptSide(capturedSide, draft: draft)
+        try await store.put(SideKeepIntent(chat: capturedSide), kind: "side-keep", id: capturedSide.id)
+        _ = try await store.commitKeptSide(capturedSide, draft: draft, expected: capturedSide)
         _ = try await store.moveChatsToTopic(ids: [parent.id], workspaceID: "project", topicID: "parent-group")
         _ = try await store.moveChatsToTopic(ids: [capturedSide.id], workspaceID: "project", topicID: "child-group")
         _ = try await store.updateChatOrganization(id: capturedSide.id, change: .title("Independently named side"))
         let organized = try await store.updateChatOrganization(id: capturedSide.id, change: .pinned(true))
         capturedSide.path = root.appendingPathComponent("retained-side.jsonl").path
-        let replayed = try await store.commitKeptSide(capturedSide, draft: draft)
+        // A fresh pending registration can reconcile a retained chat; a
+        // duplicate receipt without an intent must never rewrite its draft.
+        try await store.put(SideKeepIntent(chat: capturedSide), kind: "side-keep", id: capturedSide.id)
+        let replayed = try await store.commitKeptSide(capturedSide, draft: draft, expected: capturedSide)
         XCTAssertEqual(replayed.topicID, "child-group"); XCTAssertEqual(replayed.organizationRevision, organized.organizationRevision)
         XCTAssertEqual(replayed.title, organized.title); XCTAssertEqual(replayed.pinnedAt, organized.pinnedAt)
         XCTAssertEqual(replayed.path, capturedSide.path)
         // A fork is independent: even if the source moved while it was being
         // retained, its explicitly captured topic remains its initial group.
         let fork = chat("fork", topicID: "original")
-        let keptFork = try await store.commitKeptSide(fork, draft: DraftRecord(id: fork.id, text: "Fork draft"))
+        try await store.put(SideKeepIntent(chat: fork), kind: "side-keep", id: fork.id)
+        let keptFork = try await store.commitKeptSide(fork, draft: DraftRecord(id: fork.id, text: "Fork draft"), expected: fork)
         XCTAssertNil(keptFork.parentSessionID); XCTAssertEqual(keptFork.topicID, "original")
         await store.close()
     }

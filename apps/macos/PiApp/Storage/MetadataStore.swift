@@ -619,11 +619,18 @@ actor MetadataStore {
         draft.requireSubmissionReview(commands)
         try put(draft, kind: "draft", id: sessionID)
     }
-    @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord) throws -> ChatRecord {
+    @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord, expected: ChatRecord) throws -> ChatRecord {
         let database = try ready()
         guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
         transactionDrafts = []  // told once committed (`transaction`)
         do {
+            // Identity reads suspend outside this transaction. Dismissal, a
+            // replacement or another receipt may have consumed their intent.
+            // Compare the captured intent before path/organization migration;
+            // no chat or draft write is allowed without that exact pending copy.
+            guard proposed.id == expected.id,
+                  let pending = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id),
+                  pending.chat == expected else { throw StoreError.staleRevision }
             var chat = proposed
             if let existing = try get(ChatRecord.self, kind: "chat", id: chat.id) {
                 // Replaying a keep receipt must preserve an independent rename
@@ -646,9 +653,11 @@ actor MetadataStore {
     /// Only the exact pending copy reviewed by the confirmation can be
     /// dismissed. Journals, chats, drafts and other metadata stay untouched.
     func dismissSideKeep(_ expected: ChatRecord) throws {
-        guard let current = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id) else { return }
-        guard current.chat == expected else { throw StoreError.staleRevision }
-        try remove(kind: "side-keep", id: expected.id)
+        try transaction {
+            guard let current = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id) else { return }
+            guard current.chat == expected else { throw StoreError.staleRevision }
+            try remove(kind: "side-keep", id: expected.id)
+        }
     }
     /// A handoff must never reappear as an empty chat after a partial write.
     func commitPortableHandoff(_ chat: ChatRecord, draft: DraftRecord, provenance: WireValue?) throws {

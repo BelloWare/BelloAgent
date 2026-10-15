@@ -10,12 +10,25 @@ struct SideKeepIssue: Equatable, Identifiable {
 
 extension WorkspaceModel {
     func reportSideKeepFailure(id: String, title: String, error: Error) async {
-        if let intent = try? await store?.get(SideKeepIntent.self, kind: "side-keep", id: id) {
+        // A late receipt for a dismissed or already registered copy is settled,
+        // not a new failure. A superseded attempt cannot describe its replacement.
+        if case StoreError.staleRevision = error { return }
+        let revision = sideKeepResolutionRevision
+        do {
+            guard let store else { throw StoreError.unavailable }
+            let intent = try await store.get(SideKeepIntent.self, kind: "side-keep", id: id)
+            guard revision == sideKeepResolutionRevision else { return }
+            guard let intent else {
+                if sideKeepDismissals[id] == nil, !chats.contains(where: { $0.id == id }) {
+                    self.error = "Could not add “\(title)” to saved chats. \(error.localizedDescription)"
+                }
+                return
+            }
             let issue = sideKeepIssue(intent, error: error)
             sideKeepResolutionRevision &+= 1
             sideKeepIssues.removeAll { $0.id == id }
             sideKeepIssues.append(issue); sideKeepIssues.sort { $0.id < $1.id }
-        } else { self.error = "Could not add “\(title)” to saved chats. \(error.localizedDescription)" }
+        } catch { self.error = "Could not check the saved copy of “\(title)”. \(error.localizedDescription)" }
     }
 
     func sideKeepIssue(_ intent: SideKeepIntent, error: Error) -> SideKeepIssue {
@@ -50,13 +63,19 @@ extension WorkspaceModel {
             SideKeepDismissSheet(issue: issue, parentSize: window.contentView?.bounds.size ?? window.frame.size, answer: answer)
         }) { [weak self] accepted in
             guard let self, accepted else { return }
+            let dismissal = UUID()
+            self.sideKeepDismissals[issue.id, default: []].insert(dismissal)
             Task {
                 do {
                     guard let store = self.store else { throw StoreError.unavailable }
                     try await store.dismissSideKeep(issue.chat)
                     self.sideKeepResolutionRevision &+= 1
-                    self.sideKeepIssues.removeAll { $0 == issue }
-                } catch { self.error = "Could not dismiss “\(issue.chat.title)”. \(error.localizedDescription)" }
+                    self.sideKeepIssues.removeAll { $0.chat == issue.chat }
+                } catch {
+                    self.sideKeepDismissals[issue.id]?.remove(dismissal)
+                    if self.sideKeepDismissals[issue.id]?.isEmpty == true { self.sideKeepDismissals.removeValue(forKey: issue.id) }
+                    self.error = "Could not dismiss “\(issue.chat.title)”. \(error.localizedDescription)"
+                }
             }
         }
         if !asked { error = PiQuestion.busyNotice }

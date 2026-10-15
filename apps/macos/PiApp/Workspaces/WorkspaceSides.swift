@@ -490,7 +490,7 @@ extension WorkspaceModel {
         if let profile = profiles.first(where: { $0.id == retained.profileID }) { retained.migrateOutputBudget(profile: profile) }
         // The transaction resolves a concurrent parent move and returns its
         // durable organization instead of the stale recovery intent's group.
-        retained = try await store.commitKeptSide(retained, draft: draft)
+        retained = try await store.commitKeptSide(retained, draft: draft, expected: intent.chat)
         retained.topicID = effectiveTopicID(for: retained)
         if let index = chats.firstIndex(where: { $0.id == id }) {
             if (retained.organizationRevision ?? 0) >= (chats[index].organizationRevision ?? 0) {
@@ -500,7 +500,7 @@ extension WorkspaceModel {
         if let info = side(id) { sides[info.parentID]?.kept = true; sides[info.parentID]?.keeping = false; sides[info.parentID]?.keepRequested = false; sides[info.parentID]?.topicID = chats.first(where: { $0.id == id })?.topicID }
         await retainSideReadState(id)
         sideKeepResolutionRevision &+= 1
-        sideKeepIssues.removeAll { $0.id == id }
+        sideKeepIssues.removeAll { $0.chat == intent.chat }
     }
     func reconcileSideKeeps() async {
         guard !reconcilingSideKeeps else { return }
