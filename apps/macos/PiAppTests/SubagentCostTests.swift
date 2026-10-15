@@ -3,6 +3,54 @@ import XCTest
 @testable import PiApp
 
 final class SubagentCostTests: XCTestCase {
+    @MainActor func testOrphanTransitionRefreshesRetainedAttributionOnExistingDisplaysAndCachedRows() async throws {
+        let root = URL(fileURLWithPath:scratchBase()).appendingPathComponent("orphan-cached-cost-" + UUID().uuidString)
+        let model = makeWorkspaceModel(stateRoot:root,vault:ConfigurationVault(storage:MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model,root:root)
+        let main = ChatRecord(id:"main",workspaceID:"w",title:"Main",profileID:"p")
+        let side = ChatRecord(id:"side",workspaceID:"w",title:"Side",path:"/fixture/side_side.jsonl",profileID:"p",parentSessionID:"main")
+        let nested = ChatRecord(id:"nested",workspaceID:"w",title:"Nested",path:"/fixture/side_nested.jsonl",profileID:"p",parentSessionID:"side")
+        let scope = try subagentCaptureScope(source:"agent",owner:side.id)
+        let link = try JSONDecoder().decode(RequestScope.self,from:JSONEncoder().encode(scope)).delegation
+        let agent = ChatRecord(id:"agent",workspaceID:"w",title:"Agent",profileID:"p",parentSessionID:side.id,delegation:link)
+        model.chats = [main,side,nested,agent]
+        let display = SessionDisplay(id:side.id); model.displays[side.id] = display
+        let child = SessionDisplay(id:agent.id); model.displays[agent.id] = child
+        try await model.traces.configure(quota:nil,bodyRetention:86400,metricRetention:86400)
+        for id in [side.id,nested.id,agent.id] {
+            var metadata: [String:WireValue] = ["attemptId":.string(UUID().uuidString),"sessionId":.string(id),"turnId":.string("turn"),"purpose":.string("turn"),
+                "api":.string("openai-responses"),"requestedModel":.string("fixture"),"mode":.string("off"),"outcome":.string("completed"),
+                "wallTimestamp":.number(Date().timeIntervalSince1970),"timingVersion":.number(2),"timings":.object(["dispatch":.number(100)]),
+                "usage":.object(["inputIncludingCache":.number(100),"output":.number(20)]),
+                "gateway":.object(["version":.number(1),"cost":.object(["status":.string("reported"),"usd":.number(0.2)])])]
+            if id == agent.id { metadata["requestScope"] = scope }
+            try await model.traces.begin(metadata,workspace:"w"); try await model.traces.finish(metadata)
+        }
+        try await model.restoreSideBudgets(); model.refreshCostReading(side.id)
+        for view in [display,child] { await model.refreshAccounting(view,workspaceID:"w",includeMessages:false) }
+        await model.refreshChatStats()
+        try await eventually("original accounting reads settle") { model.accountingTasks.isEmpty }
+        XCTAssertEqual(display.footer.gateway.budgetOwnerID,main.id)
+        XCTAssertEqual(child.footer.gateway.budgetOwnerID,main.id)
+        XCTAssertEqual(model.chatStats[nested.id]?.budgetOwnerID,main.id)
+        model.chats.removeAll { $0.id == main.id }
+        try await model.restoreSideBudgets(); model.refreshCostReading(side.id)
+        try await eventually("orphan ancestry refreshes cached accounting without a new request") {
+            display.footer.gateway.budgetOwnerID == nil && model.chatStats[side.id]?.budgetOwnerID == nil && model.chatStats[nested.id]?.budgetOwnerID == side.id && child.footer.gateway.budgetOwnerID == side.id
+        }
+        XCTAssertEqual(try XCTUnwrap(display.footer.gateway.costUSD),0.6,accuracy:1e-9)
+        XCTAssertEqual(display.footer.gateway.sideCost?.usd,0.2)
+        XCTAssertEqual(display.footer.gateway.subagentCost?.usd,0.2)
+        XCTAssertEqual(model.chatStats[nested.id]?.costUSD,0.2)
+        let help = SessionStatsPresentation(gateway:display.footer.gateway,work:nil,cost:display.footer.cost).usageHelp
+        XCTAssertFalse(help.contains("Counts toward")); XCTAssertTrue(help.contains("side"))
+        // A repeated restore is inert: no requests, new ancestry or cache work.
+        try await eventually("accounting refresh completes") { model.accountingTasks.isEmpty }
+        let revision = display.accountingRevision
+        try await model.restoreSideBudgets()
+        XCTAssertTrue(model.accountingTasks.isEmpty); XCTAssertEqual(display.accountingRevision,revision)
+    }
+
     @MainActor func testDeletingAnOwnerDetachesAndReopensSurvivingSavedSides() async throws {
         let root = URL(fileURLWithPath:scratchBase()).appendingPathComponent("side-deletion-budget-" + UUID().uuidString)
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
@@ -109,6 +157,13 @@ final class SubagentCostTests: XCTestCase {
         let view = SessionDisplay(id:side.id); model.displays[side.id] = view
         view.footer.cost = model.costReading(for:side.id)
         XCTAssertEqual(view.footer.cost.budgetOwnerID,main.id)
+        let inspector = SessionInspectorModel(scope:.init(sessionID:side.id,workspaceID:side.workspaceID),title:side.title,archive:model.traces,workspace:model,
+            usageLoader: { [archive = model.traces] scope, until, offset in
+                try await archive.sessionMetrics(sessionID:scope.sessionID,workspaceID:scope.workspaceID,until:until,offset:offset,includeFamily:scope.includeFamily)
+            },cache:InspectorDocumentCache())
+        let overview = InspectorOverviewPage(inspector:inspector,compact:true)
+        func limitCard() -> NSView? { ConversationPaneTests.views(NSView.self,in:overview).first { $0.accessibilityIdentifier() == "inspector-cost-limit" } }
+        XCTAssertNil(limitCard())
         try await model.traces.configure(quota:nil,bodyRetention:86400,metricRetention:86400)
         try await model.restoreSideBudgets()
         model.chats.removeAll { $0.id == main.id }
@@ -117,6 +172,17 @@ final class SubagentCostTests: XCTestCase {
         XCTAssertNil(view.footer.cost.budgetOwnerID)
         XCTAssertNil(view.footer.cost.budgetSpentUSD)
         XCTAssertNil(view.footer.cost.costAttribution)
+        XCTAssertTrue(inspector.display === view,"The open Overview retains the same display and footer")
+        try await eventually("orphan gains its budget editor without recreating Overview") { limitCard() != nil }
+        let card = try XCTUnwrap(limitCard())
+        model.pendingChatIDs.insert(side.id)
+        try await model.setCostLimit(.usd(8),for:side.id)
+        try await eventually("orphan editor follows its own limit") {
+            ConversationPaneTests.views(CostLimitLiveEditor.self,in:card).contains { $0.reading.limit == .usd(8) }
+        }
+        model.chats.insert(main,at:0); model.refreshCostReading(side.id)
+        try await eventually("rebound side relinquishes its budget editor") { limitCard() == nil }
+        XCTAssertEqual(view.footer.cost.budgetOwnerID,main.id)
         let ancestry = await model.traces.savedSideBudgets
         XCTAssertEqual(ancestry["w\u{0}side"],[])
     }

@@ -79,9 +79,12 @@ extension SubagentRecovery {
         }
         guard child.origin == plan.origin, let attempt = cost["attemptId"].text else { throw damaged() }
         let prior = accounting.attempts[attempt]?.contribution
-        // Each mirror has its own local accounting revision. Repeating the
-        // same known charge must be idempotent across those revision counters.
-        if let prior, prior.removing(["accountingRevision"]) == cost.removing(["accountingRevision"]) { return }
+        // Local revisions and derived side ancestry can differ after legacy
+        // adoption or parent deletion. Neither changes the physical charge.
+        // Keep the immutable request scope (including its original ancestry),
+        // source/owner/delegation identities, amounts and usage exact.
+        let derived: Set<String> = ["accountingRevision", "sideParents"]
+        if let prior, prior.removing(derived) == cost.removing(derived) { return }
         guard prior == nil || prior?["reported"].int != 1 else { throw damaged() }
         var value = cost; value["accountingRevision"] = JSON(accounting.revision + 1)
         try writer.append(["type":"custom", "customType":JSON(prior == nil ? JournalRecordKind.cost : JournalRecordKind.costUpdate), "data":value], flush: true)

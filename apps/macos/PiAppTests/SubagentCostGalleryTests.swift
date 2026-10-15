@@ -123,7 +123,61 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
                 controller.close()
             }
         }
+        try await orphanScenes(fixture,side:sideView,folder:folder)
     }
+    @MainActor private func orphanScenes(_ fixture: SubagentGalleryFixture, side: SessionDisplay, folder: URL) async throws {
+        let model = fixture.model, originalChats = fixture.model.chats
+        for (appearance, name) in [(NSAppearance.Name.aqua,"light"),(.darkAqua,"dark")] {
+            for size in [NSSize(width:420,height:600),NSSize(width:920,height:600),NSSize(width:1240,height:800)] {
+                model.chats = originalChats
+                try await model.restoreSideBudgets(); model.refreshCostReading(side.id)
+                let chat = try XCTUnwrap(model.record(side.id))
+                let inspector = SessionInspectorModel(scope:.init(sessionID:side.id,workspaceID:chat.workspaceID),title:chat.title,archive:model.traces,workspace:model,
+                    usageLoader: { [archive = model.traces] scope, until, offset in
+                        try await archive.sessionMetrics(sessionID:scope.sessionID,workspaceID:scope.workspaceID,until:until,offset:offset,includeFamily:scope.includeFamily)
+                    },cache:InspectorDocumentCache())
+                inspector.observe(footer:side.footer,display:side); inspector.setVisible(true)
+                defer { inspector.setVisible(false) }
+                let overview = InspectorOverviewPage(inspector:inspector,compact:size.width < 1000)
+                let window = NSWindow(contentRect:CGRect(origin:.zero,size:size),styleMask:[.titled],backing:.buffered,defer:false)
+                window.isReleasedWhenClosed = false; window.appearance = NSAppearance(named:appearance)
+                window.contentView = overview; window.orderFront(nil)
+                defer { window.contentView = nil; window.close() }
+                overview.wantsLayer = true
+                overview.effectiveAppearance.performAsCurrentDrawingAppearance { overview.layer?.backgroundColor = NSColor.piContent.cgColor }
+                try await eventually("shared side overview is ready") {
+                    let figures = ConversationPaneTests.views(PiKit.Figure.self,in:overview)
+                    return inspector.indexLoaded && !inspector.isReading && inspector.timeCharts.historyLoaded && inspector.inputs.gateway.requests == 1
+                        && figures.contains { $0.accessibilityIdentifier() == "inspector-figure-tokens" && $0.value == "1,000" }
+                        && figures.contains { $0.accessibilityIdentifier() == "inspector-figure-steps" && $0.value == "1" }
+                }
+                XCTAssertFalse(ConversationPaneTests.views(NSView.self,in:overview).contains { $0.accessibilityIdentifier() == "inspector-cost-limit" })
+                try save(overview,to:folder.appendingPathComponent("side-shared-overview-\(name)-\(Int(size.width)).png"))
+                model.chats.removeAll { $0.id == fixture.parent.id }
+                try await model.restoreSideBudgets(); model.refreshCostReading(side.id)
+                try await eventually("same overview gains orphan budget controls") {
+                    let figure = ConversationPaneTests.views(NSView.self,in:overview).first { $0.accessibilityIdentifier() == "inspector-figure-cost" }
+                    return side.footer.gateway.budgetOwnerID == nil && inspector.inputs.gateway.budgetOwnerID == nil && figure?.toolTip?.contains("Counts toward") == false && ConversationPaneTests.views(CostLimitLiveEditor.self,in:overview).contains {
+                        $0.reading.budgetOwnerID == nil && $0.reading.costAttribution == nil && $0.reading.spentUSD == 0.4 && $0.reading.limit == .usd(5)
+                    }
+                }
+                XCTAssertTrue(inspector.display === side)
+                let card = try XCTUnwrap(ConversationPaneTests.views(NSView.self,in:overview).first { $0.accessibilityIdentifier() == "inspector-cost-limit" })
+                let editor = try XCTUnwrap(ConversationPaneTests.views(CostLimitLiveEditor.self,in:card).first)
+                XCTAssertEqual(editor.reading.spentUSD,0.4); XCTAssertEqual(editor.reading.limit,.usd(5))
+                XCTAssertNil(editor.reading.budgetOwnerID); XCTAssertNil(editor.reading.costAttribution)
+                let chip = try XCTUnwrap(ConversationPaneTests.views(CostLimitChip.self,in:card).first)
+                XCTAssertFalse(chip.accessibilityLabel()?.isEmpty ?? true)
+                XCTAssertTrue(window.makeFirstResponder(chip),"Orphan budget choices remain keyboard reachable")
+                overview.layoutSubtreeIfNeeded()
+                card.scrollToVisible(card.bounds)
+                try save(overview,to:folder.appendingPathComponent("side-orphan-overview-\(name)-\(Int(size.width)).png"))
+            }
+        }
+        model.chats = originalChats
+        try await model.restoreSideBudgets(); model.refreshCostReading(side.id)
+    }
+
     @MainActor private func setParentCost(_ fixture: SubagentGalleryFixture) {
         // Use production limit resolution rather than mixing a synthetic $5
         // effective limit with SessionCostReading's default $25 default.

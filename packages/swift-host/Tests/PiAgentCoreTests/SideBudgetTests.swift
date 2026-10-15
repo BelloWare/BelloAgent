@@ -121,6 +121,55 @@ final class SideBudgetTests: XCTestCase {
         await host.shutdown()
     }
 
+    func testDeletingMainWithLegacyReportedManagedSpendKeepsOrphanFamilyCountedOnce() async throws {
+        for loadedSide in [false,true] {
+            for loadedChild in [false,true] {
+                let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+                let main = try await session("main",root:root), seed = await main.sideSeed()
+                // Before shared side budgets, both physical journals lacked
+                // sideParents even though this saved side belonged to main.
+                let side = try AgentSession(id:"side",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                    resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),seed:seed.messages,parent:seed.info)
+                let kept = try await side.keep(whenFinished:false), mainPath = await main.path
+                await side.enableFamilyBudget()
+                await side.beginPresentedTask("turn")
+                var origin = subagentFixtureOrigin(parent:"side")
+                let execution = await side.activeTaskPresentation?.executionID
+                origin.link.parentExecutionID = try XCTUnwrap(execution)
+                try await side.installAdmissionFixturePlan(SubagentPlan(origin:origin,task:"Private legacy task",resultMessageID:"result"))
+                let child = try AgentSession(id:"child",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                    resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),prepared:nil,subagentOrigin:origin)
+                try await child.bindBudgetOwner(side,generation:0)
+                let request = try await start(child,attempt:"legacy-reported")
+                try await finish(request,attempt:"legacy-reported",cost:0.7)
+                try await child.setSubagentState(.completed)
+                await child.close(); await side.close(); await main.close()
+                let host = try await host(root)
+                let owner = try await open(host,"main",path:mainPath)
+                if loadedSide { _ = try await open(host,"side",path:kept["path"].text) }
+                if loadedChild { _ = try await open(host,"child",path:root.appendingPathComponent("child.jsonl").path) }
+                let total = await owner.spend; XCTAssertEqual(total.usd,0.7); XCTAssertEqual(total.reported,1)
+                do { _ = try await host.command("session.forget",sessionID:"main",params:[:]) }
+                catch {
+                    XCTFail("Migrated known child cost must not block deletion (side=\(loadedSide), child=\(loadedChild)): \(error)")
+                    await host.shutdown(); continue
+                }
+                await host.shutdown()
+                try FileManager.default.removeItem(atPath:try XCTUnwrap(mainPath))
+                for _ in 0..<2 {
+                    let reopened = try await self.host(root)
+                    let orphan = try await open(reopened,"side",path:kept["path"].text,limit:0.5)
+                    let cost = await orphan.costSnapshot
+                    XCTAssertEqual(cost["spentUSD"].double,0.7); XCTAssertEqual(cost["reportedRequests"].int,1)
+                    XCTAssertEqual(cost["familyUsage"]["output"].int,20)
+                    do { _ = try await start(orphan,attempt:UUID().uuidString); XCTFail("Orphan must enforce its own family budget") }
+                    catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit") }
+                    await reopened.shutdown()
+                }
+            }
+        }
+    }
+
     func testReconciliationUpdatesALoadedSideOwnedManagedMirror() async throws {
         try await reconcileManagedMirror(readerLoaded:true)
     }

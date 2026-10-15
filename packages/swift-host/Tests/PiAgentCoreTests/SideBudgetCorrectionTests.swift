@@ -2,6 +2,44 @@ import XCTest
 @testable import PiAgentCore
 
 final class SideBudgetCorrectionTests: XCTestCase {
+    func testKnownChildMirrorsIgnoreOnlyDerivedAncestryAndLocalRevision() throws {
+        let origin = subagentFixtureOrigin(parent:"side")
+        let plan = SubagentPlan(origin:origin,task:"Private side task",resultMessageID:"result")
+        let oldAncestries: [JSON] = [.null, [], ["deleted-main"], ["former-owner", "deleted-main"]]
+        let newAncestries: [JSON] = [.null, [], ["main"], ["surviving-owner"]]
+        for oldParents in oldAncestries {
+            for newParents in newAncestries {
+                let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+                let file = root.appendingPathComponent("child.jsonl")
+                var original = cost(owner:"side",managed:true)
+                original["sideParents"] = oldParents
+                if oldParents == .null { original = original.removing(["sideParents"]) }
+                original["scope"] = try subagentJSON(RequestScope(sourceSessionID:"child",budgetOwnerSessionID:"side",turnID:"turn",executionID:"execution",purpose:"turn",ownerGeneration:0,delegation:origin.link))
+                do {
+                    let writer = try SessionJournal(url:file,id:"child",cwd:root,binding:fixtureProfile().binding,create:true,managedChild:true)
+                    try writer.append(["type":"custom","customType":JSON(JournalRecordKind.subagentOrigin),"data":try subagentJSON(origin)])
+                    try writer.append(["type":"custom","customType":JSON(JournalRecordKind.cost),"data":original],flush:true)
+                }
+                let before = try Data(contentsOf:file)
+                var migrated = original; migrated["sideParents"] = newParents; migrated["accountingRevision"] = 99
+                if newParents == .null { migrated = migrated.removing(["sideParents"]) }
+                for _ in 0..<2 {
+                    XCTAssertNoThrow(try SubagentRecovery.mirrorCapturedCost(migrated,plan:plan,directory:root))
+                }
+                XCTAssertEqual(try Data(contentsOf:file),before,"Migration must not rewrite physical child history")
+                var forgedScope = migrated["scope"]; forgedScope["sideParents"] = ["main"]
+                let changes: [(String,JSON)] = [("usd",0.8),("usage",["input":101,"output":20]),("sourceSessionId","foreign"),("budgetOwnerSessionId","foreign"),("delegationId","foreign"),("scope",forgedScope)]
+                for (key, value) in changes {
+                    var changed = migrated; changed[key] = value
+                    XCTAssertThrowsError(try SubagentRecovery.mirrorCapturedCost(changed,plan:plan,directory:root),key) {
+                        XCTAssertEqual(($0 as? AgentError)?.code,"subagent_recovery",key)
+                    }
+                }
+                XCTAssertEqual(try Data(contentsOf:file),before)
+            }
+        }
+    }
+
     func testDiskMirrorsUseActualOwnershipAndLeaveLoadedForkAndForeignJournalsUntouched() throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let side = try fixture(root,id:"side"), foreign = try fixture(root,id:"foreign",parent:"elsewhere")

@@ -148,14 +148,18 @@ extension PayloadArchive {
 // Desktop relationships also adopt retained requests from older helpers that
 // predate side request scopes. Only identities are stored, never side content.
 extension PayloadArchive {
-    func recordSideBudgets(_ sides: [String: [String]], workspaceID: String) throws {
+    @discardableResult func recordSideBudgets(_ sides: [String: [String]], workspaceID: String) throws -> Set<String> {
         let db = try dashboardDatabase()
+        var affected = Set<String>()
         try db.transaction {
             for (side, parents) in sides {
                 guard parents.count <= 128, Set(parents).count == parents.count,
                       !parents.contains(side), ([side,workspaceID] + parents).allSatisfy({ Self.inspectorScope($0) }) else { throw CaptureFailure.sequence }
                 let bytes = try JSONEncoder().encode(parents)
-                if try db.rows("SELECT parents FROM side_budgets WHERE workspace=? AND side=?", [.text(workspaceID),.text(side)]).first?["parents"]?.data == bytes { continue }
+                let previous = try db.rows("SELECT parents FROM side_budgets WHERE workspace=? AND side=?", [.text(workspaceID),.text(side)]).first?["parents"]?.data
+                if previous == bytes { continue }
+                affected.insert(side); affected.formUnion(parents)
+                if let previous { affected.formUnion(try JSONDecoder().decode([String].self,from:previous)) }
                 try db.execute("INSERT INTO side_budgets(workspace,side,parents) VALUES(?,?,?) ON CONFLICT(workspace,side) DO UPDATE SET parents=excluded.parents", [.text(workspaceID),.text(side),.blob(bytes)])
                 for row in try db.rows("SELECT id FROM attempts WHERE workspace=? AND (session=? OR local_owner=?)", [.text(workspaceID),.text(side),.text(side)]) {
                     if let id = row["id"]?.string { try CaptureLineage.projectSides(parents,localOwner:side,id:id,db:db) }
@@ -163,5 +167,6 @@ extension PayloadArchive {
             }
         }
         for (side, parents) in sides { savedSideBudgets[workspaceID + "\u{0}" + side] = parents }
+        return affected
     }
 }

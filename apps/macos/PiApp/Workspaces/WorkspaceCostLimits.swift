@@ -41,7 +41,16 @@ extension WorkspaceModel {
             // retaining physical captures and unrelated discarded-side usage.
             workspaces[item.workspaceID, default: [:]][item.id] = parents
         }
-        for (workspace, sides) in workspaces { try await traces.recordSideBudgets(sides, workspaceID: workspace) }
+        for (workspace, sides) in workspaces {
+            let affected = try await traces.recordSideBudgets(sides, workspaceID: workspace)
+            // Orphans retain their display and row caches. Re-read the numeric
+            // projection when ancestry changes, including managed children and
+            // former ancestors; waiting for another request leaves stale help.
+            guard !affected.isEmpty else { continue }
+            for item in chats where item.workspaceID == workspace && (affected.contains(item.id) || item.delegation.map({ affected.contains($0.budgetOwnerSessionID) }) == true) {
+                if displays[item.id] != nil || chatStats[item.id] != nil { scheduleAccounting(item.id,workspaceID:workspace) }
+            }
+        }
     }
 
     /// The chat's reading with its current limit and what its helper last

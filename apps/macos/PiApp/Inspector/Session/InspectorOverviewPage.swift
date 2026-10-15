@@ -13,6 +13,7 @@ import AppKit
     private lazy var observer = ShellObserver { [weak self] in self?.refresh() }
     private lazy var footerObserver = ShellObserver { [weak self] in self?.refresh() }
     private weak var followedFooter: SessionMetrics?
+    private var followedBudgetOwnerID: String?
     private var limitCard: NSView?
     private var chartViews: [NSView] = []
     private var shownTime: SessionTimeCharts?
@@ -35,10 +36,15 @@ import AppKit
         let inset = compact ? PiSpacing.lg : PiSpacing.xl
         scroll.insets = NSEdgeInsets(top: PiSpacing.lg, left: inset, bottom: PiSpacing.lg, right: inset)
         var views: [NSView] = [InspectorPageHeader("Overview", subtitle: subtitle, actions: [InspectorShowInChat { [weak inspector] in inspector?.showInChat() }]), figures()]
-        if followedFooter !== inspector.display?.footer {
+        let chat = inspector.workspace?.record(inspector.scope.sessionID)
+        let budgetOwner = chat.flatMap { inspector.workspace?.budgetOwner(for: $0) }
+        if followedFooter !== inspector.display?.footer || followedBudgetOwnerID != budgetOwner?.id {
             footerObserver.reset(); followedFooter = inspector.display?.footer
-            if let footer = followedFooter, let workspace = inspector.workspace, workspace.record(inspector.scope.sessionID).map({ workspace.budgetOwner(for: $0).id == $0.id }) == true {
-                footerObserver.observe(footer)
+            followedBudgetOwnerID = budgetOwner?.id
+            // Saved sides retain their display when their parent is deleted.
+            // Follow shared footers too, so that transition builds the editor.
+            if let footer = followedFooter { footerObserver.observe(footer) }
+            if let footer = followedFooter, let workspace = inspector.workspace, budgetOwner?.id == inspector.scope.sessionID {
                 let id = inspector.scope.sessionID
                 limitCard = PiKit.card(CostLimitLiveEditor(footer: footer, choose: { [weak workspace] limit in try await workspace?.setCostLimit(limit, for: id) }), padding: PiSpacing.lg)
                 limitCard?.setAccessibilityIdentifier("inspector-cost-limit")
@@ -46,11 +52,10 @@ import AppKit
         }
         if inspector.familyFilter == .family, !inspector.sideGroups.isEmpty { views.append(sideCosts()) }
         if inspector.familyFilter == .family, !inspector.groups.isEmpty { views.append(subagentCosts()) }
-        if let link = inspector.workspace?.record(inspector.scope.sessionID)?.delegation {
+        if let link = chat?.delegation {
             views.append(InspectorBanner(symbol: "person.2", text: "This sub-agent’s usage is included in its parent chat’s cost limit.", tone: .neutral))
             views.append(PiKit.Button("Parent budget", style: .ghost) { [weak inspector] in inspector?.workspace?.openInspector(session: link.budgetOwnerSessionID, focus: .overview) })
-        } else if let workspace = inspector.workspace, let chat = workspace.record(inspector.scope.sessionID), workspace.budgetOwner(for: chat).id != chat.id {
-            let parent = workspace.budgetOwner(for: chat)
+        } else if let workspace = inspector.workspace, let chat, let parent = budgetOwner, parent.id != chat.id {
             views.append(InspectorBanner(symbol: "arrow.turn.up.left", text: "This side’s spend counts toward " + parent.title + ". It uses the main chat’s budget.", tone: .neutral))
             views.append(PiKit.Button("Parent budget", style: .ghost) { [weak workspace] in workspace?.openInspector(session: parent.id, focus: .overview) })
         } else if let limitCard { views.append(limitCard) }
