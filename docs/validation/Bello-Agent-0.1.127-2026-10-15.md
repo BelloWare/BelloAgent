@@ -1,6 +1,6 @@
 # Bello Agent 0.1.127 — IntelliJ-style Git tools, file folder navigation, global Flat sidebar
 
-Status: **packaged; publication pending** (this record is updated after publication). Marketing version 0.1.127, build 131. Previous public release: 0.1.126/build 130.
+Status: **publicly released and verified** at [belloware.com](https://belloware.com/bello-agent.html), marketing version 0.1.127, build 131. Public verification completed at **2026-10-15 00:30:15 UTC**. Tagged source: **`b70a2dda`**, `v0.1.127`. Website: **`d7a0748`**. Previous public release: 0.1.126/build 130.
 
 ## Owner request
 
@@ -88,4 +88,24 @@ Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1, XcodeGen 2.44.1.
 
 ## Publication
 
-Pending.
+Packaged from **`b70a2dda`** with `scripts/release.sh`. That commit is `main` merged with `dev/next` at `bb6e9503`, plus the version bump, the release notes and this record's first draft. The script:
+- made a Release build, stripped the binaries and kept the dSYMs;
+- signed with Developer ID and ran the packaged-helper offline smoke test;
+- notarized and stapled the app and the DMG, then checked them with Gatekeeper;
+- signed the appcast and verified its Ed25519 signature.
+
+`validate-release.py` against build 130 passed. The owner approved publishing 0.1.127 on 2026-10-15 after the gate and soak.
+
+- App notarization: **`a39cc507-ec51-44da-bca6-0ad4af205557`**, Accepted.
+- DMG notarization: **`209fd0ad-e514-4daa-b640-2f9aa2c49dce`**, Accepted.
+- Installer: **14,884,163 bytes (14.19 MiB)**.
+- SHA-256: **`6060ebafb3defc1557c7d4c4886ff682a60154a2dacf4f2ed4a2df9f91555e22`**.
+
+Source was pushed atomically to `main` and `dev/next` at `b70a2dda`, with tag `v0.1.127`. `publish-release.sh 0.1.127` pushed website `d7a0748`.
+
+`verify-published.py` passed at 2026-10-15 00:30:15 UTC:
+- the canonical and legacy feeds are identical;
+- the public DMG's SHA-256 matches;
+- the Ed25519 signature verifies.
+
+Install and update rehearsals were skipped by standing owner instruction.
