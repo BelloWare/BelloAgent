@@ -151,6 +151,83 @@ final class BudgetOwnerUnloadTests: XCTestCase {
 }
 
 final class SideBudgetIntegrationTests: XCTestCase {
+    @MainActor func testInterruptedSideFamilyDeletionKeepsRepairProofAndColdMainReadable() async throws {
+        for interruption in ["before-trash","owner-trash","child-trash","repaired","files:side","files:child","metadata:child","intent:child","metadata:side"] {
+            let model = try await sideBudgetFixture(), side = try XCTUnwrap(model.record("side"))
+            let store = try XCTUnwrap(model.store), path = URL(fileURLWithPath:try XCTUnwrap(side.path))
+            try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
+            var link = SubagentTranscriptTests.link
+            link.childSessionID = UUID().uuidString; link.budgetOwnerSessionID = side.id; link.call.parentSessionID = side.id
+            let origin: WireValue = .object([
+                "link":try JSONDecoder().decode(WireValue.self,from:JSONEncoder().encode(link)),
+                "description":.string("Deletion fixture"),"model":.object(["model":.string("fixture")]),
+                "tools":.array([]),"readOnly":.bool(true),"resourceRevision":.string("fixture")])
+            let cost: [String:WireValue] = ["attemptId":.string("charged"),"sourceSessionId":.string(link.childSessionID),
+                "budgetOwnerSessionId":.string(side.id),"delegationId":.string(link.delegationID),
+                "purpose":.string("turn"),"outcome":.string("completed"),"usd":.number(0.7),
+                "reported":.number(1),"unreported":.number(0),"accountingRevision":.number(2),
+                "usage":.object(["input":.number(100),"output":.number(20)]),
+                "usageStatus":.object(["input":.string("reported"),"output":.string("reported")])]
+            func append(_ kind: String, _ value: [String:WireValue], to file: URL) throws {
+                let rows = try self.fixtureJournalRows(file), id = UUID().uuidString
+                let row: [String:WireValue] = ["type":.string("custom"),"customType":.string(kind),"id":.string(id),
+                    "parentId":rows.last?["type"]?.string == "session" ? .null : (rows.last?["id"] ?? .null),"data":.object(value)]
+                var bytes = try Data(contentsOf:file); bytes.append(try JSONEncoder().encode(row)); bytes.append(10)
+                try bytes.write(to:file)
+            }
+            try append("pi-app.subagent-call.v1",["origin":origin,"task":.string("Private fixture"),"resultMessageID":.string("result")],to:path)
+            try append("pi-app.budget-attempt.v1",["attemptId":.string("charged"),"sourceSessionId":.string(link.childSessionID),
+                "budgetOwnerSessionId":.string(side.id),"delegationId":.string(link.delegationID),
+                "purpose":.string("turn"),"state":.string("dispatched"),"accountingRevision":.number(1)],to:path)
+            try append("pi-app.cost.v1",cost,to:path)
+            let child = path.deletingLastPathComponent().appendingPathComponent(link.childSessionID + ".jsonl")
+            let header: [String:WireValue] = ["type":.string("session"),"version":.number(3),"id":.string(link.childSessionID)]
+            var bytes = try JSONEncoder().encode(header); bytes.append(10); try bytes.write(to:child)
+            try append("pi-app.native.v2",["version":.number(2)],to:child)
+            try append("pi-app.subagent-origin.v1",try XCTUnwrap(origin.object),to:child)
+            try append("pi-app.cost.v1",cost,to:child)
+            var interrupted = false
+            func interrupt() throws { interrupted = true; throw StoreError.unavailable }
+            model.familyFileRecycler = { urls in
+                if interruption == "before-trash" { try interrupt() }
+                for url in urls { try FileManager.default.removeItem(at:url) }
+                if interruption == "owner-trash" && urls.contains(path) || interruption == "child-trash" && urls.contains(child) { try interrupt() }
+            }
+            model.familyDeletionStep = { step in
+                let selected = interruption.replacingOccurrences(of:":child",with:":" + link.childSessionID)
+                if step == selected { try interrupt() }
+            }
+            do { try await model.deleteSubagentFamily(side); XCTFail("Cleanup interruption was not injected") }
+            catch { XCTAssertTrue(interrupted,"Fixture failed before cleanup: \(error)") }
+            let intents = try await store.pendingFamilyDeletions()
+            let ownerIntent = try XCTUnwrap(intents.first { $0.id == side.id })
+            let saved = try JSONDecoder().decode(WireValue.self,from:JSONEncoder().encode(ownerIntent))
+            XCTAssertEqual(saved.object?["repairCompleted"]?.bool,true,"Repair must be durable before any cleanup")
+            if interruption != "metadata:side" { XCTAssertNotNil(model.record(side.id),"Keep the retry entry until all cleanup is done") }
+            try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
+            do {
+                let host = try await model.open(try XCTUnwrap(model.record("main")))
+                let status = try await host.request("session.status",sessionID:"main",params:["budgetOnly":.bool(true)])
+                XCTAssertEqual(status.object?["cost"]?.object?["spentUSD"]?.number,0.7)
+            } catch { XCTFail("Main became damaged during cleanup step \(interruption): \(error)") }
+            await model.stopHostsAndWait()
+            model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at:url) } }
+            model.error = nil; model.familyDeletionStep = nil
+            // Completed repair must make retry independent of the helper and
+            // removed member journals, including older child-first cleanup.
+            model.workspaceChangesInFlight.insert("w")
+            await model.resumeFamilyDeletions(); await model.resumeFamilyDeletions()
+            model.workspaceChangesInFlight.remove("w")
+            XCTAssertNil(model.error,"Retry step \(interruption)")
+            let remaining = try await store.pendingFamilyDeletions(); XCTAssertTrue(remaining.isEmpty)
+            XCTAssertFalse(FileManager.default.fileExists(atPath:path.path)); XCTAssertFalse(FileManager.default.fileExists(atPath:child.path))
+            let host = try await model.open(try XCTUnwrap(model.record("main")))
+            let status = try await host.request("session.status",sessionID:"main",params:["budgetOnly":.bool(true)])
+            XCTAssertEqual(status.object?["cost"]?.object?["spentUSD"]?.number,0.7)
+            XCTAssertEqual(status.object?["cost"]?.object?["familyUsage"]?.object?["output"]?.number,20)
+        }
+    }
+
     @MainActor func testColdSideDeletionRepairsSurvivingAncestorsBeforeTrashWithoutCaptures() async throws {
         for deleted in ["side","nested"] {
             let model = try await sideBudgetFixture(), target = try XCTUnwrap(model.record(deleted))

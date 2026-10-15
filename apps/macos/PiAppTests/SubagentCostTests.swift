@@ -92,7 +92,7 @@ final class SubagentCostTests: XCTestCase {
         XCTAssertEqual(parents[workspace.id + "\u{0}nested"],["side"])
     }
 
-    @MainActor func testBusyPresentationReleaseCannotMakeEditingSkipTheRealUnload() async throws {
+    @MainActor func testEditingReleasesAnIdleDependentAfterPresentationReleaseWasRejected() async throws {
         let root = URL(fileURLWithPath:scratchBase()).appendingPathComponent("side-tools-budget-" + UUID().uuidString)
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
         let workspace = WorkspaceRecord(id:"project",path:root.path,trusted:true)
@@ -114,13 +114,12 @@ final class SubagentCostTests: XCTestCase {
         model.releaseHelperSession(parent.id)
         await model.sessionClosings[parent.id]?.task.value
         XCTAssertTrue(model.opened.contains(parent.id),"A rejected unload must retain the loaded tool-mode state")
-        do { try await model.enableEditingAfterConfirmation(parent.id); XCTFail("The pinned owner cannot announce editing") }
-        catch { }
-        XCTAssertEqual(model.record(parent.id)?.toolMode,ChatRecord.readOnlyTools)
-        let saved = try await model.store?.get(ChatRecord.self,kind:"chat",id:parent.id)
-        XCTAssertEqual(saved?.toolMode,ChatRecord.readOnlyTools)
-        _ = try await host.request("session.close",sessionID:"side")
         try await model.enableEditingAfterConfirmation(parent.id)
+        XCTAssertEqual(model.record(parent.id)?.toolMode,ChatRecord.editingTools)
+        let saved = try await model.store?.get(ChatRecord.self,kind:"chat",id:parent.id)
+        XCTAssertEqual(saved?.toolMode,ChatRecord.editingTools)
+        do { _ = try await host.request("session.status",sessionID:"side"); XCTFail("Idle dependent was not unloaded") }
+        catch HostError.rejected(let code,_) { XCTAssertEqual(code,"session_missing") }
         XCTAssertFalse(model.opened.contains(parent.id))
         _ = try await model.open(try XCTUnwrap(model.record(parent.id)))
         let snapshot = try await host.request("session.status",sessionID:parent.id)

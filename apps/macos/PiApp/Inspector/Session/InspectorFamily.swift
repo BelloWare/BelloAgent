@@ -75,6 +75,8 @@ enum CaptureSubagents {
 }
 
 extension PayloadArchive {
+    static let subagentStatisticsSQL = "SELECT delegation,COUNT(*) AS requests,COUNT(cost_usd) AS samples,SUM(cost_usd) AS cost FROM attempts WHERE local_owner=? AND workspace=? AND metrics_retained=1 AND dispatch IS NOT NULL GROUP BY delegation"
+
     func forgetSubagentRelationships(sessionID: String, workspaceID: String) throws {
         let db = try dashboardDatabase()
         try db.transaction {
@@ -89,7 +91,7 @@ extension PayloadArchive {
         guard Self.inspectorScope(owner, workspaceID) else { throw CaptureFailure.unavailable }
         return try await dashboardReader().run(consumer: "inspector") { engine in
             let args: [CaptureSQLValue] = [.text(owner),.text(workspaceID)]
-            let stats = try engine.db.rows("SELECT delegation,COUNT(*) AS requests,COUNT(cost_usd) AS samples,SUM(cost_usd) AS cost FROM attempts WHERE local_owner=? AND workspace=? AND metrics_retained=1 AND dispatch IS NOT NULL GROUP BY delegation", args)
+            let stats = try engine.db.rows(Self.subagentStatisticsSQL, args)
             let byID = Dictionary(uniqueKeysWithValues: stats.compactMap { row in row["delegation"]?.string.map { ($0,row) } })
             return try engine.db.rows("SELECT summary FROM subagent_groups WHERE owner=? AND workspace=? ORDER BY rowid", args).map { row in
                 guard let bytes = row["summary"]?.data else { throw CaptureFailure.corrupt }
@@ -148,6 +150,10 @@ extension PayloadArchive {
 // Desktop relationships also adopt retained requests from older helpers that
 // predate side request scopes. Only identities are stored, never side content.
 extension PayloadArchive {
+    // Explicit indexed populations avoid SQLite choosing a workspace-wide
+    // scan for the OR. UNION deduplicates a side's own requests.
+    static let sideBudgetAttemptsSQL = "SELECT id FROM attempts WHERE workspace=? AND session=? UNION SELECT id FROM attempts WHERE workspace=? AND local_owner=?"
+
     @discardableResult func recordSideBudgets(_ sides: [String: [String]], workspaceID: String) throws -> Set<String> {
         let db = try dashboardDatabase()
         var affected = Set<String>()
@@ -161,7 +167,7 @@ extension PayloadArchive {
                 affected.insert(side); affected.formUnion(parents)
                 if let previous { affected.formUnion(try JSONDecoder().decode([String].self,from:previous)) }
                 try db.execute("INSERT INTO side_budgets(workspace,side,parents) VALUES(?,?,?) ON CONFLICT(workspace,side) DO UPDATE SET parents=excluded.parents", [.text(workspaceID),.text(side),.blob(bytes)])
-                for row in try db.rows("SELECT id FROM attempts WHERE workspace=? AND (session=? OR local_owner=?)", [.text(workspaceID),.text(side),.text(side)]) {
+                for row in try db.rows(Self.sideBudgetAttemptsSQL, [.text(workspaceID),.text(side),.text(workspaceID),.text(side)]) {
                     if let id = row["id"]?.string { try CaptureLineage.projectSides(parents,localOwner:side,id:id,db:db) }
                 }
             }

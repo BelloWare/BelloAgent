@@ -50,8 +50,9 @@ extension WorkspaceModel {
             if let host = hosts[parent.workspaceID], host.isReady { _ = try await host.request("session.forget", sessionID: member.id) }
             helperSessionDidUnload(member.id)
         }
-        try await store.beginFamilyDeletion(members); durable = true
-        try await finishFamilyDeletion(members, repaired: true)
+        try await store.beginFamilyDeletion(members, repairCompleted: true); durable = true
+        members[0].repairCompleted = true // committed by beginFamilyDeletion above
+        try await finishFamilyDeletion(members)
     }
 
     private func prepareFamilyDeletion(_ owner: SessionDeletionRecord) async throws {
@@ -106,21 +107,29 @@ extension WorkspaceModel {
         return journal
     }
 
-    private func finishFamilyDeletion(_ members: [SessionDeletionRecord], repaired: Bool = false) async throws {
+    private func finishFamilyDeletion(_ members: [SessionDeletionRecord]) async throws {
         guard let store, let owner = members.first?.ownerID else { return }
         deletingFamilies.insert(owner)
-        if !repaired {
+        guard let record = members.first(where: { $0.id == owner }),
+              try await store.get(String.self, kind: "session-deleted", id: owner) == owner else { throw StoreError.invalidRecord }
+        if record.repairCompleted != true {
             // An older app's intent is not proof that it repaired side mirrors.
             // Retry before any cleanup, using the persisted owner even when it
             // is absent from the current chat-list window.
-            guard let record = members.first(where: { $0.id == owner }),
-                  try await store.get(String.self, kind: "session-deleted", id: owner) == owner else { throw StoreError.invalidRecord }
             try await prepareFamilyDeletion(record)
             helperSessionDidUnload(owner)
+            try await store.completeFamilyDeletionRepair(owner)
         }
-        // Keep the parent until its children are gone, so a partial failure
-        // still has an obvious entry from which the user can retry deletion.
-        for member in members.sorted(by: { ($0.id == owner ? 1 : 0, $0.id) < ($1.id == owner ? 1 : 0, $1.id) }) {
+        try familyDeletionStep?("repaired")
+        // Validate the complete manifest before deleting any file. Remove the
+        // owner journal first: a cold family scan must never discover a side
+        // whose children have already been intentionally removed. The repair
+        // receipt and owner metadata remain until every file is cleaned up.
+        for member in members {
+            guard member.ownerID == owner, try await store.get(String.self, kind: "session-deleted", id: member.id) == owner else { throw StoreError.invalidRecord }
+            _ = try familyDeletionJournal(member)
+        }
+        for member in members.sorted(by: { ($0.id == owner ? 0 : 1, $0.id) < ($1.id == owner ? 0 : 1, $1.id) }) {
             guard member.ownerID == owner, try await store.get(String.self, kind: "session-deleted", id: member.id) == owner else { throw StoreError.invalidRecord }
             let directory = try subagentDirectory(member.workspaceID)
             let journal = try familyDeletionJournal(member)
@@ -149,6 +158,11 @@ extension WorkspaceModel {
                     }
                 }
             }
+            try familyDeletionStep?("files:" + member.id)
+        }
+        // Keep the owner's retry entry/repair proof until child metadata and
+        // intents are gone too. Retrying never needs a deleted child journal.
+        for member in members.sorted(by: { ($0.id == owner ? 1 : 0, $0.id) < ($1.id == owner ? 1 : 0, $1.id) }) {
             forgetReadState(member.id); forgetRunHold(member.id)
             for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: member.id) }
             try await store.removeAll(kind: "receipt:\(member.id)")
@@ -164,7 +178,9 @@ extension WorkspaceModel {
             if selectedID == member.id { selectedID = nil; selected = nil }
             if focusedSessionID == member.id { focusedSessionID = nil }
             try await removeDeletedCapturePreference(sessionID: member.id)
+            try familyDeletionStep?("metadata:" + member.id)
             try await store.remove(kind: SessionDeletionRecord.kind, id: member.id)
+            if member.id != owner { try familyDeletionStep?("intent:" + member.id) }
         }
         try await restoreSideBudgets()
         for id in displays.keys { refreshCostReading(id) }

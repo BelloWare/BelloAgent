@@ -2,6 +2,19 @@ import XCTest
 @testable import PiAgentCore
 
 final class SideBudgetUpgradeTests: XCTestCase {
+    func testMissingDispatchedChildStillFailsClosedWithoutCompletedDeletion() async throws {
+        for usage in SideBudgetUpgradeFixture.Usage.allCases {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            var f = SideBudgetUpgradeFixture(root:root,shape:.current,family:.agents,usage:usage,crash:.afterAll)
+            try f.write()
+            try FileManager.default.removeItem(at:f.file("child"))
+            let host = try await f.host()
+            do { _ = try await f.open(host,"main"); XCTFail("Unknown child loss must not be mistaken for completed deletion") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"subagent_recovery") }
+            await host.shutdown()
+        }
+    }
+
     func testMissingLegacyFieldsNeverAuthorizeAConflictingSideIdentity() async throws {
         for field in ["sourceSessionId","budgetOwnerSessionId","delegationId"] {
             for loaded in [false,true] {
@@ -156,43 +169,55 @@ final class SideBudgetUpgradeTests: XCTestCase {
                         for target in family.sides {
                             for sideLoaded in [false,true] {
                                 for childLoaded in family.agents ? [false,true] : [false] {
-                                    let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-                                    var f = SideBudgetUpgradeFixture(root:root,shape:shape,family:family,usage:usage,crash:crash)
-                                    try f.write(); var host = try await f.host()
-                                    let label = "\(shape)/\(family)/\(usage)/\(crash)/delete=\(target)/side=\(sideLoaded)/child=\(childLoaded)"
-                                    var stage = "open"
-                                    do {
-                                        if childLoaded { _ = try await f.open(host,"child") }
-                                        if sideLoaded {
-                                            _ = try await f.open(host,"main")
-                                            for id in family.sides { _ = try await f.open(host,id) }
-                                        }
-                                        // No capture evidence, and the cold case never opens the
-                                        // owner first: doing so would hide the lost-evidence bug.
-                                        stage = "forget"
-                                        _ = try await host.command("session.forget",sessionID:target,params:[:])
-                                        try FileManager.default.removeItem(at:f.file(target))
-                                        if family.agents, target == family.owner { try FileManager.default.removeItem(at:f.file("child")) }
-                                        for pass in 0..<2 {
-                                            for id in ["main"] + family.sides.filter({ $0 != target }) {
-                                                stage = "reopen \(id) pass \(pass)"
-                                                let snapshot = try await f.open(host,id).costSnapshot
-                                                f.assertTotals(snapshot,label + "/" + id)
-                                                for field in ["spentUSD","reportedRequests","unreportedRequests","familyUsage"] {
-                                                    XCTAssertEqual(snapshot[field],baseline[field],label + "/" + id + "/" + field)
-                                                }
+                                    // Native integration tests enforce owner-files-first
+                                    // cleanup and the durable repair/metadata steps.
+                                    let cleanup = [target] + (family.agents && target == family.owner ? ["child"] : [])
+                                    for cut in 0...cleanup.count {
+                                        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+                                        var f = SideBudgetUpgradeFixture(root:root,shape:shape,family:family,usage:usage,crash:crash)
+                                        try f.write(); var host = try await f.host()
+                                        let label = "\(shape)/\(family)/\(usage)/\(crash)/delete=\(target)/side=\(sideLoaded)/child=\(childLoaded)/cleanup=\(cut)"
+                                        var stage = "open"
+                                        do {
+                                            if childLoaded { _ = try await f.open(host,"child") }
+                                            if sideLoaded {
+                                                _ = try await f.open(host,"main")
+                                                for id in family.sides { _ = try await f.open(host,id) }
                                             }
-                                            await host.shutdown()
-                                            if pass == 0 { host = try await f.host() }
-                                        }
-                                        // Retained charges remain mirrorable after their
-                                        // original side disappears, including cold deletion
-                                        // of a surviving ancestor on a later launch.
-                                        host = try await f.host()
-                                        stage = "forget surviving main"
-                                        _ = try await host.command("session.forget",sessionID:"main",params:[:])
-                                    } catch { XCTFail("\(label) at \(stage): \(error)") }
-                                    await host.shutdown(); cases += 1
+                                            // No capture evidence, and the cold case never opens the
+                                            // owner first: doing so would hide the lost-evidence bug.
+                                            stage = "forget"
+                                            _ = try await host.command("session.forget",sessionID:target,params:[:])
+                                            for id in cleanup.prefix(cut) { try FileManager.default.removeItem(at:f.file(id)) }
+                                            await host.shutdown(); host = try await f.host()
+                                            // Cold main stays readable even before retry.
+                                            let interim = try await f.open(host,"main").costSnapshot
+                                            f.assertTotals(interim,label + "/interrupted")
+                                            await host.shutdown(); host = try await f.host()
+                                            stage = "retry interrupted deletion"
+                                            _ = try await host.command("session.forget",sessionID:target,params:[:])
+                                            for id in cleanup.dropFirst(cut) { try FileManager.default.removeItem(at:f.file(id)) }
+                                            for pass in 0..<2 {
+                                                for id in ["main"] + family.sides.filter({ $0 != target }) {
+                                                    stage = "reopen \(id) pass \(pass)"
+                                                    let snapshot = try await f.open(host,id).costSnapshot
+                                                    f.assertTotals(snapshot,label + "/" + id)
+                                                    for field in ["spentUSD","reportedRequests","unreportedRequests","familyUsage"] {
+                                                        XCTAssertEqual(snapshot[field],baseline[field],label + "/" + id + "/" + field)
+                                                    }
+                                                }
+                                                await host.shutdown()
+                                                if pass == 0 { host = try await f.host() }
+                                            }
+                                            // Retained charges remain mirrorable after their
+                                            // original side disappears, including cold deletion
+                                            // of a surviving ancestor on a later launch.
+                                            host = try await f.host()
+                                            stage = "forget surviving main"
+                                            _ = try await host.command("session.forget",sessionID:"main",params:[:])
+                                        } catch { XCTFail("\(label) at \(stage): \(error)") }
+                                        await host.shutdown(); cases += 1
+                                    }
                                 }
                             }
                         }
@@ -200,7 +225,7 @@ final class SideBudgetUpgradeTests: XCTestCase {
                 }
             }
         }
-        XCTAssertEqual(cases,1080)
+        XCTAssertEqual(cases,2640)
     }
 
     func testActualLegacyWritersAcrossFamiliesUsageCrashesLoadingAndOperations() async throws {

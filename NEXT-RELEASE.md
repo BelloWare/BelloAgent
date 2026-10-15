@@ -4,6 +4,9 @@
 
 ## 0.1.128
 
+- [x] Interrupted side-family deletion keeps durable repair proof and removes owner journals before managed children, so retries and cold main opens preserve accounting. Editing regression coverage now matches automatic idle-dependent release. Indexed direct-owner lookups and a deduplicated registration union keep both queries at indexed-owner cost on 30,000 attempts. [Round 14 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-14-retryable-deletion-and-indexed-direct-owners).
+- [ ] Round-14 native validation follow-up: the single full parallel lane passed 2,566 tests, skipped 37 and failed four. Two obsolete deletion fixtures were corrected (9/9 per class alone); unchanged TerminalSessionsTests and CatalogModelPickerTests passed 13/13 and 5/5 alone. Those two parallel-only timeout causes remain unconfirmed. [Exact results and isolated reruns](docs/validation/sub-cost-0.1.128.md#lead-review-round-14-retryable-deletion-and-indexed-direct-owners).
+
 - [x] Deleting a side at any depth repairs its numeric evidence into surviving ancestors before acknowledgement or Trash, preserving spend and token totals after interrupted settlements. Owner connection, editing, folder and deletion changes release idle dependent runtimes first, with a named blocker for running work and the pinned-owner guard intact. [Round 13 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-13-side-deletion-and-owner-unloading).
 
 - [x] Raising a shared budget rearms its next stop even when only a side resumes; old cancelled work stays stopped. Settlement failures drain every ancestor and preserve terminal recovery evidence. Copying session references uses indexed family membership, restoring the previous join's query cost on a 30,000-attempt fixture. [Round 12 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-12-budget-rearming-settlement-cleanup-and-reference-query-cost).

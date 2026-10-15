@@ -790,16 +790,25 @@ actor MetadataStore {
     /// it: launch settling every background request a quit left, at once.
     /// Rebase discovery on the owner's latest durable organization in one
     /// actor turn. A delayed scan cannot restore a deleted or moved family.
-    func beginFamilyDeletion(_ members: [SessionDeletionRecord]) throws {
+    func beginFamilyDeletion(_ members: [SessionDeletionRecord], repairCompleted: Bool = false) throws {
         try transaction {
             guard let owner = members.first?.ownerID, members.contains(where: { $0.id == owner }),
                   Set(members.map(\.id)).count == members.count, Set(members.map(\.workspaceID)).count == 1,
                   members.allSatisfy({ $0.ownerID == owner && ($0.id == owner || UUID(uuidString: $0.id) != nil) }) else { throw StoreError.invalidRecord }
-            for member in members {
+            for var member in members {
+                if member.id == owner { member.repairCompleted = repairCompleted ? true : nil }
                 try put(owner, kind: "session-deleted", id: member.id)
                 try put(member, kind: SessionDeletionRecord.kind, id: member.id)
             }
         }
+    }
+
+    func completeFamilyDeletionRepair(_ owner: String) throws {
+        guard var record = try get(SessionDeletionRecord.self,kind:SessionDeletionRecord.kind,id:owner),
+              record.id == owner, record.ownerID == owner,
+              try get(String.self,kind:"session-deleted",id:owner) == owner else { throw StoreError.invalidRecord }
+        record.repairCompleted = true
+        try put(record,kind:SessionDeletionRecord.kind,id:owner)
     }
 
     /// Recovery must see the complete durable manifest, including families

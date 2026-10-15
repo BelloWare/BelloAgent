@@ -6,6 +6,57 @@ import XCTest
 final class AccountingScaleTests: XCTestCase {
     private let recordCount = 100_000
 
+    func testDirectOwnerLookupsStayIndexedWithThirtyThousandUnrelatedAttempts() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at:root) }
+        let archive = PayloadArchive(root:root,now:{ Date(timeIntervalSince1970:2000) })
+        try await archive.configure(quota:1_048_576,bodyRetention:100,metricRetention:1000)
+        let db = try CaptureDatabase(url:root.appendingPathComponent("requests.sqlite"))
+        try db.execute("""
+        WITH RECURSIVE sequence(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM sequence WHERE n<29999)
+        INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,model,outcome,wall,updated,metadata,
+            metrics_retained,dispatch,cost_usd,budget_owner,local_owner,delegation)
+        SELECT 'attempt-'||n,CASE WHEN n<5 THEN 'side' ELSE 'child-'||n END,'workspace','turn','turn',
+            'fixture','fixture','fixture','completed',1995,1995,X'7b7d',1,100,0.125,
+            CASE WHEN n<10 THEN 'side' ELSE 'unrelated-'||n END,
+            CASE WHEN n<10 THEN 'side' ELSE 'unrelated-'||n END,'delegation'
+        FROM sequence
+        """)
+        // Reopening an already-current archive must add the new index too;
+        // no projection migration or fresh database may be required.
+        try db.execute("DROP INDEX IF EXISTS attempts_local_owner")
+        try CaptureLineage.prepare(db,migrate:false)
+        for (name,sql,args) in [
+            ("inspector",PayloadArchive.subagentStatisticsSQL,[CaptureSQLValue.text("side"),.text("workspace")]),
+            ("side_registration",PayloadArchive.sideBudgetAttemptsSQL,[.text("workspace"),.text("side"),.text("workspace"),.text("side")])
+        ] {
+            let previous = sql.replacingOccurrences(of:"local_owner",with:"budget_owner")
+            let beforeOld = db.virtualMachineSteps
+            let expected = try db.rows(previous,args)
+            let oldSteps = db.virtualMachineSteps-beforeOld
+            let before = db.virtualMachineSteps
+            let actual = try db.rows(sql,args)
+            let steps = db.virtualMachineSteps-before
+            if name == "inspector" {
+                XCTAssertEqual(actual.first?["requests"]?.number,10)
+                XCTAssertEqual(actual.first?["cost"]?.double,1.25)
+            } else {
+                XCTAssertEqual(Set(actual.compactMap { $0["id"]?.string }),Set(expected.compactMap { $0["id"]?.string }))
+                XCTAssertEqual(actual.count,10)
+            }
+            print("DIRECT_OWNER_SCALE attempts=30000 matches=10 lookup=\(name) previous_steps=\(oldSteps) current_steps=\(steps)")
+            XCTAssertLessThanOrEqual(steps,oldSteps*2+100,"\(name) must seek direct membership, not scan unrelated attempts")
+            XCTAssertLessThan(steps,1000,"Neither lookup may visit unrelated attempts")
+        }
+        let before = try await archive.virtualMachineSteps()
+        _ = try await archive.recordSideBudgets(["side":["main"]],workspaceID:"workspace")
+        let steps = try await archive.virtualMachineSteps()-before
+        print("DIRECT_OWNER_SCALE attempts=30000 matches=10 lookup=registration_with_projection current_steps=\(steps)")
+        XCTAssertLessThan(steps,10_000,"The real registration path must stay bounded by its ten matching requests")
+        let projected = try db.rows("SELECT COUNT(*) AS n FROM family_recipients WHERE owner='main'")
+        XCTAssertEqual(projected.first?["n"]?.number,10)
+        try await archive.close()
+    }
+
     func testThirtyThousandReferenceAttemptsMaterializeMembershipOncePerScope() async throws {
         let root = try folder(); defer { try? FileManager.default.removeItem(at:root) }
         let archive = PayloadArchive(root:root,now:{ Date(timeIntervalSince1970:2000) })

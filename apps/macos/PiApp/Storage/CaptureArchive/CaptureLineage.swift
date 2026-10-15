@@ -91,6 +91,7 @@ enum CaptureLineage {
                 }
             }
             try db.execute("CREATE INDEX IF NOT EXISTS attempts_family ON attempts(workspace,budget_owner,wall)")
+            try db.execute("CREATE INDEX IF NOT EXISTS attempts_local_owner ON attempts(workspace,local_owner,wall)")
             try db.execute("CREATE INDEX IF NOT EXISTS attempts_delegation ON attempts(workspace,parent_session,parent_assistant,parent_tool_call,wall)")
         }
     }
