@@ -25,7 +25,7 @@ struct SubagentSpec: Sendable {
     static func definition(models: [SubagentModelGrant]) -> ToolDefinition {
         var model: JSON = ["type":"string", "description":"An offered model for this connection; omit to inherit the parent model."]
         if !models.isEmpty { model["enum"] = .array(models.map { JSON($0.model) }) }
-        return ToolDefinition("subagent", "Delegate a self-contained task and wait for its result. Multiple calls run concurrently, sharing project files and this chat's cost limit. Include all necessary context: children start fresh and cannot delegate. Interrupted calls are never automatically replayed.",
+        return ToolDefinition("subagent", "Delegate a self-contained task and wait for its result. Multiple calls run concurrently, sharing project files and this chat's cost limit. Include all necessary context: children start fresh and cannot delegate. Interrupted calls are never automatically replayed. " + SubagentSteeringContract.delegationPolicy,
             ["type":"object", "properties":["task":["type":"string","minLength":1], "description":["type":"string","maxLength":120],
                                              "model":model,"tools":["type":"array","items":["type":"string"],"uniqueItems":true]],
              "required":["task"],"additionalProperties":false])
