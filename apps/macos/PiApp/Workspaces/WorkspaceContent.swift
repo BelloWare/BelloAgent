@@ -60,10 +60,10 @@ extension WorkspaceModel {
 
     func inspectConversation(_ id: String) { contentSessionID = id; showConversationContent = true }
     func searchConversation(_ id: String, query: String, start: Int, renderedAgentProse: Bool = false) async throws -> ContentSearch {
-        let reader = subagentTab(id)?.navigation
+        let navigation = transcriptNavigation(id)
         let result = try await searchConversationSource(id, query: query, start: start, renderedAgentProse: renderedAgentProse)
         try Task.checkCancellation()
-        guard reader?.isCurrent != false else { throw CancellationError() }
+        guard navigation.isCurrent(in: self) else { throw CancellationError() }
         return result
     }
     private func searchConversationSource(_ id: String, query: String, start: Int, renderedAgentProse: Bool) async throws -> ContentSearch {
@@ -98,12 +98,12 @@ extension WorkspaceModel {
     }
     func revealConversationHit(_ id: String, hit: ContentHit) async throws {
         guard let item = record(id), let view = displays[id] else { throw StoreError.invalidRecord }
-        let reader = subagentTab(id)?.renewNavigation()
+        let navigation = transcriptNavigation(id, advancing: true)
         let generation = view.presentationGeneration
         var page = try await readConversationWindow(item, cursor: nil, around: hit.id)
-        guard !Task.isCancelled, reader?.isCurrent != false, displays[id] === view, view.presentationGeneration == generation else { return }
+        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentationGeneration == generation else { return }
         page.messages = await withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
-        guard !Task.isCancelled, reader?.isCurrent != false, displays[id] === view, view.presentationGeneration == generation else { return }
+        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentationGeneration == generation else { return }
         adoptInitialHistory(page, into: view, around: hit.id)
         view.browsingHistory = true
         anchorChanged(view)
@@ -114,8 +114,8 @@ extension WorkspaceModel {
     /// message details sheet, which explains why it is not visible (edited
     /// away or outside the loaded page). Returns false when the chat is gone.
     @discardableResult
-    func revealMessage(sessionID: String, messageID: String?, historyLookup: (@Sendable (String, String) async throws -> HistoryPage)? = nil) async -> Bool {
-        guard !Task.isCancelled else { return false }
+    func revealMessage(sessionID: String, messageID: String?, historyLookup: (@Sendable (String, String) async throws -> HistoryPage)? = nil, origin: HostedReaderToken? = nil) async -> Bool {
+        guard !Task.isCancelled, origin?.isCurrent != false else { return false }
         retirePendingSubagentOpening()
         messageNavigationRevision += 1
         guard let item = record(sessionID) else {
@@ -133,12 +133,12 @@ extension WorkspaceModel {
         let changingSelection = selectedID != parentID
         // select changes selectedID synchronously before its first await, which
         // advances the revision once. Any additional navigation supersedes us.
-        let revision = messageNavigationRevision + (changingSelection ? 1 : 0)
+        let revision = messageNavigationRevision + (changingSelection ? 1 : 0) + (page == .chats ? 0 : 1)
         // Reaching a side through its chat: the side is what is opened.
         if changingSelection || item.isSubagent {
             if parentID != sessionID { await passingThrough(parentID) { await select(parentID) } } else { await select(parentID) }
-        }
-        guard !Task.isCancelled, revision == messageNavigationRevision, selectedID == parentID,
+        } else { page = .chats }
+        guard !Task.isCancelled, origin?.isCurrent != false, revision == messageNavigationRevision, selectedID == parentID,
               !changingSelection || page == .chats, record(sessionID) != nil,
               (side(sessionID)?.parentID ?? sessionID) == parentID,
               let view = displays[sessionID] else { return false }
@@ -151,7 +151,7 @@ extension WorkspaceModel {
             return true
         }
         func current() -> Bool {
-            !Task.isCancelled && revision == messageNavigationRevision && page == .chats && selectedID == parentID && focusedSessionID == sessionID &&
+            !Task.isCancelled && origin?.isCurrent != false && revision == messageNavigationRevision && page == .chats && selectedID == parentID && focusedSessionID == sessionID &&
             record(sessionID) != nil && record(sessionID)?.path == item.path && displays[sessionID] === view && view.messages.map(\.id) == expectedMessageIDs
         }
         if historyLookup == nil {

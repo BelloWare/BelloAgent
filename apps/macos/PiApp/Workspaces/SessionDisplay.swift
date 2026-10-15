@@ -40,6 +40,8 @@ import Combine
 /// one: which version, the rows read of it so far, and the tasks their turn
 /// cards read.
 struct TranscriptVersionView: Equatable, Sendable {
+    /// In-memory ownership of this version read, including same-index retries.
+    var loadID = UUID()
     /// The latest version's message: the row of `messages` whose switcher was used.
     var latestID: String
     /// The version shown, 1-based, of `count`; every version's message id,

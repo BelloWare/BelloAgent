@@ -85,6 +85,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Read-only lookup seams for deterministic navigation races.
     var conversationSearchLoader: (@Sendable (String, String, Int) async throws -> ContentSearch)?
     var agentCoordinationLoader: (@Sendable (URL, String) async throws -> AgentCoordination)?
+    var subagentVersionsLoader: (@Sendable (String, String) async throws -> [String: WireValue])?
     /// Chats a "Fork from here" is being made from, so a second press waits for the first.
     var forkingReplies: Set<String> = []
     var organizationNavigationRevision = 0
@@ -239,7 +240,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     @Published var page: WorkspacePage = .chats {
         didSet {
             if page != oldValue { organizationNavigationRevision &+= 1; noteSelectionChanged() }
-            if page == .report && page != oldValue { messageNavigationRevision += 1 }
+            if page != oldValue { messageNavigationRevision += 1 }
             if page != .chats && page != oldValue {
                 if pendingSubagentOpening?.reader.container?.isPane != false { retirePendingSubagentOpening() }
                 (tabs.pane.activeTab as? SubagentTab)?.didHide()

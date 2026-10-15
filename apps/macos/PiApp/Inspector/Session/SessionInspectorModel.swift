@@ -654,10 +654,11 @@ import AppKit
                 showSubagentParent(group.summary.link); return
             }
             let archive = archive, fallback = index.request(id)?.turn
+            let navigation = workspace.transcriptNavigation(sessionID, advancing: true)
             Task { [weak self] in
                 let links = try? await archive.linkedMessages(attemptID: id)
-                guard self != nil else { return }
-                self?.reveal(workspace, sessionID, links?.output.first ?? fallback)
+                guard !Task.isCancelled, navigation.isCurrent(in: workspace), let self, self.page == .request(id) else { return }
+                self.reveal(workspace, sessionID, links?.output.first ?? fallback, navigation: navigation)
             }
         case .subagent(let id):
             if let group = groups.first(where: { $0.id == id }) { bringMainWindowForward(); Task { await workspace.openSubagent(SubagentTarget(group.summary.link)) } }
@@ -665,12 +666,14 @@ import AppKit
         }
     }
 
-    private func reveal(_ workspace: WorkspaceModel, _ sessionID: String, _ message: String?) {
+    private func reveal(_ workspace: WorkspaceModel, _ sessionID: String, _ message: String?, navigation: TranscriptNavigationToken? = nil) {
         bringMainWindowForward()
         let target = groups.first { $0.summary.link.childSessionID == sessionID }.map { SubagentTarget($0.summary.link) }
+        let navigation = navigation ?? workspace.transcriptNavigation(sessionID, advancing: true)
         Task {
-            if let target { guard await workspace.openSubagent(target) else { return } }
-            _ = await workspace.revealMessage(sessionID: sessionID, messageID: message)
+            guard !Task.isCancelled, navigation.isCurrent(in: workspace) else { return }
+            if let target { _ = await workspace.openSubagent(target, sourceMessage: message) }
+            else { _ = await workspace.revealMessage(sessionID: sessionID, messageID: message) }
         }
     }
     /// A standalone child Inspector has no owned delegation groups. Resolve
@@ -679,24 +682,28 @@ import AppKit
     func showOriginatingTool(_ row: InspectorRequestRow) {
         guard let workspace, let parent = row.parentSessionID else { return }
         let child = row.sessionID ?? scope.sessionID
+        let navigation = workspace.transcriptNavigation(child, advancing: true)
         Task { [weak self] in
             guard let self else { return }
             let groups = self.groups.isEmpty ? (try? await archive.inspectorSubagents(owner: parent, workspaceID: scope.workspaceID)) ?? [] : self.groups
+            guard !Task.isCancelled, navigation.isCurrent(in: workspace) else { return }
             let link = workspace.record(child)?.delegation ?? groups.first(where: { $0.id == row.delegationID })?.summary.link
-            guard !Task.isCancelled, let link, link.valid, link.childSessionID == child,
+            guard let link, link.valid, link.childSessionID == child,
                   link.delegationID == row.delegationID, link.call.parentSessionID == parent,
                   link.call.assistantMessageID == row.parentAssistantID, link.call.toolCallID == row.parentToolCallID,
                   workspace.record(parent)?.workspaceID == scope.workspaceID else {
                 focusNotice = "The originating delegation is no longer available."; return
             }
-            showSubagentParent(link)
+            showSubagentParent(link, navigation: navigation)
         }
     }
-    func showSubagentParent(_ link: SubagentLink) {
+    func showSubagentParent(_ link: SubagentLink, navigation: TranscriptNavigationToken? = nil) {
         guard let workspace else { return }
         bringMainWindowForward()
+        let navigation = navigation ?? workspace.transcriptNavigation(link.childSessionID, advancing: true)
         Task {
-            await workspace.openSubagentParent(link)
+            guard !Task.isCancelled, navigation.isCurrent(in: workspace) else { return }
+            await workspace.openSubagentParent(link, origin: navigation.reader)
         }
     }
     /// The app's main window: the one that is not an Inspector and can be main.

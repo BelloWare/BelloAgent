@@ -150,10 +150,11 @@ extension WorkspaceModel {
     /// It stops wherever the reader has moved on.
     func loadSelectedChat(_ id: String, item: ChatRecord, into view: SessionDisplay, selection: Int,
                                   generation: UUID, heldRows: HeldRows, focusesComposer: Bool, reader: HostedReaderToken? = nil) async {
+        let navigation = transcriptNavigation(id)
         // However this ends, nothing is reading the chat any more.
         defer { view.finishHistoryPresentation(generation) }
         @MainActor func current() -> Bool {
-            !Task.isCancelled && (reader.map { $0.isCurrent && self.subagentTab(id) === $0.reader } ?? (self.selectionRevision == selection && self.selectedID == id)) &&
+            !Task.isCancelled && navigation.isCurrent(in: self) && (reader.map { $0.isCurrent && self.subagentTab(id) === $0.reader } ?? (self.selectionRevision == selection && self.selectedID == id)) &&
                 self.displays[id] === view && view.presentationGeneration == generation
         }
         do {
@@ -257,8 +258,9 @@ extension WorkspaceModel {
         if revealInSidebar { quietSidebarReveal = [] }
         tabs.showSide()
         let paneIntent = tabs.navigationRevision, selection = selectionRevision, changesParent = selectedID != info.parentID
+        let revision = messageNavigationRevision + (changesParent ? 1 + (page == .chats ? 0 : 1) : 0)
         if selectedID != info.parentID { await passingThrough(info.parentID) { await select(info.parentID, revealInSidebar: revealInSidebar, focusesComposer: false) } }
-        guard !Task.isCancelled, tabs.navigationRevision == paneIntent, selectionRevision == selection + (changesParent ? 1 : 0), selectedID == info.parentID, side(id) != nil else { return }
+        guard !Task.isCancelled, messageNavigationRevision == revision, tabs.navigationRevision == paneIntent, selectionRevision == selection + (changesParent ? 1 : 0), selectedID == info.parentID, side(id) != nil else { return }
         page = .chats; focusedSessionID = id
         if revealInSidebar, let child = record(id) { revealProjectChat(child) }
         focusComposer(id)

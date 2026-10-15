@@ -9,13 +9,15 @@ Saved-side and child search results name their parent. The picker and restored c
 tabs preserve numbering, view/Stop, typed-message links and family Inspector.
 Embedded Back only focuses the parent; delayed history reads preserve that decision.
 Full child windows have sibling access and route their own Find/Stop shortcuts.
-Saved sides retain their own delegation families, grouped by side in the main
-picker; Stop and Inspector still address the actual delegation owner. Each hosted
+Saved sides and reply forks retain their own delegation families, indented under
+their actual parents in the main picker at every depth; Stop and Inspector still address the actual delegation owner. Each hosted
 reader has one navigation token for opens, reveals, Find, paging and version reads,
 retained across pane/window moves. Back, hide, close or a newer destination retires
 its pending work; unrelated main-window selection and Reports leave popped-out
 reads intact. Native responder changes and the key child window determine menu
-availability and command targets as well as keyboard shortcuts.
+availability and command targets as well as keyboard shortcuts. The
+[reader navigation ownership rule](subagents.md#reader-navigation-ownership) also
+applies to every stage of Source and Inspector reveals and sidebar search hits.
 Task, result and report prose uses the assistant Markdown reader, with bounded
 previews, source-preserving copy and rendered-text Find. Typed authorship and
 delivery metadata stay separate from the Markdown source. Managed readers cannot

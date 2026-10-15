@@ -36,6 +36,10 @@ final class SubagentPanelTests: XCTestCase {
         model.chats[1].workspaceID = "another-project"
         XCTAssertTrue(model.subagentFamily("chat-parent").members.isEmpty)
         XCTAssertTrue(model.subagentFamily("chat-child").members.isEmpty)
+        let header = AgentFamilyHeaderView(); header.update(model: model, sessionID: "chat-child", enabled: true)
+        XCTAssertTrue(header.isHidden, "Root-picker routing must not expose another project's sides")
+        let picker = AgentFamilyPopoverView(model: model, sessionID: "chat-child", close: {}, ownerWindow: nil)
+        XCTAssertTrue(ConversationPaneTests.views(FamilyPickerRow.self, in: picker).isEmpty)
     }
     @MainActor func testLegacyChildLaunchRestoresReportAndTheSideTab() async throws {
         let model = try fixture()

@@ -37,7 +37,7 @@ import Combine
             }
         }
         self.sessionID = sessionID; self.enabled = enabled; self.allowsDisplay = allowsDisplay; button.isEnabled = enabled
-        let next = model.conversationFamily(sessionID)
+        let next = model.conversationFamily(model.familyPickerOwner(sessionID))
         let hidden = !allowsDisplay || next.isEmpty
         if isHidden != hidden { isHidden = hidden; superview?.needsLayout = true }
         if hidden { popover.close() }
@@ -72,12 +72,14 @@ import Combine
     let primary: String
     let secondary: String?
     let current: Bool
+    let depth: Int
+    var titleInset: CGFloat { 30 + CGFloat(depth) * 14 }
     var leadingSymbol: String?
     var stop: PiKit.IconButton?
     var navigate: ((NSEvent) -> Void)?
     var focused: (() -> Void)?
-    init(_ primary: String, secondary: String? = nil, current: Bool = false) {
-        self.primary = primary; self.secondary = secondary; self.current = current
+    init(_ primary: String, secondary: String? = nil, current: Bool = false, depth: Int = 0) {
+        self.primary = primary; self.secondary = secondary; self.current = current; self.depth = depth
         super.init(frame: .zero); title = primary
     }
     required init?(coder: NSCoder) { nil }
@@ -86,10 +88,10 @@ import Combine
     override func cornerRadius(for size: CGSize) -> CGFloat { PiRadius.sm }
     override func layout() { super.layout(); stop?.frame = CGRect(x: max(0, bounds.width - 32), y: (bounds.height - 24) / 2, width: 24, height: 24) }
     override func drawContent(in rect: CGRect) {
-        let inset: CGFloat = 30
+        let inset = titleInset
         let width = max(0, rect.width - inset - (stop == nil ? 10 : 36))
         if let symbol = leadingSymbol ?? (current ? "checkmark" : nil) {
-            PiKit.Symbol(symbol, size: 12).drawPlaced(centredIn: CGRect(x: 10, y: 0, width: 12, height: rect.height), color: .piAccent, scale: piScale)
+            PiKit.Symbol(symbol, size: 12).drawPlaced(centredIn: CGRect(x: inset - 20, y: 0, width: 12, height: rect.height), color: .piAccent, scale: piScale)
         }
         PiKit.Line(primary, font: PiKit.Font.body, color: current || leadingSymbol != nil ? .piAccent : .piInk)
             .draw(in: CGRect(x: inset, y: secondary == nil ? 7 : 5, width: width, height: 20), truncation: .end, scale: piScale)
@@ -137,8 +139,8 @@ import Combine
     required init?(coder: NSCoder) { nil }
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
-    private func row(_ title: String, detail: String? = nil, id: String, label: String, current: Bool = false, action: @escaping () -> Void) -> FamilyPickerRow {
-        let row = FamilyPickerRow(title, secondary: detail, current: current)
+    private func row(_ title: String, detail: String? = nil, id: String, label: String, current: Bool = false, depth: Int = 0, action: @escaping () -> Void) -> FamilyPickerRow {
+        let row = FamilyPickerRow(title, secondary: detail, current: current, depth: depth)
         row.setAccessibilityIdentifier(id); row.setAccessibilityLabel(label)
         row.toolTip = label + (detail == nil ? "" : ". Spend includes reported usage only.")
         row.onPress = action
@@ -152,49 +154,51 @@ import Combine
             [.view(PiKit.TextLine(PiKit.Line(title, font: PiKit.Font.micro, color: .piInkTertiary, tracking: 0.5, uppercased: true)), .fill)])
     }
     func refresh() {
-        let value = model.conversationFamily(sessionID)
+        let value = model.conversationFamily(model.familyPickerOwner(sessionID))
         guard value != family else { return }; family = value
         let hadFocus = window?.firstResponder as? NSView
         let restoreFocus = hadFocus.map { $0 === self || $0.isDescendant(of: self) } ?? false
         let focusID = hadFocus?.accessibilityIdentifier()
         stack?.removeFromSuperview(); openButtons = []; controls = []
         var rows: [NSView] = []
-        if !value.sides.isEmpty || value.canAddSide {
-            rows.append(heading("Sides"))
-            for side in value.sides {
-                let detail = [side.status, side.spend.map(CostLimit.dollars)].compactMap { $0 }.joined(separator: " · ")
-                rows.append(row(side.title, detail: detail, id: "open-side-" + side.id, label: "Open side " + side.title + ", " + detail, current: side.open) { [weak model, close] in
-                    close(); Task { await model?.openFamilySide(side.id) }
-                })
-            }
-            let newSide = row("New Side", id: "new-family-side", label: "New side beside the parent chat") { [weak model, close] in
+        func newSide() {
+            guard !value.sides.isEmpty || value.canAddSide else { return }
+            let action = row("New Side", id: "new-family-side", label: "New side beside the parent chat") { [weak model, close] in
                 close(); model?.openNewFamilySide(value.ownerID)
             }
-            newSide.leadingSymbol = "plus"; newSide.isEnabled = value.canAddSide; rows.append(newSide)
+            action.leadingSymbol = "plus"; action.isEnabled = value.canAddSide; rows.append(action)
         }
-        for group in value.agentFamilies where !group.members.isEmpty {
-            let ownerTitle = model.record(group.ownerID)?.title ?? "Unavailable parent"
-            rows.append(heading(group.ownerID == value.ownerID ? "Sub-agents" : "Sub-agents in " + ownerTitle))
-            for member in group.members {
+        if !value.sides.isEmpty || value.canAddSide { rows.append(heading("Sides")) }
+        var reachedMainAgents = false
+        for entry in value.rows {
+            switch entry.content {
+            case .side(let side):
+                let detail = [side.status, side.spend.map(CostLimit.dollars)].compactMap { $0 }.joined(separator: " · ")
+                let parent = model.record(side.id).flatMap { model.sideFamilyOwner($0) }.flatMap { model.record($0)?.title }
+                rows.append(row(side.title, detail: detail, id: "open-side-" + side.id,
+                    label: "Open side " + side.title + (parent.map { " in " + $0 } ?? "") + ", " + detail, current: side.open, depth: entry.depth) { [weak model, close] in
+                    close(); Task { await model?.openFamilySide(side.id) }
+                })
+            case .agent(let member, let ownerID):
+                if entry.depth == 0, !reachedMainAgents {
+                    reachedMainAgents = true; newSide(); rows.append(heading("Sub-agents"))
+                }
+                let ownerTitle = model.record(ownerID)?.title ?? "Unavailable parent"
                 let detail = [member.statusLabel, member.model, member.effort, member.spend.map(CostLimit.dollars)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
                 let row = row(member.label, detail: detail, id: "open-agent-" + member.chat.id,
-                    label: "Open " + member.chat.displayTitle + " in " + ownerTitle + ", " + detail, current: member.chat.id == sessionID) { [weak model, close] in
+                    label: "Open " + member.chat.displayTitle + " in " + ownerTitle + ", " + detail, current: member.chat.id == sessionID, depth: entry.depth) { [weak model, close] in
                     close(); Task { await model?.openSubagentTab(member.chat.id) }
                 }
                 if member.status == .running, let link = member.chat.delegation {
                     let stop = PiKit.IconButton(symbol: "stop.fill", label: "Stop " + member.chat.displayTitle + " in " + ownerTitle, size: 24)
                     stop.setAccessibilityIdentifier("stop-agent-" + member.chat.id)
-                    stop.onPress = { [weak model] in model?.stopSubagent(SubagentTarget(link), from: group.ownerID) }
+                    stop.onPress = { [weak model] in model?.stopSubagent(SubagentTarget(link), from: ownerID) }
                     row.stop = stop; row.addSubview(stop); controls.append(stop)
                 }
                 rows.append(row)
             }
-            if group.ownerID != value.ownerID {
-                let inspect = PiKit.Button("Inspect " + ownerTitle, symbol: "info.circle", style: .ghost, compact: true)
-                inspect.onPress = { [weak model, close] in close(); model?.inspect(group.ownerID) }
-                controls.append(inspect); rows.append(ShellStack(.horizontal, spacing: 0, [.view(inspect)]))
-            }
         }
+        if !reachedMainAgents { newSide() }
         let active = value.activity.runningAgents + value.activity.queuedAgents + value.activity.stoppingAgents
         let stopAll = PiKit.Button("Stop All…", style: .ghost, compact: true)
         stopAll.isEnabled = active > 0

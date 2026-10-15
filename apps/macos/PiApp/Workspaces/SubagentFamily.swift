@@ -70,9 +70,9 @@ extension WorkspaceModel {
         if let chat = record(owner), let main = sideFamilyOwner(chat), main == selectedID { return main }
         return id
     }
-    var canShowAgentFamily: Bool { familyPickerSession.map { !conversationFamily($0).isEmpty } ?? false }
+    var canShowAgentFamily: Bool { familyPickerSession.map { !conversationFamily(familyPickerOwner($0)).isEmpty } ?? false }
     func showAgentFamily() {
-        if let id = familyPickerSession { agentFamilyRequests.send(conversationFamily(id).ownerID) }
+        if let id = familyPickerSession { agentFamilyRequests.send(conversationFamily(familyPickerOwner(id)).ownerID) }
     }
 }
 
@@ -100,6 +100,11 @@ struct ConversationFamily: Equatable {
         var spend: Double?
         var open: Bool
     }
+    struct Row: Equatable {
+        enum Content: Equatable { case side(Side); case agent(SubagentFamily.Member, ownerID: String) }
+        var content: Content
+        var depth: Int
+    }
     var ownerID: String
     var sides: [Side]
     var agents: SubagentFamily
@@ -108,6 +113,7 @@ struct ConversationFamily: Equatable {
     /// They remain labelled by their own owner; numbers and Stop authority are
     /// never reassigned to the main chat.
     var sideAgentFamilies: [SubagentFamily] = []
+    var rows: [Row] = []
     var agentFamilies: [SubagentFamily] { [agents] + sideAgentFamilies }
     var agentCount: Int { agentFamilies.reduce(0) { $0 + $1.members.count } }
     var isEmpty: Bool { sides.isEmpty && agentCount == 0 }
@@ -131,14 +137,22 @@ extension WorkspaceModel {
               parent.workspaceID == chat.workspaceID else { return nil }
         return id
     }
+    /// Display ancestry is separate from a delegation's authority. A main
+    /// column showing a saved fork still offers its complete original family.
+    func familyPickerOwner(_ sessionID: String) -> String {
+        var id = sessionID
+        var visited: Set<String> = [id]
+        while let chat = record(id), let parent = chat.delegation?.budgetOwnerSessionID ?? sideFamilyOwner(chat),
+              let owner = record(parent), owner.workspaceID == chat.workspaceID, visited.insert(parent).inserted { id = parent }
+        return id
+    }
     func invalidateConversationFamily(_ id: String? = nil) {
-        if let id, let chat = record(id) {
+        guard let id, record(id) != nil else { conversationFamilies.removeAll(keepingCapacity: true); return }
+        var current: String? = id, visited = Set<String>()
+        while let id = current, visited.insert(id).inserted {
             conversationFamilies[id] = nil
-            if let owner = chat.delegation?.budgetOwnerSessionID ?? sideFamilyOwner(chat) {
-                conversationFamilies[owner] = nil
-                if let parent = record(owner).flatMap(sideFamilyOwner) { conversationFamilies[parent] = nil }
-            }
-        } else { conversationFamilies.removeAll(keepingCapacity: true) }
+            current = record(id).flatMap { $0.delegation?.budgetOwnerSessionID ?? sideFamilyOwner($0) }
+        }
     }
     /// Metadata is grouped once, and status/spend are cached between activity
     /// publications. Neither the header nor a sidebar row reads transcripts.
@@ -155,26 +169,40 @@ extension WorkspaceModel {
             for chat in chats { if let owner = sideFamilyOwner(chat) { grouped[owner, default: []].append(chat) } }
             familySideRecords = grouped
         }
-        let shown = sides[ownerID]
-        var records = (familySideRecords?[ownerID] ?? []).filter { !$0.isArchived || $0.id == shown?.id }
-            .sorted { sidebarPrecedes($0, $1) }
-        if let shown, !records.contains(where: { $0.id == shown.id }), shown.workspaceID == record(ownerID)?.workspaceID {
-            records.insert(shown.chat, at: 0)
+        var members: [ConversationFamily.Side] = [], related: [SubagentFamily] = [], rows: [ConversationFamily.Row] = []
+        var visited: Set<String> = [ownerID]
+        func visit(_ parentID: String, depth: Int) {
+            let shown = sides[parentID]
+            // Retained archived forks remain reachable too; their archive state
+            // is descriptive, not a reason to hide a branch and its descendants.
+            var records = (familySideRecords?[parentID] ?? []).sorted { sidebarPrecedes($0, $1) }
+            if let shown, !records.contains(where: { $0.id == shown.id }), shown.workspaceID == record(parentID)?.workspaceID {
+                records.insert(shown.chat, at: 0)
+            }
+            for chat in records where visited.insert(chat.id).inserted {
+                let display = displays[chat.id], pending = shown?.id == chat.id && shown?.pending == true
+                let working = display.map { $0.busy || $0.loading } ?? false
+                let failed = unreadFailure(sessionID: chat.id) || display?.runState == .error
+                let unread = unreadOutputCount(sessionID: chat.id) > 0
+                let status = working ? "Working" : failed ? "Failed" : unread ? (markedUnreadOnly(sessionID: chat.id) ? "Unread" : "New reply") : pending ? "Draft" : chat.isArchived ? "Archived" : "Saved"
+                let totals = display?.footer.gateway ?? chatAccounting.row(for: chat.id).totals
+                let spend = totals.flatMap { $0.costSamples > 0 ? $0.costUSD : nil }
+                let side = ConversationFamily.Side(id: chat.id, title: pending ? "New side" : chat.title, status: status, working: working,
+                    spend: spend, open: shown?.id == chat.id)
+                members.append(side); rows.append(.init(content: .side(side), depth: depth))
+                visit(chat.id, depth: depth + 1)
+            }
+            guard record(parentID)?.isSubagent != true else { return }
+            let group = subagentFamily(parentID)
+            if parentID != ownerID, !group.members.isEmpty { related.append(group) }
+            for member in group.members where visited.insert(member.chat.id).inserted {
+                rows.append(.init(content: .agent(member, ownerID: parentID), depth: depth))
+                visit(member.chat.id, depth: depth + 1)
+            }
         }
-        let members = records.map { chat -> ConversationFamily.Side in
-            let display = displays[chat.id], pending = shown?.id == chat.id && shown?.pending == true
-            let working = display.map { $0.busy || $0.loading } ?? false
-            let failed = unreadFailure(sessionID: chat.id) || display?.runState == .error
-            let unread = unreadOutputCount(sessionID: chat.id) > 0
-            let status = working ? "Working" : failed ? "Failed" : unread ? (markedUnreadOnly(sessionID: chat.id) ? "Unread" : "New reply") : pending ? "Draft" : "Saved"
-            let totals = display?.footer.gateway ?? chatAccounting.row(for: chat.id).totals
-            let spend = totals.flatMap { $0.costSamples > 0 ? $0.costUSD : nil }
-            return .init(id: chat.id, title: pending ? "New side" : chat.title, status: status, working: working,
-                         spend: spend, open: shown?.id == chat.id)
-        }
-        let related = records.map { subagentFamily($0.id) }.filter { !$0.members.isEmpty }
+        visit(ownerID, depth: 0)
         let value = ConversationFamily(ownerID: ownerID, sides: members, agents: agents,
-            canAddSide: canOpenSide(ownerID) && record(ownerID).flatMap(sideFamilyOwner) == nil, sideAgentFamilies: related)
+            canAddSide: canOpenSide(ownerID) && record(ownerID).flatMap(sideFamilyOwner) == nil, sideAgentFamilies: related, rows: rows)
         conversationFamilies[ownerID] = value
         return value
     }
@@ -186,11 +214,11 @@ extension WorkspaceModel {
         if selectedID == ownerID { openSide(parentID: ownerID); tabs.showSide() }
         else {
             tabs.showSide()
-            let intent = tabs.navigationRevision, selection = selectionRevision
+            let intent = tabs.navigationRevision, selection = selectionRevision, revision = messageNavigationRevision
             Task {
-                guard !Task.isCancelled, tabs.navigationRevision == intent, selectionRevision == selection else { return }
+                guard !Task.isCancelled, messageNavigationRevision == revision, tabs.navigationRevision == intent, selectionRevision == selection else { return }
                 await select(ownerID, focusesComposer: false)
-                guard !Task.isCancelled, tabs.navigationRevision == intent, selectionRevision == selection + 1, selectedID == ownerID else { return }
+                guard !Task.isCancelled, messageNavigationRevision == revision + 1, tabs.navigationRevision == intent, selectionRevision == selection + 1, selectedID == ownerID else { return }
                 openSide(parentID: ownerID)
             }
         }

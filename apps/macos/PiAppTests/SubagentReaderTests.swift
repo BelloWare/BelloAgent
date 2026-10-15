@@ -104,6 +104,186 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
             XCTAssertTrue(model.subagentTabIsShown(tab.key))
         }
     }
+    @MainActor func testEmbeddedBackRetiresEveryStageOfAParentSourceReveal() async throws {
+        for stage in ["versions", "anchor", "version page", "message"] {
+            for goBack in [true, false] {
+                let (model, _) = try fixture()
+                let tab = try await open("chat-child", in: model), parent = try XCTUnwrap(model.selected)
+                parent.messages = [.init(id: "reading", role: "assistant", text: "Keep reading here")]
+                parent.scrollAnchor = .init(id: "reading", offset: 31, followsBottom: false)
+                model.chats[0].path = model.root.appendingPathComponent("parent.jsonl").path
+                let gate = ReaderLookupGate()
+                model.agentCoordinationLoader = { _, _ in
+                    AgentCoordination(entries: [.init(id: "delivery", childID: "chat-child", turn: 1, kind: "task", author: "parent",
+                        sourceSessionID: "chat-parent", sourceMessageID: "issuing", sourceToolCallID: "call", recipientID: "chat-child", disposition: "delivered")])
+                }
+                model.subagentVersionsLoader = { _, _ in
+                    if stage == "versions" { await gate.wait() }
+                    if stage == "message" { return [:] }
+                    return ["versions": .array([.object(["messageId": .string("old-input")]), .object(["messageId": .string("anchor")])]),
+                            "selected": .number(1), "anchor": .string("anchor"), "current": .number(2)]
+                }
+                model.historyWindowLoader = { _, _, _, around in
+                    if stage == "anchor" || stage == "message" { await gate.wait() }
+                    return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture"), "lineage": .string("root"),
+                        "messages": .array([.object(["id": .string(around ?? "anchor"), "role": .string("assistant"), "text": .string("Source")])]),
+                        "older": .null, "newer": .null]))
+                }
+                model.versionPageLoader = { _, _ in
+                    if stage == "version page" { await gate.wait() }
+                    return ([.init(id: "issuing", role: "assistant", text: "Earlier issuing call")], [])
+                }
+                let lookup = Task { await model.openAgentSource(.init(childID: tab.key, turn: 1, eventID: "delivery"), from: tab.key) }
+                try await eventually("Source awaits \(stage)") { await gate.reads == 1 }
+                let before = parent.scrollAnchor, rows = parent.messages, versionRows = parent.versionView?.rows
+                if goBack { await model.backToSubagentParent(tab.key) }
+                await gate.release(); await lookup.value
+                if goBack {
+                    XCTAssertEqual(parent.scrollAnchor, before, stage)
+                    XCTAssertEqual(parent.messages, rows, stage)
+                    XCTAssertEqual(parent.versionView?.rows ?? [], versionRows ?? [], stage)
+                    XCTAssertFalse(parent.versionView?.loading == true, stage)
+                } else { XCTAssertEqual(parent.scrollAnchor?.id, "issuing", stage + " completes without Back") }
+            }
+        }
+    }
+    @MainActor func testParentSourceRetiresAnOlderParentReadBeforeAwaitingItsVersionLookup() async throws {
+        let (model, history) = try fixture(), tab = try await open("chat-child", in: model)
+        let parent = try XCTUnwrap(model.selected)
+        parent.messages = [.init(id: "reading", role: "assistant", text: "Keep reading")]
+        parent.scrollAnchor = .init(id: "reading", offset: 31, followsBottom: false)
+        await history.set("Older destination", held: true, messageID: "older")
+        let count = await history.reads
+        let old = Task { await model.revealInTranscript(sessionID: parent.id, messageID: "older") }
+        try await eventually("Older parent reveal is held") { await history.reads > count }
+        let versions = ReaderLookupGate()
+        model.subagentVersionsLoader = { _, _ in await versions.wait(); return [:] }
+        let link = try XCTUnwrap(model.record(tab.key)?.delegation)
+        let source = Task { await model.openSubagentParent(link, origin: tab.renewNavigation()) }
+        try await eventually("New Source is looking up its version") { await versions.reads == 1 }
+        await history.release()
+        let landed = await old.value
+        XCTAssertFalse(landed, "A new Source destination retires the old parent read immediately")
+        XCTAssertEqual(parent.scrollAnchor?.id, "reading")
+        await model.backToSubagentParent(tab.key); await versions.release(); _ = await source.value
+    }
+    @MainActor func testSidebarContentHitRevealsInPoppedOutChildOnEveryMainPage() async throws {
+        let (model, _) = try fixture()
+        let path = model.root.appendingPathComponent("search-child.jsonl")
+        try FileManager.default.createDirectory(at: model.root, withIntermediateDirectories: true)
+        try "{\"type\":\"session\",\"version\":3,\"id\":\"chat-child\"}\n{\"type\":\"message\",\"id\":\"matching\",\"parentId\":null,\"message\":{\"role\":\"assistant\",\"content\":\"Distinctive search phrase\"}}\n".write(to: path, atomically: true, encoding: .utf8)
+        model.chats[1].path = path.path
+        await model.sidebarSearch.reconcileNow()
+        model.sidebarSearch.setQuery("Distinctive search")
+        try await eventually("The generated child journal is indexed") { model.sidebarSearchHit("chat-child") != nil }
+        let tab = try await open("chat-child", in: model)
+        model.tabs.showsWindows = false; model.tabs.popOut(tab)
+        for page in [WorkspacePage.report, .background, .chats] {
+            model.page = page
+            let display = try XCTUnwrap(model.displays[tab.key]); display.scrollAnchor = .init(id: "saved-reply", offset: 19, followsBottom: false)
+            await model.openFromSidebar(tab.key)
+            XCTAssertEqual(display.scrollAnchor?.id, "matching", "Search reveals in the child window on \(page)")
+            XCTAssertEqual(model.page, page)
+        }
+    }
+    @MainActor func testMainHistoryOperationsRetireAcrossPageRoundTrips() async throws {
+        for operation in ["reload", "edge", "version", "search hit"] {
+            let (model, gate) = try fixture(), display = try XCTUnwrap(model.selected)
+            display.messages = [.init(id: "reading", role: "assistant", text: "Keep this page")]
+            display.scrollAnchor = .init(id: "reading", offset: 31, followsBottom: false)
+            await gate.set("Obsolete read", held: true, messageID: "obsolete")
+            let lookup = ReaderLookupGate()
+            model.versionPageLoader = { _, _ in await lookup.wait(); return ([.init(id: "obsolete", role: "assistant", text: "Earlier version")], []) }
+            let task = Task {
+                switch operation {
+                case "reload": model.reloadHistory(display.id); await display.presentation.navigation?.value
+                case "edge":
+                    display.olderPage.cursor = .init(incarnation: "fixture", lineage: "root", entry: "reading")
+                    _ = await model.loadEarlierPage(sessionID: display.id)
+                case "version":
+                    model.showVersion(sessionID: display.id, latestID: "reading", index: 1, count: 2, ids: ["old", "reading"])
+                    await display.versionLoad?.value
+                default: try? await model.revealConversationHit(display.id, hit: .init(id: "obsolete", position: 1, preview: "Obsolete"))
+                }
+            }
+            try await eventually("\(operation) is reading") { operation == "version" ? await lookup.reads == 1 : await gate.reads == 1 }
+            model.page = .background; model.page = .chats
+            await gate.release(); await lookup.release(); await task.value
+            XCTAssertEqual(display.messages.map(\.id), ["reading"], operation)
+            XCTAssertEqual(display.scrollAnchor?.id, "reading", operation)
+            XCTAssertFalse(display.versionView?.rows.contains { $0.id == "obsolete" } == true, operation)
+            XCTAssertFalse(display.versionView?.loading == true, "A retired version must not leave a permanent loading cover")
+            XCTAssertFalse(display.historyState == .loading, "A retired reload can be reopened")
+            XCTAssertFalse(display.olderPage.loading)
+        }
+    }
+    @MainActor func testRetiredPositionReadDoesNotRestartItsQueuedDestination() async throws {
+        let (model, gate) = try fixture(), display = try XCTUnwrap(model.selected)
+        display.messages = [.init(id: "reading", role: "assistant", text: "Keep this page")]
+        display.scrollAnchor = .init(id: "reading", offset: 31, followsBottom: false)
+        await gate.set("Obsolete position", held: true, messageID: "obsolete")
+        model.jumpToHistoryPosition(display.id, position: 0, offset: 24)
+        try await eventually("The first position read is held") { await gate.reads == 1 }
+        let first = display.jumpTask
+        model.jumpToHistoryPosition(display.id, position: 10, offset: 24)
+        model.page = .background; model.page = .chats
+        await gate.release(); await first?.value; await display.jumpTask?.value
+        let reads = await gate.reads
+        XCTAssertEqual(reads, 1, "Retiring an intent also retires its coalesced destination")
+        XCTAssertEqual(display.messages.map(\.id), ["reading"])
+        XCTAssertEqual(display.scrollAnchor?.id, "reading")
+        XCTAssertNil(display.jumpTask); XCTAssertNil(display.jumpRead)
+    }
+    @MainActor func testSourceCanTransferFromEmbeddedChildIntoItsOwningSavedSide() async throws {
+        let (model, gate) = try fixture()
+        model.chats[1].parentSessionID = "chat-side"; model.chats[1].delegation?.budgetOwnerSessionID = "chat-side"; model.chats[1].delegation?.call.parentSessionID = "chat-side"
+        model.chats[2].path = model.root.appendingPathComponent("side.jsonl").path
+        let tab = try await open("chat-child", in: model)
+        model.agentCoordinationLoader = { _, _ in
+            AgentCoordination(entries: [.init(id: "delivery", childID: "chat-child", turn: 1, kind: "task", author: "parent",
+                sourceSessionID: "chat-side", sourceMessageID: "issuing", sourceToolCallID: "call", recipientID: "chat-child", disposition: "delivered")])
+        }
+        await gate.set("Side's issuing call", messageID: "issuing")
+        await model.openAgentSource(.init(childID: tab.key, turn: 1, eventID: "delivery"), from: tab.key)
+        XCTAssertEqual(model.selectedID, "chat-parent"); XCTAssertEqual(model.focusedSessionID, "chat-side")
+        XCTAssertEqual(model.displays["chat-side"]?.scrollAnchor?.id, "issuing")
+        XCTAssertFalse(model.subagentTabIsShown(tab.key))
+    }
+    @MainActor func testInspectorParentSourceRetainsTheOriginatingReaderThroughItsVersionRead() async throws {
+        let (model, _) = try fixture(), tab = try await open("chat-child", in: model)
+        let parent = try XCTUnwrap(model.selected)
+        parent.messages = [.init(id: "reading", role: "assistant", text: "Keep reading")]
+        parent.scrollAnchor = .init(id: "reading", offset: 31, followsBottom: false)
+        let gate = ReaderLookupGate()
+        model.subagentVersionsLoader = { _, _ in await gate.wait(); return [:] }
+        let inspector = SessionInspectorModel(scope: .init(sessionID: tab.key, workspaceID: "pane-project"), title: "Child", archive: model.traces,
+            workspace: model, usageLoader: { _, _, _ in throw CancellationError() })
+        inspector.showSubagentParent(try XCTUnwrap(model.record(tab.key)?.delegation))
+        try await eventually("Inspector Source is reading versions") { await gate.reads == 1 }
+        await model.backToSubagentParent(tab.key)
+        await gate.release()
+        // Drain both the version continuation and the generated history read.
+        for _ in 0..<50 { await Task.yield() }
+        XCTAssertEqual(parent.scrollAnchor?.id, "reading")
+        XCTAssertEqual(parent.messages.map(\.id), ["reading"])
+    }
+    @MainActor func testNewRevealInPoppedChildRetiresItsAwaitingBackToParent() async throws {
+        let (model, _) = try fixture(), tab = try await open("chat-child", in: model)
+        model.tabs.showsWindows = false; model.tabs.popOut(tab)
+        let parent = try XCTUnwrap(model.selected)
+        parent.messages = [.init(id: "reading", role: "assistant", text: "Keep reading")]
+        parent.scrollAnchor = .init(id: "reading", offset: 31, followsBottom: false)
+        let gate = ReaderLookupGate()
+        model.subagentVersionsLoader = { _, _ in await gate.wait(); return [:] }
+        let back = Task { await model.backToSubagentParent(tab.key) }
+        try await eventually("Popped Back is reading the parent version") { await gate.reads == 1 }
+        tab.focus()
+        let shown = await model.revealInTranscript(sessionID: tab.key, messageID: "saved-reply")
+        XCTAssertTrue(shown)
+        await gate.release(); await back.value
+        XCTAssertEqual(parent.scrollAnchor?.id, "reading"); XCTAssertEqual(parent.messages.map(\.id), ["reading"])
+        XCTAssertEqual(model.focusedSessionID, tab.key)
+    }
     @MainActor func testNewParentMessageNavigationRetiresAnAwaitingChildReveal() async throws {
         let (model, gate) = try fixture()
         model.selected?.messages = [.init(id: "parent-message", role: "assistant", text: "Main reply")]

@@ -362,13 +362,14 @@ extension WorkspaceModel {
         if let shown = sides[parentID], shown.id == id { await selectSide(id, revealInSidebar: revealInSidebar); return }
         tabs.showSide()
         let paneIntent = tabs.navigationRevision, selection = selectionRevision, changesParent = selectedID != parentID
+        let revision = messageNavigationRevision, pageChange = page == .chats ? 0 : 1
         if let shown = sides[parentID], shown.pending, !(await discardPendingSide(shown)) { return }
-        guard !Task.isCancelled, tabs.navigationRevision == paneIntent, selectionRevision == selection else { return }
+        guard !Task.isCancelled, messageNavigationRevision == revision, tabs.navigationRevision == paneIntent, selectionRevision == selection else { return }
         if let shown = sides[parentID], !shown.kept || shown.keeping { error = "Wait for the current side to finish opening before switching."; return }
         if revealInSidebar { quietSidebarReveal = [] }
         // This side is the one asked for, not the one the parent last showed.
         if selectedID != parentID { await passingThrough(parentID) { await select(parentID, revealInSidebar: revealInSidebar, reopensSide: false, focusesComposer: false) } }
-        guard !Task.isCancelled, tabs.navigationRevision == paneIntent, selectionRevision == selection + (changesParent ? 1 : 0), selectedID == parentID else { return }
+        guard !Task.isCancelled, messageNavigationRevision == revision + (changesParent ? 1 + pageChange : 0), tabs.navigationRevision == paneIntent, selectionRevision == selection + (changesParent ? 1 : 0), selectedID == parentID else { return }
         let view = mountSide(child, beside: parentID)
         page = .chats; focusedSessionID = id
         if revealInSidebar { revealProjectChat(child) }
@@ -391,11 +392,12 @@ extension WorkspaceModel {
     /// Restores a saved child's draft, anchor, pending intents and history into
     /// its display, mirroring what selecting a chat does for the main pane.
     func loadSideDisplay(_ child: ChatRecord, view: SessionDisplay) async {
-        let id = child.id, generation = view.presentationGeneration
+        let id = child.id, generation = view.presentationGeneration, navigation = transcriptNavigation(child.id)
+        let paneIntent = tabs.navigationRevision
         let task = Task { [weak self, weak view] in
             guard let self, let view else { return }
             defer { view.finishHistoryPresentation(generation) }
-            @MainActor func current() -> Bool { !Task.isCancelled && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentationGeneration == generation }
+            @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.tabs.navigationRevision == paneIntent && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentationGeneration == generation }
             do {
                 let oldDraft = view.savedDraft
                 let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded && view.scrollAnchor == nil)

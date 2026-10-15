@@ -1305,3 +1305,199 @@ test hosts only; no installed app, real preferences, Keychain or paid-provider c
 Release/design notes were updated. Remaining work is the lead's independent
 review and integration; this round makes no new claim about earlier full-lane
 flakes.
+
+## Lead review round 8: nested families and navigation ownership
+
+Work remains on `dev/a128-sub-display`; the build root for all evidence below is
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`. This round uses only
+affected native classes, serial-lane classes alone, and the standalone picker
+gallery. No full lane or helper-package run is claimed for this round.
+
+### Root causes and decisions
+
+- The replacement picker grouped only direct `parentSessionID` children. Both a
+  saved side and its reply fork disappeared from normal sidebar lists, but the
+  picker could reach only the first. Its cached projection now traverses all
+  descendants, with a visited set, retaining real delegation scopes. Rows form a
+  depth-first tree with 14-point indentation per parent, two lines at most, and
+  complete parent-labelled accessibility/tooltip text. Root agents retain number
+  order; each side's agents keep their own numbers and Stop authority. Archived
+  branches remain in the picker, labelled Archived. Metadata invalidation reaches
+  all ancestors; no transcript is scanned or parsed for the tree.
+- Nested sides still open beside their immediate parent using the existing side
+  path. The main-column header resolves the original root's complete picker, so
+  drilling into a branch never loses access to other saved descendants. Ancestry,
+  stored links, helper ownership and draft persistence are unchanged. Search
+  retains each saved descendant under its existing archive/project filters and
+  labels its immediate parent. Imported/orphan/cross-project side behavior stays
+  unchanged. Root-picker ancestry validates the project at every edge, including
+  delegated children; a malformed link cannot expose another project's family.
+- Source checked its originating reader only during coordination lookup, then
+  silently changed to main-window ownership. The entire parent operation now
+  carries the origin token *and* the destination intent through helper opening,
+  versions metadata, anchor history, earlier-version pages and the final reveal.
+  Inspector source entry points and popped-out Back share that ownership. Opening
+  the owning ordinary Side deliberately replaces an embedded child and transfers
+  ownership to the main pane before its load; an external origin keeps its token.
+- Sidebar hits incorrectly required Chats even for an external child. Hosted hits
+  now require that exact reader's current token and host visibility, plus the
+  unchanged query/open identity. Reports and Background remain in the main window.
+- The audit also found main reload/edge/search-hit reads with no workspace-token
+  check, a canceled first version page that left a loading cover, and a coalesced
+  position destination that could restart from a retired operation's cleanup.
+  Main navigation now retires reads on every page transition, including Background
+  and a leave/return round trip. Version cleanup uses its own in-memory read ID;
+  it cannot clear a newer same-index retry. Presentation cleanup remains cursor
+  preserving. No new navigation generation is stored in journals.
+
+The short normative rule is in
+[Reader navigation ownership](../design/subagents.md#reader-navigation-ownership).
+A hosted reader uses one local navigation UUID; main/ordinary-side readers use the
+workspace revision. Presentation, query and read IDs protect the specific resource
+being published or cleaned up; they do not replace reader navigation ownership.
+
+### Failing first and real-guard mutations
+
+Saved console logs and xcresult summary/test JSON use the `review8-` prefix. Each
+native run used `PI_BUILD_ROOT` above and
+`TEST_RUNNER_PI_APP_SCRATCH_ROOT=<build root>/scratch-review8`, with
+`scripts/test-macos.sh -only-testing:PiAppTests/<Class>` (multiple filters only for
+parallel-lane classes). No named result bundle was created; the script pruned its
+older automatic bundles after summary/test JSON extraction.
+
+- `red-family`: 14 passed / 1 failed. The nested tree, nested agents and row order
+  were absent before the traversal fix.
+- `red-reader`: 28 passed / 2 failed. Source was suspended at versions metadata,
+  anchor history, version-page history and final message history, with paired
+  non-canceled controls. Back lost its position at all four stages. A real indexed
+  content-search hit failed in the external child on Reports and Background.
+- `red-audit`: main reload, older edge, version cover and search-hit regressions
+  failed on a Background→Chats round trip. Its extra side-handoff control initially
+  used an invalid fixture link (owner changed without the call's parent); the
+  fixture was corrected to the real reciprocal ownership contract. That setup
+  failure is not counted as a production defect.
+- `red-inspector`: 32 passed / 1 failed; Inspector's parent Source changed the
+  parent after embedded Back while versions metadata was suspended.
+- `red-back`: 33 passed / 1 failed; a newer reveal in the popped-out child did not
+  retire the older Back operation's pending parent version read.
+- `red-position`: 34 passed / 1 failed; cleanup started a second, obsolete position
+  read after the main page had left and returned.
+- `red-project-boundary`: 7 passed / 1 failed; the new root routing bypassed the
+  existing family projection's cross-project check. Per-edge root validation now
+  preserves that check for both the header and popover.
+- `red-source-destination`: 35 passed / 1 failed; starting a parent Source lookup
+  did not retire an older parent reveal until after versions metadata returned.
+  Starting the destination intent now retires the old read before the first await.
+- `mutation-tree`: removing recursive traversal from the real picker projection
+  failed 3 family tests (13 passed).
+- `mutation-origin`: removing the real `TranscriptNavigationToken.origin` guard
+  failed typed Source, Inspector Source and popped-out Back (31 passed / 3 failed).
+- `mutation-visibility`: restoring the Chats requirement in the real hosted search
+  guard failed the external search-hit test (33 passed / 1 failed).
+- `mutation-main`: ignoring the real workspace revision failed the page-round-trip
+  read test (33 passed / 1 failed).
+
+All mutations were restored in `finally` blocks. The restored reader and family
+classes passed before continuing. The mutation runner and exact failure records
+are `review8-mutations.py` and `review8-mutation-status.json` in the build root.
+
+### Awaited-path audit and regression map
+
+The final grep inventory is `review8-navigation-await-audit.txt` in the build root
+(228 await sites, including the non-navigation reads classified below).
+Paths below are under `apps/macos/PiApp`; tests are under `PiAppTests`. This table
+covers navigation entry points and every underlying conversation read/reveal
+stage, including deferred retries and source lookups. Pure storage methods return
+data and never navigate; their publication owner is identified here.
+
+| Path / awaited operation | Ownership and visibility | Regression coverage |
+| --- | --- | --- |
+| `Tabs/SubagentTab.swift`: `openSubagentTab`, `ensureLoaded`, `loadSubagentTab` (parent selection, load, managed attachment) | Exact reader token before/after await; actual host visibility, identity-key reuse; completion never focuses | `SubagentReaderTests`: initial-load Back, another-tab choice, close/reopen, pane/window move, hidden reload, side fallback; `SubagentPanelTests`: restored tab; `SubagentOpeningTests`: live attachment after main selection |
+| `Workspaces/WorkspaceSubagents.swift`: `openSubagent` (header, discovery, tab load, turn-message lookup, final reveal) | One opening token throughout; validated project/link, shown reader and current focus; newer external destinations retire unfinished opens | `SubagentOpeningTests.testCardHeaderValidationDoesNotOverrideANewerTabChoice`; `SubagentReaderTests`: new parent reveal, Back superseding Show in Chat |
+| `WorkspaceSubagents.attachManagedSubagent` (header and helper open) | Caller presentation predicate or exact reader token; helper connection/link remains the same | `SubagentOpeningTests.testVisibleChildAttachmentSurvivesAnUnrelatedMainSelection`, selection/Inspector attach and unload-during-opening tests |
+| `WorkspaceAgentNavigation.openAgentSource` (coordination history → Source, delivery, fallback parent/child) | Captures originating reader/main intent before lookup; checks before dispatch/error; parent branches carry origin onward | `SubagentReaderTests.testEmbeddedBackRetiresAnAwaitingAgentSourceLookup`; four-stage Source regression with uncanceled controls |
+| `WorkspaceAgentNavigation.showAgentSource` | Parent path retains origin; child Source is revealed inside the same validated opening rather than starting a second navigation afterward | Inspector Source regression; `SubagentNavigationTests.testFollowUpReturnAndTypedSourceKeepTheIssuingSendInAnEarlierVersion` |
+| `WorkspaceSubagents.backToSubagentParent`, `openSubagentParent` | Back renews origin; embedded same-parent Back only focuses; external Back carries its new token; parent selection/side opening checks expected selection, pane and workspace revisions | `SubagentReaderTests.testNewRevealInPoppedChildRetiresItsAwaitingBackToParent`, owning-side handoff, saved-side-owned agent and embedded Back tests |
+| `WorkspaceSubagents.revealSubagentCall` (helper open → `session.versions` → anchor → version load → exact tool reveal) | One destination intent starts before the first await, retiring older destination reads; it carries origin through every stage; `transcriptShows` before publication; errors guarded too | `SubagentReaderTests.testEmbeddedBackRetiresEveryStageOfAParentSourceReveal` (four gates × Back/control); Inspector and external Back gates; `testParentSourceRetiresAnOlderParentReadBeforeAwaitingItsVersionLookup`; `SubagentOpeningTests` edited-ancestor source routes |
+| `WorkspaceVersions.showVersion`, `latestVersion`, `readVersionPage` | Explicit version choice starts an intent; internal Source version work shares it. Helper/decode/accounting return into the same version read ID and visible transcript; old cleanup cannot leave a spinner or clear a newer read | `MessageVersionTranscriptTests`; Source version-page gate; main round-trip version case |
+| `WorkspaceSelection.select`, `loadSelectedChat`, `restoreShownSide` | Main selection/workspace plus display/presentation identity; hosted load uses its own token. Metadata/draft/coordination/plan reads, unchanged-file reuse, initial history and accounting recheck before adoption | `WorkspaceLoadingTests` (12), `WorkspaceConcurrencyTests` (8), reader hidden reload/canceled flags, `SubagentOpeningTests` |
+| `WorkspaceSelection.readInitialWindow`; `WorkspaceHistory.readConversationWindow` | Data reads for latest/held anchor, helper/file handoff, cursor validation and progress. Low-level window read checks reader/main token; caller also checks presentation/visibility before adoption | `WorkspaceLoadingTests`; `HistoryEdgeTests`; `TranscriptRevealTests` replaced-source/helper-boundary tests |
+| `WorkspaceSelection.selectSide`; `WorkspaceSides.showSide`, `loadSideDisplay` | Main workspace revision plus selected parent, pane intent and presentation; expected own selection/page transition is accounted for; stale completion never selects the Side tab | `SubagentReaderTests`: saved-side/file race, another-parent opening, side reopen and boundary reset; `SideTests`, `SideRelaunchTests`, `WorkspaceLoadingTests` draft/close races |
+| `SubagentFamily.openFamilySide`, `openNewFamilySide` | Uses existing side opening; deferred New Side checks pane/main selection/revision before and after await | `ConversationFamilyTests`: nested opening, root picker/menu, existing-side reuse, ephemeral draft; reader deferred New Side race |
+| `WorkspaceHistory.reloadHistory`, `loadHistoryPage` | Reader/main token, presentation and read identity; recheck source and accounting results; only owning boundary task clears flags; retired reload becomes dormant | Reader main round-trip cases, unchanged-child paging cancellation; `HistoryEdgeTests`, `WorkspaceLoadingTests` |
+| `WorkspaceHistory.fillLiveGap`, `reacquireHistoryPositions`, `historyViewportReady` | Captured intent across waits/retries and publication; viewport callback uses actual visibility; metadata-only position reads also retain presentation/lineage | `HistoryExtentTests` bounded retries/recovery/coalescing; reader page-round-trip and popped history tests; `HistoryEdgeTests` |
+| `TranscriptReveal.revealInTranscript`, `revealStartOfChat`, `readWindow` | Shared `TranscriptNavigationToken`, presentation, reveal serial and `transcriptShows`; explicit reveal renews intent, Find's own reveals do not | `TranscriptRevealTests` (10); reader Back/read, popped Find/Home on Reports, full 251-match `setQuery` test |
+| `TranscriptReveal.jumpToHistoryPosition`, `drawablePage` and delayed/coalesced retries | Reader/main token through every page/accounting await; retries and queued destinations cannot outlive the intent; actual transcript visibility | `HistoryExtentTests` (24); reader popped position read and `testRetiredPositionReadDoesNotRestartItsQueuedDestination` |
+| `WorkspaceContent.searchConversation`, `searchConversationSource`; `ConversationPaneBridges` / `TranscriptFindController` | Source pages capture reader/main token; query and match tasks additionally cancel their own old work; Find reveals share rather than renew the reader intent | `TranscriptFindTests` (11); reader actual `setQuery`/251 matches with pending second page and off-page Next |
+| `WorkspaceContent.revealConversationHit`, `revealMessage` | Hit publication checks token, actual visibility and presentation. Show in Chat checks current successful child opening; ordinary targets account for their own selection/page transition and retain optional origin through history/accounting | Reader main search-hit round trip, new parent superseding child, Back superseding visible-child reveal; `ReportMessageNavigationTests` (9) |
+| `SidebarSearch.revealSidebarSearchHit` / `SidebarSearchReveal`; `WorkspaceSelection.openFromSidebar` | Query/open identity and Task cancellation plus exact hosted token/visibility; ordinary path requires Chats. Delegated-task history lookup rechecks all of these before revealing | Reader real indexed child hit on Reports/Background/Chats; `SidebarSearchSidebarTests` (9), including superseded opens/query change/shutdown |
+| `Inspector/Session/SessionInspectorModel`: `showInChat` linked-message lookup, `reveal`, `showOriginatingTool` family lookup, `showSubagentParent`; `InspectorAgentCoordination` Source/delivery actions | Destination intent before lookup/queued dispatch, current Inspector request where applicable; origin token passed to parent chain; child open and final message use one opening | Reader Inspector version-read regression; `SubagentOpeningTests` standalone/family Inspector source and Parent-request routes; `SubagentInspectorTests`, `SubagentSteeringInspectorTests` |
+| `WorkspaceLaunchSelection.reopenRememberedSelection` | Existing launch selection generation; child restore goes through the same reader opening and visible-host predicate | `SubagentPanelTests` saved-tab and legacy child/Reports restore; `SideRelaunchTests` |
+| `WorkspaceContent.conversationPage`; `Inspector/ConversationContentView` search/copy/export | Read-only retained-source paging; the sheet's `PayloadTaskScope` owns result/copy/export publication. It does not focus or scroll. Show in Transcript uses the guarded reveal path above | Existing `ConversationSearchPagingTests` / payload scope tests; unchanged data-only path, not rerun in this round |
+
+The broad grep also includes background discovery/status/accounting, draft recovery,
+transactional fork/create/delete reads, Inspector archive refresh, resource/file/Git
+readers and message-detail/copy reads. Those are not conversation navigation:
+they retain their existing helper connection, transaction, Inspector/task-scope or
+file-tab ownership and do not adopt a transcript position. Their *navigation*
+entry points are the shared open/reveal paths listed above. No tool execution,
+provider call, permission, capture, vault, accounting or journal contract changed.
+
+### Final validation and gallery
+
+Final result: **229 distinct affected tests passed, zero failures, one intentional
+skip**, across 20 classes. Repeated green checks are not added to that count.
+The skip is the older 68-image panel gallery, whose opt-in environment variable
+was deliberately absent; the requested nested gallery passed and produced all
+four images. `review8-final-status.json` contains the per-test, per-class result
+and the exact supplying run.
+
+| Class | Passed |
+| --- | ---: |
+| ConversationFamilyTests | 16 |
+| HistoryEdgeTests | 16 |
+| HistoryExtentTests | 24 |
+| MessageVersionTranscriptTests | 8 |
+| ReportMessageNavigationTests | 9 |
+| SideRelaunchTests | 3 |
+| SideTests | 15 |
+| SidebarSearchSidebarTests | 9 |
+| SubagentInspectorTests | 6 |
+| SubagentOrganizationTests | 13 |
+| SubagentPanelTests | 8 |
+| SubagentSteeringInspectorTests | 5 |
+| TranscriptFindTests | 11 |
+| TranscriptRevealTests | 10 |
+| WorkspaceConcurrencyTests | 8 |
+| WorkspaceLoadingTests | 12 |
+| SubagentReaderTests (serial) | 36 |
+| SubagentOpeningTests (serial, generated loopback helper) | 12 |
+| SubagentNavigationTests (serial) | 7 |
+| SubagentPanelGalleryTests (serial) | 1 |
+
+Evidence: `review8-prefinal-parallel-{summary,tests}.json` and
+`review8-final-{reader,family,reveal,opening,navigation,gallery}-{summary,tests}.json`,
+with their `.log` files. The family and reader results are the final reruns after
+all boundary and destination-ownership changes. No new layout change followed the
+gallery run.
+
+Gallery directory: `gallery-review8-nested/`, manifest `manifest.txt`:
+
+- `nested-light-1240x800.png`
+- `nested-dark-1240x800.png`
+- `nested-light-920x600.png`
+- `nested-dark-920x600.png`
+
+All four were opened and visually inspected. They show three saved side/fork
+levels, agents under their actual owners, root agents, one running indicator per
+place, aligned accent New Side, all six rows and the complete footer without
+scrolling or window-edge clipping. Native assertions also check indentation,
+visibility and window containment. Navigation/key/VoiceOver regressions cover the
+same row implementation.
+
+Only generated fixtures, isolated preferences/vaults and the synthetic/loopback
+helper were used. No installed app, real preferences, Keychain or paid-provider
+calls. No helper-package, model-facing, journal, accounting, webhook or permission
+changes. The commit/push target is `dev/a128-sub-display` only.
+Remaining work is the lead's independent review and integration; no known requested
+fix remains open in this stream.

@@ -29,11 +29,15 @@ VoiceOver labels provide access. The parent sidebar row has one leading spinner 
 a passive “N working” badge (or “N queued” when only queued work remains); its tooltip
 and VoiceOver spell out working sides and running/queued/stopping sub-agents.
 
-A saved side's delegation family stays its own: its agents appear in a separate
-“Sub-agents in ‹side title›” group in the main picker. Numbers, Stop authority and
-family Inspector targets retain that side as owner. Opening such a child keeps
-the main chat in place; embedded Back opens/focuses its actual owning side.
-A popped-out child shows its own delegation family and siblings.
+The main picker includes every saved descendant as a depth-first tree: sides,
+reply forks and their sub-agents, with 14 points of indentation per parent. Each
+row stays at most two lines; archived branches remain available and are labelled
+Archived. A saved side's delegation family stays its own: numbers and Stop
+requests retain that actual owner. The main column and popped-out child picker
+resolve the complete original family; the current child remains highlighted.
+Opening a nested side uses its existing pane beside its immediate parent, without
+rewriting ancestry, and that main column still offers the complete family tree.
+Search retains all saved descendants and names their immediate parent.
 
 Sides keep their existing pane, draft and persistence paths. New Side reuses an
 unsent draft; no draft, chat, intent or journal is persisted until its first send.
@@ -51,25 +55,40 @@ Back to Parent and later tab choices win. Visibility follows the host’s actual
 availability. Closing readers applies the existing eight-display eviction policy,
 protecting running sessions and open tabs. Cold readers do not start a helper.
 
-Each hosted reader owns one navigation token, retained when its tab moves between
-the pane and windows. Every awaited open, reveal and history read checks that token;
-main-window selection and page revisions do not govern independent child readers.
-A newer external destination retires an unfinished child opening, while Back, hide
-and close retire that reader's pending navigation. A Find query's own match reveals
-share its reader token so pending search pages can finish; the Find controller
-still cancels obsolete queries and match reads.
-Source-link coordination lookups also check the originating reader's token before
-navigating or reporting an error, so embedded Back retires them. Moving a loaded
-reader preserves its page; reopening after a real hide revalidates history.
-Main, side and child presentations
-reset both paging boundaries together while retaining reusable cursors; canceled
-visits retire their task and can be reopened. Closing/reopening or moving a tab
-cannot adopt a former reader's page. Native responder transitions in both window
-types update conversation command focus by walking only the responder's ancestors.
-Visibility callbacks run after host state changes and respect the no-side fallback;
-deferred attachment never undoes Back or a later focus choice.
-Show in Chat requires a current successful child opening before revealing a message;
-Back can supersede it even while leaving that reader visible beside the parent.
+### Reader navigation ownership
+
+A hosted child has one UUID navigation token, retained across pane/window moves.
+Open/header validation, attachment, reload, history edges/position reads, versions,
+Find pages and reveals capture it before awaiting and recheck before publishing.
+Back, a new explicit open/reveal/Home/version/Latest, a real hide or close retires
+it. An unrelated main selection or page does not retire a visible child window.
+Find's own match reveals share the query's reader intent; its controller separately
+cancels old queries and match requests. Only an unfinished external child opening
+is superseded by a newer external destination before it has attached.
+
+Main/ordinary-side reads use the workspace navigation revision, plus presentation
+identity and the selection/pane intent while opening. Selection, a page change,
+or a new explicit reveal retires that main intent. A Source action carries its
+originating child token through the destination's version lookup, anchor read,
+version pages and final reveal, together with the destination's token. Embedded
+Back therefore cancels the whole chain. Intentionally opening the owning ordinary
+side replaces an embedded child and transfers ownership to the main pane before
+awaiting its load; a popped-out origin remains independent. Neither a chain's
+internal reveal nor its version switch creates a fresh intent.
+
+`transcriptShows` decides reveal visibility: Chats with the selected main or the
+actual shown Side, or `subagentTabIsShown` for a hosted reader. The latter uses
+`shownTab(sideAvailable:)`; only embedded readers require Chats. Sidebar hits also
+retain the search/open identity across awaits. Presentation loads may fill their
+still-owned mounted slot before viewport readiness; background metadata and
+standalone Inspector/search-copy reads use their own task scopes and do not scroll
+or focus a transcript. Pure storage/helper readers return data; their UI callers
+own and validate navigation. Canceled reads clear only their own loading flags,
+and reopening resets both boundaries while retaining reusable cursors.
+
+Native responder transitions update command focus. Deferred attachment and read
+completion never refocus a reader. Show in Chat requires a successful, current
+opening even if Back left the embedded reader visible.
 
 Conversation menu validation and dispatch resolve the active reader of the key
 child window, including while the main window shows Reports. Embedded readers use

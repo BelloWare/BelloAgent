@@ -3,6 +3,60 @@ import XCTest
 @testable import PiApp
 
 final class ConversationFamilyTests: XCTestCase {
+    @MainActor func testNestedSavedForksAndTheirAgentsStayReachableInTreeOrderAndSearch() throws {
+        let model = try fixture()
+        var fork = try XCTUnwrap(model.record("chat-side")); fork.id = "nested-fork"; fork.title = "Nested review"; fork.parentSessionID = "chat-side"
+        var deep = fork; deep.id = "deep-fork"; deep.title = "Deep review"; deep.parentSessionID = fork.id
+        model.chats.append(contentsOf: [fork, deep])
+        let original = try XCTUnwrap(model.record("chat-child"))
+        for owner in ["chat-side", fork.id, deep.id] {
+            var child = original; child.id = owner + "-agent"; child.parentSessionID = owner
+            child.delegation?.childSessionID = child.id; child.delegation?.budgetOwnerSessionID = owner; child.delegation?.call.parentSessionID = owner
+            child.subagentNumber = 1; child.title = "Review " + owner
+            model.chats.append(child)
+        }
+        let family = model.conversationFamily("chat-parent")
+        XCTAssertEqual(family.sides.map(\.id), ["chat-side", fork.id, deep.id])
+        XCTAssertEqual(family.agentCount, 4)
+        let picker = AgentFamilyPopoverView(model: model, sessionID: "chat-parent", close: {}, ownerWindow: nil)
+        let rows = ConversationPaneTests.views(FamilyPickerRow.self, in: picker).filter { $0.accessibilityIdentifier().hasPrefix("open-") }
+        XCTAssertEqual(rows.map { $0.accessibilityIdentifier() }, ["open-side-chat-side", "open-side-nested-fork", "open-side-deep-fork",
+            "open-agent-deep-fork-agent", "open-agent-nested-fork-agent", "open-agent-chat-side-agent", "open-agent-chat-child"])
+        XCTAssertEqual(rows.map(\.depth), [0, 1, 2, 3, 2, 1, 0])
+        XCTAssertEqual(rows.map(\.titleInset), [30, 44, 58, 72, 58, 44, 30])
+        XCTAssertTrue(rows[3].accessibilityLabel()?.contains("in Deep review") == true)
+        var totals = GatewayTotals(); totals.costUSD = 0.04; totals.costSamples = 1
+        model.publishChatStats(totals, sessionID: deep.id)
+        XCTAssertEqual(model.conversationFamily("chat-parent").sides.last?.spend, 0.04)
+        for flat in [false, true] {
+            model.setSidebarFlat(flat)
+            XCTAssertEqual(model.sidebarChatOrder, ["chat-parent"])
+            for chat in model.chats where chat.id != "chat-parent" {
+                XCTAssertTrue(SubagentOrganizationTests.contents(model, filter: chat.title).entries.map(\.id).contains("chat|" + chat.id), chat.id)
+            }
+        }
+        model.chats[model.chats.firstIndex { $0.id == fork.id }!].archivedAt = Date()
+        XCTAssertEqual(model.conversationFamily("chat-parent").sides.map(\.id), ["chat-side", fork.id, deep.id])
+        let leaf = try XCTUnwrap(model.record("deep-fork-agent"))
+        model.subagentSummaries[leaf.id] = .init(link: leaf.delegation!, description: leaf.title, model: "fixture", status: .running, revision: 1)
+        XCTAssertEqual(model.conversationFamily("chat-parent").activity.runningAgents, 1, "Activity invalidates every ancestor's cached family")
+        XCTAssertEqual(model.subagentFamily(deep.id).members.map(\.chat.id), [leaf.id], "Display grouping never reparents delegation authority")
+    }
+    @MainActor func testNestedForkOpensBesideItsActualParentWithTheRootFamilyStillAvailable() async throws {
+        let model = try fixture()
+        var fork = try XCTUnwrap(model.record("chat-side")); fork.id = "nested-fork"; fork.parentSessionID = "chat-side"; model.chats.append(fork)
+        model.historyWindowLoader = { _, _, _, _ in try ConversationHistoryPage(.object(["version": .number(2), "messages": .array([]), "incarnation": .string("fixture"), "lineage": .string("root"), "older": .null, "newer": .null])) }
+        await model.openFamilySide(fork.id)
+        XCTAssertEqual(model.selectedID, "chat-side"); XCTAssertEqual(model.focusedSessionID, fork.id)
+        XCTAssertEqual(model.sides["chat-side"]?.id, fork.id)
+        XCTAssertEqual(model.record(fork.id)?.parentSessionID, "chat-side")
+        let header = AgentFamilyHeaderView(); header.update(model: model, sessionID: "chat-side", enabled: true)
+        XCTAssertEqual(header.button.title, "2 sides · 1 agent")
+        var owners: [String] = []
+        let subscription = model.agentFamilyRequests.sink { owners.append($0) }; defer { subscription.cancel() }
+        model.showAgentFamily(); XCTAssertEqual(owners, ["chat-parent"])
+        XCTAssertEqual(model.selectionToRemember.shownSides?["chat-side"], fork.id)
+    }
     @MainActor private func fixture() throws -> WorkspaceModel {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try SubagentOrganizationTests.fixture(root)

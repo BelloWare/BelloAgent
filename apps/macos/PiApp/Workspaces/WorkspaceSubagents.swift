@@ -3,7 +3,7 @@ import Foundation
 extension WorkspaceModel {
     /// Cards keep original ownership even when copied into a fork. Navigation
     /// validates the reciprocal child header inside this project's directory.
-    @discardableResult func openSubagent(_ target: SubagentTarget) async -> Bool {
+    @discardableResult func openSubagent(_ target: SubagentTarget, sourceMessage: String? = nil, sourceToolCall: String? = nil) async -> Bool {
         let opening = beginSubagentOpening(target.sessionID)
         defer { finishSubagentOpening(opening) }
         func currentOpening() -> Bool {
@@ -24,7 +24,7 @@ extension WorkspaceModel {
             let message = try await history.subagentTurnMessage(path: path, childID: target.sessionID, turn: target.turn, messageID: target.messageID)
             guard currentOpening(),
                   subagentTab(target.sessionID) === tab, subagentTabIsShown(target.sessionID), focusedSessionID == target.sessionID else { return false }
-            if let message { _ = await revealInTranscript(sessionID: target.sessionID, messageID: message, navigation: opening) }
+            if let message = sourceMessage ?? message { _ = await revealInTranscript(sessionID: target.sessionID, messageID: message, toolCallID: sourceToolCall, navigation: opening) }
             return currentOpening() && subagentTabIsShown(target.sessionID)
         } catch is CancellationError { }
         catch { if currentOpening() { self.error = error.localizedDescription } }
@@ -75,6 +75,7 @@ extension WorkspaceModel {
         guard let link = record(childID)?.delegation else { return }
         if pendingSubagentOpening?.reader.key == childID { retirePendingSubagentOpening() }
         else { subagentTab(childID)?.renewNavigation() }
+        let origin = subagentTab(childID)?.navigation
         if subagentTab(childID)?.container?.isPane == true {
             if selectedID == link.budgetOwnerSessionID { focusSubagentParent(link.budgetOwnerSessionID); return }
             if let owner = record(link.budgetOwnerSessionID), sideFamilyOwner(owner) == selectedID {
@@ -82,60 +83,76 @@ extension WorkspaceModel {
                 return
             }
         }
-        if await openSubagentParent(link, returningTo: subagentReturnTargets[childID]) { focusSubagentParent(link.budgetOwnerSessionID) }
+        if await openSubagentParent(link, returningTo: subagentReturnTargets[childID], origin: origin) { focusSubagentParent(link.budgetOwnerSessionID) }
     }
 
-    @discardableResult func openSubagentParent(_ link: SubagentLink, returningTo target: SubagentTarget? = nil) async -> Bool {
+    @discardableResult func openSubagentParent(_ link: SubagentLink, returningTo target: SubagentTarget? = nil, origin: HostedReaderToken? = nil) async -> Bool {
+        guard !Task.isCancelled, origin?.isCurrent != false else { return false }
         let childID = link.childSessionID
         guard link.valid, let parent = record(link.budgetOwnerSessionID),
               record(childID).map({ $0.workspaceID == parent.workspaceID && $0.delegation == link }) ?? true else {
             displays[childID]?.notice = "The parent chat is unavailable. This saved sub-agent remains viewable."; return false
         }
         let sideOwner = sideFamilyOwner(parent), mainID = sideOwner ?? parent.id
-        let selection = selectionRevision
+        // Showing the owning ordinary side intentionally replaces an embedded
+        // child. At that synchronous navigation boundary ownership transfers to
+        // the main pane; an external child keeps its independent origin token.
+        let origin = sideOwner != nil && origin?.reader.container?.isPane == true ? nil : origin
+        // Retire the destination's previous reveal before any selection or
+        // version lookup can suspend. Internal steps below share this intent.
+        _ = transcriptNavigation(parent.id, advancing: true)
+        let selection = selectionRevision, revision = messageNavigationRevision + (page == .chats ? 0 : 1)
         let changesMain = selectedID != mainID
         let paneIntent = tabs.navigationRevision + (sideOwner == nil ? 0 : 1)
         if side(parent.id) != nil { await selectSide(parent.id, revealInSidebar: false) }
         else if sideOwner != nil { await showSide(parent.id, revealInSidebar: false) }
         else { await select(parent.id, revealInSidebar: false, reopensSide: false, focusesComposer: false) }
         func current() -> Bool {
-            !Task.isCancelled && (changesMain ? selectionRevision == selection + 1 : (selection...selection + 1).contains(selectionRevision)) && tabs.navigationRevision == paneIntent && focusedSessionID == parent.id && subagentParentIsShown(parent.id)
+            !Task.isCancelled && origin?.isCurrent != false && messageNavigationRevision == revision + (changesMain ? 1 : 0) && (changesMain ? selectionRevision == selection + 1 : (selection...selection + 1).contains(selectionRevision)) && tabs.navigationRevision == paneIntent && focusedSessionID == parent.id && subagentParentIsShown(parent.id)
         }
         guard current() else { return false }
         var destination = link
         if let target, target.matchesOrigin(link) {
             destination.call.assistantMessageID = target.assistantID; destination.call.toolCallID = target.toolCallID
         }
-        await revealSubagentCall(destination)
+        var intent = transcriptNavigation(parent.id)
+        intent.origin = origin
+        await revealSubagentCall(destination, intent: intent)
         return current()
     }
 
-    func revealSubagentCall(_ link: SubagentLink) async {
+    func revealSubagentCall(_ link: SubagentLink, intent: TranscriptNavigationToken? = nil) async {
         guard let parent = record(link.budgetOwnerSessionID), subagentParentIsShown(parent.id), let view = displays[parent.id] else { return }
-        messageNavigationRevision += 1
-        let navigation = messageNavigationRevision
+        let intent = intent ?? transcriptNavigation(parent.id, advancing: true)
+        func current() -> Bool { !Task.isCancelled && intent.isCurrent(in: self) && displays[parent.id] === view && subagentParentIsShown(parent.id) }
+        guard current() else { return }
         let messageID = link.call.assistantMessageID
         if !view.presentedMessages.contains(where: { $0.id == messageID }) {
             do {
-                let host = try await open(parent)
-                let group = try await host.request("session.versions", sessionID: parent.id, params: ["containing":.string(messageID)]).object ?? [:]
-                guard !Task.isCancelled, navigation == messageNavigationRevision, subagentParentIsShown(parent.id) else { return }
+                let group: [String: WireValue]
+                if let subagentVersionsLoader { group = try await subagentVersionsLoader(parent.id, messageID) }
+                else {
+                    let host = try await open(parent)
+                    guard current() else { return }
+                    group = try await host.request("session.versions", sessionID: parent.id, params: ["containing":.string(messageID)]).object ?? [:]
+                }
+                guard current() else { return }
                 let ids = group["versions"]?.array?.compactMap { $0.object?["messageId"]?.string } ?? []
                 if let index = group["selected"]?.nonnegativeInteger, index > 0, index <= ids.count, let anchor = group["anchor"]?.string {
-                    latestVersion(sessionID: parent.id)
-                    guard await revealInTranscript(sessionID: parent.id, messageID: anchor),
-                          !Task.isCancelled, navigation == messageNavigationRevision, subagentParentIsShown(parent.id) else { return }
-                    showVersion(sessionID: parent.id, latestID: anchor, index: index, count: ids.count, ids: ids, live: group["current"]?.nonnegativeInteger ?? 0, around: messageID)
+                    latestVersion(sessionID: parent.id, intent: intent)
+                    guard await revealInTranscript(sessionID: parent.id, messageID: anchor, intent: intent),
+                          current() else { return }
+                    showVersion(sessionID: parent.id, latestID: anchor, index: index, count: ids.count, ids: ids, live: group["current"]?.nonnegativeInteger ?? 0, around: messageID, intent: intent)
                     await view.versionLoad?.value
-                } else { latestVersion(sessionID: parent.id) }
-            } catch { view.notice = "The issuing version could not be read: " + error.localizedDescription }
+                } else { latestVersion(sessionID: parent.id, intent: intent) }
+            } catch { if current() { view.notice = "The issuing version could not be read: " + error.localizedDescription } }
         }
-        guard !Task.isCancelled, navigation == messageNavigationRevision, subagentParentIsShown(parent.id) else { return }
-        _ = await revealInTranscript(sessionID: parent.id, messageID: messageID, toolCallID: link.call.toolCallID)
+        guard current() else { return }
+        _ = await revealInTranscript(sessionID: parent.id, messageID: messageID, toolCallID: link.call.toolCallID, intent: intent)
     }
 
     private func subagentParentIsShown(_ id: String) -> Bool {
-        page == .chats && (selectedID == id || sides[selectedID ?? ""]?.id == id)
+        transcriptShows(id)
     }
 
     /// A changed family revision pages journal-backed summaries, including

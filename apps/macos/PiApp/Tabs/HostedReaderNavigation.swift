@@ -14,8 +14,12 @@ import AppKit
 @MainActor struct TranscriptNavigationToken {
     var reader: HostedReaderToken?
     var workspaceRevision: Int
+    /// A Source action can read a different transcript while its originating
+    /// child remains visible. Back in that child retires the entire chain.
+    var origin: HostedReaderToken? = nil
     func isCurrent(in model: WorkspaceModel) -> Bool {
-        reader.map { $0.isCurrent && model.subagentTab($0.reader.key) === $0.reader }
+        guard origin?.isCurrent != false else { return false }
+        return reader.map { $0.isCurrent && model.subagentTab($0.reader.key) === $0.reader }
             ?? (workspaceRevision == model.messageNavigationRevision)
     }
 }
@@ -23,6 +27,7 @@ import AppKit
 extension WorkspaceModel {
     func transcriptNavigation(_ id: String, advancing: Bool = false) -> TranscriptNavigationToken {
         let tab = subagentTab(id)
+        if advancing, tab == nil { retirePendingSubagentOpening(); messageNavigationRevision += 1 }
         return .init(reader: advancing ? tab?.renewNavigation() : tab?.navigation, workspaceRevision: messageNavigationRevision)
     }
 

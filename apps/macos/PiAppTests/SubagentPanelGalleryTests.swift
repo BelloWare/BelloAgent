@@ -4,6 +4,57 @@ import XCTest
 @testable import PiApp
 
 final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testNestedFamilyPickerGallery() async throws {
+        guard let path = testEnvironment("PI_APP_SUB_NESTED_GALLERY") else { throw XCTSkip("Set PI_APP_SUB_NESTED_GALLERY") }
+        let folder = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let fixture = try SubagentGalleryFixture(root: folder.appendingPathComponent("fixture-" + UUID().uuidString))
+        let model = fixture.model, window = fixture.window
+        fixture.show("completed"); fixture.parent.runState = .idle
+        fixture.parent.messages = [.init(id: "question", role: "user", text: "Review the parser and keep follow-up branches for recovery and Unicode checks."),
+            .init(id: "answer", role: "assistant", text: "The review notes and their follow-up branches are ready. Open Sides and Agents to browse the saved review tree and the checks delegated within each branch.")]
+        model.chats.removeAll { $0.isSubagent && $0.id != "child-0" }
+        model.subagentSummaries = model.subagentSummaries.filter { $0.key == "child-0" }
+        let profile = fixture.records[0].profileID
+        for (id, parent, title) in [("review", fixture.parent.id, "Review notes"), ("fork", "review", "Parser recovery follow-up"), ("deep", "fork", "Verify malformed Unicode cases")] {
+            let chat = ChatRecord(id: id, workspaceID: "pane-project", title: title, profileID: profile, parentSessionID: parent)
+            model.chats.append(chat)
+            let display = SessionDisplay(id: id); display.historyState = .ready; display.draftReady = true
+            var totals = GatewayTotals(); totals.costSamples = 1; totals.costUSD = 0.04
+            display.footer.gateway = totals; model.displays[id] = display
+        }
+        let original = try XCTUnwrap(model.record("child-0"))
+        for (owner, title, status) in [("fork", "Review recovery paths", SubagentStatus.completed), ("deep", "Check escaped scalars", .running)] {
+            var child = original; child.id = owner + "-agent"; child.title = title; child.parentSessionID = owner; child.subagentNumber = 1
+            child.delegation?.childSessionID = child.id; child.delegation?.budgetOwnerSessionID = owner; child.delegation?.call.parentSessionID = owner
+            model.chats.append(child)
+            model.subagentSummaries[child.id] = .init(link: child.delegation!, description: title, model: "fixture-model", status: status, revision: 1)
+        }
+        let root = WorkspaceRootView(model: model); window.contentView = root
+        let previousMotion = PiKit.Motion.reducedOverride; PiKit.Motion.reducedOverride = true
+        defer { PiKit.Motion.reducedOverride = previousMotion; fixture.close() }
+        addTeardownBlock { @MainActor in model.shutdown(); try? await model.traces.close(); await model.store?.close() }
+        var files: [String] = []
+        for (appearance, theme) in [(NSAppearance.Name.aqua, "light"), (.darkAqua, "dark")] {
+            window.appearance = NSAppearance(named: appearance)
+            for size in [NSSize(width: 1240, height: 800), NSSize(width: 920, height: 600)] {
+                window.setContentSize(size); root.refresh(); await settle(window)
+                let header = try XCTUnwrap(root.conversation?.agentFamilyHeader)
+                XCTAssertEqual(header.button.title, "3 sides · 3 agents")
+                header.open(); await settle(window)
+                let content = try XCTUnwrap(header.popover.popover?.contentViewController?.view), popup = try XCTUnwrap(content.window)
+                let rows = ConversationPaneTests.views(FamilyPickerRow.self, in: content).filter { $0.accessibilityIdentifier().hasPrefix("open-") }
+                XCTAssertEqual(rows.map(\.depth), [0, 1, 2, 3, 2, 0])
+                XCTAssertGreaterThanOrEqual(popup.frame.minX, window.frame.minX); XCTAssertLessThanOrEqual(popup.frame.maxX, window.frame.maxX)
+                XCTAssertGreaterThanOrEqual(popup.frame.minY, window.frame.minY)
+                for row in rows { XCTAssertTrue(content.visibleRect.contains(row.convert(row.bounds, to: content)), row.primary) }
+                let file = "nested-\(theme)-\(Int(size.width))x\(Int(size.height)).png"
+                try capture([popup, window], to: folder.appendingPathComponent(file)); files.append(file)
+                header.popover.close()
+            }
+        }
+        try (files.joined(separator: "\n") + "\n").write(to: folder.appendingPathComponent("manifest.txt"), atomically: true, encoding: .utf8)
+    }
     @MainActor func testMainColumnFamilyAndChildTabGallery() async throws {
         guard let path = testEnvironment("PI_APP_SUB_PANEL_GALLERY") else { throw XCTSkip("Set PI_APP_SUB_PANEL_GALLERY") }
         let folder = URL(fileURLWithPath: path)
