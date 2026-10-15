@@ -392,3 +392,173 @@ The lead still owns independent branch review and integration with sub-cost.
 Shared edits are small/additive in WorkspaceModel (family caches/invalidation),
 conversation layout and tab navigation; keep the other stream's independent cost
 fields. No merge or push of `dev/next`; only `dev/a128-sub-display` is published.
+
+
+## Lead review round 2: reader lifecycle and compact picker
+
+Branch `dev/a128-sub-display`, based on `6593ba9451d30bf86bfb1a4619a432b535b0fbb2`.
+All artifacts below are under `/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`.
+Only generated journals, in-memory vaults, the loopback gateway and the isolated
+native test host were used. No installed-app launch, real preferences, Keychain,
+paid provider, helper/tool semantics or journal format changes.
+
+### Findings, ownership and lifecycle audit
+
+- A saved side's ordinary parent relationship had replaced its delegation owner.
+  `conversationFamily(side)` now retains that side's agents. The main picker adds
+  labelled side-owned delegation groups, each with its own Inspector target and
+  Stop authority. Opening their readers keeps the main column; Back shows the
+  actual owning side. Sidebar activity includes these groups without reassigning
+  the agent numbers or changing accounting ownership.
+- Child attachment checked the main selection revision after its header read.
+  Loads now validate the exact tab, display and presentation generation, alongside
+  the existing origin/path/workspace/helper-connection checks. Main selection,
+  visibility and pane/window placement are separate from the load's lifetime.
+- Presentation restart canceled page tasks without clearing their loading flags.
+  Main, side and child readers share a cursor-preserving boundary reset and owned
+  task cleanup. Unchanged journals remain reusable; canceled side reads reopen.
+  Closed readers cannot revive themselves or adopt a page into a new reader.
+- Side-opening completions selected the pane too late, and hide callbacks observed
+  the previous host state. Pane choices now occur at the request; later choices
+  invalidate pending openings. Host callbacks use actual side availability and
+  run after the state transition, retaining the no-side fallback.
+- Native focus could return to a visible child's reply without updating command
+  focus. Both workspace and tab windows reconcile responder changes through the
+  containing conversation pane. This walks ancestors only, never transcript rows.
+  Deferred attachment checks current focus intent before restoring a responder.
+- The audit additionally reproduced a deferred New Side selection overriding a
+  newer file tab, a canceled side remaining dormant on reopen, and delayed card
+  header validation reopening a child over a newer tab choice. Their regressions
+  fail before the fixes. Popped-out reader command availability is also independent
+  of the main window's Reports page; sheets and native responder checks still apply.
+
+The audit covers initial open, ready/hidden reopen, unchanged-journal paging,
+active-Side selection, no-side fallback, main selection during attachment, newer
+file/child choices during awaits, close/reopen during a read, eviction, pop-out and
+move back during a read, native responder transitions, Back, saved-side restoration
+and child-tab restoration. Pending side drafts retain their existing memory-only
+path and persistence tests.
+
+### Picker design and decisions
+
+Rows are custom Pi buttons with a title and one secondary line, opened by click
+or Return, with arrow navigation and separate accessible trailing Stop buttons.
+New Side uses the same title inset. Keyboard selection survives status updates by
+identity. Six side/agent rows plus New Side and the footer fit at 1240×800.
+
+Spend uses existing `CostLimit.dollars` / `MetricFormat.centsUSD`: two decimal
+places at a cent or above, meaningful sub-cent digits (up to six) and a less-than
+label below that precision. The usage caveat is in the tooltip rather than a
+repeated “Reported” prefix. Only existing per-session usage is read. Cost/footer/
+Inspector accounting code remains owned by sub-cost.
+
+Numbering stays `Sub-agent N · description` for full identities and `#N · description`
+for compact rows/tabs. Side-owned groups name their own parent so identical numbers
+in different delegation families remain distinguishable. No model-facing text,
+permission, tool, capture, vault or data boundary changed.
+
+### Failing-first and mutation evidence
+
+- `review2-red-reader-corrected.log`: four reported reader regressions fail (paging
+  flags, stale side completion, hidden-child focus and responder focus). The first
+  draft of the journal fixture needed its generated directory created; the corrected
+  run has no unexpected failures.
+- `review2-red-family.log`: side-owned membership and compact/money assertions fail.
+- `review2-red-opening-corrected.log`: a real loopback child fails attachment after
+  an unrelated main selection. The fixture holds the history actor only after its
+  parent is selected. The final assertion distinguishes an unfinished `.loading`
+  read from `.preparing`, which already has its page and awaits the viewport.
+- `review2-audit-red-reader.log`: the deferred New Side and canceled-side reopen
+  regressions fail; the other lifecycle checks pass.
+- `review2-audit-red-opening.log`: delayed card validation overrides the newer tab.
+- `review2-mutation-opening.log`: weakening the real pane-intent equality guard to
+  `>=` makes the card-opening regression fail all three stale-navigation assertions.
+  The original guard was restored; the full opening class then passes.
+- The additional report-page command check is isolated from global app activation:
+  an earlier native-key precondition did not become true in this shared test host.
+  The final check tests reader command scope, while existing responder/sheet and
+  native keyboard tests verify delivery. Those exploratory key-window failures are
+  retained separately and are not counted as product-regression evidence.
+
+### Validation and galleries
+
+The final affected selections pass **358 tests across 26 classes**, with no skips
+or failures, excluding repeat runs. `review2-affected-class-results.json` records
+each class's count and final log. The 17-class parallel selection passes 202 tests;
+standalone serial classes pass 156:
+
+| Standalone serial class | Passed |
+| --- | ---: |
+| SubagentOpeningTests | 11 |
+| SubagentReaderTests | 19 |
+| SubagentNavigationTests | 7 |
+| ConversationPaneTests | 81 |
+| WindowPresentationTests | 9 |
+| WindowLifecycleTests | 3 |
+| WorkspaceRootTests | 7 |
+| ShellParityTests | 15 |
+| SidebarNativeBindingTests | 4 |
+
+Reader and navigation final logs are `review2-final-<Class>.log`; other serial logs
+are `review2-serial-<Class>.log`. The affected parallel log and exact arguments are
+`review2-affected-parallel.log` and `review2-affected-arguments.json`.
+ConversationFamilyTests was rerun alone after extending sub-cent/side-owner checks;
+its 13 passing tests are counted once. A legacy WorkspaceRootTests selector for the
+removed Open button was updated to the clickable Pi row; its final class passes.
+
+`review2-audit-red-reader-command-scope.log` records the report-page scope regression;
+`review2-final-SubagentReaderTests.log` verifies the fix, including actual popped-out
+Find/Next/Previous/Stop commands on Reports, sheet rejection and embedded-reader
+rejection. No product code changed after the final reader/navigation selections.
+
+The standalone galleries produce **108 captures**, inspected in ten contact sheets
+and full-size picker images:
+
+- `gallery-review2-final/`: 68 captures in light/dark at 920×600 and 1240×800,
+  including compact rows, keyboard focus, closed/open/running/done pickers,
+  embedded/pop-out children, ordinary sides, new drafts, long titles and side-owned
+  delegation groups/readers. Native assertions check six visible rows at 1240×800,
+  all popup bounds, main-column placement and keyboard/accessibility actions.
+- `gallery-display-review2/`: 40 captures of collapsed/expanded turns, numbered
+  cards, typed parent/child messages, reports and family Inspector, including narrow
+  640×600 panes. Existing collapsed-turn and numbering behavior remains intact.
+
+Each folder has `manifest.txt` and `review2-contact-*.jpg`. Logs are
+`review2-serial-SubagentPanelGalleryTests.log` and
+`review2-serial-SubagentDisplayGalleryTests.log`. Galleries use the same conversation
+window subclass as production. The subsequent command-availability change affects
+Reports-page keyboard routing only, with no gallery appearance change.
+Interactive VoiceOver operation is not claimed; native labels, roles/actions and
+keyboard routing are covered. Swift helper packages were not changed.
+
+### One full native parallel lane and isolated follow-up
+
+The one full native parallel lane for review round 2 used four workers and
+`scripts/test-lanes.py parallel` exclusions. It finished with **2,469 passed,
+one failed, 37 skipped**, exit status 65, in 553.1 seconds including setup.
+Exact arguments, console output, native summary and status are saved as
+`review2-parallel-arguments.json`, `review2-full-parallel.log`,
+`review2-full-parallel-summary.json` and `review2-full-parallel-status.txt`.
+
+`AppShellPerformanceTests.testMemoryAfterVisitingFiftyChatsAndAnHourOfStreaming`
+failed because `chat-12` was still retained after the fifty-chat visit. The total
+retained-page limit passed; the stricter intermediate-chat release assertion did
+not. Its native detail and activity exports are
+`review2-full-memory-test-details.json` and `review2-full-memory-activities.json`.
+The cause remains unconfirmed; this run is not reported as a passing full lane.
+
+The entire unchanged `AppShellPerformanceTests` class then passed **11/11** alone,
+with no skips, in 14.7 test seconds (19.9 seconds including setup). Its memory
+check retained exactly eight pages for eight displays, with no retained accounting
+rows and zero settlement milliseconds. The log, status and native summary are
+`review2-isolated-AppShellPerformanceTests.log`,
+`review2-isolated-AppShellPerformanceTests-status.txt` and
+`review2-isolated-AppShellPerformanceTests-summary.json`. No assertion or timing
+limit was changed, and the full lane was not repeated. These eleven follow-up
+tests are separate from the 358 affected tests above. No product code changed
+after either final affected validation or the full lane.
+
+The lead retains independent review and integration with sub-cost, plus follow-up
+on the unconfirmed parallel retention failure. Only `dev/a128-sub-display` is
+published; `dev/next` is not merged or pushed. No cost accounting, webhook, helper,
+tool-result text, journal format or side-draft persistence contract changed.

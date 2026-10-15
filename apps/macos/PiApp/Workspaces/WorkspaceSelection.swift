@@ -82,16 +82,7 @@ extension WorkspaceModel {
         // and they would change under the reader when the finished page came.
         // The chat opens as a chat opened for the first time does.
         if view.hasPresentedRows, view.heldRowsOutlived { view.messages = []; view.presentation.identity = nil }
-        let cached = view.hasPresentedRows
-        // What the rows shown were read under, should they still be the chat's rows.
-        let heldIdentity = view.presentation.identity, heldTurnInput = view.presentation.partialTurnInput
-        view.presentation.begin(); view.presentationGeneration = view.presentation.generation
-        // Reads under way end with the page they were for; the boundaries
-        // themselves stay until a page read in replaces them, since the rows
-        // shown may turn out to be the chat's rows still.
-        view.historyState = .loading; view.refreshingCachedRows = cached
-        view.olderPage = .init(cursor: view.olderPage.cursor); view.newerPage = .init(cursor: view.newerPage.cursor)
-        view.historyProgress = nil
+        let held = view.beginHistoryPresentation()
         view.contextSelectionReady = false; view.browsingHistory = true
         view.draftReady = false
         view.used = Date(); displays[id] = view
@@ -111,7 +102,7 @@ extension WorkspaceModel {
         view.publishTranscript()
         clearFailureMark(sessionID: id)
         if item.workspaceID != WorkspaceRecord.scratchID { selectedWorkspaceID = item.workspaceID }
-        return (view, selection, HeldRows(cached: cached, identity: heldIdentity, partialTurnInput: heldTurnInput))
+        return (view, selection, held)
     }
     /// The side shown beside this chat comes back with it: the one open in
     /// this launch, or else the saved side it showed when the app last
@@ -119,9 +110,7 @@ extension WorkspaceModel {
     private func restoreShownSide(of id: String, selection: Int, reopensSide: Bool) {
         var shownSide: (child: ChatRecord, view: SessionDisplay)?
         if let info = sides[id], let sideView = displays[info.id], let child = record(info.id) {
-            let sideCached = sideView.hasPresentedRows
-            sideView.presentation.begin(); sideView.presentationGeneration = sideView.presentation.generation
-            sideView.historyProgress = nil; sideView.historyState = .loading; sideView.refreshingCachedRows = sideCached; sideView.browsingHistory = true
+            sideView.beginHistoryPresentation(); sideView.browsingHistory = true
             sideView.draftReady = info.pending
             sideView.publishTranscript()
             shownSide = (child, sideView)
@@ -160,15 +149,15 @@ extension WorkspaceModel {
     /// it: the rows it held when they are still its newest, else the page read.
     /// It stops wherever the reader has moved on.
     func loadSelectedChat(_ id: String, item: ChatRecord, into view: SessionDisplay, selection: Int,
-                                  generation: UUID, heldRows: HeldRows, focusesComposer: Bool, inTab: Bool = false) async {
+                                  generation: UUID, heldRows: HeldRows, focusesComposer: Bool, tab: SubagentTab? = nil) async {
         // However this ends, nothing is reading the chat any more.
-        defer { if view.presentationGeneration == generation { view.presentation.navigation = nil } }
+        defer { view.finishHistoryPresentation(generation) }
         @MainActor func current() -> Bool {
-            !Task.isCancelled && (inTab ? self.subagentTab(id) != nil : self.selectionRevision == selection && self.selectedID == id) &&
+            !Task.isCancelled && (tab.map { self.subagentTab(id) === $0 } ?? (self.selectionRevision == selection && self.selectedID == id)) &&
                 self.displays[id] === view && view.presentationGeneration == generation
         }
         do {
-            try await attachManagedSubagent(item)
+            try await attachManagedSubagent(item, current: current)
             guard current() else { return }
             guard try await reconcileSubmissionDraft(item, view: view, current: current) else { return }
             let owner = item.delegation.flatMap { record($0.budgetOwnerSessionID) } ?? item
@@ -266,12 +255,19 @@ extension WorkspaceModel {
             return
         }
         if revealInSidebar { quietSidebarReveal = [] }
+        tabs.showSide()
+        let paneIntent = tabs.navigationRevision, selection = selectionRevision, changesParent = selectedID != info.parentID
         if selectedID != info.parentID { await passingThrough(info.parentID) { await select(info.parentID, revealInSidebar: revealInSidebar, focusesComposer: false) } }
-        guard selectedID == info.parentID, side(id) != nil else { return }
+        guard !Task.isCancelled, tabs.navigationRevision == paneIntent, selectionRevision == selection + (changesParent ? 1 : 0), selectedID == info.parentID, side(id) != nil else { return }
         page = .chats; focusedSessionID = id
         if revealInSidebar, let child = record(id) { revealProjectChat(child) }
         focusComposer(id)
         scheduleAutomaticContext(id)
+        if let view = displays[id], let child = record(id), !info.pending,
+           view.historyState == .dormant || (view.historyState == .loading && view.presentation.navigation == nil) {
+            view.beginHistoryPresentation(); view.browsingHistory = true
+            await loadSideDisplay(child, view: view)
+        }
     }
 
     /// A row the reader clicked in the sidebar. The chat opens as it would

@@ -124,7 +124,7 @@ extension UIScreenshotTests {
             model.displays[session.id] = session
         }
         content = SubagentGalleryContent(model: model)
-        window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 920, height: 600), styleMask: [.titled, .resizable, .closable], backing: .buffered, defer: false)
+        window = ConversationWindow(contentRect: CGRect(x: 0, y: 0, width: 920, height: 600), styleMask: [.titled, .resizable, .closable], backing: .buffered, defer: false)
         window.title = "Sub-agent gallery — generated fixture"; window.isReleasedWhenClosed = false
         window.contentView = content; window.center(); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
         show("running-collapsed")

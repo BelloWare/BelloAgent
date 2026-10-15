@@ -342,12 +342,15 @@ extension WorkspaceModel {
     func showSide(_ id: String, revealInSidebar: Bool = true) async {
         guard !installPreparing, let child = chats.first(where: { $0.id == id }), !child.isSubagent, let parentID = child.parentSessionID, record(parentID) != nil, !child.imported else { return }
         if let shown = sides[parentID], shown.id == id { await selectSide(id, revealInSidebar: revealInSidebar); return }
+        tabs.showSide()
+        let paneIntent = tabs.navigationRevision, selection = selectionRevision, changesParent = selectedID != parentID
         if let shown = sides[parentID], shown.pending, !(await discardPendingSide(shown)) { return }
+        guard !Task.isCancelled, tabs.navigationRevision == paneIntent, selectionRevision == selection else { return }
         if let shown = sides[parentID], !shown.kept || shown.keeping { error = "Wait for the current side to finish opening before switching."; return }
         if revealInSidebar { quietSidebarReveal = [] }
         // This side is the one asked for, not the one the parent last showed.
         if selectedID != parentID { await passingThrough(parentID) { await select(parentID, revealInSidebar: revealInSidebar, reopensSide: false, focusesComposer: false) } }
-        guard selectedID == parentID else { return }
+        guard !Task.isCancelled, tabs.navigationRevision == paneIntent, selectionRevision == selection + (changesParent ? 1 : 0), selectedID == parentID else { return }
         let view = mountSide(child, beside: parentID)
         page = .chats; focusedSessionID = id
         if revealInSidebar { revealProjectChat(child) }
@@ -359,9 +362,7 @@ extension WorkspaceModel {
         if let previous = sides[parentID] { displays[previous.id]?.presentation.cancel() }
         let view = displays[child.id] ?? SessionDisplay(id: child.id); view.used = Date(); displays[child.id] = view
         adoptContextReading(view, item: child)
-        let cached = view.hasPresentedRows
-        view.presentation.begin(); view.presentationGeneration = view.presentation.generation
-        view.historyState = .loading; view.refreshingCachedRows = cached; view.draftReady = false
+        view.beginHistoryPresentation(); view.draftReady = false
         view.browsingHistory = true; view.publishTranscript()
         var info = SideRecord(id: child.id, parentID: parentID, workspaceID: child.workspaceID, profileID: child.profileID, title: child.title, kept: true, model: child.model, thinkingLevel: child.thinkingLevel, contextWindow: child.contextWindow, maxOutputTokens: child.maxOutputTokens, modelOutputLimit: child.modelOutputLimit, outputBudgetVersion: child.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: child)
@@ -375,6 +376,7 @@ extension WorkspaceModel {
         let id = child.id, generation = view.presentationGeneration
         let task = Task { [weak self, weak view] in
             guard let self, let view else { return }
+            defer { view.finishHistoryPresentation(generation) }
             @MainActor func current() -> Bool { !Task.isCancelled && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentationGeneration == generation }
             do {
                 let oldDraft = view.savedDraft

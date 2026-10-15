@@ -59,11 +59,16 @@ extension WorkspaceModel {
         guard let owner = chat.delegation?.budgetOwnerSessionID ?? sideFamilyOwner(chat) else { return chat.displayTitle }
         return (chat.isSubagent ? chat.subagentShortTitle : chat.title) + " — in " + (record(owner)?.title ?? "Unavailable parent")
     }
-    var canShowAgentFamily: Bool {
-        (focusedSessionID ?? selectedID).map { !conversationFamily($0).isEmpty } ?? false
+    private var familyPickerSession: String? {
+        guard let id = focusedSessionID ?? selectedID else { return nil }
+        if subagentTab(id)?.container?.isPane == false { return id }
+        let owner = record(id)?.delegation?.budgetOwnerSessionID ?? id
+        if let chat = record(owner), let main = sideFamilyOwner(chat), main == selectedID { return main }
+        return id
     }
+    var canShowAgentFamily: Bool { familyPickerSession.map { !conversationFamily($0).isEmpty } ?? false }
     func showAgentFamily() {
-        if let id = focusedSessionID ?? selectedID { agentFamilyRequests.send(conversationFamily(id).ownerID) }
+        if let id = familyPickerSession { agentFamilyRequests.send(conversationFamily(id).ownerID) }
     }
 }
 
@@ -95,14 +100,21 @@ struct ConversationFamily: Equatable {
     var sides: [Side]
     var agents: SubagentFamily
     var canAddSide: Bool
-    var isEmpty: Bool { sides.isEmpty && agents.members.isEmpty }
+    /// Separate delegation scopes belonging to the saved sides in this picker.
+    /// They remain labelled by their own owner; numbers and Stop authority are
+    /// never reassigned to the main chat.
+    var sideAgentFamilies: [SubagentFamily] = []
+    var agentFamilies: [SubagentFamily] { [agents] + sideAgentFamilies }
+    var agentCount: Int { agentFamilies.reduce(0) { $0 + $1.members.count } }
+    var isEmpty: Bool { sides.isEmpty && agentCount == 0 }
     var title: String {
-        [(sides.count, "side"), (agents.members.count, "agent")].filter { $0.0 > 0 }
+        [(sides.count, "side"), (agentCount, "agent")].filter { $0.0 > 0 }
             .map { "\($0.0) \($0.1)\($0.0 == 1 ? "" : "s")" }.joined(separator: " · ")
     }
     var activity: FamilyActivity {
-        .init(workingSides: sides.filter(\.working).count, runningAgents: agents.runningCount,
-              queuedAgents: agents.queuedCount, stoppingAgents: agents.stoppingCount)
+        agentFamilies.reduce(into: FamilyActivity(workingSides: sides.filter(\.working).count)) {
+            $0.runningAgents += $1.runningCount; $0.queuedAgents += $1.queuedCount; $0.stoppingAgents += $1.stoppingCount
+        }
     }
 }
 
@@ -118,15 +130,18 @@ extension WorkspaceModel {
     func invalidateConversationFamily(_ id: String? = nil) {
         if let id, let chat = record(id) {
             conversationFamilies[id] = nil
-            if let owner = chat.delegation?.budgetOwnerSessionID ?? sideFamilyOwner(chat) { conversationFamilies[owner] = nil }
+            if let owner = chat.delegation?.budgetOwnerSessionID ?? sideFamilyOwner(chat) {
+                conversationFamilies[owner] = nil
+                if let parent = record(owner).flatMap(sideFamilyOwner) { conversationFamilies[parent] = nil }
+            }
         } else { conversationFamilies.removeAll(keepingCapacity: true) }
     }
     /// Metadata is grouped once, and status/spend are cached between activity
     /// publications. Neither the header nor a sidebar row reads transcripts.
     func conversationFamily(_ sessionID: String) -> ConversationFamily {
         let item = record(sessionID)
-        let ownerID = item?.delegation?.budgetOwnerSessionID ?? item.flatMap(sideFamilyOwner) ?? sessionID
-        let agents = subagentFamily(item?.isSubagent == true ? sessionID : ownerID)
+        let ownerID = item?.delegation?.budgetOwnerSessionID ?? sessionID
+        let agents = subagentFamily(sessionID)
         if let item, let owner = record(ownerID), item.workspaceID != owner.workspaceID {
             return .init(ownerID: ownerID, sides: [], agents: agents, canAddSide: false)
         }
@@ -153,18 +168,28 @@ extension WorkspaceModel {
             return .init(id: chat.id, title: pending ? "New side" : chat.title, status: status, working: working,
                          spend: spend, open: shown?.id == chat.id)
         }
-        let value = ConversationFamily(ownerID: ownerID, sides: members, agents: agents, canAddSide: canOpenSide(ownerID))
+        let related = records.map { subagentFamily($0.id) }.filter { !$0.members.isEmpty }
+        let value = ConversationFamily(ownerID: ownerID, sides: members, agents: agents,
+            canAddSide: canOpenSide(ownerID) && record(ownerID).flatMap(sideFamilyOwner) == nil, sideAgentFamilies: related)
         conversationFamilies[ownerID] = value
         return value
     }
     func openFamilySide(_ id: String) async {
         await openFromSidebar(id)
-        if side(id) != nil { tabs.showSide() }
     }
     func openNewFamilySide(_ ownerID: String) {
         page = .chats
         if selectedID == ownerID { openSide(parentID: ownerID); tabs.showSide() }
-        else { Task { await select(ownerID, focusesComposer: false); guard selectedID == ownerID else { return }; openSide(parentID: ownerID); tabs.showSide() } }
+        else {
+            tabs.showSide()
+            let intent = tabs.navigationRevision, selection = selectionRevision
+            Task {
+                guard !Task.isCancelled, tabs.navigationRevision == intent, selectionRevision == selection else { return }
+                await select(ownerID, focusesComposer: false)
+                guard !Task.isCancelled, tabs.navigationRevision == intent, selectionRevision == selection + 1, selectedID == ownerID else { return }
+                openSide(parentID: ownerID)
+            }
+        }
     }
 }
 

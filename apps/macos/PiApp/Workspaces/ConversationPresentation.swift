@@ -122,6 +122,24 @@ struct ConversationHistoryPage: Sendable {
 }
 
 extension SessionDisplay {
+    /// A new visit cancels the old reads and their flags together. Retain the
+    /// cursors and row identity for unchanged-journal reuse, never a canceled
+    /// page's loading/error state. Main, side and hosted readers share this.
+    @discardableResult func beginHistoryPresentation() -> HeldRows {
+        let held = HeldRows(cached: hasPresentedRows, identity: presentation.identity, partialTurnInput: presentation.partialTurnInput)
+        presentation.begin(); presentationGeneration = presentation.generation
+        olderPage = .init(cursor: olderPage.cursor); newerPage = .init(cursor: newerPage.cursor)
+        historyProgress = nil; historyState = .loading; refreshingCachedRows = held.cached
+        return held
+    }
+    func finishHistoryPresentation(_ generation: UUID) {
+        guard presentationGeneration == generation else { return }
+        presentation.navigation = nil
+        // A canceled/superseded visit that never adopted a page can be reopened.
+        // Preparing already has its page and waits for the viewport instead.
+        if historyState == .loading { historyState = .dormant; refreshingCachedRows = false }
+    }
+
     /// Shows what the journal says was unfinished when the chat's helper last
     /// stopped, the way the helper restores it when the chat is next used:
     /// a run that was cut off reads as interrupted, with its outcome uncertain

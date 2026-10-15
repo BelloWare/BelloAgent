@@ -142,7 +142,7 @@ final class WorkspaceRootTests: XCTestCase, SerialTestLane {
         model.workspaces = [WorkspaceRecord(id: "p", path: "/tmp/p", trusted: true)]
         model.chats = [parent, side]
         let picker = AgentFamilyPopoverView(model: model, sessionID: "P", close: {}, ownerWindow: nil)
-        let button = try XCTUnwrap(picker.subviewsOfType(PiKit.Button.self).first { $0.accessibilityIdentifier() == "open-side-S" })
+        let button = try XCTUnwrap(picker.subviewsOfType(FamilyPickerRow.self).first { $0.accessibilityIdentifier() == "open-side-S" })
         XCTAssertEqual(button.accessibilityLabel(), "Open side Idempotency keys for refunds, Saved")
     }
 

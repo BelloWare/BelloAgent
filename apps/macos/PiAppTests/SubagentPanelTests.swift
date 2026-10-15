@@ -96,8 +96,8 @@ final class SubagentPanelTests: XCTestCase {
         XCTAssertEqual(model.subagentFamily("chat-child").members.map { $0.chat.id }, ["first", "chat-child"])
         XCTAssertEqual(model.subagentFamily("chat-parent").members.map(\.label), ["#1 · child", "#2 · child"])
         let popover = AgentFamilyPopoverView(model: model, sessionID: "chat-child", close: {}, ownerWindow: nil)
-        let buttons = ConversationPaneTests.views(PiKit.Button.self, in: popover)
-        XCTAssertEqual(buttons.filter { $0.title == "Open" }.map { $0.accessibilityIdentifier() }, ["open-side-chat-side", "open-agent-first", "open-agent-chat-child"])
+        let buttons = ConversationPaneTests.views(PiKit.ButtonBase.self, in: popover)
+        XCTAssertEqual(buttons.filter { $0.accessibilityIdentifier().hasPrefix("open-") }.map { $0.accessibilityIdentifier() }, ["open-side-chat-side", "open-agent-first", "open-agent-chat-child"])
         XCTAssertTrue(buttons.first { $0.title == "Stop All…" }?.isEnabled == false)
         XCTAssertTrue(model.sessionOpenings.isEmpty)
     }

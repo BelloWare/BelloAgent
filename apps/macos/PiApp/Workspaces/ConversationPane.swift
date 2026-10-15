@@ -111,9 +111,18 @@ struct SideActions {
     override var isFlipped: Bool { true }
 
     override var acceptsFirstResponder: Bool { chat?.isSubagent == true }
+    func noteNativeFocus() {
+        guard window != nil, !isHiddenOrHasHiddenAncestor, let id = chat?.id,
+              model.selectedID == id || model.subagentTabIsShown(id) ||
+              (model.sides[model.selectedID ?? ""]?.id == id && model.tabs.pane.shownTab(sideAvailable: true) == nil) else { return }
+        if model.focusedSessionID != id { model.focusPane(id) }
+    }
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder(); if accepted { noteNativeFocus() }; return accepted
+    }
     var canBackToSubagentParent: Bool {
         guard side == nil, let chat, let link = chat.delegation, (model.selectedID == chat.id || model.subagentTabIsShown(chat.id)),
-              model.record(link.budgetOwnerSessionID) != nil, model.conversationCommandsEnabled,
+              model.record(link.budgetOwnerSessionID) != nil, model.subagentReaderCommandsEnabled(chat.id),
               let window, window.isKeyWindow, window.attachedSheet == nil,
               !(window.childWindows ?? []).contains(where: { $0.isVisible && $0.canBecomeKey }),
               let responder = window.firstResponder as? NSView else { return false }

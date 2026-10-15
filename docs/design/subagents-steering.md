@@ -9,6 +9,10 @@ Saved-side and child search results name their parent. The picker and restored c
 tabs preserve numbering, view/Stop, typed-message links and family Inspector.
 Embedded Back only focuses the parent; delayed history reads preserve that decision.
 Full child windows have sibling access and route their own Find/Stop shortcuts.
+Saved sides retain their own delegation families, grouped by side in the main
+picker; Stop and Inspector still address the actual delegation owner. Reader
+loads belong to tab/display generations rather than unrelated main selections,
+and native responder changes keep command focus with the visible reader.
 Unsent side drafts remain memory-only. No steering, model-visible or journal
 contract changes accompany this UI amendment.
 

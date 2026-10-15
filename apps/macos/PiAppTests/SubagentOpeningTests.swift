@@ -5,7 +5,55 @@ import AppKit
 
 /// Real helper navigation over a generated loopback stream. The fixture's
 /// explicit barrier keeps a child active until its viewer has attached.
+private final class AttachmentHistoryGate: @unchecked Sendable {
+    let entered: XCTestExpectation
+    let release = DispatchSemaphore(value: 0)
+    init(_ entered: XCTestExpectation) { self.entered = entered }
+    func hold() { entered.fulfill(); release.wait() }
+}
+private extension HistoryReader {
+    func holdAttachment(_ gate: AttachmentHistoryGate) { gate.hold() }
+}
+
 final class SubagentOpeningTests: XCTestCase, SerialTestLane {
+    @MainActor func testVisibleChildAttachmentSurvivesAnUnrelatedMainSelection() async throws {
+        let (_, model, _, parent, target) = try await fixture()
+        await model.select(parent.id)
+        let entered = expectation(description: "History actor held before the child header read")
+        let gate = AttachmentHistoryGate(entered)
+        defer { gate.release.signal() }
+        let hold = Task { await model.history.holdAttachment(gate) }
+        await fulfillment(of: [entered], timeout: 5)
+        let opening = Task { await model.openSubagentTab(target.sessionID) }
+        try await eventually("Child presentation started") { model.displays[target.sessionID]?.historyState == .loading }
+        let other = ChatRecord(id: "unrelated-main", workspaceID: parent.workspaceID, title: "Other", path: nil, profileID: parent.profileID)
+        model.chats.append(other)
+        let selection = Task { await model.select(other.id, focusesComposer: false) }
+        try await eventually("Unrelated main selected") { model.selectedID == other.id }
+        gate.release.signal(); await hold.value; await selection.value; _ = await opening.value
+        XCTAssertTrue(model.subagentTabIsShown(target.sessionID))
+        XCTAssertTrue(model.opened.contains(target.sessionID))
+        XCTAssertFalse(model.displays[target.sessionID]?.historyState == .loading)
+        XCTAssertFalse(model.displays[target.sessionID]?.messages.isEmpty == true)
+    }
+
+    @MainActor func testCardHeaderValidationDoesNotOverrideANewerTabChoice() async throws {
+        let (_, model, _, parent, target) = try await fixture()
+        await model.select(parent.id)
+        let held = expectation(description: "Header reader held"), began = expectation(description: "Card opening began")
+        let gate = AttachmentHistoryGate(held); defer { gate.release.signal() }
+        let hold = Task { await model.history.holdAttachment(gate) }
+        await fulfillment(of: [held], timeout: 5)
+        let opening = Task { began.fulfill(); return await model.openSubagent(target) }
+        await fulfillment(of: [began], timeout: 5)
+        let file = model.tabs.open(kind: HostedTab.kind, key: "newer-file") { HostedTab(key: "newer-file", title: "File", symbol: "doc") }
+        gate.release.signal(); await hold.value
+        let opened = await opening.value
+        XCTAssertFalse(opened)
+        XCTAssertNil(model.subagentTab(target.sessionID))
+        XCTAssertTrue(model.tabs.pane.shownTab(sideAvailable: model.paneSideAvailable) === file)
+    }
+
     @MainActor func testColdParentOpenRepairsCapturedChildChargeBeforeReturningItsHost() async throws {
         let (_, model, host, parent, target) = try await fixture()
         var requests: [[String: WireValue]] = []

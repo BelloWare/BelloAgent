@@ -32,8 +32,8 @@ final class ConversationFamilyTests: XCTestCase {
         let header = AgentFamilyHeaderView(); header.update(model: model, sessionID: "chat-parent", enabled: true)
         XCTAssertFalse(header.isHidden); XCTAssertEqual(header.button.title, "1 side · 1 agent")
         let popover = AgentFamilyPopoverView(model: model, sessionID: "chat-parent", close: {}, ownerWindow: nil)
-        let buttons = ConversationPaneTests.views(PiKit.Button.self, in: popover)
-        XCTAssertEqual(buttons.filter { $0.title == "Open" }.map { $0.accessibilityIdentifier() }, ["open-side-chat-side", "open-agent-chat-child"])
+        let buttons = ConversationPaneTests.views(PiKit.ButtonBase.self, in: popover)
+        XCTAssertEqual(buttons.filter { $0.accessibilityIdentifier().hasPrefix("open-") }.map { $0.accessibilityIdentifier() }, ["open-side-chat-side", "open-agent-chat-child"])
         XCTAssertNotNil(buttons.first { $0.title == "New Side" })
         XCTAssertTrue(model.sessionOpenings.isEmpty)
         model.chats.removeAll { $0.parentSessionID != nil }
@@ -67,7 +67,7 @@ final class ConversationFamilyTests: XCTestCase {
         let header = AgentFamilyHeaderView(); header.update(model: model, sessionID: "chat-parent", enabled: true)
         XCTAssertEqual(header.button.title, "2 sides · 1 agent")
         let popover = AgentFamilyPopoverView(model: model, sessionID: "chat-parent", close: {}, ownerWindow: nil)
-        let new = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: popover).first { $0.title == "New Side" })
+        let new = try XCTUnwrap(ConversationPaneTests.views(PiKit.ButtonBase.self, in: popover).first { $0.title == "New Side" })
         new.onPress?()
         XCTAssertEqual(model.sides["chat-parent"]?.id, side.id)
         XCTAssertEqual(model.displays[side.id]?.draft, "An unsent side draft")
@@ -101,7 +101,7 @@ final class ConversationFamilyTests: XCTestCase {
         var totals = GatewayTotals(); totals.costUSD = 0.123; totals.costSamples = 1
         model.publishChatStats(totals, sessionID: "chat-side")
         XCTAssertEqual(model.conversationFamily("chat-parent").sides.first?.spend, 0.123)
-        XCTAssertEqual(model.conversationFamily("chat-side").ownerID, "chat-parent")
+        XCTAssertEqual(model.conversationFamily("chat-side").ownerID, "chat-side")
     }
     @MainActor func testPickerOpensSavedSideAndReusesItBesideTheParent() async throws {
         let model = try fixture()
@@ -166,6 +166,45 @@ final class ConversationFamilyTests: XCTestCase {
                 let frame = control.convert(control.bounds, to: header)
                 XCTAssertGreaterThanOrEqual(frame.minX, 0); XCTAssertLessThanOrEqual(frame.maxX, width)
             }
+        }
+    }
+
+    @MainActor func testSavedSideRetainsItsOwnDelegationFamilyAndIsReachableFromTheMainPicker() throws {
+        let model = try fixture()
+        var child = try XCTUnwrap(model.record("chat-child")); child.id = "side-agent"; child.subagentNumber = 1
+        child.parentSessionID = "chat-side"; child.delegation?.childSessionID = child.id; child.delegation?.budgetOwnerSessionID = "chat-side"
+        model.chats.append(child)
+        XCTAssertEqual(model.conversationFamily("chat-side").agents.ownerID, "chat-side")
+        XCTAssertEqual(model.conversationFamily("chat-side").agents.members.map(\.chat.id), [child.id])
+        let popover = AgentFamilyPopoverView(model: model, sessionID: "chat-parent", close: {}, ownerWindow: nil)
+        XCTAssertTrue(ConversationPaneTests.views(PiKit.ButtonBase.self, in: popover).contains { $0.accessibilityIdentifier() == "open-agent-side-agent" })
+        let header = AgentFamilyHeaderView(); header.update(model: model, sessionID: "chat-parent", enabled: true)
+        XCTAssertEqual(header.button.title, "1 side · 2 agents")
+        model.subagentSummaries[child.id] = .init(link: child.delegation!, description: child.title, model: "fixture", status: .running, revision: 1)
+        XCTAssertEqual(model.conversationFamily("chat-parent").activity.runningAgents, 1)
+        XCTAssertEqual(model.subagentFamily("chat-parent").members.map(\.chat.id), ["chat-child"], "The side's agents are displayed together without changing delegation ownership")
+        model.focusedSessionID = "chat-side"
+        XCTAssertTrue(model.canShowAgentFamily, "The side's menu reaches the main column picker")
+    }
+    @MainActor func testPickerFitsSixCompactRowsAndFormatsSpendInCents() throws {
+        let model = try fixture(), original = try XCTUnwrap(model.record("chat-child"))
+        for index in 0..<3 {
+            var child = original; child.id = "extra-\(index)"; child.delegation?.childSessionID = child.id; child.subagentNumber = index + 3
+            model.chats.append(child)
+        }
+        var side = try XCTUnwrap(model.record("chat-side")); side.id = "second-side"; model.chats.append(side)
+        var totals = GatewayTotals(); totals.costUSD = 0.025; totals.costSamples = 1
+        model.publishChatStats(totals, sessionID: "chat-side")
+        let popover = AgentFamilyPopoverView(model: model, sessionID: "chat-parent", close: {}, ownerWindow: nil)
+        XCTAssertLessThanOrEqual(popover.height(forWidth: 400), 480)
+        let open = try XCTUnwrap(ConversationPaneTests.views(PiKit.ButtonBase.self, in: popover).first { $0.accessibilityIdentifier() == "open-side-chat-side" })
+        XCTAssertTrue(open.accessibilityLabel()?.contains("$0.03") == true)
+        XCTAssertFalse(open.accessibilityLabel()?.contains("Reported") == true)
+        XCTAssertTrue(ConversationPaneTests.views(PiKit.ButtonBase.self, in: popover).filter { $0.title == "Open" }.isEmpty)
+        for (amount, expected) in [(0.00042, "$0.00042"), (0.00000001, "<$0.000001"), (0, "$0.00")] {
+            totals.costUSD = amount; model.publishChatStats(totals, sessionID: "chat-side"); popover.refresh()
+            let row = try XCTUnwrap(ConversationPaneTests.views(FamilyPickerRow.self, in: popover).first { $0.accessibilityIdentifier() == "open-side-chat-side" })
+            XCTAssertTrue(row.accessibilityLabel()?.contains(expected) == true, expected)
         }
     }
 

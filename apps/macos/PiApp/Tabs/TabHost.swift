@@ -67,6 +67,8 @@ import Combine
     func menuEntries() -> [PiMenuEntry] { [] }
     /// The view that takes the keys when the tab is shown, if any.
     var focusView: NSView? { nil }
+    /// A deferred native attachment must not undo a later focus decision.
+    var canRestoreFocus: Bool { true }
     /// A ⌘ key pressed while focus is in the tab's content, before the
     /// window and the menus have it: true if the kind took it.
     func performKeyEquivalent(with event: NSEvent) -> Bool { false }
@@ -172,6 +174,11 @@ extension TabHost {
     private let defaults: UserDefaults?
     static let savedKey = "tabHost"
     var configureTab: ((HostedTab) -> Void)?
+    var sideAvailable: () -> Bool = { true }
+    private(set) var navigationRevision = 0
+    private func shownTab(in container: TabContainer) -> HostedTab? {
+        container.shownTab(sideAvailable: container.isPane && sideAvailable())
+    }
     private var restoring = false
     private var restored = false
     private var saveScheduled = false
@@ -215,8 +222,9 @@ extension TabHost {
     /// Shows a tab in its pane or window, the window brought forward.
     func activate(_ tab: HostedTab) {
         guard let container = tab.container else { return }
-        // What was shown before: nothing in a container just made.
-        let shown = container.sideShown ? nil : container.tabs.first { $0.id == container.activeID }
+        navigationRevision &+= 1
+        // A newly inserted tab has no activeID and has not been shown yet.
+        let shown = container.activeID == nil ? nil : shownTab(in: container)
         if container.activeID != tab.id { container.activeID = tab.id }
         if container.sideShown { container.sideShown = false }
         if shown !== tab { shown?.didHide(); tab.didShow() }
@@ -225,9 +233,11 @@ extension TabHost {
     }
     /// In the pane: the chat's side in place of the tabs.
     func showSide() {
+        navigationRevision &+= 1
         guard !pane.sideShown else { return }
-        pane.shownTab(sideAvailable: true)?.didHide()
+        let previous = shownTab(in: pane)
         pane.sideShown = true
+        if shownTab(in: pane) !== previous { previous?.didHide() }
         save()
     }
 
@@ -237,6 +247,7 @@ extension TabHost {
     /// pane, else the side; a window whose last tab closes closes.
     func close(_ tab: HostedTab) {
         guard let container = tab.container else { return }
+        navigationRevision &+= 1
         remove(tab, from: container)
         tab.willClose()
         tab.letGoOfContent()
@@ -346,7 +357,7 @@ extension TabHost {
     }
     private func remove(_ tab: HostedTab, from container: TabContainer) {
         guard let index = container.tabs.firstIndex(where: { $0 === tab }) else { return }
-        let wasShown = container.shownTab(sideAvailable: true) === tab
+        let wasShown = shownTab(in: container) === tab
         container.tabs.remove(at: index)
         tab.container = nil
         if container.activeID == tab.id {

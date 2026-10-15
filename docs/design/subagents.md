@@ -14,14 +14,23 @@ The main conversation column reserves a 34-point row for one trailing Pi pill,
 Its quiet symbol becomes one spinner during activity. It remains left of the divider
 when the right pane opens. The popover aligns to the pill’s trailing edge and stays
 within the owning window. A Sides section lists open/kept sides, status (working,
-new reply, failed, saved or draft), existing reported spend, Open and New Side.
-Sub-agents follow in stable number order with status, model, reported spend,
-Open and Stop for running children. Running, queued and stopping counts are distinct.
+new reply, failed, saved or draft), existing spend and New Side.
+Each compact row opens on click or Return; arrows move between rows. Sub-agents
+follow in stable number order with status, model, spend and a trailing Stop icon
+for running children. Rows use at most two lines; six fit without scrolling at
+1240×800. New Side shares their title inset. Spend uses the existing cents/sub-cent
+money formatter; the reported-usage caveat is in the tooltip. Running, queued and stopping counts are distinct.
 Stop All uses a custom Pi confirmation; Inspect Family uses the existing Inspector.
 View, Conversation and chat menus offer Sides and Agents. Tab/arrow keys and complete
 VoiceOver labels provide access. The parent sidebar row has one leading spinner and
 a passive “N working” badge (or “N queued” when only queued work remains); its tooltip
 and VoiceOver spell out working sides and running/queued/stopping sub-agents.
+
+A saved side's delegation family stays its own: its agents appear in a separate
+“Sub-agents in ‹side title›” group in the main picker. Numbers, Stop authority and
+family Inspector targets retain that side as owner. Opening such a child keeps
+the main chat in place; embedded Back opens/focuses its actual owning side.
+A popped-out child shows its own delegation family and siblings.
 
 Sides keep their existing pane, draft and persistence paths. New Side reuses an
 unsent draft; no draft, chat, intent or journal is persisted until its first send.
@@ -39,11 +48,23 @@ Back to Parent and later tab choices win. Visibility follows the host’s actual
 availability. Closing readers applies the existing eight-display eviction policy,
 protecting running sessions and open tabs. Cold readers do not start a helper.
 
+Reader loads belong to the exact tab and display generation, independently of
+main-chat selection. Opening intents also check pane selection before and after
+awaits, so a later file/child/side choice wins. Main, side and child presentations
+reset both paging boundaries together while retaining reusable cursors; canceled
+visits retire their task and can be reopened. Closing/reopening or moving a tab
+cannot adopt a former reader's page. Native responder transitions in both window
+types update conversation command focus by walking only the responder's ancestors.
+Visibility callbacks run after host state changes and respect the no-side fallback;
+deferred attachment never undoes Back or a later focus choice.
+
 Embedded Back to Parent focuses the existing parent without changing its draft,
 version or reading position. Source links still reveal their issuing message/version.
 Popped-out children have the same picker, highlighting the current child; only the
 active tab sets the native window title. In-chat Find/Next/Previous, Inspector Find
 and Stop shortcuts route to the hosted child, excluding sheets and other popups.
+A child window keeps those commands and Back when the main window shows Reports;
+an embedded reader remains covered with its main chat.
 
 Full identities retain **Sub-agent N · description**. Compact family/search/tab
 labels use **#N · description**; tabs truncate at the tail and native titles,

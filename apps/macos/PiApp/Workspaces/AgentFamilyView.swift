@@ -66,6 +66,52 @@ import Combine
     }
 }
 
+/// A two-line Pi action row; its trailing Stop keeps its own hit target and
+/// accessibility action. Text always starts at the same inset, including New Side.
+@MainActor final class FamilyPickerRow: PiKit.ButtonBase, PiKit.WidthSizing {
+    let primary: String
+    let secondary: String?
+    let current: Bool
+    var stop: PiKit.IconButton?
+    var navigate: ((NSEvent) -> Void)?
+    var focused: (() -> Void)?
+    init(_ primary: String, secondary: String? = nil, current: Bool = false) {
+        self.primary = primary; self.secondary = secondary; self.current = current
+        super.init(frame: .zero); title = primary
+    }
+    required init?(coder: NSCoder) { nil }
+    func height(forWidth width: CGFloat) -> CGFloat { secondary == nil ? 32 : 46 }
+    override var intrinsicContentSize: NSSize { .init(width: NSView.noIntrinsicMetric, height: height(forWidth: 400)) }
+    override func cornerRadius(for size: CGSize) -> CGFloat { PiRadius.sm }
+    override func layout() { super.layout(); stop?.frame = CGRect(x: max(0, bounds.width - 32), y: (bounds.height - 24) / 2, width: 24, height: 24) }
+    override func drawContent(in rect: CGRect) {
+        let width = max(0, rect.width - (stop == nil ? 20 : 46))
+        PiKit.Line(primary, font: PiKit.Font.body, color: current ? .piAccent : .piInk)
+            .draw(in: CGRect(x: 10, y: secondary == nil ? 7 : 5, width: width, height: 20), truncation: .end, scale: piScale)
+        if let secondary {
+            PiKit.Line(secondary, font: PiKit.Font.caption, color: .piInkSecondary)
+                .draw(in: CGRect(x: 10, y: 25, width: width, height: 16), truncation: .end, scale: piScale)
+        }
+    }
+    override func styleFace() {
+        fill.backgroundColor = piCGColor(current ? .piAccentSoft : hovering || isPressedDown ? .piFill : .clear)
+        stroke.borderColor = CGColor.clear; shadowLayer.shadowOpacity = 0
+    }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let hit = super.hitTest(point), hit === stop { return hit }
+        return frame.contains(point) ? self : nil
+    }
+    override func accessibilityChildren() -> [Any]? { stop.map { [$0] } }
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder(); if accepted { focused?() }; return accepted
+    }
+    override func keyDown(with event: NSEvent) {
+        if [125, 126, 53].contains(event.keyCode) { navigate?(event) }
+        else if [36, 76].contains(event.keyCode), isEnabled { onPress?() }
+        else { super.keyDown(with: event) }
+    }
+}
+
 @MainActor final class AgentFamilyPopoverView: NSView, PiKit.WidthSizing {
     private let model: WorkspaceModel
     private let sessionID: String
@@ -74,9 +120,9 @@ import Combine
     private var stack: ShellStack?
     private var observer: ShellObserver?
     private var family: ConversationFamily?
-    private var openButtons: [PiKit.Button] = []
-    private var controls: [PiKit.Button] = []
-    private var selectedIndex = 0
+    private var openButtons: [FamilyPickerRow] = []
+    private var controls: [PiKit.ButtonBase] = []
+    private var selectedID: String?
     init(model: WorkspaceModel, sessionID: String, close: @escaping () -> Void, ownerWindow: NSWindow?) {
         self.model = model; self.sessionID = sessionID; self.close = close; self.ownerWindow = ownerWindow
         super.init(frame: .zero)
@@ -86,93 +132,96 @@ import Combine
     required init?(coder: NSCoder) { nil }
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
+    private func row(_ title: String, detail: String? = nil, id: String, label: String, current: Bool = false, action: @escaping () -> Void) -> FamilyPickerRow {
+        let row = FamilyPickerRow(title, secondary: detail, current: current)
+        row.setAccessibilityIdentifier(id); row.setAccessibilityLabel(label)
+        row.toolTip = label + (detail == nil ? "" : ". Spend includes reported usage only.")
+        row.onPress = action
+        row.navigate = { [weak self] event in self?.keyDown(with: event) }
+        row.focused = { [weak self] in self?.selectedID = id }
+        openButtons.append(row); controls.append(row)
+        return row
+    }
+    private func heading(_ title: String) -> NSView {
+        ShellStack(.vertical, spacing: 0, padding: NSEdgeInsets(top: 5, left: 10, bottom: 3, right: 10),
+            [.view(shellLine(title, font: PiKit.Font.body, color: .piInk), .fill)])
+    }
     func refresh() {
         let value = model.conversationFamily(sessionID)
         guard value != family else { return }; family = value
         let hadFocus = window?.firstResponder as? NSView
         let restoreFocus = hadFocus.map { $0 === self || $0.isDescendant(of: self) } ?? false
+        let focusID = hadFocus?.accessibilityIdentifier()
         stack?.removeFromSuperview(); openButtons = []; controls = []
         var rows: [NSView] = []
         if !value.sides.isEmpty || value.canAddSide {
-            rows.append(shellLine("Sides", font: PiKit.Font.body, color: .piInk))
+            rows.append(heading("Sides"))
             for side in value.sides {
-                let title = shellLine(side.title + (side.open ? " · Open" : ""), font: PiKit.Font.body, color: side.open ? .piAccent : .piInk)
-                title.truncation = .end; title.toolTip = side.title
-                let detail = [side.status, side.spend.map { "Reported " + compactGatewayUSD($0) }].compactMap { $0 }.joined(separator: " · ")
-                let status = shellLine(detail, font: PiKit.Font.caption, color: .piInkSecondary)
-                let open = PiKit.Button("Open", style: .secondary, compact: true)
-                open.setAccessibilityIdentifier("open-side-" + side.id)
-                open.setAccessibilityLabel("Open side " + side.title + ", " + detail)
-                open.toolTip = "Open " + side.title + " beside the parent chat"
-                open.onPress = { [weak model, close] in close(); Task { await model?.openFamilySide(side.id) } }
-                openButtons.append(open); controls.append(open)
-                rows.append(ShellStack(.vertical, spacing: 6, padding: NSEdgeInsets(top: 6, left: 0, bottom: 8, right: 0),
-                    [.view(title, .fill), .view(status, .fill), .view(ShellStack(.horizontal, spacing: 0, [.view(open)]), .fill)]))
+                let detail = [side.status, side.spend.map(CostLimit.dollars)].compactMap { $0 }.joined(separator: " · ")
+                rows.append(row(side.title, detail: detail, id: "open-side-" + side.id, label: "Open side " + side.title + ", " + detail, current: side.open) { [weak model, close] in
+                    close(); Task { await model?.openFamilySide(side.id) }
+                })
             }
-            let newSide = PiKit.Button("New Side", symbol: "plus", style: .ghost, compact: true)
-            newSide.isEnabled = value.canAddSide
-            newSide.onPress = { [weak model, close] in close(); model?.openNewFamilySide(value.ownerID) }
-            controls.append(newSide)
-            rows.append(ShellStack(.horizontal, spacing: 0, [.view(newSide)]))
-        }
-        if !value.agents.members.isEmpty {
-            rows.append(shellLine("Sub-agents", font: PiKit.Font.body, color: .piInk))
-            let activity = FamilyActivity(runningAgents: value.agents.runningCount, queuedAgents: value.agents.queuedCount, stoppingAgents: value.agents.stoppingCount)
-            if activity.active > 0 { rows.append(shellLine(activity.label, font: PiKit.Font.caption, color: .piInkSecondary)) }
-        }
-        for member in value.agents.members {
-            let current = member.chat.id == sessionID
-            let name = shellLine(member.label + (current ? " · Current" : ""), font: PiKit.Font.body, color: current ? .piAccent : .piInk)
-            name.truncation = .end; name.toolTip = member.chat.displayTitle
-            let spend = member.spend.map { "Reported " + compactGatewayUSD($0) }
-            let detail = [member.statusLabel, member.model, spend].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
-            let status = shellLine(detail, font: PiKit.Font.caption, color: .piInkSecondary)
-            status.truncation = .middle; status.toolTip = detail
-            let open = PiKit.Button("Open", style: .secondary, compact: true)
-            open.setAccessibilityIdentifier("open-agent-" + member.chat.id)
-            open.setAccessibilityLabel("Open " + member.chat.displayTitle + ", " + detail)
-            open.toolTip = "Open " + member.chat.displayTitle + " beside the parent chat"
-            open.onPress = { [weak model, close] in close(); Task { await model?.openSubagentTab(member.chat.id) } }
-            openButtons.append(open); controls.append(open)
-            var actions: [ShellItem] = [.view(open)]
-            if member.status == .running, let link = member.chat.delegation {
-                let stop = PiKit.Button("Stop", style: .ghost, compact: true)
-                stop.setAccessibilityLabel("Stop " + member.chat.displayTitle); stop.toolTip = stop.accessibilityLabel()
-                stop.onPress = { [weak model] in model?.stopSubagent(SubagentTarget(link), from: value.ownerID) }
-                controls.append(stop); actions.append(.view(stop))
+            let newSide = row("New Side", id: "new-family-side", label: "New side beside the parent chat") { [weak model, close] in
+                close(); model?.openNewFamilySide(value.ownerID)
             }
-            let labels = ShellStack(.vertical, spacing: 4, [.view(name, .fill), .view(status, .fill)])
-            let buttons = ShellStack(.horizontal, spacing: 6, actions)
-            rows.append(ShellStack(.vertical, spacing: 7, padding: NSEdgeInsets(top: 6, left: 0, bottom: 8, right: 0), [.view(labels, .fill), .view(buttons, .fill)]))
+            newSide.isEnabled = value.canAddSide; rows.append(newSide)
         }
+        for group in value.agentFamilies where !group.members.isEmpty {
+            let ownerTitle = model.record(group.ownerID)?.title ?? "Unavailable parent"
+            rows.append(heading(group.ownerID == value.ownerID ? "Sub-agents" : "Sub-agents in " + ownerTitle))
+            for member in group.members {
+                let detail = [member.statusLabel, member.model, member.spend.map(CostLimit.dollars)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                let row = row(member.label, detail: detail, id: "open-agent-" + member.chat.id,
+                    label: "Open " + member.chat.displayTitle + " in " + ownerTitle + ", " + detail, current: member.chat.id == sessionID) { [weak model, close] in
+                    close(); Task { await model?.openSubagentTab(member.chat.id) }
+                }
+                if member.status == .running, let link = member.chat.delegation {
+                    let stop = PiKit.IconButton(symbol: "stop.fill", label: "Stop " + member.chat.displayTitle + " in " + ownerTitle, size: 24)
+                    stop.setAccessibilityIdentifier("stop-agent-" + member.chat.id)
+                    stop.onPress = { [weak model] in model?.stopSubagent(SubagentTarget(link), from: group.ownerID) }
+                    row.stop = stop; row.addSubview(stop); controls.append(stop)
+                }
+                rows.append(row)
+            }
+            if group.ownerID != value.ownerID {
+                let inspect = PiKit.Button("Inspect " + ownerTitle, symbol: "info.circle", style: .ghost, compact: true)
+                inspect.onPress = { [weak model, close] in close(); model?.inspect(group.ownerID) }
+                controls.append(inspect); rows.append(ShellStack(.horizontal, spacing: 0, [.view(inspect)]))
+            }
+        }
+        let active = value.activity.runningAgents + value.activity.queuedAgents + value.activity.stoppingAgents
         let stopAll = PiKit.Button("Stop All…", style: .ghost, compact: true)
-        stopAll.isEnabled = value.agents.activeCount > 0
-        stopAll.setAccessibilityLabel("Stop all \(value.agents.activeCount) running or queued sub-agents")
+        stopAll.isEnabled = active > 0
+        stopAll.setAccessibilityIdentifier("stop-all-agents")
+        stopAll.setAccessibilityLabel("Stop all \(active) running or queued sub-agents")
         stopAll.onPress = { [weak self] in self?.confirmStopAll() }
         let inspect = PiKit.Button("Inspect Family", symbol: "info.circle", style: .ghost, compact: true)
+        inspect.setAccessibilityIdentifier("inspect-agent-family")
         inspect.onPress = { [weak model, close] in close(); model?.inspect(value.ownerID) }
-        if !value.agents.members.isEmpty { controls.append(contentsOf: [stopAll, inspect]); rows.append(ShellStack(.horizontal, spacing: 8, [.view(stopAll), .spacer(0), .view(inspect)])) }
-        let stack = ShellStack(.vertical, spacing: 8, padding: NSEdgeInsets(top: 16, left: 16, bottom: 12, right: 16), rows.map { .view($0, .fill) })
+        if value.agentCount > 0 { controls.append(contentsOf: [stopAll, inspect]); rows.append(ShellStack(.horizontal, spacing: 8, [.view(stopAll), .spacer(0), .view(inspect)])) }
+        let stack = ShellStack(.vertical, spacing: 2, padding: NSEdgeInsets(top: 8, left: 6, bottom: 8, right: 6), rows.map { .view($0, .fill) })
         self.stack = stack; addSubview(stack)
-        for (index, button) in controls.enumerated() { button.nextKeyView = controls[(index + 1) % controls.count] }
-        selectedIndex = min(selectedIndex, max(0, openButtons.count - 1))
+        let enabled = controls.filter(\.isEnabled)
+        for (index, control) in enabled.enumerated() { control.nextKeyView = enabled[(index + 1) % enabled.count] }
+        if !openButtons.contains(where: { $0.accessibilityIdentifier() == selectedID && $0.isEnabled }) { selectedID = openButtons.first(where: \.isEnabled)?.accessibilityIdentifier() }
         needsLayout = true
-        if restoreFocus { window?.makeFirstResponder(self) }
+        if restoreFocus { window?.makeFirstResponder(enabled.first { $0.accessibilityIdentifier() == focusID } ?? self) }
     }
     private func confirmStopAll() {
-        guard let family, family.agents.activeCount > 0, let ownerWindow else { return }
-        let ownerID = family.ownerID
-        let targets = family.agents.members.filter(\.active).compactMap { $0.chat.delegation }.map { link in
+        guard let family, let ownerWindow else { return }
+        let targets = family.agentFamilies.flatMap(\.members).filter(\.active).compactMap { $0.chat.delegation }.map { link in
             var target = SubagentTarget(link); target.turn = model.subagentSummaries[link.childSessionID]?.turn
             return target
         }
+        guard !targets.isEmpty else { return }
         close()
         _ = model.questions.askSheet(over: ownerWindow, make: { answer in
             AgentStopAllSheet(count: targets.count, answer: answer)
         }, answered: { [weak model] accepted in
             guard accepted, let model else { return }
             for target in targets where model.record(target.sessionID)?.delegation.map(target.matchesOrigin) == true && model.subagentSummaries[target.sessionID]?.status.terminal == false && model.subagentSummaries[target.sessionID]?.turn == target.turn {
-                model.stopSubagent(target, from: ownerID)
+                model.stopSubagent(target, from: target.ownerID)
             }
         })
     }
@@ -180,14 +229,19 @@ import Combine
     override func layout() { super.layout(); stack?.frame = bounds }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window != nil { window?.makeFirstResponder(self) } }
     override func keyDown(with event: NSEvent) {
+        let enabled = openButtons.filter(\.isEnabled)
+        if let responder = window?.firstResponder as? NSView,
+           let row = enabled.first(where: { responder === $0 || responder.isDescendant(of: $0) }) { selectedID = row.accessibilityIdentifier() }
         switch event.keyCode {
         case 53: close()
         case 125, 126:
-            guard !openButtons.isEmpty else { return }
-            selectedIndex = (selectedIndex + (event.keyCode == 125 ? 1 : openButtons.count - 1)) % openButtons.count
-            let button = openButtons[selectedIndex]; window?.makeFirstResponder(button); scrollToVisible(button.convert(button.bounds, to: self))
-        case 36, 76: if !openButtons.isEmpty { openButtons[selectedIndex].onPress?() }
-        case 48: if let first = controls.first { window?.makeFirstResponder(first) }
+            guard !enabled.isEmpty else { return }
+            let current = enabled.firstIndex { $0.accessibilityIdentifier() == selectedID } ?? 0
+            let index = (current + (event.keyCode == 125 ? 1 : enabled.count - 1)) % enabled.count
+            let row = enabled[index]; selectedID = row.accessibilityIdentifier()
+            window?.makeFirstResponder(row); row.scrollToVisible(row.bounds)
+        case 36, 76: enabled.first { $0.accessibilityIdentifier() == selectedID }?.onPress?()
+        case 48: if let first = controls.first(where: \.isEnabled) { window?.makeFirstResponder(first) }
         default: super.keyDown(with: event)
         }
     }

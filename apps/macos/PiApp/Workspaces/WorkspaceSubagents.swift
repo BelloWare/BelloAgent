@@ -4,42 +4,56 @@ extension WorkspaceModel {
     /// Cards keep original ownership even when copied into a fork. Navigation
     /// validates the reciprocal child header inside this project's directory.
     @discardableResult func openSubagent(_ target: SubagentTarget) async -> Bool {
-        let navigation = selectionRevision
+        let navigation = selectionRevision, paneIntent = tabs.navigationRevision, opening = subagentNavigationRevision
+        func currentOpening() -> Bool {
+            !isShutDown && !Task.isCancelled && selectionRevision == navigation && tabs.navigationRevision == paneIntent && subagentNavigationRevision == opening
+        }
         do {
             guard let parent = record(target.ownerID), store != nil else { throw HostError.failure("The parent chat is unavailable. The saved child can still be opened from search.") }
             let directory = try subagentDirectory(parent.workspaceID)
             let path = directory.appendingPathComponent(target.sessionID + ".jsonl")
             let header = try await history.subagentHeader(path: path, directory: directory, expected: target)
-            guard !isShutDown, !Task.isCancelled, selectionRevision == navigation, record(parent.id)?.workspaceID == parent.workspaceID else { return false }
+            guard currentOpening(), record(parent.id)?.workspaceID == parent.workspaceID else { return false }
             if record(target.sessionID) == nil { await reconcileSubagents(parentID: parent.id) }
+            guard currentOpening() else { return false }
             guard let child = record(target.sessionID), child.workspaceID == parent.workspaceID, child.delegation == header.link else { throw StoreError.invalidRecord }
-            guard !Task.isCancelled, selectionRevision == navigation else { return false }
-            await openSubagentTab(target.sessionID)
-            guard subagentTabIsShown(target.sessionID), !Task.isCancelled else { return false }
+            guard let tab = await openSubagentTab(target.sessionID), subagentTabIsShown(target.sessionID),
+                  !Task.isCancelled, focusedSessionID == target.sessionID else { return false }
             subagentReturnTargets[target.sessionID] = target
+            let intent = tabs.navigationRevision, request = subagentNavigationRevision
             let message = try await history.subagentTurnMessage(path: path, childID: target.sessionID, turn: target.turn, messageID: target.messageID)
-            if let message, subagentTabIsShown(target.sessionID) { _ = await revealInTranscript(sessionID: target.sessionID, messageID: message) }
+            guard !Task.isCancelled, tabs.navigationRevision == intent, subagentNavigationRevision == request,
+                  subagentTab(target.sessionID) === tab, subagentTabIsShown(target.sessionID), focusedSessionID == target.sessionID else { return false }
+            if let message { _ = await revealInTranscript(sessionID: target.sessionID, messageID: message) }
             return !Task.isCancelled && subagentTabIsShown(target.sessionID)
         } catch is CancellationError { }
-        catch { self.error = error.localizedDescription }
+        catch { if currentOpening() { self.error = error.localizedDescription } }
         return false
     }
 
     /// Every selection route (including restoration, notifications and a
     /// reveal of the already selected chat) attaches here before reading its
     /// history. Cold saved children remain view-only without starting a host.
-    func attachManagedSubagent(_ item: ChatRecord) async throws {
+    func attachManagedSubagent(_ item: ChatRecord, current: (() -> Bool)? = nil) async throws {
         guard let link = item.delegation, item.delegationIssue == nil,
               let parent = record(link.budgetOwnerSessionID), parent.workspaceID == item.workspaceID,
               let host = hosts[item.workspaceID], host.isReady, opened.contains(parent.id) else { return }
         let navigation = selectionRevision, connection = host.connectionID
+        let tab = subagentTab(item.id)
+        func ownsPresentation() -> Bool {
+            if let current { return current() }
+            if let tab { return subagentTab(item.id) === tab }
+            return selectedID == item.id && selectionRevision == navigation
+        }
         let directory = try subagentDirectory(item.workspaceID)
         guard let path = item.path else { throw StoreError.invalidRecord }
         _ = try await history.subagentHeader(path: URL(fileURLWithPath: path), directory: directory, expected: SubagentTarget(link))
-        guard !Task.isCancelled, (selectedID == item.id || subagentTab(item.id) != nil), selectionRevision == navigation,
+        guard !Task.isCancelled, ownsPresentation(),
               record(item.id)?.delegation == link, record(item.id)?.path == path,
               hosts[item.workspaceID] === host, host.connectionID == connection, opened.contains(parent.id) else { throw CancellationError() }
         _ = try await open(item)
+        guard !Task.isCancelled, ownsPresentation(), record(item.id)?.delegation == link,
+              hosts[item.workspaceID] === host, host.connectionID == connection else { throw CancellationError() }
         refresh(item.id)
     }
 
@@ -59,28 +73,40 @@ extension WorkspaceModel {
 
     func backToSubagentParent(_ childID: String) async {
         guard let link = record(childID)?.delegation else { return }
-        if subagentTab(childID)?.container?.isPane == true, selectedID == link.budgetOwnerSessionID {
-            focusSubagentParent(link.budgetOwnerSessionID); return
+        subagentNavigationRevision &+= 1
+        if subagentTab(childID)?.container?.isPane == true {
+            if selectedID == link.budgetOwnerSessionID { focusSubagentParent(link.budgetOwnerSessionID); return }
+            if let owner = record(link.budgetOwnerSessionID), sideFamilyOwner(owner) == selectedID {
+                await openFamilySide(owner.id)
+                return
+            }
         }
-        await openSubagentParent(link, returningTo: subagentReturnTargets[childID])
-        focusSubagentParent(link.budgetOwnerSessionID)
+        if await openSubagentParent(link, returningTo: subagentReturnTargets[childID]) { focusSubagentParent(link.budgetOwnerSessionID) }
     }
 
-    func openSubagentParent(_ link: SubagentLink, returningTo target: SubagentTarget? = nil) async {
-        let childID = link.childSessionID, navigation = selectionRevision
+    @discardableResult func openSubagentParent(_ link: SubagentLink, returningTo target: SubagentTarget? = nil) async -> Bool {
+        let childID = link.childSessionID
         guard link.valid, let parent = record(link.budgetOwnerSessionID),
               record(childID).map({ $0.workspaceID == parent.workspaceID && $0.delegation == link }) ?? true else {
-            displays[childID]?.notice = "The parent chat is unavailable. This saved sub-agent remains viewable."; return
+            displays[childID]?.notice = "The parent chat is unavailable. This saved sub-agent remains viewable."; return false
         }
-        guard !Task.isCancelled, selectionRevision == navigation else { return }
+        let sideOwner = sideFamilyOwner(parent), mainID = sideOwner ?? parent.id
+        let selection = selectionRevision
+        let changesMain = selectedID != mainID
+        let paneIntent = tabs.navigationRevision + (sideOwner == nil ? 0 : 1)
         if side(parent.id) != nil { await selectSide(parent.id, revealInSidebar: false) }
-        else if let ancestor = parent.parentSessionID, record(ancestor) != nil, !parent.imported { await showSide(parent.id, revealInSidebar: false) }
+        else if sideOwner != nil { await showSide(parent.id, revealInSidebar: false) }
         else { await select(parent.id, revealInSidebar: false, reopensSide: false, focusesComposer: false) }
+        func current() -> Bool {
+            !Task.isCancelled && (changesMain ? selectionRevision == selection + 1 : (selection...selection + 1).contains(selectionRevision)) && tabs.navigationRevision == paneIntent && focusedSessionID == parent.id && subagentParentIsShown(parent.id)
+        }
+        guard current() else { return false }
         var destination = link
         if let target, target.matchesOrigin(link) {
             destination.call.assistantMessageID = target.assistantID; destination.call.toolCallID = target.toolCallID
         }
         await revealSubagentCall(destination)
+        return current()
     }
 
     func revealSubagentCall(_ link: SubagentLink) async {

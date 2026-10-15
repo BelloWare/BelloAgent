@@ -61,13 +61,18 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
                     XCTAssertLessThanOrEqual(popup.frame.maxY, window.frame.maxY)
                     try capture([popup, window], to: folder.appendingPathComponent(base + "-open.png")); files.append(base + "-open.png")
                     let content = try XCTUnwrap(main.agentFamilyHeader.popover.popover?.contentViewController?.view)
-                    let open = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: content).first { $0.accessibilityIdentifier() == "open-agent-child-0" })
+                    let open = try XCTUnwrap(ConversationPaneTests.views(PiKit.ButtonBase.self, in: content).first { $0.accessibilityIdentifier() == "open-agent-child-0" })
                     XCTAssertTrue(open.accessibilityLabel()?.contains("Sub-agent 1") == true)
                     let list = try XCTUnwrap(ConversationPaneTests.views(AgentFamilyPopoverView.self, in: content).first)
+                    if size.width == 1240 {
+                        let rows = ConversationPaneTests.views(FamilyPickerRow.self, in: list).filter { $0.accessibilityIdentifier().hasPrefix("open-") }
+                        XCTAssertEqual(rows.count, 6)
+                        for row in rows { XCTAssertTrue(list.visibleRect.contains(row.convert(row.bounds, to: list)), row.primary + " must fit without scrolling") }
+                    }
                     let tabKey = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                         windowNumber: popup.windowNumber, context: nil, characters: "\t", charactersIgnoringModifiers: "\t", isARepeat: false, keyCode: 48))
                     list.keyDown(with: tabKey)
-                    XCTAssertEqual((popup.firstResponder as? PiKit.Button)?.accessibilityIdentifier(), "open-side-saved-side-0")
+                    XCTAssertEqual((popup.firstResponder as? PiKit.ButtonBase)?.accessibilityIdentifier(), "open-side-saved-side-0")
                     let footer = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: content).first { $0.title == "Inspect Family" })
                     footer.scrollToVisible(footer.bounds); await settle(window)
                     try capture([popup, window], to: folder.appendingPathComponent(base + "-open-footer.png")); files.append(base + "-open-footer.png")
@@ -115,6 +120,22 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
                     await model.backToSubagentParent("child-0")
                     XCTAssertEqual(model.focusedSessionID, fixture.parent.id)
                     if done {
+                        let index = try XCTUnwrap(model.chats.firstIndex { $0.id == "child-1" }), original = model.chats[index]
+                        model.chats[index].parentSessionID = "saved-side-0"
+                        model.chats[index].delegation?.budgetOwnerSessionID = "saved-side-0"
+                        model.chats[index].subagentNumber = 1
+                        root.refresh(); await settle(window)
+                        main.agentFamilyHeader.open(); await settle(window)
+                        let grouped = try XCTUnwrap(main.agentFamilyHeader.popover.popover?.contentViewController?.view.window)
+                        try capture([grouped, window], to: folder.appendingPathComponent(base + "-side-family.png")); files.append(base + "-side-family.png")
+                        main.agentFamilyHeader.popover.close()
+                        await model.openSubagentTab("child-1"); root.refresh(); await settle(window)
+                        XCTAssertEqual(model.selectedID, fixture.parent.id)
+                        try capture([window], to: folder.appendingPathComponent(base + "-side-agent.png")); files.append(base + "-side-agent.png")
+                        await model.backToSubagentParent("child-1")
+                        XCTAssertEqual(model.focusedSessionID, "saved-side-0")
+                        model.chats[index] = original
+                        await model.openSubagentTab("child-0"); await settle(window)
                         model.tabs.popOut(tab); await settle(window)
                         let popped = try XCTUnwrap(tab.container.flatMap { model.tabs.window(of: $0) })
                         popped.appearance = window.appearance; await settle(popped)
@@ -159,7 +180,7 @@ final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
             try capture([popup, window], to: folder.appendingPathComponent("sides-only-" + theme + ".png")); files.append("sides-only-" + theme + ".png")
             main.agentFamilyHeader.popover.close()
         }
-        XCTAssertEqual(files.count, 60)
+        XCTAssertEqual(files.count, 68)
         try (files.joined(separator: "\n") + "\n").write(to: folder.appendingPathComponent("manifest.txt"), atomically: true, encoding: .utf8)
     }
     @MainActor private func settle(_ window: NSWindow) async {
