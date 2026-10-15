@@ -19,6 +19,13 @@ private actor ChildHistoryGate {
     }
 }
 
+private actor ReaderLookupGate {
+    private(set) var reads = 0
+    private var waiting: CheckedContinuation<Void, Never>?
+    func wait() async { reads += 1; await withCheckedContinuation { waiting = $0 } }
+    func release() { waiting?.resume(); waiting = nil }
+}
+
 final class SubagentReaderTests: XCTestCase, SerialTestLane {
     @MainActor private func fixture() throws -> (WorkspaceModel, ChildHistoryGate) {
         let root = scratchRoot("subagent-reader")
@@ -40,6 +47,62 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
     }
     @MainActor private func otherTab(_ model: WorkspaceModel) -> HostedTab {
         model.tabs.open(kind: HostedTab.kind, key: "other") { HostedTab(key: "other", title: "Other reader", symbol: "doc") }
+    }
+    @MainActor func testFindKeepsPagingWhileItsAutomaticAndNextMatchesReadOtherPages() async throws {
+        let (model, _) = try fixture()
+        let tab = try await open("chat-child", in: model)
+        let display = try XCTUnwrap(model.displays[tab.key])
+        let pane = NativeTranscriptPane(frame: .init(x: 0, y: 0, width: 620, height: 500))
+        pane.showTranscript(model: model, session: display, state: "idle", canFork: false, canQuote: false, enabled: true)
+        defer { pane.closeFind(focusing: false) }
+        let rows = (0..<251).map { TranscriptMessage(id: "match-\($0)", role: "assistant", text: "Needle \($0)") }
+        let gate = ReaderLookupGate(), history = model.history
+        model.conversationSearchLoader = { _, query, start in
+            if start == 100 { await gate.wait() }
+            return try await history.searchPresented(rows, query: query, start: start)
+        }
+        model.historyWindowLoader = { _, _, _, around in
+            try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture"), "lineage": .string("root"),
+                "messages": .array([.object(["id": .string(around ?? "match-0"), "role": .string("assistant"), "text": .string("Needle")])]),
+                "older": .null, "newer": .null]))
+        }
+        pane.find.setQuery("Needle")
+        try await eventually("The second 100-hit search page is awaiting its read") { await gate.reads == 1 }
+        try await eventually("Find automatically reveals the first off-page match") { display.scrollAnchor?.id == "match-0" }
+        XCTAssertEqual(pane.find.matches.count, 100)
+        pane.find.step(1)
+        try await eventually("Find Next reveals another page while search is pending") { display.scrollAnchor?.id == "match-1" }
+        await gate.release()
+        try await eventually("Find finishes all of its pages") { !pane.find.searching }
+        XCTAssertFalse(pane.find.failed, "A query's own reveals cannot cancel its search pages")
+        XCTAssertEqual(pane.find.matches.map(\.messageID), rows.map(\.id))
+        XCTAssertEqual(pane.find.current, 1)
+    }
+    @MainActor func testEmbeddedBackRetiresAnAwaitingAgentSourceLookup() async throws {
+        for goBack in [true, false] {
+            let (model, _) = try fixture()
+            let tab = try await open("chat-child", in: model)
+            let parent = try XCTUnwrap(model.selected)
+            parent.messages = [.init(id: "reply", role: "assistant", text: "Issuing call"),
+                               .init(id: "reading", role: "assistant", text: "Reading here")]
+            parent.scrollAnchor = .init(id: "reading", offset: 31, followsBottom: false)
+            model.chats[0].path = model.workspaces[0].path + "/parent.jsonl"
+            let gate = ReaderLookupGate()
+            model.agentCoordinationLoader = { _, _ in
+                await gate.wait()
+                return AgentCoordination(entries: [.init(id: "delivery", childID: "chat-child", turn: 1, kind: "task", author: "parent",
+                    sourceSessionID: "chat-parent", sourceMessageID: "reply", sourceToolCallID: "call", recipientID: "chat-child", disposition: "delivered")])
+            }
+            let lookup = Task { await model.openAgentSource(.init(childID: tab.key, turn: 1, eventID: "delivery"), from: tab.key) }
+            try await eventually("Source is awaiting coordination history") { await gate.reads == 1 }
+            let selection = model.selectionRevision
+            if goBack { await model.backToSubagentParent(tab.key) }
+            XCTAssertEqual(model.selectionRevision, selection)
+            await gate.release(); await lookup.value
+            XCTAssertEqual(parent.scrollAnchor?.id, goBack ? "reading" : "reply")
+            if goBack { XCTAssertEqual(parent.scrollAnchor?.offset, 31); XCTAssertNil(parent.reveal) }
+            XCTAssertTrue(model.subagentTabIsShown(tab.key))
+        }
     }
     @MainActor func testNewParentMessageNavigationRetiresAnAwaitingChildReveal() async throws {
         let (model, gate) = try fixture()

@@ -36,6 +36,17 @@ final class SubagentEffortGalleryTests: XCTestCase, SerialTestLane {
                 await settle(window)
                 let card = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeSubagentCard.self, in: main).first)
                 XCTAssertTrue(card.accessibilityLabel()?.contains(" · high") == true)
+                let grid = try XCTUnwrap(card.subviews.first { $0.accessibilityIdentifier() == "subagent-details" })
+                XCTAssertEqual(ConversationPaneTests.views(PiKit.TextLine.self, in: grid).map { $0.line.text },
+                               ["Model", "Effort", "Tools", "Requests", "Time", "Cost", "Tokens"])
+                XCTAssertTrue(ConversationPaneTests.views(PiKit.WrappedText.self, in: grid).contains { $0.text == "1 request's cost unknown" })
+                for value in ConversationPaneTests.views(PiKit.SelectableText.self, in: grid) {
+                    XCTAssertEqual(value.font, PiKit.Font.caption)
+                    XCTAssertTrue(grid.bounds.contains(value.convert(value.bounds, to: grid)))
+                }
+                grid.scrollToVisible(grid.bounds.insetBy(dx: 0, dy: -4)); await settle(window)
+                let clip = main.transcript.scrollView.contentView
+                XCTAssertTrue(clip.bounds.contains(grid.convert(grid.bounds, to: clip)), "The captured grid is fully visible, including at 920×600")
                 let base = "\(theme)-\(Int(size.width))x\(Int(size.height))"
                 try capture([window], to: folder.appendingPathComponent(base + "-card.png")); files.append(base + "-card.png")
                 main.agentFamilyHeader.open(); await settle(window)

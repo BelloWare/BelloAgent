@@ -67,6 +67,7 @@ extension WorkspaceModel {
         return result
     }
     private func searchConversationSource(_ id: String, query: String, start: Int, renderedAgentProse: Bool) async throws -> ContentSearch {
+        if let conversationSearchLoader { return try await conversationSearchLoader(id, query, start) }
         guard let item = record(id) else { throw StoreError.invalidRecord }
         // The app owns Markdown rendering. Search its journal projection for
         // Find, including unloaded rows, without changing the helper's source

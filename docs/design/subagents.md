@@ -55,8 +55,13 @@ Each hosted reader owns one navigation token, retained when its tab moves betwee
 the pane and windows. Every awaited open, reveal and history read checks that token;
 main-window selection and page revisions do not govern independent child readers.
 A newer external destination retires an unfinished child opening, while Back, hide
-and close retire that reader's pending navigation. Moving a loaded reader preserves
-its page; reopening after a real hide revalidates history. Main, side and child presentations
+and close retire that reader's pending navigation. A Find query's own match reveals
+share its reader token so pending search pages can finish; the Find controller
+still cancels obsolete queries and match reads.
+Source-link coordination lookups also check the originating reader's token before
+navigating or reporting an error, so embedded Back retires them. Moving a loaded
+reader preserves its page; reopening after a real hide revalidates history.
+Main, side and child presentations
 reset both paging boundaries together while retaining reusable cursors; canceled
 visits retire their task and can be reopened. Closing/reopening or moving a tab
 cannot adopt a former reader's page. Native responder transitions in both window
@@ -81,6 +86,12 @@ an empty effort capability list show no effort. Unknown legacy capabilities do
 not invent a model-default label. Follow-ups update the current child's effort;
 older send receipts retain their own turn's value. No journal or model-facing
 text is changed by this presentation.
+
+Saved receipt effort comes from `nativeSubagent.effort`, then the output envelope,
+before legacy summary/grant fallback. The expanded card presents Model, Effort,
+Tools, Requests, Time, Cost and Tokens in a compact Pi label/value grid using the
+normal UI font. Cost uses the shared money formatter; only unknown request costs
+add a quiet note. Copy actions belong to Task and Result, not the metadata grid.
 
 Embedded Back to Parent focuses the existing parent without changing its draft,
 version or reading position. Source links still reveal their issuing message/version.

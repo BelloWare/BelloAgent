@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Sub-agent review round 7 (`dev/a128-sub-display`): Find keeps collecting full-history matches while revealing them; embedded Back retires pending Source lookups; saved follow-up cards read accepted effort from their receipts. Expanded cards use a compact Pi label/value grid for model, effort, tools, requests, time, cost and tokens, with an unknown-cost note only when needed. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-7-find-source-receipts-and-card-details).
+
 - [x] Sub-agent review round 6 and integration (`dev/a128-sub-display`): hosted readers own a navigation token across opens, reveals, history paging and pane/window moves. New external destinations retire pending opens; unrelated main-window selection and Reports leave popped-out reads intact. Conversation menus resolve the key reader for availability and dispatch. Picker rows, card headers/details, child headers and family Inspector show accepted effort, including changed follow-ups; inherited levels use their actual value, model default is labelled, and models without effort controls omit it. Merged policy, fork, project-chip and side-recovery work from `dev/next`. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-6-reader-ownership-and-effort-integration).
 
 - [x] Sub-agent review round 5 (`dev/a128-sub-display`): bounded code previews copy complete fences through hover and VoiceOver actions; superseded Show in Chat opens cannot move a child reader; popped-out Find/Next/Previous and Stop shortcuts ignore Caps Lock. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-5-code-copy-and-reader-navigation).

@@ -105,4 +105,28 @@ final class SubagentEffortTests: XCTestCase {
         try await check(model, found: found, summary: saved, expected: "high", inspector: false)
         XCTAssertEqual(try Data(contentsOf: child), bytes); XCTAssertTrue(model.hosts.isEmpty)
     }
+    @MainActor func testSavedSendReceiptsKeepAcceptedEffortWithoutASummary() async throws {
+        let (model, original) = try await fixture()
+        var found = original; found.header.model.thinkingLevel = "low"; found.header.model.reasoning = ["low", "high"]
+        try await model.registerDiscoveredSubagent(found, workspaceID: "pane-project", live: summary(found, effort: "low", turn: 3))
+        let parent = try XCTUnwrap(model.selected), link = found.header.link
+        for (native, output, expected) in [("high", "low", "high"), (nil, "high", "high"), (nil, "default", "model default"), (nil, nil, "low")] as [(String?, String?, String)] {
+            var metadata: [String: WireValue] = ["version": .number(2), "sessionId": .string(link.childSessionID), "delegationId": .string(link.delegationID),
+                "budgetOwnerSessionId": .string(link.budgetOwnerSessionID), "parentAssistantMessageId": .string("follow-up"), "toolCallId": .string("send"),
+                "turn": .number(2), "route": .string("follow_up"), "status": .string("accepted"), "effects": .string("completed")]
+            metadata["effort"] = native.map(WireValue.string)
+            var envelope: [String: WireValue] = ["accepted": .bool(true), "child_id": .string(link.childSessionID), "turn": .number(2), "route": .string("follow_up")]
+            envelope["effort"] = output.map(WireValue.string)
+            let receipt = ToolView(id: "send", name: "subagent_send", state: "completed", input: "{\"child_id\":\"\(link.childSessionID)\",\"message\":\"Check again\"}",
+                output: String(decoding: try JSONEncoder().encode(envelope), as: UTF8.self), durationMs: 0, truncated: false, nativeSubagent: .object(metadata))
+            // Round-trip the receipt exactly as saved; production has no summary.
+            let saved = try JSONDecoder().decode(ToolView.self, from: JSONEncoder().encode(receipt))
+            XCTAssertNil(saved.subagent)
+            let shown = try XCTUnwrap(parent.presentAgentState(.init(id: "follow-up", role: "assistant", text: "", tools: [saved])).tools?.first)
+            XCTAssertEqual(shown.subagentEffort, expected)
+            XCTAssertTrue(SubagentToolView(shown).label.hasSuffix(" · " + expected))
+            XCTAssertNil(shown.subagent, "Turn 3 must not rewrite the saved turn-2 receipt")
+            XCTAssertEqual(shown.nativeSubagent, saved.nativeSubagent); XCTAssertEqual(shown.output, saved.output)
+        }
+    }
 }

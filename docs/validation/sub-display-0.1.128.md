@@ -1192,3 +1192,116 @@ at `gallery-review6-effort/` (manifest in that directory):
 No installed app was launched and no real preferences, Keychain, paid provider
 or `xctrace --launch` was used. Remaining handoff after validation and push is the
 lead's independent review; no merge or push to `dev/next` is part of this stream.
+## Lead review round 7: Find, Source, receipts and card details
+
+2026-10-15, `dev/a128-sub-display`, following `f53f7625`. This round fixes all
+three review findings and the lead's details-grid design note. It runs affected
+classes only, as requested; no new full native lane or helper-package run.
+
+### Causes and decisions
+
+- Find's automatic first-match reveal and Next-match reads renewed the hosted
+  reader token while the same query was awaiting its next 100-hit search page.
+  Find reveals now share that reader intent. The Find controller retains its
+  own query/task and newest-match cancellation; Back, hide and close still retire
+  the reader token. The regression uses `TranscriptFindController.setQuery`
+  through the ordinary pane bridge and `WorkspaceModel.searchConversation`,
+  holding a generated-history search page while both automatic and Next reveals
+  read other pages. All 251 matches must arrive, with the second match current.
+- A typed delivery's Source lookup used only main selection revision. Embedded
+  Back changes focus and the reader token without changing that revision.
+  Coordination lookup completion and error publication now check the originating
+  hosted reader's token; ordinary main readers retain their selection guard.
+  The regression holds that lookup, presses embedded Back, and verifies the
+  parent's message, pixel offset and reveal state remain intact. Its control case
+  verifies that a current Source link still reveals the issuing call.
+- Saved `agentToolWire` send receipts need not contain a summary. The presentation
+  had ignored their accepted effort and fallen back to the initial grant.
+  Receipt effort now resolves `nativeSubagent.effort`, then the output envelope,
+  before legacy summary/grant fallback. The current-turn overlay remains scoped
+  by origin and turn. A Codable round-trip fixture starts at low, has an older
+  turn-2 send receipt and a current turn-3 summary; it checks native metadata
+  precedence, output-only high/default, legacy fallback, and unchanged source
+  output/native metadata. Model capabilities still determine whether effort is
+  displayed. Nothing changes in model-facing text or journals.
+- Expanded cards use seven compact Pi label/value rows: Model, Effort, Tools,
+  Requests, Time, Cost and Tokens. Values use the normal UI font, retain complete
+  VoiceOver labels, and wrap within narrow cards. Cost uses the shared money
+  formatter and adds only an unknown-cost note when needed (singular/plural).
+  There is no reported-request count. Copy buttons remain on Task and Result.
+  Metadata views rebuild only when the small field list changes; transcript
+  Markdown parsing/layout is unchanged. Gallery inspection caught a nested-stack
+  baseline error; a failing geometry regression now verifies that wrapped values
+  and cost notes keep each label on the value's first baseline at 272, 500 and
+  850 points.
+
+Two optional read-only lookup seams hold precisely the awaited search/coordination
+boundary in generated fixtures. Production still reads the same history actor or
+helper, with the same source validation and search semantics.
+
+### Failing-first and mutation evidence
+
+All artifacts below are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display/`.
+
+| Stage | Result | Evidence |
+| --- | --- | --- |
+| Reader regressions before fixes | 26 passed, 2 failed | `review7-red-reader.log`, matching summary JSON |
+| Effort and details regressions before fixes | 12 passed, 3 failed | `review7-red-display.log`, matching summary JSON |
+| Baseline regression before layout correction | 10 passed, 1 failed | `review7-red-grid-baselines.log`, matching summary JSON |
+| Restore unconditional reader renewal and selection-only Source guard | 26 passed, the same 2 reader regressions failed | `review7-mutation-reader.log`, matching summary JSON |
+| Ignore receipt effort again | 3 passed, the saved-receipt regression failed | `review7-mutation-effort.log`, matching summary JSON |
+
+All three mutations were restored before final validation;
+`review7-mutation-status.json` records their exit status and test counts.
+
+### Final affected validation
+
+Every class ran through `PI_BUILD_ROOT=… scripts/test-macos.sh
+-only-testing:PiAppTests/<Class>`, using this stream's build root and generated
+scratch fixtures. `scripts/test-lanes.py list` was checked; serial classes ran
+alone. The six eligible parallel classes ran together with four workers.
+
+| Class | Passed |
+| --- | ---: |
+| SubagentReaderTests | 28 |
+| SubagentEffortTests | 4 |
+| SubagentTranscriptTests | 11 |
+| SubagentSteeringPresentationTests | 9 |
+| SubagentSteeringWorkspaceTests | 4 |
+| TranscriptFindTests | 11 |
+| TranscriptRevealTests | 10 |
+| SubagentNavigationTests | 7 |
+| SubagentMarkdownTests | 16 |
+| SubagentPerformanceTests | 2 |
+| SubagentEffortGalleryTests | 1 |
+| **Total** | **103** |
+
+Zero failures and zero skips. Logs, summaries and case lists are
+`review7-final-{reader,parallel,navigation,markdown,performance,gallery}.*`;
+`review7-final-status.json` records the six runs. No named result bundle was
+created; the native script pruned older automatically named bundles.
+
+The 55,812-byte Markdown result in a 400-message history had a 15.45 ms worst cold
+draw, 3.05 ms worst Markdown batch and 52.83 ms heartbeat gap. Expansion measured
+25.03 ms worst draw, 15.01 ms Markdown batch and 77.17 ms heartbeat gap. All existing
+budgets passed; 20 progress updates caused zero sidebar recomputations. These are
+test-host observations, not signed-release performance claims.
+
+### Gallery and boundaries
+
+Final gallery: `gallery-review7-details/manifest.txt`, **12 PNGs**, all inspected:
+light/dark × 1240×800/920×600 × card/picker/child. Card captures expose the full
+grid; the narrow capture scrolls just enough to keep Tokens and the Cost note
+inside the transcript viewport. Picker rows retain effective effort, numbered
+children, complete footer and window containment. Side-pane scenes retain the
+main-column pill and the child's readable effort/header. The initial gallery
+under `gallery-review7-details-initial/` is retained only as evidence of the
+baseline issue and is superseded by the final gallery.
+
+No cost accounting, webhook, helper-package, permission, capture, tool, vault,
+side-draft persistence or journal changes. Generated fixtures and isolated native
+test hosts only; no installed app, real preferences, Keychain or paid-provider calls.
+Release/design notes were updated. Remaining work is the lead's independent
+review and integration; this round makes no new claim about earlier full-lane
+flakes.

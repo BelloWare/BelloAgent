@@ -39,6 +39,8 @@ struct SubagentToolView: Equatable, Sendable {
     let operation: String
     let number: Int?
     let effort: String?
+    /// The accepted turn's saved receipt, before any live display overlay.
+    let receiptEffort: String?
     let childID: String?
     var name: String { SubagentLabel.name(number) }
     var title: String { SubagentLabel.title(number, description) }
@@ -62,6 +64,7 @@ struct SubagentToolView: Equatable, Sendable {
         effort = tool.subagentEffort
         let input = tool.input.data(using: .utf8).flatMap { try? JSONDecoder().decode(WireValue.self, from: $0) }?.object ?? [:]
         let output = tool.output.data(using: .utf8).flatMap { try? JSONDecoder().decode(WireValue.self, from: $0) }?.object ?? [:]
+        receiptEffort = tool.nativeSubagent?.object?["effort"]?.string ?? output["effort"]?.string
         accepted = output["accepted"]?.bool
         messageState = tool.agentDeliveryState
         heldByUser = tool.agentHeldByUser == true

@@ -38,7 +38,10 @@ extension WorkspaceModel {
     func revealInTranscript(sessionID id: String, messageID: String, mark: TranscriptReveal.Mark? = nil, fromFind: Bool = false, toolCallID: String? = nil, navigation: HostedReaderToken? = nil) async -> Bool {
         guard !Task.isCancelled, transcriptShows(id), let view = displays[id], let item = record(id) else { return false }
         if let navigation { guard navigation.isCurrent, navigation.reader.key == id else { return false } }
-        else { subagentTab(id)?.renewNavigation() }
+        // Find owns its query and cancels superseded match tasks itself. Its
+        // reveals share the reader intent with pages the query is still reading;
+        // Back/hide/close still retire both through the reader's token.
+        else if !fromFind { subagentTab(id)?.renewNavigation() }
         revealSerial += 1
         view.reveal = TranscriptReveal(messageID: messageID, mark: mark, serial: revealSerial, fromFind: fromFind, toolCallID: toolCallID)
         if view.presentedMessages.contains(where: { $0.id == messageID }) {
