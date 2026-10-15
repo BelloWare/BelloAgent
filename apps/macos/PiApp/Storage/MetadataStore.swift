@@ -643,6 +643,13 @@ actor MetadataStore {
             return saved
         } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
     }
+    /// Only the exact pending copy reviewed by the confirmation can be
+    /// dismissed. Journals, chats, drafts and other metadata stay untouched.
+    func dismissSideKeep(_ expected: ChatRecord) throws {
+        guard let current = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id) else { return }
+        guard current.chat == expected else { throw StoreError.staleRevision }
+        try remove(kind: "side-keep", id: expected.id)
+    }
     /// A handoff must never reappear as an empty chat after a partial write.
     func commitPortableHandoff(_ chat: ChatRecord, draft: DraftRecord, provenance: WireValue?) throws {
         let database = try ready()

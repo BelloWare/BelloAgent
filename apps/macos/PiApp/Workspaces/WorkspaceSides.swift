@@ -447,7 +447,7 @@ extension WorkspaceModel {
                 // Registration can be retried from the preserved recovery
                 // intent. It must not prevent this snapshot from updating the
                 // transcript, run state, Stop control and queue afterwards.
-                self.error = "The side's saved history could not be registered. Its recovery intent was preserved. \(error.localizedDescription)"
+                await reportSideKeepFailure(id: id, title: info.title, error: error)
             }
         }
     }
@@ -469,7 +469,7 @@ extension WorkspaceModel {
         guard let store, let intent = try await store.get(SideKeepIntent.self, kind: "side-keep", id: id), let expected = intent.chat.path,
               let path, Self.sameFile(path, expected) else {
             if chats.contains(where: { $0.id == id }) { return }
-            throw HostError.failure("Keep needs its saved recovery intent and expected conversation file.")
+            throw HostError.failure("Keep could not match this chat to its saved file.")
         }
         try await history.validateIdentity(path: path, id: id)
         let view = displays[id]
@@ -499,17 +499,35 @@ extension WorkspaceModel {
         } else { chats.insert(retained, at: 0) }
         if let info = side(id) { sides[info.parentID]?.kept = true; sides[info.parentID]?.keeping = false; sides[info.parentID]?.keepRequested = false; sides[info.parentID]?.topicID = chats.first(where: { $0.id == id })?.topicID }
         await retainSideReadState(id)
+        sideKeepResolutionRevision &+= 1
+        sideKeepIssues.removeAll { $0.id == id }
     }
     func reconcileSideKeeps() async {
+        guard !reconcilingSideKeeps else { return }
+        reconcilingSideKeeps = true; defer { reconcilingSideKeeps = false }
         do {
-            for intent in try await store?.list(SideKeepIntent.self, kind: "side-keep") ?? [] {
-                do {
-                    guard let path = intent.chat.path else { continue }
-                    if FileManager.default.fileExists(atPath: path) { try await registerKeptSide(id: intent.chat.id, path: path) }
-                    else { try await store?.remove(kind: "side-keep", id: intent.chat.id) }
-                } catch { self.error = "A previous conversation copy needs review. Its file and recovery intent were preserved. \(error.localizedDescription)" }
+            while true {
+                let revision = sideKeepResolutionRevision
+                var issues: [SideKeepIssue] = []
+                for intent in try await store?.list(SideKeepIntent.self, kind: "side-keep") ?? [] {
+                    do {
+                        guard let path = intent.chat.path else { throw HostError.failure("No file location was saved for this chat.") }
+                        try await registerKeptSide(id: intent.chat.id, path: path)
+                    } catch {
+                        // A missing file may still be awaiting publication. Keep
+                        // the registration until it succeeds or is dismissed.
+                        if let current = try await store?.get(SideKeepIntent.self, kind: "side-keep", id: intent.chat.id), current.chat == intent.chat {
+                            issues.append(sideKeepIssue(intent, error: error))
+                        }
+                    }
+                }
+                // An answer or live keep may settle an earlier item while a later
+                // file is checked. Re-read rather than resurrecting its old notice.
+                guard revision == sideKeepResolutionRevision else { continue }
+                sideKeepIssues = issues.sorted { $0.id < $1.id }
+                break
             }
-        } catch { self.error = "A previous conversation copy needs review. Its file and recovery intent were preserved. \(error.localizedDescription)" }
+        } catch { self.error = "Saved conversation copies could not be checked. \(error.localizedDescription)" }
     }
     func closeSide(_ id: String) {
         guard let info = side(id), let view = displays[id], !view.loading, !info.keeping else { return }

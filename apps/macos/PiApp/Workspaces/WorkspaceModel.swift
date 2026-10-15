@@ -120,6 +120,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var openedBeforeReadStates: Set<String> = []
     @Published var selected: SessionDisplay?
     @Published var error: String?
+    @Published var sideKeepIssues: [SideKeepIssue] = []
+    var reconcilingSideKeeps = false
+    var sideKeepResolutionRevision: UInt64 = 0
     /// Projects whose folder was not found when a helper was to start in it,
     /// by project id: the folder named. The pane offers Locate Folder….
     @Published var missingProjectFolders: [String: String] = [:]

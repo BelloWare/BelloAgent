@@ -4,6 +4,7 @@
 
 ## 0.1.128
 
+- [x] Recover saved side chats and forks (`dev/a128-side-keep`): registration validates the chat header without rejecting history warnings; cut-off tails and damaged later records open in the existing recovery UI, with journal bytes untouched. Missing files retain their pending registration. Failed copies appear together by chat/parent name with read-only Open anyway, Show file in Finder and confirmed Dismiss; dismissing removes only the reminder. [Causes, decisions and validation](docs/validation/side-keep-0.1.128.md).
 - [x] Fork chats with sub-agents (`dev/a128-fork-subagents`): copy fallback now writes one marker at the source's required version; promoted APFS clones keep valid checkpoint hashes and replay parity. Forks retain sub-agent cards/results as history, with disabled History controls across appearance changes, their own budget and newly owned children. They never adopt or write the source's children. Existing duplicate-marker damage is rejected unchanged with instructions to fork again from the source; managed-child Fork remains deferred by design. [Root causes, tests, decisions and gallery](docs/validation/fork-subagents-0.1.128.md).
 
 ## 0.1.127
