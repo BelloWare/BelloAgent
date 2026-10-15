@@ -2,11 +2,15 @@ import XCTest
 @testable import PiAgentCore
 
 final class FamilyLimitStopTests: XCTestCase {
-    enum Phase: String, CaseIterable { case idle, ownRequest, childrenDispatched, preLedgerRequest, tools }
+    enum Phase: String, CaseIterable { case idle, ownRequest, childrenDispatched, queuedChildren, preLedgerRequest, tools }
     enum Crosser: String, CaseIterable { case own, backgroundChild, waitedChild, nestedSide, sideChild }
 
     func testEveryPhaseAndChargeSourceDrainsBeforeOneBudgetStop() async throws {
         for phase in Phase.allCases { for crosser in Crosser.allCases {
+            if phase == .queuedChildren {
+                try await assertQueuedChildrenFinalizeWhileOtherRequestsDrain(crosser)
+                continue
+            }
             let label = "\(phase)/\(crosser)", root = try temporaryDirectory()
             defer { try? FileManager.default.removeItem(at:root) }
             let owner = try familyFixture(root:root)
@@ -51,6 +55,96 @@ final class FamilyLimitStopTests: XCTestCase {
             catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit",label) }
             await sideChild.close(); await child.close(); await nested.close(); await side.close(); await owner.close()
         } }
+    }
+
+    private func assertQueuedChildrenFinalizeWhileOtherRequestsDrain(_ crosser: Crosser) async throws {
+        let label = "queuedChildren/\(crosser)", root = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at:root) }
+        let client = LimitRunClient(mode:"queued"), runtimes = LimitChildRuntimes()
+        let coordinator = AgentSteeringCoordinator(open:{ try await runtimes.open($0,$1) },settled:{ await runtimes.settle($0) })
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+            readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
+        await owner.enableFamilyBudget(); await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+        await owner.setCostLimit(0.5)
+        let side = try await self.side("side",parent:owner,root:root)
+        let nested = try await self.side("nested",parent:side,root:root)
+        var accepted: [String] = []
+        for index in 0..<18 {
+            let call = ToolCall(id:"start-\(index)",name:"subagent_start",arguments:["task":JSON("Worker \(index)"),"mode":"background"])
+            let key = try await owner.agentFixtureCall(call,newTask:index == 0)
+            let receipt = try await coordinator.prepare(call,key:key,parent:owner)
+            accepted.append(try XCTUnwrap(receipt["child_id"].text))
+        }
+        try await eventually { await client.children.count == 16 }
+        let child = try await self.child("child",parent:owner,root:root)
+        let sideChild = try await self.child("side-child",parent:side,root:root)
+        let source: AgentSession
+        switch crosser {
+        case .own: source = owner
+        case .backgroundChild, .waitedChild: source = child
+        case .nestedSide: source = nested
+        case .sideChild: source = sideChild
+        }
+        let queued = Array(accepted.suffix(2)), opened = await runtimes.opened
+        XCTAssertEqual(opened.count,18,label)
+        for id in queued {
+            let prepared = try XCTUnwrap(opened[id]), unloadable = await prepared.canUnload
+            XCTAssertFalse(unloadable,"\(label): acceptance pins a prepared runtime until it has a terminal record")
+        }
+        let crossing = try await start(source,"crossing")
+        await owner.limitFixturePhase(model:false,tools:crosser == .waitedChild)
+        try await finish(crossing.0,"crossing",cost:0.6)
+        let before = await owner.stopCount; XCTAssertEqual(before,0,label)
+        // Free one slot while fifteen HTTP requests remain dispatched. Both
+        // prepared queued children hit the budget gate, without a family Stop.
+        await client.releaseFirst()
+        try await eventually { await coordinator.jobs.count == 15 }
+        let stopping = await owner.stopCount, inFlight = await owner.inFlightBudgetAttempts.count
+        let cancelled = await client.cancelled, settled = await runtimes.settled
+        XCTAssertEqual(stopping,0,label); XCTAssertEqual(inFlight,15,label)
+        XCTAssertTrue(cancelled.isEmpty,label); XCTAssertEqual(settled.count,3,label)
+        let family = await owner.agentState()
+        for id in queued {
+            let prepared = try XCTUnwrap(opened[id]), target = AgentTurnTarget(childID:id,turn:1)
+            let terminal = try XCTUnwrap(family.turns[target.id])
+            XCTAssertEqual(terminal.status,.notExecuted,label)
+            XCTAssertEqual(terminal.result?.envelope["error"]["code"].text,"cost_limit",label)
+            XCTAssertEqual(terminal.result?.metadata["effects"].text,"not_executed",label)
+            let state = await prepared.agentState(), closed = await prepared.agentTurnClosed
+            let unloadable = await prepared.canUnload, released = await runtimes.released.contains(target.id)
+            let spend = await prepared.spend
+            XCTAssertEqual(state.latest(id),terminal,"\(label): child and owner must agree before releasing the runtime")
+            XCTAssertTrue(closed,label); XCTAssertTrue(unloadable,label); XCTAssertTrue(released,label)
+            XCTAssertEqual(settled.filter { $0 == target.id }.count,1,label)
+            XCTAssertEqual(spend.reported + spend.unreported,0,label)
+            let reader = try JournalRecordReader(root.appendingPathComponent(id + ".jsonl"))
+            var records: [JSON] = []
+            while let row = try reader.next() {
+                if row["customType"].text == JournalRecordKind.agentTerminal { records.append(row["data"]) }
+            }
+            XCTAssertEqual(records,[try subagentJSON(terminal)],"\(label): the terminal must be durable, exactly once")
+        }
+        await client.releaseAll()
+        try await eventually { await coordinator.jobs.isEmpty }
+        let stopped = await owner.stopCount, spend = await owner.spend, allSettled = await runtimes.settled
+        let allReleased = await runtimes.released, allCancelled = await client.cancelled
+        XCTAssertEqual(stopped,1,label); XCTAssertEqual(spend.usd,4.2,accuracy:1e-9,label)
+        XCTAssertEqual(spend.reported,17,label); XCTAssertEqual(spend.unreported,0,label)
+        XCTAssertEqual(allSettled.count,18,label); XCTAssertEqual(allReleased.count,18,label)
+        XCTAssertTrue(allCancelled.isEmpty,label)
+        // Match the host's idle-runtime guard when opening a follow-up. A
+        // leaked prepared child would reject this with session_busy.
+        await owner.setCostLimit(20)
+        let follow = ToolCall(id:"follow",name:"subagent_send",arguments:["child_id":JSON(queued[0]),"message":"Try again","expected_turn":1])
+        let key = try await owner.agentFixtureCall(follow,newTask:true)
+        let receipt = try await coordinator.prepare(follow,key:key,parent:owner)
+        XCTAssertEqual(receipt["route"].text,"follow_up",label)
+        try await eventually { await coordinator.jobs.isEmpty }
+        let resumed = await owner.agentState(), dispatched = await client.children
+        XCTAssertEqual(resumed.latest(queued[0])?.status,.completed,label)
+        XCTAssertEqual(dispatched.count,17,label)
+        let ownerUnloadable = await owner.canUnload; XCTAssertTrue(ownerUnloadable,label)
+        await runtimes.close(); await sideChild.close(); await child.close(); await nested.close(); await side.close(); await owner.close()
     }
 
     func testBackgroundAndWaitedResultsCannotCancelAnotherDispatchedRequest() async throws {
@@ -221,6 +315,28 @@ final class FamilyLimitStopTests: XCTestCase {
 
 private extension AgentSession {
     func limitFixturePhase(model: Bool, tools: Bool) { modelActive = model; runStatus = tools ? .waitingTool : .running }
+}
+
+/// Uses the same unload guard as HostService's open/release callbacks rather
+/// than closing every child unconditionally, which would hide a missing seal.
+private actor LimitChildRuntimes {
+    var opened: [String:AgentSession] = [:]
+    var settled: [String] = []
+    var released: Set<String> = []
+    func open(_ environment: SubagentEnvironment, _ plan: SubagentPlan) async throws -> AgentSession {
+        let id = plan.origin.link.childSessionID
+        if let previous = opened[id], !(await previous.unloadIfIdle()) {
+            throw AgentError("session_busy","Child is still settling")
+        }
+        let child = try AgentSteeringCoordinator.makeChild(environment,plan)
+        opened[id] = child; return child
+    }
+    func settle(_ child: AgentSession) async {
+        guard let turn = await child.agentLease else { return }
+        settled.append(turn.id)
+        if await child.unloadIfIdle() { released.insert(turn.id) }
+    }
+    func close() async { for child in opened.values { await child.close() } }
 }
 
 private actor LimitRunClient: ModelClient {

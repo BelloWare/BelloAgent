@@ -188,7 +188,9 @@ actor AgentSteeringCoordinator {
             job.turn.status = child == nil ? .notExecuted : .interrupted
             job.turn.result = SubagentToolResult(plan:job.plan,status:job.turn.status,error:(error as? AgentError) ?? AgentError("subagent_interrupted", "The turn did not finish and was not restarted"),began:child != nil)
         }
-        await Task { await self.finishJob(job,child:child) }.value
+        // Acceptance may already have prepared a child before it got a slot.
+        // A gate rejection still seals and releases that never-started runtime.
+        await Task { await self.finishJob(job,child:child ?? job.child) }.value
     }
     func finishJob(_ job: Job, child: AgentSession?) async {
         let lock = gate(job.owner.id)
