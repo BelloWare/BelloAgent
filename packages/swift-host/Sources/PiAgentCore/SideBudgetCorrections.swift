@@ -43,7 +43,8 @@ extension SideBudgetRecovery {
             for cost in relevant {
                 guard let attempt = cost["attemptId"].text, let entry = accounting.attempts[attempt] else { continue }
                 guard let logicalOwner = cost["budgetOwnerSessionId"].text,
-                      logicalOwner == origin.id || family.contains(where: { $0.origin.id == logicalOwner && $0.parents.contains(origin.id) }) else { throw AttemptAccounting.damaged() }
+                      logicalOwner == origin.id || family.contains(where: { $0.origin.id == logicalOwner && $0.parents.contains(origin.id) }) ||
+                        FamilyCharge.retainedSideCharge(cost,entry:entry,owner:origin.id) else { throw AttemptAccounting.damaged() }
                 if let update = try FamilyCharge.merge(cost,into:entry,revision:accounting.revision,legacySession:origin.id) {
                     try accounting.consume(kind:update.kind,data:update.data,spend:&spend)
                     try writer.append(["type":"custom","customType":JSON(update.kind),"data":update.data],flush:true)

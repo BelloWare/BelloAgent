@@ -24,6 +24,9 @@ extension WorkspaceModel {
         return lease
     }
     func requireConnection(_ lease: ConnectionLease) throws {
+        if let item = record(lease.chatID), budgetOwnerIsChanging(item) || workspaceChangesInFlight.contains(item.workspaceID) {
+            throw connectionChanged
+        }
         guard !deletingProfiles.contains(lease.profileID),
               profileDeletionGenerations[lease.profileID, default: 0] == lease.deletionGeneration,
               profiles.contains(where: { $0.id == lease.profileID }) else { throw connectionUnavailable }

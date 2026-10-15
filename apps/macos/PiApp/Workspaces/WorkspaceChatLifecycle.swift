@@ -201,8 +201,8 @@ extension WorkspaceModel {
         guard let id, let item = record(id), !item.isSubagent else { return }
         if pendingChatIDs.contains(id) { discardPendingChat(id); return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
-        if sides[id] != nil { error = "Close the side panel before deleting its parent."; return }
-        if side(id) != nil { error = "Close this side panel before deleting its chat."; return }
+        if let info = side(id), info.pending { Task { await discardPendingSide(info) }; return }
+        if let busy = runningBudgetDependent(of:id) { error = budgetMemberBusy(busy); return }
         guard displays[id]?.hasWork != true, displays[id]?.loading != true else { error = "Stop work and remove queued submissions before deleting this chat"; return }
         Task {
             do {
@@ -220,7 +220,8 @@ extension WorkspaceModel {
                 let count = managed.count
                 let question = ChatQuestion(title: item.isArchived ? "Delete the archived chat “\(item.title)”?" : "Delete this chat?",
                     detail: (item.imported ? "Remove its app index and draft. The imported original stays in place." : "Move its managed conversation files to Trash and remove its draft and retained trace bodies.")
-                        + (count > 0 ? " Includes \(count) managed sub-agent\(count == 1 ? "" : "s")." : ""), action: "Delete Chat")
+                        + (count > 0 ? " Includes \(count) managed sub-agent\(count == 1 ? "" : "s")." : "")
+                        + (sides[id]?.pending == true ? " Its unsent side draft is also removed." : ""), action: "Delete Chat")
                 if !questions.ask(question, about: item.id, destructive: true, answered: { [weak self] confirmed in
                     guard let self, confirmed, self.record(item.id) != nil else { return }
                     self.performDelete(item, store: store)

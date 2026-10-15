@@ -87,7 +87,7 @@ enum SideBudgetRecovery {
         }
         return result
     }
-    private static func readOrigin(_ file: URL) throws -> Origin? {
+    static func readOrigin(_ file: URL) throws -> Origin? {
         let reader = try JournalRecordReader(file)
         var id: String?
         while let line = try reader.nextLine() {

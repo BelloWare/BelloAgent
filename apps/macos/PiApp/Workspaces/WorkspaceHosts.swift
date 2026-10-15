@@ -180,6 +180,7 @@ extension WorkspaceModel {
                   (releasedHelperSessions.contains(id) || displays[id] == nil),
                   SessionInspectorWindows.shared.controller(sessionID: id) == nil,
                   let item = record(id), !deletingFamilies.contains(id),
+                  !budgetOwnerChanges.contains(id), connectionSwitches[id] == nil, !workspaceChangesInFlight.contains(item.workspaceID),
                   let host = hosts[item.workspaceID], host.isReady else { continue }
             let token = UUID(), connection = host.connectionID
             let task = Task { [weak self] in

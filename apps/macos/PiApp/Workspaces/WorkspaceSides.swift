@@ -694,7 +694,7 @@ extension WorkspaceModel {
         parent.draft = draft; parent.directCommand = false; parent.completionVisible = false; draftChanged(parent)
     }
     func enableEditing(_ id: String) {
-        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else { error = "Close the saved side panel and wait for idle before changing tools."; return }
+        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true else { error = "Wait for this chat to finish its work before changing tools."; return }
         guard store != nil else { error = StoreError.unavailable.localizedDescription; return }
         let question = ChatQuestion(title: "Enable editing tools for this saved chat?",
                                     detail: "Future turns may run shell commands and change files in this project with your account's permissions.",
@@ -706,12 +706,15 @@ extension WorkspaceModel {
     }
     func enableEditingAfterConfirmation(_ id: String) async throws {
         guard let store else { throw StoreError.unavailable }
-        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else {
-            throw HostError.failure("Close the saved side panel and wait for idle before changing tools.")
+        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true else {
+            throw HostError.failure("Wait for this chat to finish its work before changing tools.")
         }
         let view = displays[id]
+        try beginBudgetOwnerChange(id)
+        defer { budgetOwnerChanges.remove(id) }
         view?.loading = true
         defer { view?.loading = false }
+        if let host = hosts[item.workspaceID], host.isReady { try await releaseIdleBudgetDependents(of:id,host:host) }
         if opened.contains(id) {
             guard let host = hosts[item.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing tools.") }
             _ = try await host.request("session.close", sessionID: id); helperSessionDidUnload(id)

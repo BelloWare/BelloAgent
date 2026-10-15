@@ -529,23 +529,44 @@ public actor NativeHostService {
     private func namedSessionCommand(_ method:String, id:String, params:JSON, directory:URL) async throws -> JSON? {
         if method.hasPrefix("debug.") { return try await traces.command(method,session:id,params:params) }
         switch method {
+        case "session.releaseDependents":
+            return try await withRuntimeGate {
+                let family = try await loadedBudgetFamily(id,directory:directory)
+                // Inspect every runtime before releasing any writer. This also
+                // catches hidden owners/readers and work between HTTP requests.
+                for (value, _) in family.sorted(by: { $0.1 > $1.1 }) {
+                    guard await value.canUnload else { throw busyBudgetMember(value.id,names:params["names"]) }
+                }
+                var released: [JSON] = []
+                for (value, _) in family.sorted(by: { $0.1 > $1.1 }) where value.id != id {
+                    guard await value.unloadIfIdle() else { throw busyBudgetMember(value.id,names:params["names"]) }
+                    await didUnloadBudgetMember(value)
+                    released.append(JSON(value.id))
+                }
+                return ["accepted":true,"released":.array(released)]
+            }
         case "session.forget":
             try await withRuntimeGate {
-                var family: [(AgentSession, Int)] = []
-                var owners: Set<String> = [id]
-                for value in sessions.values {
-                    let parents = await value.sideBudgetIDs
-                    if value.id == id || parents.contains(id) { family.append((value,parents.count)); owners.insert(value.id) }
-                }
-                for value in sessions.values where !owners.contains(value.id) {
-                    if let owner = await value.subagents.origin?.link.budgetOwnerSessionID, owners.contains(owner) {
-                        family.append((value,129))
-                    }
-                }
+                let family = try await loadedBudgetFamily(id,directory:directory)
                 // Preflight the whole family before detaching any writer. The
                 // surviving saved sides reopen as independent orphaned chats.
                 for (value, _) in family {
                     guard await value.canUnload else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
+                }
+                // Deleting a side can remove the only priced/token evidence
+                // after its ancestor's append failed. Repair surviving owners
+                // before downward mirrors, detachment, capture clearing or Trash.
+                for ancestor in try SideBudgetRecovery.ancestors(of:id,directory:directory).reversed() {
+                    let records = try SideBudgetRecovery.deletionRecords(side:id,ancestor:ancestor,directory:directory)
+                    let committed: [JSON]
+                    if let runtime = sessions[ancestor] {
+                        try await runtime.importDeletionRecords(records)
+                        committed = await runtime.committedSideCharges()
+                    } else {
+                        try SideBudgetRecovery.importDeletionRecords(records,owner:ancestor,directory:directory)
+                        committed = try SideBudgetRecovery.committedSideCharges(owner:ancestor,directory:directory)
+                    }
+                    try await mirrorFamilyCharges(committed,owner:ancestor,directory:directory)
                 }
                 let costs: [JSON]
                 if let owner = sessions[id] { costs = await owner.committedSideCharges() }
@@ -553,14 +574,37 @@ public actor NativeHostService {
                 try await mirrorFamilyCharges(costs,owner:id,directory:directory)
                 for (value, _) in family.sorted(by: { $0.1 > $1.1 }) {
                     guard await value.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
-                    sessions.removeValue(forKey:value.id); profiles.removeValue(forKey:value.id); subagentReaders.remove(value.id)
-                    dirty.removeValue(forKey:value.id)
-                    emit(["v":1,"kind":"event","hostEpoch":JSON(epoch),"sessionId":JSON(value.id),"seq":JSON(await value.sequence),"type":"session.unloaded","payload":[:]])
+                    await didUnloadBudgetMember(value)
                 }
             }
             _=try await traces.command("debug.clear",session:id,params:[:]); return ["accepted":true]
         default: return nil
         }
+    }
+    /// Runtime ancestry governs loaded sides; persisted ancestry also finds a
+    /// side-owned child reader opened without its direct owner's runtime.
+    /// Call under the runtime gate. Pane placement never defines this family.
+    private func loadedBudgetFamily(_ id: String, directory: URL) async throws -> [(AgentSession,Int)] {
+        var family: [(AgentSession,Int)] = []
+        var owners = Set(try SideBudgetRecovery.savedFamily(owner:id,directory:directory).map { $0.origin.id })
+        owners.insert(id)
+        for value in sessions.values {
+            let parents = await value.sideBudgetIDs
+            if value.id == id || parents.contains(id) { family.append((value,parents.count)); owners.insert(value.id) }
+        }
+        for value in sessions.values where !owners.contains(value.id) {
+            if let owner = await value.subagents.origin?.link.budgetOwnerSessionID, owners.contains(owner) { family.append((value,129)) }
+        }
+        return family.sorted { $0.0.id < $1.0.id }
+    }
+    private func busyBudgetMember(_ id: String, names: JSON) -> AgentError {
+        let name = String((names[id].text ?? id).prefix(120))
+        return AgentError("side_budget_busy","Wait for “\(name)” to finish its work and queued messages before changing this chat.")
+    }
+    private func didUnloadBudgetMember(_ value: AgentSession) async {
+        sessions.removeValue(forKey:value.id); profiles.removeValue(forKey:value.id); subagentReaders.remove(value.id)
+        dirty.removeValue(forKey:value.id)
+        emit(["v":1,"kind":"event","hostEpoch":JSON(epoch),"sessionId":JSON(value.id),"seq":JSON(await value.sequence),"type":"session.unloaded","payload":[:]])
     }
     /// Commands on an open chat that a quiesced workspace still answers:
     /// reads, a stop, and a side kept or closed. A fork and a new side

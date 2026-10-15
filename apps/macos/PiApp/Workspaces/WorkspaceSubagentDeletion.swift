@@ -11,6 +11,8 @@ extension WorkspaceModel {
     func deleteSubagentFamily(_ parent: ChatRecord) async throws {
         guard !parent.isSubagent, !parent.imported, let store, displays[parent.id]?.hasWork != true,
               displays[parent.id]?.loading != true else { throw HostError.failure("Stop work before deleting this family.") }
+        try beginBudgetOwnerChange(parent.id)
+        defer { budgetOwnerChanges.remove(parent.id) }
         let existing = try await store.pendingFamilyDeletions().filter { $0.ownerID == parent.id }
         if !existing.isEmpty { try await finishFamilyDeletion(existing); return }
         guard deletingFamilies.insert(parent.id).inserted else { throw HostError.failure("This family is already being deleted.") }
@@ -75,6 +77,7 @@ extension WorkspaceModel {
         // from the owner's committed charges, even with no loaded runtime or
         // capture evidence. Await that durable repair before tombstones/Trash.
         // Starting only the project helper needs no model profile/credential.
+        try await releaseIdleBudgetDependents(of:owner.id,host:host)
         _ = try await host.request("session.forget", sessionID: owner.id)
     }
 
@@ -151,6 +154,11 @@ extension WorkspaceModel {
             try await store.removeAll(kind: "receipt:\(member.id)")
             try await store.removeAll(kind: "pending:\(member.id)")
             contextReadings.removeValue(forKey: member.id); subagentSummaries.removeValue(forKey: member.id)
+            for (parentID, info) in sides where parentID == member.id || info.id == member.id {
+                sides.removeValue(forKey:parentID)
+                if info.pending { displays.removeValue(forKey:info.id); forgetOpened(info.id) }
+                else { displays[info.id]?.presentation.cancel() }
+            }
             chats.removeAll { $0.id == member.id }; displays.removeValue(forKey: member.id); helperSessionDidUnload(member.id)
             forgetOpened(member.id)
             if selectedID == member.id { selectedID = nil; selected = nil }

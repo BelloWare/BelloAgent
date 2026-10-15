@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Deleting a side at any depth repairs its numeric evidence into surviving ancestors before acknowledgement or Trash, preserving spend and token totals after interrupted settlements. Owner connection, editing, folder and deletion changes release idle dependent runtimes first, with a named blocker for running work and the pinned-owner guard intact. [Round 13 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-13-side-deletion-and-owner-unloading).
+
 - [x] Raising a shared budget rearms its next stop even when only a side resumes; old cancelled work stays stopped. Settlement failures drain every ancestor and preserve terminal recovery evidence. Copying session references uses indexed family membership, restoring the previous join's query cost on a 30,000-attempt fixture. [Round 12 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-12-budget-rearming-settlement-cleanup-and-reference-query-cost).
 
 - [x] Shared-budget stops finish every dispatched request, including when child results wake the parent. One guarded stop path rechecks settlement and model completion, blocks later tools, and stops nested-side tools after draining. Retry backoff is no longer mistaken for a live request. Recovered saved sides become independent copies with retained historical spend and their own editable default limit. [Round 11 validation and limit state machine](docs/validation/sub-cost-0.1.128.md#lead-review-round-11-request-draining-and-recovered-sides).

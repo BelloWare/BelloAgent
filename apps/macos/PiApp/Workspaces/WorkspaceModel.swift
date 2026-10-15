@@ -224,6 +224,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var projectSidebarWrites: [String: Task<Void, Never>] = [:]
     var dirtyProjectSidebarStates: Set<String> = []
     @Published var workspaceChangesInFlight: Set<String> = []
+    var budgetOwnerChanges: Set<String> = []
     @Published var installPreparing = false
     @Published var showConversationContent = false
     var contentSessionID: String?

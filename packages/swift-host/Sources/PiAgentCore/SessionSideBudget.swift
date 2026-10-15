@@ -51,7 +51,8 @@ extension AgentSession {
             guard let entry else { return false }
             if entry.admission == nil {
                 guard let owner = cost["budgetOwnerSessionId"].text,
-                      owner == id || sideBudgetMembers[owner]?.contains(id) == true else { throw AttemptAccounting.damaged() }
+                      owner == id || sideBudgetMembers[owner]?.contains(id) == true ||
+                        FamilyCharge.retainedSideCharge(cost,entry:entry,owner:id) else { throw AttemptAccounting.damaged() }
             }
             child = nil
         }

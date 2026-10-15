@@ -3,6 +3,13 @@ import Foundation
 /// One compatibility/merge rule for durable physical charges, whether evidence
 /// arrives through recovery, adoption, a live mirror or a failed settlement.
 enum FamilyCharge {
+    /// A deleted side's existing charge remains part of every ancestor's
+    /// ledger. Its recorded ancestry can authorize refreshing that same entry,
+    /// never admitting new work or importing a previously unknown charge.
+    static func retainedSideCharge(_ cost: JSON, entry: AttemptAccounting.Entry, owner: String) -> Bool {
+        entry.contribution?["budgetOwnerSessionId"] == cost["budgetOwnerSessionId"] &&
+        entry.contribution?["sideParents"].list.contains(JSON(owner)) == true
+    }
     struct Update {
         var kind: String
         var data: JSON

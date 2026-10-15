@@ -140,6 +140,69 @@ final class SideBudgetUpgradeTests: XCTestCase {
         }
     }
 
+    func testDeletingSidesAtEveryDepthPreservesSurvivingAncestorTotalsAfterEveryCrash() async throws {
+        var cases = 0
+        for shape in SideBudgetUpgradeFixture.Shape.allCases {
+            for family in SideBudgetUpgradeFixture.Family.allCases {
+                for usage in SideBudgetUpgradeFixture.Usage.allCases {
+                    for crash in SideBudgetUpgradeFixture.Crash.allCases {
+                        let controlRoot = try temporaryDirectory()
+                        defer { try? FileManager.default.removeItem(at:controlRoot) }
+                        var control = SideBudgetUpgradeFixture(root:controlRoot,shape:shape,family:family,usage:usage,crash:crash)
+                        try control.write(); let controlHost = try await control.host()
+                        let baseline = try await control.open(controlHost,"main").costSnapshot
+                        control.assertTotals(baseline,"control")
+                        await controlHost.shutdown()
+                        for target in family.sides {
+                            for sideLoaded in [false,true] {
+                                for childLoaded in family.agents ? [false,true] : [false] {
+                                    let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+                                    var f = SideBudgetUpgradeFixture(root:root,shape:shape,family:family,usage:usage,crash:crash)
+                                    try f.write(); var host = try await f.host()
+                                    let label = "\(shape)/\(family)/\(usage)/\(crash)/delete=\(target)/side=\(sideLoaded)/child=\(childLoaded)"
+                                    var stage = "open"
+                                    do {
+                                        if childLoaded { _ = try await f.open(host,"child") }
+                                        if sideLoaded {
+                                            _ = try await f.open(host,"main")
+                                            for id in family.sides { _ = try await f.open(host,id) }
+                                        }
+                                        // No capture evidence, and the cold case never opens the
+                                        // owner first: doing so would hide the lost-evidence bug.
+                                        stage = "forget"
+                                        _ = try await host.command("session.forget",sessionID:target,params:[:])
+                                        try FileManager.default.removeItem(at:f.file(target))
+                                        if family.agents, target == family.owner { try FileManager.default.removeItem(at:f.file("child")) }
+                                        for pass in 0..<2 {
+                                            for id in ["main"] + family.sides.filter({ $0 != target }) {
+                                                stage = "reopen \(id) pass \(pass)"
+                                                let snapshot = try await f.open(host,id).costSnapshot
+                                                f.assertTotals(snapshot,label + "/" + id)
+                                                for field in ["spentUSD","reportedRequests","unreportedRequests","familyUsage"] {
+                                                    XCTAssertEqual(snapshot[field],baseline[field],label + "/" + id + "/" + field)
+                                                }
+                                            }
+                                            await host.shutdown()
+                                            if pass == 0 { host = try await f.host() }
+                                        }
+                                        // Retained charges remain mirrorable after their
+                                        // original side disappears, including cold deletion
+                                        // of a surviving ancestor on a later launch.
+                                        host = try await f.host()
+                                        stage = "forget surviving main"
+                                        _ = try await host.command("session.forget",sessionID:"main",params:[:])
+                                    } catch { XCTFail("\(label) at \(stage): \(error)") }
+                                    await host.shutdown(); cases += 1
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(cases,1080)
+    }
+
     func testActualLegacyWritersAcrossFamiliesUsageCrashesLoadingAndOperations() async throws {
         var cases = 0
         for shape in SideBudgetUpgradeFixture.Shape.allCases {

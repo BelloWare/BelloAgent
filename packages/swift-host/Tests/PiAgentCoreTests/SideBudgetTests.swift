@@ -2,6 +2,49 @@ import XCTest
 @testable import PiAgentCore
 
 final class SideBudgetTests: XCTestCase {
+    func testForgetDamagedUnrelatedHistoryDoesNotInventBudgetAncestry() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let host = try await host(root)
+        for prefix in ["","fork_","side_"] {
+            let file = root.appendingPathComponent(prefix + "damaged.jsonl")
+            try Data("cut off before a valid origin".utf8).write(to:file)
+            _ = try await host.command("session.forget",sessionID:"damaged",params:[:])
+            XCTAssertEqual(try Data(contentsOf:file),Data("cut off before a valid origin".utf8))
+            try FileManager.default.removeItem(at:file)
+        }
+        await host.shutdown()
+    }
+
+    func testReleaseDependentsPreflightsRunningNestedSidesAndKeepsTheOwnerPinnedUntilIdle() async throws {
+        for running in ["side","nested","sibling"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let host = try await host(root), owner = try await open(host,"main")
+            for (id,parent) in [("side","main"),("nested","side"),("sibling","main")] {
+                _ = try await host.command("side.open",sessionID:parent,params:["sideSessionId":JSON(id)])
+            }
+            let value = await host.loadedSession(running), nested = try XCTUnwrap(value)
+            let request = try await start(nested,attempt:"running")
+            do {
+                _ = try await host.command("session.releaseDependents",sessionID:"main",params:[:])
+                XCTFail("Preflight must reject actual in-flight work without unloading idle siblings")
+            } catch {
+                XCTAssertEqual((error as? AgentError)?.code,"side_budget_busy")
+                XCTAssertTrue((error as? AgentError)?.message.contains(running) == true)
+            }
+            for id in ["main","side","nested","sibling"] { let loaded = await host.loadedSession(id); XCTAssertNotNil(loaded) }
+            do { _ = try await host.command("session.close",sessionID:"main",params:[:]); XCTFail("Keep the pinned-owner guard") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"session_busy") }
+            try await finish(request,attempt:"running",cost:0.2)
+            let result = try await host.command("session.releaseDependents",sessionID:"main",params:[:])
+            XCTAssertEqual(Set(result["released"].list.compactMap(\.text)),["side","nested","sibling"])
+            for id in ["side","nested","sibling"] { let loaded = await host.loadedSession(id); XCTAssertNil(loaded) }
+            let loadedOwner = await host.loadedSession("main"); XCTAssertTrue(loadedOwner === owner)
+            _ = try await host.command("session.close",sessionID:"main",params:[:])
+            let unloaded = await host.loadedSession("main"); XCTAssertNil(unloaded)
+            await host.shutdown()
+        }
+    }
+
     func testFailedSettlementDrainsEveryAncestorAndPreservesTerminalEvidence() async throws {
         for failedWriters in [["main"], ["side"], ["main","side"]] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
@@ -37,6 +80,54 @@ final class SideBudgetTests: XCTestCase {
             XCTAssertEqual(spend.usd,0.7); XCTAssertEqual(spend.reported,1); XCTAssertEqual(spend.unreported,0)
             XCTAssertEqual(usage["total"].int,120,"Saved terminal evidence repairs the failed ancestor without captures")
             await recovered.close()
+        }
+    }
+
+    func testReleaseFindsColdSideOwnedReadersAndDoesNotFollowForkProvenance() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        var f = SideBudgetUpgradeFixture(root:root,shape:.current,family:.nestedAgents,usage:.priced,crash:.afterAll)
+        try f.write(); let host = try await f.host()
+        _ = try await f.open(host,"child"); _ = try await f.open(host,"main")
+        _ = try await host.command("session.fork",sessionID:"main",params:["forkSessionId":"fork"])
+        let independent = try await host.command("session.releaseDependents",sessionID:"fork",params:[:])
+        XCTAssertTrue(independent["released"].list.isEmpty)
+        let child = await host.loadedSession("child"); XCTAssertNotNil(child)
+        let result = try await host.command("session.releaseDependents",sessionID:"main",params:[:])
+        XCTAssertEqual(result["released"].list,["child"])
+        let released = await host.loadedSession("child"), fork = await host.loadedSession("fork")
+        XCTAssertNil(released); XCTAssertNotNil(fork)
+        await host.shutdown()
+    }
+
+    func testColdSideDeletionRepairsEveryAncestorAfterRealSettlementAppendFailures() async throws {
+        for failedWriters in [["main"], ["side"], ["main","side"]] {
+            for deleted in ["side","nested"] {
+                let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+                let main = try await session("main",root:root,failSettlement:failedWriters.contains("main"))
+                let sideFile = root.appendingPathComponent("side_side.jsonl"), seed = await main.sideSeed()
+                do {
+                    let writer = try SessionJournal(url:sideFile,id:"side",cwd:root,binding:fixtureProfile().binding,create:true)
+                    try writer.append(["type":"custom","customType":JSON(JournalRecordKind.sideOrigin),"data":seed.info])
+                }
+                let side = try await session("side",root:root,parent:main,path:sideFile.path,failSettlement:failedWriters.contains("side"))
+                let nested = try await session("nested",root:root,parent:side)
+                _ = try await nested.keep(whenFinished:false)
+                let request = try await start(nested,attempt:"settling")
+                do { try await finish(request,attempt:"settling",cost:0.7); XCTFail("Inject failed owner settlement") }
+                catch { XCTAssertEqual((error as? AgentError)?.code,"accounting_persistence") }
+                for member in [nested,side,main] { await member.close() }
+                let host = try await host(root)
+                _ = try await host.command("session.forget",sessionID:deleted,params:[:])
+                try FileManager.default.removeItem(at:root.appendingPathComponent("side_" + deleted + ".jsonl"))
+                for id in ["main"] + (deleted == "nested" ? ["side"] : []) {
+                    let owner = try await open(host,id,path:root.appendingPathComponent((id == "main" ? "" : "side_") + id + ".jsonl").path)
+                    let spend = await owner.spend, usage = await owner.familyUsage
+                    XCTAssertEqual(spend.usd,0.7,"\(failedWriters), deleting \(deleted)")
+                    XCTAssertEqual(spend.reported,1); XCTAssertEqual(spend.unreported,0)
+                    XCTAssertEqual(usage["total"].int,120)
+                }
+                await host.shutdown()
+            }
         }
     }
 
@@ -168,6 +259,11 @@ final class SideBudgetTests: XCTestCase {
             XCTAssertTrue(permits.isEmpty,"Exercise queued/tool work between model requests")
             do { _ = try await host.command("session.close",sessionID:owner.id,params:[:]); XCTFail("An unsettled managed child still needs its writer") }
             catch { XCTAssertEqual((error as? AgentError)?.code,"session_busy") }
+            do { _ = try await host.command("session.releaseDependents",sessionID:owner.id,params:[:]); XCTFail("Tool/queued work must block family release between requests") }
+            catch {
+                XCTAssertEqual((error as? AgentError)?.code,"side_budget_busy")
+                XCTAssertTrue((error as? AgentError)?.message.contains("child") == true)
+            }
             let retained = await host.loadedSession(owner.id)
             XCTAssertTrue(retained === owner)
             await host.shutdown()
