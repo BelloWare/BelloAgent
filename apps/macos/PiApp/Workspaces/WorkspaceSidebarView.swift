@@ -14,6 +14,7 @@ import Combine
     private var observer: ShellObserver!
     private var layoutWatch: AnyCancellable?
     private let title = PiKit.TextLine(PiKit.Line("Projects", font: PiKit.Font.micro, color: .piInkTertiary, tracking: 0.5, uppercased: true))
+    private(set) var headerMenu: PiKit.MenuControl!
     let newChat = PiKit.IconButton(symbol: "square.and.pencil", label: "New Chat (⌘N)", tone: .accent, size: 24, filled: true)
     let manage = PiKit.IconButton(symbol: "folder.badge.plus", label: "Add or manage projects", size: 24)
     let filterField = PiKit.TextField(placeholder: "Search chats and messages", icon: "magnifyingglass")
@@ -64,6 +65,10 @@ import Combine
         wantsLayer = true
         setAccessibilityElement(false)
 
+        headerMenu = PiKit.MenuControl(label: "Sidebar options", identifier: "sidebarMenu", face: title,
+            onHover: { [weak self] hovering in self?.title.line.color = hovering ? .piAccent : .piInkTertiary }) { [weak model] in
+                if let model { SidebarHeaderActions.entries(model: model) }
+            }
         newChat.setAccessibilityIdentifier("newChat")
         newChat.onPress = { [weak self] in self?.model.newChat() }
         manage.setAccessibilityIdentifier("manageProjects")
@@ -118,7 +123,7 @@ import Combine
         settings.onPress = { [weak self] in self?.model.showProfiles = true }
 
         selectionBar.isHidden = true
-        for view in [title, newChat, manage, filterField, selectionBar, scroll, empty, hairline,
+        for view in [headerMenu!, newChat, manage, filterField, selectionBar, scroll, empty, hairline,
                      report, inspector, resources, background, archive, settings] as [NSView] { addSubview(view) }
         model.sidebarFilter = filter
         // Content matches arrive after the titles: the list takes them in.
@@ -172,10 +177,10 @@ import Combine
     }
 
     private func refreshChrome() {
-        let trusted = model.workspaces.contains { $0.id == model.selectedWorkspaceID && $0.trusted }
         let enabled = inheritedEnabled
-        newChat.isEnabled = trusted && enabled
-        newChat.label = model.selectedWorkspaceID == nil ? "Create or choose a project before starting a chat" : "New Chat (⌘N)"
+        newChat.isEnabled = model.canStartSidebarChat && enabled
+        headerMenu.isEnabled = enabled
+        newChat.label = !model.canStartSidebarChat ? "Create or choose a project before starting a chat" : "New Chat (⌘N)"
         let onReport = model.page == .report, onBackground = model.page == .background
         report.label = onReport ? "Back to Chats" : "Usage Report (⇧⌘R)"
         Self.set(report, tone: onReport ? .accent : .neutral, filled: onReport)
@@ -329,7 +334,7 @@ import Combine
         let titleSize = title.intrinsicContentSize
         manage.frame = CGRect(x: w - PiSpacing.lg - 24, y: 10, width: 24, height: 24)
         newChat.frame = CGRect(x: manage.frame.minX - 4 - 24, y: 10, width: 24, height: 24)
-        title.frame = CGRect(x: PiSpacing.lg, y: PiKit.round(10 + (24 - titleSize.height) / 2, piScale),
+        headerMenu.frame = CGRect(x: PiSpacing.lg, y: PiKit.round(10 + (24 - titleSize.height) / 2, piScale),
                              width: min(titleSize.width, max(0, newChat.frame.minX - 4 - PiSpacing.lg)), height: titleSize.height)
         var y = Self.headerHeight
         let fieldHeight = filterField.intrinsicContentSize.height

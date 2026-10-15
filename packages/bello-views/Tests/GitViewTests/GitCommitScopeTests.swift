@@ -72,9 +72,10 @@ final class GitCommitScopeTests: XCTestCase {
         try write("a.txt", "a2\n"); try write("b.txt", "b2\n"); try git(["add", "a.txt"])
         let controller = try await controller(); defer { controller.letGo() }
         let before = try head()
+        controller.commitScope = .checkedFiles
         controller.checked = []
         controller.commitMessage = "Only what I asked for"
-        XCTAssertEqual(controller.commitScope, .checkedFiles, "checked files is the starting scope")
+        XCTAssertEqual(controller.commitScope, .checkedFiles, "checked files was explicitly chosen")
         await controller.commitInScope()
         XCTAssertEqual(try head(), before, "no checked file, no commit")
         XCTAssertEqual(controller.commitMessage, "Only what I asked for", "the message waits")

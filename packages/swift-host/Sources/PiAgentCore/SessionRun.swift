@@ -25,13 +25,17 @@ extension AgentSession {
     /// (overload, rate limits, 5xx, transport and cut streams), never a
     /// context overflow, is retried up to settings.retry.maxRetries times (3),
     /// after 2, 4 and 8 seconds. Anything else, and a cancellation, fails at once.
+    /// Ours (owner 2026-10-15): an incomplete with no reason also retries;
+    /// an explicit incomplete reason never becomes transient through its text.
     static func isRetryable(_ error: AgentError) -> Bool {
-        !isContextOverflow(error) && PiProviderRules.isRetryableText(error.piMessage)
+        guard error.code != "provider_incomplete", !isContextOverflow(error) else { return false }
+        return error.code == "provider_incomplete_unexplained" || PiProviderRules.isRetryableText(error.piMessage)
     }
     /// Case 1 of pi's isContextOverflow: the provider's text names an overflow.
     /// Ours: the gateway's structured overflow codes count too.
     static func isContextOverflow(_ error: AgentError) -> Bool {
-        error.failure?.contextRejection == true || PiProviderRules.isOverflowText(error.piMessage)
+        guard error.code != "provider_incomplete" else { return false }
+        return error.failure?.contextRejection == true || PiProviderRules.isOverflowText(error.piMessage)
     }
     static func httpStatus(in message: String) -> Int? {
         guard let range = message.range(of: #"HTTP (\d{3})"#, options: .regularExpression) else { return nil }
@@ -66,8 +70,17 @@ extension AgentSession {
                 let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,cacheSessionID:promptCacheSessionID,turnID:turnID,purpose:purpose,lifecycle:try await requestLifecycle(turnID:turnID,purpose:purpose,requestMessages:messages),onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
                 modelReplyMs = nowMS()-started; modelRequestsMs += modelReplyMs; measured = true
                 return reply
+            } catch is UnexplainedIncompleteCancellation {
+                try discardIncompleteReply()
+                throw CancellationError()
             } catch let error as AgentError {
                 modelRequestsMs += nowMS()-started; measured = true
+                if error.code == "provider_incomplete_unexplained" || error.discardIncompleteReply {
+                    // Discard this attempt even when retrying is disabled or
+                    // exhausted. Its ledger/capture and accounting remain;
+                    // neither a retry nor crash recovery may adopt its reply.
+                    try discardIncompleteReply()
+                }
                 guard attempt < attempts, Self.isRetryable(error), !Task.isCancelled else {
                     throw attempt > 1 ? AgentError(error.code, "Failed after \(attempt) attempts. " + error.message,failure:error.failure,attemptID:error.attemptID,providerMessage:error.providerMessage) : error
                 }
@@ -221,7 +234,7 @@ extension AgentSession {
                     guard let reply=completed else { throw AgentError("provider_failed","No model response") }
                     // Pi's mapStopReason: incomplete for any reason but max_output_tokens is an error.
                     if reply.truncated, let reason=reply.terminal?.incompleteReason, reason != "max_output_tokens" {
-                        let text=PiErrorText.incomplete(reason); throw AgentError("provider_incomplete",text,providerMessage:text)
+                        throw PiErrorText.incompleteFailure(JSON(reason))
                     }
                     turnModelMs += modelMs; cumulativeModelMs = ObservedDuration.adding(cumulativeModelMs, modelMs)
                     modelActive=false

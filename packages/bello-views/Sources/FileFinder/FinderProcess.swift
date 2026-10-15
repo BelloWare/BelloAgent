@@ -32,13 +32,13 @@ enum FinderProcess {
     /// Runs `/usr/bin/git` with `arguments` in `directory`: its standard
     /// output, at most `limit` bytes (more is a failure, never a cut list).
     static func git(_ arguments: [String], in directory: String, limit: Int, timeout: TimeInterval = 60,
-                    environment: [String: String] = FinderProcess.environment) async throws -> Output {
+                    environment: [String: String] = FinderProcess.environment, input: Data? = nil) async throws -> Output {
         let handle = Running()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Output, any Error>) in
                 queue.async {
                     do { continuation.resume(returning: try execute(arguments, in: directory, limit: limit, timeout: timeout,
-                                                                    environment: environment, handle: handle)) }
+                                                                    environment: environment, input: input, handle: handle)) }
                     catch { continuation.resume(throwing: error) }
                 }
             }
@@ -71,14 +71,23 @@ enum FinderProcess {
     }
 
     private static func execute(_ arguments: [String], in directory: String, limit: Int, timeout: TimeInterval,
-                                environment: [String: String], handle: Running) throws -> Output {
+                                environment: [String: String], input: Data?, handle: Running) throws -> Output {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
         process.arguments = ["-c", "core.quotepath=off"] + arguments
         process.currentDirectoryURL = URL(fileURLWithPath: directory, isDirectory: true)
         process.environment = environment
         let stdout = Pipe(), stderr = Pipe()
-        process.standardOutput = stdout; process.standardError = stderr; process.standardInput = FileHandle.nullDevice
+        process.standardOutput = stdout; process.standardError = stderr
+        let stdin = input == nil ? nil : Pipe()
+        process.standardInput = stdin ?? FileHandle.nullDevice
+        let writer = stdin?.fileHandleForWriting
+        var inputOffset = 0, inputClosed = writer == nil
+        if let writer {
+            _ = fcntl(writer.fileDescriptor, F_SETFL, fcntl(writer.fileDescriptor, F_GETFL) | O_NONBLOCK)
+            _ = fcntl(writer.fileDescriptor, F_SETNOSIGPIPE, 1)
+        }
+        defer { if !inputClosed { try? writer?.close() } }
         let out = stdout.fileHandleForReading, err = stderr.fileHandleForReading
         defer { try? out.close(); try? err.close() }
         guard handle.adopt(process) else { throw CancellationError() }
@@ -98,6 +107,20 @@ enum FinderProcess {
                 if ended.allSatisfy({ $0 }) { break }
                 if now - (exitedAt ?? now) >= 0.25 { failure = failure ?? "git's output did not end"; break }
             }
+            if let writer, let input, !inputClosed {
+                if inputOffset < input.count, failure == nil, process.isRunning {
+                    let count = input.withUnsafeBytes { bytes in
+                        write(writer.fileDescriptor, bytes.baseAddress!.advanced(by: inputOffset), min(16_384, input.count - inputOffset))
+                    }
+                    if count > 0 { inputOffset += count }
+                    else if count < 0, errno != EAGAIN, errno != EWOULDBLOCK, errno != EINTR {
+                        failure = failure ?? "git's input could not be written"; handle.stop()
+                    }
+                }
+                if inputOffset == input.count || failure != nil || !process.isRunning {
+                    try? writer.close(); inputClosed = true
+                }
+            }
             for index in 0..<2 where !ended[index] {
                 let count = read(descriptors[index], &scratch, scratch.count)
                 if count > 0 {
@@ -112,6 +135,7 @@ enum FinderProcess {
                 }
             }
             var polls = descriptors.enumerated().map { pollfd(fd: ended[$0.offset] ? -1 : $0.element, events: Int16(POLLIN), revents: 0) }
+            if let writer, !inputClosed { polls.append(pollfd(fd: writer.fileDescriptor, events: Int16(POLLOUT), revents: 0)) }
             _ = poll(&polls, nfds_t(polls.count), 20)
         }
         process.waitUntilExit()

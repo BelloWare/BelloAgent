@@ -313,17 +313,37 @@ final class GitRepositorySwitchTests: GitPanelTestCase, SerialTestLane {
         ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { descendants(type, in: $0) }
     }
 
-    @MainActor private func openForm(_ stash: Bool, in panel: GitPanelView) async throws -> GitNamePopover {
+    @MainActor private struct OpenForm {
+        let view: GitRepositoryForm
+        let submit: ((String) -> Void)?
+        let cancel: (() -> Void)?
+        var window: NSWindow? { view.window }
+    }
+
+    @MainActor private func openForm(_ stash: Bool, in panel: GitPanelView) async throws -> OpenForm {
         panel.refresh(); panel.layoutSubtreeIfNeeded()
         let menu = try XCTUnwrap(descendants(PiKit.MenuButton.self, in: panel).first { $0.accessibilityIdentifier() == (stash ? "git-stash-menu" : "git-branch-menu") })
-        guard case .item(let item) = menu.entries().first else { throw NSError(domain: "Git form", code: 1) }
-        item.perform()
-        var form: GitNamePopover?
+        if stash {
+            let item = try XCTUnwrap(menu.entries().compactMap { entry -> PiMenuItem? in
+                guard case .item(let item) = entry, item.title == "New Stash…" else { return nil }; return item
+            }.first)
+            item.perform()
+        } else {
+            menu.onPress?()
+            var branches: GitBranchesPopover?
+            try await eventually("open the branch popup", timeout: 3) {
+                branches = NSApp.windows.filter(\.isVisible).compactMap(\.contentView).flatMap { self.descendants(GitBranchesPopover.self, in: $0) }.first
+                return branches?.catalog != nil
+            }
+            try XCTUnwrap(branches).newBranch.onPress?()
+        }
+        var form: GitRepositoryForm?
         try await eventually("open the name form", timeout: 3) {
-            form = NSApp.windows.filter(\.isVisible).compactMap(\.contentView).flatMap { self.descendants(GitNamePopover.self, in: $0) }.first
+            form = NSApp.windows.filter(\.isVisible).compactMap(\.contentView).flatMap { self.descendants(GitRepositoryForm.self, in: $0) }.first
             return form != nil
         }
-        return try XCTUnwrap(form)
+        let view = try XCTUnwrap(form), submit = view.submit
+        return OpenForm(view: view, submit: { value in view.field.text = value; submit?() }, cancel: view.field.onCancel)
     }
 
     @MainActor func testOpenFormsSurviveStatusChangesAndFoldersInTheSameRepository() async throws {

@@ -7,6 +7,11 @@ import AppKit
 
 extension WorkspaceModel {
     func newChat() {
+        if sidebarListsFlat {
+            guard let project = flatNewChatProjectID else { showWorkspaceManager = true; return }
+            newChat(in: project, topicID: nil)
+            return
+        }
         let previous = (focusedSessionID ?? selectedID).flatMap(record)
         let topicID = previous.flatMap { $0.workspaceID == selectedWorkspaceID ? effectiveTopicID(for: $0) : nil }
         createNewChat(topicID: topicID)
@@ -46,6 +51,11 @@ extension WorkspaceModel {
                 // Removing a topic during the reads above must not leave a
                 // newly created chat assigned to a deleted group.
                 item.topicID = topicID.flatMap { id in topics.contains(where: { $0.id == id && $0.workspaceID == workspaceID }) ? id : nil }
+                // Configuration can change while the defaults are read. Never
+                // create a chat for a project that disappeared or lost trust.
+                guard workspaces.contains(where: { $0.id == workspaceID && $0.trusted && !$0.isScratch }) else {
+                    error = "Choose a trusted project before starting a chat."; return
+                }
                 // Created on screen only; the first send writes it (materializeChat).
                 pendingChatIDs.insert(item.id); chats.insert(item, at: 0); await select(item.id)
             }

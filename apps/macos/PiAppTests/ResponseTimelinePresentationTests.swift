@@ -140,6 +140,32 @@ final class ResponseTimelinePresentationTests: XCTestCase {
         XCTAssertNotNil(prose); XCTAssertNotNil(reasoning)
         if let prose, let reasoning { XCTAssertGreaterThan(reasoning, prose) }
     }
+    func testDiscardedRequestLedgerCannotResurrectReplyPartsAfterHistoryReload() async throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        defer { try? FileManager.default.removeItem(at:root) }
+        for completedRetry in [false,true] {
+            let file=root.appendingPathComponent("\(completedRetry).jsonl")
+            let old=try JSONDecoder().decode(WireValue.self,from:JSONEncoder().encode(parts()))
+            var empty=ResponseTimeline();empty.finish("failed")
+            let cleared=try JSONDecoder().decode(WireValue.self,from:JSONEncoder().encode(empty))
+            var ledger:[String:WireValue] = ["role":.string("system"),"content":.array([]),"nativeKind":.string("requestLedger"),
+                "nativeReplayEligible":.bool(false),"nativePresentationSourceID":.string("discarded"),"nativeResponseTimeline":old]
+            var records:[WireValue] = [
+                .object(["type":.string("session"),"version":.number(3),"id":.string("s")]),
+                .object(["type":.string("message"),"id":.string("ledger"),"message":.object(ledger)])]
+            ledger["nativeResponseTimeline"]=cleared
+            records.append(.object(["type":.string("custom"),"customType":.string("pi-app.presentation.update.v1"),"id":.string("discard"),"parentId":.string("ledger"),"data":.object(["id":.string("ledger")]),"message":.object(ledger)]))
+            if completedRetry { records.append(.object(["type":.string("message"),"id":.string("accepted"),"parentId":.string("discard"),"message":.object(["role":.string("assistant"),"content":.string("Accepted reply")])])) }
+            var bytes=Data();for record in records { bytes.append(try JSONEncoder().encode(record));bytes.append(10) };try bytes.write(to:file)
+            let page=try await HistoryReader().read(path:file.path)
+            XCTAssertNil(page.notice)
+            let items=TaskTranscriptPlan.items(page.messages,lifecycle:nil)
+            XCTAssertFalse(items.contains { if case .block(let b)=$0 { return b.part != nil };return false },"Failed reasoning, text and tool arguments must stay discarded")
+            let text=items.compactMap { if case .block(let b)=$0 { return b.message?.text };return nil }.filter { !$0.isEmpty }
+            XCTAssertEqual(text,completedRetry ? ["Accepted reply"]:[])
+        }
+    }
     @MainActor func testClosedPreparationKeepsItsMeasuredGeometryAndLatestEvidence() throws {
         var message = TranscriptMessage(id:"response",role:"assistant",text:"",state:"streaming")
         message.responseTimeline = parts()

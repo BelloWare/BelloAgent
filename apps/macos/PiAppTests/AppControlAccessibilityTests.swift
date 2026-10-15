@@ -104,10 +104,10 @@ import FileView
         let window = try await hostedWindow(CommitBoxHost(controller: controller), width: 420, height: 300)
         let scope = try await AXClient.find(in: window, "the commit scope", timeout: .seconds(60)) { $0.label == "Commit scope" }
         XCTAssertEqual(scope.role, "AXGroup")
-        XCTAssertEqual(scope.children.map(\.label), ["Checked files", "Staged changes"])
+        XCTAssertEqual(scope.children.map(\.label), ["Staged changes", "Checked files"])
         XCTAssertEqual(scope.children.map(\.selected), [true, false])
-        controller.commitScope = .stagedChanges
-        _ = try await AXClient.find(in: window, "the staged scope selected", timeout: .seconds(60)) { $0.label == "Commit scope" && $0.children.map(\.selected) == [false, true] }
+        controller.commitScope = .checkedFiles
+        _ = try await AXClient.find(in: window, "the checked scope selected", timeout: .seconds(60)) { $0.label == "Commit scope" && $0.children.map(\.selected) == [false, true] }
     }
 
     func testEachQueueRowsButtonsSayWhichMessageTheyActOn() async throws {

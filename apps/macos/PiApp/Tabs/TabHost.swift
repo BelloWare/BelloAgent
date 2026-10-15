@@ -54,6 +54,9 @@ import Combine
     /// again while hidden.
     func didShow() {}
     func didHide() {}
+    /// Native attachment also changes visibility when the chat's side appears
+    /// or disappears without a tab selection. Kinds may reconcile that here.
+    func contentVisibilityChanged(_ shown: Bool) {}
     /// Closed for good.
     func willClose() {}
     /// The projects changed (added, removed, trusted or not).
@@ -112,6 +115,10 @@ final class TabContentView: NSView {
     required init?(coder: NSCoder) { fatalError("Not used from a nib") }
     override var wantsUpdateLayer: Bool { true }
     override func updateLayer() { layer?.backgroundColor = piCGColor(.piContent) }
+    private func reportVisibility() { tab?.contentVisibilityChanged(window != nil && !isHiddenOrHasHiddenAncestor) }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); reportVisibility() }
+    override func viewDidHide() { super.viewDidHide(); reportVisibility() }
+    override func viewDidUnhide() { super.viewDidUnhide(); reportVisibility() }
 }
 
 extension TabHost {
@@ -143,6 +150,9 @@ extension TabHost {
     /// chat has one.
     @Published fileprivate(set) var sideShown = false
 
+    @Published var fileFolders = FileFolderSettings() { didSet { if oldValue != fileFolders { folderSettingsChanged?() } } }
+    var folderSettingsChanged: (() -> Void)?
+
     init(id: UUID = UUID(), isPane: Bool) { self.id = id; self.isPane = isPane }
 
     /// The tab chosen last, or the first.
@@ -159,6 +169,7 @@ extension TabHost {
     /// Where the tabs are kept across launches; nil keeps nothing (tests).
     private let defaults: UserDefaults?
     static let savedKey = "tabHost"
+    var configureTab: ((HostedTab) -> Void)?
     private var restoring = false
     private var restored = false
     private var saveScheduled = false
@@ -170,6 +181,7 @@ extension TabHost {
 
     init(defaults: UserDefaults? = nil) {
         self.defaults = defaults
+        pane.folderSettingsChanged = { [weak self] in self?.save() }
         quitting = NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.flush()
@@ -206,7 +218,7 @@ extension TabHost {
         if container.activeID != tab.id { container.activeID = tab.id }
         if container.sideShown { container.sideShown = false }
         if shown !== tab { shown?.didHide(); tab.didShow() }
-        if !container.isPane { controllers[container.id]?.bringForward() }
+        if showsWindows, !container.isPane { controllers[container.id]?.bringForward() }
         save()
     }
     /// In the pane: the chat's side in place of the tabs.
@@ -327,6 +339,8 @@ extension TabHost {
         let after = container.tabs.firstIndex { $0.id == container.activeID }.map { $0 + 1 } ?? container.tabs.count
         container.tabs.insert(tab, at: min(max(0, index ?? after), container.tabs.count))
         tab.container = container
+        container.folderSettingsChanged = { [weak self] in self?.save() }
+        configureTab?(tab)
     }
     private func remove(_ tab: HostedTab, from container: TabContainer) {
         guard let index = container.tabs.firstIndex(where: { $0 === tab }) else { return }
@@ -353,7 +367,7 @@ extension TabHost {
     // MARK: Across launches
 
     private struct SavedTab: Codable { var kind: String; var key: String; var state: Data? }
-    private struct SavedContainer: Codable { var tabs: [SavedTab]; var active: Int?; var sideShown: Bool; var frame: String? }
+    private struct SavedContainer: Codable { var tabs: [SavedTab]; var active: Int?; var sideShown: Bool; var frame: String?; var fileFolders: FileFolderSettings? }
     private struct Saved: Codable { var pane: SavedContainer; var windows: [SavedContainer] }
 
     /// Saves on the next turn of the run loop, once for all that changed.
@@ -375,7 +389,7 @@ extension TabHost {
         func saved(_ container: TabContainer) -> SavedContainer {
             SavedContainer(tabs: container.tabs.map { SavedTab(kind: $0.kind, key: $0.key, state: $0.savedState()) },
                            active: container.tabs.firstIndex { $0.id == container.activeID }, sideShown: container.sideShown,
-                           frame: container.isPane ? nil : controllers[container.id]?.window.map { NSStringFromRect($0.frame) })
+                           frame: container.isPane ? nil : controllers[container.id]?.window.map { NSStringFromRect($0.frame) }, fileFolders: container.fileFolders)
         }
         let value = Saved(pane: saved(pane), windows: windows.map(saved))
         defaults.set(try? JSONEncoder().encode(value), forKey: Self.savedKey)
@@ -397,11 +411,13 @@ extension TabHost {
             }
         }
         func fill(_ container: TabContainer, _ saved: SavedContainer) {
+            container.fileFolders = saved.fileFolders ?? FileFolderSettings()
             let restored = tabs(saved)
             for tab in restored { insert(tab, into: container, at: nil) }
             let active = saved.active.flatMap { saved.tabs.indices.contains($0) ? saved.tabs[$0] : nil }
             container.activeID = restored.first { $0.kind == active?.kind && $0.key == active?.key }?.id ?? restored.first?.id
             container.sideShown = saved.sideShown && !restored.isEmpty
+            if !container.sideShown { container.activeTab?.didShow() }
         }
         fill(pane, saved.pane)
         for entry in saved.windows {

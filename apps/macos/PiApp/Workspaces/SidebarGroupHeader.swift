@@ -276,36 +276,33 @@ struct TopicHeaderState: Equatable {
 
 /// What the header's menu and the project's right-click menu both offer.
 enum ProjectSidebarActions {
-    @MainActor @PiMenuBuilder static func entries(model: WorkspaceModel, state: ProjectHeaderState, expand: ((Bool) -> Void)?) -> [PiMenuEntry] {
+    @MainActor static func entries(model: WorkspaceModel, state: ProjectHeaderState, expand: ((Bool) -> Void)?) -> [PiMenuEntry] {
+        projectEntries(model: model, state: state, includeDisclosure: true, expand: expand)
+    }
+
+    @MainActor @PiMenuBuilder static func projectEntries(model: WorkspaceModel, state: ProjectHeaderState,
+                                                         identifierPrefix: String? = nil, includeDisclosure: Bool = false,
+                                                         expand: ((Bool) -> Void)? = nil) -> [PiMenuEntry] {
         if !state.scratch {
-            PiMenuEntry.button("New Chat", systemImage: "square.and.pencil", enabled: state.available && state.trusted) {
+            PiMenuEntry.button("New Chat", systemImage: "square.and.pencil", enabled: state.available && state.trusted,
+                               identifier: identifierPrefix.map { $0 + "newChat" }) {
                 model.newChat(in: state.projectID, topicID: nil)
             }
-            PiMenuEntry.button("New Topic…", systemImage: "folder.badge.plus", identifier: "newTopic-" + state.projectID) {
+            PiMenuEntry.button("New Topic…", systemImage: "folder.badge.plus", identifier: identifierPrefix.map { $0 + "newTopic" } ?? "newTopic-" + state.projectID) {
                 model.presentNewTopic(in: state.projectID)
             }
-            // The header drops its own button for this in a narrow sidebar.
             PiMenuEntry.button("Changes and History…", systemImage: "arrow.triangle.branch", enabled: state.available,
-                               identifier: "projectChangesAction-" + state.projectID) { model.showChanges(in: state.projectID) }
+                               identifier: identifierPrefix.map { $0 + "changes" } ?? "projectChangesAction-" + state.projectID) { model.showChanges(in: state.projectID) }
         }
-        if !state.scratch {
-            // How the project lists its chats: in topic folders, or flat,
-            // newest first with each topic as a tag. Kept with the project.
-            let flat = model.projectListsFlat(state.projectID)
-            PiMenuEntry.divider
-            PiMenuEntry.note("Show Chats")
-            PiMenuEntry.button("Topics", systemImage: "folder", checked: !flat, identifier: "projectTopicView-topics-" + state.projectID,
-                               help: "Group this project's chats in topic folders") { model.setProjectListsFlat(state.projectID, flat: false) }
-            PiMenuEntry.button("Flat", systemImage: "list.bullet", checked: flat, identifier: "projectTopicView-flat-" + state.projectID,
-                               help: "List every chat of this project newest first, its topic as a tag") { model.setProjectListsFlat(state.projectID, flat: true) }
-            PiMenuEntry.divider
-        }
-        PiMenuEntry.button(state.expanded ? "Collapse Project" : "Expand Project", enabled: !state.filtering) {
-            if let expand { expand(!state.expanded) } else { model.setProjectExpanded(state.projectID, expanded: !state.expanded) }
+        if includeDisclosure {
+            PiMenuEntry.button(state.expanded ? "Collapse Project" : "Expand Project", enabled: !state.filtering) {
+                if let expand { expand(!state.expanded) } else { model.setProjectExpanded(state.projectID, expanded: !state.expanded) }
+            }
         }
         if !state.scratch {
             PiMenuEntry.divider
-            PiMenuEntry.button(state.available ? "Manage Project…" : "Configure Projects…", systemImage: "folder.badge.gearshape") {
+            PiMenuEntry.button(state.available ? "Manage Project…" : "Configure Projects…", systemImage: "folder.badge.gearshape",
+                               identifier: identifierPrefix.map { $0 + "manage" }) {
                 if state.available { model.selectedWorkspaceID = state.projectID }
                 model.showWorkspaceManager = true
             }

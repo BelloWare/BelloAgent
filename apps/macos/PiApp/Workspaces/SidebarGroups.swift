@@ -9,9 +9,11 @@ enum SidebarSessionPresentation {
     static let pageSize = 5
     /// The group key of a group's archived chats: they page on their own.
     static func archiveGroupID(_ group: String) -> String { "archived:" + group }
-    /// The group key of a flat project's one list: it pages apart from the
-    /// project's root group, which the Topics view still shows.
-    static func flatGroupID(_ project: String) -> String { "flat:" + project }
+    /// Active/archive pages of the one combined Flat list.
+    static let combinedFlatGroupID = "flat:all"
+    static func isCombinedGroup(_ id: String) -> Bool {
+        id == combinedFlatGroupID || id == archiveGroupID(combinedFlatGroupID)
+    }
     /// `contentMatches`: chats whose messages match (`SidebarSearch`), listed as a title match is.
     static func filtered(_ entries: [SidebarChatEntry], by query: String, contentMatches: Set<String> = []) -> [SidebarChatEntry] {
         guard !query.isEmpty else { return entries }

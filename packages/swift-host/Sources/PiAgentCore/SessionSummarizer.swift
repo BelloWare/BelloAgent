@@ -58,18 +58,34 @@ extension AgentSession {
                     onObservation:{ [weak self] in await self?.compactionObservation($0) },onDelta:{ [weak self] in await self?.compactionDelta($0) })
                 requestMs=nowMS()-start
                 return try await received(reply,cap:profile.maxOutput,revision:revision,originalProfile:originalProfile)
+            } catch let cancelled as UnexplainedIncompleteCancellation {
+                try discardIncompleteSummary(attempt:cancelled.attemptID)
+                throw CancellationError()
             } catch let error as AgentError {
                 requestMs=nowMS()-start
+                if error.code == "provider_incomplete_unexplained" || error.discardIncompleteReply {
+                    try discardIncompleteSummary(attempt:error.attemptID ?? compactionAttemptIDs.last)
+                }
                 operationStatus("Summary request failed: " + error.message)
                 if let attempt=error.attemptID, !compactionAttemptIDs.contains(attempt) { compactionAttemptIDs.append(attempt) }
-                guard !Self.isContextOverflow(error), !["compaction_incompatible", "compact_stale", "provider_incomplete", "provider_refused"].contains(error.code), retry.enabled, retries<retry.maxRetries, used<limit,
-                      PiProviderRules.isRetryableText(error.piMessage), !Task.isCancelled else { throw error }
+                guard !["compaction_incompatible", "compact_stale", "provider_incomplete", "provider_refused"].contains(error.code), retry.enabled, retries<retry.maxRetries, used<limit,
+                      Self.isRetryable(error), !Task.isCancelled else { throw error }
                 retries += 1
                 compactionState["phase"]="retrying"; event("compaction_progress")
                 try await Task.sleep(nanoseconds:UInt64(retry.delayMs(attempt:retries)*1_000_000))
                 compactionState["phase"]="summarizing"
             }
         }
+    }
+
+    /// Keep local progress/status and attempt links, but no model content
+    /// from a rejected summary in the expandable compaction timeline.
+    func discardIncompleteSummary(attempt: String?) throws {
+        guard let attempt, let id=compactionPresentationID,
+              var row=history.first(where: { $0.id == id }) else { return }
+        row.responseTimeline?.segments.removeAll { $0.part.attemptID == attempt }
+        try updatePresentation(row,persist:false)
+        try updatePresentation(row,persist:true)
     }
 
     /// Records a completed summary response.

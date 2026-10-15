@@ -46,6 +46,11 @@ struct ChatQuestion: Equatable, Sendable {
     /// The window the last sheet went onto: a panel takes its own question
     /// down with it, and a test can see where the sheet was attached.
     private(set) weak var askedIn: NSWindow?
+    private var sheetQuestion: PiQuestionPresentation?
+    deinit {
+        guard let question = sheetQuestion else { return }
+        Task { @MainActor in question.cancel() }
+    }
 
     /// What to say when a caller's question was refused because one is up.
     static let busyNotice = "Answer the question already on screen first."
@@ -70,6 +75,8 @@ struct ChatQuestion: Equatable, Sendable {
     /// completion by hand without an event loop.
     typealias Present = (NSAlert, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void
     var present: Present = { alert, window, answer in alert.beginSheetModal(for: window, completionHandler: answer) }
+    /// Drives a custom Pi sheet without attaching a window in behavioral tests.
+    var presentSheet: ((NSView, NSWindow, @escaping (Bool) -> Void) -> Void)?
 
     // MARK: Which window the question belongs to
 
@@ -102,9 +109,30 @@ struct ChatQuestion: Equatable, Sendable {
     }
 
     /// The window went away under the question; nothing was chosen.
-    func cancel() { asking = false }
+    func cancel() {
+        if let sheetQuestion { sheetQuestion.cancel() }
+        else { asking = false }
+    }
 
     // MARK: Asking
+
+    /// A custom Pi question belongs only to its caller's window. Refuse a
+    /// busy window rather than queuing the question or moving it elsewhere.
+    /// Keep the presentation until its closing animation has released it.
+    @discardableResult
+    func askSheet(over window: NSWindow, make: (@escaping (Bool) -> Void) -> NSView,
+                  answered: @escaping (Bool) -> Void) -> Bool {
+        guard !asking, window.attachedSheet == nil else { return false }
+        let question = PiQuestionPresentation(make: make)
+        sheetQuestion = question; asking = true; askedIn = window
+        question.onFinished = { [weak self, weak question] accepted in
+            guard let self, let question, self.sheetQuestion === question else { return }
+            self.sheetQuestion = nil; self.asking = false
+            answered(accepted)
+        }
+        question.present(on: window, using: presentSheet)
+        return true
+    }
 
     /// Puts `alert` on a sheet and calls back with what the reader pressed.
     /// False when a question of this asker's is already on screen, so the

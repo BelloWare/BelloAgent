@@ -180,6 +180,18 @@ public struct GitDiffFileLine: Equatable, Sendable {
 /// (`GitDiffTableView.defaultMenu`); a builder that returns nil shows none.
 public typealias GitDiffMenuBuilder = @MainActor (GitDiffMenuRequest) -> NSMenu?
 
+/// Host-provided controls keep the package independent of the app's Pi kit.
+public struct GitDiffHunkLocation {
+    public let path: String
+    public let hunk: Int
+    public let fullyShown: Bool
+}
+public struct GitDiffHunkControls {
+    public let key: AnyHashable
+    public let make: @MainActor (GitDiffHunkLocation) -> NSView?
+    public init(key: AnyHashable, make: @escaping @MainActor (GitDiffHunkLocation) -> NSView?) { self.key = key; self.make = make }
+}
+
 /// One row of the table.
 struct GitDiffTableRow: Sendable {
     enum Kind: UInt8 { case top, gap, file, note, hunk, line, split, showAll, bottom }
@@ -268,10 +280,10 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
     public func update(files: [GitDiffFile], split: Bool, wrap: Bool, showAll: Bool, identity: String, top: any GitDiffAccessory,
                        topHeightKey: AnyHashable, loading: Bool = false, more: (any GitDiffAccessory)?, colors: GitDiffColors = .system,
                        menu: GitDiffMenuBuilder? = nil, reveal: GitDiffReveal? = nil,
-                       revealed: ((GitDiffReveal, GitDiffRevealOutcome) -> Void)? = nil) {
+                       revealed: ((GitDiffReveal, GitDiffRevealOutcome) -> Void)? = nil, hunkControls: GitDiffHunkControls? = nil) {
         coordinator.schedule(Coordinator.State(files: files, split: split, wrap: wrap, showAll: showAll, identity: identity, top: top,
                                                topHeightKey: topHeightKey, loading: loading, more: more, colors: colors, menu: menu,
-                                               reveal: reveal, revealed: revealed))
+                                               reveal: reveal, revealed: revealed, hunkControls: hunkControls))
     }
 
     /// Lets go of the host's views and stops observing; the table shows
@@ -280,6 +292,9 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
         coordinator.close()
         table.delegate = nil; table.dataSource = nil
     }
+
+    /// Navigation changes only the viewport and keyboard focus, never the text selection.
+    public func moveToChange(forward: Bool) { coordinator.moveToChange(forward: forward) }
 
     // MARK: - Coordinator
 
@@ -298,6 +313,7 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             var menu: GitDiffMenuBuilder?
             var reveal: GitDiffReveal?
             var revealed: ((GitDiffReveal, GitDiffRevealOutcome) -> Void)?
+            var hunkControls: GitDiffHunkControls?
         }
         /// The last line asked for that has been dealt with, and whether the
         /// whole diff was shown then: one past the rows shown is asked again
@@ -309,6 +325,8 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
         weak var table: GitDiffTableView?
         private(set) var files: [GitDiffFile] = []
         private var identity = ""
+        private var hunkControls: GitDiffHunkControls?
+        private var navigationHunk: (path: String, hunk: Int32)?
         private(set) var split = false
         private(set) var wrap = false
         private var showAll = false
@@ -325,6 +343,8 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
         private var wrapped: [CGFloat?] = []
         private var heightWidth: CGFloat = -1
         private var pending: State?
+        private var pendingReveal: State?
+        private var revealScheduled = false
         private var topHeightKey: AnyHashable?
         /// A new diff was named: it is shown from its top once its rows are built.
         private var freshDiff = false
@@ -363,13 +383,14 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
         func close() {
             cancelWrapGeometry()
             NotificationCenter.default.removeObserver(self)
-            topView = nil; moreView = nil
+            topView = nil; moreView = nil; pendingReveal = nil
         }
 
         @objc private func scrolled() { if let table { table.window?.invalidateCursorRects(for: table) } }
 
         func schedule(_ next: State) {
             pending = next
+            pendingReveal = nil
             table?.needsLayout = true
         }
 
@@ -381,6 +402,29 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             else if table.bounds.width != measuredWidth { widthChanged() }
         }
 
+        /// Finish the table and hosted heading's layout before positioning a
+        /// line. A scrollbar can change the width during that first layout;
+        /// consuming the reveal there clamps it to the old document height.
+        func layoutDidHappen() {
+            guard pendingReveal != nil, !revealScheduled else { return }
+            revealScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                guard self.pendingReveal != nil, let table = self.table, table.bounds.width > 0,
+                      (table.enclosingScrollView?.contentView.bounds.height ?? 0) > 0 else { self.revealScheduled = false; return }
+                // One coalesced turn after the enclosing layout, including
+                // a width change that AppKit made during its last pass.
+                table.needsLayout = true
+                table.layoutSubtreeIfNeeded()
+                self.revealScheduled = false
+                guard let next = self.pendingReveal, self.pending == nil, table.bounds.width > 0,
+                      let clip = table.enclosingScrollView?.contentView, clip.bounds.height > 0 else { return }
+                guard table.bounds.width == self.measuredWidth else { self.layoutDidHappen(); return }
+                self.pendingReveal = nil
+                self.revealIfReady(next)
+            }
+        }
+
         /// Shows a state: the hosted heading always, the rows again only when
         /// the diff, its layout or its gate changed.
         private func apply(_ next: State) {
@@ -389,6 +433,9 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             let rewrap = wrap != next.wrap
             let newDiff = identity != next.identity
             if newDiff { freshDiff = true }
+            if !sameFiles { navigationHunk = nil }
+            let controlsChanged = hunkControls?.key != next.hunkControls?.key
+            hunkControls = next.hunkControls
             // Another file or commit chosen and still being read: the last
             // one's rows stay as they are until its diff arrives, rather than
             // be built again under the new name and then replaced.
@@ -416,6 +463,11 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             if topReplaced, !rebuild, !rows.isEmpty { table.reloadData(forRowIndexes: IndexSet(integer: 0), columnIndexes: IndexSet(integer: 0)) }
             if moreReplaced, !rebuild, let index = rows.firstIndex(where: { $0.kind == .showAll }) {
                 table.reloadData(forRowIndexes: IndexSet(integer: index), columnIndexes: IndexSet(integer: 0))
+            }
+            if rebuild || controlsChanged, let focused = table.window?.firstResponder as? NSView,
+               focused !== table, focused.isDescendant(of: table),
+               rows.indices.contains(where: { rows[$0].kind == .hunk && (table.view(atColumn: 0, row: $0, makeIfNecessary: false) as? GitDiffRowCell)?.hunkControl === focused }) {
+                table.window?.makeFirstResponder(table)
             }
             let width = table.bounds.width
             var heading = false
@@ -448,7 +500,10 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
             } else if heading {
                 table.noteHeightOfRows(withIndexesChanged: IndexSet(integer: 0))
             }
-            revealIfReady(next)
+            if controlsChanged, !rebuild {
+                table.reloadData(forRowIndexes: IndexSet(rows.indices.filter { rows[$0].kind == .hunk }), columnIndexes: IndexSet(integer: 0))
+            }
+            pendingReveal = next.reveal != nil && !next.loading ? next : nil
         }
 
         /// Brings the line asked for into view and selects it, once its diff
@@ -737,10 +792,33 @@ public enum GitDiffRevealOutcome: Equatable, Sendable { case shown, pastShownRow
                 let cell = tableView.makeView(withIdentifier: GitDiffRowCell.identifier, owner: self) as? GitDiffRowCell ?? GitDiffRowCell()
                 cell.coordinator = self; cell.row = row
                 cell.setAccessibilityValue(accessibilityText(row))
+                if rows[row].kind == .hunk, let hunkControls {
+                    let item = rows[row], file = file(item), hunk = Int(item.hunk)
+                    let fullyShown = showAll || file.hunks.prefix(hunk + 1).reduce(0) { $0 + $1.lines.count } <= GitDiffMetrics.rowLimit
+                    cell.hunkControl = hunkControls.make(GitDiffHunkLocation(path: file.path, hunk: hunk, fullyShown: fullyShown))
+                } else { cell.hunkControl = nil }
                 cell.needsDisplay = true
                 GitDiffRenderCount.built()
                 return cell
             }
+        }
+
+        func moveToChange(forward: Bool) {
+            guard let table else { return }
+            let hunks = rows.indices.filter { rows[$0].kind == .hunk }
+            let top = max(0, table.row(at: NSPoint(x: 0, y: table.visibleRect.minY)))
+            let target: Int?
+            if let navigationHunk, let previous = hunks.first(where: { files[Int(rows[$0].file)].path == navigationHunk.path && rows[$0].hunk == navigationHunk.hunk }) {
+                target = forward ? hunks.first(where: { $0 > previous }) : hunks.last(where: { $0 < previous })
+            } else {
+                target = forward ? hunks.first(where: { $0 >= top }) : hunks.last(where: { $0 <= top }) ?? hunks.first
+            }
+            guard let target else { return }
+            navigationHunk = (files[Int(rows[target].file)].path, rows[target].hunk)
+            table.scrollRowToVisible(target)
+            if let cell = table.view(atColumn: 0, row: target, makeIfNecessary: true) as? GitDiffRowCell, let control = cell.hunkControl {
+                if !control.isAccessibilityEnabled() || table.window?.makeFirstResponder(control) != true { table.window?.makeFirstResponder(table) }
+            } else { table.window?.makeFirstResponder(table) }
         }
 
         private func accessibilityText(_ index: Int) -> String {
@@ -997,6 +1075,7 @@ final class GitDiffTableView: NSTableView {
     override func layout() {
         coordinator?.layoutWillHappen()
         super.layout()
+        coordinator?.layoutDidHappen()
     }
 
     // MARK: Selection
@@ -1116,6 +1195,9 @@ final class GitDiffTableView: NSTableView {
     /// Arrows scroll a row, Page Up and Down and the space bar a page, Home
     /// and End to either end. Everything else, Escape first, goes on.
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 98, event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
+            coordinator?.moveToChange(forward: !event.modifierFlags.contains(.shift)); return
+        }
         guard let clip = enclosingScrollView?.contentView else { return super.keyDown(with: event) }
         let page = max(GitDiffMetrics.monoLine, clip.bounds.height - GitDiffMetrics.monoLine - 2)
         let delta: CGFloat?
@@ -1200,6 +1282,22 @@ final class GitDiffRowCell: NSView {
     private var shapes: [ShapeKey: Shape] = [:]
     /// Scalar test seam: resizing must not retain a full line for every width.
     var retainedTextShapes: Int { shapes.count }
+    var hunkControl: NSView? {
+        didSet {
+            oldValue?.removeFromSuperview()
+            if let hunkControl { addSubview(hunkControl) }
+            setAccessibilityElement(hunkControl == nil)
+            needsLayout = true
+        }
+    }
+    override func layout() {
+        super.layout()
+        if let hunkControl {
+            let size = hunkControl.intrinsicContentSize
+            hunkControl.frame = CGRect(x: max(GitDiffMetrics.cardInset + 8, bounds.width - GitDiffMetrics.cardInset - size.width - 8),
+                                       y: max(0, (bounds.height - size.height) / 2), width: size.width, height: size.height)
+        }
+    }
     private var textStorage: [GitDiffSide: NSString] = [:]
     private func clearText() { shapes = [:]; textStorage = [:] }
     private func shape(_ text: String, range: Range<Int>, side: GitDiffSide, color: NSColor, width: CGFloat) -> Shape {
@@ -1228,7 +1326,11 @@ final class GitDiffRowCell: NSView {
     required init?(coder: NSCoder) { nil }
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { false }
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let hunkControl else { return nil }
+        let local = convert(point, from: superview)
+        return hunkControl.frame.contains(local) ? hunkControl.hitTest(local) : nil
+    }
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); clearText(); needsDisplay = true }
 
     /// Where a row's selectable text sits, in the row: its x, its width and
@@ -1333,7 +1435,7 @@ final class GitDiffRowCell: NSView {
         let hunk = coordinator.file(model).hunks[Int(model.hunk)], left = GitDiffMetrics.cardInset
         context.setFillColor(GitDiffMetrics.fill(coordinator.colors.hunk, opacity: 0.06))
         context.fill(CGRect(x: left, y: 0, width: card, height: bounds.height))
-        GitDiffText.draw(hunk.header, font: GitDiffMetrics.mono, color: coordinator.colors.hunk, x: left + 12, baseline: 3 + GitDiffMetrics.monoBaseline, width: card - 24, in: context)
+        GitDiffText.draw(hunk.header, font: GitDiffMetrics.mono, color: coordinator.colors.hunk, x: left + 12, baseline: 3 + GitDiffMetrics.monoBaseline, width: max(0, card - 24 - (hunkControl.map { $0.intrinsicContentSize.width + 12 } ?? 0)), in: context)
     }
 
     private static func tint(_ kind: GitDiffLine.Kind, _ colors: GitDiffColors) -> NSColor? {
