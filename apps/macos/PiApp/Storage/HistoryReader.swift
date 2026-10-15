@@ -73,6 +73,10 @@ struct HistoryRevision: Codable, Equatable, Sendable {
 // First index record offsets and parent links; decode only the requested page.
 actor HistoryReader {
     var agentCoordinationCache: [String: (fingerprint: String, value: AgentCoordination)] = [:]
+    /// Complete plan scans only. Keep metadata for the same number of journals
+    /// as transcript pages; a cached reopen must not rescan a large journal.
+    var subagentPlanCache: [String: (owner: String, revision: HistoryRevision, plans: [DiscoveredSubagent])] = [:]
+    var subagentPlanRecency: [String] = []
     /// Where offset indexes are built (`HistoryOffsetIndex`).
     private let indexDirectory: URL
     init(indexDirectory: URL = FileManager.default.temporaryDirectory) { self.indexDirectory = indexDirectory }
@@ -314,6 +318,7 @@ actor HistoryReader {
     /// one page used to cost a full decode of its record, and `message()` a
     /// full decode of every record in the file before it.
     private(set) var decodedRecords = 0
+    var subagentScannedBytes = 0
     var acceptanceScannedBytes = 0
     private(set) var indexedRecordCount = 0
     private(set) var indexedBytes: UInt64 = 0
@@ -326,7 +331,10 @@ actor HistoryReader {
     var retainedIndexBytes: Int { indexes.values.reduce(0) { $0 + $1.branch.bytes } }
     /// Lets go of every retained offset index, and with it its file: the app
     /// is quitting.
-    func releaseIndexes() { indexes.removeAll(); recency.removeAll(); digests.removeAll(); searchDigests.removeAll() }
+    func releaseIndexes() {
+        indexes.removeAll(); recency.removeAll(); digests.removeAll(); searchDigests.removeAll()
+        subagentPlanCache.removeAll(); subagentPlanRecency.removeAll()
+    }
     /// Progress/cancellation segment size, never a source EOF or record limit.
     /// Lowered in tests to exercise traversal across segment boundaries.
     private var indexRecordLimit = 100_000

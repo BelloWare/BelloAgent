@@ -141,7 +141,8 @@ import Combine
             controller.onClose = { [weak self, weak controller] in self?.entries.removeAll { $0.controller === controller } }
             entries.append(Entry(owner: model, controller: controller))
         }
-        if let originalForkID { controller.inspector.originalForkID = originalForkID }
+        // Provenance belongs to this opening, not the reused session window.
+        controller.inspector.originalForkID = originalForkID
         controller.observe(model: model)
         controller.present(focus)
         return controller

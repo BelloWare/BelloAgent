@@ -46,6 +46,16 @@ extension HistoryReader {
     }
     /// The owning journal is the authority even before a child file exists.
     func subagentPlans(path: URL, ownerID: String, childID: String? = nil, includeInherited: Bool = false) throws -> [DiscoveredSubagent] {
+        try Task.checkCancellation()
+        let revision = Self.currentRevision(path: path.path)
+        func matches(_ plan: DiscoveredSubagent) -> Bool {
+            (includeInherited || plan.header.link.budgetOwnerSessionID == ownerID) &&
+                (childID == nil || plan.header.link.childSessionID == childID)
+        }
+        if let revision, let cached = subagentPlanCache[path.path], cached.owner == ownerID, cached.revision == revision {
+            subagentPlanRecency.removeAll { $0 == path.path }; subagentPlanRecency.append(path.path)
+            return cached.plans.filter(matches)
+        }
         var found: [DiscoveredSubagent] = [], starts: [String: SubagentLink] = [:]
         try subagentRecords(path) { row, line in
             if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == ownerID, row["version"]?.number == 3 else { throw StoreError.invalidRecord } }
@@ -60,7 +70,12 @@ extension HistoryReader {
                 starts[id] = origin.link
                 // Count every unique start, even when filtering or when its
                 // child file is missing. Follow-ups never contain a new plan.
-                guard (includeInherited || origin.link.budgetOwnerSessionID == ownerID), childID == nil || childID == id else { return true }
+                // Full scans retain every start, so inheritance/filter choices
+                // share one revision cache. Targeted cold lookups still stop
+                // at their child and never cache a partial set of plans.
+                if let childID {
+                    guard (includeInherited || origin.link.budgetOwnerSessionID == ownerID), childID == id else { return true }
+                }
                 let child = path.deletingLastPathComponent().appendingPathComponent(origin.link.childSessionID + ".jsonl")
                 guard child.resolvingSymlinksInPath().deletingLastPathComponent() == path.resolvingSymlinksInPath().deletingLastPathComponent() else { throw StoreError.invalidRecord }
                 found.append(DiscoveredSubagent(header: origin, path: child.path, task: data["task"]?.string ?? "", status: .interrupted, number: starts.count))
@@ -68,7 +83,15 @@ extension HistoryReader {
             }
             return true
         }
-        return found
+        try Task.checkCancellation()
+        if childID == nil, let revision, Self.currentRevision(path: path.path) == revision {
+            subagentPlanCache[path.path] = (ownerID, revision, found)
+            subagentPlanRecency.removeAll { $0 == path.path }; subagentPlanRecency.append(path.path)
+            while subagentPlanRecency.count > 8 {
+                subagentPlanCache.removeValue(forKey: subagentPlanRecency.removeFirst())
+            }
+        }
+        return found.filter(matches)
     }
     /// Streaming scan: retain only origins/plans/status, never transcript or
     /// capture bodies. A torn final line is left for the helper's recovery.
@@ -77,6 +100,7 @@ extension HistoryReader {
         var pending = Data(), line = 0
         let needles = ["pi-app.subagent-", "pi-app.agent-", "pi-app.family-run"].map { Data($0.utf8) }
         while let bytes = try file.read(upToCount: 65_536), !bytes.isEmpty {
+            subagentScannedBytes += bytes.count
             try Task.checkCancellation()
             var start = bytes.startIndex
             while let end = bytes[start...].firstIndex(of: 10) {

@@ -10,6 +10,44 @@ private actor OriginalReaderBackGate {
 }
 
 final class InheritedSubagentReaderTests: XCTestCase, SerialTestLane {
+    @MainActor func testOrdinaryParentInspectorReopenClearsForkProvenance() async throws {
+        for kind in AgentForkKind.allCases {
+            let root = scratchRoot("inspector-original-context-" + kind.rawValue)
+            let model = try SubagentOrganizationTests.fixture(root)
+            registerWorkspaceFixtureTeardown(model, root: root)
+            SessionInspectorWindows.shared.closeAll()
+            defer { SessionInspectorWindows.shared.closeAll() }
+            let parent = model.chats[0]
+            var fork = parent; fork.id = kind.id; fork.title = "Fork"; fork.parentSessionID = kind.parentID(parent.id)
+            model.chats.append(fork)
+            model.historyWindowLoader = { _, _, _, around in
+                try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture"), "lineage": .string("root"),
+                    "messages": .array([.object(["id": .string(around ?? "newer-reply"), "role": .string("assistant"), "text": .string("Original's newer response")])]),
+                    "older": .null, "newer": .null]))
+            }
+            await model.select(fork.id)
+            let controller = SessionInspectorWindows.shared.show(model: model, sessionID: parent.id, workspaceID: parent.workspaceID,
+                title: parent.title, focus: .overview, originalForkID: fork.id)
+            let inspector = controller.inspector
+            XCTAssertEqual(inspector.originalForkID, fork.id)
+            let request = inspector.request
+            request.open(InspectorRequestRow(id: "new-request", wall: 1, turn: "newer-reply", purpose: "turn", api: "openai-responses",
+                model: "fixture", outcome: "completed", source: .record), predecessor: nil, previousLabel: nil)
+            let requestPage = InspectorRequestPage(inspector: inspector, request: request, compact: false)
+            XCTAssertTrue(ConversationPaneTests.views(InspectorForkFromHere.self, in: requestPage).isEmpty)
+            model.openInspector(session: parent.id, focus: .overview)
+            XCTAssertTrue(SessionInspectorWindows.shared.controller(sessionID: parent.id) === controller)
+            XCTAssertNil(inspector.originalForkID, "Ordinary reopening owns the original session again: " + kind.rawValue)
+            requestPage.refresh()
+            XCTAssertEqual(ConversationPaneTests.views(InspectorForkFromHere.self, in: requestPage).count, 1)
+            inspector.select(.turn("newer-reply")); inspector.showInChat()
+            try? await eventually("Ordinary Show in Chat reveals the original's newer request", timeout: .seconds(2)) {
+                model.selectedID == parent.id && model.displays[parent.id]?.scrollAnchor?.id == "newer-reply"
+            }
+            XCTAssertTrue(model.hosts.isEmpty)
+        }
+    }
+
     @MainActor func testOriginalSourceKeepsAnAlreadySelectedForkInTheMainPane() async throws {
         for kind in AgentForkKind.allCases {
             for rememberedSide in [false, true] {

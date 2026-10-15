@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Sub-agent review round 14 (`dev/a128-sub-display`): cached chat reopens reuse delegation plans by exact journal revision without rescanning history; ordinary parent Inspector reopen clears fork provenance; unsent side drafts retain both Send menu commands, including Command-Return outside the composer. Large generated-journal, inherited-reference and native menu regressions cover the fixes. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-14-cached-reopens-inspector-context-and-side-send).
+
 - [x] Sub-agent review round 13 (`dev/a128-sub-display`): whole-chat forks and Fork from here discover inherited agents from saved plans. Original readers open the linked turn or steering message; report deliveries uncover their recipient side with explicit reader ownership, while an already-visible main fork stays in place. Child headers refresh when accepted effort arrives after the child snapshot. Both fork shapes cover inherited controls, numbering, read-only enforcement and galleries. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-13-fork-shapes-deliveries-and-live-effort).
 
 - [x] Sub-agent review round 12 (`dev/a128-sub-display`): earlier-turn and Source reveals follow their reader tokens and actual visibility across focus changes, without taking focus back. Original-reference Back restores Chats for an already-selected fork behind Reports or Background. Audited all remaining global focus/main-page checks in hosted-reader navigation. [Validation and guard inventory](docs/validation/sub-display-0.1.128.md#lead-review-round-12-focus-independent-reader-publication).

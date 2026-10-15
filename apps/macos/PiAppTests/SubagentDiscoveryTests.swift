@@ -3,6 +3,68 @@ import XCTest
 @testable import PiApp
 
 final class SubagentDiscoveryTests: XCTestCase {
+    @MainActor func testInheritedPlanCacheRevalidatesAppendsRewritesAndOwnerIdentity() async throws {
+        for kind in AgentForkKind.allCases {
+            let root = scratchRoot("plans-cache-" + kind.rawValue)
+            let model = try SubagentOrganizationTests.fixture(root)
+            registerWorkspaceFixtureTeardown(model, root: root)
+            let family = try Self.family(model)
+            let source = URL(fileURLWithPath: model.chats[0].path!)
+            var rows = try String(contentsOf: source, encoding: .utf8).split(separator: "\n").map {
+                try JSONDecoder().decode([String: WireValue].self, from: Data($0.utf8))
+            }
+            rows[0]["id"] = .string(kind.id)
+            let path = source.deletingLastPathComponent().appendingPathComponent(kind.id + ".jsonl")
+            func encode(_ rows: [[String: WireValue]]) throws -> Data {
+                var bytes = Data(); for row in rows { bytes.append(try JSONEncoder().encode(row)); bytes.append(10) }; return bytes
+            }
+            try encode(rows).write(to: path)
+            var fork = model.chats[0]; fork.id = kind.id; fork.path = path.path; fork.parentSessionID = kind.parentID(model.chats[0].id)
+            model.chats.append(fork); model.displays[fork.id] = SessionDisplay(id: fork.id)
+            let miss = try await model.history.subagentPlans(path: path, ownerID: fork.id, childID: UUID().uuidString, includeInherited: true)
+            XCTAssertTrue(miss.isEmpty, "A targeted miss must not cache an incomplete plan set")
+            await model.readInheritedSubagents(fork, current: { true })
+            XCTAssertEqual(model.inheritedSubagents[fork.id]?.map { $0.target.sessionID }, [family.child])
+            let scanned = await model.history.subagentScannedBytes
+            // Reuse across filter choices without losing inherited ordinals.
+            let owned = try await model.history.subagentPlans(path: path, ownerID: fork.id)
+            XCTAssertTrue(owned.isEmpty)
+            let child = try await model.history.subagentPlans(path: path, ownerID: fork.id, childID: family.child, includeInherited: true)
+            XCTAssertEqual(child.first?.number, 1)
+            XCTAssertEqual(child.first?.header.link.childSessionID, family.child)
+            await model.readInheritedSubagents(fork, current: { true })
+            let reused = await model.history.subagentScannedBytes
+            XCTAssertEqual(reused, scanned, "The exact revision needs no second plan scan")
+            var plan = rows[1], data = try XCTUnwrap(plan["data"]?.object), origin = try XCTUnwrap(data["origin"]?.object)
+            var link = try XCTUnwrap(origin["link"]?.object)
+            let next = UUID().uuidString
+            link["childSessionID"] = .string(next); origin["link"] = .object(link)
+            data["origin"] = .object(origin); plan["data"] = .object(data)
+            let file = try FileHandle(forWritingTo: path); try file.seekToEnd(); try file.write(contentsOf: encode([plan])); try file.close()
+            await model.readInheritedSubagents(fork, current: { true })
+            XCTAssertEqual(model.inheritedSubagents[fork.id]?.map { $0.target.sessionID }, [family.child, next])
+            XCTAssertEqual(model.inheritedSubagents[fork.id]?.map(\.number), [1, 2])
+            // Same-size rewrites with restored mtime still invalidate the cache.
+            let old = try Data(contentsOf: path), date = try FileManager.default.attributesOfItem(atPath: path.path)[.modificationDate]
+            let replacement = UUID().uuidString
+            let edited = Data(String(decoding: old, as: UTF8.self).replacingOccurrences(of: next, with: replacement).utf8)
+            XCTAssertEqual(edited.count, old.count)
+            let writer = try FileHandle(forWritingTo: path); try writer.write(contentsOf: edited); try writer.close()
+            if let date { try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: path.path) }
+            await model.readInheritedSubagents(fork, current: { true })
+            XCTAssertEqual(model.inheritedSubagents[fork.id]?.map { $0.target.sessionID }, [family.child, replacement])
+            do {
+                _ = try await model.history.subagentPlans(path: path, ownerID: "wrong-owner", includeInherited: true)
+                XCTFail("A cached path cannot bypass journal-owner validation")
+            } catch { XCTAssertTrue(error is StoreError) }
+            try FileManager.default.removeItem(at: path)
+            do {
+                _ = try await model.history.subagentPlans(path: path, ownerID: fork.id, includeInherited: true)
+                XCTFail("Removed journals cannot reuse cached plans")
+            } catch { }
+        }
+    }
+
     @MainActor func testForkOwnedNumbersFollowPersistedInheritedStarts() async throws {
         for kind in AgentForkKind.allCases { try await checkForkOwnedNumbersFollowPersistedInheritedStarts(kind) }
     }

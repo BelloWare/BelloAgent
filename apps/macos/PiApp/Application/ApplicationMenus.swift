@@ -168,7 +168,9 @@ import AppKit
         let conversation = menu("Conversation")
         command(conversation, "Sides and Agents…", enabled: { [model] in model.canShowAgentFamily }, action: model.showAgentFamily)
         let active = { [weak self] in self?.conversationCommands ?? false }
-        let editable = { [weak self, model] in (self?.conversationCommands ?? false) && model.commandChat.map { !$0.isSubagent } == true }
+        let editable = { [weak self, model] in
+            (self?.conversationCommands ?? false) && model.conversationCommandID().flatMap(model.record).map { !$0.isSubagent } == true
+        }
         command(conversation, "Send / Queue Follow-up", enabled: editable, action: { [model] in model.send() })
         command(conversation, "Open Side", enabled: editable, action: { [model] in model.openSide() })
         command(conversation, "Send / Steer Current Run", key: "\r", enabled: editable) { [model] in model.submitFocusedComposer(intent: .steer) }

@@ -1569,6 +1569,16 @@ Future implementation follows the repository’s commit/push workflow. This desi
 
 ### Forks: original sub-agents are read-only references (0.1.128)
 
+Inherited-plan discovery shares a bounded eight-journal revision cache, including
+empty plan sets for ordinary chats. Cached reopens check identity, size and change
+times without reading journal bodies. Full scans cache only an unchanged revision;
+appends, replacement and same-size rewrites invalidate it. Targeted scans never
+cache a partial plan set. Current project trust and original availability are
+still checked separately. Reusing an Inspector window replaces its provenance on
+every opening: a normal opening clears the fork context, restoring original-chat
+navigation and Fork from Here. Send menu validation uses the focused conversation
+record, including a memory-only side draft; managed/original readers remain read-only.
+
 Inherited receipts say “From the original chat”. Open reads the original child's
 validated journal in the existing side-pane tab, without attaching a helper. The
 tab and header name the original chat; Back focuses the fork. The fork picker puts

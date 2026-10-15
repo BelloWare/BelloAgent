@@ -2258,3 +2258,128 @@ independent lead review and integration remain with the lead. Only this stream's
 branch is committed/pushed. No source journal writes, accounting adoption, new
 stored fields, model/tool changes, real preferences/Keychain, installed app,
 paid-provider calls, named result bundles or `xctrace --launch` were used.
+
+
+## Lead review round 14: cached reopens, Inspector context and side Send
+
+### Causes and changes
+
+1. Removing the ancestry prerequisite in round 13 correctly found inherited
+   plans in both fork kinds, but made every native chat opening scan its full
+   journal before the retained-history fast path. `HistoryReader.subagentPlans`
+   now caches complete metadata (including empty sets) by path, owner and the
+   existing exact `HistoryRevision` identity/size/mtime/ctime stamp. Eight
+   journals are retained in LRU order and released with the history reader's
+   indexes. Filtering owned/inherited/specific children shares a complete cached
+   set; a targeted cold scan cannot cache a partial set. A scan whose revision
+   changed, a failed scan or a canceled read cannot populate the cache. Original
+   availability and project trust remain independently refreshed.
+2. The session-scoped Inspector reused its old non-nil `originalForkID` on an
+   ordinary opening. Every opening now assigns the optional provenance, clearing
+   it for the original parent's normal Inspector while preserving it for explicit
+   fork-reference entry points. The same native window is reused.
+3. Conversation Send availability used saved-chat metadata. A pending side exists
+   only in `sides`, so both Send actions were disabled. Availability now resolves
+   the focused conversation through `record`, preserving read-only managed-child
+   guards and allowing unsaved side drafts without materializing them.
+
+### Failing-first evidence and performance
+
+Artifacts are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`, prefix `review14-`.
+All tests use generated data, the memory vault and this stream's build root.
+
+- `red-cache`: 26 passed, 2 failed. The new real `WorkspaceModel.select` performance
+  regression and the inherited-plan revision-cache test failed on journal bytes
+  reread. The initial `red-loading` run also exposed a fixture readiness assertion;
+  the corrected fixture reports viewport readiness exactly as the native pane
+  does, leaving only the intended extra-scan failure in `red-cache`.
+- `red-inspector`: 5 passed, 1 failed. Ordinary reopen retained fork provenance,
+  omitted Fork from Here and revealed the fork instead of the original. Final
+  regression coverage exercises both whole-chat and from-reply fork shapes and
+  the Inspector's actual Show in Chat dispatch.
+- `red-menus`: 11 passed, 1 failed. Both Send validations failed, and neither the
+  Queue menu action nor the native Command-Return menu dispatch reached the
+  unsaved side. Dispatch uses local built-in/completion validation, so no helper,
+  journal or provider request is needed.
+
+The performance fixture is a **26,938,052-byte generated journal with 20,001
+messages** and no sub-agents. Five cached reopens before the fix read another
+**134,690,260 bytes** in delegation scans (about 660–685 ms each). After the fix,
+`green-cache` measured **0.56–0.76 ms** per reopen, with **zero additional
+sub-agent scan bytes, index bytes, decoded records or acceptance-scan bytes**.
+The same `SessionDisplay` and message page remain in use. Timing is reported;
+real byte/decode counters enforce the bound without a machine-speed threshold.
+Cold discovery still scans a changed or uncached journal off the main actor.
+
+`SubagentDiscoveryTests.testInheritedPlanCacheRevalidatesAppendsRewritesAndOwnerIdentity`
+covers both fork kinds, targeted misses, cached inherited/owned/child filters,
+new starts appended to the journal, same-size in-place rewrites with restored
+mtime, a mismatched owner, removed source files and stable inherited numbering.
+`InheritedSubagentReaderTests.testOrdinaryParentInspectorReopenClearsForkProvenance`
+checks both fork shapes, native controller reuse, restored Fork from Here and
+original-chat Show in Chat. `NativeApplicationTests.testUnsavedSideSendMenusUseTheFocusedEditableRecord`
+checks both menu actions, native Command-Return outside a composer, Reports
+availability, no saved side record and no helper creation.
+
+### Mutation checks and final validation
+
+Each mutation changed the real production guard, ran its regression alone, and
+restored the source in `finally` (`review14-mutate.py`):
+
+| Artifact | Mutation | Result |
+| --- | --- | --- |
+| `mutation-cache` | Invert the exact-revision cache-hit comparison | 1 failed; five reopens reread all 134,690,260 bytes |
+| `mutation-inspector` | Restore the non-nil-only provenance assignment | 1 failed; both fork kinds lose normal navigation and Fork from Here |
+| `mutation-menus` | Restore saved-only `commandChat` availability | 1 failed; both validations and Send/Command-Return dispatch regress |
+
+Final affected-class runs passed **156 tests, zero failures, one skip**:
+
+| Class | Passed | Skipped |
+| --- | ---: | ---: |
+| ComposerSubmissionTests | 6 | 1 |
+| InheritedSubagentReaderTests | 6 | 0 |
+| InspectorEntryPointTests | 7 | 0 |
+| InspectorWindowControlTests | 1 | 0 |
+| NativeApplicationTests | 12 | 0 |
+| QuickOpenTests | 17 | 0 |
+| SideTests | 15 | 0 |
+| SubagentDiscoveryTests | 15 | 0 |
+| SubagentOpeningTests | 12 | 0 |
+| SubagentReaderTests | 52 | 0 |
+| WorkspaceLoadingTests | 13 | 0 |
+
+Serial classes ran alone. The lone affected-class skip is the existing
+`ComposerSubmissionTests.testTheMenuBarGivesCommandReturnToSendOrSteer` because
+its test host has no Conversation menu. The new native regression installs the
+real menu and tests validation, Queue dispatch and Command-Return successfully.
+
+Each run used `PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display
+scripts/test-macos.sh -only-testing:PiAppTests/<Class>` via `review14-run.py`;
+`review14-lanes.txt` retains the lane inventory. The final artifacts are
+`review14-final-{related,inspector,menus,reader,opening,quick-open}` with arguments,
+logs and exact XCTest summary/tree JSON. `review14-affected.py` ran them
+sequentially and stopped on any failure.
+
+The **one full native parallel lane passed: 2,564 passed, 38 skipped, zero
+failed (2,602 total), in 577.4 seconds**. `review14-full-parallel-arguments.txt` contains the exact
+selection from `python3 scripts/test-lanes.py parallel`, with native parallel
+execution enabled and four workers. The log, summary and complete test tree are
+`review14-full-parallel.log` and `review14-full-parallel-{summary,tests}.json`.
+There were no full-lane failures, so no isolated failure rerun was required.
+The existing opt-in/host-dependent skips are preserved in the test tree.
+
+### Handoff
+
+No layout or visible-text change was made, so galleries were not regenerated.
+The previous round's inspected galleries remain the visual record. No helper
+package changed; no separate Swift package test run was needed. No journal,
+model/tool text, accounting, permission or capture contract changed. No source
+journal was written by the read-only opening tests. No installed app, real
+preferences/Keychain, paid provider, named result bundle or `xctrace --launch`
+was used.
+
+`NEXT-RELEASE.md` and the fork-reference design section describe the changes.
+`git diff --check` passes. No implementation or validation failure remains for
+this round; independent lead review and integration remain with the lead.
+Only `dev/a128-sub-display` is committed/pushed.
