@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Sub-agent review round 12 (`dev/a128-sub-display`): earlier-turn and Source reveals follow their reader tokens and actual visibility across focus changes, without taking focus back. Original-reference Back restores Chats for an already-selected fork behind Reports or Background. Audited all remaining global focus/main-page checks in hosted-reader navigation. [Validation and guard inventory](docs/validation/sub-display-0.1.128.md#lead-review-round-12-focus-independent-reader-publication).
+
 - [x] Live rendered Find (`dev/a128-sub-display`, review round 11): each search read captures a byte boundary, searches its complete records and tolerates normal journal appends. Full-prefix validation still rejects rewrites, truncation and replacement; incomplete tails never hide damaged completed records. Rendered agent prose, live overlays, source Copy and reader navigation ownership remain intact. Merged queue-edit and prompt-cache work from `dev/next`; 314 affected native tests, 291 helper tests and the one full native parallel lane (2,561 passed, 38 skipped) pass. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-11-live-find-and-integration).
 
 - [x] Sub-agent review round 10 (`dev/a128-sub-display`): coordination reserves inherited start numbers without adopting their children, keeping fork cards and Inspector identities consistent. Sides and Agents commands require an available picker; independent child windows retain their own. Transcript chrome uses plain activity/completion wording, and original-reference readers name the fork in their Back control. [Validation](docs/validation/sub-display-0.1.128.md#lead-review-round-10-numbering-picker-availability-and-plain-labels).

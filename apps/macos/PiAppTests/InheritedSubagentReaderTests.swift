@@ -10,6 +10,36 @@ private actor OriginalReaderBackGate {
 }
 
 final class InheritedSubagentReaderTests: XCTestCase, SerialTestLane {
+    @MainActor func testOriginalWindowBackRestoresChatsForTheAlreadySelectedFork() async throws {
+        let root = scratchRoot("original-reader-back-page")
+        let model = try SubagentOrganizationTests.fixture(root)
+        registerWorkspaceFixtureTeardown(model, root: root)
+        var fork = model.chats[0]; fork.id = "fork"; fork.title = "Independent fork"
+        model.chats.append(fork)
+        let display = SessionDisplay(id: fork.id); display.historyState = .ready; display.draftReady = true
+        display.messages = [.init(id: "reading", role: "assistant", text: "The fork's response")]
+        display.scrollAnchor = .init(id: "reading", offset: 31, followsBottom: false)
+        model.displays[fork.id] = display; model.selectedID = fork.id; model.selected = display
+        model.tabs.showsWindows = false
+        let tab = model.tabs.open(kind: SubagentTab.kind, key: "chat-child") {
+            let reader = SubagentTab(childID: "chat-child"); reader.originalForkID = fork.id; return reader
+        } as! SubagentTab
+        let container = model.tabs.popOut(tab)
+        for reports in [true, false] {
+            model.page = reports ? .report : .background
+            tab.focus()
+            let old = tab.navigation, anchor = display.scrollAnchor, generation = display.presentationGeneration
+            await model.backToSubagentParent(tab.key)
+            XCTAssertEqual(model.page, .chats)
+            XCTAssertEqual(model.selectedID, fork.id)
+            XCTAssertEqual(model.focusedSessionID, fork.id)
+            XCTAssertFalse(old.isCurrent)
+            XCTAssertEqual(display.scrollAnchor, anchor, "Back preserves the fork's reading position")
+            XCTAssertEqual(display.presentationGeneration, generation, "A visible ready fork needs no reload")
+            XCTAssertTrue(tab.container === container)
+            XCTAssertTrue(model.subagentTabIsShown(tab.key))
+        }
+    }
     @MainActor func testForkCardAndPickerOpenOriginalReadOnlyWithoutWritingSource() async throws {
         let root = scratchRoot("fork-original-reader")
         let model = try SubagentOrganizationTests.fixture(root)

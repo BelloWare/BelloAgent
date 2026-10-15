@@ -94,6 +94,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var conversationSearchLoader: (@Sendable (String, String, Int) async throws -> ContentSearch)?
     var agentCoordinationLoader: (@Sendable (URL, String) async throws -> AgentCoordination)?
     var subagentVersionsLoader: (@Sendable (String, String) async throws -> [String: WireValue])?
+    var subagentTurnMessageLoader: (@Sendable (URL, String, Int?, String?) async throws -> String?)?
     /// Chats a "Fork from here" is being made from, so a second press waits for the first.
     var forkingReplies: Set<String> = []
     var organizationNavigationRevision = 0

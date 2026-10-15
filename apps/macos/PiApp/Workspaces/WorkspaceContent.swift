@@ -138,15 +138,19 @@ extension WorkspaceModel {
         // select changes selectedID synchronously before its first await, which
         // advances the revision once. Any additional navigation supersedes us.
         let revision = messageNavigationRevision + (changingSelection ? 1 : 0) + (page == .chats ? 0 : 1)
+        let navigation = TranscriptNavigationToken(reader: nil, workspaceRevision: revision, origin: origin)
         // Reaching a side through its chat: the side is what is opened.
         if changingSelection || item.isSubagent {
             if parentID != sessionID { await passingThrough(parentID) { await select(parentID) } } else { await select(parentID) }
         } else { page = .chats }
-        guard !Task.isCancelled, origin?.isCurrent != false, revision == messageNavigationRevision, selectedID == parentID,
-              !changingSelection || page == .chats, record(sessionID) != nil,
+        guard !Task.isCancelled, navigation.isCurrent(in: self), selectedID == parentID,
+              transcriptShows(sessionID), record(sessionID) != nil,
               (side(sessionID)?.parentID ?? sessionID) == parentID,
               let view = displays[sessionID] else { return false }
-        focusedSessionID = sessionID
+        // Selection already chose focus before loading. Only transfer that
+        // still-held focus to its side; a newer focus choice never blocks the
+        // reveal itself and must not be overwritten by its completion.
+        if !changingSelection || focusedSessionID == parentID { focusedSessionID = sessionID }
         page = .chats
         guard let messageID else { return true }
         var expectedMessageIDs = view.messages.map(\.id)
@@ -162,7 +166,7 @@ extension WorkspaceModel {
         view.revealRead = read; view.revealFailure = nil; view.abandonJump()
         defer { if view.revealRead == read { view.revealRead = nil }; resumeVisibleReaders() }
         func current() -> Bool {
-            !Task.isCancelled && origin?.isCurrent != false && revision == messageNavigationRevision && page == .chats && selectedID == parentID && focusedSessionID == sessionID &&
+            !Task.isCancelled && navigation.isCurrent(in: self) && transcriptShows(sessionID) && selectedID == parentID &&
             record(sessionID) != nil && record(sessionID)?.path == item.path && displays[sessionID] === view && view.revealRead == read && view.messages.map(\.id) == expectedMessageIDs
         }
         if historyLookup == nil {

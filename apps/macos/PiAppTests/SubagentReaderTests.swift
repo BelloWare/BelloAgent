@@ -48,6 +48,93 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
     @MainActor private func otherTab(_ model: WorkspaceModel) -> HostedTab {
         model.tabs.open(kind: HostedTab.kind, key: "other") { HostedTab(key: "other", title: "Other reader", symbol: "doc") }
     }
+    @MainActor func testEarlierChildTurnOpeningSurvivesMainFocusDuringEveryRead() async throws {
+        for stage in ["presentation", "turn lookup", "reveal"] {
+            let (model, _) = try fixture()
+            model.chats.remove(at: 1)
+            let family = try SubagentDiscoveryTests.family(model)
+            await model.reconcileSubagents()
+            let child = try XCTUnwrap(model.record(family.child))
+            let delivery: WireValue = .object(["type": .string("message"), "id": .string("earlier-task"),
+                "message": .object(["nativeAgentDelivery": .object(["childId": .string(child.id), "turn": .number(1)])])])
+            let file = try FileHandle(forWritingTo: family.path)
+            try file.seekToEnd(); try file.write(contentsOf: JSONEncoder().encode(delivery) + Data([10])); try file.close()
+            let tab = try await open(child.id, in: model)
+            model.tabs.showsWindows = false
+            let container = model.tabs.popOut(tab)
+            let mainWindow = NSWindow(contentRect: .init(x: 0, y: 0, width: 620, height: 420), styleMask: [.titled], backing: .buffered, defer: false)
+            mainWindow.isReleasedWhenClosed = false
+            defer { mainWindow.close() }
+            let display = try XCTUnwrap(model.displays[child.id])
+            display.historyRevision = nil
+            display.scrollAnchor = nil
+            let gate = ReaderLookupGate(), history = model.history
+            model.historyWindowLoader = { _, _, _, around in
+                if stage == "presentation" && around == nil || stage == "reveal" && around == "earlier-task" { await gate.wait() }
+                return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture"), "lineage": .string("root"),
+                    "messages": .array([.object(["id": .string(around ?? "latest"), "role": .string("assistant"), "text": .string("Saved reply")])]),
+                    "older": .null, "newer": .null]))
+            }
+            model.subagentTurnMessageLoader = { path, child, turn, message in
+                if stage == "turn lookup" { await gate.wait() }
+                return try await history.subagentTurnMessage(path: path, childID: child, turn: turn, messageID: message)
+            }
+            var target = SubagentTarget(try XCTUnwrap(child.delegation)); target.turn = 1
+            let opening = Task { [target] in await model.openSubagent(target) }
+            try await eventually("Earlier-turn open awaits \(stage)") { await gate.reads == 1 }
+            let token = tab.navigation
+            mainWindow.makeKeyAndOrderFront(nil)
+            model.focusPane("chat-parent")
+            let keyWindow = NSApp.keyWindow
+            XCTAssertTrue(token.isCurrent, "Focus does not retire the independent reader")
+            await gate.release()
+            let opened = await opening.value
+            XCTAssertTrue(opened, stage)
+            XCTAssertEqual(display.scrollAnchor?.id, "earlier-task", stage)
+            XCTAssertEqual(model.focusedSessionID, "chat-parent", "Publishing must not refocus the child: " + stage)
+            XCTAssertTrue(NSApp.keyWindow === keyWindow, "Publishing must not change the key window: " + stage)
+            XCTAssertTrue(tab.container === container)
+            XCTAssertTrue(model.subagentTabIsShown(child.id))
+        }
+    }
+    @MainActor func testChildSourceDestinationIgnoresFocusChangesDuringParentReads() async throws {
+        for route in ["issuing call", "delivery", "initial delivery"] {
+            let (model, _) = try fixture()
+            let tab = try await open("chat-child", in: model)
+            model.tabs.showsWindows = false; _ = model.tabs.popOut(tab)
+            let parent = try XCTUnwrap(model.selected), link = try XCTUnwrap(model.record(tab.key)?.delegation)
+            parent.messages = [.init(id: "reading", role: "assistant", text: "Keep reading")]
+            parent.scrollAnchor = nil
+            parent.historyRevision = nil
+            if route != "delivery" { parent.historyState = .dormant }
+            if route == "initial delivery" {
+                var other = try XCTUnwrap(model.record(parent.id)); other.id = "other-main"
+                model.chats.append(other)
+                let otherView = SessionDisplay(id: other.id); otherView.historyState = .ready
+                model.displays[other.id] = otherView; model.selectedID = other.id; model.selected = otherView
+            }
+            let gate = ReaderLookupGate()
+            model.historyWindowLoader = { _, _, _, _ in
+                await gate.wait()
+                return try ConversationHistoryPage(.object(["version": .number(2), "incarnation": .string("fixture"), "lineage": .string("root"),
+                    "messages": .array([.object(["id": .string(link.call.assistantMessageID), "role": .string("assistant"), "text": .string("Issuing call")])]),
+                    "older": .null, "newer": .null]))
+            }
+            let origin = tab.renewNavigation()
+            let reveal = Task {
+                if route == "issuing call" { return await model.openSubagentParent(link, origin: origin) }
+                return await model.revealMessage(sessionID: parent.id, messageID: link.call.assistantMessageID, origin: origin)
+            }
+            try await eventually("Source awaits its parent's \(route) history") { await gate.reads == 1 }
+            tab.focus()
+            XCTAssertTrue(origin.isCurrent)
+            await gate.release()
+            let revealed = await reveal.value
+            XCTAssertTrue(revealed, route)
+            XCTAssertEqual(parent.scrollAnchor?.id, link.call.assistantMessageID, route)
+            XCTAssertEqual(model.focusedSessionID, tab.key, "A completed read never refocuses its destination")
+        }
+    }
     @MainActor func testVisibilityRecoveryDoesNotReplaceAnInMemoryPresentation() async throws {
         let (model, gate) = try fixture()
         let display = SessionDisplay(id: "chat-parent")

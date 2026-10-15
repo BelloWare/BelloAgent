@@ -76,6 +76,12 @@ Open/header validation, attachment, reload, history edges/position reads, versio
 Find pages and reveals capture it before awaiting and recheck before publishing.
 Back, a new explicit open/reveal/Home/version/Latest, a real hide or close retires
 it. An unrelated main selection or page does not retire a visible child window.
+Changing keyboard focus alone never retires a content operation. Publication
+checks the reader token and actual visibility, never `focusedSessionID`. A Source
+reveal into the main/side transcript carries both its originating reader token
+and the destination's main intent; it may finish after focus moves, without
+refocusing either window. Focus-only attachment callbacks still preserve newer
+responder choices; they do not decide whether history may publish.
 Find's own match reveals share the query's reader intent; its controller separately
 cancels old queries and match requests. Only an unfinished external child opening
 is superseded by a newer external destination before it has attached.
@@ -112,6 +118,8 @@ strict revision guard. These storage bounds do not retire any reader token.
 Native responder transitions update command focus. Deferred attachment and read
 completion never refocus a reader. Show in Chat requires a successful, current
 opening even if Back left the embedded reader visible.
+An original-reference reader's Back explicitly restores Chats before focusing its
+fork, including when that fork remains selected behind Reports or Background.
 
 Conversation menu validation and dispatch resolve the active reader of the key
 child window, including while the main window shows Reports. Embedded readers use

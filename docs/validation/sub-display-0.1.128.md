@@ -1970,3 +1970,118 @@ existing upstream commit identities and incorporates its queue-edit and prompt-c
 behavior without additional helper changes. Round 11 has no known remaining
 implementation or validation failures. Lead review and integration into `dev/next`
 remain with the lead; only `dev/a128-sub-display` is pushed.
+
+## Lead review round 12: focus-independent reader publication
+
+Scope: the two round-12 findings and an app-wide audit of global focus/main-page
+checks reachable from hosted-reader async navigation. Same stream branch and
+build root, generated journals and isolated native tests. No helper, tool,
+model-facing text, cost accounting, journal format or UI layout change.
+
+### Causes and changes
+
+- `openSubagent` checked `focusedSessionID` after tab loading and after the saved
+  turn lookup. Focusing an already-visible main pane changed that global value
+  without retiring the independent child. Both checkpoints now require the
+  opening's reader token and actual tab visibility; the second also checks tab
+  identity. Earlier-turn opening, lookup and reveal complete without changing
+  subsequent focus or the key window. A narrow optional lookup seam delays the
+  real read-only `HistoryReader.subagentTurnMessage` in tests; production still
+  calls that reader directly.
+- Original-reference Back skipped selection when its fork was already selected,
+  leaving Reports/Background over the destination. That branch now restores Chats
+  explicitly, then validates the origin token, selected fork and `transcriptShows`
+  before focusing. It preserves the fork's reading position and ready presentation.
+- The audit found the same publication mistake in `openSubagentParent` and the
+  main/side branch of `revealMessage`, both reachable through a child's Source or
+  delivery link. They now retain a `TranscriptNavigationToken` with the originating
+  child token and the destination's expected main revision, plus actual destination
+  visibility. Genuine destination changes and Back still retire the chain.
+- A further delayed-initial-parent test exposed a focus assignment after selection
+  completed. Focus transfer now occurs only when selection's focus is still held;
+  this condition never rejects history or a reveal. A newer focus choice survives
+  while the still-owned content publishes.
+- The design's Reader navigation ownership section explicitly distinguishes
+  focus-only callbacks from content publication, and documents Back from an
+  original-reference window to a fork behind Reports/Background.
+
+### Failing-first and mutation evidence
+
+All logs/arguments/result JSON are under the stream build root with the
+`review12-` prefix. The runner uses `PI_BUILD_ROOT`, isolated
+`TEST_RUNNER_PI_APP_SCRATCH_ROOT`, and the required
+`scripts/test-macos.sh -only-testing:PiAppTests/<Class>` form. Serial classes run
+alone. Result bundles are automatically named; summaries are extracted before
+the next run. The first compile caught a Swift sendable loop capture in the new
+test; an explicit immutable capture fixed the fixture before behavioral runs.
+
+| Run | Passed | Failed | Evidence |
+| --- | ---: | ---: | --- |
+| `red-readers` | 47 | 2 | Earlier-child opening drops both presentation/turn-lookup completions; issuing-call and delivery parent destinations drop valid reads after focus moves |
+| `red-original` | 1 | 1 | Back leaves the already-selected fork behind both Reports and Background |
+| `green-readers` | 49 | 0 | Initial fixes pass the complete reader lifecycle class |
+| `green-original` | 2 | 0 | Original-reference lifecycle and new page-return matrix pass |
+| `mutation-focus` | 47 | 2 | Restoring all four real global-focus publication checks reproduces both reader regressions |
+| `mutation-back` | 1 | 1 | Removing the real Chats restoration reproduces the Back failure |
+| `red-initial-source` | 47 | 2 | The added initial-parent case proves the late focus overwrite; the other failure was a new test assuming its window became key in the test host |
+
+The native-window check now captures the actual key window before completing the
+read and verifies it remains unchanged; it does not assume the test host grants
+activation. The focused conversation assertion separately verifies the user's
+main-pane decision. Both mutations were restored before final validation.
+
+### Global focus/page audit and navigation paths
+
+The app-wide search is recorded in `review12-global-guards.txt`; the async
+open/reveal/history/source/search inventory is `review12-async-paths.txt`. The
+post-fix search is `review12-global-guards-final.txt`. Search expressions:
+`focusedSessionID|page\s*(==|!=)` and `async|Task |await`, across `PiApp` and the
+navigation/Inspector files respectively. The first inventory also includes
+unrelated synchronous UI, composer, organization and report state, so the
+dispositions below distinguish those from hosted content publication.
+
+| Path / matching guard | Ownership and disposition | Behavioral coverage |
+| --- | --- | --- |
+| `WorkspaceSubagents.openSubagent`: header, discovery, open/load, turn lookup, reveal | Reader token before any await; identity + `subagentTabIsShown` once mounted. Removed both global focus guards. | `SubagentReaderTests.testEarlierChildTurnOpeningSurvivesMainFocusDuringEveryRead` gates presentation, saved turn lookup and off-page reveal; `SubagentOpeningTests.testCardHeaderValidationDoesNotOverrideANewerTabChoice` |
+| `backToSubagentParent`: original-reference branch | Restore Chats for an already-selected fork; origin token + selected destination + `transcriptShows` after an awaited selection. This page assignment intentionally navigates the main window. | `InheritedSubagentReaderTests.testOriginalWindowBackRestoresChatsForTheAlreadySelectedFork`; existing full original-reader matrix rejects a delayed Back after newer selection |
+| `openSubagentParent` / `revealSubagentCall` | Main destination token carries child origin through selection, helper/versions, anchor and history reads. Removed focus predicate; main page arithmetic only accounts for the intentional Chats transition. | New `testChildSourceDestinationIgnoresFocusChangesDuringParentReads`; existing `testEmbeddedBackRetiresEveryStageOfAParentSourceReveal`, `testNewRevealInPoppedChildRetiresItsAwaitingBackToParent` |
+| `WorkspaceAgentNavigation.openAgentSource` / `showAgentSource` | Coordination lookup captures reader/main intent, then passes originating child through the destination chain. No global focus/page publication guard. | `testEmbeddedBackRetiresAnAwaitingAgentSourceLookup`, `testParentSourceRetiresAnOlderParentReadBeforeAwaitingItsVersionLookup`, side-transfer tests |
+| `WorkspaceContent.revealMessage` | Hosted branch returns before main selection logic; reader token + visibility govern the child. Main destination now uses its token + origin + `transcriptShows`, including source delivery. The remaining focus comparison only controls a focus assignment, never whether content publishes. | New Source test includes an initially unloaded parent selected from another main chat; `testBackSupersedesShowInChatWithoutMovingTheStillVisibleReader`, `testNewParentMessageNavigationRetiresAnAwaitingChildReveal`, `ReportMessageNavigationTests` |
+| `revealConversationHit`, `TranscriptReveal` reveal/readWindow/Home/position/drawable-page paths | Reader/main token and `transcriptShows`, with presentation/read identities. The `.chats` check lives only in the main/side branch of the shared visibility predicate; external readers bypass it. | `testPoppedOutHistoryReadsSurviveUnrelatedMainNavigation`, `testBackRetiresAnAwaitingRevealInTheVisibleChild`, `testMainHistoryOperationsRetireAcrossPageRoundTrips`, `testRetiredPositionReadDoesNotRestartItsQueuedDestination` |
+| `WorkspaceHistory` reload, initial/source-handoff, viewport-ready, earlier/newer pages, live gap and position reacquisition | Reader token and presentation identity; viewport/reveal work uses actual visibility. Initial content can fill its still-owned mounted slot before viewport readiness. No global focus/page guard. | Reader hide/show recovery, hidden-history reopen, paging reset, move/close/reopen and main page round-trip tests |
+| `WorkspaceVersions` show/read/latest | Async publication uses intent + actual transcript visibility. `stepVersion`'s optional focused-session fallback selects a command target synchronously, not after an await. | `testNoOpVersionSelectionKeepsItsPendingPage`, Source version-stage tests, `SubagentNavigationTests` |
+| `WorkspaceContent.searchConversation` / Find | Search pages retain reader/main token; query/reveal tasks own cancellation. No global focus/page guard; Find's own reveals do not renew its query token. | `testFindKeepsPagingWhileItsAutomaticAndNextMatchesReadOtherPages`, `testVisibleReadersRestartTheirRetiredFindQueryWithoutRevealingAnOldMatch` |
+| `SidebarSearch.revealSidebarSearchHit` / `openFromSidebar` | Hosted branch checks reader identity/token/visibility and returns before the fallback's main Chats/focus guard. Retained fallback applies only to an ordinary main/side opening. Search/open identity also remains current. | `testSidebarContentHitRevealsInPoppedOutChildOnEveryMainPage`, opening tests |
+| `SubagentTab` open/ensureLoaded/load/attachment | Reader-local intent, actual host visibility and presentation identity. `.chats` gates embedded visibility only. `canRestoreFocus`, `focusIfAttached`, hide and close retain focus-only checks; they cannot reject a history result. | Initial-load Back, newer-tab choice, native responder transition, independent-window menu, attachment and moved-reader tests |
+| `WorkspaceSelection.resumeVisibleReaders`, main/side initial loading, `WorkspaceSides`, `SubagentFamily` | Recovery visits independent child windows before its main-only Chats guard. Ordinary sides retain main/pane intent; the side's focus comparison only requests composer focus. The family command's Chats gate runs after its independent-window branch. | Retired main/side/child recovery, Side no-op/independent-window, side-open handoff and family-command availability tests |
+| `InheritedSubagents` open/load | Trust/header/history/accounting reads retain the original reader token and presentation, with no global focus/page guard. No helper attachment or source writes. | Original-reader matrix, including read-only menus, restore, missing originals and byte-identical source journals |
+| Inspector linked-message/origin/source/delivery routes | Navigation tokens survive lookup and transfer into shared open/reveal functions. `SessionInspectorModel.page == .request` checks the Inspector's own page, not the main window. Metadata-only coordination uses its Inspector task scope. | `testInspectorParentSourceRetainsTheOriginatingReaderThroughItsVersionRead`, `SubagentOpeningTests.testBackAndStandaloneInspectorFindTheIssuingCallAfterAnAncestorEdit`, original-reader Inspector matrix |
+| Launch restoration, chrome, menus and other grep matches | `reopenReport` restores the main page only; remembered-side focus checks restore its composer. Menu/UI availability uses key-reader ownership. Run/edit/delete/composer, unread, project choice, automatic-context, organization and report-rendering checks are not hosted history publication. Pure copy/export/storage readers keep caller-owned task/clipboard scope. | Existing restore, key-reader menus, no-human-composer, read-only and original-reader matrix coverage; these guards are unchanged |
+
+### Final affected validation and handoff
+
+The restored final implementation passes **79 unique native tests in five affected
+classes, zero failures and zero skips**. Counts are recorded in
+`review12-final-counts.json`; each run also retains its arguments, log and extracted
+summary/tests JSON under the stream build root.
+
+| Final run | Class | Passed |
+| --- | --- | ---: |
+| `final-readers` | SubagentReaderTests | 49 |
+| `final-original` | InheritedSubagentReaderTests | 2 |
+| `final-opening` | SubagentOpeningTests | 12 |
+| `final-navigation` | SubagentNavigationTests | 7 |
+| `final-reports` | ReportMessageNavigationTests | 9 |
+
+The four serial classes ran separately; the report class ran on its own as well.
+No full native lane or gallery was run for round 12, as requested: there are no
+visible text/layout changes. No helper package changed, so no helper suite was
+needed; the opening class exercised its generated loopback helper fixture.
+
+`git diff --check` passes. Tests used this stream's build root and isolated test
+storage, generated journals, MemoryVault and synthetic/loopback services only.
+No installed app, paid-provider calls, real preferences, Keychain, named result
+bundles or `xctrace --launch` were used. Source journals and model/tool contracts
+are unchanged. No implementation or validation failure remains in this round;
+the independent lead review and integration remain with the lead. Commit/push
+scope is only `dev/a128-sub-display`.

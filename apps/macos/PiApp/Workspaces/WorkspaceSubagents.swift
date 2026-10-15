@@ -18,12 +18,14 @@ extension WorkspaceModel {
             if record(target.sessionID) == nil { await reconcileSubagents(parentID: parent.id) }
             guard currentOpening() else { return false }
             guard let child = record(target.sessionID), child.workspaceID == parent.workspaceID, child.delegation == header.link else { throw StoreError.invalidRecord }
-            guard let tab = await openSubagentTab(target.sessionID, opening: opening), subagentTabIsShown(target.sessionID),
-                  !Task.isCancelled, focusedSessionID == target.sessionID else { return false }
+            guard let tab = await openSubagentTab(target.sessionID, opening: opening),
+                  currentOpening(), subagentTabIsShown(target.sessionID) else { return false }
             subagentReturnTargets[target.sessionID] = target
-            let message = try await history.subagentTurnMessage(path: path, childID: target.sessionID, turn: target.turn, messageID: target.messageID)
+            let message: String?
+            if let subagentTurnMessageLoader { message = try await subagentTurnMessageLoader(path, target.sessionID, target.turn, target.messageID) }
+            else { message = try await history.subagentTurnMessage(path: path, childID: target.sessionID, turn: target.turn, messageID: target.messageID) }
             guard currentOpening(),
-                  subagentTab(target.sessionID) === tab, subagentTabIsShown(target.sessionID), focusedSessionID == target.sessionID else { return false }
+                  subagentTab(target.sessionID) === tab, subagentTabIsShown(target.sessionID) else { return false }
             if let message = sourceMessage ?? message { _ = await revealInTranscript(sessionID: target.sessionID, messageID: message, toolCallID: sourceToolCall, navigation: opening) }
             return currentOpening() && subagentTabIsShown(target.sessionID)
         } catch is CancellationError { }
@@ -79,7 +81,8 @@ extension WorkspaceModel {
         if let fork = subagentTab(childID)?.originalForkID {
             guard record(fork) != nil else { return }
             if selectedID != fork { await select(fork, focusesComposer: false) }
-            guard !Task.isCancelled, origin?.isCurrent != false, selectedID == fork, page == .chats else { return }
+            else { page = .chats }
+            guard !Task.isCancelled, origin?.isCurrent != false, selectedID == fork, transcriptShows(fork) else { return }
             focusSubagentParent(fork)
             return
         }
@@ -110,23 +113,23 @@ extension WorkspaceModel {
         let origin = sideOwner != nil && origin?.reader.container?.isPane == true ? nil : origin
         // Retire the destination's previous reveal before any selection or
         // version lookup can suspend. Internal steps below share this intent.
-        _ = transcriptNavigation(parent.id, advancing: true)
+        var intent = transcriptNavigation(parent.id, advancing: true)
         let selection = selectionRevision, revision = messageNavigationRevision + (page == .chats ? 0 : 1)
         let changesMain = selectedID != mainID
+        intent.workspaceRevision = revision + (changesMain ? 1 : 0)
+        intent.origin = origin
         let paneIntent = tabs.navigationRevision + (sideOwner == nil || tabs.pane.sideShown ? 0 : 1)
         if side(parent.id) != nil { await selectSide(parent.id, revealInSidebar: false) }
         else if sideOwner != nil { await showSide(parent.id, revealInSidebar: false) }
         else { await select(parent.id, revealInSidebar: false, reopensSide: false, focusesComposer: false) }
         func current() -> Bool {
-            !Task.isCancelled && origin?.isCurrent != false && messageNavigationRevision == revision + (changesMain ? 1 : 0) && (changesMain ? selectionRevision == selection + 1 : (selection...selection + 1).contains(selectionRevision)) && tabs.navigationRevision == paneIntent && focusedSessionID == parent.id && subagentParentIsShown(parent.id)
+            !Task.isCancelled && intent.isCurrent(in: self) && (changesMain ? selectionRevision == selection + 1 : (selection...selection + 1).contains(selectionRevision)) && tabs.navigationRevision == paneIntent && subagentParentIsShown(parent.id)
         }
         guard current() else { return false }
         var destination = link
         if let target, target.matchesOrigin(link) {
             destination.call.assistantMessageID = target.assistantID; destination.call.toolCallID = target.toolCallID
         }
-        var intent = transcriptNavigation(parent.id)
-        intent.origin = origin
         await revealSubagentCall(destination, intent: intent)
         return current()
     }
