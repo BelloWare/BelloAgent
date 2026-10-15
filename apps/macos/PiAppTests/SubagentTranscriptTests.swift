@@ -3,6 +3,23 @@ import XCTest
 @testable import PiApp
 
 final class SubagentTranscriptTests: XCTestCase {
+    @MainActor func testHistoricalForkCardHasNoSourceNavigationOrControls() throws {
+        var tool = Self.tool; tool.nativeSubagent = Self.metadata; tool.state = "running"
+        var environment = TranscriptRowEnvironment(); environment.sessionID = "fork"
+        var called = false
+        let actions = TranscriptActions(openSubagent:{ _ in called = true },inspectSubagent:{ _ in called = true },stopSubagent:{ _ in called = true })
+        let row = TranscriptNativeActionRow()
+        row.update(tool:tool,open:true,fetched:nil,environment:environment,toggle:{},openFile:nil,actions:actions)
+        let buttons = ConversationPaneTests.views(PiKit.Button.self,in:row)
+        for id in ["open-subagent","inspect-subagent","stop-subagent"] {
+            let button = try XCTUnwrap(buttons.first { $0.accessibilityIdentifier() == id })
+            XCTAssertTrue(button.isHidden || !button.isEnabled)
+            button.onPress?()
+        }
+        XCTAssertFalse(called,"Even a retained action must not navigate into the source's live child")
+        XCTAssertEqual(buttons.first { $0.accessibilityIdentifier() == "open-subagent" }?.title,"History")
+        XCTAssertTrue(ConversationPaneTests.views(TranscriptPlainTextView.self,in:row).contains { $0.string.contains("Historical sub-agent") })
+    }
     static let link = SubagentLink(delegationID: "delegation", childSessionID: "chat-child", budgetOwnerSessionID: "chat-parent",
                                   call: .init(parentSessionID: "chat-parent", assistantMessageID: "reply", toolCallID: "call"),
                                   parentTurnID: "turn", parentExecutionID: "execution")
@@ -81,7 +98,7 @@ final class SubagentTranscriptTests: XCTestCase {
             button.onPress?()
         }
         XCTAssertEqual(calls, ["open:chat-child", "inspect:delegation"])
-        // A running copied card may navigate but has no Stop affordance.
+        // A copied card is saved history and has no Stop affordance.
         tool.output = "{\"status\":\"running\",\"text\":\"\",\"truncated\":false}"; tool.state = "running"
         environment.sessionID = "fork"
         row.update(tool: tool, open: true, fetched: nil, environment: environment, toggle: {}, openFile: nil, actions: relay.forwarded)

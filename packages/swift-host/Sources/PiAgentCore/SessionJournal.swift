@@ -102,10 +102,10 @@ final class SessionJournal {
     /// A journal a clone made (`clone(to:id:cwd:through:)`): its file written,
     /// locked and open, its header, marker and last record known.
     private init(cloned url: URL, lockFD: Int32, handle: FileHandle, tail: String, bytes: UInt64,
-                 header: JournalCheckpoint.Check, marker: JournalCheckpoint.Check?, markerBinding: JSON?, rebinds: [Rebind]) {
+                 header: JournalCheckpoint.Check, marker: JournalCheckpoint.Check?, markerKind: String, markerBinding: JSON?, rebinds: [Rebind]) {
         self.url=url; self.lockFD=lockFD; self.handle=handle; self.tail=tail; self.bytes=bytes
         self.beforeAppend={ _ in }; self.beforeSynchronize={}
-        headerCheck=header; markerCheck=marker; self.markerBinding=markerBinding; self.rebinds=rebinds; unsynced=true
+        headerCheck=header; markerCheck=marker; self.markerKind=markerKind; self.markerBinding=markerBinding; self.rebinds=rebinds; unsynced=true
     }
     /// The bindings a journal names, as a walk over it meets them: the
     /// marker's, then each move to another connection, which must say it
@@ -151,7 +151,7 @@ final class SessionJournal {
             let rid=try identity(item?["id"] ?? .string(fields.id ?? ""))
             guard branch.extend(rid, parent: fields.parentID) else { throw AgentError("session_damaged", "Native journal must be a valid single branch") }
             if JournalRecordKind.isMarker(fields.customType) {
-                guard marker == nil else { throw AgentError("session_damaged", "A native journal has exactly one format marker") }
+                guard marker == nil else { throw AgentError("session_damaged", "This chat has duplicate native format markers and cannot be opened safely. Its journal was not changed. If this is a fork, create a new fork from the source chat.") }
                 marker=try item ?? JSON.parse(line)
                 markerCheck=JournalCheckpoint.Check(offset:start,length:line.count,sha256:JournalCheckpoint.digest(line))
                 bindings.marker=marker?["data"]["binding"]; bindings.markerKind=fields.customType
@@ -415,7 +415,7 @@ extension SessionJournal {
         try? FileManager.default.setAttributes([.creationDate: Date()], ofItemAtPath: url.path)
         return SessionJournal(cloned: url, lockFD: lock, handle: file, tail: lastID, bytes: keep,
                               header: .init(offset: headerCheck.offset, length: headerCheck.length, sha256: JournalCheckpoint.digest(line)), marker: markerCheck,
-                              markerBinding: markerBinding, rebinds: rebinds.filter { $0.check.offset < keep })
+                              markerKind: markerKind, markerBinding: markerBinding, rebinds: rebinds.filter { $0.check.offset < keep })
     }
 
     /// Removes what a fork that did not finish (the app quit or crashed

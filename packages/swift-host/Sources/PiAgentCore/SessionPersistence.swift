@@ -258,6 +258,10 @@ extension AgentSession {
         var copiedHistory: JournalReplay?, sourcePlaces: [UInt64: (offset: UInt64, length: Int)] = [:]
         do {
             let prepared=try SessionJournal(url:temporary,id:newID,cwd:cwd,binding:profile.binding,create:true)
+            // Keep the source's reader requirement, but write exactly one
+            // marker belonging to this independent chat. V3 history must not
+            // become writable by a helper that predates agent deliveries.
+            if journal.markerKind == JournalRecordKind.steeringMarker { try prepared.promoteToSteering(managedChild:false) }
             // Each record the fork's journal gets, from its marker on, is
             // replayed as it is written, as the fork's first open would.
             var consumer=JournalReplayConsumer(id:newID,header:prepared.headerCheck,marker:prepared.markerCheck,spendTracked:false)
@@ -282,7 +286,7 @@ extension AgentSession {
                 // run-state records a long chat has are left out, each still
                 // checked to be JSON the parser takes, as parsing it checked.
                 if let fields=JournalLineScan.stateTail(line) ?? JournalLineScan.fields(line), let recordID=fields.id {
-                    if left.contains(fields.customType ?? "") {
+                    if JournalRecordKind.isMarker(fields.customType) || left.contains(fields.customType ?? "") {
                         if !JSONSyntax.plainlyValid(line) { _ = try JSON.parse(line) }
                         continue
                     }
@@ -297,7 +301,7 @@ extension AgentSession {
                     }
                 }
                 let record=try JSON.parse(line)
-                if left.contains(record["customType"].text ?? "") { continue }
+                if JournalRecordKind.isMarker(record["customType"].text) || left.contains(record["customType"].text ?? "") { continue }
                 // Branch records can contain a queued edit. Preserve the branch
                 // and all message bytes, but never authorize its command twice.
                 try prepared.append(record.removing(["id","parentId","timestamp","nativeState"]),id:try identity(record["id"]),flush:false)
