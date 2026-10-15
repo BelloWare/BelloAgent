@@ -29,7 +29,7 @@ enum CaptureLineage {
         if scope.budgetOwnerSessionID != scope.sourceSessionID {
             try db.execute("INSERT OR IGNORE INTO family_recipients(attempt,owner,kind,child) VALUES(?,?,'subagent',?)", [.text(id),.text(scope.budgetOwnerSessionID),.text(scope.sourceSessionID)])
         }
-        if let parents = scope.sideParents ?? savedParents {
+        if let parents = savedParents ?? scope.sideParents {
             try projectSides(parents, localOwner: scope.budgetOwnerSessionID, id: id, db: db)
         }
         if let events = scope.agentDeliveryIDs {
@@ -50,8 +50,10 @@ enum CaptureLineage {
         return result
     }
     static func projectSides(_ parents: [String], localOwner: String, id: String, db: CaptureDatabase) throws {
-        guard let owner = parents.last else { return }
-        try db.execute("UPDATE attempts SET budget_owner=?,local_owner=?,side_session=? WHERE id=?", [.text(owner),.text(localOwner),.text(parents.count == 1 ? localOwner : parents[parents.count - 2]),.text(id)])
+        let owner = parents.last ?? localOwner
+        try db.execute("DELETE FROM family_recipients WHERE attempt=? AND kind='side'", [.text(id)])
+        let side: CaptureSQLValue = parents.isEmpty ? .null : .text(parents.count == 1 ? localOwner : parents[parents.count - 2])
+        try db.execute("UPDATE attempts SET budget_owner=?,local_owner=?,side_session=? WHERE id=?", [.text(owner),.text(localOwner),side,.text(id)])
         var child = localOwner
         for parent in parents {
             try db.execute("INSERT OR IGNORE INTO family_recipients(attempt,owner,kind,child) VALUES(?,?,'side',?)", [.text(id),.text(parent),.text(child)])

@@ -81,6 +81,8 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
                     let controls = ConversationPaneTests.views(PiKit.ButtonBase.self, in: content)
                     return controls.filter { $0.accessibilityIdentifier().hasPrefix("subagent-cost-") }.count == 4
                         && controls.contains { $0.accessibilityIdentifier() == "side-cost-cost-side" }
+                        && !ConversationPaneTests.views(ShellText.self, in: content).contains { $0.text == "Reading requests…" }
+                        && ConversationPaneTests.views(ShellSelectableText.self, in: content).contains { $0.text.hasPrefix("1 turn · 5 requests") }
                 }
                 let buttons = ConversationPaneTests.views(PiKit.ButtonBase.self, in: content).filter { $0.accessibilityIdentifier().hasPrefix("subagent-cost-") }
                 XCTAssertEqual(buttons.count, 4)
@@ -97,6 +99,9 @@ final class SubagentCostGalleryTests: XCTestCase, SerialTestLane {
                 XCTAssertTrue(window.makeFirstResponder(sideButton), "Side statistics are reachable by keyboard")
                 sideCard.scrollToVisible(sideCard.bounds)
                 try save(content, to: folder.appendingPathComponent("sides-breakdown-\(name)-\(Int(size.width)).png"))
+                let limitCard = try XCTUnwrap(ConversationPaneTests.views(NSView.self, in: content).first { $0.accessibilityIdentifier() == "inspector-cost-limit" })
+                limitCard.scrollToVisible(limitCard.bounds)
+                try save(content, to: folder.appendingPathComponent("cost-limit-\(name)-\(Int(size.width)).png"))
                 buttons.first?.performClick(nil)
                 XCTAssertEqual(inspector.page, .subagent("delegation-0"))
                 if size.width == 920 {

@@ -15,7 +15,7 @@ extension AgentSession {
         return ["attemptIds":.array(page.map { JSON($0) }), "next":ids.count > page.count ? JSON(page.last!) : .null]
     }
 
-    func reconcileCapturedAccounting(_ evidence: [JSON]) throws -> JSON {
+    func reconcileCapturedAccounting(_ evidence: [JSON], mirrorChildren: Bool = true) throws -> JSON {
         try requireIndependentSession()
         guard !closed, runTask == nil, requestPermits.isEmpty, inFlightBudgetAttempts.isEmpty else { throw AgentError("session_busy", "Wait for settlement before reconciling captured costs") }
         guard evidence.count <= 128 else { throw AttemptAccounting.damaged() }
@@ -51,7 +51,7 @@ extension AgentSession {
                     contribution = value
                     try correctAccounting(contribution)
                 }
-                if let link = scope.delegation, let plan = subagents.plans[link.delegationID] {
+                if mirrorChildren, let link = scope.delegation, let plan = subagents.plans[link.delegationID] {
                     try SubagentRecovery.mirrorCapturedCost(contribution, plan: plan, directory: directory)
                 }
             }
@@ -79,8 +79,11 @@ extension SubagentRecovery {
         }
         guard child.origin == plan.origin, let attempt = cost["attemptId"].text else { throw damaged() }
         let prior = accounting.attempts[attempt]?.contribution
-        if prior == cost { return }
+        // Each mirror has its own local accounting revision. Repeating the
+        // same known charge must be idempotent across those revision counters.
+        if let prior, prior.removing(["accountingRevision"]) == cost.removing(["accountingRevision"]) { return }
         guard prior == nil || prior?["reported"].int != 1 else { throw damaged() }
-        try writer.append(["type":"custom", "customType":JSON(prior == nil ? JournalRecordKind.cost : JournalRecordKind.costUpdate), "data":cost], flush: true)
+        var value = cost; value["accountingRevision"] = JSON(accounting.revision + 1)
+        try writer.append(["type":"custom", "customType":JSON(prior == nil ? JournalRecordKind.cost : JournalRecordKind.costUpdate), "data":value], flush: true)
     }
 }

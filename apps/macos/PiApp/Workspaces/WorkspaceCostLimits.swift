@@ -12,9 +12,13 @@ extension WorkspaceModel {
     var defaultCostLimit: CostLimit { configuration.defaultChatCostLimit }
     /// Only actual sides inherit budgets; forks also have parentSessionID.
     func sideBudgetParent(_ item: ChatRecord) -> String? {
-        if let side = side(item.id) { return side.parentID }
-        guard let parent = item.parentSessionID, item.path.map({ URL(fileURLWithPath: $0).lastPathComponent.hasPrefix("side_") }) == true else { return nil }
-        return parent
+        guard !item.isSubagent else { return nil }
+        if let path = item.path {
+            return URL(fileURLWithPath: path).lastPathComponent == "side_" + item.id + ".jsonl" ? item.parentSessionID : nil
+        }
+        // Only an unpublished side draft lacks a journal. A mounted saved
+        // fork is pane placement, never an accounting relationship.
+        return side(item.id).flatMap { !$0.kept ? $0.parentID : nil }
     }
     func budgetOwner(for item: ChatRecord) -> ChatRecord {
         var current = item, seen: Set<String> = [item.id]
@@ -27,13 +31,15 @@ extension WorkspaceModel {
 
     func restoreSideBudgets() async throws {
         var workspaces: [String: [String: [String]]] = [:]
-        for item in chats where sideBudgetParent(item) != nil {
+        for item in chats where !item.isSubagent && (item.parentSessionID != nil || sideBudgetParent(item) != nil) {
             var current = item, parents: [String] = [], seen: Set<String> = [item.id]
             while let id = sideBudgetParent(current), seen.insert(id).inserted,
                   let parent = record(id), parent.workspaceID == item.workspaceID {
                 parents.append(id); current = parent
             }
-            if !parents.isEmpty { workspaces[item.workspaceID, default: [:]][item.id] = parents }
+            // An empty mapping retires a stale fork/orphan projection while
+            // retaining physical captures and unrelated discarded-side usage.
+            workspaces[item.workspaceID, default: [:]][item.id] = parents
         }
         for (workspace, sides) in workspaces { try await traces.recordSideBudgets(sides, workspaceID: workspace) }
     }
@@ -42,6 +48,8 @@ extension WorkspaceModel {
     /// said of its spend.
     func costReading(for id: String) -> SessionCostReading {
         var reading = displays[id]?.footer.cost ?? SessionCostReading()
+        if reading.budgetOwnerID != nil { reading.costAttribution = nil }
+        reading.budgetOwnerID = nil; reading.budgetSpentUSD = nil
         reading.override = record(id).map { budgetOwner(for: $0).costLimit } ?? nil; reading.defaultLimit = defaultCostLimit; reading.limit = costLimit(for: id)
         if let item = record(id) {
             let owner = budgetOwner(for: item)

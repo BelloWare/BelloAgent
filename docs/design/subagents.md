@@ -601,6 +601,10 @@ The owner total includes previous turns and all delegated work, including interr
 
 Since 0.1.128, ordinary sides share the main chat’s budget. Their legacy per-side limit values remain readable but are ignored; forks retain independent budgets. Already-dispatched requests finish before budget enforcement stops queued/tool work. Parent journals retain numeric side usage and attempt identities, including discarded ephemeral side spend, without side content. The native archive projects those identities into family recipients so filtered totals count each physical attempt once.
 
+Budget ancestry follows the saved side origin, never which chat occupies a side pane. Mounting a fork cannot change its independent budget or acquire its source’s children. A saved side whose parent journal was deleted survives as an independent budget owner (its own saved limit, or the default); existing nested sides and managed children then charge that surviving owner. An existing but unloaded parent must open before its side. The archive retires stale ancestor projections without rewriting physical request lineage. Legacy per-side limits remain dormant while connected to a parent and become the surviving orphan’s own setting after deletion.
+
+An explicit `session.close` rejects while loaded side runtimes pin its accounting writer. Closing pane presentation is separate. Deletion preflights and detaches idle dependents before forgetting the owner; queued, running or unsettled work blocks it. Legacy unkeyed side seeds are adopted once during binding as well as cold recovery. Reported cost corrections update registered parent admissions and validated contribution-only mirrors separately, retaining numeric ancestry across reload. No side content is copied into the parent ledger.
+
 Display:
 
 - **Parent footer:** family total, with “This chat” and “Sub-agents” breakdowns.

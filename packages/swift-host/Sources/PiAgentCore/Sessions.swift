@@ -369,11 +369,18 @@ public actor AgentSession {
         }
         if resumePath != nil, subagents.origin == nil {
             for var charge in try SideBudgetRecovery.charges(owner: id, directory: directory) {
-                guard let attempt = charge["attemptId"].text, accounting.attempts[attempt]?.contribution == nil else { continue }
+                guard let attempt = charge["attemptId"].text else { continue }
+                var kind = JournalRecordKind.cost
+                if let previous = accounting.attempts[attempt]?.contribution {
+                    guard previous["reported"].int != 1, charge["reported"].int == 1 else { continue }
+                    guard previous["sourceSessionId"] == charge["sourceSessionId"], previous["budgetOwnerSessionId"] == charge["budgetOwnerSessionId"],
+                          previous["delegationId"] == charge["delegationId"] else { throw AttemptAccounting.damaged() }
+                    kind = JournalRecordKind.costUpdate
+                }
                 charge["accountingRevision"] = JSON(accounting.revision + 1)
                 var next = accounting, total = spend
-                try next.consume(kind: JournalRecordKind.cost, data: charge, spend: &total)
-                try opened.append(["type":"custom","customType":JSON(JournalRecordKind.cost),"data":AttemptAccounting.journalData(charge)], flush:true)
+                try next.consume(kind: kind, data: charge, spend: &total)
+                try opened.append(["type":"custom","customType":JSON(kind),"data":AttemptAccounting.journalData(charge)], flush:true)
                 accounting = next; spend = total; spendTracked = true; familyBudgetEnabled = true
             }
         }
@@ -597,8 +604,12 @@ public actor AgentSession {
         else if state != .error { state = .paused }
         event("state")
     }
+    var canUnload: Bool {
+        isIdle && !ephemeral && requestPermits.isEmpty && inFlightBudgetAttempts.isEmpty &&
+        (managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true)
+    }
     public func unloadIfIdle() -> Bool {
-        guard isIdle, !ephemeral, managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true else { return false }
+        guard canUnload else { return false }
         cancelHistoryLoads(); closed=true; journal=nil
         if !isSubagent, let coordinator = subagentCoordinator {
             let owner = id, runtimeID = displayEpoch

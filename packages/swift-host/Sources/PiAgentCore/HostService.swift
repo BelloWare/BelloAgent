@@ -468,8 +468,12 @@ public actor NativeHostService {
                 if await session.isSubagent { subagentReaders.insert(id) }
                 if await session.isSideChat, let parentID = await session.parentInfo["parentSessionId"].text {
                     do {
-                        guard let parent = sessions[parentID] else { throw AgentError("side_budget_parent", "Open the parent chat before continuing this side") }
-                        try await session.bindSideBudget(to: parent)
+                        if let parent = sessions[parentID] { try await session.bindSideBudget(to: parent) }
+                        else if try SideBudgetRecovery.parentExists(parentID, directory:directory) {
+                            throw AgentError("side_budget_parent", "Open the parent chat before continuing this side")
+                        }
+                        // Deleting a parent preserves saved sides. A genuinely
+                        // orphaned side opens with its own spend and limit.
                     } catch {
                         sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); await session.close(); throw error
                     }
@@ -527,9 +531,27 @@ public actor NativeHostService {
         switch method {
         case "session.forget":
             try await withRuntimeGate {
-                if let existing=sessions[id] {
-                    guard await existing.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
-                    sessions.removeValue(forKey:id);profiles.removeValue(forKey:id); subagentReaders.remove(id)
+                var family: [(AgentSession, Int)] = []
+                var owners: Set<String> = [id]
+                for value in sessions.values {
+                    let parents = await value.sideBudgetIDs
+                    if value.id == id || parents.contains(id) { family.append((value,parents.count)); owners.insert(value.id) }
+                }
+                for value in sessions.values where !owners.contains(value.id) {
+                    if let owner = await value.subagents.origin?.link.budgetOwnerSessionID, owners.contains(owner) {
+                        family.append((value,129))
+                    }
+                }
+                // Preflight the whole family before detaching any writer. The
+                // surviving saved sides reopen as independent orphaned chats.
+                for (value, _) in family {
+                    guard await value.canUnload else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
+                }
+                for (value, _) in family.sorted(by: { $0.1 > $1.1 }) {
+                    guard await value.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
+                    sessions.removeValue(forKey:value.id); profiles.removeValue(forKey:value.id); subagentReaders.remove(value.id)
+                    dirty.removeValue(forKey:value.id)
+                    emit(["v":1,"kind":"event","hostEpoch":JSON(epoch),"sessionId":JSON(value.id),"seq":JSON(await value.sequence),"type":"session.unloaded","payload":[:]])
                 }
             }
             _=try await traces.command("debug.clear",session:id,params:[:]); return ["accepted":true]
@@ -546,12 +568,18 @@ public actor NativeHostService {
         case "budget.attempts": return try await session.budgetAttempts(after: params["after"].text)
         case "budget.reconcile":
             return try await withRuntimeGate {
-                try await releaseFamilyReaders(owner: id)
-                let result = try await session.reconcileCapturedAccounting(params["evidence"].list)
+                let result = try await session.reconcileCapturedAccounting(params["evidence"].list, mirrorChildren:false)
                 let ids = params["evidence"].list.compactMap { $0["attemptId"].text }
                 let costs = await session.sharedCharges(ids)
                 for child in sessions.values where child.id != id {
                     for cost in costs { try await child.mirrorSharedCharge(cost) }
+                }
+                for owner in sessions.values {
+                    for cost in costs where cost["reported"].int == 1 {
+                        guard let delegation = cost["delegationId"].text,
+                              let plan = await owner.subagents.plans[delegation], sessions[plan.origin.link.childSessionID] == nil else { continue }
+                        try SubagentRecovery.mirrorCapturedCost(cost,plan:plan,directory:owner.directory)
+                    }
                 }
                 return result
             }
@@ -696,8 +724,9 @@ public actor NativeHostService {
         case "session.close":
             return try await withRuntimeGate {
                 guard sessions[id] === session else { throw AgentError(AgentErrorCode.sessionMissing, "Session runtime is not loaded") }
-                // Loaded sides retain their authoritative accounting writer.
-                if await hasBudgetDependents(id) { return ["accepted":true] }
+                // Loaded sides and unsettled managed work retain their writer,
+                // including tool/queue phases with no dispatched model request.
+                if await hasBudgetDependents(id) { throw AgentError("session_busy", "Wait for managed work and close loaded side sessions before unloading their budget owner") }
                 guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
                 sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); subagentReaders.remove(id)
                 return ["accepted":true]
@@ -708,6 +737,7 @@ public actor NativeHostService {
     private func hasBudgetDependents(_ id: String) async -> Bool {
         for session in sessions.values where session.id != id {
             if await session.sideBudgetIDs.contains(id) { return true }
+            if let owner = await session.budgetOwner, owner.id == id, !(await session.canUnload) { return true }
         }
         return false
     }

@@ -157,10 +157,12 @@ extension WorkspaceModel {
         guard opened.contains(id), sessionOpenings[id] == nil, sessionClosings[id] == nil, !isEphemeral(id),
               SessionInspectorWindows.shared.controller(sessionID: id) == nil,
               let item = record(id), let host = hosts[item.workspaceID], host.isReady else { return }
-        opened.remove(id)
         let token = UUID()
         let task = Task { [weak self] in
-            _ = try? await host.request("session.close", sessionID: id)
+            do {
+                _ = try await host.request("session.close", sessionID: id)
+                self?.opened.remove(id)
+            } catch { /* A busy runtime remains loaded, including its tool mode. */ }
             if self?.sessionClosings[id]?.token == token { self?.sessionClosings.removeValue(forKey: id) }
         }
         sessionClosings[id] = (token, task)
@@ -194,7 +196,8 @@ extension WorkspaceModel {
         // Parent selection and model context are unchanged.
         if let parentID = sideBudgetParent(item), let parent = record(parentID), parent.id != item.id {
             let owner = budgetOwner(for: item)
-            guard owner.id != item.id, sideBudgetParent(owner) == nil, !owner.isSubagent else { throw HostError.failure("The side’s budget ancestry is inconsistent.") }
+            guard parent.workspaceID == item.workspaceID, owner.id != item.id,
+                  sideBudgetParent(owner).flatMap({ record($0) }) == nil, !owner.isSubagent else { throw HostError.failure("The side’s budget ancestry is inconsistent.") }
             _ = try await open(parent, automaticContext: false)
         }
         if sessionOpenings[item.id] == nil, opened.contains(item.id), let host = hosts[item.workspaceID], host.isReady { idleTasks[item.workspaceID]?.cancel(); return host }

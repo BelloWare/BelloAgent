@@ -129,6 +129,8 @@ extension WorkspaceModel {
             try await removeDeletedCapturePreference(sessionID: member.id)
             try await store.remove(kind: SessionDeletionRecord.kind, id: member.id)
         }
+        try await restoreSideBudgets()
+        for id in displays.keys { refreshCostReading(id) }
         deletingFamilies.remove(owner)
     }
 }

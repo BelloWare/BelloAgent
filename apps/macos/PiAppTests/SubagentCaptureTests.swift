@@ -11,6 +11,40 @@ func subagentCaptureScope(source: String, owner: String = "parent", purpose: Str
 }
 
 final class SubagentCaptureTests: XCTestCase {
+    func testRetiredSideAncestryRepairsHistoricalAndFutureCapturesWithoutChangingIdentity() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at:root) }
+        var log = try await archive(root)
+        var value = try metadata("agent",cost:0.2,owner:"side")
+        var scope = try XCTUnwrap(value["requestScope"]?.object)
+        scope["sideParents"] = .array([.string("deleted")]); value["requestScope"] = .object(scope)
+        try await save(value,to:log)
+        // Forks previously mounted as sides and saved orphans both retire an
+        // old projection. Nested sides retain the nearest surviving owner.
+        try await save(metadata("fork",cost:0.4),to:log)
+        try await save(metadata("nested",cost:0.3),to:log)
+        try await log.recordSideBudgets(["fork":["deleted"],"nested":["side","deleted"]],workspaceID:"workspace")
+        try await log.recordSideBudgets(["fork":[],"side":[],"nested":["side"]],workspaceID:"workspace")
+        for reload in [false,true] {
+            if reload {
+                try await log.close(); log = try await archive(root)
+                value["attemptId"] = .string(UUID().uuidString); try await save(value,to:log)
+            }
+            let totals = try await log.allSessionTotals()
+            XCTAssertNil(totals["workspace\u{0}deleted"])
+            XCTAssertEqual(try XCTUnwrap(totals["workspace\u{0}side"]?.costUSD),reload ? 0.7 : 0.5,accuracy:1e-9)
+            XCTAssertEqual(totals["workspace\u{0}fork"]?.costUSD,0.4)
+            let rows = try await log.list(sessionID:"agent",workspaceID:"workspace")
+            XCTAssertEqual(rows.count,reload ? 2 : 1)
+            let stored = try await log.budgetEvidence(attempts:[try XCTUnwrap(value["attemptId"]?.string)],owner:"side",workspace:"workspace")
+            XCTAssertEqual(stored.first?.object?["requestScope"],value["requestScope"],"Physical lineage is immutable")
+            let groups = try await log.inspectorSides(owner:"side",workspaceID:"workspace")
+            XCTAssertEqual(groups.map(\.id),["nested"])
+            let menu = try await log.menuBarMetrics(period:.retained,until:Date(timeIntervalSince1970:2001))
+            XCTAssertEqual(try XCTUnwrap(menu.gateway.costUSD),reload ? 1.1 : 0.9,accuracy:1e-9)
+        }
+        try await log.close()
+    }
+
     private func folder() throws -> URL {
         let root = URL(fileURLWithPath: testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()).appendingPathComponent("subagent-capture-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true); return root

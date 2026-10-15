@@ -20,22 +20,45 @@ extension AgentSession {
             guard let cost = entry.contribution else { continue }
             for ancestor in sideBudgetParents.reversed() { try await ancestor.importSideCharge(cost, side: id, parents: sideBudgetIDs) }
         }
+        if let seed = SideBudgetRecovery.unkeyedCharge(spend:spend,accounting:accounting,side:id,parents:sideBudgetIDs) {
+            for ancestor in sideBudgetParents.reversed() { try await ancestor.importSideCharge(seed, side:id, parents:sideBudgetIDs) }
+        }
         try await refreshSideCharges()
     }
 
     func refreshSideCharges() async throws {
         for parent in sideBudgetParents.reversed() {
             let costs = await parent.sharedCharges(Array(accounting.attempts.keys))
-            for cost in costs { try mirrorSharedCharge(cost) }
+            for cost in costs {
+                let changed = try mirrorSharedCharge(cost)
+                if changed, let delegation = cost["delegationId"].text, let plan = subagents.plans[delegation] {
+                    try SubagentRecovery.mirrorCapturedCost(cost, plan:plan, directory:directory)
+                }
+            }
         }
     }
     func sharedCharges(_ attempts: [String]) -> [JSON] { attempts.compactMap { accounting.attempts[$0]?.contribution } }
-    func mirrorSharedCharge(_ cost: JSON) throws {
+    @discardableResult func mirrorSharedCharge(_ cost: JSON) throws -> Bool {
         guard let attempt = cost["attemptId"].text, let entry = accounting.attempts[attempt],
-              let previous = entry.contribution, previous["reported"].int != 1, cost["reported"].int == 1 else { return }
-        guard previous["sourceSessionId"] == cost["sourceSessionId"], previous["budgetOwnerSessionId"] == cost["budgetOwnerSessionId"] else { throw AttemptAccounting.damaged() }
+              let previous = entry.contribution ?? entry.admission, previous["reported"].int != 1, cost["reported"].int == 1 else { return false }
+        guard previous["sourceSessionId"] == cost["sourceSessionId"], previous["budgetOwnerSessionId"] == cost["budgetOwnerSessionId"],
+              previous["delegationId"] == cost["delegationId"] else { throw AttemptAccounting.damaged() }
         var value = cost; value["accountingRevision"] = JSON(max(accounting.revision, entry.revision) + 1)
-        try correctAccounting(value)
+        if value["sideParents"].isNull, !previous["sideParents"].isNull { value["sideParents"] = previous["sideParents"] }
+        if entry.admission != nil { try correctAccounting(value); return true }
+        // A managed reader or a migrated side charge has a contribution-only
+        // mirror, not admission authority. Validate that relationship separately.
+        if let origin = subagents.origin {
+            guard origin.link.childSessionID == cost["sourceSessionId"].text,
+                  origin.link.budgetOwnerSessionID == cost["budgetOwnerSessionId"].text,
+                  origin.link.delegationID == cost["delegationId"].text else { throw AttemptAccounting.damaged() }
+        } else {
+            guard let owner = cost["budgetOwnerSessionId"].text,
+                  sideBudgetMembers[owner]?.contains(id) == true else { throw AttemptAccounting.damaged() }
+        }
+        try appendAccounting(kind:JournalRecordKind.costUpdate,data:value)
+        stopFamilyAtLimit()
+        return true
     }
 
     private func registerSideBudget(_ side: String, parents: [String]) throws {
@@ -102,11 +125,11 @@ extension AgentSession {
 
     private func importSideCharge(_ original: JSON, side: String, parents: [String]) throws {
         guard sideBudgetMembers[side] == parents, let attempt = original["attemptId"].text else { throw AttemptAccounting.damaged() }
-        guard accounting.attempts[attempt]?.contribution == nil else { return }
         var data = SideBudgetRecovery.charge(original, side: side, parents: parents)
         if data["sourceSessionId"].isNull { data["sourceSessionId"] = JSON(side) }
         if data["budgetOwnerSessionId"].isNull { data["budgetOwnerSessionId"] = JSON(side) }
         data["sideParents"] = .array(parents.map { JSON($0) })
+        if accounting.attempts[attempt]?.contribution != nil { try mirrorSharedCharge(data); return }
         data["accountingRevision"] = JSON(accounting.revision + 1)
         try appendAccounting(kind: JournalRecordKind.cost, data: data)
     }

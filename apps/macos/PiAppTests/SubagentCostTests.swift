@@ -3,6 +3,124 @@ import XCTest
 @testable import PiApp
 
 final class SubagentCostTests: XCTestCase {
+    @MainActor func testDeletingAnOwnerDetachesAndReopensSurvivingSavedSides() async throws {
+        let root = URL(fileURLWithPath:scratchBase()).appendingPathComponent("side-deletion-budget-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        let workspace = WorkspaceRecord(id:"project",path:root.path,trusted:true)
+        var profile = ProfileRecord(); profile.id = "p"; profile.baseUrl = "http://127.0.0.1:9/v1"; profile.modelId = "fixture"
+        let connection = VaultProfile(profile:profile,apiKey:"synthetic-unused-key"), vault = ConfigurationVault(storage:MemoryVaultStorage())
+        _ = try await vault.update(expectedRevision:0) {
+            $0.workspaces = [workspace]; $0.profiles = [connection]
+            $0.resources[workspace.id] = .object(["codexHome":.string(root.appendingPathComponent("codex").path)])
+        }
+        let model = makeWorkspaceModel(stateRoot:root.appendingPathComponent("state"),vault:vault)
+        registerWorkspaceFixtureTeardown(model,root:root)
+        try await model.reloadConfiguration()
+        let parent = ChatRecord(id:"main",workspaceID:workspace.id,title:"Main",profileID:profile.id)
+        try await model.store?.put(parent,kind:"chat",id:parent.id); model.chats = [parent]
+        let host = try await model.open(parent)
+        for (id, owner) in [("side","main"),("nested","side")] {
+            let result = try await host.request("side.open",sessionID:owner,params:["sideSessionId":.string(id)])
+            let record = ChatRecord(id:id,workspaceID:workspace.id,title:id,path:result.object?["path"]?.string,profileID:profile.id,toolMode:ChatRecord.readOnlyTools,parentSessionID:owner)
+            try await model.store?.put(record,kind:"chat",id:id); model.chats.append(record)
+            model.displays[id] = SessionDisplay(id:id)
+            _ = try await model.open(record); model.refreshCostReading(id)
+        }
+        try await model.restoreSideBudgets()
+        let source = try XCTUnwrap(model.record(parent.id)), path = try XCTUnwrap(source.path)
+        model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at:url) } }
+        try await model.deleteSubagentFamily(source)
+        XCTAssertNil(model.record(parent.id)); XCTAssertFalse(model.opened.contains("side")); XCTAssertFalse(model.opened.contains("nested"))
+        let side = try XCTUnwrap(model.record("side")), nested = try XCTUnwrap(model.record("nested"))
+        XCTAssertNil(model.costReading(for:side.id).budgetOwnerID)
+        XCTAssertEqual(model.costReading(for:nested.id).budgetOwnerID,side.id)
+        _ = try await model.open(nested)
+        XCTAssertTrue(model.opened.contains(side.id)); XCTAssertTrue(model.opened.contains(nested.id))
+        XCTAssertFalse(FileManager.default.fileExists(atPath:path),"Reopening an orphan must not recreate the deleted parent")
+        let parents = await model.traces.savedSideBudgets
+        XCTAssertEqual(parents[workspace.id + "\u{0}side"],[])
+        XCTAssertEqual(parents[workspace.id + "\u{0}nested"],["side"])
+    }
+
+    @MainActor func testBusyPresentationReleaseCannotMakeEditingSkipTheRealUnload() async throws {
+        let root = URL(fileURLWithPath:scratchBase()).appendingPathComponent("side-tools-budget-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        let workspace = WorkspaceRecord(id:"project",path:root.path,trusted:true)
+        var profile = ProfileRecord(); profile.id = "p"; profile.baseUrl = "http://127.0.0.1:9/v1"; profile.modelId = "fixture"
+        let connection = VaultProfile(profile:profile,apiKey:"synthetic-unused-key")
+        let vault = ConfigurationVault(storage:MemoryVaultStorage())
+        _ = try await vault.update(expectedRevision:0) {
+            $0.workspaces = [workspace]; $0.profiles = [connection]
+            $0.resources[workspace.id] = .object(["codexHome":.string(root.appendingPathComponent("codex").path)])
+        }
+        let model = makeWorkspaceModel(stateRoot:root.appendingPathComponent("state"),vault:vault)
+        registerWorkspaceFixtureTeardown(model,root:root)
+        try await model.reloadConfiguration()
+        let parent = ChatRecord(id:"main",workspaceID:workspace.id,title:"Main",profileID:profile.id,toolMode:ChatRecord.readOnlyTools)
+        try await model.store?.put(parent,kind:"chat",id:parent.id); model.chats = [parent]
+        model.displays[parent.id] = SessionDisplay(id:parent.id)
+        let host = try await model.open(parent)
+        _ = try await host.request("side.open",sessionID:parent.id,params:["sideSessionId":.string("side")])
+        model.releaseHelperSession(parent.id)
+        await model.sessionClosings[parent.id]?.task.value
+        XCTAssertTrue(model.opened.contains(parent.id),"A rejected unload must retain the loaded tool-mode state")
+        do { try await model.enableEditingAfterConfirmation(parent.id); XCTFail("The pinned owner cannot announce editing") }
+        catch { }
+        XCTAssertEqual(model.record(parent.id)?.toolMode,ChatRecord.readOnlyTools)
+        let saved = try await model.store?.get(ChatRecord.self,kind:"chat",id:parent.id)
+        XCTAssertEqual(saved?.toolMode,ChatRecord.readOnlyTools)
+        _ = try await host.request("session.close",sessionID:"side")
+        try await model.enableEditingAfterConfirmation(parent.id)
+        XCTAssertFalse(model.opened.contains(parent.id))
+        _ = try await model.open(try XCTUnwrap(model.record(parent.id)))
+        let snapshot = try await host.request("session.status",sessionID:parent.id)
+        XCTAssertEqual(snapshot.object?["toolMode"]?.string,ChatRecord.editingTools)
+    }
+
+    @MainActor func testMountedForkKeepsItsBudgetAndOwnsItsSides() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("mounted-fork-budget-" + UUID().uuidString)
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        let main = ChatRecord(id:"main",workspaceID:"w",title:"Main",profileID:"p",costLimit:.usd(3))
+        let fork = ChatRecord(id:"fork",workspaceID:"w",title:"Fork",path:"/fixture/fork_fork.jsonl",profileID:"p",parentSessionID:"main",costLimit:.usd(7))
+        let side = ChatRecord(id:"side",workspaceID:"w",title:"Side",path:"/fixture/side_side.jsonl",profileID:"p",parentSessionID:"fork")
+        model.chats = [main,fork,side]; model.pendingChatIDs.insert(fork.id)
+        _ = model.mountSide(fork,beside:main.id)
+        XCTAssertNil(model.sideBudgetParent(fork), "Pane placement cannot grant budget ownership")
+        XCTAssertEqual(model.budgetOwner(for:side).id,fork.id)
+        XCTAssertEqual(model.costLimit(for:fork),.usd(7))
+        try await model.setCostLimit(.usd(8),for:fork.id)
+        let params = await model.costLimitParams(for:try XCTUnwrap(model.record(fork.id)))
+        XCTAssertEqual(params["costLimit"]?.object?["usd"]?.number,8)
+        try await model.traces.configure(quota:nil,bodyRetention:86400,metricRetention:86400)
+        try await model.restoreSideBudgets()
+        let ancestry = await model.traces.savedSideBudgets
+        XCTAssertEqual(ancestry["w\u{0}side"],["fork"])
+        XCTAssertTrue(ancestry["w\u{0}fork"]?.isEmpty ?? true)
+    }
+
+    @MainActor func testOrphanedSideClearsTheFormerBudgetAttribution() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("orphan-side-budget-" + UUID().uuidString)
+        let model = makeWorkspaceModel(stateRoot:root,vault:ConfigurationVault(storage:MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model,root:root)
+        let main = ChatRecord(id:"main",workspaceID:"w",title:"Main",profileID:"p",costLimit:.usd(3))
+        let side = ChatRecord(id:"side",workspaceID:"w",title:"Side",path:"/fixture/side_side.jsonl",profileID:"p",parentSessionID:"main")
+        model.chats = [main,side]
+        let view = SessionDisplay(id:side.id); model.displays[side.id] = view
+        view.footer.cost = model.costReading(for:side.id)
+        XCTAssertEqual(view.footer.cost.budgetOwnerID,main.id)
+        try await model.traces.configure(quota:nil,bodyRetention:86400,metricRetention:86400)
+        try await model.restoreSideBudgets()
+        model.chats.removeAll { $0.id == main.id }
+        try await model.restoreSideBudgets(); model.refreshCostReading(side.id)
+        XCTAssertEqual(model.budgetOwner(for:side).id,side.id)
+        XCTAssertNil(view.footer.cost.budgetOwnerID)
+        XCTAssertNil(view.footer.cost.budgetSpentUSD)
+        XCTAssertNil(view.footer.cost.costAttribution)
+        let ancestry = await model.traces.savedSideBudgets
+        XCTAssertEqual(ancestry["w\u{0}side"],[])
+    }
+
     @MainActor func testLegacyCostSeedUsesOnlyPhysicalSpendBeforeHelperAddsSavedSides() async throws {
         let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("side-cost-seed-" + UUID().uuidString)
         let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

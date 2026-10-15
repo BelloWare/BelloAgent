@@ -774,7 +774,7 @@ extension WorkspaceRefreshLifecycleTests {
         try await wait { f.commands.frames.filter { $0["method"]?.string == "session.close" }.count == 2 }
         let closes = f.commands.frames.filter { $0["method"]?.string == "session.close" }
         XCTAssertEqual(closes.map { $0["sessionId"]?.string }, ["other-0", "other-2"], "The two oldest idle chats are let go of; the running one is not")
-        XCTAssertEqual(f.model.opened, Set([f.chat.id] + (1...8).filter { $0 != 2 }.map { "other-\($0)" }))
+        XCTAssertEqual(f.model.opened, Set([f.chat.id] + (0..<9).map { "other-\($0)" }), "A close can be rejected; loaded state remains until acknowledgement")
         let reopened = RefreshCommandLog(), other = try XCTUnwrap(f.model.record("other-0"))
         let reopen = Task { @MainActor in _ = try? await f.model.open(other); reopened.frames.append([:]) }
         for _ in 0..<50 { await Task.yield() }
@@ -784,6 +784,9 @@ extension WorkspaceRefreshLifecycleTests {
         try await wait { !reopened.frames.isEmpty }
         await reopen.value
         XCTAssertNil(f.model.sessionClosings["other-0"])
+        try reply(closes[1], on: f.host, result: ["accepted": .bool(true)])
+        try await wait { f.model.sessionClosings["other-2"] == nil }
+        XCTAssertEqual(f.model.opened, Set([f.chat.id] + (1...8).filter { $0 != 2 }.map { "other-\($0)" }), "Acknowledged closes release their loaded state")
         try await f.host.shutdownAndWait()
     }
 

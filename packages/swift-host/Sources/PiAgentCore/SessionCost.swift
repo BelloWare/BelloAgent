@@ -103,7 +103,7 @@ extension AgentSession {
     /// request on, also to a run that is going: a request already sent is
     /// never cut, and nothing else about the run changes.
     public func setCostLimit(_ usd: Double?) {
-        guard !isSubagent, !isSideChat else { return }
+        guard !isSubagent, sideBudgetIDs.isEmpty else { return }
         guard costLimitUSD != usd else { return }
         costLimitUSD = usd
         event("cost.limit", costSnapshot)

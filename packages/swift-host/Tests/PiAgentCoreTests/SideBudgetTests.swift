@@ -2,6 +2,260 @@ import XCTest
 @testable import PiAgentCore
 
 final class SideBudgetTests: XCTestCase {
+    func testUnsettledManagedWorkPinsItsMainOrSideOwnerBetweenRequests() async throws {
+        for isSide in [false,true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let host = try await host(root)
+            if isSide {
+                _ = try await open(host,"main")
+                _ = try await host.command("side.open",sessionID:"main",params:["sideSessionId":"parent"])
+            }
+            let owner = try await open(host,"parent")
+            await owner.beginPresentedTask("turn")
+            var origin = subagentFixtureOrigin()
+            let execution = await owner.activeTaskPresentation?.executionID
+            origin.link.parentExecutionID = try XCTUnwrap(execution)
+            try await owner.installAdmissionFixturePlan(SubagentPlan(origin:origin,task:"Task",resultMessageID:"result"))
+            let child = try AgentSession(id:"child",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),prepared:nil,subagentOrigin:origin)
+            await child.close()
+            let live = try await open(host,"child",path:root.appendingPathComponent("child.jsonl").path)
+            try await live.bindBudgetOwner(owner,generation:0)
+            await live.installManagedCancellation(SubagentCoordinator(),key:origin.link.call)
+            let permits = await owner.inFlightBudgetAttempts
+            XCTAssertTrue(permits.isEmpty,"Exercise queued/tool work between model requests")
+            do { _ = try await host.command("session.close",sessionID:owner.id,params:[:]); XCTFail("An unsettled managed child still needs its writer") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"session_busy") }
+            let retained = await host.loadedSession(owner.id)
+            XCTAssertTrue(retained === owner)
+            await host.shutdown()
+        }
+    }
+
+    func testUnreadableSideDirectoryCannotSilentlyEraseTheRecoveredFamilyBudget() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let main = try await session("main",root:root), side = try await session("side",root:root,parent:main)
+        _ = try await side.keep(whenFinished:false)
+        await side.close(); await main.close()
+        try FileManager.default.setAttributes([.posixPermissions:0o300],ofItemAtPath:root.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions:0o700],ofItemAtPath:root.path) }
+        do {
+            _ = try FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:nil)
+            throw XCTSkip("This test runner can bypass directory read permissions")
+        } catch is CocoaError { }
+        XCTAssertThrowsError(try SideBudgetRecovery.charges(owner:"main",directory:root),"An unreadable family is not an empty family")
+    }
+
+    private func host(_ root: URL) async throws -> NativeHostService {
+        let host = NativeHostService(emit: { _ in })
+        _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(root.path),"resources":["codexHome":JSON(root.appendingPathComponent("codex").path)]])
+        return host
+    }
+    private func open(_ host: NativeHostService, _ id: String, path: String? = nil, seed: Double? = nil, limit: Double = 1) async throws -> AgentSession {
+        var params: JSON = ["profile":try fixtureProfile().raw,"apiKey":"fixture","toolMode":"read-only","costLimit":["usd":JSON(limit)]]
+        if let path { params["path"] = JSON(path) }
+        if let seed { params["costSeed"] = ["usd":JSON(seed),"reported":1,"unreported":0] }
+        _ = try await host.command("session.open",sessionID:id,params:params)
+        let loaded = await host.loadedSession(id); return try XCTUnwrap(loaded)
+    }
+
+    func testLegacySideSeedJoinsTheBudgetImmediatelyAndOnlyOnce() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let main = try await session("main",root:root), seed = await main.sideSeed()
+        let path = root.appendingPathComponent("side_legacy.jsonl")
+        do {
+            let journal = try SessionJournal(url:path,id:"legacy",cwd:root,binding:fixtureProfile().binding,create:true)
+            try journal.append(["type":"custom","customType":JSON(JournalRecordKind.sideOrigin),"data":seed.info])
+        }
+        let mainPath = await main.path; await main.close()
+        for _ in 0..<2 {
+            let host = try await host(root)
+            let owner = try await open(host,"main",path:mainPath,limit:0.5)
+            let side = try await open(host,"legacy",path:path.path,seed:0.7)
+            try await side.bindSideBudget(to:owner)
+            let spend = await owner.spend
+            XCTAssertEqual(spend.usd,0.7); XCTAssertEqual(spend.reported,1)
+            do { _ = try await start(side,attempt:UUID().uuidString); XCTFail("Legacy side spend must block before any cold reopen") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit") }
+            await host.shutdown()
+        }
+    }
+
+    func testSavedOrphanReopensWithItsOwnSpendAndBudgetWithoutRecreatingParent() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let main = try await session("main",root:root), side = try await session("side",root:root,parent:main)
+        let request = try await start(side,attempt:"before-delete")
+        try await finish(request,attempt:"before-delete",cost:0.4)
+        let kept = try await side.keep(whenFinished:false), mainPath = await main.path
+        await side.close(); await main.close()
+        try FileManager.default.removeItem(atPath:try XCTUnwrap(mainPath))
+        for _ in 0..<2 {
+            let host = try await host(root)
+            do {
+                let orphan = try await open(host,"side",path:kept["path"].text,limit:0.3)
+                let cost = await orphan.costSnapshot
+                XCTAssertEqual(cost["spentUSD"].double,0.4); XCTAssertEqual(cost["limitUSD"].double,0.3)
+                do { _ = try await start(orphan,attempt:"over-limit"); XCTFail("The surviving side must enforce its own budget") }
+                catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit") }
+            } catch { XCTFail("Saved orphan is a surviving chat: \(error)") }
+            XCTAssertFalse(FileManager.default.fileExists(atPath:try XCTUnwrap(mainPath)))
+            await host.shutdown()
+        }
+    }
+
+    func testExplicitCloseRejectsPinnedOwnerAndForgetDetachesIdleSideWriters() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let host = try await host(root), owner = try await open(host,"main")
+        _ = try await host.command("side.open",sessionID:"main",params:["sideSessionId":"side"])
+        let loaded = await host.loadedSession("side"), side = try XCTUnwrap(loaded)
+        do { _ = try await host.command("session.close",sessionID:"main",params:[:]); XCTFail("An explicit close must mean the runtime is gone") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,"session_busy") }
+        let original = await host.loadedSession("main"); XCTAssertTrue(original === owner)
+        let request = try await start(side,attempt:"in-flight")
+        do { _ = try await host.command("session.forget",sessionID:"main",params:[:]); XCTFail("Deleting an owner cannot abandon dispatched side accounting") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,"session_busy") }
+        try await finish(request,attempt:"in-flight",cost:0.2)
+        _ = try await host.command("session.forget",sessionID:"main",params:[:])
+        let removed = await host.loadedSession("main"), detached = await host.loadedSession("side")
+        XCTAssertNil(removed); XCTAssertNil(detached,"Deleting the parent must release surviving sides for an orphan reopen")
+        await host.shutdown()
+    }
+
+    func testReconciliationUpdatesALoadedSideOwnedManagedMirror() async throws {
+        try await reconcileManagedMirror(readerLoaded:true)
+    }
+
+    func testReconciliationRepairsAnUnloadedSideAndItsManagedMirrorOnOpen() async throws {
+        try await reconcileManagedMirror(readerLoaded:false)
+    }
+
+    private func reconcileManagedMirror(readerLoaded: Bool) async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let host = try await host(root), main = try await open(host,"main")
+        _ = try await host.command("side.open",sessionID:"main",params:["sideSessionId":"parent"])
+        let loaded = await host.loadedSession("parent"), side = try XCTUnwrap(loaded)
+        await side.beginPresentedTask("turn")
+        var origin = subagentFixtureOrigin()
+        let execution = await side.activeTaskPresentation?.executionID
+        origin.link.parentExecutionID = try XCTUnwrap(execution)
+        try await side.installAdmissionFixturePlan(SubagentPlan(origin:origin,task:"Task",resultMessageID:"result"))
+        let child = try AgentSession(id:"child",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),prepared:nil,subagentOrigin:origin)
+        try await child.bindBudgetOwner(side,generation:0)
+        let request = try await start(child,attempt:"unknown-child")
+        let observation = billingObservation(profile:try fixtureProfile(),session:"child",attempt:"unknown-child",cost:nil)
+        try await request.settleAttempt(AttemptSettlement(scope:request.scope,observation:observation,dispatched:true))
+        try await child.setSubagentState(.completed); await child.close()
+        if readerLoaded { _ = try await open(host,"child",path:root.appendingPathComponent("child.jsonl").path) }
+        else { _ = try await host.command("session.close",sessionID:"parent",params:[:]) }
+        let evidence: JSON = ["attemptId":"unknown-child","sessionId":"child","turnId":"turn","purpose":"turn","outcome":"completed","requestScope":try subagentJSON(request.scope),"gateway":["cost":["status":"reported","usd":0.7]],"usage":["inputIncludingCache":100,"output":20]]
+        for _ in 0..<2 {
+            do { _ = try await host.command("budget.reconcile",sessionID:"main",params:["evidence":.array([evidence])]) }
+            catch { XCTFail("A contribution-only managed mirror must accept the owner's correction: \(error)") }
+        }
+        let currentSide = try await open(host,"parent",path:root.appendingPathComponent("side_parent.jsonl").path)
+        let reader = try await open(host,"child",path:root.appendingPathComponent("child.jsonl").path)
+        for value in [main,currentSide,reader] {
+            let cost = await value.costSnapshot
+            XCTAssertEqual(cost["spentUSD"].double,0.7); XCTAssertEqual(cost["reportedRequests"].int,1)
+            XCTAssertEqual(cost["unreportedRequests"].int,0)
+        }
+        await host.shutdown()
+    }
+
+    func testColdRecoveryAdoptsAReportedCorrectionFromALegacySideOnce() async throws {
+        try await legacyCorrection(cold:true)
+    }
+
+    func testLiveLegacyCorrectionUpdatesTheContributionOnlyAncestor() async throws {
+        try await legacyCorrection(cold:false)
+    }
+
+    private func legacyCorrection(cold: Bool) async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let main = try await session("main",root:root), seed = await main.sideSeed()
+        let side = try AgentSession(id:"legacy",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),seed:seed.messages,parent:seed.info)
+        await side.enableSubagents(SubagentCoordinator(),steering:false)
+        await side.enableFamilyBudget()
+        let request = try await start(side,attempt:"legacy-unknown")
+        try await request.settleAttempt(AttemptSettlement(scope:request.scope,observation:billingObservation(profile:try fixtureProfile(),session:"legacy",attempt:"legacy-unknown",cost:nil),dispatched:true))
+        let kept = try await side.keep(whenFinished:false), mainPath = await main.path
+        await main.close(); await side.close()
+        let baseline = try await session("main",root:root,path:mainPath)
+        let before = await baseline.spend; XCTAssertEqual(before.unreported,1)
+        await baseline.close()
+        let evidence: JSON = ["attemptId":"legacy-unknown","sessionId":"legacy","turnId":"turn","purpose":"turn","outcome":"completed",
+            "requestScope":try subagentJSON(request.scope),"gateway":["cost":["status":"reported","usd":0.7]],"usage":["inputIncludingCache":100,"output":20]]
+        if cold {
+            let legacy = try await session("legacy",root:root,path:kept["path"].text)
+            _ = try await legacy.reconcileCapturedAccounting([evidence]); await legacy.close()
+        } else {
+            let host = try await host(root), main = try await open(host,"main",path:mainPath)
+            _ = try await open(host,"legacy",path:kept["path"].text)
+            for _ in 0..<2 { _ = try await host.command("budget.reconcile",sessionID:"legacy",params:["evidence":.array([evidence])]) }
+            let total = await main.spend; XCTAssertEqual(total.usd,0.7); XCTAssertEqual(total.unreported,0)
+            await host.shutdown()
+        }
+        for _ in 0..<2 {
+            let reopened = try await session("main",root:root,path:mainPath)
+            let total = await reopened.costSnapshot
+            XCTAssertEqual(total["spentUSD"].double,0.7); XCTAssertEqual(total["reportedRequests"].int,1)
+            XCTAssertEqual(total["unreportedRequests"].int,0); XCTAssertEqual(total["familyUsage"]["output"].int,20)
+            await reopened.setCostLimit(0.5)
+            do { _ = try await start(reopened,attempt:UUID().uuidString); XCTFail("Recovered corrections must enforce the budget immediately") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit") }
+            await reopened.close()
+        }
+    }
+
+    func testExistingUnloadedParentCannotBeBypassedAndNestedOrphansUseTheirSurvivingOwner() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let host = try await host(root), main = try await open(host,"main")
+        _ = try await host.command("side.open",sessionID:"main",params:["sideSessionId":"side"])
+        _ = try await host.command("side.open",sessionID:"side",params:["sideSessionId":"nested"])
+        let mainPath = await main.path
+        _ = try await host.command("session.forget",sessionID:"main",params:[:])
+        do { _ = try await open(host,"side",path:root.appendingPathComponent("side_side.jsonl").path); XCTFail("An unloaded parent still owns the budget") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,"side_budget_parent") }
+        try FileManager.default.removeItem(atPath:try XCTUnwrap(mainPath))
+        let side = try await open(host,"side",path:root.appendingPathComponent("side_side.jsonl").path,limit:0.5)
+        let nested = try await open(host,"nested",path:root.appendingPathComponent("side_nested.jsonl").path,limit:9)
+        let request = try await start(nested,attempt:"surviving-side")
+        XCTAssertEqual(request.scope.sideParents,["side"])
+        try await finish(request,attempt:"surviving-side",cost:0.6)
+        let total = await side.spend; XCTAssertEqual(total.usd,0.6)
+        do { _ = try await start(nested,attempt:"over-limit"); XCTFail("An existing nested side shares the surviving owner's limit") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit") }
+        await host.shutdown()
+    }
+
+    func testForkOfASideStartsAnIndependentFamilyBudgetOnCreateAndReload() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let host = try await host(root), main = try await open(host,"main",limit:0.1)
+        _ = try await host.command("side.open",sessionID:"main",params:["sideSessionId":"source"])
+        let held = await host.loadedSession("source"), source = try XCTUnwrap(held)
+        let request = try await start(source,attempt:"source-spend"); try await finish(request,attempt:"source-spend",cost:0.2)
+        try await source.sideBudgetFixtureReply("point")
+        let forked = try await host.command("session.fork",sessionID:"source",params:["forkSessionId":"fork","costLimit":["usd":0.5]])
+        let fork = try await open(host,"fork",path:forked["path"].text,limit:0.5)
+        let zero = await fork.spend; XCTAssertEqual(zero,SessionSpend())
+        _ = try await host.command("side.open",sessionID:"fork",params:["sideSessionId":"fork-side"])
+        let loaded = await host.loadedSession("fork-side"), side = try XCTUnwrap(loaded)
+        let own = try await start(side,attempt:"fork-side-spend")
+        XCTAssertEqual(own.scope.sideParents,["fork"])
+        try await finish(own,attempt:"fork-side-spend",cost:0.6)
+        let original = await main.spend, total = await fork.spend
+        XCTAssertEqual(original.usd,0.2); XCTAssertEqual(total.usd,0.6)
+        await host.shutdown()
+        let reopenedHost = try await self.host(root)
+        let reopened = try await open(reopenedHost,"fork",path:forked["path"].text,limit:0.5)
+        let parents = await reopened.sideBudgetIDs, spend = await reopened.spend
+        XCTAssertTrue(parents.isEmpty); XCTAssertEqual(spend.usd,0.6)
+        do { _ = try await start(reopened,attempt:"fork-limit"); XCTFail("The fork must enforce its own family spend") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit") }
+        await reopenedHost.shutdown()
+    }
+
     private func session(_ id: String, root: URL, parent: AgentSession? = nil, path: String? = nil) async throws -> AgentSession {
         let seed = await parent?.sideSeed()
         let value = try AgentSession(id: id, profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
@@ -211,6 +465,13 @@ final class SideBudgetTests: XCTestCase {
             catch { XCTAssertEqual((error as? AgentError)?.code,"cost_limit") }
         }
         await nested.close(); await side.close(); await main.close()
+    }
+}
+
+private extension AgentSession {
+    func sideBudgetFixtureReply(_ id: String) throws {
+        var row = ChatMessage(role:"assistant",content:[textBlock(id)]); row.id = id
+        try append(row); boundary = context
     }
 }
 

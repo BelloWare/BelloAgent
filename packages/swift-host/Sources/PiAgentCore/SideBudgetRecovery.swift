@@ -8,8 +8,31 @@ enum SideBudgetRecovery {
         var parent: String
         var file: URL
     }
+    static func parentExists(_ id: String, directory: URL) throws -> Bool {
+        let id = try identity(JSON(id))
+        for name in [id, "side_" + id, "fork_" + id] {
+            do {
+                _ = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent(name + ".jsonl").path)
+                return true
+            } catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileReadNoSuchFileError { }
+        }
+        return false
+    }
+
+    static func unkeyedCharge(spend: SessionSpend, accounting: AttemptAccounting, side: String, parents: [String]) -> JSON? {
+        var remainder = spend
+        for entry in accounting.attempts.values {
+            var counted = SessionSpend(); counted.add(record: entry.effective)
+            remainder.usd -= counted.usd; remainder.reported -= counted.reported; remainder.unreported -= counted.unreported
+        }
+        guard remainder.reported > 0 || remainder.unreported > 0 || remainder.usd > 0.000000000001 else { return nil }
+        var seed = remainder.record
+        seed["usd"] = JSON(max(0,remainder.usd)); seed["attemptId"] = JSON("side-history:" + side)
+        seed["source"] = "side-history"; seed["outcome"] = "completed"; seed["purpose"] = "legacy"
+        return charge(seed,side:side,parents:parents)
+    }
     static func charges(owner: String, directory: URL) throws -> [JSON] {
-        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         var origins: [String: Origin] = [:]
         for file in files where file.lastPathComponent.hasPrefix("side_") && file.pathExtension == "jsonl" {
             guard within(canonical(file.path), canonical(directory.path)) else { continue }
@@ -39,16 +62,11 @@ enum SideBudgetRecovery {
             }
             for key in accounting.attempts.keys.sorted() {
                 let entry = accounting.attempts[key]!
-                var counted = SessionSpend(); counted.add(record:entry.effective)
-                remainder.usd -= counted.usd; remainder.reported -= counted.reported; remainder.unreported -= counted.unreported
                 guard let original = entry.contribution else { continue }
                 result.append(charge(original,side:origin.id,parents:parents))
             }
-            if remainder.reported > 0 || remainder.unreported > 0 || remainder.usd > 0.000000000001 {
-                var seed = remainder.record
-                seed["usd"] = JSON(max(0,remainder.usd)); seed["attemptId"] = JSON("side-history:" + origin.id)
-                seed["source"] = "side-history"; seed["outcome"] = "completed"; seed["purpose"] = "legacy"
-                result.append(charge(seed,side:origin.id,parents:parents))
+            if let seed = unkeyedCharge(spend:remainder,accounting:accounting,side:origin.id,parents:parents) {
+                result.append(seed)
             }
         }
         return result

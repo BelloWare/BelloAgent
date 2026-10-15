@@ -182,7 +182,7 @@ final class SidebarInteractionTests: XCTestCase {
         let row = try XCTUnwrap(document.views["chat|chat55"] as? SidebarChatRowView)
         let surface = try XCTUnwrap(surfaces(row).first)
         let release = Unchecked(try mouse(.leftMouseUp, window: window))
-        let heldRow = Unchecked((document, row))
+        let heldRow = Unchecked((document, row, surface))
         var movedDuringPress = false
         // A pin finishing while mouseDown tracks moves the pressed chat to
         // the top. Its control must stay out of the pool until mouse-up.
@@ -190,7 +190,7 @@ final class SidebarInteractionTests: XCTestCase {
             MainActor.assumeIsolated {
                 let pinned = entries.entries.remove(at: 55)
                 entries.entries.insert(pinned, at: 0)
-                let (document, row) = heldRow.value
+                let (document, row, surface) = heldRow.value
                 document.update(entries, width: 280, animated: false)
                 movedDuringPress = true
                 XCTAssertEqual(row.chat.id, "chat55", "A held row cannot be rebound to another chat")

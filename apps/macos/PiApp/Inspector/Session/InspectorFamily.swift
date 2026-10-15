@@ -152,7 +152,7 @@ extension PayloadArchive {
         let db = try dashboardDatabase()
         try db.transaction {
             for (side, parents) in sides {
-                guard !parents.isEmpty, parents.count <= 128, Set(parents).count == parents.count,
+                guard parents.count <= 128, Set(parents).count == parents.count,
                       !parents.contains(side), ([side,workspaceID] + parents).allSatisfy({ Self.inspectorScope($0) }) else { throw CaptureFailure.sequence }
                 let bytes = try JSONEncoder().encode(parents)
                 if try db.rows("SELECT parents FROM side_budgets WHERE workspace=? AND side=?", [.text(workspaceID),.text(side)]).first?["parents"]?.data == bytes { continue }
