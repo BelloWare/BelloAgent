@@ -128,7 +128,7 @@ import Combine
     }
 
     @discardableResult
-    func show(model: WorkspaceModel, sessionID: String, workspaceID: String, title: String, focus: InspectorFocus) -> SessionInspectorWindowController {
+    func show(model: WorkspaceModel, sessionID: String, workspaceID: String, title: String, focus: InspectorFocus, originalForkID: String? = nil) -> SessionInspectorWindowController {
         // An Inspector whose project window is gone has nothing to follow.
         for entry in entries where entry.owner == nil { entry.controller.close() }
         let scope = SessionUsageScope(sessionID: sessionID, workspaceID: workspaceID)
@@ -141,6 +141,7 @@ import Combine
             controller.onClose = { [weak self, weak controller] in self?.entries.removeAll { $0.controller === controller } }
             entries.append(Entry(owner: model, controller: controller))
         }
+        if let originalForkID { controller.inspector.originalForkID = originalForkID }
         controller.observe(model: model)
         controller.present(focus)
         return controller

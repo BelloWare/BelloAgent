@@ -26,8 +26,9 @@ final class SubagentSteeringWorkspaceTests: XCTestCase {
         var started = false
         let click = Task { started = true; await model.openAgentSource(.init(childID: link.childSessionID, turn: 2, eventID: "input-2"), from: link.childSessionID) }
         while !started { await Task.yield() }
-        model.selectionRevision += 1
-        release.signal(); await blocking.value; await click.value
+        let selection = Task { await model.select("chat-side") }
+        while model.selectedID != "chat-side" { await Task.yield() }
+        release.signal(); await blocking.value; await click.value; await selection.value
         XCTAssertNil(view.reveal, "A source read belongs to the selection that requested it")
     }
     func testSteerRevealSelectsItsDeliveredEventRatherThanTheInitialTask() async throws {

@@ -45,7 +45,7 @@ final class SubagentForkGalleryTests: XCTestCase, SerialTestLane {
                     }
                     let card = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeSubagentCard.self,in:fixture.content).first)
                     let open = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self,in:card).first { $0.accessibilityIdentifier() == "open-subagent" })
-                    XCTAssertEqual(open.title,"History"); XCTAssertFalse(open.isEnabled)
+                    XCTAssertEqual(open.title,"Open"); XCTAssertFalse(open.isEnabled)
                     for button in ConversationPaneTests.views(PiKit.Button.self,in:card) where !button.isHidden {
                         XCTAssertLessThanOrEqual(button.convert(button.bounds,to:card).maxX,card.bounds.width + 1)
                     }

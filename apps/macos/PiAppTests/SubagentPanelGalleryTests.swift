@@ -4,6 +4,63 @@ import XCTest
 @testable import PiApp
 
 final class SubagentPanelGalleryTests: XCTestCase, SerialTestLane {
+    @MainActor func testOriginalReaderForkGallery() async throws {
+        guard let path = testEnvironment("PI_APP_ORIGINAL_GALLERY") else { throw XCTSkip("Set PI_APP_ORIGINAL_GALLERY") }
+        let folder = URL(fileURLWithPath:path)
+        try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
+        let fixture = try SubagentGalleryFixture(root:folder.appendingPathComponent("fixture-" + UUID().uuidString))
+        let model = fixture.model, window = fixture.window
+        model.chats.removeAll { $0.isSubagent }
+        model.chats[0].title = "Parser review"
+        let saved = try SubagentDiscoveryTests.family(model)
+        try await model.store?.putChats(model.chats); await model.reconcileSubagents()
+        let parent = model.chats[0], child = try XCTUnwrap(model.record(saved.child)), target = SubagentTarget(child.delegation!)
+        let source = URL(fileURLWithPath:parent.path!), forkPath = source.deletingLastPathComponent().appendingPathComponent("fork.jsonl")
+        var rows = try String(contentsOf:source,encoding:.utf8).split(separator:"\n").map { try JSONDecoder().decode([String:WireValue].self,from:Data($0.utf8)) }
+        rows[0]["id"] = .string("fork")
+        var bytes = Data(); for row in rows { bytes.append(try JSONEncoder().encode(row)); bytes.append(10) }; try bytes.write(to:forkPath)
+        var fork = parent; fork.id = "fork"; fork.title = "Parser review · fork"; fork.path = forkPath.path; fork.parentSessionID = parent.id
+        model.chats.append(fork)
+        var tool = SubagentTranscriptTests.tool
+        tool.name = "subagent_start"; tool.input = "{\"description\":\"Parser review\",\"task\":\"Check **token boundaries** and report any ambiguities.\"}"
+        tool.output = "{\"text\":\"The parser checks passed. Escaped scalars retain their source spans.\"}"
+        var meta = SubagentTranscriptTests.metadata.object!; meta["sessionId"] = .string(child.id); tool.nativeSubagent = .object(meta)
+        let savedTool = tool
+        model.historyWindowLoader = { id,_,_,_ in
+            var page = try ConversationHistoryPage(.object(["version":.number(2),"incarnation":.string(id),"lineage":.string("root"),"messages":.array([]),"older":.null,"newer":.null]))
+            page.messages = id == "fork" ? [.init(id:"question",role:"user",text:"Continue the review from this saved result."),
+                .init(id:"reply",role:"assistant",text:"The original review is available below.",tools:[savedTool])] :
+                [.init(id:"task",role:"user",text:"Check token boundaries."),.init(id:"answer",role:"assistant",text:"## Parser checks\n\nAll **token boundary** cases passed.\n\n- Preserve source spans for escaped scalars.\n- Keep recovery checks beside each parser fixture.\n\n```swift\nlet span = token.sourceRange\n```\n\nThe original task and its captured requests remain in the original chat.")]
+            return page
+        }
+        await model.select(fork.id)
+        let display = try XCTUnwrap(model.selected)
+        display.disclosure.setOpen(true,.work("reply")); display.disclosure.setOpen(true,.tool(ToolOccurrence.key("reply",tool.id)))
+        var own = child; own.id = "fork-agent"; own.title = "Review follow-up tests"; own.path = nil; own.parentSessionID = fork.id; own.subagentNumber = 2
+        own.delegation?.childSessionID = own.id; own.delegation?.budgetOwnerSessionID = fork.id; own.delegation?.call.parentSessionID = fork.id
+        model.chats.append(own); model.subagentSummaries[own.id] = .init(link:own.delegation!,description:own.title,model:"fixture-model",status:.completed,revision:1)
+        let root = WorkspaceRootView(model:model); window.contentView = root
+        let opened = await model.openOriginalSubagent(target,from:fork.id); XCTAssertTrue(opened)
+        defer { fixture.close() }
+        addTeardownBlock { @MainActor in model.shutdown(); try? await model.traces.close(); await model.store?.close() }
+        var files: [String] = []
+        for (appearance,theme) in [(NSAppearance.Name.aqua,"light"),(.darkAqua,"dark")] {
+            window.appearance = NSAppearance(named:appearance)
+            for size in [NSSize(width:1240,height:800),NSSize(width:920,height:600)] {
+                window.setContentSize(size); root.refresh(); await settle(window)
+                _ = await model.revealInTranscript(sessionID:fork.id,messageID:"reply",toolCallID:tool.id); await settle(window)
+                let base = "original-\(theme)-\(Int(size.width))x\(Int(size.height))"
+                try capture([window],to:folder.appendingPathComponent(base + ".png")); files.append(base + ".png")
+                let header = try XCTUnwrap(root.conversation?.agentFamilyHeader)
+                header.open(); await settle(window)
+                let popup = try XCTUnwrap(header.popover.popover?.contentViewController?.view.window)
+                try capture([popup,window],to:folder.appendingPathComponent(base + "-picker.png")); files.append(base + "-picker.png")
+                header.popover.close()
+                XCTAssertTrue(model.subagentTab(child.id)?.pane?.composer.isHidden == true)
+            }
+        }
+        try (files.joined(separator:"\n") + "\n").write(to:folder.appendingPathComponent("manifest.txt"),atomically:true,encoding:.utf8)
+    }
     @MainActor func testNestedFamilyPickerGallery() async throws {
         guard let path = testEnvironment("PI_APP_SUB_NESTED_GALLERY") else { throw XCTSkip("Set PI_APP_SUB_NESTED_GALLERY") }
         let folder = URL(fileURLWithPath: path)

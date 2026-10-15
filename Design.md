@@ -17,6 +17,9 @@ results and reports share the assistant Markdown surface, with cached bounded
 previews, source Copy and rendered Find; large results parse off the main thread.
 [Reader navigation ownership](docs/design/subagents.md#reader-navigation-ownership)
 defines async read, reveal and Source cancellation across main and hosted readers.
+Retired initial loads restart when their reader becomes visible; no-op tab choices
+and unrelated windows leave them intact. Forks open inherited sub-agents as
+original-chat references, preserving read-only mode through tabs and Inspectors.
 
 ## Webhook when a chat finishes (0.1.105)
 

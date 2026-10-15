@@ -1501,3 +1501,206 @@ calls. No helper-package, model-facing, journal, accounting, webhook or permissi
 changes. The commit/push target is `dev/a128-sub-display` only.
 Remaining work is the lead's independent review and integration; no known requested
 fix remains open in this stream.
+
+
+## Lead review round 9: reader recovery and original references
+
+Branch `dev/a128-sub-display`; build root
+`/Users/admin/Library/Caches/BelloSwiftWork/build-sub-display`. This round uses
+scratch-review9, generated journals, and the existing loopback gateway. No installed
+app, paid provider, real preferences/Keychain, named result bundle, helper package
+change, model-visible text change or journal format change. The separate cost and
+webhook stream remains untouched; the one footer change only guards a retained
+Stop callback against an original-reference reader.
+
+### Root causes and decisions
+
+- Rejecting an obsolete initial page left the owning display dormant. Page return
+  and canceled-load cleanup now reconcile visible readers, with fresh presentation
+  identity and the same desired chat. Leaving Chats retires an initial read at once;
+  an uncooperative old read cannot delay the new read or clear its flags. Main,
+  saved-side, child-tab and popped-child cases are covered, including returning
+  before and after the old completion. Recovery never changes keyboard focus.
+  Eligibility requires a presentation that actually began; populated in-memory
+  displays are left alone. Recovery defers to a newer reveal/jump/version read,
+  then completes any still-pending initial draft setup.
+- The host revision counted Side re-clicks and external-window activity. It now
+  describes actual pane choices only. Pane show/close/move transitions reconcile
+  side hydration; unrelated window selections and inactive-tab closes do not
+  invalidate it. The audit also moved the idempotent version guard before token
+  renewal and removed main-revision changes from external-child Show in Chat.
+  Parent Source's expected pane revision now accounts for an already-shown Side;
+  a popped-out child can reveal its issuing message there without a fake selection.
+- A retained Find query was a second still-wanted read: cancellation could stop
+  search with “Search failed”. Reader retirement now suspends the query, and visible
+  readers restart it under the new token. Recovery rebuilds matches without
+  automatically navigating to an obsolete first match. Query edits/close still own
+  their cancellation, and Find's own reveals still share the query intent.
+- The new owner decision replaces disabled History controls with Open and Inspect
+  Requests. A derived index reads copied acceptance plans off the main actor. Its
+  cache contains original identities, labels and numbers, never delegation or cost
+  authority. The fork's own numbers count copied starts first, including missing
+  originals. The picker puts inherited entries after owned agents in a separate
+  “From the original chat” group. A fork with inherited references uses its own
+  picker scope and retains New Side; the ancestor's complete descendant tree
+  remains reachable.
+- An original-reference tab keeps `originalForkID` in existing tab restoration
+  state, not a chat/journal field. One child identity still means one tab. Reusing
+  this tab never upgrades it: it stays read-only until closed. Headers and native
+  titles include “From the original chat · <title>”; compact tabs put that label
+  immediately after #N so tail truncation preserves the provenance. Back returns
+  to the fork. Source/Inspector parent navigation targets copied fork history;
+  Inspector child navigation retains read-only provenance even after tab closure.
+  A delayed Back rechecks its originating reader and the selected fork before
+  focusing, so a newer main selection cannot be overwritten.
+- Original reads validate the project’s trust/availability, reciprocal header and
+  saved paths, then use saved history without attaching/opening a writable helper.
+  Stop, send/steer, generic run actions, managed-child human commands and helper
+  opens are blocked; retained footer callbacks check the same reader mode. Inspector
+  capture reading remains available, with its fork/run actions unavailable. Missing
+  parent/child/file/project, missing project folders and revoked trust leave labelled,
+  disabled entries.
+  The new tool availability cache is explicitly excluded from ToolView coding.
+- Tree rows draw a faint guide at each depth. Non-main owners appear at the start
+  of agent secondary text; complete owner/status/model/effort/cost remains in the
+  tooltip and VoiceOver label. No transcript scan or Markdown parse occurs in layout.
+
+### Failing first and mutation evidence
+
+Logs and extracted result JSON are `<build root>/review9-<run>.*`. Runs use
+`PI_BUILD_ROOT` and `TEST_RUNNER_PI_APP_SCRATCH_ROOT` with the required
+`scripts/test-macos.sh -only-testing:PiAppTests/<Class>` form. Serial classes run
+alone. The initial fork UI regression lived in SubagentTranscriptTests, then moved
+into the new serial InheritedSubagentReaderTests when Inspector/window coverage
+was added. A fixture correction persisted parent metadata before discovery, as a
+real saved family does; otherwise the fixture correctly appeared orphaned.
+
+- `navigation-red`: 37 pass / 2 fail. Main/side return left content blank; a Side
+  re-click discarded its still-owned load. Hosted hide/show recovery was a passing
+  control. The strengthened test returns before the obsolete read completes too.
+- `fork-red`: 24 pass / 2 fail. Open remained disabled and a fork's owned start
+  incorrectly numbered itself 1 after a copied start.
+- `query-red`: 41 pass / 1 fail. Actual `setQuery` could not finish after a reader
+  hid and reappeared. The green test checks both main and hosted readers and that
+  recovery does not reveal an old match.
+- `recovery-reveal-red`: 42 pass / 1 fail. Automatic hydration displaced a newer
+  explicit reveal. Recovery now waits for reveal/jump/version reads to finish,
+  and tracks incomplete initial draft setup separately from already-readable rows.
+- `affected-initial`: 295 pass / 7 fail. Six failures exposed recovery of displays
+  that had never started an initial presentation (version rows and visible cost
+  attribution). Recovery must own an abandoned initialization, not merely a
+  dormant display. One older Source test simulated selection by changing a private
+  counter; it now exercises an actual `select` while the coordination read waits.
+- `audit-red3`: 44 pass / 2 fail. A Side already on screen incorrectly rejected
+  Source from a popped-out child, and an in-memory presentation was reinitialized
+  just by returning to Chats. `original-back-red`: 0 pass / 1 fail, with delayed
+  Back stealing focus after another selection. The final reader class passes all
+  46 tests, including an old initial read suspended across a newer explicit reveal.
+  Original-reader Back is covered in the read-only fixture matrix. Reloading that
+  fixture restores saved disclosure state; the unavailable-card checks explicitly
+  expand the card again before asserting its disabled Open action.
+- `reveal-read-red`: 45 pass / 1 fail. Extending the same recovery race to the
+  report and conversation-search paths reproduced it in both. These paths now
+  reserve and retire their existing reveal-read identity as the Find/Home path
+  does. Recovery waits for all three destinations. `fork-side-action-red` failed
+  the read-only matrix because the fork-scoped picker had lost New Side; its
+  availability now follows the actual picker owner.
+- `root`: 6 pass / 1 fail. The old VoiceOver expectation omitted the parent name;
+  it now checks the required owner context ("in Parent").
+- `project-availability-red`: 0 pass / 1 fail. A still-configured project with a
+  missing folder incorrectly kept the original available. Reads now validate all
+  original project roots as well as trust, configuration and saved journal paths;
+  the complete original-reader matrix passes with that case included.
+- Real-guard mutations: disabling visible recovery failed three reader tests;
+  advancing the pane revision on a Side re-click failed two; removing the original
+  reader Stop guard failed the live fixture's byte-identical source-journal check.
+  All three mutations were restored before the final runs. Logs are
+  `review9-mutation-{recovery,pane-intent,original-stop}.log`; exit codes are saved
+  in `review9-mutation-status.json`.
+- A fourth mutation removed the pending-destination exclusion from real recovery
+  eligibility: 45 pass / 1 fail (`mutation-destination`). All 46 reader tests passed
+  again after restoration (`reader-restored-final`).
+
+### Renewed awaited-path audit (both ownership rules)
+
+The grep inventory is `review9-navigation-await-audit.txt` (279 awaited sites). This table replaces the
+round-8 interpretation of retirement; all its paths were rechecked. “Hydrate” below
+means restart only the still-wanted initial presentation, never replay a retired
+Source, reveal, version choice or coalesced jump. Existing readable rows remain
+available when those one-off destinations retire. Every completion still checks
+its token plus its own presentation/read identity before publication.
+
+| Awaited path (under PiApp) | Retirement, recovery and visibility | Tests |
+| --- | --- | --- |
+| `Tabs/SubagentTab`: open, ensureLoaded, loadSubagentTab, attachment | Reader-local token; real hide/Back/close/new intent retire; visible dormant readers hydrate without focus; pane/window moves retain identity | SubagentReaderTests initial-load recovery (tab/pop-out), Back, move, close/reopen, hidden revalidation; SubagentPanelTests restore; SubagentOpeningTests attachment |
+| `WorkspaceSelection`: select, loadSelectedChat, restoreShownSide, readInitialWindow | Main revision + selected slot + presentation; page return and canceled cleanup hydrate only a started presentation under fresh identity; no-op reselect keeps its load | Reader main/side return before/after completion, in-memory preservation and newer-reveal recovery; WorkspaceLoadingTests; WorkspaceConcurrencyTests; SideRelaunchTests |
+| `WorkspaceSides`: selectSide/showSide, pending-side discard, loadSideDisplay | Workspace intent plus actual pane revision and mounted side; re-click/independent window does not retire; shown dormant side hydrates | Reader Side no-op/window, file-tab race, canceled side/reopen; SideTests |
+| `SubagentFamily`: openFamilySide/openNewFamilySide | Delegates to guarded side opening; deferred new-side intent rechecks before/after parent selection; no old completion can reselect Side | Reader deferred-new-side and side/file tests; ConversationFamilyTests nested opening |
+| `WorkspaceSubagents.openSubagent` | Local opening through header/discovery/tab/turn-message/reveal; superseded destination is not replayed; visible reader still hydrates | Reader newer-parent/Back; Opening header-tab race |
+| `attachManagedSubagent` | Caller/local token and connection through header/open; original-reference mode never attaches | Opening live attachment/expiry; InheritedSubagentReaderTests helper-open guard |
+| `WorkspaceAgentNavigation`: coordination lookup/Source/delivery/fallback | Origin token from first await through destination; retirement suppresses only the old navigation, retains displayed content | Reader lookup/four-stage Source/Back tests; SubagentNavigationTests |
+| `WorkspaceSubagents`: Back/openSubagentParent/revealSubagentCall | Origin plus destination through helper, versions, anchor, version page, exact call; embedded side handoff explicitly transfers ownership; already-shown Side does not advance the expected pane revision; original Back rechecks selected fork before focus | Reader Source stages, side handoff, already-shown Side, Inspector origin and popped Back; InheritedSubagentReaderTests delayed Back; Opening standalone/family Inspector |
+| `WorkspaceHistory.reloadHistory` | Token and presentation; canceled initial reload hydrates when visible, retaining requested reading anchor | Reader main history round trip; WorkspaceLoadingTests |
+| `WorkspaceHistory`: loadHistoryPage/fillLiveGap/reacquireHistoryPositions/historyViewportReady | Local/main token and boundary/lineage; canceled boundaries clear only their flags; current viewport may request a fresh page; old queued position is never replayed | HistoryEdgeTests; HistoryExtentTests; Reader paging reset/retired coalesced destination |
+| `TranscriptReveal`: revealInTranscript/readWindow/Home/drawablePage/jumpToHistoryPosition | Actual transcriptShows, token, presentation and request serial; a deliberate destination replaces the old destination; Find-owned reveals share its intent | TranscriptRevealTests; HistoryExtentTests; Reader popped reads, Back and 251-hit Find |
+| `WorkspaceVersions`: showVersion/readVersionPage/latestVersion | Idempotent selection preserves pending load; new choice retires; first-page cleanup clears its cover using loadID; saved current page remains readable | Reader no-op version test and page round trips; MessageVersionTranscriptTests |
+| `WorkspaceContent`: searchConversation/source and Find controller | Query task plus reader token; retirement suspends wanted queries, visible reader restarts without automatic reveal; changed query/close stays canceled | Reader actual setQuery retirement/recovery and 251-hit paging; TranscriptFindTests |
+| `WorkspaceContent`: revealConversationHit/revealMessage | Token before await, pending reveal-read identity, unchanged source/presentation, actual visibility; recovery waits for the destination; external child only changes its local token; no stale reveal restart | Reader recovery race through transcript/report/conversation search, external reveal during main hydration, newer parent/Back; ReportMessageNavigationTests |
+| `SidebarSearch` and `openFromSidebar` | Search/open identity plus reader token; popped window visibility independent of main page; retired hit selection is not replayed | Reader actual indexed popped hits on Chats/Reports/Background; SidebarSearchSidebarTests |
+| `SessionInspectorModel` and `InspectorAgentCoordination`: linked requests/origins/Source/delivery | Inspector page + reader intent through lookup; original provenance persists across window/tab close and redirects parent navigation to fork | Reader Inspector-origin race; InheritedSubagentReaderTests; SubagentInspectorTests; SubagentSteeringInspectorTests |
+| `WorkspaceLaunchSelection` / TabHost restoration | Existing launch selection owns ordinary loads; restored children use local tokens; no-op activation does not retire; original mode restored before load | SubagentPanelTests; SideRelaunchTests; InheritedSubagentReaderTests; TabHostTests/TabPaneTests |
+| `InheritedSubagents`: copied plans, original header/history/accounting, optional message reveal | Caller/main or local reader token at every await; original availability rechecked before publication; visible retired load hydrates; no helper writer | InheritedSubagentReaderTests card/picker/restore/unavailable/bytes; Opening live original Stop/bytes; Discovery numbering |
+| `conversationPage`, copy/export sheets, storage primitives | Data-only readers retain caller task/Inspector scopes; never focus or scroll; navigation uses the paths above | Existing conversation paging and Inspector suites in the full parallel lane |
+
+Background discovery, metadata/accounting, draft/transaction recovery, file/Git
+readers and request-detail reads retain their own transaction/connection/task
+ownership. They do not publish a conversation location. Sub-agent tool, permission,
+capture, vault and model-facing contracts stay unchanged.
+
+### Gallery
+
+Standalone SubagentPanelGalleryTests produced 12 images: eight in
+`gallery-review9-original` (fork card plus original child tab, picker closed/open,
+light/dark at 1240×800 and 920×600), and four in `gallery-review9-nested` (light/dark
+at both sizes). Every image was opened and visually inspected. The main pill stays
+left of the divider; popovers fit within the window. Narrow prose scrolls normally;
+source provenance remains visible, and the child has no composer or Stop. The
+nested picker keeps all six rows and footer visible with faint guides and explicit
+side-owner labels. Each directory contains a manifest. The final original captures
+also show New Side in the fork's own picker. Standalone SubagentForkGalleryTests
+added 12 legacy missing-reference captures in `gallery-review9-unavailable`, with
+pending/result cards in light/dark at widths 1240, 920 and 684 (height 600). All 24
+final images were opened and inspected; disabled Open/Inspect remain inert across
+appearance changes. The older 68-scene gallery
+was intentionally skipped because its opt-in variable was not set.
+
+### Final validation
+
+Affected validation: **460 unique behavioral tests passed across 38 classes**,
+zero failures. `review9-final-affected-counts.json` records the union by test
+identifier, so repeated classes are not counted twice. Final run evidence:
+
+| Run (`review9-<name>`) | Pass | Fail | Scope |
+| --- | ---: | ---: | --- |
+| `affected` | 302 | 0 | 30 affected parallel-lane classes |
+| `reveal-family-final` | 82 | 0 | Latest reveal/picker changes, plus ContentSearch and ConversationSearchPaging |
+| `reader-restored-final` | 46 | 0 | Serial SubagentReaderTests after the destination mutation was restored |
+| `originals-availability-final` | 1 | 0 | Serial read-only original matrix, including missing project folder |
+| `opening-restored` | 12 | 0 | Serial live loopback ownership, Stop, source bytes and fork budget |
+| `navigation-restored` | 7 | 0 | Serial SubagentNavigationTests |
+| `root-final` | 7 | 0 | Serial WorkspaceRootTests |
+| `pane-final` | 81 | 0 | Serial ConversationPaneTests |
+
+Standalone gallery classes: **3 passed, 1 intentionally skipped**, producing 24
+inspected PNGs. Four real-guard mutations failed and were restored. No helper
+package source changed, so no additional helper-package test run was needed.
+XcodeGen regenerated the project; `git diff --check` passes. All data is generated,
+and all gateway traffic uses loopback fixtures. No installed app, real preferences,
+Keychain, paid provider, source-journal migration or cost accounting change.
+
+The **one full native parallel lane passed: 2,541 passed, 37 skipped, zero failures**
+(2,578 total). Its exact arguments are saved in
+`review9-full-native-parallel-arguments.txt` (the lane script's serial exclusions,
+four workers); its log and extracted summary/tests JSON use that same run prefix.
+No second full lane was run. Round 9 has no known remaining implementation or
+validation failures; lead review and integration remain with the lead.

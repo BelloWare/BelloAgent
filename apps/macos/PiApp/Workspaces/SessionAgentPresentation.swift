@@ -22,6 +22,7 @@ extension SessionDisplay {
             guard SubagentToolView.isControl(source.name) else { return source }
             var original = source
             let value = SubagentToolView(source)
+            original.originalSubagentAvailability = value.childID.flatMap { originalSubagentAvailability[$0] }
             let childID = value.childID ?? (source.name == "subagent_report" && isManagedSubagent ? id : nil)
             original.subagentNumber = childID.flatMap { subagentNumbers[$0] }
             let effort = childID.flatMap { subagentEfforts[$0] } ?? SubagentEffort()

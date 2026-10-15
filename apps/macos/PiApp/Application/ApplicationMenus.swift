@@ -113,7 +113,7 @@ import AppKit
         command(file, "Open Project…", key: "o", action: model.pickWorkspace)
         command(file, "Open File…", key: "p", enabled: { [model] in model.canQuickOpen }) { [model] in model.showQuickOpen(in: NSApp.keyWindow) }
         command(file, "Import Pi Session…", action: model.importChat)
-        command(file, "Rename Chat…", enabled: { [model] in model.conversationCommandsEnabled && model.commandChat?.isSubagent != true }, action: model.rename)
+        command(file, "Rename Chat…", enabled: { [model] in model.conversationCommandsEnabled && model.commandChat.map { !$0.isSubagent } == true }, action: model.rename)
         command(file, "Delete Chat…", enabled: { [model] in model.canDeleteCommandChat }, action: model.deleteChat)
         file.addItem(.separator())
         command(file, title: { [model] in model.commandChat?.isArchived == true ? "Restore Chat" : "Archive Chat" },
@@ -168,15 +168,15 @@ import AppKit
         let conversation = menu("Conversation")
         command(conversation, "Sides and Agents…", enabled: { [model] in model.canShowAgentFamily }, action: model.showAgentFamily)
         let active = { [weak self] in self?.conversationCommands ?? false }
-        let editable = { [weak self, model] in (self?.conversationCommands ?? false) && model.commandChat?.isSubagent != true }
+        let editable = { [weak self, model] in (self?.conversationCommands ?? false) && model.commandChat.map { !$0.isSubagent } == true }
         command(conversation, "Send / Queue Follow-up", enabled: editable, action: { [model] in model.send() })
         command(conversation, "Open Side", enabled: editable, action: { [model] in model.openSide() })
         command(conversation, "Send / Steer Current Run", key: "\r", enabled: editable) { [model] in model.submitFocusedComposer(intent: .steer) }
-        command(conversation, "Stop", key: ".", enabled: active, action: { [model] in model.stopFocused() })
+        command(conversation, "Stop", key: ".", enabled: { [model] in active() && model.canStopConversation }, action: { [model] in model.stopFocused() })
         // Resume goes on with a run that stopped before it finished; Resume
         // Follow-ups sends only what waits in the queue.
         command(conversation, "Resume", enabled: { [weak self, model] in
-            (self?.conversationCommands ?? false) && model.commandChat?.isSubagent != true && (model.focusedSessionID.flatMap { model.displays[$0] }?.offersResume ?? false)
+            (self?.conversationCommands ?? false) && model.commandChat.map { !$0.isSubagent } == true && (model.focusedSessionID.flatMap { model.displays[$0] }?.offersResume ?? false)
         }) { [model] in model.resumeRun(sessionID: model.focusedSessionID) }
         command(conversation, "Resume Follow-ups", enabled: editable) { [model] in model.action("queue.resume", sessionID: model.focusedSessionID) }
         command(conversation, "Compact Now", enabled: editable) { [model] in model.action("context.compact", sessionID: model.focusedSessionID) }

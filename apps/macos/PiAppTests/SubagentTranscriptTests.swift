@@ -25,7 +25,7 @@ final class SubagentTranscriptTests: XCTestCase {
             let card = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeSubagentCard.self,in:pane).first)
             let buttons = ConversationPaneTests.views(PiKit.Button.self,in:card)
             let open = try XCTUnwrap(buttons.first { $0.accessibilityIdentifier() == "open-subagent" })
-            XCTAssertEqual(open.title,"History")
+            XCTAssertEqual(open.title,"Open")
             XCTAssertEqual(open.accessibilityLabel(),SubagentToolView.historicalNotice)
             for id in ["open-subagent", "inspect-subagent", "stop-subagent"] {
                 let button = try XCTUnwrap(buttons.first { $0.accessibilityIdentifier() == id })
@@ -38,7 +38,7 @@ final class SubagentTranscriptTests: XCTestCase {
             let copies = buttons.filter { $0.accessibilityLabel()?.hasSuffix("as Markdown") == true }
             XCTAssertEqual(copies.count, 2)
             XCTAssertTrue(copies.allSatisfy(\.isEnabled))
-            XCTAssertTrue(ConversationPaneTests.views(TranscriptPlainTextView.self,in:card).contains { $0.string.contains("Historical sub-agent") })
+            XCTAssertTrue(ConversationPaneTests.views(TranscriptPlainTextView.self,in:card).contains { $0.string.contains("From the original chat") })
         }
         try checkHistory(.light)
         for (appearance,color) in [(NSAppearance.Name.darkAqua,TranscriptColorScheme.dark),(.aqua,.light)] {
@@ -64,8 +64,8 @@ final class SubagentTranscriptTests: XCTestCase {
             button.onPress?()
         }
         XCTAssertFalse(called,"Even a retained action must not navigate into the source's live child")
-        XCTAssertEqual(buttons.first { $0.accessibilityIdentifier() == "open-subagent" }?.title,"History")
-        XCTAssertTrue(ConversationPaneTests.views(TranscriptPlainTextView.self,in:row).contains { $0.string.contains("Historical sub-agent") })
+        XCTAssertEqual(buttons.first { $0.accessibilityIdentifier() == "open-subagent" }?.title,"Open")
+        XCTAssertTrue(ConversationPaneTests.views(TranscriptPlainTextView.self,in:row).contains { $0.string.contains("From the original chat") })
     }
     static let link = SubagentLink(delegationID: "delegation", childSessionID: "chat-child", budgetOwnerSessionID: "chat-parent",
                                   call: .init(parentSessionID: "chat-parent", assistantMessageID: "reply", toolCallID: "call"),

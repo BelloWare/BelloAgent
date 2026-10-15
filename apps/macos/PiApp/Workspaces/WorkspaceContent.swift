@@ -100,10 +100,14 @@ extension WorkspaceModel {
         guard let item = record(id), let view = displays[id] else { throw StoreError.invalidRecord }
         let navigation = transcriptNavigation(id, advancing: true)
         let generation = view.presentationGeneration
+        revealSerial += 1
+        let read = revealSerial
+        view.revealRead = read; view.revealFailure = nil; view.abandonJump()
+        defer { if view.revealRead == read { view.revealRead = nil }; resumeVisibleReaders() }
         var page = try await readConversationWindow(item, cursor: nil, around: hit.id)
-        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentationGeneration == generation else { return }
+        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentationGeneration == generation, view.revealRead == read else { return }
         page.messages = await withAccounting(page.messages, view: view, workspaceID: item.workspaceID)
-        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentationGeneration == generation else { return }
+        guard !Task.isCancelled, navigation.isCurrent(in: self), transcriptShows(id), displays[id] === view, view.presentationGeneration == generation, view.revealRead == read else { return }
         adoptInitialHistory(page, into: view, around: hit.id)
         view.browsingHistory = true
         anchorChanged(view)
@@ -117,7 +121,7 @@ extension WorkspaceModel {
     func revealMessage(sessionID: String, messageID: String?, historyLookup: (@Sendable (String, String) async throws -> HistoryPage)? = nil, origin: HostedReaderToken? = nil) async -> Bool {
         guard !Task.isCancelled, origin?.isCurrent != false else { return false }
         retirePendingSubagentOpening()
-        messageNavigationRevision += 1
+        if subagentTab(sessionID)?.container?.isPane != false { messageNavigationRevision += 1 }
         guard let item = record(sessionID) else {
             error = "That chat is no longer available. It was deleted or was an unkept side conversation; its retained requests remain in the report and inspector."
             return false
@@ -147,12 +151,19 @@ extension WorkspaceModel {
         guard let messageID else { return true }
         var expectedMessageIDs = view.messages.map(\.id)
         if view.messages.contains(where: { $0.id == messageID }) {
+            view.abandonReveal(); view.abandonJump()
             view.scrollAnchor = .init(id: messageID, offset: 0, followsBottom: false); view.viewportRequestOpens = false; view.viewportRequest += 1; anchorChanged(view)
             return true
         }
+        // These legacy report/search reads own the destination just like the
+        // transcript's Find/Home path. Recovery must wait for their publication.
+        revealSerial += 1
+        let read = revealSerial
+        view.revealRead = read; view.revealFailure = nil; view.abandonJump()
+        defer { if view.revealRead == read { view.revealRead = nil }; resumeVisibleReaders() }
         func current() -> Bool {
             !Task.isCancelled && origin?.isCurrent != false && revision == messageNavigationRevision && page == .chats && selectedID == parentID && focusedSessionID == sessionID &&
-            record(sessionID) != nil && record(sessionID)?.path == item.path && displays[sessionID] === view && view.messages.map(\.id) == expectedMessageIDs
+            record(sessionID) != nil && record(sessionID)?.path == item.path && displays[sessionID] === view && view.revealRead == read && view.messages.map(\.id) == expectedMessageIDs
         }
         if historyLookup == nil {
             do {

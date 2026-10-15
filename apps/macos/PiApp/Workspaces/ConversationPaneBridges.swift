@@ -58,8 +58,8 @@ extension NativeTranscriptPane {
                                                         latestVersion: { [weak model] in model?.latestVersion(sessionID: session.id) },
                                                         openFile: { [weak model] path, lines in model?.openFile(fromChat: session.id, path: path, lines: lines) },
                                                         resolveReplyFile: { [weak model] text in await model?.resolveReplyFile(text, fromChat: session.id) },
-                                                        openSubagent: { [weak model] target in guard !target.isHistorical(in:session.id) else { return }; Task { await model?.openSubagent(target) } },
-                                                        inspectSubagent: { [weak model] target in guard !target.isHistorical(in:session.id) else { return }; model?.openInspector(session: target.ownerID, focus: .subagent(target.delegationID)) },
+                                                        openSubagent: { [weak model] target in Task { if target.isHistorical(in:session.id) { await model?.openOriginalSubagent(target, from:session.id) } else { await model?.openSubagent(target) } } },
+                                                        inspectSubagent: { [weak model] target in if target.isHistorical(in:session.id) { model?.inspectOriginalSubagent(target, from:session.id) } else { model?.openInspector(session: target.ownerID, focus: .subagent(target.delegationID)) } },
                                                         stopSubagent: { [weak model] target in model?.stopSubagent(target, from: session.id) },
                                                         openAgentSource: { [weak model] reference in Task { await model?.openAgentSource(reference, from: session.id) } }), environment: environment, reduceMotion: piReducesMotion)
     }

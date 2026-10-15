@@ -101,7 +101,7 @@ struct ConversationFamily: Equatable {
         var open: Bool
     }
     struct Row: Equatable {
-        enum Content: Equatable { case side(Side); case agent(SubagentFamily.Member, ownerID: String) }
+        enum Content: Equatable { case side(Side); case agent(SubagentFamily.Member, ownerID: String); case inherited(InheritedSubagent, OriginalSubagentAvailability) }
         var content: Content
         var depth: Int
     }
@@ -115,7 +115,7 @@ struct ConversationFamily: Equatable {
     var sideAgentFamilies: [SubagentFamily] = []
     var rows: [Row] = []
     var agentFamilies: [SubagentFamily] { [agents] + sideAgentFamilies }
-    var agentCount: Int { agentFamilies.reduce(0) { $0 + $1.members.count } }
+    var agentCount: Int { agentFamilies.reduce(0) { $0 + $1.members.count } + rows.filter { if case .inherited = $0.content { return true }; return false }.count }
     var isEmpty: Bool { sides.isEmpty && agentCount == 0 }
     var title: String {
         [(sides.count, "side"), (agentCount, "agent")].filter { $0.0 > 0 }
@@ -137,9 +137,11 @@ extension WorkspaceModel {
               parent.workspaceID == chat.workspaceID else { return nil }
         return id
     }
-    /// Display ancestry is separate from a delegation's authority. A main
-    /// column showing a saved fork still offers its complete original family.
+    /// Display ancestry is separate from a delegation's authority. Forks with
+    /// copied references offer their own family plus read-only original entries.
     func familyPickerOwner(_ sessionID: String) -> String {
+        if let fork = subagentTab(sessionID)?.originalForkID { return fork }
+        if inheritedSubagents[sessionID]?.isEmpty == false { return sessionID }
         var id = sessionID
         var visited: Set<String> = [id]
         while let chat = record(id), let parent = chat.delegation?.budgetOwnerSessionID ?? sideFamilyOwner(chat),
@@ -199,10 +201,13 @@ extension WorkspaceModel {
                 rows.append(.init(content: .agent(member, ownerID: parentID), depth: depth))
                 visit(member.chat.id, depth: depth + 1)
             }
+            for original in inheritedSubagents[parentID] ?? [] {
+                rows.append(.init(content: .inherited(original, originalAvailability(original.target)), depth: depth))
+            }
         }
         visit(ownerID, depth: 0)
         let value = ConversationFamily(ownerID: ownerID, sides: members, agents: agents,
-            canAddSide: canOpenSide(ownerID) && record(ownerID).flatMap(sideFamilyOwner) == nil, sideAgentFamilies: related, rows: rows)
+            canAddSide: canOpenSide(ownerID) && familyPickerOwner(ownerID) == ownerID, sideAgentFamilies: related, rows: rows)
         conversationFamilies[ownerID] = value
         return value
     }

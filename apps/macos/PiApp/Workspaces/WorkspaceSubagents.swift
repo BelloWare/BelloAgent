@@ -35,7 +35,7 @@ extension WorkspaceModel {
     /// reveal of the already selected chat) attaches here before reading its
     /// history. Cold saved children remain view-only without starting a host.
     func attachManagedSubagent(_ item: ChatRecord, current: (() -> Bool)? = nil) async throws {
-        guard let link = item.delegation, item.delegationIssue == nil,
+        guard !isOriginalSubagentReader(item.id), let link = item.delegation, item.delegationIssue == nil,
               let parent = record(link.budgetOwnerSessionID), parent.workspaceID == item.workspaceID,
               let host = hosts[item.workspaceID], host.isReady, opened.contains(parent.id) else { return }
         let navigation = selectionRevision, connection = host.connectionID
@@ -76,6 +76,13 @@ extension WorkspaceModel {
         if pendingSubagentOpening?.reader.key == childID { retirePendingSubagentOpening() }
         else { subagentTab(childID)?.renewNavigation() }
         let origin = subagentTab(childID)?.navigation
+        if let fork = subagentTab(childID)?.originalForkID {
+            guard record(fork) != nil else { return }
+            if selectedID != fork { await select(fork, focusesComposer: false) }
+            guard !Task.isCancelled, origin?.isCurrent != false, selectedID == fork, page == .chats else { return }
+            focusSubagentParent(fork)
+            return
+        }
         if subagentTab(childID)?.container?.isPane == true {
             if selectedID == link.budgetOwnerSessionID { focusSubagentParent(link.budgetOwnerSessionID); return }
             if let owner = record(link.budgetOwnerSessionID), sideFamilyOwner(owner) == selectedID {
@@ -89,6 +96,9 @@ extension WorkspaceModel {
     @discardableResult func openSubagentParent(_ link: SubagentLink, returningTo target: SubagentTarget? = nil, origin: HostedReaderToken? = nil) async -> Bool {
         guard !Task.isCancelled, origin?.isCurrent != false else { return false }
         let childID = link.childSessionID
+        if let fork = subagentTab(childID)?.originalForkID {
+            return await revealMessage(sessionID: fork, messageID: target?.assistantID ?? link.call.assistantMessageID, origin: origin)
+        }
         guard link.valid, let parent = record(link.budgetOwnerSessionID),
               record(childID).map({ $0.workspaceID == parent.workspaceID && $0.delegation == link }) ?? true else {
             displays[childID]?.notice = "The parent chat is unavailable. This saved sub-agent remains viewable."; return false
@@ -103,7 +113,7 @@ extension WorkspaceModel {
         _ = transcriptNavigation(parent.id, advancing: true)
         let selection = selectionRevision, revision = messageNavigationRevision + (page == .chats ? 0 : 1)
         let changesMain = selectedID != mainID
-        let paneIntent = tabs.navigationRevision + (sideOwner == nil ? 0 : 1)
+        let paneIntent = tabs.navigationRevision + (sideOwner == nil || tabs.pane.sideShown ? 0 : 1)
         if side(parent.id) != nil { await selectSide(parent.id, revealInSidebar: false) }
         else if sideOwner != nil { await showSide(parent.id, revealInSidebar: false) }
         else { await select(parent.id, revealInSidebar: false, reopensSide: false, focusesComposer: false) }

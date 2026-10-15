@@ -57,6 +57,20 @@ protecting running sessions and open tabs. Cold readers do not start a helper.
 
 ### Reader navigation ownership
 
+**Publication and recovery are separate.** Retiring an intent only prevents its
+operation from publishing. A still-selected reader that is visible again and
+still needs initial content restarts under a fresh token; cancellation must never
+leave it dormant or blank. Visibility transitions and canceled-load cleanup both
+reconcile that obligation, without changing focus or replaying an obsolete reveal.
+Recovery applies to a presentation that actually began loading, not an unrelated
+in-memory draft or live display. It waits for a newer explicit destination to finish
+and completes any still-pending draft initialization without replacing that destination.
+A retained Find query suspends during retirement and resumes when visible,
+without repeating its automatic first-match reveal. Re-clicking the selected
+tab/version is a no-op. An independent window's tab
+selection does not change the main pane's intent. Pane revisions describe only
+actual main-pane selections, not all tab-host activity.
+
 A hosted child has one UUID navigation token, retained across pane/window moves.
 Open/header validation, attachment, reload, history edges/position reads, versions,
 Find pages and reveals capture it before awaiting and recheck before publishing.
@@ -1516,3 +1530,23 @@ Future implementation follows the repository’s commit/push workflow. This desi
 - Phase 2: only child journals use `pi-app.native.v2`. The derived `.meta` checkpoint version advances to 2 so it cannot omit delegation state; journal bytes are not migrated. An actual `v0.1.125` helper accepts the v1 parent and refuses the v2 child without writing it. The generated Xcode project also picks up phase 1's shared source and tests.
 - Phase 1: the shared `SubagentPolicy.enabled` constant is the single production rollout switch. There is no preference or IPC override. Model grants and origin types are shared source between the helper and app. Parent metadata keeps managed origin immutable across stale updates. The scheduling table now reflects the owner decisions in §15.
 - Base: `dev/a126-helper` already includes closing-session accounting; preserve and extend that implementation instead of reverting to the older lifecycle described in §4.5.
+
+### Forks: original sub-agents are read-only references (0.1.128)
+
+Inherited receipts say “From the original chat”. Open reads the original child's
+validated journal in the existing side-pane tab, without attaching a helper. The
+tab and header name the original chat; Back focuses the fork. The fork picker puts
+inherited entries after its own agents in a separate “From the original chat”
+group. Their original owner remains authoritative; copied starts reserve ordinal
+slots before the fork's own new starts. New Side stays available in the fork's
+own picker scope. The cached index comes from persisted
+plans, not a new journal field. Original project trust, reciprocal identities and
+file availability are checked before reading and after awaited validation. Missing
+originals remain visible as disabled entries with a reason.
+
+The original-reader mode survives tab moves and restore. It never grants Stop,
+send, follow-up, composer, helper-open or fork authority; Inspect Requests uses the
+existing read-only capture Inspector. No original journal, delegation, ledger or
+cost owner is changed. A tab opened this way stays read-only until closed, even if
+another navigation entry point reuses it. Family tree rows retain per-owner
+numbers and name non-main owners in secondary text, with faint per-depth guides.

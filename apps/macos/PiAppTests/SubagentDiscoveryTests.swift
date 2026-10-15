@@ -3,6 +3,24 @@ import XCTest
 @testable import PiApp
 
 final class SubagentDiscoveryTests: XCTestCase {
+    @MainActor func testForkOwnedNumbersFollowPersistedInheritedStarts() async throws {
+        let root = scratchRoot("fork-numbers"), model = try SubagentOrganizationTests.fixture(scratchRoot("fork-numbers-model"))
+        registerWorkspaceFixtureTeardown(model, root: model.root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let family = try Self.family(model), source = URL(fileURLWithPath: model.chats[0].path!)
+        var rows = try String(contentsOf:source,encoding:.utf8).split(separator:"\n").map { try JSONDecoder().decode([String:WireValue].self,from:Data($0.utf8)) }
+        rows[0]["id"] = .string("fork")
+        var own = rows[1], data = own["data"]!.object!, origin = data["origin"]!.object!, link = origin["link"]!.object!
+        let ownID = UUID().uuidString
+        link["childSessionID"] = .string(ownID); link["budgetOwnerSessionID"] = .string("fork")
+        var call = link["call"]!.object!; call["parentSessionID"] = .string("fork"); link["call"] = .object(call)
+        origin["link"] = .object(link); data["origin"] = .object(origin); own["data"] = .object(data); rows.append(own)
+        let path = family.path.deletingLastPathComponent().appendingPathComponent("fork.jsonl")
+        var bytes = Data(); for row in rows { bytes.append(try JSONEncoder().encode(row)); bytes.append(10) }; try bytes.write(to:path)
+        let plans = try await model.history.subagentPlans(path:path,ownerID:"fork")
+        XCTAssertEqual(plans.count,1); XCTAssertEqual(plans.first?.number,2)
+        XCTAssertEqual(plans.first?.header.link.childSessionID,ownID)
+    }
     @MainActor func testOlderRecoveryOriginKeepsReciprocalDiscoveryAndLiveFollowUpsAttached() async throws {
         for missing in [WireValue?.none, .null] {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -36,6 +36,47 @@ extension WorkspaceModel {
         navigationTask = task; view.presentation.navigation = task
         await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
+    func readerPaneVisibilityChanged() {
+        if let id = selectedID, let side = sides[id], !transcriptShows(side.id) {
+            displays[side.id]?.retireInitialPresentation()
+        }
+        resumeVisibleReaders()
+    }
+    /// Retirement only rejects publication. Still-wanted initial content must
+    /// be hydrated under a fresh intent once its reader is visible again.
+    /// Defer to the next actor turn so selection/pane mutations have settled.
+    func resumeVisibleReaders() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isShutDown else { return }
+            for tab in self.tabs.allTabs.compactMap({ $0 as? SubagentTab }) where self.subagentTabIsShown(tab.key) {
+                tab.ensureLoaded()
+                self.displays[tab.key]?.findHost?.resumeFindNavigation()
+            }
+            guard self.page == .chats, let id = self.selectedID else { return }
+            self.displays[id]?.findHost?.resumeFindNavigation()
+            if let side = self.sides[id], self.transcriptShows(side.id) { self.displays[side.id]?.findHost?.resumeFindNavigation() }
+            if let view = self.displays[id], view.needsVisibleHistoryLoad,
+               let item = self.record(id), !item.isSubagent {
+                let held = view.beginHistoryPresentation(), generation = view.presentationGeneration, selection = self.selectionRevision
+                let task = Task { [weak self, weak view] in
+                    guard let self, let view else { return }
+                    await self.loadSelectedChat(id, item: item, into: view, selection: selection,
+                        generation: generation, heldRows: held, focusesComposer: false)
+                }
+                view.presentation.navigation = task
+            }
+            if let side = self.sides[id], !side.pending, self.transcriptShows(side.id),
+               let child = self.record(side.id), let view = self.displays[side.id],
+               view.needsVisibleHistoryLoad {
+                view.beginHistoryPresentation()
+                let generation = view.presentationGeneration
+                Task { [weak self, weak view] in
+                    guard let self, let view, self.transcriptShows(child.id), view.presentationGeneration == generation else { return }
+                    await self.loadSideDisplay(child, view: view)
+                }
+            }
+        }
+    }
     /// Opening the chat that is already open, with its page or reading it:
     /// the chat is focused and looked at, and nothing is read again.
     /// Returns whether it was that chat.
@@ -152,12 +193,14 @@ extension WorkspaceModel {
                                   generation: UUID, heldRows: HeldRows, focusesComposer: Bool, reader: HostedReaderToken? = nil) async {
         let navigation = transcriptNavigation(id)
         // However this ends, nothing is reading the chat any more.
-        defer { view.finishHistoryPresentation(generation) }
+        defer { view.finishHistoryPresentation(generation); resumeVisibleReaders() }
         @MainActor func current() -> Bool {
             !Task.isCancelled && navigation.isCurrent(in: self) && (reader.map { $0.isCurrent && self.subagentTab(id) === $0.reader } ?? (self.selectionRevision == selection && self.selectedID == id)) &&
                 self.displays[id] === view && view.presentationGeneration == generation
         }
         do {
+            await readInheritedSubagents(item, current: current)
+            guard current() else { return }
             try await attachManagedSubagent(item, current: current)
             guard current() else { return }
             guard try await reconcileSubmissionDraft(item, view: view, current: current) else { return }
@@ -220,7 +263,9 @@ extension WorkspaceModel {
             }
             if !view.recovered.isEmpty { view.notice = "Outcome uncertain for a previous command. Review the saved history before sending again." }
             if self.opened.contains(id) { self.refresh(id) }
-        } catch is CancellationError { }
+        } catch is CancellationError {
+            if current() { view.historyState = .failed("History reading was interrupted. Try loading it again.") }
+        }
         catch {
             guard current() else { return }
             view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false

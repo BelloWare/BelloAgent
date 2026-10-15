@@ -5,6 +5,11 @@ import AppKit
 @MainActor final class SubagentTab: HostedTab {
     override class var kind: String { "subagent" }
     weak var model: WorkspaceModel?
+    var originalForkID: String?
+    var originalLabel: String? {
+        guard originalForkID != nil, let child = model?.record(key), let link = child.delegation else { return nil }
+        return "From the original chat · " + (model?.record(link.budgetOwnerSessionID)?.title ?? "Unavailable")
+    }
     private(set) var pane: ConversationPaneView?
     var loading: Task<Void, Never>?
     private var observer: ShellObserver?
@@ -19,6 +24,7 @@ import AppKit
         navigationGeneration = UUID()
         loading?.cancel(); loading = nil
         if let model, model.subagentTab(key) === self, let display = model.displays[key] {
+            display.findHost?.retireFindNavigation()
             display.presentation.cancel()
             display.presentation.olderRead = nil; display.presentation.newerRead = nil
             display.olderPage.loading = false; display.newerPage.loading = false; display.loadingEarlier = false
@@ -27,13 +33,17 @@ import AppKit
             if display.versionView?.loading == true { display.versionView = nil }
             if display.historyState == .loading { needsRevalidation = true; display.historyState = .dormant; display.refreshingCachedRows = false }
         }
+        model?.resumeVisibleReaders()
         return navigation
     }
     init(childID: String) { super.init(key: childID, title: "Sub-agent", symbol: "person.crop.rectangle.stack") }
     override class func restore(key: String, state: Data?) -> HostedTab? {
         guard !key.isEmpty else { return nil }
-        return SubagentTab(childID: key)
+        let tab = SubagentTab(childID: key)
+        tab.originalForkID = state.flatMap { try? JSONDecoder().decode(String.self, from: $0) }
+        return tab
     }
+    override func savedState() -> Data? { originalForkID.flatMap { try? JSONEncoder().encode($0) } }
     func configure(_ model: WorkspaceModel) {
         self.model = model
         let observer = ShellObserver { [weak self] in self?.refresh() }
@@ -46,8 +56,13 @@ import AppKit
             if foundRecord, container != nil { model.tabs.close(self) }; return
         }
         foundRecord = true
-        if title != child.displayTitle { title = child.displayTitle }
-        help = model.subagentSearchTitle(child)
+        let shownTitle = child.displayTitle + (originalLabel.map { " — " + $0 } ?? "")
+        if title != shownTitle { title = shownTitle }
+        help = title
+        if originalForkID != nil, let link = child.delegation, let reason = model.originalAvailability(SubagentTarget(link)).reason {
+            loading?.cancel(); loading = nil
+            if let view = model.displays[key] { view.messages = []; view.historyState = .failed(reason); view.notice = reason }
+        }
         if let view = model.displays[key], let pane {
             pane.showsAgentFamily = container?.isPane == false
             pane.show(session: view, chat: child)
@@ -55,7 +70,12 @@ import AppKit
         if let container, container.activeTab === self, let window = model.tabs.window(of: container) { window.title = title + " — Bello Agent" }
         if model.subagentTabIsShown(key), model.displays[key]?.historyState == nil || model.displays[key]?.historyState == .dormant { ensureLoaded() }
     }
-    override var stripTitle: String { model?.record(key)?.subagentShortTitle ?? title }
+    override var stripTitle: String {
+        if let originalLabel {
+            return (model?.record(key)?.subagentNumber.map { "#\($0) · " } ?? "") + originalLabel
+        }
+        return model?.record(key)?.subagentShortTitle ?? title
+    }
     override var truncatesTitleAtEnd: Bool { true }
     override func makeAppKitContent() -> NSView {
         guard let model else { return NSView() }
@@ -75,8 +95,9 @@ import AppKit
         }
     }
     func ensureLoaded() {
-        guard !closed, let model, loading == nil, model.record(key)?.isSubagent == true,
+        guard !closed, let model, loading == nil, model.displays[key]?.readingHistoryDestination != true, model.record(key)?.isSubagent == true,
               needsRevalidation || model.displays[key]?.historyState == nil || model.displays[key]?.historyState == .dormant else { return }
+        if originalForkID != nil, let link = model.record(key)?.delegation, model.originalAvailability(SubagentTarget(link)).reason != nil { return }
         let navigation = navigation
         loading = Task { [weak self, weak model] in
             guard !Task.isCancelled, let self, let model, navigation.isCurrent else { return }
@@ -124,7 +145,7 @@ import AppKit
         case ("g", .command): find = .next
         case ("g", [.command, .shift]) where display.findHost?.findIsOpen == true: find = .previous
         case ("f", [.command, .option]): model.inspectConversation(key); return true
-        case (".", .command): model.stop(sessionID: key); return true
+        case (".", .command): if originalForkID == nil { model.stop(sessionID: key) }; return true
         default: return false
         }
         if let find { model.revealSerial += 1; display.findCommand = .init(kind: find, serial: model.revealSerial) }
@@ -166,7 +187,7 @@ extension WorkspaceModel {
         defer { if opening == nil { finishSubagentOpening(request) } }
         // Keep the owner in the main column. An orphan's saved reader can
         // still open beside the currently selected chat.
-        if reader.container?.isPane != false, let ownerID = child.delegation?.budgetOwnerSessionID, let owner = record(ownerID), owner.workspaceID == child.workspaceID, !owner.isSubagent {
+        if reader.originalForkID == nil, reader.container?.isPane != false, let ownerID = child.delegation?.budgetOwnerSessionID, let owner = record(ownerID), owner.workspaceID == child.workspaceID, !owner.isSubagent {
             let mainID = sideFamilyOwner(owner) ?? ownerID
             if selectedID != mainID {
                 await select(mainID, revealInSidebar: false, reopensSide: false, focusesComposer: false)
@@ -180,7 +201,7 @@ extension WorkspaceModel {
         // Opening is the focus decision; finishing its asynchronous read is not.
         tab.focus(); tab.ensureLoaded()
         if let loading = tab.loading { await loading.value }
-        else {
+        else if tab.originalForkID == nil {
             // Reopening an already shown viewer can reattach after recovery.
             do { try await attachManagedSubagent(child, current: { request.isCurrent }) }
             catch is CancellationError { }
@@ -199,8 +220,12 @@ extension WorkspaceModel {
         view.isManagedSubagent = true; view.browsingHistory = true; view.used = Date()
         displays[child.id] = view
         tab.refresh()
-        await loadSelectedChat(child.id, item: child, into: view, selection: selectionRevision,
-                               generation: view.presentationGeneration, heldRows: held, focusesComposer: false, reader: navigation)
+        if tab.originalForkID != nil {
+            await loadOriginalSubagent(child, view: view, navigation: navigation)
+        } else {
+            await loadSelectedChat(child.id, item: child, into: view, selection: selectionRevision,
+                                   generation: view.presentationGeneration, heldRows: held, focusesComposer: false, reader: navigation)
+        }
         if navigation.isCurrent { tab.refresh() }
         releaseUnreadDisplays(keeping: selectedID ?? "")
     }

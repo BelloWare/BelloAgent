@@ -2,6 +2,10 @@ import Foundation
 struct TranscriptAnchor: Codable, Sendable, Equatable { var id: String; var offset: Double; var followsBottom: Bool }
 
 struct ToolView: Codable, Sendable, Equatable, Identifiable {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, state, input, output, durationMs, truncated, path, added, removed, line, lastLine
+        case inputTruncated, inputBytes, subagent, nativeSubagent, agentDeliveryState, agentHeldByUser, subagentNumber, subagentEffort
+    }
     var id: String; var name: String; var state: String; var input: String; var output: String; var durationMs: Double?; var truncated: Bool
     /// File tools: resolved path and approximate line counts, from the host.
     var path: String? = nil; var added: Int? = nil; var removed: Int? = nil
@@ -20,6 +24,7 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
     var agentDeliveryState: String? = nil
     var agentHeldByUser: Bool? = nil
     /// App-only presentation cache, never sent to the helper or model.
+    var originalSubagentAvailability: OriginalSubagentAvailability? = nil
     var subagentNumber: Int? = nil
     var subagentEffort: String? = nil
 }

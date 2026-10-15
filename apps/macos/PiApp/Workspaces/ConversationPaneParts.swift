@@ -481,7 +481,7 @@ import QuartzCore
                 .view(shellLine(status + " · Usage charged to " + parent, font: PiKit.Font.caption, color: .piInkSecondary), .flexible)]
             if busy {
                 let stop = PiKit.Button("Stop " + chat.subagentName, symbol: "stop.fill", style: .danger, compact: true) { [weak self] in
-                    guard let self, let link = model.record(self.chatID)?.delegation else { return }
+                    guard let self, !model.isOriginalSubagentReader(self.chatID), let link = model.record(self.chatID)?.delegation else { return }
                     model.stopSubagent(SubagentTarget(link), from: link.budgetOwnerSessionID)
                 }
                 stop.toolTip = "Stop " + chat.displayTitle; stop.setAccessibilityLabel(stop.toolTip)

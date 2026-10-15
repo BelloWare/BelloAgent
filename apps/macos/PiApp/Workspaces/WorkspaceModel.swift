@@ -5,7 +5,7 @@ import AppKit
 enum WorkspacePage: String, Sendable { case chats, report, background }
 
 @MainActor final class WorkspaceModel: ObservableObject {
-    @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged(); tabs.projectsChanged() } }
+    @Published var workspaces: [WorkspaceRecord] = [] { didSet { sidebarIndex.invalidate(); workspacesRevision &+= 1; noteActivityChanged(); tabs.projectsChanged(); refreshOriginalAvailability() } }
     /// The tabs beside the chats and in windows of their own: the window's,
     /// publishing on their own (`TabHost`). Kept across launches in the app;
     /// in tests, nothing is kept.
@@ -21,7 +21,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Every sidebar row, unread badge and menu-bar row looks a chat up by id.
     /// A linear scan made those lookups O(chats) each and the sidebar O(chats²).
     /// The sidebar index rebuilds its id table at most once per mutation, lazily.
-    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); subagentFamilies.removeAll(); familySideRecords = nil; chatsRevision &+= 1; readBadgeCache = nil; noteActivityChanged(); forgetKeptTranscriptRows() } }
+    @Published var chats: [ChatRecord] = [] { didSet { sidebarIndex.invalidate(); subagentFamilies.removeAll(); familySideRecords = nil; chatsRevision &+= 1; readBadgeCache = nil; noteActivityChanged(); forgetKeptTranscriptRows(); refreshOriginalAvailability() } }
     /// A duplicate id keeps the first entry, matching `chats.first`.
     func chatRecord(_ id: String) -> ChatRecord? { sidebarIndex.chat(id, in: chats) }
     @Published var unreadStates: [String: SessionReadState] = [:] { didSet { readBadgeCache = nil; noteActivityChanged() } }
@@ -38,6 +38,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// actual fixture window without competing with other processes for focus.
     var conversationWindow: () -> NSWindow? = { NSApp.keyWindow }
     var subagentReturnTargets: [String: SubagentTarget] = [:]
+    var inheritedSubagents: [String: [InheritedSubagent]] = [:]
     @Published var subagentSummaries: [String: SubagentSummary] = [:] { didSet { subagentFamilies.removeAll(); invalidateConversationFamily() } }
     var subagentFamilies: [String: SubagentFamily] = [:]
     var subagentEfforts: [String: SubagentEffort] = [:]
@@ -69,7 +70,14 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         didSet { if selectedID != oldValue { messageNavigationRevision += 1; mainSelectionChangedDuringReaderOpening(); organizationNavigationRevision &+= 1; cancelAutomaticContext(); noteSelectionChanged() } }
     }
     /// Invalidates delayed report-to-message navigation when another target wins.
-    var messageNavigationRevision = 0
+    var messageNavigationRevision = 0 {
+        didSet {
+            guard messageNavigationRevision != oldValue else { return }
+            selected?.findHost?.retireFindNavigation()
+            if let id = selectedID, let side = sides[id] { displays[side.id]?.findHost?.retireFindNavigation() }
+            resumeVisibleReaders()
+        }
+    }
     /// Counts `revealInTranscript` requests (`TranscriptReveal.serial`).
     var revealSerial = 0
     var sessionReferenceCopyRevision = 0
@@ -241,7 +249,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         didSet {
             if page != oldValue { organizationNavigationRevision &+= 1; noteSelectionChanged() }
             if page != oldValue { messageNavigationRevision += 1 }
+            if page == .chats && page != oldValue { resumeVisibleReaders() }
             if page != .chats && page != oldValue {
+                selected?.retireInitialPresentation()
+                if let id = selectedID, let side = sides[id] { displays[side.id]?.retireInitialPresentation() }
                 if pendingSubagentOpening?.reader.container?.isPane != false { retirePendingSubagentOpening() }
                 (tabs.pane.activeTab as? SubagentTab)?.didHide()
             }
@@ -521,6 +532,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
         TranscriptKeptRows.policy = self
         tabs.sideAvailable = { [weak self] in self?.paneSideAvailable == true }
         tabs.configureTab = { [weak self] tab in self?.configureFileNavigation(tab); self?.configureSubagentTab(tab) }
+        tabs.paneVisibilityChanged = { [weak self] in self?.readerPaneVisibilityChanged() }
         tabs.navigationChanged = { [weak self] tab, container in self?.tabNavigationChanged(tab, in: container) }
         FileTab.resolveProject = { [weak self] id in self?.fileProjectState(id) ?? .removed }
         FileTab.activate = { [weak self] tab in self?.tabs.activate(tab) }

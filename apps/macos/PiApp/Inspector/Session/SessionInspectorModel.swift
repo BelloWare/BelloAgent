@@ -81,6 +81,7 @@ import AppKit
     let request: InspectorRequestModel
     let next: NextRequestModel
     let archive: PayloadArchive
+    @Published var originalForkID: String?
     weak var workspace: WorkspaceModel?
     /// Each chart's pointer selection, held without being observed.
     let timelineSelection = PiChartSelection()
@@ -626,7 +627,7 @@ import AppKit
     /// "Fork from here" on a request's page: a new chat that ends at the
     /// reply this request produced, opened in the main window.
     func forkFromRequest(_ attemptID: String) {
-        guard let workspace else { return }
+        guard originalForkID == nil, let workspace else { return }
         guard let row = index.request(attemptID), row.delegationID == nil else { return }
         let sessionID = row.sessionID ?? scope.sessionID
         guard workspace.canForkFromReply(sessionID) else { return }
@@ -661,18 +662,22 @@ import AppKit
                 self.reveal(workspace, sessionID, links?.output.first ?? fallback, navigation: navigation)
             }
         case .subagent(let id):
-            if let group = groups.first(where: { $0.id == id }) { bringMainWindowForward(); Task { await workspace.openSubagent(SubagentTarget(group.summary.link)) } }
+            if let group = groups.first(where: { $0.id == id }) { reveal(workspace, group.summary.link.childSessionID, nil) }
         case .overview, .nextRequest: reveal(workspace, sessionID, nil)
         }
     }
 
-    private func reveal(_ workspace: WorkspaceModel, _ sessionID: String, _ message: String?, navigation: TranscriptNavigationToken? = nil) {
+    func reveal(_ workspace: WorkspaceModel, _ sessionID: String, _ message: String?, navigation: TranscriptNavigationToken? = nil) {
         bringMainWindowForward()
         let target = groups.first { $0.summary.link.childSessionID == sessionID }.map { SubagentTarget($0.summary.link) }
+            ?? (originalForkID == nil ? nil : workspace.record(sessionID)?.delegation.map(SubagentTarget.init))
         let navigation = navigation ?? workspace.transcriptNavigation(sessionID, advancing: true)
         Task {
             guard !Task.isCancelled, navigation.isCurrent(in: workspace) else { return }
-            if let target { _ = await workspace.openSubagent(target, sourceMessage: message) }
+            if let fork = self.originalForkID {
+                if let target { _ = await workspace.openOriginalSubagent(target, from: fork, sourceMessage: message) }
+                else { _ = await workspace.revealMessage(sessionID: fork, messageID: message, origin: navigation.reader) }
+            } else if let target { _ = await workspace.openSubagent(target, sourceMessage: message) }
             else { _ = await workspace.revealMessage(sessionID: sessionID, messageID: message) }
         }
     }
@@ -703,7 +708,9 @@ import AppKit
         let navigation = navigation ?? workspace.transcriptNavigation(link.childSessionID, advancing: true)
         Task {
             guard !Task.isCancelled, navigation.isCurrent(in: workspace) else { return }
-            await workspace.openSubagentParent(link, origin: navigation.reader)
+            if let fork = self.originalForkID {
+                _ = await workspace.revealMessage(sessionID: fork, messageID: link.call.assistantMessageID, origin: navigation.reader)
+            } else { await workspace.openSubagentParent(link, origin: navigation.reader) }
         }
     }
     /// The app's main window: the one that is not an Inspector and can be main.

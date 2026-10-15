@@ -88,6 +88,11 @@ import Combine
     override func cornerRadius(for size: CGSize) -> CGFloat { PiRadius.sm }
     override func layout() { super.layout(); stop?.frame = CGRect(x: max(0, bounds.width - 32), y: (bounds.height - 24) / 2, width: 24, height: 24) }
     override func drawContent(in rect: CGRect) {
+        for level in 0..<depth {
+            let x = 30 + CGFloat(level) * 14
+            NSColor.piInkTertiary.withAlphaComponent(0.22).setFill()
+            NSRect(x: x, y: 0, width: 1 / piScale, height: rect.height).fill()
+        }
         let inset = titleInset
         let width = max(0, rect.width - inset - (stop == nil ? 10 : 36))
         if let symbol = leadingSymbol ?? (current ? "checkmark" : nil) {
@@ -170,6 +175,7 @@ import Combine
         }
         if !value.sides.isEmpty || value.canAddSide { rows.append(heading("Sides")) }
         var reachedMainAgents = false
+        var inheritedGroups = Set<String>()
         for entry in value.rows {
             switch entry.content {
             case .side(let side):
@@ -184,7 +190,7 @@ import Combine
                     reachedMainAgents = true; newSide(); rows.append(heading("Sub-agents"))
                 }
                 let ownerTitle = model.record(ownerID)?.title ?? "Unavailable parent"
-                let detail = [member.statusLabel, member.model, member.effort, member.spend.map(CostLimit.dollars)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                let detail = [ownerID == value.ownerID ? nil : "in " + ownerTitle, member.statusLabel, member.model, member.effort, member.spend.map(CostLimit.dollars)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
                 let row = row(member.label, detail: detail, id: "open-agent-" + member.chat.id,
                     label: "Open " + member.chat.displayTitle + " in " + ownerTitle + ", " + detail, current: member.chat.id == sessionID, depth: entry.depth) { [weak model, close] in
                     close(); Task { await model?.openSubagentTab(member.chat.id) }
@@ -196,6 +202,17 @@ import Combine
                     row.stop = stop; row.addSubview(stop); controls.append(stop)
                 }
                 rows.append(row)
+            case .inherited(let original, let availability):
+                if inheritedGroups.insert(original.forkID).inserted { rows.append(heading("From the original chat")) }
+                let detail = availability.reason ?? availability.title + " · Read-only"
+                let action = row("#\(original.number) · " + original.title, detail: detail,
+                    id: "open-original-" + original.forkID + "-" + original.target.sessionID,
+                    label: "Open original " + SubagentLabel.title(original.number, original.title) + ", " + detail,
+                    current: original.target.sessionID == sessionID, depth: entry.depth) { [weak model, close] in
+                    guard availability.reason == nil else { return }
+                    close(); Task { await model?.openOriginalSubagent(original.target, from: original.forkID) }
+                }
+                action.isEnabled = availability.reason == nil; rows.append(action)
             }
         }
         if !reachedMainAgents { newSide() }

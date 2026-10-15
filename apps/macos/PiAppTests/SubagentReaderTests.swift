@@ -48,6 +48,188 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
     @MainActor private func otherTab(_ model: WorkspaceModel) -> HostedTab {
         model.tabs.open(kind: HostedTab.kind, key: "other") { HostedTab(key: "other", title: "Other reader", symbol: "doc") }
     }
+    @MainActor func testVisibilityRecoveryDoesNotReplaceAnInMemoryPresentation() async throws {
+        let (model, gate) = try fixture()
+        let display = SessionDisplay(id: "chat-parent")
+        display.messages = [.init(id: "in-memory", role: "assistant", text: "Already displayed")]
+        display.draft = "Unsent draft"; display.draftReady = true
+        model.displays[display.id] = display; model.selected = display
+        let generation = display.presentationGeneration
+        model.page = .report; model.page = .chats
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertEqual(display.presentationGeneration, generation, "A visibility update has no abandoned initialization to restart")
+        let reads = await gate.reads
+        XCTAssertEqual(reads, 0, "Visibility recovery resumes an abandoned load, not an unrelated in-memory presentation")
+        XCTAssertEqual(display.messages.first?.id, "in-memory")
+        XCTAssertEqual(display.draft, "Unsent draft")
+    }
+    @MainActor func testRetiredInitialMainAndSideLoadsResumeWhenChatsReturns() async throws {
+        for side in [false, true] {
+            for returnBeforeCompletion in [false, true] {
+                let (model, gate) = try fixture()
+                let id = side ? "chat-side" : "chat-parent"
+                model.displays[id]?.historyState = .dormant
+                await gate.set("Retired", held: true, messageID: "retired")
+                let opening = Task { if side { await model.openFamilySide(id) } else { await model.select(id) } }
+                try await eventually("Initial history is pending") { await gate.reads == 1 }
+                model.page = .report
+                let fresh = ChildHistoryGate(); await fresh.set("Fresh content", messageID: "fresh")
+                model.historyWindowLoader = { _, _, _, _ in try await fresh.page() }
+                if returnBeforeCompletion {
+                    model.page = .chats
+                    try await eventually("A retired uncooperative read cannot delay fresh hydration") { model.displays[id]?.messages.first?.id == "fresh" }
+                }
+                await gate.release(); await opening.value
+                if !returnBeforeCompletion { model.page = .chats }
+                try await eventually("Returning to Chats hydrates the still-selected reader") {
+                    model.displays[id]?.messages.first?.id == "fresh"
+                }
+                XCTAssertTrue(model.displays[id]?.draftReady == true)
+                XCTAssertNotEqual(model.displays[id]?.historyState, .dormant)
+                XCTAssertEqual(model.selectedID, "chat-parent")
+            }
+        }
+    }
+    @MainActor func testSideHydrationSurvivesNoOpSelectionAndIndependentWindowActions() async throws {
+        for action in ["Side", "window"] {
+            let (model, gate) = try fixture()
+            model.tabs.showsWindows = false
+            let external = otherTab(model); let window = model.tabs.popOut(external)
+            let other = model.tabs.open(kind: HostedTab.kind, key: "external-other", in: window) {
+                HostedTab(key: "external-other", title: "Another", symbol: "doc")
+            }
+            await gate.set("Side content", held: true)
+            let opening = Task { await model.openFamilySide("chat-side") }
+            try await eventually("Side is reading") { await gate.reads == 1 }
+            if action == "Side" { model.tabs.showSide() } else { model.tabs.activate(external); model.tabs.close(other) }
+            await gate.release(); await opening.value
+            XCTAssertEqual(model.displays["chat-side"]?.messages.first?.text, "Side content", action)
+            XCTAssertNotEqual(model.displays["chat-side"]?.historyState, .dormant, action)
+        }
+    }
+    @MainActor func testRetiredChildInitialLoadRestartsWhenItsReaderIsVisibleAgain() async throws {
+        for popped in [false, true] {
+            let (model, gate) = try fixture()
+            model.tabs.showsWindows = false
+            await gate.set("Retired", held: true, messageID: "retired")
+            let opening = Task { await model.openSubagentTab("chat-child") }
+            try await eventually("Child initial read is pending") { await gate.reads == 1 }
+            let tab = try XCTUnwrap(model.subagentTab("chat-child"))
+            if popped { model.tabs.popOut(tab) }
+            let other = model.tabs.open(kind: HostedTab.kind, key: "replacement", in: tab.container) {
+                HostedTab(key: "replacement", title: "Replacement", symbol: "doc")
+            }
+            let fresh = ChildHistoryGate(); await fresh.set("Fresh child", messageID: "fresh")
+            model.historyWindowLoader = { _, _, _, _ in try await fresh.page() }
+            model.tabs.activate(tab)
+            let token = tab.navigation
+            model.tabs.activate(tab)
+            XCTAssertTrue(token.isCurrent, "Re-clicking a visible reader is a no-op")
+            await gate.release(); _ = await opening.value
+            try await eventually("Shown child hydrates under a fresh token") { model.displays[tab.key]?.messages.first?.id == "fresh" }
+            XCTAssertFalse(model.displays[tab.key]?.historyState == .dormant)
+            model.tabs.close(other)
+        }
+    }
+    @MainActor func testNoOpVersionSelectionKeepsItsPendingPage() async throws {
+        let (model, _) = try fixture(), tab = try await open("chat-child",in:model)
+        let gate = ReaderLookupGate(), display = try XCTUnwrap(model.displays[tab.key])
+        model.versionPageLoader = { _, _ in await gate.wait(); return ([.init(id:"old",role:"assistant",text:"Earlier")],[]) }
+        model.showVersion(sessionID:tab.key,latestID:"latest",index:1,count:2,ids:["old","latest"])
+        try await eventually("Version is reading") { await gate.reads == 1 }
+        let token = tab.navigation
+        model.showVersion(sessionID:tab.key,latestID:"latest",index:1,count:2,ids:["old","latest"])
+        XCTAssertTrue(token.isCurrent)
+        await gate.release(); await display.versionLoad?.value
+        XCTAssertEqual(display.versionView?.rows.first?.text,"Earlier")
+    }
+    @MainActor func testExternalChildRevealsDoNotRetireMainHydration() async throws {
+        let (model, _) = try fixture(), tab = try await open("chat-child",in:model)
+        model.tabs.showsWindows = false; model.tabs.popOut(tab)
+        let gate = ChildHistoryGate(); await gate.set("Fresh main",held:true)
+        let childPage = ChildHistoryGate()
+        model.historyWindowLoader = { id,_,_,_ in try await (id == "chat-parent" ? gate : childPage).page() }
+        model.displays["chat-parent"]?.historyState = .dormant
+        let opening = Task { await model.select("chat-parent") }
+        try await eventually("Main read is pending") { await gate.reads == 1 }
+        let revision = model.messageNavigationRevision
+        _ = await model.revealMessage(sessionID:tab.key,messageID:"saved-reply")
+        XCTAssertEqual(model.messageNavigationRevision,revision)
+        await gate.release(); await opening.value
+        XCTAssertEqual(model.selected?.messages.first?.text,"Fresh main")
+    }
+    @MainActor func testVisibleReadersRestartTheirRetiredFindQueryWithoutRevealingAnOldMatch() async throws {
+        for child in [false,true] {
+            let (model, _) = try fixture()
+            let tab = child ? try await open("chat-child",in:model) : nil
+            let display = try XCTUnwrap(child ? model.displays["chat-child"] : model.selected)
+            let pane = NativeTranscriptPane(frame:.init(x:0,y:0,width:620,height:500))
+            pane.showTranscript(model:model,session:display,state:"idle",canFork:false,canQuote:false,enabled:true)
+            pane.showFind(); defer { pane.closeFind(focusing:false) }
+            let gate = ReaderLookupGate(), history = model.history
+            model.conversationSearchLoader = { _, query, start in
+                if await gate.reads == 0 { await gate.wait() }
+                return try await history.searchPresented([.init(id:"needle",role:"assistant",text:"Needle")],query:query,start:start)
+            }
+            pane.find.setQuery("Needle")
+            try await eventually("Find is pending") { await gate.reads == 1 }
+            if let tab { _ = otherTab(model); model.tabs.activate(tab) }
+            else { model.page = .report; model.page = .chats }
+            await gate.release()
+            try await eventually("The retained query restarts under the visible reader's fresh intent") { !pane.find.searching && pane.find.matches.count == 1 }
+            XCTAssertFalse(pane.find.failed)
+            XCTAssertNotEqual(display.scrollAnchor?.id,"needle","Recovery must not replay an obsolete automatic reveal")
+        }
+    }
+    @MainActor func testRecoveryDefersToANewerRevealThatStillOwnsTheReader() async throws {
+        for route in ["transcript", "report", "conversation-search"] {
+            let (model, old) = try fixture(), fresh = ChildHistoryGate(), display = try XCTUnwrap(model.selected)
+            display.historyState = .dormant
+            await old.set("Old initial",held:true); await fresh.set("Wanted match",held:true,messageID:"target")
+            model.historyWindowLoader = { _,_,_,around in try await (around == "target" ? fresh : old).page() }
+            let opening = Task { await model.select(display.id) }
+            try await eventually("Initial read held") { await old.reads == 1 }
+            let reveal = Task {
+                switch route {
+                case "report": return await model.revealMessage(sessionID:display.id,messageID:"target")
+                case "conversation-search":
+                    try? await model.revealConversationHit(display.id, hit:.init(id:"target",position:1,preview:"Wanted match"))
+                    return display.scrollAnchor?.id == "target"
+                default: return await model.revealInTranscript(sessionID:display.id,messageID:"target")
+                }
+            }
+            try await eventually("New reveal held") { await fresh.reads == 1 }
+            await old.release(); await opening.value
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+            await fresh.release()
+            let landed = await reveal.value
+            XCTAssertTrue(landed,"Generic hydration cannot supersede a newer explicit destination: " + route)
+            XCTAssertEqual(display.scrollAnchor?.id,"target",route)
+            XCTAssertEqual(display.messages.first?.text,"Wanted match",route)
+        }
+    }
+    @MainActor func testNewMainIntentRestartsInitializationWithoutWaitingForRetiredRead() async throws {
+        let (model, old) = try fixture(), display = try XCTUnwrap(model.selected)
+        display.historyState = .dormant
+        display.messages = [.init(id: "target", role: "assistant", text: "Held rows")]
+        await old.set("Retired", held: true)
+        defer { Task { await old.release() } }
+        let opening = Task { await model.select(display.id) }
+        try await eventually("Initial read held") { await old.reads == 1 }
+        let fresh = ChildHistoryGate(); await fresh.set("Fresh target", messageID: "target")
+        model.historyWindowLoader = { _, _, _, _ in try await fresh.page() }
+        _ = await model.revealInTranscript(sessionID: display.id, messageID: "target")
+        try await eventually("Still-wanted initialization restarts while the old read remains suspended") {
+            display.draftReady && display.messages.first?.text == "Fresh target"
+        }
+        await old.release(); await opening.value
+        XCTAssertEqual(display.scrollAnchor?.id, "target")
+        XCTAssertNotEqual(display.historyState, .dormant)
+    }
     @MainActor func testFindKeepsPagingWhileItsAutomaticAndNextMatchesReadOtherPages() async throws {
         let (model, _) = try fixture()
         let tab = try await open("chat-child", in: model)
@@ -207,8 +389,12 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
                 }
             }
             try await eventually("\(operation) is reading") { operation == "version" ? await lookup.reads == 1 : await gate.reads == 1 }
-            model.page = .background; model.page = .chats
+            model.page = .background
+            let fresh = ChildHistoryGate(); await fresh.set("Keep this page", messageID:"reading")
+            model.historyWindowLoader = { _,_,_,_ in try await fresh.page() }
+            model.page = .chats
             await gate.release(); await lookup.release(); await task.value
+            if operation == "reload" { try await eventually("Reload recovers its held page") { display.messages.first?.id == "reading" && display.historyState != .loading } }
             XCTAssertEqual(display.messages.map(\.id), ["reading"], operation)
             XCTAssertEqual(display.scrollAnchor?.id, "reading", operation)
             XCTAssertFalse(display.versionView?.rows.contains { $0.id == "obsolete" } == true, operation)
@@ -248,6 +434,26 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(model.selectedID, "chat-parent"); XCTAssertEqual(model.focusedSessionID, "chat-side")
         XCTAssertEqual(model.displays["chat-side"]?.scrollAnchor?.id, "issuing")
         XCTAssertFalse(model.subagentTabIsShown(tab.key))
+    }
+    @MainActor func testSourceFromAPoppedChildRevealsItsAlreadyShownSide() async throws {
+        let (model, _) = try fixture()
+        model.chats[1].parentSessionID = "chat-side"; model.chats[1].delegation?.budgetOwnerSessionID = "chat-side"; model.chats[1].delegation?.call.parentSessionID = "chat-side"
+        model.chats[2].path = model.root.appendingPathComponent("side.jsonl").path
+        let tab = try await open("chat-child", in: model)
+        model.tabs.showsWindows = false; model.tabs.popOut(tab)
+        await model.openFamilySide("chat-side")
+        let side = try XCTUnwrap(model.displays["chat-side"])
+        side.messages = [.init(id: "issuing", role: "assistant", text: "Side's issuing call")]
+        side.scrollAnchor = .init(id: "reading", offset: 23, followsBottom: false)
+        let paneRevision = model.tabs.navigationRevision
+        model.agentCoordinationLoader = { _, _ in
+            AgentCoordination(entries: [.init(id: "delivery", childID: "chat-child", turn: 1, kind: "task", author: "parent",
+                sourceSessionID: "chat-side", sourceMessageID: "issuing", sourceToolCallID: "call", recipientID: "chat-child", disposition: "delivered")])
+        }
+        await model.openAgentSource(.init(childID: tab.key, turn: 1, eventID: "delivery"), from: tab.key)
+        XCTAssertEqual(model.tabs.navigationRevision, paneRevision, "The side was already shown")
+        XCTAssertEqual(side.scrollAnchor?.id, "issuing")
+        XCTAssertTrue(model.subagentTabIsShown(tab.key))
     }
     @MainActor func testInspectorParentSourceRetainsTheOriginatingReaderThroughItsVersionRead() async throws {
         let (model, _) = try fixture(), tab = try await open("chat-child", in: model)
@@ -788,12 +994,10 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         for _ in 0..<500 { if await gate.reads > 0 { break }; try await Task.sleep(for: .milliseconds(2)) }
         let display = try XCTUnwrap(model.displays["chat-side"])
         display.presentation.navigation?.cancel()
+        let fresh = ChildHistoryGate(); await fresh.set("Reopened saved side")
+        model.historyWindowLoader = { _, _, _, _ in try await fresh.page() }
         await gate.release(); await opening.value
-        XCTAssertEqual(display.historyState, .dormant)
-        XCTAssertNil(display.presentation.navigation)
-        await gate.set("Reopened saved side")
-        await model.openFamilySide("chat-side")
-        XCTAssertEqual(display.messages.first?.text, "Reopened saved side")
+        try await eventually("A canceled visible side resumes without reselecting") { display.messages.first?.text == "Reopened saved side" }
         XCTAssertFalse(display.historyState == .dormant)
     }
 

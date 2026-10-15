@@ -396,9 +396,11 @@ extension WorkspaceModel {
         let paneIntent = tabs.navigationRevision
         let task = Task { [weak self, weak view] in
             guard let self, let view else { return }
-            defer { view.finishHistoryPresentation(generation) }
+            defer { view.finishHistoryPresentation(generation); self.resumeVisibleReaders() }
             @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.tabs.navigationRevision == paneIntent && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentationGeneration == generation }
             do {
+                await self.readInheritedSubagents(child, current: current)
+                guard current() else { return }
                 let oldDraft = view.savedDraft
                 let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded && view.scrollAnchor == nil)
                 guard current() else { return }
@@ -419,7 +421,9 @@ extension WorkspaceModel {
                 guard current() else { return }
                 self.adoptInitialHistory(page, into: view)
                 if self.opened.contains(id) { self.refresh(id) }
-            } catch is CancellationError { }
+            } catch is CancellationError {
+                if current() { view.historyState = .failed("History reading was interrupted. Try loading it again.") }
+            }
             catch { if current() { view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false; view.notice = error.localizedDescription } }
         }
         view.presentation.navigation = task

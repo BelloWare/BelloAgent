@@ -34,8 +34,9 @@ struct SubagentTarget: Equatable, Sendable {
 }
 
 struct SubagentToolView: Equatable, Sendable {
-    static let historicalNotice = "Historical sub-agent. Open the source chat to view its children."
+    static let historicalNotice = "From the original chat"
     static func isControl(_ name: String) -> Bool { name == "subagent" || ["subagent_start", "subagent_send", "subagent_wait", "subagent_status", "subagent_stop", "subagent_report"].contains(name) }
+    let originalAvailability: OriginalSubagentAvailability?
     let operation: String
     let number: Int?
     let effort: String?
@@ -59,6 +60,7 @@ struct SubagentToolView: Equatable, Sendable {
     let status: SubagentStatus
     let truncated: Bool
     init(_ tool: ToolView) {
+        originalAvailability = tool.originalSubagentAvailability
         operation = tool.name
         number = tool.subagentNumber
         effort = tool.subagentEffort

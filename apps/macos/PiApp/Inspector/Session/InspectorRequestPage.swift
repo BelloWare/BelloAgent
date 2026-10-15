@@ -51,7 +51,7 @@ import AppKit
         let position = inspector.index.position(of: row.id)
         let childLinks = inspector.groups.filter { $0.summary.link.parentAttemptID == row.id }.map(\.id).joined(separator: ",")
         let agentLinks = inspector.coordination(for: row)
-        let headerIdentity = [String(describing: agentLinks), childLinks, position.map { "\($0.index):\($0.count)" } ?? "", inspector.summaryLabel(row.id) ?? "", inspector.index.kind(of: row.id), inspector.workspace?.canForkFromReply(request.sessionID) == true ? "fork" : ""].joined(separator: "|")
+        let headerIdentity = [String(describing: agentLinks), childLinks, position.map { "\($0.index):\($0.count)" } ?? "", inspector.summaryLabel(row.id) ?? "", inspector.index.kind(of: row.id), inspector.originalForkID == nil && inspector.workspace?.canForkFromReply(request.sessionID) == true ? "fork" : ""].joined(separator: "|")
         if forceHeader || shownRow != row || shownMetadata != request.metadata || shownHeaderIdentity != headerIdentity {
             header?.removeFromSuperview(); header = buildHeader(row); addSubview(header!)
             shownRow = row; shownMetadata = request.metadata; shownHeaderIdentity = headerIdentity; forceHeader = false
@@ -104,7 +104,7 @@ import AppKit
         next.setAccessibilityIdentifier("inspector-next-request")
         next.isEnabled = inspector.index.adjacent(to: row.id, step: 1) != nil
         var actions: [NSView] = [previous, next, InspectorShowInChat { [weak inspector] in inspector?.showInChat() }]
-        if row.purpose == "turn", row.delegationID == nil, !row.running, inspector.workspace?.canForkFromReply(request.sessionID) == true { actions.append(InspectorForkFromHere { [weak inspector] in inspector?.forkFromRequest(row.id) }) }
+        if row.purpose == "turn", row.delegationID == nil, !row.running, inspector.originalForkID == nil && inspector.workspace?.canForkFromReply(request.sessionID) == true { actions.append(InspectorForkFromHere { [weak inspector] in inspector?.forkFromRequest(row.id) }) }
         let heading = InspectorPageHeader(title, subtitle: context.joined(separator: " · "), badges: badges, actions: actions)
         var metrics: [ShellItem] = [.view(InspectorFigureStrip(figures: row.figures), .fill)]
         if row.source != .record {

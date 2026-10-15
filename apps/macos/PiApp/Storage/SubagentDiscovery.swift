@@ -45,13 +45,13 @@ extension HistoryReader {
         if rows.count > 2 { _ = try subagentHeader(path: path, directory: directory, expected: expected) }
     }
     /// The owning journal is the authority even before a child file exists.
-    func subagentPlans(path: URL, ownerID: String, childID: String? = nil) throws -> [DiscoveredSubagent] {
+    func subagentPlans(path: URL, ownerID: String, childID: String? = nil, includeInherited: Bool = false) throws -> [DiscoveredSubagent] {
         var found: [DiscoveredSubagent] = [], starts: [String: SubagentLink] = [:]
         try subagentRecords(path) { row, line in
             if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == ownerID, row["version"]?.number == 3 else { throw StoreError.invalidRecord } }
             if let data = Self.subagentPlan(row),
                let raw = data["origin"], let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)),
-               origin.link.valid, origin.link.budgetOwnerSessionID == ownerID, UUID(uuidString: origin.link.childSessionID) != nil {
+               origin.link.valid, UUID(uuidString: origin.link.childSessionID) != nil {
                 let id = origin.link.childSessionID
                 if let previous = starts[id] {
                     guard previous == origin.link else { throw StoreError.invalidRecord }
@@ -60,7 +60,7 @@ extension HistoryReader {
                 starts[id] = origin.link
                 // Count every unique start, even when filtering or when its
                 // child file is missing. Follow-ups never contain a new plan.
-                guard childID == nil || childID == id else { return true }
+                guard (includeInherited || origin.link.budgetOwnerSessionID == ownerID), childID == nil || childID == id else { return true }
                 let child = path.deletingLastPathComponent().appendingPathComponent(origin.link.childSessionID + ".jsonl")
                 guard child.resolvingSymlinksInPath().deletingLastPathComponent() == path.resolvingSymlinksInPath().deletingLastPathComponent() else { throw StoreError.invalidRecord }
                 found.append(DiscoveredSubagent(header: origin, path: child.path, task: data["task"]?.string ?? "", status: .interrupted, number: starts.count))
@@ -110,10 +110,11 @@ extension HistoryReader {
                     if line == 1 { guard row["type"]?.string == "session", row["id"]?.string == owner, row["version"]?.number == 3 else { throw StoreError.invalidRecord } }
                     if let data = Self.subagentPlan(row),
                        let raw = data["origin"], let origin = try? JSONDecoder().decode(SubagentHeader.self, from: JSONEncoder().encode(raw)),
-                       origin.link.valid, origin.link.budgetOwnerSessionID == owner {
+                       origin.link.valid {
                         let id = origin.link.childSessionID
-                        if let previous = plans[owner]?[id], previous != .object(data) { throw StoreError.invalidRecord }
                         if numbers[owner]?[id] == nil { numbers[owner, default: [:]][id] = (numbers[owner]?.count ?? 0) + 1 }
+                        guard origin.link.budgetOwnerSessionID == owner else { return true }
+                        if let previous = plans[owner]?[id], previous != .object(data) { throw StoreError.invalidRecord }
                         plans[owner, default: [:]][id] = .object(data)
                     }
                     return true

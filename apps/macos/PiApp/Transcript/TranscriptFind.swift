@@ -11,6 +11,8 @@ struct TranscriptFindCommand: Equatable {
 @MainActor protocol TranscriptFindHost: AnyObject {
     /// Whether the find bar is open, in a window.
     var findIsOpen: Bool { get }
+    func retireFindNavigation()
+    func resumeFindNavigation()
 }
 
 /// ⌘F in an open chat: a field over the top right of the transcript, the
@@ -104,6 +106,7 @@ struct TranscriptFindCommand: Equatable {
     private var task: Task<Void, Never>?
     private var navigation: Task<Void, Never>?
     private var serial = 0
+    private var needsResume = false
     /// The conversation's search: hits after `start`, with their counts.
     var search: ((String, String, Int) async throws -> ContentSearch)?
     /// Brings a message into view in the transcript.
@@ -111,8 +114,17 @@ struct TranscriptFindCommand: Equatable {
 
     init(pane: NativeTranscriptPane) { self.pane = pane }
 
-    func setQuery(_ text: String) {
-        guard text != query else { return }
+    func retireReaderNavigation() {
+        if searching { task?.cancel(); task = nil; searching = false; needsResume = true }
+        stopNavigation()
+    }
+    func resumeReaderNavigation() {
+        guard needsResume else { return }
+        setQuery(query, restarting: true)
+    }
+    func setQuery(_ text: String, restarting: Bool = false) {
+        guard text != query || restarting else { return }
+        needsResume = false
         query = text
         task?.cancel(); stopNavigation(); matches = []; current = nil; failed = false
         guard !text.isEmpty, let session = pane?.session, let search else { searching = false; publish(focus: false); return }
@@ -135,13 +147,13 @@ struct TranscriptFindCommand: Equatable {
                     for occurrence in 0..<max(1, hit.count ?? 1) { self.matches.append(Match(messageID: hit.id, occurrence: occurrence)) }
                 }
                 guard let next = found.next else { break }
-                if self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: true) }
+                if self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: !restarting) }
                 else { self.publish(focus: false) }
                 start = next
             }
             guard let self, !Task.isCancelled, self.query == text else { return }
             self.searching = false
-            if self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: true) }
+            if self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: !restarting) }
             else { self.publish(focus: false) }
         }
     }
@@ -156,6 +168,7 @@ struct TranscriptFindCommand: Equatable {
         publish(focus: true)
     }
     func clear() {
+        needsResume = false
         task?.cancel(); task = nil; stopNavigation(); query = ""; matches = []; current = nil; searching = false; failed = false
         pane?.document.highlights = TranscriptHighlights()
     }
@@ -222,4 +235,9 @@ struct TranscriptFindCommand: Equatable {
         }
         pane.document.highlights = highlights
     }
+}
+
+extension NativeTranscriptPane {
+    func retireFindNavigation() { find.retireReaderNavigation() }
+    func resumeFindNavigation() { if findBar != nil { find.resumeReaderNavigation() } }
 }

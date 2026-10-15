@@ -143,7 +143,7 @@ final class WorkspaceRootTests: XCTestCase, SerialTestLane {
         model.chats = [parent, side]
         let picker = AgentFamilyPopoverView(model: model, sessionID: "P", close: {}, ownerWindow: nil)
         let button = try XCTUnwrap(picker.subviewsOfType(FamilyPickerRow.self).first { $0.accessibilityIdentifier() == "open-side-S" })
-        XCTAssertEqual(button.accessibilityLabel(), "Open side Idempotency keys for refunds, Saved")
+        XCTAssertEqual(button.accessibilityLabel(), "Open side Idempotency keys for refunds in Parent, Saved")
     }
 
     /// A sheet asked for follows the root out of its window and back: it goes

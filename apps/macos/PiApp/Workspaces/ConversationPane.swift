@@ -86,6 +86,7 @@ struct SideActions {
         var sideBoundaryDetail: String
         var sideLoading: Bool
         /// The window's disabled state, which the bridged SwiftUI roots take too.
+        var original: String?
         var enabled: Bool
     }
 
@@ -220,7 +221,7 @@ struct SideActions {
         if current.isSubagent {
             let parent = current.delegation.flatMap { model.record($0.budgetOwnerSessionID) }
             kind = .subagent(status: (session.heldAgentChildren.contains(session.id) ? "Stopped by you" : session.subagentStatus?.label ?? (session.busy ? "Running" : "Saved sub-agent")) + (session.subagentTurn.map { " · turn \($0)" } ?? ""),
-                             busy: session.subagentStatus.map { !$0.terminal } ?? session.busy, parent: parent?.title ?? "Parent unavailable")
+                             busy: !model.isOriginalSubagentReader(session.id) && (session.subagentStatus.map { !$0.terminal } ?? session.busy), parent: parent?.title ?? "Parent unavailable")
         } else if !projectAvailable { kind = .projectUnavailable(retry: !model.configurationLoaded) }
         else if current.isBackgroundTask {
             kind = .backgroundTask(busy: session.busy, source: current.sourceSessionID.flatMap { model.record($0) != nil ? $0 : nil })
@@ -239,7 +240,7 @@ struct SideActions {
                      canQuote: model.canQuoteReply(session.id),
                      contextWindow: current.contextWindow ?? profile?.contextWindow, outputReserve: current.maxOutputTokens ?? profile?.maxOutputTokens,
                      sideBoundary: side.map { Self.boundary($0, model: model) } ?? "", sideBoundaryDetail: side.map { Self.boundaryDetail($0) } ?? "",
-                     sideLoading: session.loading, enabled: inheritedEnabled)
+                     sideLoading: session.loading, original: model.subagentTab(session.id)?.originalLabel, enabled: inheritedEnabled)
     }
 
     /// Reads the chat and the workspace again and changes only what differs.
@@ -274,7 +275,7 @@ struct SideActions {
         }
         if let link = chat.delegation {
             if subagentHeader.superview !== self { addSubview(subagentHeader) }
-            subagentHeader.update(chat: chat, parent: model.record(link.budgetOwnerSessionID), effort: model.subagentEffortLabel(chat.id), back: { [weak model] in
+            subagentHeader.update(chat: chat, parent: model.record(link.budgetOwnerSessionID), effort: model.subagentEffortLabel(chat.id), original: model.subagentTab(chat.id)?.originalLabel, back: { [weak model] in
                 Task { await model?.backToSubagentParent(chat.id) }
             })
         } else { subagentHeader.removeFromSuperview() }

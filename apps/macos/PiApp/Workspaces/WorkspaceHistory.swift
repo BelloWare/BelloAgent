@@ -27,7 +27,7 @@ extension WorkspaceModel {
             let page = try await historyWindowLoader(item.id, cursor, newer, start ? HistoryWindowEdge.start : position.map(HistoryWindowEdge.position) ?? around)
             try checkNavigation(); return page
         }
-        if opened.contains(item.id), let host = hosts[item.workspaceID] {
+        if !isOriginalSubagentReader(item.id), opened.contains(item.id), let host = hosts[item.workspaceID] {
             var params: [String: WireValue] = ["version": .number(2), "direction": .string(newer ? "newer" : "older")]
             // Source handoff uses a stable entry id. Numeric file positions are
             // never passed to a helper. The replacement source validates it.
@@ -193,7 +193,7 @@ extension WorkspaceModel {
         view.historyState = .loading; view.refreshingCachedRows = false; view.historyProgress = nil; view.browsingHistory = true; view.publishTranscript()
         view.presentation.navigation = Task { [weak self, weak view] in
             guard let self, let view else { return }
-            defer { view.finishHistoryPresentation(generation) }
+            defer { view.finishHistoryPresentation(generation); self.resumeVisibleReaders() }
             do {
                 var page = try await self.readConversationWindow(item, cursor: nil, around: around)
                 guard !Task.isCancelled, navigation.isCurrent(in: self), self.displays[id] === view, view.presentationGeneration == generation else { return }

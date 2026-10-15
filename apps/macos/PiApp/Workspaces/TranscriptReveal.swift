@@ -137,6 +137,7 @@ extension WorkspaceModel {
                 }
             }
             defer {
+                self.resumeVisibleReaders()
                 if view.jumpRead == serial {
                     view.jumpRead = nil; view.jumpTask = nil
                     // Where the reader went while this page was read.
@@ -284,6 +285,7 @@ extension WorkspaceModel {
         view.presentation.olderTask?.cancel(); view.presentation.newerTask?.cancel()
         var landed = false
         defer {
+            resumeVisibleReaders()
             if view.revealRead == serial {
                 view.revealRead = nil
                 // A failed read must not leave a mark that ordinary paging

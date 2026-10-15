@@ -28,6 +28,9 @@ reads “model default”, and models without effort controls omit it. The accep
 model grant supplies legacy values; later follow-ups update current surfaces
 while older send receipts retain their own turn's effort. This is display metadata
 derived from the policy stream's saved fields, without new journal writes.
+Original sub-agents reached from a fork remain read-only through tab restore,
+Inspector navigation and source links. Their copied starts reserve numbers before
+the fork’s own agents, without granting steering or charging the fork.
 Unsent side drafts remain memory-only. No steering, model-visible or journal
 contract changes accompany this UI amendment.
 
