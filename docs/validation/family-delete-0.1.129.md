@@ -1,0 +1,132 @@
+# Family deletion and missing-project deletion (0.1.129)
+
+Branch `dev/a129-family-delete`, based on `dev/next` 9d4123f6 (released 0.1.128).
+
+## Owner decisions implemented (2026-10-16)
+
+1. **Deleting a main chat deletes its whole family.** One Delete moves the chat, its saved sides at every depth and all of their managed sub-agents to Trash together. The confirmation lists the sides that go with it. Deleting a single side deletes that side and its descendants. Spend from a deleted side stays counted in the main chat ("Keep it counted").
+2. **A chat whose project is missing can be deleted.** The restore-first requirement is gone. Deletion removes only the app's own chat records and files. Anything that needed the project folder is skipped and named.
+
+## Behavior
+
+- **Members.** `MetadataStore.savedSideDescendants(of:workspaceID:)` walks the complete durable chat graph, not just the 10,000-chat window. It is joined with any loaded record that the store has not caught up with yet. Membership follows `persistedBudgetParentID` (a `side_<id>.jsonl` journal plus `parentSessionID`). Forks are only provenance and are never included. Sub-agents are collected per member from the journal plans and the metadata, after the runtimes have detached, as before.
+- **One durable intent.** Every member is written to `session-delete` / `session-deleted` under the root's owner ID in one transaction. Side members carry `sideDepth`, which is the only thing that lets a non-owner member use a `side_<id>.jsonl` name. A side ID must be one plain name. Managed children keep their strict UUID rule.
+  - Files are removed root first, then sides parents-first, then sub-agents.
+  - Metadata is removed in the reverse order, so the root's retry entry stays until everything else is gone.
+  - Relaunch marks side members as deleting as well as the owner, and the tombstones block opens and discovery. M4 below shows that the tombstone alone already blocks reopening.
+- **Running work.** As before, deletion refuses with the busy member's name. Nothing is stopped implicitly.
+- **Ledger repair.**
+  - A **main** chat has no surviving ancestor, so no repair runs. With no ready helper, none is started and no profile or credential is needed.
+  - With a ready helper, idle dependents are released and `session.forget` is sent with `descendantsDeleted`. This means no owner charge is mirrored into the deleted subtree, so damaged evidence in a side that is going to Trash can no longer block the deletion.
+  - A **side** root still takes the existing repair barrier: the helper repairs every surviving ancestor from the whole deleted subtree before tombstones and Trash. Members are then forgotten with `ancestorsRepaired`, so their ancestors are not written again.
+- **Missing project.** `deletionProjectUnavailable` covers both a removed project and a missing root folder. The confirmation's notes say that only Bello's own copy is removed and nothing in the project folder is touched. For a side whose helper is not ready, the notes also include "Skipped: checking for costs from interrupted requests…". If the state changes after the confirmation, any skip it did not announce is reported once deletion finishes.
+- **Earlier orphans.** Sides orphaned by 0.1.128 deletions are left alone: their parent no longer exists, so they belong to no family. Deleting an orphan deletes it and its own descendants, with no repair.
+- **Older intents.** Intents written by 0.1.128 (sides survive) resume with their original manifest and the original downward-mirror repair. No user data is deleted retroactively.
+- **Confirmation UI.** `ChatQuestion.list` sends the question to the new `ChatQuestionSheet`, which is built from Pi components: a scrolling body, at most 200 rows plus "and N more", depth indentation and warning-colored notes. Return and Escape choose Cancel for a destructive question. With no window available, it falls back to an alert whose list is limited to 20 rows.
+
+## Changed files
+
+- App
+  - `Workspaces/WorkspaceSubagentDeletion.swift`: member discovery, preview, repair decision, ordering.
+  - `Workspaces/WorkspaceChatLifecycle.swift`: confirmation and result.
+  - `Storage/MetadataStore.swift`: graph query and the intent rule for side members.
+  - `Storage/SessionDeletionRecord.swift`: `sideDepth`.
+  - `Design/PiQuestion.swift`, `Design/ChatQuestionSheet.swift`.
+- Helper
+  - `HostService.swift`: the `session.forget` flags. No change to SessionCost, SessionRequestAdmission, AgentSteeringCoordinator, SessionSide or SessionRun.
+- Docs
+  - `docs/design/subagents.md` §5.6 and §9.5.
+
+## Tests
+
+New tests:
+
+- Helper (`SideBudgetCrashMatrixTests`)
+  - `testFamilyDeletionSkipsMirrorsIntoDeletedDescendants`, cold and loaded.
+  - `testMemberForgetAfterTheRootRepairLeavesAncestorsUntouched`.
+- App (`FamilyDeletionTests`)
+  - Whole family, cold or warm, listed or unlisted, including a side-owned sub-agent.
+  - The confirmation's list and wording.
+  - A long list with a scrolling sheet.
+  - Side deletion keeps 0.9 counted in main.
+  - Interrupted deletion at six steps, relaunch marking and resume.
+  - A missing or removed project, for both a main chat and a side. A sentinel file in the project folder stays untouched.
+  - An earlier orphan survives until it is deleted itself.
+- App (`SideBudgetIntegrationTests`)
+  - Deleting main with no ready helper (absent, stopped or stopping) starts none.
+  - Damaged side evidence cannot block a whole-family deletion, cold or with a ready helper.
+  - A side's helper-start failure stays retryable.
+- Gallery: `ChatDeletionGalleryTests` (`PI_APP_CHAT_DELETION_GALLERY`).
+
+Tests updated because the old behavior they asserted is gone:
+
+- Sides surviving owner deletion: `testDeleteActionAllowsAnIdleVisibleSide…`, `testDeletingAnOwnerDetachesAndDeletesItsLoadedSavedSides`, `testPersistedUnlistedSideAncestry…`, `testRestoreKeepsUnlistedAncestors…`.
+- Main deletion repairing surviving sides with a cold helper: replaced by the tests above.
+
+### Failing before the fix
+
+- The helper tests were run against the HEAD `HostService.swift` with the new tests in place, and all 4 assertions failed:
+  - The cold forget threw `subagent_recovery`.
+  - The loaded forget threw `accounting_damaged`.
+  - The member forget rewrote main's journal (2,353 vs 520 bytes).
+- The pre-fix app does not have the new API the app tests call, so its old behavior was shown in two ways:
+  - The first run of the updated old-semantics tests.
+  - The mutations below.
+
+### Mutation checks
+
+Run against `FamilyDeletionTests` and `SideBudgetIntegrationTests`:
+
+| Mutation | Result |
+| --- | --- |
+| M1: side members not added | 9 tests failed (whole family, side subtree, interruption, missing project, helper start, damaged evidence, no helper, unlisted, restore) |
+| M2: missing project throws instead of skipping | `testMissingOrRemovedProjectDeletesOnlyTheChatsOwnFiles` failed |
+| M3: main deletion always starts the helper | missing-project and no-ready-helper tests failed |
+| M4: relaunch does not mark side members | survived: the per-side tombstone blocks opens on its own. The in-memory mark is kept as defense in depth (blocks discovery and ancestor retention before the first store read) |
+| M5: `descendantsDeleted` not sent | `testDamagedSideEvidenceCannotBlockDeletingTheWholeFamily` (ready helper) failed |
+
+### Focused runs
+
+All with zero failures:
+
+- `FamilyDeletionTests` + `SideBudgetIntegrationTests`: 25.
+- `SubagentCostTests`: 11.
+- 10 affected parallel classes plus `BudgetOwnerUnloadTests` and `PiQuestionSheetTests`, run with 4 workers: 142 passed. The one failure there was the obsolete survivor assertion, since updated.
+- Serial-lane classes run alone: `ConversationPaneTests/testDeletingAChatAsksFirst`, `SubagentReaderTests`, `CaptureDrainTests`: 61.
+
+### Gallery
+
+The scenes are generated titles only: few sides, 240 sides, a missing project with a skip note, and no sides. Each is rendered light and dark, at 1240 and 340 wide. The images were checked by eye: buttons visible, long titles cut at the end, nested rows indented, notes legible in both themes.
+
+### Full gate
+
+See [Full gate result](#full-gate-result).
+
+## Needs owner decision
+
+- **Untrusted project.** A side in an untrusted project still cannot be deleted while its helper is not running, because the ancestor repair needs a trusted helper and the existing trust error is shown. Main chats are unaffected. The conservative choice keeps that behavior. The alternative is to skip the repair and name it, as for a missing folder.
+- **Downgrade.** An older app that finds an interrupted 0.1.129 family intent cannot finish it, because its journal-name rule rejects `side_` members. It reports the incomplete deletion and keeps the intent until this version or a later one runs.
+- **Damaged intermediate record.** A side below an unreadable intermediate side's metadata cannot be proven part of the family. It is left in place and becomes an independent chat after deletion, which is the 0.1.128 orphan behavior. It is never deleted on a guess.
+- **Capture projection rows.** Capture-archive `side_budgets` projection rows for deleted sides stay, as they did for side deletion in 0.1.128. Their captures are cleared, so no total is affected.
+- **Button label.** The confirmation's action stays "Delete Chat" for sides too.
+
+## Full gate result
+
+`PI_BUILD_ROOT=… scripts/verify-release.sh` was run on 86399a50 under the shared lock (2026-10-17, 59 min 35 s).
+
+| Suite | Result |
+| --- | --- |
+| Native serial lane | 881 executed, 43 skipped, 1 failure |
+| Native parallel lane (8 clones) | 2,637 passed, 0 failed, 38 skipped |
+| Helper cost (alone) | 5/5 |
+| Helper | 963 executed, 7 skipped, 0 failures |
+| Wire | 36 OK |
+| Concurrent | 4 OK |
+| Acceptance | 3 OK |
+| Python | 86 OK |
+| Screenshot gallery (alongside the helper checks) | 3 executed, 11 failures in `testRenderRedesignGallery` |
+
+Neither failure involves deletion code:
+
+- **Serial-lane failure.** `SubagentPerformanceTests.testFiftyKilobyteMarkdownResultInALongChatKeepsTheMainThreadResponsive` measured a 101.7 ms gap against its 100 ms bound. This is a timing bound in transcript rendering, which this branch does not change. The class passed 2/2 when run alone on the same build.
+- **Gallery failures.** All 11 were file-viewer waits ("folder menu is visible", "preview to load", "long-path fixture is read"), which this branch does not change. Rerun alone under the lock on the same build, `UIScreenshotTests` passed 3/3 with 0 failures and 230 screenshots.

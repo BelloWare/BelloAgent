@@ -2,6 +2,10 @@
 
 **Released 2026-10-16:** 0.1.128 (build 132, tag `v0.1.128`) is the latest release; record `docs/validation/Bello-Agent-0.1.128-2026-10-16.md`.
 
+## 0.1.129
+
+- [x] Deleting a chat deletes its whole family (`dev/a129-family-delete`, owner decisions 2026-10-16): the chat, its saved sides at every depth (including unlisted ones) and their sub-agents go to Trash under one durable intent, listed by name on a Pi confirmation sheet. Deleting a side deletes its descendants and keeps its spend counted in main. A missing or removed project no longer blocks deletion; only the app's own chat data is removed and a skipped side-cost repair is named. Earlier orphan sides are untouched. [Validation](docs/validation/family-delete-0.1.129.md).
+
 ## 0.1.128
 
 - [x] Release-gate repairs: side wire coverage asserts separate physical spend and shared main limits; sidebar press/cut-out fixtures use indented topic chats; rendered Find waits for expanding row geometry; child shortcuts retain command ownership; large agent results reuse completed Markdown segments and cached message-to-row lookups. [Validation](docs/validation/gate-fix-0.1.128.md).
