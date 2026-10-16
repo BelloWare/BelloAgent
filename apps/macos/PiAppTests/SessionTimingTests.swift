@@ -990,8 +990,19 @@ final class SessionTimingTests: XCTestCase {
         }
     }
 
+    /// What the window server shows once it has settled: two readings in a
+    /// row that agree. Its image can lag the app's committed frame under the
+    /// parallel lane's load; one reading there still showed the previous
+    /// fixture's "latest 100 tok/s" after the app had cleared it.
     @MainActor private func renderedText(_ window: NSWindow, filename: String) async throws -> String {
-        try await Self.recognizedText(in: window, filename: filename)
+        var previous = try await Self.recognizedText(in: window, filename: filename)
+        for _ in 0..<10 {
+            let next = try await Self.recognizedText(in: window, filename: filename)
+            if next == previous { return next }
+            print("Sidebar metrics capture still settling: \(previous) -> \(next)")
+            previous = next
+        }
+        return previous
     }
     /// The words a window shows, read off its pixels: what the reader sees,
     /// lowercased. `PI_APP_USAGE_CAPTURE_ROOT` keeps the capture as evidence.

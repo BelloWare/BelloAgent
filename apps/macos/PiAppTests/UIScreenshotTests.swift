@@ -1956,7 +1956,14 @@ final class UIScreenshotTests: XCTestCase {
     @MainActor private func until(_ what: String, seconds: Double = 30, _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(seconds)
         while !condition() {
-            guard Date() < deadline else { return XCTFail("Timed out waiting for " + what) }
+            // The app's focus is shared with every other process on the machine: say what it was.
+            guard Date() < deadline else {
+                // The scenes need the app frontmost. Another process taking
+                // the focus (in 0.1.129, a probe that brought Finder forward
+                // during a gate) made eleven file-viewer waits fail in a row.
+                return XCTFail("Timed out waiting for " + what + " (app active: \(NSApp.isActive), key window: \(NSApp.keyWindow.map { String(describing: type(of: $0)) } ?? "none"), " +
+                               "first responder: \(NSApp.keyWindow?.firstResponder.map { String(describing: type(of: $0)) } ?? "none"), frontmost app: \(NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "none"))")
+            }
             try await settle(0.1)
         }
     }
