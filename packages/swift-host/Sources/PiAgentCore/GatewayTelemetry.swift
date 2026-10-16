@@ -16,7 +16,7 @@ struct GatewayTelemetry: Sendable {
     init(profile: Profile) { api = profile.api; cacheHeader = profile.raw["routing"]["cacheHeader"].text?.lowercased() }
     var headers: Set<String> { Set(["x-litellm-response-cost", "x-litellm-call-id", "x-litellm-version", "x-litellm-response-cost-margin-percent"] + Array(Self.componentHeaders.values) + (cacheHeader.map { [$0] } ?? [])) }
     mutating func head(_ headers: [String: String], excluding credential: (String) -> Bool) {
-        streaming = !(headers["content-type"]?.lowercased().contains("application/json") ?? false)
+        streaming = !ProviderClient.isJSONMediaType(headers["content-type"])
         if let text = headers["x-litellm-response-cost"] {
             // Keep a bounded numeric observation for Inspector, but do not count
             // streaming header placeholders as a completed zero-cost request.
