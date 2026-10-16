@@ -104,7 +104,7 @@ enum PiSessionState {
         case "tool": return "Working"
         case "stopping": return "Stopping"
         case "compacting": return "Compacting"
-        case "paused": return "Paused"
+        case "paused": return costLimited ? "Paused · cost limit" : "Paused"
         case "interrupted": return "Interrupted"
         case "error", "failed": return costLimited ? "Stopped · cost limit" : "Failed"
         case "idle": return "Ready"

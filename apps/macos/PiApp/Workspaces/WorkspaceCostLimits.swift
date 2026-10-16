@@ -13,6 +13,9 @@ import Combine
     /// The child's durable ledger revision, shared by live native events,
     /// status and cold list reads. Progress clocks never supersede it.
     var childLedgerRevision: Int?
+    /// The helper's `cost.paused`: work here waits for the family's Resume.
+    /// Known for owners without a transcript display too.
+    var paused = false
     init(_ reading: SessionCostReading) { self.reading = reading }
 }
 
@@ -283,6 +286,7 @@ extension WorkspaceModel {
         if let summary = subagentSummaries[id], let cursor = SubagentCostCursor(summary),
            state.childCostCursor.map({ cursor.follows($0) }) ?? true { state.childCostCursor = cursor }
         let previous = state.reading
+        state.paused = cost["paused"]?.bool ?? false
         var reading = costReading(for:id)
         reading.spentUSD = cost["spentUSD"]?.number
         reading.reportedRequests = cost["reportedRequests"]?.nonnegativeInteger ?? 0
@@ -332,6 +336,12 @@ extension WorkspaceModel {
             CostLimitPopover.shared.toggle(model: self, footer: view.footer, sessionID: owner.id, anchor: anchor)
         case .continueRun: continueAfterCostLimit(sessionID)
         }
+    }
+    /// Whether the chat's work waits at its family's cost limit, as its
+    /// display or (for an owner without one) its budget reading last said.
+    func isCostPaused(_ id: String) -> Bool {
+        if let view = displays[id], view.runStateKnown { return view.costPaused }
+        return budgetStates[id]?.paused ?? false
     }
     /// Continues a chat stopped at its limit: the stopped turn is sent again
     /// from where it stopped, with the chat's current choices, and queued

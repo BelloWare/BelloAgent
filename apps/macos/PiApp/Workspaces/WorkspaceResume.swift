@@ -28,55 +28,105 @@ extension WorkspaceModel {
               let view = displays[id] else { return }
         guard !item.isArchived else { view.notice = Self.archivedNotice; return }
         guard !view.resuming, !view.busy, !view.loading else { return }
+        // A family paused at its cost limit resumes as one: its root, then
+        // every paused side it names, from whichever member's Resume.
+        if view.costPaused { resumeCostPausedFamily(from: item); return }
         // The run goes on in the latest version, and the transcript returns to it, as for a send.
         latestVersion(sessionID: id)
         view.resuming = true
-        let commandID = UUID().uuidString, params = turnOverrides(for: item)
-        let durable = !isEphemeral(item.id)
         resumeSteps?("accepted")
         Task {
             defer { view.resuming = false; updateHostActivity(workspaceID: item.workspaceID) }
-            var recorded = false
-            do {
-                let lease = try connectionLease(for: item)
-                // A helper stopped for an update, or restarting, is started
-                // again here: the chat reopens from its journal, paused.
-                let host = try await open(item)
-                if durable {
-                    guard let store else { throw StoreError.unavailable }
-                    // As for a compaction: the command's record is on disk
-                    // before it goes, and the helper's receipt settles it.
-                    try await store.put(CommandIntent(id: commandID, sessionID: item.id, turnID: Self.resumeIntentPrefix + commandID, text: "[Resume]",
-                                                      state: "intent", epoch: host.epoch), kind: "pending:\(item.id)", id: commandID)
-                    recorded = true; pendingIntentsChanged(item.id)
-                }
-                try requireConnection(lease)
-                resumeSteps?("dispatched")
-                let reply = try await host.request("run.continue", sessionID: item.id, params: params, commandID: commandID)
-                view.acceptedCommands.insert(commandID)
-                if reply.object?["continued"]?.bool == true || reply.object?["resumedQueue"]?.bool == true { noteChatActivity(item.id) }
-                if durable { try? await store?.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
-                // What comes next is what the reader wants to see.
-                followSubmittedTurn(item.id)
-                resumeSteps?("answered")
-            } catch {
-                let rejection: String? = { if case HostError.rejected(let code, _) = error { return code }; return nil }()
-                // A refused Resume never ran: its record goes.
-                if recorded, rejection != nil { try? await store?.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
-                switch rejection {
-                case "session_busy":
-                    // A run is already going (a Send, or another Resume, got
-                    // there first): that is the chat's run now.
-                    break
-                case "nothing_to_continue":
-                    view.continuable = false
-                    view.notice = "There is nothing to resume. Send a new message to go on."
-                default:
-                    self.error = error.localizedDescription
-                }
-                resumeSteps?("failed")
+            _ = await performResume(item, view: view)
+        }
+    }
+
+    /// Resume after the family's cost limit was raised (owner, 2026-10-16:
+    /// raising alone resumes nothing). The root's `run.continue` resumes its
+    /// own run and sub-agents and names its paused sides; each side's resumes
+    /// its run and its own sub-agents. Refused while the spend is at the limit.
+    func resumeCostPausedFamily(from item: ChatRecord) {
+        guard !installPreparing else { return }
+        // Unknown spend goes to the helper, which refuses at the limit.
+        guard !costReading(for: item.id).reached else {
+            displays[item.id]?.notice = "Still at the cost limit. Raise the limit above the spend, then choose Resume."
+            return
+        }
+        let root = budgetOwner(for: item)
+        latestVersion(sessionID: item.id)
+        var views: [SessionDisplay] = []
+        for view in [displays[root.id], displays[item.id]] { if let view, !views.contains(where: { $0 === view }) { views.append(view) } }
+        for view in views { view.resuming = true }
+        resumeSteps?("accepted")
+        Task {
+            defer { for view in views { view.resuming = false }; updateHostActivity(workspaceID: item.workspaceID) }
+            var members: [String] = []
+            if root.id == item.id || isCostPaused(root.id) {
+                guard let reply = await performResume(root, view: displays[root.id], member: root.id != item.id) else { return }
+                members = reply["pausedMembers"]?.array?.compactMap(\.string) ?? []
             }
-            refresh(item.id)
+            var order = members.filter { $0 != root.id }
+            if item.id != root.id, !order.contains(item.id) { order.append(item.id) }
+            for id in order {
+                guard let member = record(id), !member.isArchived, member.workspaceID == root.workspaceID else { continue }
+                _ = await performResume(member, view: displays[id], member: true)
+            }
+        }
+    }
+
+    /// One `run.continue`, recorded as a pending intent first for a durable
+    /// chat. Returns the helper's reply; nil when it was refused or failed.
+    /// `member`: part of a family Resume, where a chat with nothing of its
+    /// own left (a side the root already resumed) is not an error.
+    func performResume(_ item: ChatRecord, view: SessionDisplay?, member: Bool = false) async -> [String: WireValue]? {
+        let commandID = UUID().uuidString, params = turnOverrides(for: item)
+        let durable = !isEphemeral(item.id)
+        var recorded = false
+        defer { refresh(item.id) }
+        do {
+            let lease = try connectionLease(for: item)
+            // A helper stopped for an update, or restarting, is started
+            // again here: the chat reopens from its journal, paused.
+            let host = try await open(item)
+            if durable {
+                guard let store else { throw StoreError.unavailable }
+                // As for a compaction: the command's record is on disk
+                // before it goes, and the helper's receipt settles it.
+                try await store.put(CommandIntent(id: commandID, sessionID: item.id, turnID: Self.resumeIntentPrefix + commandID, text: "[Resume]",
+                                                  state: "intent", epoch: host.epoch), kind: "pending:\(item.id)", id: commandID)
+                recorded = true; pendingIntentsChanged(item.id)
+            }
+            try requireConnection(lease)
+            resumeSteps?("dispatched")
+            let reply = try await host.request("run.continue", sessionID: item.id, params: params, commandID: commandID)
+            view?.acceptedCommands.insert(commandID)
+            if reply.object?["continued"]?.bool == true || reply.object?["resumedQueue"]?.bool == true { noteChatActivity(item.id) }
+            if durable { try? await store?.acknowledgeCommand(sessionID: item.id, commandID: commandID); pendingIntentsChanged(item.id) }
+            // What comes next is what the reader wants to see.
+            if !member { followSubmittedTurn(item.id) }
+            resumeSteps?("answered")
+            return reply.object ?? [:]
+        } catch {
+            let rejection: String? = { if case HostError.rejected(let code, _) = error { return code }; return nil }()
+            // A refused Resume never ran: its record goes.
+            if recorded, rejection != nil { try? await store?.remove(kind: "pending:\(item.id)", id: commandID); pendingIntentsChanged(item.id) }
+            switch rejection {
+            case "session_busy":
+                // A run is already going (a Send, or another Resume, got
+                // there first): that is the chat's run now.
+                break
+            case "nothing_to_continue":
+                if !member {
+                    view?.continuable = false
+                    view?.notice = "There is nothing to resume. Send a new message to go on."
+                }
+            case SessionDisplay.costLimitCode:
+                view?.notice = error.localizedDescription
+            default:
+                self.error = error.localizedDescription
+            }
+            resumeSteps?("failed")
+            return nil
         }
     }
 

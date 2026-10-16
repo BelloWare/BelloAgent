@@ -872,7 +872,7 @@ class NativeIntegration(unittest.TestCase):
         self.submit('cost-unknown'); value = self.settled('cost-unknown')
         self.assertEqual(value['cost']['spentUSD'], 0); self.assertEqual(value['cost']['unreportedRequests'], 1)
         self.assertFalse(value['cost']['reached'])
-    def test_cost_limit_stops_a_running_turn_and_reaches_sides_forks_and_seeds(self):
+    def test_cost_limit_stops_a_running_turn_and_pauses_sides_until_resume_forks_and_seeds(self):
         # A tool round costs 0.0123: the request after it is not sent under a 0.01 limit.
         session = 'cost-stop'
         self.open(model='billing-tool', session=session, costLimit={'usd': 0.01})
@@ -894,27 +894,41 @@ class NativeIntegration(unittest.TestCase):
         self.assertIsNone(state['cost']['limitUSD']); self.assertEqual(state['cost']['spentUSD'], 0)
         self.peer.command('session.configure', {'costLimit': {'usd': 0.0001}}, 'cost-side')
         self.peer.command('session.configure', {'costLimit': {'usd': 0.03}}, session)
+        # The side's tool-call reply crosses the shared limit: the family
+        # pauses at once (owner, 2026-10-16), before that tool can run.
         self.submit('cost-side', 'side question'); state = self.settled('cost-side')
         self.assertIsNone(state['cost']['limitUSD'])
         self.assertAlmostEqual(state['cost']['spentUSD'], 0.0123)
         self.assertEqual(state['cost']['reportedRequests'], 1)
-        main = self.peer.command('session.status', session=session)['cost']
-        self.assertAlmostEqual(main['spentUSD'], 0.0369)
-        self.assertEqual(main['reportedRequests'], 3); self.assertTrue(main['reached'])
+        self.assertEqual(state['state'], 'paused'); self.assertEqual(state['errorCode'], 'cost_limit')
+        self.assertTrue(state['costPaused']); self.assertTrue(state['cost']['paused'])
+        self.assertNotIn('fixture file contents', json.dumps(state['messages']), 'No tool runs once the family is paused')
+        main = self.peer.command('session.status', session=session)
+        self.assertAlmostEqual(main['cost']['spentUSD'], 0.0369)
+        self.assertEqual(main['cost']['reportedRequests'], 3); self.assertTrue(main['cost']['reached'])
+        self.assertTrue(main['costPaused'], 'The root shows the paused family')
         sent = len(Fixture.requests)
         refused = self.peer.command('turn.submit', {'clientTurnId': str(uuid.uuid4()), 'text': 'over budget'}, session, fail=True)
         self.assertEqual(refused['code'], 'cost_limit')
-        # The side accepts the human input; shared admission then rejects its
-        # run before dispatch, with the owner's cost-limit error.
-        self.submit('cost-side', 'over budget')
-        rejected = self.settled('cost-side')
-        self.assertEqual(rejected['state'], 'error'); self.assertEqual(rejected['errorCode'], 'cost_limit')
-        self.assertEqual(len(Fixture.requests), sent, 'Both main and side stop at the shared budget')
+        # The paused side keeps a new message for Resume; nothing is sent.
+        queued = self.submit('cost-side', 'over budget')
+        self.assertEqual(queued['delivery'], 'after-resume')
+        refused = self.peer.command('run.continue', {}, session, command_id=str(uuid.uuid4()), fail=True)
+        self.assertEqual(refused['code'], 'cost_limit', 'Resume waits for a limit above the spend')
         self.peer.command('session.configure', {'costLimit': {'usd': 1}}, session)
-        self.submit('cost-side', 'after raising the main limit'); state = self.settled('cost-side')
-        self.assertEqual(state['state'], 'idle', state.get('preflightError'))
-        self.assertAlmostEqual(state['cost']['spentUSD'], 0.0246)
-        self.assertAlmostEqual(self.peer.command('session.status', session=session)['cost']['spentUSD'], 0.0492)
+        time.sleep(0.2)
+        self.assertEqual(len(Fixture.requests), sent, 'Raising the limit alone resumes nothing')
+        self.assertTrue(self.peer.command('session.status', session='cost-side')['costPaused'])
+        resumed = self.peer.command('run.continue', {}, session, command_id=str(uuid.uuid4()))
+        self.assertEqual(resumed['pausedMembers'], ['cost-side']); self.assertFalse(resumed['continued'])
+        self.assertTrue(self.peer.command('run.continue', {}, 'cost-side', command_id=str(uuid.uuid4()))['continued'])
+        state = self.settled('cost-side')
+        self.assertEqual(state['state'], 'idle', state.get('preflightError')); self.assertNotIn('costPaused', state)
+        # The cut-off call is answered by a continuation, then the kept message.
+        self.assertEqual(len(Fixture.requests), sent + 2)
+        self.assertIn('over budget', json.dumps(state['messages']))
+        self.assertAlmostEqual(state['cost']['spentUSD'], 0.0369)
+        self.assertAlmostEqual(self.peer.command('session.status', session=session)['cost']['spentUSD'], 0.0615)
         # A fork still starts with an independent limit and zero spend.
         fork = self.peer.command('session.fork', {'forkSessionId': 'cost-fork', 'costLimit': {'usd': None}}, session)
         state = self.peer.command('session.status', session='cost-fork')

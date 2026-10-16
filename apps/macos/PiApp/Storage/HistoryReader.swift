@@ -60,6 +60,9 @@ struct RetainedRun: Equatable, Sendable {
     /// Tool calls in the conversation's context with no result: their outcome
     /// is unknown when the run that issued them never finished.
     var unansweredCalls: Set<String>
+    /// Paused at the family's shared cost limit: Resume, not an
+    /// interruption, is what waits, also when the helper ended mid-pause.
+    var costPaused = false
 }
 
 /// The journal identity used for a retained display, including replacements
@@ -107,6 +110,7 @@ actor HistoryReader {
         /// "interrupted" for a run cut off, "paused" for one stopped or with
         /// work held behind it, nil for none or a failure.
         var hold: String? {
+            if work.costPaused == true { return "paused" }
             if work.active == true { return "interrupted" }
             if work.runStatus == "failed" { return nil }
             return work.exists || work.pausedWithoutWork ? "paused" : nil
@@ -126,6 +130,8 @@ actor HistoryReader {
             var active: Bool?; var queue: [PendingItem]?; var steering: [PendingItem]?
             var runStatus: String?; var errorMessage: String?; var queuePaused: Bool?
             var errorCode: String?; var skillUpdatedTurnId: String?
+            /// The helper's cost-limit pause (`costPaused`, 0.1.129).
+            var costPaused: Bool?
             /// The failure's code, as the helper reports it: a skill-update
             /// stop's only while its re-pinned message waits.
             var failureCode: String? {
@@ -149,9 +155,10 @@ actor HistoryReader {
             /// Stopped by the reader (or a quit) with nothing queued: the run
             /// is over, but the chat waits for Resume, as the helper restores
             /// it. Not a failure, which is shown as one.
-            var pausedWithoutWork: Bool { !exists && queuePaused == true && runStatus != "failed" }
+            var pausedWithoutWork: Bool { !exists && queuePaused == true && runStatus != "failed" || costPaused == true }
             func retained(unanswered: Set<String>) -> RetainedRun? {
                 guard exists || pausedWithoutWork else { return nil }
+                let active = self.active == true && costPaused != true
                 func row(_ item: PendingItem, steering: Bool) -> [String: WireValue]? {
                     guard let id = item.turnID else { return nil }
                     let text = item.text ?? "", kept = String(text.prefix(1024))
@@ -160,8 +167,8 @@ actor HistoryReader {
                     return value
                 }
                 let rows = (steering ?? []).compactMap { row($0, steering: true) } + (queue ?? []).compactMap { row($0, steering: false) }
-                return RetainedRun(active: active == true, runStatus: runStatus, queuePaused: queuePaused == true || !rows.isEmpty || active == true,
-                                   queue: rows, unansweredCalls: active == true ? unanswered : [])
+                return RetainedRun(active: active, runStatus: runStatus, queuePaused: queuePaused == true || !rows.isEmpty || active || costPaused == true,
+                                   queue: rows, unansweredCalls: active ? unanswered : [], costPaused: costPaused == true)
             }
         }
         struct MessageRole: Decodable {

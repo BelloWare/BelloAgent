@@ -80,7 +80,9 @@ extension WorkspaceModel {
 
     func interruptSubagents(workspaceID: String) {
         for child in chats where child.workspaceID == workspaceID && child.isSubagent {
-            guard var summary = subagentSummaries[child.id], !summary.status.terminal else { continue }
+            // A turn held at its family's cost limit is not running: the
+            // helper's loss leaves it waiting for Resume, not interrupted.
+            guard var summary = subagentSummaries[child.id], !summary.status.terminal, summary.costPaused != true else { continue }
             summary.status = .interrupted; summary.revision = 0; summary.progress = nil; summary.progressEpoch = nil
             subagentSummaries[child.id] = summary; displays[child.id]?.subagentStatus = .interrupted
             displays[summary.link.budgetOwnerSessionID]?.childSummaries[child.id] = summary

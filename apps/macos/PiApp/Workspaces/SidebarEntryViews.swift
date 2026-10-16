@@ -186,7 +186,7 @@ import Combine
     static func liveStats(_ display: SessionDisplay, now: Date) -> ChatRowStats {
         var value = ChatRowStats(totals: display.footer.gateway, timing: display.footer.timing, now: now)
         value.updateActivity(state: display.state, loading: display.loading, activity: display.activity)
-        value.costLimited = display.failureCode == SessionDisplay.costLimitCode
+        value.costLimited = display.failureCode == SessionDisplay.costLimitCode || display.costPaused
         // A message that just landed is more recent than the last retained request.
         if let at = display.messages.last(where: { $0.at != nil })?.at { value.noteActivity(max(value.lastActivity ?? 0, at / 1_000), now: now) }
         return value

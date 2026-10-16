@@ -304,6 +304,30 @@ final class FamilyLimitPauseTests: XCTestCase {
         await side.close(); await owner.close()
     }
 
+    /// A child that reaches its final boundary as the pause lands is not
+    /// sealed (Stop would read as interrupted): its turn waits for Resume.
+    func testChildFinalBoundaryDuringThePauseDefersItsSeal() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let coordinator = AgentSteeringCoordinator()
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+            readOnly:true,resources:Resources(cwd:root,home:root),client:LimitRunClient(mode:"queued"),tools:RecordingTools(),traces:TraceStore())
+        await owner.enableFamilyBudget(); await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+        let call = ToolCall(id:"start",name:"subagent_start",arguments:["task":"Worker","mode":"background"])
+        let key = try await owner.agentFixtureCall(call,newTask:true)
+        // Paused before the turn gets a slot: it stays queued with its
+        // prepared child, which then reaches a final boundary.
+        await coordinator.fixturePause("parent")
+        let receipt = try await coordinator.prepare(call,key:key,parent:owner)
+        let id = try XCTUnwrap(receipt["child_id"].text), target = AgentTurnTarget(childID:id,turn:1)
+        let job = await coordinator.jobs[target.id], child = try XCTUnwrap(job?.child)
+        await child.stop()
+        do { _ = try await coordinator.boundary(child,final:true); XCTFail("A paused family's child sealed its turn") }
+        catch { XCTAssertTrue(error is CancellationError) }
+        let turn = await owner.agentState().turns[target.id]
+        XCTAssertEqual(turn?.status,.queued); XCTAssertNil(turn?.result)
+        await child.close(); await owner.close()
+    }
+
     /// Retry backoff is not a request in flight: the pause cuts it short.
     func testRetryBackoffIsCutShortByThePause() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
@@ -349,6 +373,10 @@ final class FamilyLimitPauseTests: XCTestCase {
         let observation = billingObservation(profile:try fixtureProfile(),session:hooks.scope.sourceSessionID,attempt:attempt,cost:cost)
         try await hooks.settleAttempt(.init(scope:hooks.scope,observation:observation,dispatched:true))
     }
+}
+
+private extension AgentSteeringCoordinator {
+    func fixturePause(_ owner: String) { paused.insert(owner) }
 }
 
 private extension AgentSession {

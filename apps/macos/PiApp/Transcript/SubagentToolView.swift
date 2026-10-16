@@ -123,6 +123,7 @@ struct SubagentToolView: Equatable, Sendable {
             if route == "follow_up" { return "Follow-up accepted" + suffix }
             return "Accepted" + suffix
         }
+        if summary?.pausedAtCostLimit == true { return "Paused at cost limit" }
         guard !status.terminal, status != .queued, status != .stopping else { return status.label }
         switch summary?.progress?.phase {
         case "retry": return "Retrying"

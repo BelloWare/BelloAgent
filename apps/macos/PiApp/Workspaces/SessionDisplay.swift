@@ -302,6 +302,8 @@ struct TranscriptVersionView: Equatable, Sendable {
                 row.failureCode = resuming ? Self.resumingCode : Self.interruptedCode; row.detail = Self.resumeDetail(paused)
             }
             rows.append(row)
+        } else if costPaused && !busy && !loading {
+            rows.append(costPausedRow)
         } else if showsPausedRun {
             // Stopped, or paused by a quit or an update: one row says so
             // where the run stopped, with Resume.
@@ -328,6 +330,39 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The helper's code for a run stopped, or a message refused, at the
     /// chat's cost limit; and the notice's state once the limit is raised.
     nonisolated static let costLimitCode = "cost_limit", costLimitRaised = "cost_limit_raised"
+    /// The family's pause at its shared limit: held (Raise limit…), raised
+    /// (Resume), a Resume on its way, and a sub-agent's (no action of its own).
+    nonisolated static let costPausedCode = "cost_paused", costPausedRaisedCode = "cost_paused_raised",
+                           costPausedResumingCode = "cost_paused_resuming", costPausedChildCode = "cost_paused_child"
+    /// The pause's card, with the live spend and the limit it waits under.
+    var costPausedRow: TranscriptMessage {
+        let reading = footer.cost, spent = reading.budgetOwnerID == nil ? reading.spentUSD : reading.budgetSpentUSD
+        let shared = reading.budgetOwnerID != nil || isManagedSubagent
+        let limit = reading.limit.usd.map(CostLimit.dollars), owner = shared ? "the main chat’s " : "the "
+        // The card's title says it is paused; its text gives the figures.
+        var text = spent.map { amount in compactGatewayUSD(amount) + (limit.map { " spent of " + owner + $0 + " limit." } ?? " spent; there is no limit now.") }
+            ?? limit.map { "The " + (shared ? "main chat’s " : "") + "limit is " + $0 + "." } ?? "There is no limit now."
+        if isManagedSubagent { text += " This sub-agent goes on when the main chat resumes." }
+        var row = TranscriptMessage(id: "paused:run:" + id, role: "system", text: text, kind: "failure")
+        let queued = queuePaused && !queue.isEmpty
+        if isManagedSubagent { row.failureCode = Self.costPausedChildCode }
+        else if resuming { row.failureCode = Self.costPausedResumingCode }
+        else if spent == nil {
+            // Before the helper reads the spend (a chat read from its journal):
+            // Resume is offered, and the helper refuses it at the limit.
+            row.failureCode = Self.costPausedRaisedCode
+            row.detail = "Resume goes on with this chat and every paused side and sub-agent once the limit is above the spend."
+        } else if costLimitHeld {
+            row.failureCode = Self.costPausedCode
+            row.detail = [(shared ? "Raise the main chat’s limit above the spend." : "Raise the limit above the spend.") + " Nothing resumes until you choose Resume.",
+                          reading.unreportedNote.map { $0 + ", so the spend may be higher." }].compactMap { $0 }.joined(separator: " ")
+        } else {
+            row.failureCode = Self.costPausedRaisedCode
+            row.detail = (reading.limit.usd == nil ? "There is no limit now." : "The limit is now \(reading.limit.label).")
+                + " Resume goes on with this chat and every paused side and sub-agent" + (queued ? "; queued messages go after it." : ".")
+        }
+        return row
+    }
     /// The row of a run stopped before it finished, which offers Resume; and
     /// the failure row's code for a run a restart cut off, which offers it too.
     nonisolated static let pausedCode = "run_paused", interruptedCode = "run_interrupted"
@@ -345,11 +380,13 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// Takes the chat's cost reading: the footer's figures, and the stop
     /// notice's state.
     func applyCostReading(_ reading: SessionCostReading) {
-        if footer.cost != reading { footer.cost = reading }
+        let changed = footer.cost != reading
+        if changed { footer.cost = reading }
         let held = reading.held
-        guard held != costLimitHeld else { return }
+        // The pause's card shows the figures themselves: it follows them.
+        guard held != costLimitHeld else { if changed && costPaused { publishTranscript() }; return }
         costLimitHeld = held
-        if failureCode == Self.costLimitCode { publishTranscript() }
+        if failureCode == Self.costLimitCode || costPaused { publishTranscript() }
     }
     /// The owner changed the limit this chat runs under. A message refused
     /// at the old one is a draft to send again, so its notice goes: sent
@@ -460,6 +497,9 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// The helper's code for the run failure shown; `cost_limit` draws the stop notice.
     @Published var failureCode: String? { didSet { if failureCode != oldValue { publishTranscript() } } }
     @Published var queuePaused = false { didSet { if queuePaused != oldValue { publishTranscript() } } }
+    /// Work here stopped at the family's shared cost limit and waits for
+    /// Resume (the helper's `costPaused`). Raising the limit resumes nothing.
+    @Published var costPaused = false { didSet { if costPaused != oldValue { publishTranscript(); activityChanges.send() } } }
     /// The chat's journal ends in a record cut off mid-write: its complete
     /// records are shown read-only and Recover Copy is offered instead of the composer.
     @Published var damagedTail = false
@@ -475,7 +515,10 @@ struct TranscriptVersionView: Equatable, Sendable {
     @Published var resuming = false { didSet { if resuming != oldValue { publishTranscript() } } }
     /// The chat's run stopped before it finished (Stop, a quit, a restart or
     /// an update paused it) and Resume would go on with it.
-    var offersResume: Bool { !isManagedSubagent && showsPausedRun && !resuming }
+    /// A family paused at its limit offers it only once the limit is raised.
+    var offersResume: Bool { !isManagedSubagent && showsPausedRun && !resuming && !(costPaused && costPausedAtLimit) }
+    /// The family's spend is known to be at its limit: Raise limit…, not Resume.
+    var costPausedAtLimit: Bool { costLimitHeld && (footer.cost.budgetOwnerID == nil ? footer.cost.spentUSD : footer.cost.budgetSpentUSD) != nil }
     /// The Paused row is drawn: while a Resume is on its way it stays, without its button.
     var showsPausedRun: Bool { !busy && !loading && runState.holdsQueue && continuable != false && queueEditHold == nil }
     func observeRunState(_ snapshot: [String: WireValue]) {
@@ -497,6 +540,8 @@ struct TranscriptVersionView: Equatable, Sendable {
         // A helper before 0.1.125 does not say; Resume then stays offered.
         let continues = snapshot["continuable"]?.bool
         if continuable != continues { continuable = continues }
+        let pausedAtLimit = snapshot["costPaused"]?.bool ?? false
+        if costPaused != pausedAtLimit { costPaused = pausedAtLimit }
         let detail = snapshot["preflightError"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
         let failure = RunState(rawValue: nextState) == .error ? (detail?.isEmpty == false ? detail : "Run failed.") : nil
         let code = failure == nil ? nil : snapshot["errorCode"]?.string
