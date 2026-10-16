@@ -15,9 +15,9 @@ extension AgentSteeringCoordinator {
             if let receipt = try await job.owner.agentReceipt(key,digest:digest) { await lock.release(); return receipt }
             let state = await job.owner.agentState()
             try validateReply(call.arguments["reply_to"].text,child:child.id,author:"parent",state:state)
-            let message = AgentFamilyMessage(id:UUID().uuidString,sequence:state.sequence + 1,childID:child.id,turn:lease.turn,author:"subagent",kind:call.arguments["kind"].text!,text:call.arguments["message"].text!,task:job.plan.origin.description,epoch:lease.epoch,replyTo:call.arguments["reply_to"].text)
+            let message = AgentFamilyMessage(id:UUID().uuidString,sequence:state.sequence + 1,childID:child.id,turn:lease.turn,author:"subagent",kind:call.arguments["kind"].text!,text:call.arguments["message"].text!,task:job.plan.origin.description,epoch:lease.currentEpoch,replyTo:call.arguments["reply_to"].text)
             let receipt: JSON = ["version":3,"accepted":true,"route":"report","child_id":JSON(child.id),"turn":JSON(lease.turn),"message_id":JSON(message.id)]
-            let op = try await job.owner.acceptAgentOperation(.init(key:key,digest:digest,receipt:receipt,message:message,epoch:lease.epoch),generation:lease.generation)
+            let op = try await job.owner.acceptAgentOperation(.init(key:key,digest:digest,receipt:receipt,message:message,epoch:lease.currentEpoch),generation:lease.currentGeneration)
             // Child mirror repairs a lost sender receipt without reporting again.
             try await child.appendAgentRecord(JournalRecordKind.agentOperation,op,owner:job.owner.id)
             await lock.release(); await signal(job.owner.id).pulse(); return receipt
@@ -32,6 +32,9 @@ extension AgentSteeringCoordinator {
             do {
                 let delivered = try await deliver(owner:job.owner,recipient:session,childTurn:lease)
                 if final, !delivered {
+                    // A cost-limit pause defers the seal: the runner parks the
+                    // turn and Resume finds its answer already in place.
+                    if paused.contains(job.owner.id) { throw CancellationError() }
                     var terminal = jobs[lease.id] ?? job
                     terminal.turn.result = await session.agentResult(lease,plan:job.plan,cancelled:terminal.cancelled)
                     terminal.turn.status = terminal.turn.result!.status

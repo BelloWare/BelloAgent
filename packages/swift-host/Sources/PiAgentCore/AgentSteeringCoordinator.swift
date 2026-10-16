@@ -12,6 +12,8 @@ actor AgentSteeringCoordinator {
         var child: AgentSession?
         var task: Task<Void,Never>?
         var cancelled = false, allocated = false, sealed = false
+        /// Continues a turn parked at a cost-limit pause.
+        var resuming = false
         let startedAt = nowMS()
         var progress: SubagentProgress?
     }
@@ -21,6 +23,11 @@ actor AgentSteeringCoordinator {
     var gates: [String:AsyncGate] = [:]
     var signals: [String:AgentWakeSignal] = [:]
     var cancelledThrough: [String:Int] = [:]
+    /// Owners paused at their family's cost limit: nothing of theirs starts,
+    /// and their turns are parked rather than sealed until `resumeParked`.
+    var paused: Set<String> = []
+    /// Runners whose turn the cost-limit gate or admission ended.
+    var budgetStopped: Set<String> = []
     init(open: @escaping Open = { env, plan in try AgentSteeringCoordinator.makeChild(env,plan) }, settled: @escaping SubagentCoordinator.Settled = { await $0.close() }) {
         self.open = open; self.settled = settled
     }
@@ -87,7 +94,7 @@ actor AgentSteeringCoordinator {
                 turn?.effort = grant.thinkingLevel
                 receipt["route"] = "follow_up"
             } else {
-                guard latest.parentExecutionID == env.executionID else { throw AgentError("subagent_closed", "This child belongs to a stopped execution") }
+                guard latest.currentParentExecutionID == env.executionID else { throw AgentError("subagent_closed", "This child belongs to a stopped execution") }
                 message = AgentFamilyMessage(id:UUID().uuidString,sequence:state.sequence + 1,childID:child,turn:latest.turn,author:"parent",kind:"steer",text:call.arguments["message"].text!,task:savedPlan.origin.description,epoch:env.executionID,replyTo:call.arguments["reply_to"].text)
                 receipt["route"] = "steer"
                 receipt["effort"] = JSON(latest.effort ?? savedPlan.origin.model.thinkingLevel ?? "default")
@@ -150,7 +157,7 @@ actor AgentSteeringCoordinator {
         if let id { guard let message = state.messages[id], message.childID == child, message.author == author else { throw AgentError("subagent_reply", "reply_to is not a message from this child/parent pair") } }
     }
     func pump(_ owner: String) {
-        while active[owner,default:0] < SubagentPolicy.maximumActiveChildren,
+        while !paused.contains(owner), active[owner,default:0] < SubagentPolicy.maximumActiveChildren,
               let position = queues[owner]?.firstIndex(where: { candidate in
                   guard let pending = jobs[candidate] else { return true }
                   return !jobs.values.contains { $0.allocated && $0.turn.childID == pending.turn.childID }
@@ -166,34 +173,120 @@ actor AgentSteeringCoordinator {
         var child: AgentSession?
         do {
             try Task.checkCancellation()
-            guard job.turn.generation > cancelledThrough[job.turn.runtimeID,default:-1], !job.cancelled else { throw CancellationError() }
+            guard job.turn.currentGeneration > cancelledThrough[job.turn.currentRuntimeID,default:-1], !job.cancelled else { throw CancellationError() }
             try await job.owner.enforceSharedCostLimit()
             if let existing = job.child { child = existing } else { child = try await open(job.environment,job.plan) }
             guard let child else { throw SubagentRecovery.damaged() }
             jobs[id]?.child = child
             guard await child.subagents.origin?.matchesAccepted(job.plan.origin) == true else { throw SubagentRecovery.damaged() }
-            try await child.prepareAgentTurn(job.turn,owner:job.owner,coordinator:self)
+            if job.resuming { try await child.resumeAgentTurn(job.turn,owner:job.owner,coordinator:self) }
+            else { try await child.prepareAgentTurn(job.turn,owner:job.owner,coordinator:self) }
             await child.useRetrySettings(job.environment.retry)
             try await job.environment.traces.inheritCapturePolicy(child:job.turn.childID,owner:job.owner.id)
             try Task.checkCancellation()
             job.turn.status = .running; jobs[id]?.turn.status = .running
             try await job.owner.appendAgentRecord(JournalRecordKind.agentTurnState,job.turn)
-            try await child.startAgentTurn(job.turn)
+            // A resumed turn whose task was delivered goes on from its own
+            // context; one parked before it began is sent its task now.
+            if job.resuming, await child.agentTurnBegan(job.turn) { try await child.continueAgentTurn(job.turn) }
+            else { try await child.startAgentTurn(job.turn) }
             await child.waitForSubagent()
             job.turn.result = await child.agentResult(job.turn,plan:job.plan,cancelled:jobs[id]?.cancelled == true)
             job.turn.status = job.turn.result!.status
         } catch {
             if let child {
-                if let budget = error as? AgentError, budget.code == AgentSession.costLimitCode { await child.stopFamilyAtLimit(budget) }
-                else { await child.stop() }
+                if let budget = error as? AgentError, budget.code == AgentSession.costLimitCode { await job.owner.stopFamilyAtLimit(budget) }
+                else if !paused.contains(job.owner.id) { await child.stop() }
                 await child.waitForSubagent()
             }
             job.turn.status = child == nil ? .notExecuted : .interrupted
             job.turn.result = SubagentToolResult(plan:job.plan,status:job.turn.status,error:(error as? AgentError) ?? AgentError("subagent_interrupted", "The turn did not finish and was not restarted"),began:child != nil)
+            if (error as? AgentError)?.code == AgentSession.costLimitCode { budgetStopped.insert(id) }
         }
+        // Stopped by the family's cost limit, not finished: the turn keeps
+        // its place for Resume instead of becoming interrupted/not executed.
+        if await parks(job,child:child ?? job.child) {
+            budgetStopped.remove(id)
+            // Not under this runner's cancellation: the pause cancels it.
+            let parked = child ?? job.child
+            await Task { await self.park(job,child:parked) }.value; return
+        }
+        budgetStopped.remove(id)
         // Acceptance may already have prepared a child before it got a slot.
         // A gate rejection still seals and releases that never-started runtime.
         await Task { await self.finishJob(job,child:child ?? job.child) }.value
+    }
+    /// A turn parks when it did not finish while its owner is paused at the
+    /// cost limit, or when the limit itself ended it (the owner's pause may
+    /// still be on its way). A turn that completed is sealed as usual.
+    func parks(_ job: Job, child: AgentSession?) async -> Bool {
+        guard jobs[job.turn.id]?.sealed != true, job.turn.status != .completed, job.turn.status != .outputLimited else { return false }
+        if paused.contains(job.owner.id) || budgetStopped.contains(job.turn.id) { return true }
+        if await job.owner.costPaused { return true }
+        if let child, await child.errorCode == AgentSession.costLimitCode { await job.owner.stopFamilyAtLimit(); return true }
+        return false
+    }
+    /// Keeps an unsealed turn for Resume: queued in the owner and child
+    /// journals, with no result and its pending parent messages kept. The
+    /// runtime is released; Resume opens the child again from its journal.
+    func park(_ job: Job, child: AgentSession?) async {
+        var turn = job.turn; turn.status = .queued; turn.result = nil
+        let lock = gate(job.owner.id)
+        do {
+            try await lock.acquire()
+            do {
+                if let saved = await job.owner.agentState().turns[turn.id], !saved.status.terminal, saved.status != .queued {
+                    try await job.owner.appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+                }
+                if let child { try await child.parkAgentTurn(turn) }
+                await lock.release()
+            } catch { await lock.release(); throw error }
+        } catch { await job.owner.failFamilyAccounting(error) }
+        if let child { await settled(child) }
+        jobs.removeValue(forKey:turn.id); queues[job.owner.id]?.removeAll { $0 == turn.id }
+        if job.allocated { active[job.owner.id,default:0] -= 1 }
+        pump(job.owner.id)
+        await signal(job.owner.id).pulse()
+    }
+    /// The owner paused at its family's cost limit (`AgentSession.stop` while
+    /// `costPaused`): stop running turns and park queued ones. Idempotent.
+    func pause(owner: AgentSession) async {
+        paused.insert(owner.id)
+        for job in Array(jobs.values) where job.owner === owner {
+            if job.allocated {
+                // Its runner parks the turn once the child's run has ended.
+                jobs[job.turn.id]?.task?.cancel()
+                if let child = job.child { await child.stop() }
+            } else if jobs[job.turn.id]?.task == nil {
+                await park(job,child:job.child)
+            }
+        }
+        await signal(owner.id).pulse()
+    }
+    /// Resume: every unsealed turn of this owner goes on under the owner's
+    /// current execution, in acceptance order, through the ordinary slots.
+    /// Turns parked across a relaunch are found in the journal, not memory.
+    func resumeParked(owner parent: AgentSession) async throws {
+        paused.remove(parent.id)
+        let state = await parent.agentState()
+        let parked = state.turns.values.filter { !$0.status.terminal && jobs[$0.id] == nil }
+        guard !parked.isEmpty else { return }
+        let env = try await parent.delegationEnvironment()
+        let order = { (turn: AgentChildTurn) in state.operations[AgentOperation.id(turn.call)]?.acceptedAt ?? 0 }
+        let plans = await parent.subagents.plans.values
+        for original in parked.sorted(by: { (order($0), $0.id) < (order($1), $1.id) }) {
+            guard let plan = plans.first(where: { $0.origin.link.childSessionID == original.childID }) else { throw SubagentRecovery.damaged() }
+            var turn = original; turn.status = .queued; turn.result = nil
+            turn.continuations = (turn.continuations ?? []) + [AgentTurnContinuation(parentExecutionID:env.executionID,generation:env.generation,runtimeID:env.runtimeID,epoch:env.executionID)]
+            try await parent.appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+            var runtimeEnv = env
+            if plan.origin.frozenResources == nil, let snapshot = state.turns[AgentTurnTarget(childID:turn.childID,turn:1).id]?.legacyResources { runtimeEnv.resources = snapshot }
+            var job = Job(owner:parent,environment:runtimeEnv,plan:plan,turn:turn); job.resuming = true
+            jobs[turn.id] = job
+            queues[parent.id,default:[]].append(turn.id)
+        }
+        pump(parent.id)
+        await signal(parent.id).pulse()
     }
     func finishJob(_ job: Job, child: AgentSession?) async {
         let lock = gate(job.owner.id)
@@ -207,7 +300,8 @@ actor AgentSteeringCoordinator {
         await signal(job.owner.id).pulse()
     }
     func stop(owner: String, target: AgentTurnTarget, human: Bool) async {
-        guard var job = jobs[target.id], job.owner.id == owner, !job.cancelled else { return }
+        // A cost-limit pause stops runs itself and keeps the turns for Resume.
+        guard !paused.contains(owner), var job = jobs[target.id], job.owner.id == owner, !job.cancelled else { return }
         job.cancelled = true; job.task?.cancel(); jobs[target.id] = job
         if let child = job.child { await child.stop() }
         if !job.allocated {
@@ -220,24 +314,11 @@ actor AgentSteeringCoordinator {
     }
     func cancel(owner: String, runtimeID: String, through: Int) async {
         cancelledThrough[runtimeID] = max(cancelledThrough[runtimeID,default:-1],through)
-        for job in Array(jobs.values) where job.owner.id == owner && job.turn.runtimeID == runtimeID && job.turn.generation <= through { await stop(owner:owner,target:job.turn.target,human:false) }
+        for job in Array(jobs.values) where job.owner.id == owner && job.turn.currentRuntimeID == runtimeID && job.turn.currentGeneration <= through { await stop(owner:owner,target:job.turn.target,human:false) }
     }
     func drain(owner: String? = nil) async {
         let current = jobs.values.filter { owner == nil || $0.owner.id == owner }
         for job in current { await stop(owner:job.owner.id,target:job.turn.target,human:false) }
         for job in Array(jobs.values) where owner == nil || job.owner.id == owner { await job.task?.value }
-    }
-    /// Budget exhaustion closes admission but is not permission to cancel a
-    /// dispatched request. The owner's single stop path cancels remaining
-    /// queued/tool work only once the accounting drain fence is clear.
-    func finishAtLimit(owner: String) async {
-        let wake = signal(owner)
-        while true {
-            let revision = await wake.revision
-            guard jobs.values.contains(where: { $0.owner.id == owner }) else { return }
-            // Queued jobs need not have a task yet. Waiting on the signal
-            // releases this actor so dispatched jobs can finish and pump them.
-            await wake.wait(after:revision)
-        }
     }
 }

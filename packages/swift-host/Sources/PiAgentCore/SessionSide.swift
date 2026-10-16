@@ -31,11 +31,21 @@ extension AgentSession {
     /// anything runs. The app keeps a side read-only; a chat forked from it
     /// can have its editing tools turned on.
     func sideRefusal(_ call: ToolCall) -> AgentError? {
+        if let refusal = sideDelegationRefusal(call) { return refusal }
         guard readOnly, isSideChat, Self.editingTools.contains(call.name) else { return nil }
         return AgentError("read_only", "Side chats are read-only: \(call.name) is not available here. To make this change, ask in the main chat, or fork this side with /fork and choose Enable Editing Tools… in the new chat's menu.")
     }
+    /// Starting or messaging a sub-agent (owner, 2026-10-16): sides at any
+    /// depth never delegate. The offered tools stay the parent's, for its
+    /// prompt cache; the call is refused before anything is accepted.
+    /// Waiting, status and Stop of children a 0.1.128 side already owns stay.
+    static let sideDelegationTools: Set<String> = ["subagent", "subagent_start", "subagent_send"]
+    func sideDelegationRefusal(_ call: ToolCall) -> AgentError? {
+        guard isSideChat, Self.sideDelegationTools.contains(call.name) else { return nil }
+        return AgentError("read_only", "Side chats cannot start or message sub-agents: \(call.name) is not available here. Ask in the main chat to delegate this work.")
+    }
 
-    static let sideNote = ContextNote(kind: "side-read-only", text: "This is a side conversation, branched from the conversation above. It is read-only: write, edit and bash are unavailable here, so answer from the conversation and the read-only tools.")
+    static let sideNote = ContextNote(kind: "side-read-only", text: "This is a side conversation, branched from the conversation above. It is read-only: write, edit and bash are unavailable here, and it cannot start or message sub-agents, so answer from the conversation and the read-only tools.")
     static let editingNote = ContextNote(kind: "editing-on", text: "Editing tools are now on in this conversation: write, edit and bash are available.")
 
     /// The hidden note the next user message carries, if any. A read-only

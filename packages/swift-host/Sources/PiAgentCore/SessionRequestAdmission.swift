@@ -21,7 +21,7 @@ extension AgentSession {
         var scope = RequestScope(sourceSessionID: id, budgetOwnerSessionID: isSubagent ? subagents.origin!.link.budgetOwnerSessionID : id,
                                  turnID: turnID, executionID: activeTaskPresentation?.executionID ?? displayEpoch, purpose: purpose,
                                  ownerGeneration: isSubagent ? budgetOwnerGeneration : stopCount, delegation: subagents.origin?.link)
-        scope.childTurn = agentLease?.turn; scope.parentExecutionID = agentLease?.parentExecutionID
+        scope.childTurn = agentLease?.turn; scope.parentExecutionID = agentLease?.currentParentExecutionID
         if agentCoordinator != nil, let requestMessages { scope.agentDeliveryIDs = requestMessages.flatMap { $0.nativeAgentDelivery?["eventIds"].list.compactMap(\.text) ?? [] } }
         scope = await owner.sharedRequestScope(scope)
         let admittedScope = scope
@@ -51,7 +51,7 @@ extension AgentSession {
                   activeTaskPresentation?.executionID == (scope.parentExecutionID ?? link.parentExecutionID) else { throw AttemptAccounting.damaged() }
             if let number = scope.childTurn {
                 guard let turn = subagents.family?.turns[AgentTurnTarget(childID:scope.sourceSessionID,turn:number).id],
-                      !turn.status.terminal, turn.parentExecutionID == scope.parentExecutionID, turn.generation == scope.ownerGeneration else { throw AttemptAccounting.damaged() }
+                      !turn.status.terminal, turn.currentParentExecutionID == scope.parentExecutionID, turn.currentGeneration == scope.ownerGeneration else { throw AttemptAccounting.damaged() }
             }
         } else if scope.sourceSessionID != id { throw AttemptAccounting.damaged() }
     }
@@ -128,21 +128,18 @@ extension AgentSession {
         familyStopReason = accountingFailure
         stop()
     }
-    /// The only budget-induced Stop. Admission/tool gates close immediately;
-    /// cancellation waits for every dispatched request and the model callback
-    /// (including requests begun before the family ledger existed). Rechecked
-    /// on settlement, modelActive clearing, corrections and budget errors.
+    /// The only budget-induced Stop: the family pauses at once. Admission
+    /// and tool gates close, and every dispatched request, retry wait, tool
+    /// and child turn is cancelled the way Stop cancels it; aborted requests
+    /// keep whatever usage they reported (unknown stays unknown). Rechecked on
+    /// settlement, corrections, limit changes and budget errors. A managed
+    /// child only latches the reason: its coordinator parks the turn.
     func stopFamilyAtLimit(_ inherited: AgentError? = nil) {
         if inherited?.code == Self.costLimitCode { familyStopReason = inherited }
         if familyBudgetEnabled, costLimitReached {
             do { try enforceCostLimit() } catch { familyStopReason = error as? AgentError }
         }
-        guard familyStopReason?.code == Self.costLimitCode, !budgetStopIssued,
-              inFlightBudgetAttempts.isEmpty, !modelActive else { return }
-        budgetStopIssued = true
-        stop()
-        // Sides retain their ancestors, so callbacks hold only weak runtimes.
-        // A side with a running tool must stop too; it has no local USD limit.
-        for notify in sideBudgetStops.values { Task { await notify() } }
+        guard let reason = familyStopReason, reason.code == Self.costLimitCode, !isSubagent else { return }
+        pauseAtCostLimit(reason)
     }
 }

@@ -777,7 +777,10 @@ public actor NativeHostService {
         case "queue.steer": try await session.steerQueued(required(params["turnId"],"turn id")); return ["accepted":true]
         case "queue.resume": try await session.resumeQueue(); return ["accepted":true]
         case "turn.retry": try await session.retryRun(overrides: params); return ["accepted":true]
-        case "run.continue": return try await session.continueRun(commandID: commandID, overrides: params)
+        case "run.continue":
+            // A paused family resumes only below its (root's) limit.
+            try await session.requireCostResumeRoom()
+            return try await session.continueRun(commandID: commandID, overrides: params)
         case "queue.configure": try await session.configureQueue(params); return ["accepted":true]
         case "context.compact": try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true]
         case "mcp.invoke":

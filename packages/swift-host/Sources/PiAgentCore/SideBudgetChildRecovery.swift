@@ -39,7 +39,7 @@ extension SideBudgetRecovery {
                       admission["state"].text == "dispatched" else { throw SubagentRecovery.damaged() }
                 if let number = admission["scope"]["childTurn"].int {
                     guard let turn = state.family?.turns[AgentTurnTarget(childID:link.childSessionID,turn:number).id],
-                          turn.parentExecutionID == admission["scope"]["parentExecutionID"].text else { throw SubagentRecovery.damaged() }
+                          turn.acceptsParentExecution(admission["scope"]["parentExecutionID"].text) else { throw SubagentRecovery.damaged() }
                 }
                 if let update = try FamilyCharge.merge(cost,into:owned,revision:accounting.revision,
                     child:.init(accepted:plan.origin,observed:child.origin),failure:SubagentRecovery.damaged()) {

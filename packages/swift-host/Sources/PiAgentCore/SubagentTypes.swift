@@ -78,6 +78,9 @@ public struct SubagentSummary: Codable, Sendable, Equatable {
     /// hostEpoch. Semantic revision is the durable owner's family revision.
     public var progressEpoch: String? = nil
     public var effort: String? = nil
+    /// The owner paused at its family's cost limit with this turn unsealed:
+    /// it goes on (from where it stopped, or from the queue) on Resume.
+    public var costPaused: Bool? = nil
 }
 
 /// Display-only progress, coalesced while running and saved once with the

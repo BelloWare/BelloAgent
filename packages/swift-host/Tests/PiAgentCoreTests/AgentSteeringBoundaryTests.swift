@@ -132,24 +132,38 @@ extension AgentSteeringBoundaryTests {
 }
 
 extension AgentSteeringBoundaryTests {
-    func testChildCostLimitStopsParentInUnrelatedToolAndSettlesFamily() async throws {
+    /// A child's charge crossing the limit pauses the family at once: the
+    /// parent's unrelated tool is cancelled, no further request is admitted
+    /// and the child's turn is held, not sealed. Raising the limit resumes
+    /// nothing; Resume finishes the child and the parent.
+    func testChildCostLimitPausesParentInUnrelatedToolUntilResume() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let tools = AgentBudgetHoldTools(), client = AgentBudgetClient(), coordinator = AgentSteeringCoordinator()
         await client.bind(tools)
         let parent = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore())
         await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
-        try await parent.setCostLimit(0.015)
+        await parent.setCostLimit(0.015)
         _ = try await parent.submit(Submission(commandID:"command",turnID:"user",text:"Parallel work"),steer:false)
-        try await eventually { !(await parent.isRunning) }
+        try await eventually { let busy = await parent.isRunning, jobs = await coordinator.jobs.isEmpty; return !busy && jobs }
         let spend = await parent.spend, family = await parent.agentState(), entered = await tools.entered, calls = await client.requests
         XCTAssertTrue(entered)
         XCTAssertEqual(spend.usd,0.02,accuracy:0.000001)
         XCTAssertEqual(calls,2,"No third request may pass family admission")
-        XCTAssertTrue(family.turns.values.allSatisfy { $0.status.terminal })
         XCTAssertEqual(family.turns.count,1)
-        let code = await parent.errorCode
-        XCTAssertEqual(code,AgentSession.costLimitCode)
-        await parent.close()
+        XCTAssertTrue(family.turns.values.allSatisfy { $0.status == .queued },"The child's turn waits for Resume")
+        let code = await parent.errorCode, state = await parent.state, paused = await parent.costPaused
+        XCTAssertEqual(code,AgentSession.costLimitCode); XCTAssertEqual(state,.paused); XCTAssertTrue(paused)
+        await parent.setCostLimit(1)
+        let idle = await client.requests; XCTAssertEqual(idle,2,"Raising the limit resumes nothing")
+        try await parent.requireCostResumeRoom()
+        _ = try await parent.continueRun(commandID:"resume")
+        try await eventually { let busy = await parent.isRunning, jobs = await coordinator.jobs.isEmpty; return !busy && jobs }
+        let resumed = await parent.agentState(), after = await parent.state
+        XCTAssertTrue(resumed.turns.values.allSatisfy { $0.status == .completed })
+        XCTAssertEqual(after,.idle)
+        let delivered = await parent.history.contains { $0.nativeAgentDelivery?["events"].list.contains { $0["kind"].text == "result" } == true }
+        XCTAssertTrue(delivered,"The resumed child's result reaches the parent")
+        await coordinator.drain(); await parent.close()
     }
 }
 actor AgentBudgetHoldTools: ToolExecuting {
@@ -161,7 +175,7 @@ actor AgentBudgetHoldTools: ToolExecuting {
     }
 }
 actor AgentBudgetClient: ModelClient {
-    var tools: AgentBudgetHoldTools?, requests = 0
+    var tools: AgentBudgetHoldTools?, requests = 0, parentRequests = 0
     func bind(_ tools: AgentBudgetHoldTools) { self.tools = tools }
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply { throw AgentError("fixture_unscoped","Missing accounting") }
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, cacheSessionID: String, turnID: String, purpose: String, lifecycle: RequestLifecycle?, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
@@ -170,8 +184,12 @@ actor AgentBudgetClient: ModelClient {
         try await lifecycle?.willDispatch(attempt); requests += 1
         var reply: ModelReply
         if sessionID == "parent" {
-            reply = agentCallReply("start","subagent_start",["task":"Child task","mode":"background"])
-            let hold = agentCallReply("hold","hold",[:]); reply.calls += hold.calls; reply.message.content += hold.message.content
+            parentRequests += 1
+            if parentRequests > 1 { reply = answer("Done") }
+            else {
+                reply = agentCallReply("start","subagent_start",["task":"Child task","mode":"background"])
+                let hold = agentCallReply("hold","hold",[:]); reply.calls += hold.calls; reply.message.content += hold.message.content
+            }
         } else {
             while !(await self.tools!.entered) { try await Task.sleep(for:.milliseconds(5)) }
             reply = answer("Discovery costing the rest of the budget")

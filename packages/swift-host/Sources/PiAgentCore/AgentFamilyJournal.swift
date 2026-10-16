@@ -19,6 +19,11 @@ struct AgentTurnTarget: Codable, Sendable, Equatable, Hashable {
     var childID: String, turn: Int
     var id: String { childID + ":" + String(turn) }
 }
+/// A turn paused at the family's cost limit continues under the parent
+/// execution that resumed it. Appended once per Resume; older helpers ignore it.
+struct AgentTurnContinuation: Codable, Sendable, Equatable {
+    var parentExecutionID: String, generation: Int, runtimeID: String, epoch: String
+}
 struct AgentChildTurn: Codable, Sendable, Equatable {
     var childID: String, turn: Int, executionID: String
     var parentExecutionID: String, generation: Int, runtimeID: String, epoch: String
@@ -31,6 +36,17 @@ struct AgentChildTurn: Codable, Sendable, Equatable {
     var legacyResources: ResourceSnapshot? = nil
     /// Frozen at acceptance. Older turns inherit their saved model grant.
     var effort: String? = nil
+    /// Resumes after a cost-limit pause, oldest first. The fields above stay
+    /// the turn's immutable acceptance identity; admission uses the latest.
+    var continuations: [AgentTurnContinuation]? = nil
+    var currentParentExecutionID: String { continuations?.last?.parentExecutionID ?? parentExecutionID }
+    var currentGeneration: Int { continuations?.last?.generation ?? generation }
+    var currentRuntimeID: String { continuations?.last?.runtimeID ?? runtimeID }
+    var currentEpoch: String { continuations?.last?.epoch ?? epoch }
+    /// Charges recorded under the acceptance or any later continuation.
+    func acceptsParentExecution(_ id: String?) -> Bool {
+        id == parentExecutionID || continuations?.contains { $0.parentExecutionID == id } == true
+    }
     var target: AgentTurnTarget { .init(childID:childID,turn:turn) }
     var id: String { target.id }
 }
@@ -98,7 +114,17 @@ struct AgentFamilyState: Codable, Sendable, Equatable {
                 // Released v3 helpers omit unknown optional fields when they
                 // seal recovery. Absence cannot erase the accepted effort.
                 if turn.effort == nil { turn.effort = old.effort }
+                // Released helpers omit continuations too; absence keeps them.
+                if turn.continuations == nil { turn.continuations = old.continuations }
                 var identity = old; identity.status = turn.status; identity.result = turn.result
+                if old.continuations != turn.continuations {
+                    // Only a Resume of a paused, unsealed turn extends them,
+                    // one continuation at a time, and it requeues the turn.
+                    let previous = old.continuations ?? [], next = turn.continuations ?? []
+                    guard !old.status.terminal, next.count == previous.count + 1, Array(next.dropLast()) == previous,
+                          turn.status == .queued, turn.result == nil else { throw SubagentRecovery.damaged() }
+                    identity.continuations = turn.continuations
+                }
                 guard identity == turn, !old.status.terminal || old == turn else { throw SubagentRecovery.damaged() }
             }
             turns[turn.id] = turn; revision += 1

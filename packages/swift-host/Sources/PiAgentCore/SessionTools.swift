@@ -74,6 +74,7 @@ extension AgentSession {
         return definitions
     }
     func invokeTool(_ call: ToolCall) async throws -> JSON {
+        if let refusal = sideDelegationRefusal(call) { throw refusal }
         if SubagentSteeringContract.names.contains(call.name) {
             guard agentCoordinator != nil, let result = agentPreparedResults[call.id] else { throw AgentError("tool_unavailable", "Agent control was not admitted") }
             if result["isError"].flag != true, call.name == "subagent_wait" || call.name == "subagent_start" && call.arguments["mode"].text == "wait",
@@ -222,6 +223,8 @@ extension AgentSession {
         agentPreparedResults = [:]
         if let coordinator = agentCoordinator {
             for call in calls where SubagentSteeringContract.names.contains(call.name) {
+                // A side refuses delegation before any acceptance or receipt.
+                if sideDelegationRefusal(call) != nil { continue }
                 do {
                     try await enforceToolBudget()
                     let key = try agentToolKey(call)
@@ -239,7 +242,7 @@ extension AgentSession {
         if agentCoordinator == nil, canDelegate, let coordinator = subagentCoordinator, calls.contains(where: { $0.name == "subagent" }) {
             do {
                 let environment = try await delegationEnvironment()
-                let planned = calls.filter { $0.name == "subagent" }.compactMap { call -> (SubagentCallKey, ToolCall)? in
+                let planned = calls.filter { $0.name == "subagent" && sideDelegationRefusal($0) == nil }.compactMap { call -> (SubagentCallKey, ToolCall)? in
                     guard let assistant = toolHistory.owners[call.id] else { return nil }
                     return (SubagentCallKey(parentSessionID: id, assistantMessageID: assistant, toolCallID: call.id), call)
                 }

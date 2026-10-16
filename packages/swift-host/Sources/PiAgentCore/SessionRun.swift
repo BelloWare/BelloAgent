@@ -149,11 +149,29 @@ extension AgentSession {
                 let continued=continuing
                 continuing=false
                 if continued { try startAgentEpoch() }
+                // Resume after a cost-limit pause: parked sub-agent turns go on
+                // under this run's execution, before anything is asked again.
+                if resumingCostPause, !isSubagent {
+                    resumingCostPause=false
+                    try await agentCoordinator?.resumeParked(owner:self)
+                }
+                // Nothing of the parent's own was cut off: wait for the resumed
+                // family as the turn's end would, and ask the model only once
+                // something arrives for it.
+                var familyOnly=false
+                if familyWaitResume {
+                    familyWaitResume=false
+                    if let coordinator=agentCoordinator, try await coordinator.boundary(self,final:true) {} else { familyOnly=true }
+                }
                 // Pi's _overflowRecoveryAttempted: one compact-and-retry until a
                 // user message arrives or a reply completes.
                 var overflowRecoveryAttempted=retryFirstRequest && contextRecovery["consumed"].flag == true
                 var rounds=0
-                while true {
+                if familyOnly {
+                    try finishPresentedTask("completed")
+                    if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
+                }
+                while !familyOnly {
                     // Pi's agent loop has no limit on model requests per run.
                     try Task.checkCancellation(); rounds += 1
                     // Retry repeats the failed model request before pending steering
@@ -170,6 +188,13 @@ extension AgentSession {
                     // queued edit took the hold first, or the message left)
                     // settles without asking the model about the old context.
                     if rounds == 1, !retryFirstRequest, !continued, !startedFollowUp, !drained { break }
+                    // A resumed sub-agent turn that had already answered when
+                    // its family paused has nothing to ask the model again.
+                    if rounds == 1, continued, isSubagent, !drained, let tail=continuationTail, !Self.continues(from:tail) {
+                        try finishPresentedTask("completed")
+                        if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
+                        break
+                    }
                     let resourceSnapshot: ResourceSnapshot
                     if let appliedSnapshot { resourceSnapshot=appliedSnapshot }
                     else { resourceSnapshot=try await resources.resolve(); appliedSnapshot=resourceSnapshot }
@@ -308,22 +333,23 @@ extension AgentSession {
             let cancelled = Task.isCancelled || error is CancellationError
             modelActive = false
             let budgetError = familyStopReason?.code == Self.costLimitCode ? familyStopReason : (error as? AgentError).flatMap { $0.code == Self.costLimitCode ? $0 : nil }
+            // At the family's limit the family pauses (`pauseAtCostLimit`):
+            // its sub-agent turns are parked, not cancelled or waited for.
             if let budgetError, familyBudgetEnabled || isSubagent {
                 stopFamilyAtLimit(budgetError)
-                if !isSubagent, let coordinator = agentCoordinator {
-                    state = .stopping; setFamilyWaiting(true); event("state")
-                    await Task { await coordinator.finishAtLimit(owner:id) }.value
-                }
-            } else if budgetError == nil, !isSubagent, subagents.family != nil, let coordinator = agentCoordinator {
+            } else if budgetError == nil, !costPaused, !isSubagent, subagents.family != nil, let coordinator = agentCoordinator {
                 let owner = id, runtime = displayEpoch, generation = stopCount
                 stop()
                 await Task { await coordinator.cancel(owner:owner,runtimeID:runtime,through:generation); await coordinator.drain(owner:owner) }.value
             }
             let error: Error = familyStopReason ?? error
             setFamilyWaiting(false)
-            queuePaused=true; runStatus=familyStopReason == nil && cancelled ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
-            errorMessage=(error as? AgentError)?.message ?? (runStatus == .cancelled ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
-            errorCode=runStatus == .failed ? (error as? AgentError)?.code : nil
+            // Paused, not failed: Resume goes on from here once the limit is
+            // raised. A managed child's turn is parked by its coordinator.
+            let pausedAtLimit = costPaused || isSubagent && budgetError != nil
+            queuePaused=true; runStatus=pausedAtLimit || familyStopReason == nil && cancelled ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
+            errorMessage=pausedAtLimit ? (isSubagent ? "Paused at the shared cost limit." : costPausedMessage) : (error as? AgentError)?.message ?? (runStatus == .cancelled ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
+            errorCode=pausedAtLimit ? Self.costLimitCode : runStatus == .failed ? (error as? AgentError)?.code : nil
             if let activeSubmission { commandState(activeSubmission,runStatus.rawValue) }
             if let partial=interruptedPartial(attemptIDs:partialTimeline.segments.first.map { [$0.part.attemptID] } ?? requestObservation.map { [$0.attemptID] }) {
                 // Publishing links can suspend below. Once the durable row
@@ -346,6 +372,12 @@ extension AgentSession {
         // the continuation's own receipt.
         retrySubmission = runStatus == .idle || activeSubmission?.turnID.hasPrefix(Self.continuePrefix) == true ? nil : activeSubmission; activeSubmission=nil
         if let pending=pendingConfiguration { apply(profile:pending.profile, apiKey:pending.apiKey) }
+        // The pause landed as the run was settling: the run's own outcome
+        // stays, but the chat waits for the family's Resume.
+        if costPaused, state != .error {
+            queuePaused=true; state = .paused; runStatus = .cancelled
+            errorCode=Self.costLimitCode; errorMessage=errorMessage ?? costPausedMessage
+        }
         // A reply the journal refused has its log set aside before the run
         // is saved as settled: a reopen of a settled run removes the log.
         if partialReplyUnsaved { removeStreamedLog() }

@@ -108,6 +108,17 @@ public actor AgentSession {
     var inFlightBudgetAttempts = Set<String>()
     var familyStopReason: AgentError?
     var budgetStopIssued = false
+    /// Work here stopped at the family's cost limit and waits for Resume
+    /// (`pauseAtCostLimit`). Durable in the run state; raising the limit
+    /// alone never clears it.
+    var costPaused = false
+    /// A root's sides that paused with it, handed to the app by Resume.
+    var costPausedMembers: [String] = []
+    /// Set by a Resume of a paused family: the run resumes the parked
+    /// sub-agent turns first, and (`familyWaitResume`) with nothing of its
+    /// own to continue waits for them instead of asking the model.
+    var resumingCostPause = false
+    var familyWaitResume = false
     var familyCancelled: (@Sendable (Int) -> Void)?
     var subagentCoordinator: SubagentCoordinator?
     var agentCoordinator: AgentSteeringCoordinator?
@@ -478,7 +489,15 @@ public actor AgentSession {
                 cumulativeModelMs=ObservedDuration.valid(saved["timing"]["modelMs"].double)
                 cumulativeToolMs=ObservedDuration.valid(saved["timing"]["toolMs"].double)
             }
-            if saved["active"].flag == true { errorMessage="The previous run was interrupted. No model or tool request was replayed. Inspect tool effects before continuing." }
+            costPaused = saved["costPaused"].flag == true
+            costPausedMembers = saved["costPausedMembers"].list.compactMap(\.text)
+            if costPaused {
+                // Paused at the family's limit, also when the helper ended
+                // mid-pause: the pause, not an interruption, is what waits.
+                queuePaused = true; runStatus = .cancelled; errorCode = Self.costLimitCode
+                errorMessage = saved["errorMessage"].text ?? "Paused at the cost limit. Raise the limit above the spend, then choose Resume."
+            }
+            else if saved["active"].flag == true { errorMessage="The previous run was interrupted. No model or tool request was replayed. Inspect tool effects before continuing." }
             else if saved["runStatus"].text == RunStatus.failed.rawValue {
                 runStatus = .failed; errorMessage=saved["errorMessage"].text ?? "Run failed."; errorCode=saved["errorCode"].text
                 skillUpdatedTurnID=saved["skillUpdatedTurnId"].text
@@ -489,7 +508,7 @@ public actor AgentSession {
         // unknown outcomes so future requests remain protocol-valid.
         let delegatedResults = try SubagentRecovery.recover(state: subagents, context: context, parent: opened, owner: id,
                                                              directory: directory, accounting: &accounting, spend: &spend)
-        try AgentFamilyRecovery.recover(state:&subagents,parent:opened,owner:id,directory:directory,accounting:&accounting,spend:&spend)
+        try AgentFamilyRecovery.recover(state:&subagents,parent:opened,owner:id,directory:directory,accounting:&accounting,spend:&spend,costPaused:costPaused)
         let recoveredTools=ToolHistoryIndex(context)
         let unresolved=context.flatMap { message in
             message.content.filter { message.role == "assistant" && $0["type"].text == "toolCall" && recoveredTools.results[message.id]?[$0["id"].text ?? ""] == nil }
@@ -601,7 +620,10 @@ public actor AgentSession {
         let cancelledGeneration = stopCount
         stopCount &+= 1; queuePaused=true; runTask?.cancel()
         for permit in requestPermits.values { permit.cancel() }
-        familyCancelled?(cancelledGeneration)
+        // A cost-limit pause parks this owner's sub-agent turns for Resume
+        // instead of cancelling them. The coordinator stops their runs.
+        if costPaused, !isSubagent, let coordinator = agentCoordinator { Task { await coordinator.pause(owner:self) } }
+        else { familyCancelled?(cancelledGeneration) }
         managedCancellation?()
         // The run may already have reached its terminal state while its
         // final links are flushing. Nothing after that await enters the
@@ -612,7 +634,7 @@ public actor AgentSession {
     }
     var canUnload: Bool {
         isIdle && !ephemeral && requestPermits.isEmpty && inFlightBudgetAttempts.isEmpty &&
-        (managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true)
+        (managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true || costPaused)
     }
     public func unloadIfIdle() -> Bool {
         guard canUnload else { return false }
@@ -625,6 +647,8 @@ public actor AgentSession {
     }
     public func close() async {
         cancelHistoryLoads(); closed=true; stop(); await runTask?.value
+        // A paused family keeps its turns for Resume after the next open.
+        if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self) }
         if !isSubagent { await agentCoordinator?.drain(owner:id) }
         if !isSubagent { await subagentCoordinator?.release(owner: id, runtimeID: displayEpoch) }
         journal=nil
