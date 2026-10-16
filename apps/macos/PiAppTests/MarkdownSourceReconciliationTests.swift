@@ -85,11 +85,42 @@ final class MarkdownSourceReconciliationTests: XCTestCase {
     }
 
     @MainActor func testLateReferenceDefinitionKeepsUnselectedMiddleCharacterAtDrawTime() async throws {
+        try await checkReadingLineAcrossLateDefinition(width: 640)
+    }
+
+    /// Which character starts the reader's line depends on where the lines
+    /// wrap. One that the definition drops (a reference link's brackets and
+    /// label) once fell back to its old offset, a line or more away, and the
+    /// reading position jumped (16.5 points at 640 points in a cold process,
+    /// where the first layout wrapped as 656 points does). Every wrap here
+    /// puts a different character at the reader's line, dropped ones among them.
+    @MainActor func testLateReferenceDefinitionHoldsTheReadingLineWhereverItsLinesWrap() async throws {
+        for width in stride(from: 560, through: 720, by: 8) {
+            try await checkReadingLineAcrossLateDefinition(width: CGFloat(width))
+        }
+    }
+
+    func testAReadingPositionInADroppedReferenceLabelStandsWhereItsSourceResumes() throws {
+        let paragraph = "Part 0 **bold** and [linked text][ref] 中文🙂."
+        let old = paragraph + "\n\nUnchanged tail.", new = old + "\n\n[ref]: https://example.com/target\n"
+        let previous = "Part 0 bold and [linked text][ref] 中文🙂.", rendered = "Part 0 bold and linked text 中文🙂."
+        let map = MarkdownSelection.Reconciliation(
+            previous: previous, source: try XCTUnwrap(MarkdownSelection.Source(new, bytes: 0..<paragraph.utf8.count)),
+            previousSource: try XCTUnwrap(MarkdownSelection.Source(old, bytes: 0..<paragraph.utf8.count)), rendered: rendered, keepsSoftBreaks: false)
+        let before = previous as NSString, after = rendered as NSString
+        func position(_ text: String, plus: Int = 0) -> Int? { map.position(before.range(of: text).location + plus, from: previous, to: rendered) }
+        XCTAssertEqual(position("[linked"), after.range(of: "linked").location, "A dropped bracket stands at the text it opened")
+        XCTAssertEqual(position("text]", plus: 1), after.range(of: "text").location + 1, "Kept text maps exactly")
+        XCTAssertEqual(position("][ref]", plus: 3), after.range(of: " 中文").location, "A dropped label stands where the source resumes")
+        XCTAssertNil(map.range(NSRange(location: before.range(of: "[ref]").location, length: 1)), "A selection still never invents a range")
+    }
+
+    @MainActor private func checkReadingLineAcrossLateDefinition(width: CGFloat, file: StaticString = #filePath, line: UInt = #line) async throws {
         let paragraph = (0..<60).map { "Part \($0) **bold** and [linked text][ref] 中文🙂. " }.joined()
         let session = SessionDisplay(id: "document-reference-reading")
         session.messages = [.init(id: "u", role: "user", text: "Read"),
                             .init(id: "a", role: "assistant", text: paragraph + "\n\nUnchanged tail.", state: "streaming")]
-        let stage = TranscriptStreamingStressTests.Stage(session, width: 640, height: 440)
+        let stage = TranscriptStreamingStressTests.Stage(session, width: width, height: 440)
         defer { stage.close() }
         stage.page.presentationInterval = 0
         await stage.settle(turns: 2)
@@ -97,14 +128,15 @@ final class MarkdownSourceReconciliationTests: XCTestCase {
         func body(_ view: NSView) -> NativeMarkdownContainer? {
             (view as? NativeMarkdownContainer) ?? view.subviews.lazy.compactMap { body($0) }.first
         }
-        let surface = try XCTUnwrap(body(stage.document))
+        let surface = try XCTUnwrap(body(stage.document), file: file, line: line)
         stage.scroll.transcriptReading.capture(surface)
-        let anchor = try XCTUnwrap(stage.scroll.transcriptReading.readingAnchor)
-        XCTAssertGreaterThan(try XCTUnwrap(anchor.sourceUTF16Range).location, 100)
+        let anchor = try XCTUnwrap(stage.scroll.transcriptReading.readingAnchor, file: file, line: line)
+        XCTAssertGreaterThan(try XCTUnwrap(anchor.sourceUTF16Range, file: file, line: line).location, 100, file: file, line: line)
         var draws = 0
         surface.didDrawPreparedContent = {
             draws += 1
-            XCTAssertEqual(surface.displacement(of: anchor) ?? .infinity, 0, accuracy: 1 / stage.window.backingScaleFactor)
+            XCTAssertEqual(surface.displacement(of: anchor) ?? .infinity, 0, accuracy: 1 / stage.window.backingScaleFactor,
+                           "width \(width), reading line at character \(anchor.character?.offset ?? -1)", file: file, line: line)
         }
         session.messages[1].text += "\n\n[ref]: https://example.com/target\n"
         session.messages[1].state = "complete"
@@ -113,7 +145,8 @@ final class MarkdownSourceReconciliationTests: XCTestCase {
             await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } }
             stage.window.displayIfNeeded()
         }
-        XCTAssertGreaterThan(draws, 0)
-        XCTAssertEqual(surface.displacement(of: anchor) ?? .infinity, 0, accuracy: 1 / stage.window.backingScaleFactor)
+        XCTAssertGreaterThan(draws, 0, file: file, line: line)
+        XCTAssertEqual(surface.displacement(of: anchor) ?? .infinity, 0, accuracy: 1 / stage.window.backingScaleFactor,
+                       "width \(width), reading line at character \(anchor.character?.offset ?? -1)", file: file, line: line)
     }
 }

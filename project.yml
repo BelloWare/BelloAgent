@@ -110,3 +110,9 @@ schemes:
         # Recorded in .xctestrun too, so clones and test-without-building keep
         # the same isolation without a shell wrapper or a developer's setup.
         CFFIXED_USER_HOME: "$(PROJECT_TEMP_DIR)/PiAppTests-Home"
+        # The terminal tests start real login shells. Read from the account's
+        # home, the developer's zsh files (nvm, brew, rbenv here) took about
+        # 3 s per shell alone and over 20 s for five at once in the parallel
+        # lane, past the tests' waits. Shells in tests read a fixed, empty
+        # folder's files instead; the rc-reading test writes its own there.
+        ZDOTDIR: "$(PROJECT_TEMP_DIR)/PiAppTests-Home"

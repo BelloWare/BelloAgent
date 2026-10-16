@@ -49,9 +49,15 @@ final class WorkspaceRedrawTests: XCTestCase {
             RedrawCounter.recording = false; RedrawCounter.reset()
             window.contentView = nil; window.close(); model.report.suspend(); model.shutdown(); try? await model.traces.close(); await model.store?.close()
         }
-        // Whatever the selection still had in flight lands before counting.
+        // Whatever the selection still had in flight lands before counting,
+        // the chat's automatic context count included: it says "calculating"
+        // after a 180 ms pause, and under the parallel lane's load its end
+        // could land after these draws but before the footer was watched,
+        // drawing the figures once for a change nothing counted.
         let deadline = Date().addingTimeInterval(10)
-        while display.historyState.loading && Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
+        while (display.historyState.loading || model.automaticContextTask != nil || display.footer.preparingContext) && Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
         for _ in 0..<5 { try await draw(window); try await Task.sleep(for: .milliseconds(60)) }
 
         // Whatever the chat itself changes meanwhile is counted too, and

@@ -30,8 +30,14 @@ import SwiftUI
     /// Types a line into a shell and waits for it to show on that terminal.
     private func mark(_ session: TerminalSession, _ text: String) async throws {
         session.process.write(Data("echo \(text)\n".utf8))
-        try await eventually("\(text) shows", timeout: .seconds(20)) {
-            (0..<session.emulator.lineCount).contains { session.emulator.text(atLine: $0).hasPrefix(text) }
+        do {
+            try await eventually("\(text) shows", timeout: .seconds(20)) {
+                (0..<session.emulator.lineCount).contains { session.emulator.text(atLine: $0).hasPrefix(text) }
+            }
+        } catch {
+            // What the shell had shown by then says whether it was still starting.
+            XCTFail("\(text) never showed; the terminal read: \((0..<session.emulator.lineCount).map { session.emulator.text(atLine: $0) })")
+            throw error
         }
     }
     private func shows(_ session: TerminalSession, _ text: String) -> Bool {

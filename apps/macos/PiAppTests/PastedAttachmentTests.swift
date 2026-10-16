@@ -191,7 +191,14 @@ extension PastedAttachmentTests {
         defer { pause.release() }
         var restored = false
         let restoration = Task { await model.restore(); restored = true }
-        try await eventually("cleanup started") { pause.entered }
+        do { try await eventually("cleanup started") { pause.entered } } catch {
+            // Whether the sweep was scheduled and what could have deferred it,
+            // or whether it was merely still waiting for a utility thread.
+            XCTFail("cleanup: scheduled=\(model.pastedImageCleanup != nil) restored=\(restored) launching=\(model.launching) " +
+                    "activeWork=\(model.hasActiveWork) installPreparing=\(model.installPreparing) shutDown=\(model.isShutDown) " +
+                    "draftWrites=\(model.draftWrites.tasks.count) sessionOpenings=\(model.sessionOpenings.count)")
+            throw error
+        }
         XCTAssertTrue(restored, "Initial restoration must finish before a retained journal sweep starts")
         XCTAssertFalse(model.launching)
         XCTAssertEqual(model.chats.map(\.id), [chat.id])

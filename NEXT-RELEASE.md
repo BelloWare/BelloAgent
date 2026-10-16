@@ -4,7 +4,22 @@
 
 ## 0.1.129
 
-- [x] Cost limit pauses the whole family at once and only Resume continues it (owner, 2026-10-16): in-flight requests and tools are cancelled like Stop, unsealed sub-agent turns are parked (queued, never not_executed), the pause survives relaunch and helper restart, raising the limit resumes nothing, and Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).
+- [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).
+- [x] Intermittent tests: ten failures given causes and fixes:
+  - a late reference definition moved the reading line (product);
+  - a pending automatic count blanked a standing context reading (product);
+  - long-chat idle measuring starved a 50 KB expansion (product; serial-lane heartbeat 101.7 → 55 ms);
+  - test shells read the developer's zsh files (scheme `ZDOTDIR`);
+  - transient chooser and quote bar closed by another host's focus (tests);
+  - redraw and Overview waits (tests);
+  - the family-delete gallery's 11 file-viewer timeouts, caused by this workstream's Finder-activating probe.
+
+  Rule: runs that change app focus hold the full-lane lock. [Validation](docs/validation/flakes-0.1.129.md).
+- [ ] Still unexplained, each with failure diagnostics now:
+  - `SessionTimingTests.testNarrowSidebarKeepsStateCostAndRateVisibleWithoutOverflow`: stale "latest 100 tok/s" OCR, 3 of 5 lanes on `dev/a129-flakes`;
+  - `ContextReadingTests.testAChangedModelOrJournalCountsAgain`: the 66.7 s hang, 1/48 then 0/160;
+  - `SettingsFullDocumentGeometryTests`: a 1 pt difference, once;
+  - FileHiddenRead resume, PiSheetWindow closed-sheet release, transcript reveal and pasted-image cleanup start: not reproduced.
 
 ## 0.1.128
 
