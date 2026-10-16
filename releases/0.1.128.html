@@ -1,0 +1,14 @@
+<h2>Bello Agent 0.1.128</h2>
+<ul>
+<li><strong>Sub-agents and sides live at the main chat's top right.</strong> One button shows how many sides and sub-agents a chat has; it opens a list with both groups, nested under whoever started them. Opening one shows it in the panel beside the main chat. Sides and sub-agents no longer appear in the sidebar, and the hover sides panel at the right edge is gone. A chat row in the sidebar shows a small count while its agents are running.</li>
+<li><strong>Numbered sub-agents.</strong> Each sub-agent is named "Sub-agent 1", "Sub-agent 2" and so on, followed by its task, so they are easy to tell apart.</li>
+<li><strong>Collapsed turns show only the main reply.</strong> Sub-agent tasks and results are left out of a collapsed turn. Expanded results are rendered as Markdown instead of plain text.</li>
+<li><strong>Sub-agent and side spend counts toward the main chat.</strong> The main chat's cost and its cost limit include its sides and sub-agents. The cost tooltip and the Inspector show how much each one spent. Sides no longer have limits of their own.</li>
+<li><strong>Sub-agents only when you ask.</strong> The agent starts sub-agents only when you ask for sub-agents, delegation or parallel work. It can set each sub-agent's thinking effort; otherwise a sub-agent uses the main chat's.</li>
+<li><strong>Choose the project of a new chat in Flat view.</strong> An unsent chat shows "in <em>Project</em> ▾" above the composer.</li>
+<li>The completion webhook fires once when the main chat and all its sub-agents are done, not for each sub-agent.</li>
+<li>Forking a chat that has sub-agents works again. The forked copy opens the original's sub-agents read-only.</li>
+<li>Saving an edited queued message works again.</li>
+<li>Keeping a side no longer stops with "A previous conversation copy needs review".</li>
+<li>Talking to sub-agents reuses the provider's prompt cache better, so follow-ups cost less.</li>
+</ul>

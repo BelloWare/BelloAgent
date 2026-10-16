@@ -5088,7 +5088,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 131;
+				CURRENT_PROJECT_VERSION = 132;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -5103,11 +5103,11 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.127;
+				MARKETING_VERSION = 0.1.128;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				RELEASE_MESSAGE = "IntelliJ-style Git tools: hunk staging, a History browser, branches and stash. Browse a file's folders, and switch every project to a flat chat list at once.";
+				RELEASE_MESSAGE = "Sub-agents and sides at the main chat's top right, numbered and rendered. Their spend counts toward the main chat, and sub-agents start only when you ask.";
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
@@ -5191,7 +5191,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 131;
+				CURRENT_PROJECT_VERSION = 132;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = 43TXHV3TM3;
 				ENABLE_HARDENED_RUNTIME = NO;
@@ -5212,12 +5212,12 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.127;
+				MARKETING_VERSION = 0.1.128;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				RELEASE_MESSAGE = "IntelliJ-style Git tools: hunk staging, a History browser, branches and stash. Browse a file's folders, and switch every project to a flat chat list at once.";
+				RELEASE_MESSAGE = "Sub-agents and sides at the main chat's top right, numbered and rendered. Their spend counts toward the main chat, and sub-agents start only when you ask.";
 				SDKROOT = macosx;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";

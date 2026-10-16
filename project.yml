@@ -5,15 +5,15 @@ options:
     macOS: "14.0"
 settings:
   base:
-    MARKETING_VERSION: 0.1.127
-    CURRENT_PROJECT_VERSION: 131
+    MARKETING_VERSION: 0.1.128
+    CURRENT_PROJECT_VERSION: 132
     SWIFT_VERSION: "6.0"
     SWIFT_STRICT_CONCURRENCY: complete
     SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
     DEVELOPMENT_TEAM: 43TXHV3TM3
     ARCHS: arm64
     ENABLE_HARDENED_RUNTIME: YES
-    RELEASE_MESSAGE: "IntelliJ-style Git tools: hunk staging, a History browser, branches and stash. Browse a file's folders, and switch every project to a flat chat list at once."
+    RELEASE_MESSAGE: "Sub-agents and sides at the main chat's top right, numbered and rendered. Their spend counts toward the main chat, and sub-agents start only when you ask."
   configs:
     Debug:
       ENABLE_HARDENED_RUNTIME: NO
