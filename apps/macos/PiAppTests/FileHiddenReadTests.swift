@@ -71,7 +71,14 @@ final class FileHiddenReadTests: XCTestCase {
         XCTAssertFalse(document.isReading, "hidden readers must not admit disk reads")
         XCTAssertNil(scroll.textView.find?.search, "hidden find counting must release its reader")
         tab.didShow()
-        try await eventually("resumed") { document.isReading && scroll.textView.find?.count == 500 }
+        do { try await eventually("resumed") { document.isReading && scroll.textView.find?.count == 500 } } catch {
+            // Where resuming stopped: the document's reading, or the find's count.
+            let search = scroll.textView.find?.search
+            XCTFail("resume: reading=\(document.isReading) status=\(document.status) same document=\(tab.document === document) unchanged=\(document.isUnchanged) " +
+                    "find=\(scroll.textView.find != nil) search=\(search != nil) " +
+                    "count=\(search?.count ?? -1) counting=\(search?.isCounting ?? false) stopped=\(search?.stopped ?? "-") stale=\(search?.isStale ?? false)")
+            throw error
+        }
         XCTAssertEqual(scroll.textView.anchor, .init(line: 121, column: 3))
         XCTAssertEqual(scroll.textView.focus, .init(line: 124, column: 8))
     }

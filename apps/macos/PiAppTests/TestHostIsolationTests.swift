@@ -36,6 +36,18 @@ final class TestHostIsolationTests: XCTestCase {
         XCTAssertEqual(UserDefaults.standard.string(forKey: key), "fixture")
     }
 
+    /// Terminal tests start real login shells. They read zsh's files from the
+    /// test home, never the developer's: those (nvm, brew, rbenv) made each
+    /// shell take seconds and five at once in the parallel lane outlast the
+    /// tests' twenty-second waits.
+    func testShellsStartedInTestsReadTheTestHomesFilesNotTheDevelopers() throws {
+        guard hasIsolatedHost() else { return }
+        let folder = try XCTUnwrap(ProcessInfo.processInfo.environment["ZDOTDIR"], "The scheme names the shells' file folder")
+        let account = String(cString: try XCTUnwrap(getpwuid(getuid())?.pointee.pw_dir))
+        XCTAssertEqual(URL(fileURLWithPath: folder).resolvingSymlinksInPath(), URL(fileURLWithPath: NSHomeDirectory()).resolvingSymlinksInPath())
+        XCTAssertNotEqual(URL(fileURLWithPath: folder).resolvingSymlinksInPath(), URL(fileURLWithPath: account).resolvingSymlinksInPath())
+    }
+
     @MainActor func testDefaultWorkspaceAndKeychainLockAreInTheTestHome() throws {
         guard hasIsolatedHost() else { return }
         let home = try XCTUnwrap(ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"])

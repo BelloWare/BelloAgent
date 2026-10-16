@@ -871,8 +871,8 @@ import AppKit
             var offset = character.offset
             let current = (storage.string as NSString).substring(with: content)
             if current != character.rendered, !current.hasUTF8Prefix(character.rendered),
-               let mapped = segments[index].reconciliation?.range(NSRange(location: character.offset, length: 1), from: character.rendered, to: current) {
-                offset = mapped.location
+               let mapped = segments[index].reconciliation?.position(character.offset, from: character.rendered, to: current) {
+                offset = mapped
             }
             let location = min(content.location + offset, storage.length - 1)
             let glyph = manager.glyphIndexForCharacter(at: location)

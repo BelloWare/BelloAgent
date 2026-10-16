@@ -2,6 +2,24 @@
 
 **Released 2026-10-16:** 0.1.128 (build 132, tag `v0.1.128`) is the latest release; record `docs/validation/Bello-Agent-0.1.128-2026-10-16.md`.
 
+## 0.1.129
+
+- [x] Intermittent tests: ten failures given causes and fixes:
+  - a late reference definition moved the reading line (product);
+  - a pending automatic count blanked a standing context reading (product);
+  - long-chat idle measuring starved a 50 KB expansion (product; serial-lane heartbeat 101.7 → 55 ms);
+  - test shells read the developer's zsh files (scheme `ZDOTDIR`);
+  - transient chooser and quote bar closed by another host's focus (tests);
+  - redraw and Overview waits (tests);
+  - the family-delete gallery's 11 file-viewer timeouts, caused by this workstream's Finder-activating probe.
+
+  Rule: runs that change app focus hold the full-lane lock. [Validation](docs/validation/flakes-0.1.129.md).
+- [ ] Still unexplained, each with failure diagnostics now:
+  - `SessionTimingTests.testNarrowSidebarKeepsStateCostAndRateVisibleWithoutOverflow`: stale "latest 100 tok/s" OCR, 3 of 5 lanes on `dev/a129-flakes`;
+  - `ContextReadingTests.testAChangedModelOrJournalCountsAgain`: the 66.7 s hang, 1/48 then 0/160;
+  - `SettingsFullDocumentGeometryTests`: a 1 pt difference, once;
+  - FileHiddenRead resume, PiSheetWindow closed-sheet release, transcript reveal and pasted-image cleanup start: not reproduced.
+
 ## 0.1.128
 
 - [x] Release-gate repairs: side wire coverage asserts separate physical spend and shared main limits; sidebar press/cut-out fixtures use indented topic chats; rendered Find waits for expanding row geometry; child shortcuts retain command ownership; large agent results reuse completed Markdown segments and cached message-to-row lookups. [Validation](docs/validation/gate-fix-0.1.128.md).

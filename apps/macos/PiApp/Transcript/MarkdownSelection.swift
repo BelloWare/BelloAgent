@@ -92,6 +92,22 @@ enum MarkdownSelection {
             return NSRange(location: start, length: end - start)
         }
 
+        /// Where one character now is, for holding a reading position rather
+        /// than a selection. A character the new rendering dropped (the
+        /// brackets and label of a reference link once its definition
+        /// arrives) has no counterpart; it stands for the place where its
+        /// source now resumes, so the reader's line stays on the words it
+        /// showed instead of moving by everything dropped before it.
+        func position(_ offset: Int, from previous: String, to rendered: String) -> Int? {
+            guard previous == self.previous, rendered.hasPrefix(self.rendered) else { return nil }
+            if let exact = range(NSRange(location: offset, length: 1)) { return exact.location }
+            guard offset >= 0, offset < previous.utf16.count, let oldMap, let newMap,
+                  let span = oldMap.spans.first(where: { NSLocationInRange(offset, $0.output) }) else { return nil }
+            let input = span.input.location + offset - span.output.location
+            guard let next = newMap.spans.filter({ NSMaxRange($0.input) > input }).min(by: { $0.input.location < $1.input.location }) else { return nil }
+            return next.output.location + max(0, input - next.input.location)
+        }
+
         private struct Span { let output: NSRange; let input: NSRange }
         private struct TextMap { let text: String; let spans: [Span] }
 
