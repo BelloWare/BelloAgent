@@ -61,6 +61,7 @@ extension AgentSession {
             attempt += 1
             // Every attempt, the first and each retry, is a model request:
             // none goes once the chat's reported spend reaches its limit.
+            if costPaused { throw Self.costHoldError }
             try enforceCostLimit()
             let generation=beginObservationGeneration(profile:profile)
             // Each attempt's own duration; the back-off below is not model time.
@@ -68,7 +69,12 @@ extension AgentSession {
             defer { if !measured { modelRequestsMs += nowMS()-started } }
             do {
                 modelActive = true
-                let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,cacheSessionID:promptCacheSessionID,turnID:turnID,purpose:purpose,lifecycle:try await requestLifecycle(turnID:turnID,purpose:purpose,requestMessages:messages),onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
+                let lifecycle = try await requestLifecycle(turnID:turnID,purpose:purpose,requestMessages:messages)
+                let client = self.client, apiKey = self.apiKey, sessionID = id, cacheSessionID = promptCacheSessionID
+                // A cost-limit pause cuts this request (`abortModelRequests`).
+                let reply = try await abortable { [weak self] in
+                    try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:sessionID,cacheSessionID:cacheSessionID,turnID:turnID,purpose:purpose,lifecycle:lifecycle,onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
+                }
                 modelReplyMs = nowMS()-started; modelRequestsMs += modelReplyMs; measured = true
                 return reply
             } catch is UnexplainedIncompleteCancellation {
@@ -90,11 +96,33 @@ extension AgentSession {
                 try reset()
                 retryInfo = ["attempt": JSON(attempt + 1), "of": JSON(attempts), "reason": JSON(error.message)]
                 runStatus = .retrying; event("retry", retryInfo)
-                try await Task.sleep(nanoseconds: UInt64(retry.delayMs(attempt: attempt) * 1_000_000))
+                let delay = UInt64(retry.delayMs(attempt: attempt) * 1_000_000)
+                try await abortable { try await Task.sleep(nanoseconds: delay) }
                 runStatus = .running; event("state")
                 if let next = try await refresh() { (profile, messages, instructions, tools) = next }
             }
         }
+    }
+    /// Runs a model request (or its retry back-off) so a cost-limit pause can
+    /// cut it alone, leaving the run and its tools in place. Stop still
+    /// cancels it through the run task.
+    func abortable<T: Sendable>(_ body: @escaping @Sendable () async throws -> T) async throws -> T {
+        let task = Task { try await body() }
+        modelRequestAbort = { task.cancel() }
+        defer { modelRequestAbort = nil }
+        if costPaused { task.cancel() }
+        return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
+    }
+    /// The held calls of the newest reply, in its order, still without results.
+    func heldToolCalls() -> ([ToolCall], [String]) {
+        let held = Set(costPendingCalls)
+        guard let reply = context.last(where: { $0.role == "assistant" }) else { return ([], []) }
+        let answered = Set(context.compactMap { $0.role == "toolResult" ? $0.toolCallId : nil })
+        let calls = reply.content.compactMap { block -> ToolCall? in
+            guard block["type"].text == "toolCall", let id = block["id"].text, let name = block["name"].text, held.contains(id), !answered.contains(id) else { return nil }
+            return ToolCall(id:id,name:name,arguments:block["arguments"])
+        }
+        return (calls, reply.requestAttemptIDs ?? [])
     }
     func observeOperation(_ observation: RequestObservation, generation: UInt64, operation: JSON) async {
         countAttempt(observation)
@@ -153,7 +181,19 @@ extension AgentSession {
                 // under this run's execution, before anything is asked again.
                 if resumingCostPause, !isSubagent {
                     resumingCostPause=false
-                    try await agentCoordinator?.resumeParked(owner:self,generation:stopCount)
+                    try await agentCoordinator?.resumeParked(owner:self,generation:costPauseCount)
+                }
+                // Tool calls the pause held before they started run first,
+                // from the reply that issued them: it is never asked again.
+                if continued, !costPendingCalls.isEmpty {
+                    let (calls, attempts) = heldToolCalls()
+                    costPendingCalls = []
+                    if !calls.isEmpty {
+                        currentAttemptIDs = attempts
+                        try await runToolBatch(calls)
+                        await flushRequestLinks()
+                        boundary=context; try persistState(active:true); event("turn_end")
+                    } else { try persistState(active:true) }
                 }
                 // Nothing of the parent's own was cut off: wait for the resumed
                 // family as the turn's end would, and ask the model only once
@@ -179,7 +219,7 @@ extension AgentSession {
                     let resumingFailedRequest=retryFirstRequest && rounds == 1
                     // Each round makes a model request. At the chat's cost
                     // limit it stops here, before pending steering is delivered.
-                    try enforceCostLimit()
+                    try await enforceCostHold(); try enforceCostLimit()
                     let humanDrained=resumingFailedRequest ? false : try await drainSteering()
                     let agentDrained=resumingFailedRequest || agentCoordinator == nil ? false : try await agentCoordinator!.boundary(self,final:false)
                     let drained = humanDrained || agentDrained
@@ -336,9 +376,9 @@ extension AgentSession {
             let cancelled = Task.isCancelled || error is CancellationError
             modelActive = false
             let budgetError = familyStopReason?.code == Self.costLimitCode ? familyStopReason : (error as? AgentError).flatMap { $0.code == Self.costLimitCode ? $0 : nil }
-            // At the family's limit the family pauses (`pauseAtCostLimit`):
-            // its sub-agent turns are parked, not cancelled or waited for.
-            if let budgetError, familyBudgetEnabled || isSubagent {
+            // At the limit every chat pauses (`pauseAtCostLimit`); a family's
+            // sub-agent turns are parked, not cancelled or waited for.
+            if let budgetError {
                 stopFamilyAtLimit(budgetError)
             } else if budgetError == nil, !costPaused, !isSubagent, subagents.family != nil, let coordinator = agentCoordinator {
                 let owner = id, runtime = displayEpoch, generation = stopCount

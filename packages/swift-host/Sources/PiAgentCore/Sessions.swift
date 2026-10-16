@@ -119,6 +119,13 @@ public actor AgentSession {
     /// own to continue waits for them instead of asking the model.
     var resumingCostPause = false
     var familyWaitResume = false
+    /// Advances with each cost-limit pause; a Resume covers the pauses so far.
+    var costPauseCount = 0
+    /// Tool calls of a completed reply the pause held before any started:
+    /// they run first on Resume, before another model request. Durable.
+    var costPendingCalls: [String] = []
+    /// Cancels the model request (or retry back-off) under way, if any.
+    var modelRequestAbort: (@Sendable () -> Void)?
     var familyCancelled: (@Sendable (Int) -> Void)?
     var subagentCoordinator: SubagentCoordinator?
     var agentCoordinator: AgentSteeringCoordinator?
@@ -491,6 +498,7 @@ public actor AgentSession {
             }
             costPaused = saved["costPaused"].flag == true
             costPausedMembers = saved["costPausedMembers"].list.compactMap(\.text)
+            costPendingCalls = saved["costPendingCalls"].list.compactMap(\.text)
             if costPaused {
                 // Paused at the family's limit, also when the helper ended
                 // mid-pause: the pause, not an interruption, is what waits.
@@ -510,8 +518,11 @@ public actor AgentSession {
                                                              directory: directory, accounting: &accounting, spend: &spend)
         try AgentFamilyRecovery.recover(state:&subagents,parent:opened,owner:id,directory:directory,accounting:&accounting,spend:&spend,costPaused:costPaused)
         let recoveredTools=ToolHistoryIndex(context)
+        // Calls the pause held before they started are still pending: they
+        // run on Resume. Only calls that may have begun get unknown outcomes.
+        let held = Set(costPendingCalls)
         let unresolved=context.flatMap { message in
-            message.content.filter { message.role == "assistant" && $0["type"].text == "toolCall" && recoveredTools.results[message.id]?[$0["id"].text ?? ""] == nil }
+            message.content.filter { message.role == "assistant" && $0["type"].text == "toolCall" && recoveredTools.results[message.id]?[$0["id"].text ?? ""] == nil && !held.contains($0["id"].text ?? "") }
                 .map { (call: $0, assistant: message.id, attempts: message.requestAttemptIDs, turn: message.turn) }
         }
         for pending in unresolved {
@@ -622,7 +633,9 @@ public actor AgentSession {
         for permit in requestPermits.values { permit.cancel() }
         // A cost-limit pause parks this owner's sub-agent turns for Resume
         // instead of cancelling them. The coordinator stops their runs.
-        if costPaused, !isSubagent, let coordinator = agentCoordinator { Task { await coordinator.pause(owner:self,generation:cancelledGeneration) } }
+        // A paused family's children are held by their coordinator, not
+        // cancelled; Stop (or close) stops their runs (`pause(halt:)`).
+        if costPaused, !isSubagent, let coordinator = agentCoordinator { let count = costPauseCount; Task { await coordinator.pause(owner:self,generation:count,halt:true) } }
         else { familyCancelled?(cancelledGeneration) }
         managedCancellation?()
         // The run may already have reached its terminal state while its
@@ -648,7 +661,7 @@ public actor AgentSession {
     public func close() async {
         cancelHistoryLoads(); closed=true; stop(); await runTask?.value
         // A paused family keeps its turns for Resume after the next open.
-        if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:stopCount) }
+        if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:costPauseCount,halt:true) }
         if !isSubagent { await agentCoordinator?.drain(owner:id) }
         if !isSubagent { await subagentCoordinator?.release(owner: id, runtimeID: displayEpoch) }
         journal=nil

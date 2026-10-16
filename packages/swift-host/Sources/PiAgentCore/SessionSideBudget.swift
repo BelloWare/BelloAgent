@@ -83,6 +83,7 @@ extension AgentSession {
     }
 
     func enforceToolBudget() async throws {
+        try await enforceCostHold()
         guard familyBudgetEnabled || isSubagent else { return }
         if let budgetOwner { try await budgetOwner.enforceSharedCostLimit() }
         else { try await enforceSharedCostLimit() }

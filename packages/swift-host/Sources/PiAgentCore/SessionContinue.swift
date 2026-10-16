@@ -118,7 +118,8 @@ extension AgentSession {
         }
         if costPaused { members = endCostPause() }
         let familyOnly = paused.paused && hasParkedAgentTurns
-        let tailContinues = continuationTail.map { Self.continues(from: $0) } ?? false || hasPendingAgentEvents
+        // Held tool calls are a run to go on with: they run first.
+        let tailContinues = continuationTail.map { Self.continues(from: $0) } ?? false || hasPendingAgentEvents || !costPendingCalls.isEmpty
         // With nothing of its own cut off, the run waits for the resumed
         // family first, as its turn's end did; follow-ups go after it.
         guard !titleTask, !isConnectionTest, tailContinues || familyOnly else {
@@ -133,7 +134,7 @@ extension AgentSession {
                 event("state")
                 // No run: release the coordinator's hold now.
                 resumingCostPause = false; committed = true
-                if !isSubagent, let coordinator = agentCoordinator { let generation = stopCount; Task { try? await coordinator.resumeParked(owner:self,generation:generation) } }
+                if !isSubagent, let coordinator = agentCoordinator { let generation = costPauseCount; Task { try? await coordinator.resumeParked(owner:self,generation:generation) } }
                 return ["accepted": true, "continued": false, "resumedFamily": true, "pausedMembers": .array(members.map(JSON.string))]
             }
             // Pi: from an answered context (or none: a first message stopped

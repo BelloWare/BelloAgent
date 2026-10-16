@@ -87,3 +87,31 @@ final class CostPausePresentationTests: XCTestCase {
                      parentTurnID: "turn", parentExecutionID: "execution")
     }
 }
+
+extension CostPausePresentationTests {
+    /// After a relaunch, before any helper starts, an unsealed child of a
+    /// paused family reads Paused (queued), not Interrupted; without the
+    /// pause it still reads Interrupted.
+    @MainActor func testColdDiscoveryKeepsPausedChildrenQueued() async throws {
+        for paused in [true, false] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+            model.chats.remove(at: 1)
+            let family = try SubagentDiscoveryTests.family(model)
+            // Unseal the child: drop its terminal row, as a parked turn has none.
+            let lines = try String(contentsOf: family.path, encoding: .utf8).split(separator: "\n").filter { !$0.contains("subagent-terminal") }
+            try (lines.joined(separator: "\n") + "\n").write(to: family.path, atomically: true, encoding: .utf8)
+            let parent = URL(fileURLWithPath: try XCTUnwrap(model.chats[0].path))
+            let handle = try FileHandle(forWritingTo: parent); try handle.seekToEnd()
+            let state: [String: WireValue] = ["type": .string("custom"), "customType": .string(StateRecordTail.customType),
+                "data": .object(["active": .bool(false), "queuePaused": .bool(true), "runStatus": .string("cancelled"), "costPaused": .bool(paused)])]
+            var data = try JSONEncoder().encode(state); data.append(10); try handle.write(contentsOf: data); try handle.close()
+            for chat in model.chats { try await model.store?.put(chat, kind: "chat", id: chat.id) }
+            await model.reconcileSubagents()
+            let summary = try XCTUnwrap(model.subagentSummaries[family.child])
+            XCTAssertEqual(summary.status, paused ? .queued : .interrupted)
+            XCTAssertEqual(summary.pausedAtCostLimit, paused)
+            XCTAssertTrue(model.hosts.isEmpty, "Nothing was started to learn it")
+        }
+    }
+}

@@ -177,6 +177,7 @@ actor AgentSteeringCoordinator {
         do {
             try Task.checkCancellation()
             guard job.turn.currentGeneration > cancelledThrough[job.turn.currentRuntimeID,default:-1], !job.cancelled else { throw CancellationError() }
+            guard !paused.contains(job.owner.id) else { throw AgentSession.costHoldError }
             try await job.owner.enforceSharedCostLimit()
             if let existing = job.child { child = existing } else { child = try await open(job.environment,job.plan) }
             guard let child else { throw SubagentRecovery.damaged() }
@@ -254,16 +255,19 @@ actor AgentSteeringCoordinator {
         pump(job.owner.id)
         await signal(job.owner.id).pulse()
     }
-    /// The owner paused at its family's cost limit (`AgentSession.stop` while
-    /// `costPaused`): stop running turns and park queued ones. Idempotent.
-    func pause(owner: AgentSession, generation: Int) async {
-        guard generation >= resumedThrough[owner.id, default: -1] else { return }
+    /// The owner paused at its family's cost limit: queued turns park now;
+    /// running ones lose only their model request in flight. A child's tool
+    /// finishes with its real result, then its gate holds the run and its
+    /// runner parks the turn. `halt` (Stop or close of a paused owner) stops
+    /// the children's runs too. Idempotent; a pause older than a Resume
+    /// (`generation`, the owner's pause count) is ignored.
+    func pause(owner: AgentSession, generation: Int, halt: Bool = false) async {
+        guard generation > resumedThrough[owner.id, default: -1] else { return }
         paused.insert(owner.id)
         for job in Array(jobs.values) where job.owner === owner {
             if job.allocated {
-                // Its runner parks the turn once the child's run has ended.
-                jobs[job.turn.id]?.task?.cancel()
-                if let child = job.child { await child.stop() }
+                if halt { jobs[job.turn.id]?.task?.cancel() }
+                if let child = job.child { if halt { await child.stop() } else { await child.abortModelRequests() } }
             } else if jobs[job.turn.id]?.task == nil {
                 await park(job,child:job.child)
             }

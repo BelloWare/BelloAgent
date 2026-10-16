@@ -162,7 +162,30 @@ extension AgentSession {
         // Written with the run's records: an attempt's cost is as durable as
         // the reply it paid for. A failed write leaves the figure in memory.
         _ = try? journal?.append(["type":"custom","customType":JSON(SessionSpend.recordType),"data":data], flush: journalFlushesEachRecord)
+        // Every chat pauses at its limit (owner, 2026-10-17), not only families.
+        stopFamilyAtLimit()
     }
+    /// Cuts every model request this session has in flight (and a retry's
+    /// back-off): request permits cancel their streams; the run's request
+    /// task covers a chat that has none. The crossing request has already
+    /// returned its reply by the time it is counted.
+    func abortModelRequests() {
+        for permit in requestPermits.values { permit.cancel() }
+        modelRequestAbort?()
+    }
+    /// The gate before every model request and tool batch: nothing starts
+    /// while this chat, or a child's owner, waits at the cost limit, even
+    /// after the limit is raised and before Resume.
+    func enforceCostHold() async throws {
+        if costPaused { throw Self.costHoldError }
+        // A child also waits for its coordinator to release the hold: the
+        // owner's Resume first parks it, then resumes it under its execution.
+        if isSubagent, let budgetOwner {
+            if await budgetOwner.costPaused { throw Self.costHoldError }
+            if let agentCoordinator, await agentCoordinator.paused.contains(budgetOwner.id) { throw Self.costHoldError }
+        }
+    }
+    static var costHoldError: AgentError { AgentError(costLimitCode, "Paused at the cost limit; Resume goes on from here.") }
     /// Whether the next model request may go: never once the spend the
     /// gateway reported reaches the limit. Unreported attempts are unknown,
     /// so they cannot bring a chat to its limit.
@@ -200,17 +223,23 @@ extension AgentSession {
     /// unfinished work only closes its gates; a side that pauses tells its
     /// root, which then shows the family's pause and fans Resume out to it.
     func pauseAtCostLimit(_ reason: AgentError) {
-        guard familyBudgetEnabled, !isSubagent, !budgetStopIssued else { return }
+        guard !isSubagent, !budgetStopIssued else { return }
         budgetStopIssued = true; familyStopReason = reason
         let pauses = !costPaused && hasCostPausableWork
         if pauses {
-            costPaused = true; queuePaused = true
+            costPaused = true; queuePaused = true; costPauseCount &+= 1
             errorCode = Self.costLimitCode; errorMessage = costPausedMessage
             do { try persistState() } catch { failFamilyAccounting(error); return }
         }
-        // Stop's cancellation; with `costPaused` the coordinator parks
-        // children instead of sealing them (`AgentSteeringCoordinator.pause`).
-        stop()
+        // Owner, 2026-10-17: only model requests are cut, as Stop cuts them
+        // (an aborted reply is never replayed). Running tools finish with
+        // their real results; the gates (`enforceCostHold`) start nothing
+        // new. Children are held by their coordinator the same way.
+        abortModelRequests()
+        if costPaused, let coordinator = agentCoordinator {
+            let generation = costPauseCount
+            Task { await coordinator.pause(owner:self,generation:generation) }
+        }
         if costPaused, runTask == nil { state = .paused; runStatus = .cancelled }
         if pauses, let root = sideBudgetParents.last {
             let member = id

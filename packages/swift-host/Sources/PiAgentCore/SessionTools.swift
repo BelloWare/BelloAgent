@@ -208,6 +208,12 @@ extension AgentSession {
     /// removed every editing lock (2026-10-08).
     func runToolBatch(_ calls: [ToolCall]) async throws {
         do { try await enforceToolBudget() }
+        catch let error as AgentError where error.code == Self.costLimitCode {
+            // Paused at the cost limit before any of these started: they stay
+            // pending, durably, and run first on Resume (no new reply first).
+            costPendingCalls = calls.map(\.id); try persistState(active:true)
+            throw error
+        }
         catch {
             for call in calls { try recordTool(call,result:resultText("Not executed: \((error as? AgentError)?.message ?? "Budget unavailable")",error:true),started:nil,state:.failed) }
             throw error

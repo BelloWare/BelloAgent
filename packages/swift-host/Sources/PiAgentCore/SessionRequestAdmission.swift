@@ -136,7 +136,7 @@ extension AgentSession {
     /// child only latches the reason: its coordinator parks the turn.
     func stopFamilyAtLimit(_ inherited: AgentError? = nil) {
         if inherited?.code == Self.costLimitCode { familyStopReason = inherited }
-        if familyBudgetEnabled, costLimitReached {
+        if costLimitReached {
             do { try enforceCostLimit() } catch { familyStopReason = error as? AgentError }
         }
         guard let reason = familyStopReason, reason.code == Self.costLimitCode, !isSubagent else { return }

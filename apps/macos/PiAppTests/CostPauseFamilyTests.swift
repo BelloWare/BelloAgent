@@ -59,6 +59,15 @@ final class CostPauseFamilyTests: XCTestCase {
     /// nothing; Resume in the chat resumes the side it names, which goes on
     /// from where it stopped.
     @MainActor func testSidePausesAtOnceSurvivesRelaunchAndResumesFromTheChatAfterARaise() async throws {
+        try await pauseRelaunchAndResume(fromSide: false)
+    }
+    /// After a relaunch the side's Resume, with its root not yet read by
+    /// anything, still resumes the whole family from the root.
+    @MainActor func testAColdSidesResumeResumesItsRootFirst() async throws {
+        try await pauseRelaunchAndResume(fromSide: true)
+    }
+
+    @MainActor private func pauseRelaunchAndResume(fromSide: Bool) async throws {
         // Forty words stream for about nine seconds: the crossing lands mid-reply.
         let setup = try await gatewayWorkspace("cost-pause-family", projectID: "cost-pause-project", gatewayEnvironment: ["PI_APP_UI_FIXTURE_SLOW_WORDS": "40"])
         let first = await launch(setup)
@@ -104,6 +113,24 @@ final class CostPauseFamilyTests: XCTestCase {
         try await quit(first)
 
         let second = await launch(setup)
+        if fromSide {
+            try await second.setCostLimit(.usd(1), for: parent.id)
+            XCTAssertNil(second.displays[parent.id], "Nothing has read the root")
+            second.resumeCostPausedFamily(from: try XCTUnwrap(second.record(side.id)))
+            let host = try await second.open(try XCTUnwrap(second.record(parent.id)), budgetDependency: true)
+            var done = false
+            for _ in 0..<600 where !done {
+                let main = try? await host.request("session.status", sessionID: parent.id, params: ["budgetOnly": .bool(true)]).object
+                let sideState = try? await host.request("session.status", sessionID: side.id).object
+                let sideRequests = try await Self.captures(setup.base).filter { $0.sessionID == side.id }.count
+                done = main?["cost"]?.object?["paused"] == nil && sideState?["state"]?.string == "idle" && sideState?["costPaused"] == nil
+                    && sideRequests > sideSent
+                if !done { try await Task.sleep(for: .milliseconds(50)) }
+            }
+            XCTAssertTrue(done, "The root and its side never both resumed")
+            XCTAssertNil(second.error, second.error ?? "")
+            return
+        }
         await second.select(parent.id)
         let reopened = try XCTUnwrap(second.displays[parent.id])
         await waitFor("The chat never read its paused state") { reopened.runStateKnown && reopened.costPaused }
