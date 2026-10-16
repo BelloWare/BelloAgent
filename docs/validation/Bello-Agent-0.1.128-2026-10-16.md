@@ -1,6 +1,6 @@
 # Bello Agent 0.1.128 — sub-agents and sides at the main chat's top right, family spend, sub-agents on request
 
-Status: **packaged, awaiting publication**. Marketing version 0.1.128, build 132. Previous public release: 0.1.127/build 131.
+Status: **publicly released and verified** at [belloware.com](https://belloware.com/bello-agent.html), marketing version 0.1.128, build 132. Public verification completed at **2026-10-16 04:53:04 UTC**. Tagged source: **`73f9527c`**, `v0.1.128`. Website: **`7e4a5bb`**. Previous public release: 0.1.127/build 131.
 
 ## Owner request
 
@@ -91,4 +91,24 @@ Toolchain: macOS 14.8 on Apple Silicon, Xcode 16.1, XcodeGen 2.44.1.
 
 ## Publication
 
-Pending.
+Packaged from **`73f9527c`** with `scripts/release.sh`. That commit is `main` merged with `dev/next` at `cd4730ec`, plus the version bump, the release notes and this record's first draft. The script:
+- made a Release build, stripped the binaries and kept the dSYMs;
+- signed with Developer ID and ran the packaged-helper offline smoke test;
+- notarized and stapled the app and the DMG, then checked them with Gatekeeper;
+- signed the appcast and verified its Ed25519 signature.
+
+`validate-release.py` against build 131 passed. The owner approved publishing 0.1.128 on 2026-10-15 ("work on these and then release a new version"), once the work, gate and soak were done.
+
+- App notarization: **`3e098545-87bd-428a-8ca9-4712c450f48c`**, Accepted.
+- DMG notarization: **`1dce34c5-ec20-44cb-9f82-e6fa0e73e5ea`**, Accepted.
+- Installer: **15,536,212 bytes (14.82 MiB)**.
+- SHA-256: **`ff5f6c50a59a261bda1ec045dc3f444b9b12467a836bbfb7db0484b310721244`**.
+
+Source was pushed atomically to `main` and `dev/next` at `73f9527c`, with tag `v0.1.128`. `publish-release.sh 0.1.128` pushed website `7e4a5bb`.
+
+`verify-published.py` passed at 2026-10-16 04:53:04 UTC:
+- the canonical and legacy feeds are identical;
+- the public DMG's SHA-256 matches;
+- the Ed25519 signature verifies.
+
+Install and update rehearsals were skipped by standing owner instruction.
