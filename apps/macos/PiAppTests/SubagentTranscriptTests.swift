@@ -110,7 +110,7 @@ final class SubagentTranscriptTests: XCTestCase {
             XCTAssertEqual(field.font, PiKit.Font.caption)
             XCTAssertEqual(field.accessibilityLabel(), key)
         }
-        let note = try XCTUnwrap(ConversationPaneTests.views(PiKit.WrappedText.self, in: card).first { $0.text == "1 request's cost unknown" })
+        let note = try XCTUnwrap(ConversationPaneTests.views(PiKit.WrappedText.self, in: card).first { $0.text == "1 request's cost unknown · Counts toward parent chat" })
         XCTAssertEqual(note.color, .piInkSecondary)
         let copies = ConversationPaneTests.views(PiKit.Button.self, in: card).filter { $0.title == "Copy" }
         XCTAssertEqual(copies.count, 2, "Only Task and Result have Copy actions")
@@ -130,7 +130,7 @@ final class SubagentTranscriptTests: XCTestCase {
             let card = TranscriptNativeSubagentCard(); card.configure(.subagent(SubagentToolView(tool)))
             let details = try XCTUnwrap(card.subviews.first { $0.accessibilityIdentifier() == "subagent-details" })
             let notes = ConversationPaneTests.views(PiKit.WrappedText.self, in: details).map(\.text)
-            XCTAssertEqual(notes, unknown == 0 ? [] : ["2 requests' cost unknown"])
+            XCTAssertEqual(notes, unknown == 0 ? ["Counts toward parent chat"] : ["2 requests' cost unknown · Counts toward parent chat"])
             XCTAssertFalse(ConversationPaneTests.views(PiKit.TextLine.self, in: details).contains { $0.line.text == "Effort" })
             XCTAssertTrue(ConversationPaneTests.views(PiKit.SelectableText.self, in: details).contains { $0.stringValue == compactGatewayUSD(0.002) })
             for width in [272.0, 500.0, 850.0] {

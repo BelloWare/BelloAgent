@@ -16,7 +16,7 @@ struct SideRecord: Identifiable, Equatable {
     var modelOutputLimit: Int? = nil
     var outputBudgetVersion: Int? = 1
     var topicID: String?
-    /// The side's own cost limit; nil runs it under the Settings default.
+    /// Legacy value retained for decoding only; sides follow the main budget.
     var costLimit: CostLimit? = nil
     /// What follows its chat's title in a new side's, until its first
     /// message names it.
@@ -192,8 +192,8 @@ extension WorkspaceModel {
         let result: [String: WireValue]
         var written = false
         do {
-            // A side is a session of its own, with its own spend and limit.
-            result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id), "costLimit": costLimit(for: info.chat).wire]).object ?? [:]
+            // Sides share the main chat’s budget.
+            result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id)]).object ?? [:]
             written = true
             guard result["sessionId"]?.string == id, sides[parentID]?.id == id else { throw HostError.failure("Side identity changed; reopen this project before creating another side.") }
             try await registerKeptSide(id: id, path: result["path"]?.string)
@@ -378,6 +378,7 @@ extension WorkspaceModel {
     /// Puts a saved child chat in its parent's side pane, waiting to be read.
     /// The side shown there before keeps its display and any running work.
     func mountSide(_ child: ChatRecord, beside parentID: String) -> SessionDisplay {
+        releasedHelperSessions.remove(child.id)
         if let previous = sides[parentID] { displays[previous.id]?.presentation.cancel() }
         let view = displays[child.id] ?? SessionDisplay(id: child.id); view.used = Date(); displays[child.id] = view
         adoptContextReading(view, item: child)
@@ -544,6 +545,8 @@ extension WorkspaceModel {
         await retainSideReadState(id)
         sideKeepResolutionRevision &+= 1
         sideKeepIssues.removeAll { $0.chat == expected }
+        do { try await restoreSideBudgets() }
+        catch { self.error = "The chat was saved, but its family cost totals could not be refreshed: " + error.localizedDescription }
     }
     func reconcileSideKeeps() async {
         guard !reconcilingSideKeeps else { return }
@@ -665,7 +668,7 @@ extension WorkspaceModel {
         for info in sides.values.filter({ $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) {
             let view = displays[info.id]
             let typed = view.map { !Self.unsentDraft(of: $0, to: info.parentID).isBlank } ?? false
-            sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id); opened.remove(info.id)
+            sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id); helperSessionDidUnload(info.id)
             forgetReadState(info.id)
             // The side is gone, but nothing the user typed into it is: the
             // draft moves as a closed side's does, from the display kept here.
@@ -699,7 +702,7 @@ extension WorkspaceModel {
         parent.draft = draft; parent.directCommand = false; parent.completionVisible = false; draftChanged(parent)
     }
     func enableEditing(_ id: String) {
-        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else { error = "Close the saved side panel and wait for idle before changing tools."; return }
+        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true else { error = "Wait for this chat to finish its work before changing tools."; return }
         guard store != nil else { error = StoreError.unavailable.localizedDescription; return }
         let question = ChatQuestion(title: "Enable editing tools for this saved chat?",
                                     detail: "Future turns may run shell commands and change files in this project with your account's permissions.",
@@ -711,15 +714,18 @@ extension WorkspaceModel {
     }
     func enableEditingAfterConfirmation(_ id: String) async throws {
         guard let store else { throw StoreError.unavailable }
-        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else {
-            throw HostError.failure("Close the saved side panel and wait for idle before changing tools.")
+        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true else {
+            throw HostError.failure("Wait for this chat to finish its work before changing tools.")
         }
         let view = displays[id]
+        try beginBudgetOwnerChange(id)
+        defer { budgetOwnerChanges.remove(id) }
         view?.loading = true
         defer { view?.loading = false }
+        if let host = hosts[item.workspaceID], host.isReady { try await releaseIdleBudgetDependents(of:id,host:host) }
         if opened.contains(id) {
             guard let host = hosts[item.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing tools.") }
-            _ = try await host.request("session.close", sessionID: id); opened.remove(id)
+            _ = try await host.request("session.close", sessionID: id); helperSessionDidUnload(id)
         }
         item.toolMode = ChatRecord.editingTools
         try await store.put(item, kind: "chat", id: id)

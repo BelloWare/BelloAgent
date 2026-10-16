@@ -58,8 +58,8 @@ final class SideCacheTests: XCTestCase {
     /// The side's first request is the parent's last one extended: the same
     /// tools, byte for byte, the same instructions and prompt cache key, and
     /// the parent's input items first. Only the correlation identity, the
-    /// attempt log and the spend are the side's own.
-    func testASidesFirstRequestExtendsItsParentsLastAndIsPaidForByTheSide() async throws {
+    /// attempt log are the side’s own; spending also counts toward the parent.
+    func testASidesFirstRequestExtendsItsParentsLastAndCountsTowardTheParent() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let gateway = try await PythonGateway.start(source: Self.gatewayScript, root: root); defer { gateway.stop() }
         let port = gateway.port
@@ -111,7 +111,7 @@ final class SideCacheTests: XCTestCase {
         }
         XCTAssertEqual(last.headers["session_id"].text, "parent"); XCTAssertEqual(last.body["metadata"]["session_id"].text, "parent")
 
-        // The attempt log and the spend are the side's own.
+        // Physical capture identity stays with the side; the parent includes its spend.
         let sideAttempts = try await host.command("debug.list", sessionID: "side", params: [:])["attempts"].list
         let parentAttempts = try await host.command("debug.list", sessionID: "parent", params: [:])["attempts"].list
         XCTAssertEqual(sideAttempts.count, 2); XCTAssertEqual(parentAttempts.count, 1)
@@ -120,15 +120,44 @@ final class SideCacheTests: XCTestCase {
         let sideCost = try await host.command("session.status", sessionID: "side", params: [:])["cost"]
         let parentCost = try await host.command("session.status", sessionID: "parent", params: [:])["cost"]
         XCTAssertEqual(sideCost["spentUSD"].double ?? 0, 0.0246, accuracy: 1e-9); XCTAssertEqual(sideCost["reportedRequests"].int, 2)
-        XCTAssertEqual(parentCost["spentUSD"].double ?? 0, 0.0123, accuracy: 1e-9); XCTAssertEqual(parentCost["reportedRequests"].int, 1)
+        XCTAssertEqual(parentCost["spentUSD"].double ?? 0, 0.0369, accuracy: 1e-9); XCTAssertEqual(parentCost["reportedRequests"].int, 3)
         func costRecords(_ path: String) throws -> [String] {
             try String(contentsOfFile: path, encoding: .utf8).split(separator: "\n").map { try JSON.parse(Data($0.utf8)) }
                 .filter { $0["customType"].text == "pi-app.cost.v1" }.compactMap { $0["data"]["attemptId"].text }
         }
         let sideIDs = Set(sideAttempts.compactMap { $0["attemptId"].text }), journal = await parent.path, parentPath = try XCTUnwrap(journal)
         XCTAssertEqual(Set(try costRecords(try XCTUnwrap(opened["path"].text))), sideIDs, "The side's journal records its own attempts' cost")
-        XCTAssertTrue(Set(try costRecords(parentPath)).isDisjoint(with: sideIDs), "and the parent's records none of them")
+        XCTAssertTrue(sideIDs.isSubset(of: Set(try costRecords(parentPath))), "The parent durably retains every side charge")
         await host.shutdown()
+    }
+
+    func testSideOpenAndReopenIgnoreLegacyLimitsAndStopAtTheMainBudget() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let gateway = try await PythonGateway.start(source:Self.gatewayScript,root:root); defer { gateway.stop() }
+        var profile = try fixtureProfile().raw; profile["baseUrl"] = JSON("http://127.0.0.1:\(gateway.port)")
+        func host() async throws -> NativeHostService {
+            let value = NativeHostService(emit:{ _ in })
+            _ = try await value.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(root.appendingPathComponent("state").path),"resources":["codexHome":JSON(root.appendingPathComponent("codex").path)]])
+            return value
+        }
+        var service = try await host()
+        let parent = try await service.command("session.open",sessionID:"main",params:["profile":profile,"apiKey":"synthetic","costLimit":["usd":0.01]])
+        let side = try await service.command("side.open",sessionID:"main",params:["sideSessionId":"side","costLimit":["usd":99]])
+        _ = try await service.command("turn.submit",sessionID:"side",params:["clientTurnId":"first","text":"Side question"])
+        let loaded = await service.loadedSession("side"); try await settle(try XCTUnwrap(loaded))
+        let own = try await service.command("session.status",sessionID:"side",params:[:])
+        XCTAssertEqual(own["cost"]["spentUSD"].double ?? 0,0.0123,accuracy:1e-9)
+        XCTAssertEqual(own["taskPresentation"]["completion"]["outcome"].text,"completed","The running side request completes even though it crosses the main limit")
+        await service.shutdown(); service = try await host()
+        _ = try await service.command("session.open",sessionID:"main",params:["profile":profile,"apiKey":"synthetic","path":parent["path"],"costLimit":["usd":0.01]])
+        _ = try await service.command("session.open",sessionID:"side",params:["profile":profile,"apiKey":"synthetic","path":side["path"],"costLimit":["usd":100]])
+        _ = try await service.command("turn.submit",sessionID:"side",params:["clientTurnId":"blocked","text":"Second side question"])
+        let reopened = await service.loadedSession("side"); try await settle(try XCTUnwrap(reopened))
+        let stopped = try await service.command("session.status",sessionID:"side",params:[:])
+        XCTAssertEqual(stopped["errorCode"].text,AgentSession.costLimitCode)
+        let requests = try String(contentsOf:root.appendingPathComponent("requests.jsonl"),encoding:.utf8).split(separator:"\n")
+        XCTAssertEqual(requests.count,1,"No second HTTP request may leave after reload")
+        await service.shutdown()
     }
 
     func testASideRefusesWriteEditAndBashWithoutRunningThem() async throws {

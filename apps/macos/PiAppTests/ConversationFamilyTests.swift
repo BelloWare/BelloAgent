@@ -3,6 +3,203 @@ import XCTest
 @testable import PiApp
 
 final class ConversationFamilyTests: XCTestCase {
+    @MainActor func testColdOriginalChildLedgerReplacesRetainedCostWithoutStartingAHelper() async throws {
+        let model = try fixture(), family = try SubagentDiscoveryTests.family(model)
+        try await model.traces.configure(quota:nil,bodyRetention:1000,metricRetention:1000)
+        try await model.store?.putChats(model.chats)
+        await model.reconcileSubagents(parentID:"chat-parent")
+        let link = try XCTUnwrap(model.record(family.child)?.delegation)
+        model.observeCost(["cost":.object(["spentUSD":.number(0.25),"reportedRequests":.number(1),"accountingRevision":.number(1)])],sessionID:family.child)
+        let file = try FileHandle(forWritingTo:family.path); try file.seekToEnd()
+        for (number,usd,reported) in [(1,0.25,1),(2,0.35,1),(3,0.0,0)] {
+            let record: WireValue = .object(["type":.string("custom"),"id":.string("cost-\(number)"),"parentId":.string(number == 1 ? "terminal" : "cost-\(number-1)"),"customType":.string("pi-app.cost.v1"),"data":.object([
+                "attemptId":.string("attempt-\(number)"),"sourceSessionId":.string(family.child),"budgetOwnerSessionId":.string(link.budgetOwnerSessionID),"delegationId":.string(link.delegationID),
+                "usd":.number(usd),"reported":.number(Double(reported)),"unreported":.number(Double(1-reported)),"accountingRevision":.number(Double(number))])])
+            try file.write(contentsOf:JSONEncoder().encode(record)); try file.write(contentsOf:Data([10]))
+        }
+        try file.close()
+        let read = try await model.history.subagentCost(path:family.path,directory:family.path.deletingLastPathComponent(),expected:SubagentTarget(link))
+        model.observeCost(["cost":.object(try XCTUnwrap(read))],sessionID:family.child)
+        XCTAssertEqual(model.familyMemberSpend(family.child),0.60)
+        XCTAssertEqual(model.costReading(for:family.child).reportedRequests,2)
+        XCTAssertEqual(model.costReading(for:family.child).unreportedRequests,1)
+        XCTAssertEqual(model.budgetStates[family.child]?.childLedgerRevision,3)
+        XCTAssertEqual(model.costReading(for:family.child).budgetOwnerID,link.budgetOwnerSessionID)
+        XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.opened.isEmpty)
+        XCTAssertNil(model.displays[family.child])
+    }
+
+    @MainActor func testReleasedChildLedgerRevisionWinsAcrossEveryLifecyclePath() async throws {
+        let paths: [(String,SubagentStatus,Double,Int,Int)] = [
+            ("follow-up start",.queued,0.25,1,0), ("progress",.running,0.65,2,1),
+            ("settle without progress",.completed,0.65,2,0), ("limit stop",.cancelled,0.65,2,0),
+            ("cancel",.cancelled,0.25,1,1), ("helper restart",.interrupted,0.65,2,1),
+            ("fork original",.completed,0.65,2,0), ("downward correction",.completed,0.15,2,0)]
+        for (path,status,usd,reported,unknown) in paths {
+            let model = try fixture(), child = try XCTUnwrap(model.record("chat-child"))
+            let link = try XCTUnwrap(child.delegation)
+            func cost(_ revision: Int, _ usd: Double, _ reported: Int, _ unknown: Int) -> [String:WireValue] {
+                ["cost":.object(["accountingRevision":.number(Double(revision)), "spentUSD":.number(usd),
+                    "reportedRequests":.number(Double(reported)), "unreportedRequests":.number(Double(unknown))])]
+            }
+            model.observeCost(cost(4,0.25,1,0),sessionID:child.id)
+            model.helperSessionDidUnload(child.id)
+            model.subagentSummaries[child.id] = .init(link:link,description:path,model:"fixture",status:status,revision:20,turn:2)
+            if path == "helper restart" { model.interruptSubagents(workspaceID:child.workspaceID) }
+            if path == "fork original" {
+                var fork = try XCTUnwrap(model.record("chat-parent")); fork.id = "fork"; fork.path = "/fixture/fork_fork.jsonl"; fork.parentSessionID = link.budgetOwnerSessionID
+                model.chats.append(fork)
+                model.inheritedSubagents[fork.id] = [.init(target:SubagentTarget(link),title:child.title,number:1,forkID:fork.id)]
+                XCTAssertEqual(model.budgetOwner(for:fork).id,fork.id)
+                XCTAssertTrue(model.conversationFamily(fork.id).agents.members.isEmpty)
+            }
+            _ = model.conversationFamily("chat-parent")
+            let final = cost(7,usd,reported,unknown)
+            model.observeCost(final,sessionID:child.id)
+            // Native events, status replies and cold list projections can
+            // arrive in either order. No older ledger may replace the final.
+            model.observeCost(cost(4,0.25,1,0),sessionID:child.id)
+            let summary = SubagentSummary(link:link,description:path,model:"fixture",status:.running,revision:20,
+                progress:.init(phase:"generating",elapsedMs:9999,requests:1,tools:0,preview:"",usd:0.3,reported:1,unreported:0),turn:2,progressEpoch:"old-runtime")
+            model.observeSubagentCost(summary)
+            XCTAssertEqual(model.familyMemberSpend(child.id),usd,path)
+            XCTAssertEqual(model.costReading(for:child.id).reportedRequests,reported,path)
+            XCTAssertEqual(model.costReading(for:child.id).unreportedRequests,unknown,path)
+            XCTAssertEqual(model.displays["chat-parent"]?.subagentCosts[child.id]?.spentUSD,usd,path)
+            XCTAssertEqual(model.conversationFamily("chat-parent").agents.members.first?.spend,usd,path)
+            model.observeCost(cost(8,0.55,3,0),sessionID:child.id)
+            model.observeCost(final,sessionID:child.id)
+            XCTAssertEqual(model.familyMemberSpend(child.id),0.55,"Later corrections can lower dollars: " + path)
+            XCTAssertEqual(model.costReading(for:child.id).reportedRequests,3,path)
+            XCTAssertNil(model.displays[child.id],path)
+            XCTAssertFalse(model.opened.contains(child.id),path)
+            model.shutdown()
+        }
+    }
+
+    @MainActor func testReleasedChildCostsFollowAcceptedProgressWithoutReopeningItsReader() async throws {
+        let model = try fixture(), family = try SubagentDiscoveryTests.family(model)
+        try await model.traces.configure(quota:nil,bodyRetention:1000,metricRetention:1000)
+        let parent = try XCTUnwrap(model.record("chat-parent")), view = try XCTUnwrap(model.displays[parent.id])
+        try await model.store?.put(parent,kind:"chat",id:parent.id)
+        await model.reconcileSubagents(parentID:parent.id)
+        let link = try XCTUnwrap(model.record(family.child)?.delegation)
+        func summary(_ turn: Int, _ elapsed: Double, _ usd: Double, _ reported: Int, _ unreported: Int = 0) -> SubagentSummary {
+            .init(link:link,description:"Parser review",model:"fixture",status:.running,revision:turn,
+                progress:.init(phase:"generating",elapsedMs:elapsed,requests:reported + unreported,tools:0,preview:"",usd:usd,reported:reported,unreported:unreported),
+                turn:turn,executionID:"turn-\(turn)",progressEpoch:"fixture-runtime")
+        }
+        let first = summary(1,100,0.20,1)
+        try await model.registerListedSubagent(first,parent:parent,task:"Review")
+        model.displays[family.child] = SessionDisplay(id:family.child); model.opened.insert(family.child)
+        model.observeCost(["cost":.object(["spentUSD":.number(0.25),"reportedRequests":.number(1)])],sessionID:family.child)
+        model.displays.removeValue(forKey:family.child); model.helperSessionDidUnload(family.child)
+        XCTAssertNotNil(model.budgetStates[family.child],"Eviction retains lightweight numeric state")
+        _ = model.conversationFamily(parent.id)
+        func check(_ usd: Double, _ reported: Int, _ unknown: Int = 0, file: StaticString = #filePath, line: UInt = #line) throws {
+            XCTAssertEqual(model.conversationFamily(parent.id).agents.members.first { $0.chat.id == family.child }?.spend,usd,file:file,line:line)
+            XCTAssertEqual(model.costReading(for:family.child).spentUSD,usd,file:file,line:line)
+            XCTAssertEqual(model.costReading(for:family.child).reportedRequests,reported,file:file,line:line)
+            XCTAssertEqual(model.costReading(for:family.child).unreportedRequests,unknown,file:file,line:line)
+            var tool = SubagentTranscriptTests.tool; tool.subagent = first
+            let card = view.presentAgentState(.init(id:"reply",role:"assistant",text:"",tools:[tool]))
+            XCTAssertEqual(SubagentToolView(try XCTUnwrap(card.tools?.first)).cost?.spentUSD,usd,file:file,line:line)
+            XCTAssertNil(model.displays[family.child],file:file,line:line); XCTAssertFalse(model.opened.contains(family.child),file:file,line:line)
+        }
+        let second = summary(2,100,0.65,2,1)
+        try await model.registerListedSubagent(second,parent:parent,task:"Follow up"); try check(0.65,2,1)
+        let later = summary(2,200,0.85,3)
+        try await model.registerListedSubagent(later,parent:parent,task:"Follow up"); try check(0.85,3)
+        try await model.registerListedSubagent(first,parent:parent,task:"Late old turn"); try check(0.85,3)
+        // A direct accounting correction wins over repeated/older progress.
+        model.observeCost(["cost":.object(["spentUSD":.number(0.90),"reportedRequests":.number(3)])],sessionID:family.child)
+        try await model.registerListedSubagent(later,parent:parent,task:"Duplicate"); try check(0.90,3)
+        try await model.registerListedSubagent(second,parent:parent,task:"Late progress"); try check(0.90,3)
+        // A newer correction can lower dollars without losing coverage.
+        let correction = summary(2,300,0.75,3)
+        try await model.registerListedSubagent(correction,parent:parent,task:"Correction"); try check(0.75,3)
+        var terminal = correction; terminal.status = .completed; terminal.progress = nil; terminal.revision = 3
+        try await model.registerListedSubagent(terminal,parent:parent,task:"Done"); try check(0.75,3)
+    }
+
+    @MainActor func testUnchangedStreamingCostDoesNoFamilyWorkAfterManyChatsWereVisited() throws {
+        let model = try fixture(), parent = "chat-parent", side = "chat-side"
+        model.chats[try XCTUnwrap(model.chats.firstIndex { $0.id == side })].path = "/fixture/side_chat-side.jsonl"
+        let other = (0..<200).map { ChatRecord(id:"visited-\($0)",workspaceID:"pane-project",title:"Visited \($0)",profileID:"pane-profile") }
+        model.chats.append(contentsOf:other)
+        for item in other { _ = model.budgetState(for:item.id) }
+        for id in [side,"chat-child"] { _ = model.budgetState(for:id) }
+        func snapshot(_ usd: Double) -> [String:WireValue] { ["cost":.object(["spentUSD":.number(usd),"reportedRequests":.number(1),"limitUSD":.number(25)])] }
+        model.observeCost(snapshot(0.4),sessionID:parent)
+        let before = model.budgetFamilyRefreshVisits
+        for _ in 0..<200 { model.observeCost(snapshot(0.4),sessionID:parent) }
+        XCTAssertEqual(model.budgetFamilyRefreshVisits,before,"Unchanged per-token cost must not traverse retained chats")
+        model.observeCost(snapshot(0.6),sessionID:parent)
+        XCTAssertEqual(model.budgetStates[side]?.reading.budgetSpentUSD,0.6)
+        XCTAssertEqual(model.budgetStates["chat-child"]?.reading.budgetSpentUSD,0.6)
+        XCTAssertTrue(other.allSatisfy { model.budgetStates[$0.id]?.reading.spentUSD == nil })
+        // Ownership/attribution changes still apply when the amount repeats.
+        model.observeCost(snapshot(0.1),sessionID:side)
+        model.chats.removeAll { $0.id == parent }
+        model.observeCost(snapshot(0.1),sessionID:side)
+        XCTAssertNil(model.budgetStates[side]?.reading.budgetOwnerID)
+        XCTAssertNil(model.budgetStates[side]?.reading.costAttribution)
+    }
+    @MainActor func testCachedCardAttributionFollowsSavedSideOrphaningWithoutAnotherCharge() throws {
+        let model = try fixture()
+        let sideIndex = try XCTUnwrap(model.chats.firstIndex { $0.id == "chat-side" })
+        model.chats[sideIndex].path = "/fixture/side_chat-side.jsonl"
+        let childIndex = try XCTUnwrap(model.chats.firstIndex { $0.id == "chat-child" })
+        model.chats[childIndex].parentSessionID = "chat-side"
+        model.chats[childIndex].delegation?.budgetOwnerSessionID = "chat-side"
+        model.chats[childIndex].delegation?.call.parentSessionID = "chat-side"
+        let side = SessionDisplay(id:"chat-side"); model.displays[side.id] = side
+        model.observeCost(["cost":.object(["spentUSD":.number(0.6),"reportedRequests":.number(1)])],sessionID:"chat-child")
+        let first = side.presentAgentState(cardRow(model)).tools?.first
+        XCTAssertEqual(SubagentToolView(try XCTUnwrap(first)).cost?.costAttribution,"Counts toward parent")
+        model.chats.removeAll { $0.id == "chat-parent" }
+        model.refreshCostReading("chat-child")
+        let orphan = side.presentAgentState(cardRow(model)).tools?.first
+        XCTAssertEqual(SubagentToolView(try XCTUnwrap(orphan)).cost?.costAttribution,"Counts toward side")
+        XCTAssertEqual(SubagentToolView(try XCTUnwrap(orphan)).cost?.spentUSD,0.6)
+    }
+    @MainActor private func cardRow(_ model: WorkspaceModel) -> TranscriptMessage {
+        var tool = SubagentTranscriptTests.tool
+        tool.subagent = .init(link:model.record("chat-child")!.delegation!,description:"Child",model:"fixture",status:.completed,revision:1)
+        return .init(id:"reply",role:"assistant",text:"",tools:[tool])
+    }
+    @MainActor func testFamilyCostsPreferAuthoritativeBudgetStateAndRefreshCachedPickerAndCards() throws {
+        let model = try fixture(), child = try XCTUnwrap(model.record("chat-child"))
+        var old = GatewayTotals(); old.costUSD = 0.04; old.costSamples = 1
+        model.publishChatStats(old,sessionID:"chat-side")
+        model.subagentSummaries[child.id] = .init(link:try XCTUnwrap(child.delegation),description:child.title,model:"fixture",status:.completed,revision:1,
+            progress:.init(phase:"done",elapsedMs:100,requests:1,tools:0,preview:"",usd:0.05,reported:1,unreported:0))
+        let picker = AgentFamilyPopoverView(model:model,sessionID:"chat-parent",close:{},ownerWindow:nil)
+        _ = model.conversationFamily("chat-parent")
+        for (id,usd) in [("chat-side",0.75),("chat-child",0.60)] {
+            model.observeCost(["cost":.object(["spentUSD":.number(usd),"reportedRequests":.number(2),"unreportedRequests":.number(1),"limitUSD":.number(25)])],sessionID:id)
+        }
+        let family = model.conversationFamily("chat-parent")
+        XCTAssertEqual(family.sides.first?.spend,0.75)
+        XCTAssertEqual(family.agents.members.first?.spend,0.60)
+        XCTAssertNil(model.displays["chat-side"],"Cost-only state must not allocate a hidden transcript")
+        picker.refresh()
+        let rows = ConversationPaneTests.views(FamilyPickerRow.self,in:picker)
+        XCTAssertTrue(rows.contains { $0.accessibilityIdentifier() == "open-side-chat-side" && $0.secondary?.contains("$0.75") == true })
+        XCTAssertTrue(rows.contains { $0.accessibilityIdentifier() == "open-agent-chat-child" && $0.secondary?.contains("$0.60") == true })
+        var tool = SubagentTranscriptTests.tool; tool.nativeSubagent = SubagentTranscriptTests.metadata
+        tool.subagent = model.subagentSummaries[child.id]
+        let parent = try XCTUnwrap(model.displays["chat-parent"])
+        let projected = parent.presentAgentState(.init(id:"reply",role:"assistant",text:"",tools:[tool]))
+        let row = TranscriptNativeActionRow()
+        row.update(tool:try XCTUnwrap(projected.tools?.first),open:true,fetched:nil,environment:.init(),toggle:{},openFile:nil)
+        XCTAssertTrue(ConversationPaneTests.views(PiKit.SelectableText.self,in:row).contains { $0.stringValue == "$0.60" })
+        XCTAssertTrue(ConversationPaneTests.views(PiKit.WrappedText.self,in:row).contains { $0.text.contains("Counts toward") })
+        // Late capture refresh cannot downgrade a durable helper total.
+        model.publishChatStats(old,sessionID:"chat-child"); model.publishChatStats(old,sessionID:"chat-side")
+        XCTAssertEqual(model.conversationFamily("chat-parent").agents.members.first?.spend,0.60)
+        XCTAssertEqual(model.conversationFamily("chat-parent").sides.first?.spend,0.75)
+    }
     @MainActor func testNestedSavedForksAndTheirAgentsStayReachableInTreeOrderAndSearch() throws {
         let model = try fixture()
         var fork = try XCTUnwrap(model.record("chat-side")); fork.id = "nested-fork"; fork.title = "Nested review"; fork.parentSessionID = "chat-side"

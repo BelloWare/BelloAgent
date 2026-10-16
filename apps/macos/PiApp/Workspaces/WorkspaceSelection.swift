@@ -10,6 +10,7 @@ extension WorkspaceModel {
     func select(_ id: String, revealInSidebar: Bool = true, preserveArchiveSwitch: Bool = false, reopensSide: Bool = true,
                 focusesComposer: Bool = true) async {
         guard let item = chats.first(where: { $0.id == id }) else { return }
+        releasedHelperSessions.remove(id)
         if item.isSubagent { await openSubagentTab(id); return }
         let focusesComposer = focusesComposer && !item.isSubagent
         if revealInSidebar || preserveArchiveSwitch { quietSidebarReveal = [] }

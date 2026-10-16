@@ -89,6 +89,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     var agentCoordination: [String: AgentCoordinationEntry] = [:] { didSet { if agentCoordination != oldValue { publishTranscript() } } }
     @Published var heldAgentChildren: Set<String> = [] { didSet { if heldAgentChildren != oldValue { publishTranscript() } } }
     var childSummaries: [String: SubagentSummary] = [:] { didSet { if childSummaries != oldValue { publishTranscript() } } }
+    var subagentCosts: [String: SubagentCostPresentation] = [:] { didSet { if subagentCosts != oldValue { publishTranscript() } } }
     var originalSubagentAvailability: [String: OriginalSubagentAvailability] = [:] { didSet { if originalSubagentAvailability != oldValue { publishTranscript() } } }
     var subagentNumbers: [String: Int] = [:] { didSet { if subagentNumbers != oldValue { publishTranscript() } } }
     var subagentEfforts: [String: SubagentEffort] = [:] { didSet { if subagentEfforts != oldValue { publishTranscript() } } }
@@ -345,7 +346,7 @@ struct TranscriptVersionView: Equatable, Sendable {
     /// notice's state.
     func applyCostReading(_ reading: SessionCostReading) {
         if footer.cost != reading { footer.cost = reading }
-        let held = reading.reached || reading.spentUSD == nil
+        let held = reading.held
         guard held != costLimitHeld else { return }
         costLimitHeld = held
         if failureCode == Self.costLimitCode { publishTranscript() }

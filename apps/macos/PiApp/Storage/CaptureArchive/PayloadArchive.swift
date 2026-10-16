@@ -11,6 +11,10 @@ actor PayloadArchive {
     // of unpublished chunk tails across 64 simultaneous attempts.
     let root: URL
     private var database: CaptureDatabase?
+    var isOpen: Bool { database != nil && closeTask == nil }
+    /// Identity-only legacy side ancestry, loaded once and updated with its
+    /// durable projection. Ordinary capture starts need no ancestry SQL reads.
+    var savedSideBudgets: [String: [String]] = [:]
     private var reportReader: DashboardReader?
     var usageSnapshots: [UsageSnapshotKey: MenuBarSnapshot] = [:]
     var usageReadGeneration = 0
@@ -100,6 +104,7 @@ actor PayloadArchive {
         }
         try Self.prepareDashboardSchema(db, migrate: version < 4)
         try CaptureLineage.prepare(db, migrate: version < 6)
+        savedSideBudgets = try CaptureLineage.savedSideBudgets(db)
         try CaptureSubagents.prepare(db)
         try db.execute("CREATE INDEX IF NOT EXISTS attempts_filter ON attempts(wall,workspace,session,purpose,api,outcome)")
         try db.execute("CREATE TABLE IF NOT EXISTS bodies(attempt TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE, kind TEXT NOT NULL, state TEXT NOT NULL, reason TEXT, observed INTEGER NOT NULL DEFAULT 0, length INTEGER NOT NULL DEFAULT 0, digest BLOB, PRIMARY KEY(attempt,kind))")
@@ -149,12 +154,16 @@ actor PayloadArchive {
     /// Resolve the owner plus output links on at most two 500-row visible
     /// pages. Final metadata omits link arrays; never materialize the attempt's
     /// entire retained context or scan unrelated sessions to route its update.
-    func accountingTarget(attemptID: String, workspaceID: String, visibleMessageIDs: Set<String> = []) throws -> (sessionID: String, budgetOwnerSessionID: String?, outputMessageIDs: Set<String>)? {
+    func accountingTarget(attemptID: String, workspaceID: String, visibleMessageIDs: Set<String> = []) throws -> (sessionID: String, budgetOwnerSessionID: String?, familySessionIDs: Set<String>, outputMessageIDs: Set<String>)? {
         guard UUID(uuidString: attemptID) != nil else { return nil }
         let db = try ready()
         guard let row = try db.rows("SELECT session,budget_owner FROM attempts WHERE id=? AND workspace=?", [.text(attemptID), .text(workspaceID)]).first, let session = row["session"]?.string else { return nil }
         let owner = row["budget_owner"]?.string
-        guard !visibleMessageIDs.isEmpty else { return (session, owner, []) }
+        // Current, rebuildable recipients include the direct coordinating side
+        // and every budget ancestor. The physical scope can predate adoption or
+        // parent deletion; root ownership alone loses intermediate recipients.
+        let family = Set(try db.rows("SELECT owner FROM family_recipients WHERE attempt=?", [.text(attemptID)]).compactMap { $0["owner"]?.string })
+        guard !visibleMessageIDs.isEmpty else { return (session, owner, family, []) }
         // Any number of visible messages, a batch of SQL variables at a time.
         var outputs = Set<String>(), pending = Array(visibleMessageIDs)
         while !pending.isEmpty {
@@ -163,7 +172,7 @@ actor PayloadArchive {
             let rows = try db.rows("SELECT message FROM message_links INDEXED BY accounting_outputs WHERE role='output' AND attempt=? AND message IN (\(placeholders))", [.text(attemptID)] + batch.map(CaptureSQLValue.text))
             outputs.formUnion(rows.compactMap { $0["message"]?.string })
         }
-        return (session, owner, outputs)
+        return (session, owner, family, outputs)
     }
     func begin(_ metadata: [String: WireValue], workspace: String) throws {
         let db = try ready()
@@ -177,7 +186,7 @@ actor PayloadArchive {
         try reconcile()
         try db.transaction {
             try db.execute("INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,model,outcome,wall,updated,metadata) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", [.text(id), .text(session), .text(workspace), .text(turn), .text(metadata["purpose"]?.string ?? "turn"), .text(metadata["api"]?.string ?? ""), .text(metadata["requestedModel"]?.string ?? ""), .null, .text("running"), .real(metadata["wallTimestamp"]?.number ?? now().timeIntervalSince1970), .real(now().timeIntervalSince1970), .blob(encoded)])
-            try CaptureLineage.project(lineage, id: id, db: db)
+            try CaptureLineage.project(lineage, id: id, session: session, savedParents: savedSideBudgets[workspace + "\u{0}" + (lineage?.budgetOwnerSessionID ?? session)], db: db)
             try CaptureSubagents.record(scope: lineage, metadata: metadata, workspace: workspace, db: db)
             for kind in ["request", "response"] {
                 try db.execute("INSERT INTO bodies(attempt,kind,state,reason,storage) VALUES(?,?,?,?,'plaintext-v2')", [.text(id), .text(kind), .text(mode == "persist" ? "recording" : "not-retained"), .text(mode == "off" ? "Capture was disabled" : mode == "memory" ? "Session-memory capture is not durable" : "")])
@@ -782,6 +791,7 @@ actor PayloadArchive {
     }
     /// Full-scan rows this archive's database has visited so far (tests only).
     func scannedRows() throws -> Int { try ready().scannedRows }
+    func virtualMachineSteps() throws -> Int { try ready().virtualMachineSteps }
     /// Statements prepared and top-level transactions opened (tests only).
     func statementCount() throws -> Int { try ready().statements }
     func commitCount() throws -> Int { try ready().commits }

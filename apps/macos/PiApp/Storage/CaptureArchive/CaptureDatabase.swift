@@ -39,6 +39,8 @@ final class CaptureDatabase: @unchecked Sendable {
     /// Tests pin writes with it: a per-chunk or per-event cost that grows with
     /// the size of the archive shows up here long before it shows up in a timer.
     private(set) var scannedRows = 0
+    /// Deterministic query work, including indexed correlated loops (tests).
+    private(set) var virtualMachineSteps = 0
     /// Executions, actual preparations, sort operations and transactions.
     private(set) var statements = 0
     private(set) var preparations = 0
@@ -99,6 +101,7 @@ final class CaptureDatabase: @unchecked Sendable {
             prepared[sql] = next; preparedOrder.append(sql)
         }
         defer {
+            virtualMachineSteps += Int(sqlite3_stmt_status(statement, SQLITE_STMTSTATUS_VM_STEP, 1))
             scannedRows += Int(sqlite3_stmt_status(statement, SQLITE_STMTSTATUS_FULLSCAN_STEP, 1))
             sorts += Int(sqlite3_stmt_status(statement, SQLITE_STMTSTATUS_SORT, 1))
             sqlite3_reset(statement); sqlite3_clear_bindings(statement)

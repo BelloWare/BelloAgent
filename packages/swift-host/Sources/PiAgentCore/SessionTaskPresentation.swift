@@ -40,6 +40,7 @@ extension AgentSession {
         task.detail = detail.map { preview($0, bytes: 2048) }; task.preparingCalls = 0; task.currentTool = nil
         let value = try JSON.parse(JSONEncoder().encode(task))
         try journal?.append(["type":"custom", "customType":JSON(JournalRecordKind.taskTerminal), "data":value], flush:true)
+        taskCompletion.revision += 1; taskCompletion.outcome = outcome
         recentTaskPresentations.append(task)
         if recentTaskPresentations.count > 64 { recentTaskPresentations.removeFirst(recentTaskPresentations.count - 64) }
         activeTaskPresentation = nil
@@ -55,8 +56,10 @@ extension AgentSession {
             active?.preparingCalls = partialToolSeen.count
             active?.currentTool = toolStates.values.first { $0["state"].text == "running" }?["name"].text
         }
-        return TaskPresentationProjection(sessionID:id, epoch:displayEpoch, timeline:presentationTimeline,
+        var projection = TaskPresentationProjection(sessionID:id, epoch:displayEpoch, timeline:presentationTimeline,
             sequence:sequence, sourceRevision:displayRevision, active:active, recent:recentTaskPresentations,
             utilityPhase:presentationUtility && active == nil && (state == .running || state == .stopping) ? (runStatus == .compacting ? "compacting" : "preparing") : nil)
+        projection.completion = taskCompletion
+        return projection
     }
 }

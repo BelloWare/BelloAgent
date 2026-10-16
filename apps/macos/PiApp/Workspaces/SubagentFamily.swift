@@ -47,7 +47,7 @@ extension WorkspaceModel {
         }.map { child in
             let summary = subagentSummaries[child.id]
             return SubagentFamily.Member(chat: child, status: summary?.status,
-                model: summary?.model ?? child.model ?? profiles.first(where: { $0.id == child.profileID })?.modelId ?? "Unknown model", spend: summary?.progress.flatMap { $0.reported > 0 ? $0.usd : nil }, effort: subagentEffortLabel(child.id, summary: summary))
+                model: summary?.model ?? child.model ?? profiles.first(where: { $0.id == child.profileID })?.modelId ?? "Unknown model", spend: familyMemberSpend(child.id,progress:summary?.progress), effort: subagentEffortLabel(child.id, summary: summary))
         }
         let value = SubagentFamily(ownerID: ownerID, members: members,
             runningCount: members.filter { $0.status == .running }.count,
@@ -55,6 +55,15 @@ extension WorkspaceModel {
             stoppingCount: members.filter { $0.status == .stopping }.count)
         subagentFamilies[ownerID] = value
         return value
+    }
+    /// Prefer the same durable numeric state as the footer and budget. Retained
+    /// captures are a fallback, never a replacement for an observed ledger.
+    func familyMemberSpend(_ id: String, progress: SubagentProgress? = nil) -> Double? {
+        let reading = budgetStates[id]?.reading ?? displays[id]?.footer.cost
+        if let reading, let spent = reading.spentUSD { return reading.reportedRequests > 0 ? spent : nil }
+        if let progress { return progress.reported > 0 ? progress.usd : nil }
+        let totals = displays[id]?.footer.gateway ?? chatAccounting.values[id]
+        return totals.flatMap { $0.costSamples > 0 ? $0.costUSD : nil }
     }
     func subagentSearchTitle(_ chat: ChatRecord) -> String {
         guard let owner = chat.delegation?.budgetOwnerSessionID ?? sideFamilyOwner(chat) else { return chat.displayTitle }
@@ -190,8 +199,7 @@ extension WorkspaceModel {
                 let failed = unreadFailure(sessionID: chat.id) || display?.runState == .error
                 let unread = unreadOutputCount(sessionID: chat.id) > 0
                 let status = working ? "Working" : failed ? "Failed" : unread ? (markedUnreadOnly(sessionID: chat.id) ? "Unread" : "New reply") : pending ? "Draft" : chat.isArchived ? "Archived" : "Saved"
-                let totals = display?.footer.gateway ?? chatAccounting.row(for: chat.id).totals
-                let spend = totals.flatMap { $0.costSamples > 0 ? $0.costUSD : nil }
+                let spend = familyMemberSpend(chat.id)
                 let side = ConversationFamily.Side(id: chat.id, title: pending ? "New side" : chat.title, status: status, working: working,
                     spend: spend, open: shown?.id == chat.id)
                 members.append(side); rows.append(.init(content: .side(side), depth: depth))

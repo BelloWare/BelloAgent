@@ -125,6 +125,7 @@ actor SubagentCoordinator {
         guard let job = jobs[key], let runtime = job.runtime else { return }
         do {
             try Task.checkCancellation()
+            try await runtime.environment.parent.enforceSharedCostLimit()
             try await runtime.child.setSubagentState(.running)
             guard jobs[key]?.cancelled == false else { throw CancellationError() }
             _ = try await runtime.child.submitManaged(Submission(commandID: job.plan.origin.link.delegationID, turnID: UUID().uuidString, text: job.plan.task), steer: false, admittedAt: runtime.childGeneration)
@@ -133,8 +134,10 @@ actor SubagentCoordinator {
             let result = await runtime.child.subagentResult(job.plan, cancelled: jobs[key]?.cancelled == true)
             await finish(key, result: result)
         } catch {
-            await runtime.child.stop(); await runtime.child.waitForSubagent()
-            let result = SubagentToolResult(plan: job.plan, status: error is CancellationError || (error as? AgentError)?.code == "submission_stopped" ? .notExecuted : .failed,
+            if let budget = error as? AgentError, budget.code == AgentSession.costLimitCode { await runtime.child.stopFamilyAtLimit(budget) }
+            else { await runtime.child.stop() }
+            await runtime.child.waitForSubagent()
+            let result = SubagentToolResult(plan: job.plan, status: error is CancellationError || ["submission_stopped", AgentSession.costLimitCode].contains((error as? AgentError)?.code ?? "") ? .notExecuted : .failed,
                                            error: (error as? AgentError) ?? AgentError("subagent_not_started", "The delegated task did not start"))
             await finish(key, result: result)
         }

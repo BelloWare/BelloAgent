@@ -25,6 +25,8 @@ struct ToolView: Codable, Sendable, Equatable, Identifiable {
     var agentHeldByUser: Bool? = nil
     /// App-only presentation cache, never sent to the helper or model.
     var originalSubagentAvailability: OriginalSubagentAvailability? = nil
+    /// Authoritative display overlay, deliberately excluded from CodingKeys.
+    var subagentCost: SubagentCostPresentation? = nil
     var subagentNumber: Int? = nil
     var subagentEffort: String? = nil
 }

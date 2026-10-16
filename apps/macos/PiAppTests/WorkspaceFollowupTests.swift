@@ -231,11 +231,14 @@ final class WorkspaceFollowupTests: XCTestCase {
         await model.store?.close()
     }
 
-    @MainActor func testArchivedOpenSideDeletionKeepsPaneRecordDraftAndJournal() async throws {
+    @MainActor func testCancellingArchivedOpenSideDeletionKeepsPaneRecordDraftAndJournal() async throws {
         let root = try scratch(); defer { try? FileManager.default.removeItem(at: root) }
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
         defer { model.shutdown() }
-        let path = root.appendingPathComponent("child.jsonl"), bytes = Data("retained child history\n".utf8)
+        let directory = try model.subagentDirectory("w")
+        try FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+        let path = directory.appendingPathComponent("side_child.jsonl")
+        let bytes = Data((#"{"type":"session","version":3,"id":"child"}"# + "\n").utf8)
         try bytes.write(to: path)
         let parent = ChatRecord(id: "parent", workspaceID: "w", title: "Parent", path: nil, profileID: "p")
         var child = ChatRecord(id: "child", workspaceID: "w", title: "Side", path: path.path, profileID: "p", toolMode: "read-only", parentSessionID: parent.id)
@@ -245,8 +248,12 @@ final class WorkspaceFollowupTests: XCTestCase {
         model.sides[parent.id] = SideRecord(id: child.id, parentID: parent.id, workspaceID: "w", profileID: "p", title: child.title, kept: true)
         model.selectedID = parent.id; model.focusedSessionID = child.id
         try await model.store?.put(child, kind: "chat", id: child.id)
+        var question: ChatQuestion?
+        model.questions.answer = { question = $0; return false }
         model.deleteChat(child.id)
-        XCTAssertEqual(model.error, "Close this side panel before deleting its chat.")
+        try await eventually("The idle archived side reaches its deletion confirmation") { question != nil || model.error != nil }
+        XCTAssertNil(model.error)
+        XCTAssertEqual(question?.title,"Delete the archived chat “Side”?")
         XCTAssertEqual(model.sides[parent.id]?.id, child.id); XCTAssertTrue(model.displays[child.id] === display)
         XCTAssertEqual(model.record(child.id), child); XCTAssertEqual(display.draft, "Unsent child draft")
         XCTAssertEqual(model.selectedID, parent.id); XCTAssertEqual(model.focusedSessionID, child.id)

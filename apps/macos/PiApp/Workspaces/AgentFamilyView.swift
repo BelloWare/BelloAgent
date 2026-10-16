@@ -181,8 +181,9 @@ import Combine
             case .side(let side):
                 let detail = [side.status, side.spend.map(CostLimit.dollars)].compactMap { $0 }.joined(separator: " · ")
                 let parent = model.record(side.id).flatMap { model.sideFamilyOwner($0) }.flatMap { model.record($0)?.title }
+                let attribution = model.costReading(for:side.id).costAttribution.map { ". " + $0 } ?? ""
                 rows.append(row(side.title, detail: detail, id: "open-side-" + side.id,
-                    label: "Open side " + side.title + (parent.map { " in " + $0 } ?? "") + ", " + detail, current: side.open, depth: entry.depth) { [weak model, close] in
+                    label: "Open side " + side.title + (parent.map { " in " + $0 } ?? "") + ", " + detail + attribution, current: side.open, depth: entry.depth) { [weak model, close] in
                     close(); Task { await model?.openFamilySide(side.id) }
                 })
             case .agent(let member, let ownerID):
@@ -191,8 +192,9 @@ import Combine
                 }
                 let ownerTitle = model.record(ownerID)?.title ?? "Unavailable parent"
                 let detail = [ownerID == value.ownerID ? nil : "in " + ownerTitle, member.statusLabel, member.model, member.effort, member.spend.map(CostLimit.dollars)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+                let attribution = model.costReading(for:member.chat.id).costAttribution.map { ". " + $0 } ?? ""
                 let row = row(member.label, detail: detail, id: "open-agent-" + member.chat.id,
-                    label: "Open " + member.chat.displayTitle + " in " + ownerTitle + ", " + detail, current: member.chat.id == sessionID, depth: entry.depth) { [weak model, close] in
+                    label: "Open " + member.chat.displayTitle + " in " + ownerTitle + ", " + detail + attribution, current: member.chat.id == sessionID, depth: entry.depth) { [weak model, close] in
                     close(); Task { await model?.openSubagentTab(member.chat.id) }
                 }
                 if member.status == .running, let link = member.chat.delegation {

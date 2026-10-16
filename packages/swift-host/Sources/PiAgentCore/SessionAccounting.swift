@@ -9,7 +9,7 @@ extension AgentSession {
             guard try next.consume(kind: kind, data: data, spend: &total) else { return false }
             if !ephemeral {
                 guard let journal else { throw AgentError("accounting_unavailable", "The accounting journal is closed") }
-                try journal.append(["type":"custom", "customType":JSON(kind), "data":data], flush: true)
+                try journal.append(["type":"custom", "customType":JSON(kind), "data":AttemptAccounting.journalData(data)], flush: true)
             }
             accounting = next; spend = total; spendTracked = true
             event("cost.spend", costSnapshot)
@@ -42,7 +42,9 @@ extension AgentSession {
     func correctAccounting(_ data: JSON) throws {
         guard let id = data["attemptId"].text, let entry = accounting.attempts[id], entry.admission != nil else { throw AttemptAccounting.damaged() }
         do {
-            _ = try appendAccounting(kind: JournalRecordKind.costUpdate, data: data)
+            if let update = try FamilyCharge.merge(data,into:entry,revision:accounting.revision) {
+                try appendAccounting(kind:update.kind,data:update.data)
+            }
             stopFamilyAtLimit()
         } catch { failFamilyAccounting(error); throw error }
     }

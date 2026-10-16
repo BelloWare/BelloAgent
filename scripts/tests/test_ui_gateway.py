@@ -85,6 +85,32 @@ class UIGatewayTests(unittest.TestCase):
             return next(event["response"]["model"] for event in events if event["type"] == "response.completed")
         return next(event["message"]["model"] for event in events if event["type"] == "message_start")
 
+    def test_conditional_effort_schema_preserves_common_and_branch_constraints(self):
+        from litellm_contract import validate_arguments, FixtureContractError
+        path, headers, body = self.request()
+        common = {"type": "object", "properties": {
+            "task": {"type": "string"}, "model": {"type": "string"},
+            "effort": {"type": "string", "enum": ["default", "high"]}},
+            "required": ["task"], "additionalProperties": False}
+        inherited = {"type": "object", "properties": {"task": {"type": "string"},
+            "effort": {"type": "string", "enum": ["default", "high"]}},
+            "required": ["task"], "additionalProperties": False}
+        fast = {"type": "object", "properties": {"task": {"type": "string"},
+            "model": {"type": "string", "const": "fixture-fast"}},
+            "required": ["task", "model"], "additionalProperties": False}
+        schema = dict(common, oneOf=[inherited, fast])
+        body["tools"].append({"type": "function", "name": "subagent_start", "description": "Synthetic conditional effort", "parameters": schema})
+        status, _, received = self.send(path, headers, body)
+        self.assertEqual(status, 200, received)
+        for arguments in [{"task": "fixture", "effort": "high"}, {"task": "fixture", "model": "fixture-fast"}]:
+            validate_arguments(arguments, schema)
+        for arguments in [{"task": "fixture", "model": "fixture-fast", "effort": "high"}, {"task": "fixture", "extra": 1}, {"task": "fixture", "effort": "unsupported"}]:
+            with self.assertRaises(FixtureContractError):
+                validate_arguments(arguments, schema)
+        # Common constraints are conjunctive with oneOf, not discarded.
+        stricter = dict(schema, required=["task", "effort"])
+        with self.assertRaises(FixtureContractError):
+            validate_arguments({"task": "fixture", "model": "fixture-fast"}, stricter)
     @staticmethod
     def effort_schema():
         # The policy stream keeps an object envelope for provider compatibility,

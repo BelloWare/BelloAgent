@@ -221,9 +221,23 @@ extension LifecycleHelperTests {
     /// a new chat from the complete records, which sends like any other, and
     /// leaves the original file byte for byte as it was.
     @MainActor func testRecoverCopyMakesAChatThatSendsAndLeavesTheOriginal() async throws {
+        try await recoverCopy(savingSide:false)
+    }
+    @MainActor func testRecoveredSavedSideOpensWithoutItsParentAndHasAnEditableIndependentLimit() async throws {
+        try await recoverCopy(savingSide:true)
+    }
+    @MainActor private func recoverCopy(savingSide: Bool) async throws {
         let bench = try await Bench("recover"); defer { bench.tearDown() }
-        let chat = try await bench.newChat("Cut off")
+        var chat = try await bench.newChat("Cut off")
         var model = bench.model
+        if savingSide {
+            let owner = chat, host = try await model.open(owner), sideID = UUID().uuidString
+            _ = try await host.request("side.open",sessionID:owner.id,params:["sideSessionId":.string(sideID)])
+            let kept = try await host.request("side.keep",sessionID:sideID)
+            chat = ChatRecord(id:sideID,workspaceID:owner.workspaceID,title:"Saved side",path:kept.object?["path"]?.string,
+                profileID:owner.profileID,toolMode:ChatRecord.readOnlyTools,parentSessionID:owner.id,costLimit:.usd(99))
+            try await model.store?.put(chat,kind:"chat",id:chat.id); model.chats.append(chat)
+        }
         await model.select(chat.id)
         var session = try XCTUnwrap(model.displays[chat.id])
         var pane = PaneWindow(model, session, chat)
@@ -247,6 +261,7 @@ extension LifecycleHelperTests {
         XCTAssertTrue(session.messages.contains { $0.role == "assistant" }, "The complete records show")
         pane = PaneWindow(model, session, try XCTUnwrap(model.record(chat.id))); defer { pane.close() }
         await pane.settle(10)
+        if savingSide { await model.stopHostsAndWait() }
         model.recoverCopy(chat.id)
         func asking() -> NSWindow? { NSApp.windows.first { $0.attachedSheet != nil && $0.isVisible } }
         try await Self.waitUntil("Recover Copy never asked", seconds: 10, settle: { await pane.settle(1) }) { asking() != nil }
@@ -257,6 +272,14 @@ extension LifecycleHelperTests {
         let copyID = try XCTUnwrap(model.selectedID), copy = try XCTUnwrap(model.displays[copyID])
         try await Self.waitUntil("The copy never showed its history", settle: { await pane.settle(1) }) { copy.messages.contains { $0.role == "assistant" } }
         XCTAssertFalse(copy.damagedTail)
+        if savingSide {
+            let record = try XCTUnwrap(model.record(copyID))
+            XCTAssertNil(record.parentSessionID); XCTAssertNil(record.costLimit)
+            XCTAssertEqual(model.budgetOwner(for:record).id,copyID)
+            XCTAssertEqual(model.costLimit(for:record),model.defaultCostLimit)
+            try await model.setCostLimit(.usd(42),for:copyID)
+            XCTAssertEqual(model.costLimit(for:copyID),.usd(42),"The recovered copy has its own editable budget")
+        }
         copy.draft = "second question"
         model.send(sessionID: copyID)
         try await Self.waitUntil("The recovered chat did not answer", settle: { await pane.settle(2) }) {

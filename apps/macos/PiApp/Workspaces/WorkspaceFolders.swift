@@ -65,6 +65,7 @@ extension WorkspaceModel {
         }
         workspaceChangesInFlight.insert(workspaceID)
         defer { workspaceChangesInFlight.remove(workspaceID) }
+        try await releaseIdleWorkspaceSessions(workspaceID)
         try await updateConfiguration { config in
             guard let index = config.workspaces.firstIndex(where: { $0.id == workspaceID }) else { throw HostError.failure("This project is no longer configured.") }
             if config.workspaces[index].path == missing { config.workspaces[index].path = replacement }
@@ -93,12 +94,17 @@ extension WorkspaceModel {
 
     private func requireIdle(_ workspaceID: String) throws {
         guard !installPreparing else { throw HostError.failure("Wait for the app update to finish before changing projects.") }
+        if let busy = displays.keys.sorted().first(where: { id in
+            guard let view = displays[id] else { return false }
+            return (view.hasWork || view.loading) && record(id)?.workspaceID == workspaceID
+        }) { throw HostError.failure(budgetMemberBusy(busy)) }
         guard !workspaceHasActiveWork(workspaceID) else { throw HostError.failure("Stop this project's work and keep or close its sides before changing its folders.") }
     }
 
     /// Stops the workspace host so the next chat reopens it with the new root set. Sessions are re-opened lazily.
     func restartWorkspaceHost(_ workspaceID: String) async throws {
         cancelIdle(workspaceID: workspaceID)
+        try await releaseIdleWorkspaceSessions(workspaceID)
         if let host = hosts[workspaceID] {
             try await host.shutdownAndWait()
             hosts.removeValue(forKey: workspaceID)
@@ -117,6 +123,7 @@ extension WorkspaceModel {
         let additions = folders.map { URL(fileURLWithPath: $0).resolvingSymlinksInPath().path }.filter { !workspace.roots.contains($0) }
         guard !additions.isEmpty else { throw HostError.failure("Those folders are already part of this project.") }
         try Self.validateRoots(workspace.roots + additions)
+        try await releaseIdleWorkspaceSessions(workspaceID)
         try await updateConfiguration { config in
             guard let index = config.workspaces.firstIndex(where: { $0.id == workspaceID }) else { throw HostError.failure("This project is no longer configured.") }
             let current = config.workspaces[index].roots
@@ -133,6 +140,7 @@ extension WorkspaceModel {
         try requireIdle(workspaceID)
         workspaceChangesInFlight.insert(workspaceID)
         defer { workspaceChangesInFlight.remove(workspaceID) }
+        try await releaseIdleWorkspaceSessions(workspaceID)
         try await updateConfiguration { config in
             guard let index = config.workspaces.firstIndex(where: { $0.id == workspaceID }) else { throw HostError.failure("This project is no longer configured.") }
             config.workspaces[index].paths.removeAll { $0 == folder }
@@ -154,6 +162,7 @@ extension WorkspaceModel {
         if let existing { try requireIdle(existing.id) }
         workspaceChangesInFlight.insert(workspace.id)
         defer { workspaceChangesInFlight.remove(workspace.id) }
+        if let existing, existing.paths != paths { try await releaseIdleWorkspaceSessions(existing.id) }
         try await updateConfiguration { config in
             if let index = config.workspaces.firstIndex(where: { $0.id == workspace.id }) { config.workspaces[index] = workspace }
             else { config.workspaces.append(workspace) }

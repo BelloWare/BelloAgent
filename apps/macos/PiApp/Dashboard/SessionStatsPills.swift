@@ -89,6 +89,17 @@ struct SessionStatsPresentation: Equatable {
         guard let cost, let counted = cost.spentUSD, cost.reportedRequests > 0 || counted > 0 else { return logged }
         return counted
     }
+    /// Attribution uses the same retained attempts as the token figures. If
+    /// the helper retains older spend, do not imply this subset is lifetime.
+    var costAttribution: String? {
+        if let own = cost?.costAttribution, cost?.budgetOwnerID != nil { return gateway.costAttribution?.replacingOccurrences(of: "Counts toward parent chat", with: own) ?? own }
+        guard let detail = gateway.costAttribution else { return nil }
+        let olderSpend = cost.map { $0.reportedRequests + $0.unreportedRequests > gateway.requests } ?? false
+        return detail + (olderSpend ? " (retained requests)" : "")
+    }
+    var usageHelp: String {
+        [usageLabel, costAttribution, "Input includes cached tokens once; reasoning is part of output. Opens the Session Inspector."].compactMap { $0 }.joined(separator: " · ")
+    }
     /// `$0.0025`, or `$4.12 of $5.00` under a cost limit.
     var costFigure: String? {
         guard let cost else { return spent.map(compactGatewayUSD) }

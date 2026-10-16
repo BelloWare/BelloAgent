@@ -138,7 +138,10 @@ import Combine
             controller.updateTitle(title)
         } else {
             controller = SessionInspectorWindowController(inspector: makeInspector(model: model, scope: scope, title: title))
-            controller.onClose = { [weak self, weak controller] in self?.entries.removeAll { $0.controller === controller } }
+            controller.onClose = { [weak self, weak controller, weak model] in
+                self?.entries.removeAll { $0.controller === controller }
+                model?.releaseUnusedBudgetSessions()
+            }
             entries.append(Entry(owner: model, controller: controller))
         }
         // Provenance belongs to this opening, not the reused session window.

@@ -1256,7 +1256,7 @@ send `truncation: disabled` and reject alternative output-limit parameters.
 Generic settings cannot replace input/model/tools, force a nontext format,
 truncate history, enable provider compaction or bypass execution controls. The
 appended instruction is request-local and never enters ordinary conversation
-history. A side session keeps its parent's cache affinity but its own accounting.
+history. A side session keeps its parent's cache affinity and its own physical request identity. Since 0.1.128, its spend and tokens also count toward the main chat, and all sides use that chat's budget. Forks retain independent budgets.
 Prefix preservation is not a guarantee of a real provider cache hit.
 
 Generation allowance G is the lesser of 16,384 tokens, the declared output

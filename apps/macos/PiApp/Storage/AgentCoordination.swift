@@ -101,11 +101,11 @@ extension PayloadArchive {
                 var entry = original
                 func attempt(_ message: String?, role: String, session: String) throws -> String? {
                     guard let message else { return nil }
-                    return try engine.db.rows("SELECT a.id FROM message_links l JOIN attempts a ON a.id=l.attempt WHERE l.message=? AND l.role=? AND a.session=? AND a.workspace=? AND (a.session=? OR a.budget_owner=?) ORDER BY a.wall,a.id LIMIT 1",
+                    return try engine.db.rows("SELECT a.id FROM message_links l JOIN attempts a ON a.id=l.attempt WHERE l.message=? AND l.role=? AND a.session=? AND a.workspace=? AND (a.session=? OR a.local_owner=?) ORDER BY a.wall,a.id LIMIT 1",
                         [.text(message),.text(role),.text(session),.text(workspaceID),.text(ownerID),.text(ownerID)]).first?["id"]?.string
                 }
                 entry.sourceAttemptID = try attempt(entry.sourceMessageID, role: "output", session: entry.sourceSessionID)
-                entry.consumingAttemptID = try engine.db.rows("SELECT a.id FROM attempts a WHERE a.session=? AND a.workspace=? AND (a.session=? OR a.budget_owner=?) AND (EXISTS(SELECT 1 FROM agent_delivery_links d WHERE d.attempt=a.id AND d.event=?) OR (a.agent_delivery_ids IS NULL AND EXISTS(SELECT 1 FROM message_links l WHERE l.attempt=a.id AND l.role='context' AND l.message=?))) ORDER BY a.wall,a.id LIMIT 1",
+                entry.consumingAttemptID = try engine.db.rows("SELECT a.id FROM attempts a WHERE a.session=? AND a.workspace=? AND (a.session=? OR a.local_owner=?) AND (EXISTS(SELECT 1 FROM agent_delivery_links d WHERE d.attempt=a.id AND d.event=?) OR (a.agent_delivery_ids IS NULL AND EXISTS(SELECT 1 FROM message_links l WHERE l.attempt=a.id AND l.role='context' AND l.message=?))) ORDER BY a.wall,a.id LIMIT 1",
                     [.text(entry.recipientID),.text(workspaceID),.text(ownerID),.text(ownerID),.text(entry.id),entry.recipientMessageID.map(CaptureSQLValue.text) ?? .null]).first?["id"]?.string
                 if entry.consumingAttemptID != nil { entry.disposition = "delivered" }
                 return entry

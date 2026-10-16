@@ -273,11 +273,11 @@ Paths beginning with `Core/` refer to `packages/swift-host/Sources/PiAgentCore/`
 
 ### Why children are not sides
 
-Sides have different semantics: inherited conversation context, side-specific cache behavior, read-only execution policy, independent spending, and their own user interaction.
+Sides have different semantics: inherited conversation context, side-specific cache behavior, read-only execution policy and their own user interaction. Since 0.1.128, sides share the main chat’s spending and budget too (owner choice, 2026-10-15).
 
 Sub-agents need fresh context, automatic return to a waiting tool call, parent-owned spending, and a managed lifecycle. They therefore use ordinary `AgentSession` machinery through a new coordinator, without calling `side.open`.
 
-An ordinary kept side may itself delegate if it is a durable, eligible project chat. In that case, the side owns the budget. Its existing sidebar parent does not become the budget owner.
+An ordinary kept side may itself delegate if it is a durable, eligible project chat. The side remains the delegation/coordinator owner; optional helper-only `RequestScope.sideParents` forwards numeric admissions and charges through its side ancestry to the main budget. Provider session/cache identity and model-facing tool semantics are unchanged.
 
 ### Core invariants
 
@@ -809,7 +809,11 @@ The limit cannot be a guaranteed exact billing ceiling: concurrent requests alre
 
 The owner total includes previous turns and all delegated work, including interrupted tasks and earlier transcript versions. Editing, compaction, and archiving do not refund spend.
 
-Ordinary sides and ordinary forks retain their existing independent budgets.
+Since 0.1.128, ordinary sides share the main chat’s budget. Their legacy per-side limit values remain readable but are ignored; forks retain independent budgets. Already-dispatched requests finish before budget enforcement stops queued/tool work. Parent journals retain numeric side usage and attempt identities, including discarded ephemeral side spend, without side content. The native archive projects those identities into family recipients so filtered totals count each physical attempt once.
+
+Budget ancestry follows the saved side origin, never which chat occupies a side pane. Mounting a fork cannot change its independent budget or acquire its source’s children. A saved side whose parent journal was deleted survives as an independent budget owner (its own saved limit, or the default); existing nested sides and managed children then charge that surviving owner. An existing but unloaded parent must open before its side. The archive retires stale ancestor projections without rewriting physical request lineage. Legacy per-side limits remain dormant while connected to a parent and become the surviving orphan’s own setting after deletion.
+
+An explicit `session.close` rejects while loaded side runtimes pin its accounting writer. Closing pane presentation is separate. Deletion preflights and detaches idle dependents before forgetting the owner; queued, running or unsettled work blocks it. Legacy unkeyed side seeds are adopted once during binding as well as cold recovery. Reported cost corrections update registered parent admissions and validated contribution-only mirrors separately, retaining numeric ancestry across reload. No side content is copied into the parent ledger.
 
 Display:
 

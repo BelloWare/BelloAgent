@@ -8,4 +8,7 @@ struct SessionDeletionRecord: Codable, Sendable {
     var ownerID: String
     var workspaceID: String
     var path: String?
+    /// Set only after the helper durably repaired surviving numeric ledgers.
+    /// Missing on older intents: those still require the repair barrier.
+    var repairCompleted: Bool? = nil
 }

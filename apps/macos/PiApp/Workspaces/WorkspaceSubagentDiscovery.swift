@@ -10,6 +10,11 @@ extension WorkspaceModel {
         for display in added.values {
             display.subagentNumbers.merge(numbers, uniquingKeysWith: { _, saved in saved })
             display.subagentEfforts = subagentEfforts
+            display.subagentCosts = budgetStates.reduce(into: [:]) { result, entry in
+                if record(entry.key)?.delegation?.budgetOwnerSessionID == display.id, entry.value.reading.spentUSD != nil {
+                    result[entry.key] = SubagentCostPresentation(costReading(for:entry.key))
+                }
+            }
         }
     }
 
@@ -50,6 +55,7 @@ extension WorkspaceModel {
         let summary = live ?? retained ?? SubagentSummary(link: found.header.link, description: found.header.description, model: found.header.model.model, status: found.status, revision: 0, turn: found.turn, executionID: found.executionID, effort: found.effort ?? found.header.model.thinkingLevel)
         if let live, let previous, !live.supersedes(previous) { return }
         if subagentSummaries[child.id] != summary { subagentSummaries[child.id] = summary }
+        if live != nil { observeSubagentCost(summary) }
         if let owner = displays[summary.link.budgetOwnerSessionID], owner.childSummaries[child.id] != summary { owner.childSummaries[child.id] = summary }
         displays[child.id]?.isManagedSubagent = true
         displays[child.id]?.subagentStatus = summary.status

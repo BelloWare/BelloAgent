@@ -259,6 +259,23 @@ struct GatewayMissingUsage: Codable, Sendable, Equatable {
     }
 }
 
+/// A subset of the aggregate, never an additional charge. Optional in cached
+/// projections so older snapshots keep reading. Built by the same SQL pass.
+struct GatewaySubagentCost: Codable, Sendable, Equatable {
+    var count: Int
+    var requests: Int
+    var reported: Int
+    var usd: Double?
+    var label: String {
+        let who = "\(count) " + (count == 1 ? "sub-agent" : "sub-agents")
+        guard reported > 0, let usd else { return "Includes \(who) · cost unreported" }
+        return "Includes \(compactGatewayUSD(usd)) from \(who)"
+    }
+    var detail: String {
+        label + (reported < requests ? " · \(requests - reported) " + (requests - reported == 1 ? "request" : "requests") + " reported no cost" : "")
+    }
+}
+
 struct GatewayTotals: Codable, Sendable, Equatable {
     var inputSplit: GatewayTokenSplit?
     var outputSplit: GatewayTokenSplit?
@@ -304,6 +321,14 @@ struct GatewayTotals: Codable, Sendable, Equatable {
     var turnCount: Int?
     /// Wall time of the latest retained request, seconds since 1970, for the sidebar's recency stamp.
     var lastActivity: Double?
+    var subagentCost: GatewaySubagentCost?
+    var sideCost: GatewaySubagentCost?
+    /// The main budget owner for a child's own subtotal, including its family.
+    var budgetOwnerID: String?
+    var costAttribution: String? {
+        let parts = [sideCost?.detail.replacingOccurrences(of: "sub-agents", with: "sides").replacingOccurrences(of: "sub-agent", with: "side"), subagentCost?.detail, budgetOwnerID.map { _ in "Counts toward parent chat" }].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
 
     private enum CodingKeys: String, CodingKey {
         case inputSplit
@@ -335,6 +360,9 @@ struct GatewayTotals: Codable, Sendable, Equatable {
         case ttftSamples
         case turnCount
         case lastActivity
+        case subagentCost
+        case sideCost
+        case budgetOwnerID
     }
 
     /// Output tokens over request-to-last-output duration for this scope.
@@ -373,7 +401,7 @@ struct GatewayTotals: Codable, Sendable, Equatable {
     }
     /// The requests the cache hit covers.
     var cacheHitSamples: Int { GatewayTokenSplit.reported(self, input: true)?.samples ?? 0 }
-    var costLabel: String { gatewayUSD(costUSD) + " · \(costSamples)/\(requests) requests reported" }
+    var costLabel: String { gatewayUSD(costUSD) + " · \(costSamples)/\(requests) requests reported" + (costAttribution.map { " · " + $0 } ?? "") }
     var cacheLabel: String {
         "Cache \(cacheHits) hit · \(cacheMisses) miss · \(cacheUnreported) unreported" + (cacheConflicts > 0 ? " · \(cacheConflicts) invalid/conflicting" : "")
     }

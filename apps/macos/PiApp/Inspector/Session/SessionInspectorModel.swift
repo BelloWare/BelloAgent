@@ -17,6 +17,7 @@ import AppKit
     @Published private(set) var index = InspectorIndex()
     @Published private(set) var indexLoaded = false
     @Published var coordination: [AgentCoordinationEntry] = []
+    @Published private(set) var sideGroups: [InspectorSideGroup] = []
     @Published private(set) var groups: [InspectorSubagentGroup] = []
     func numberSubagentGroups(_ numbers: [String: Int]) {
         let numbered = groups.map { value in
@@ -32,7 +33,7 @@ import AppKit
     var filterLabel: String {
         switch familyFilter {
         case .chat: "This chat only"
-        case .family: "This chat + sub-agents"
+        case .family: "Whole chat family"
         case .child(let id): groups.first { $0.summary.link.childSessionID == id }?.title ?? "Sub-agent"
         }
     }
@@ -362,6 +363,7 @@ import AppKit
                     group.effort = self.workspace?.subagentEffortLabel(value.summary.link.childSessionID, summary: value.summary)
                     return group
                 }
+                self.sideGroups = try await archive.inspectorSides(owner: scope.sessionID, workspaceID: scope.workspaceID)
                 await self.readAgentCoordination()
                 guard !Task.isCancelled else { return }
                 self.lastRead = (read.rows, live, read.older)
@@ -542,8 +544,14 @@ import AppKit
     }
 
     nonisolated static func summaries(messages: [TranscriptMessage], lifecycle: TaskPresentationProjection?) -> [String: TurnSummary] {
+        collectSummaries(TranscriptActivity.blocks(of:messages,lifecycle:lifecycle))
+    }
+
+    // Keep the large enum/summary extraction frame off the stack while the
+    // transcript planner runs on a cooperative worker's smaller stack.
+    @inline(never) nonisolated private static func collectSummaries(_ items: [TranscriptItem]) -> [String: TurnSummary] {
         var result: [String: TurnSummary] = [:]
-        for item in TranscriptActivity.blocks(of: messages, lifecycle: lifecycle) {
+        for item in items {
             guard case .block(let block) = item, let turn = block.turn else { continue }
             if let id = block.turnID ?? turn.taskRootID ?? turn.requests.compactMap(\.turn).first { result[id] = turn }
         }

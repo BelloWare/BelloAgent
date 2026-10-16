@@ -181,6 +181,7 @@ enum MonitorShareMetric: String, CaseIterable { case tokens = "By tokens", cost 
         let gateway = controller.snapshot?.gateway
         outputFigure.set(gateway?.tokens?.output.map(MetricFormat.exactTokens) ?? "—")
         costFigure.set(monitorCost(gateway?.costUSD))
+        costFigure.toolTip = gateway?.costLabel; costFigure.setAccessibilityLabel(gateway?.costLabel)
         cacheFigure.set(monitorCacheShare(gateway))
         totals.loading = controller.loading
         refreshWorking(rows)

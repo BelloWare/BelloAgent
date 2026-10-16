@@ -97,6 +97,11 @@ extension WorkspaceModel {
             }
             _ = try await history.subagentHeader(path: URL(fileURLWithPath: path), directory: subagentDirectory(child.workspaceID), expected: SubagentTarget(link))
             guard current() else { return }
+            if let cost = try await history.subagentCost(path:URL(fileURLWithPath:path),directory:subagentDirectory(child.workspaceID),expected:SubagentTarget(link)) {
+                guard current() else { return }
+                observeCost(["cost":.object(cost)],sessionID:child.id)
+            }
+            guard current() else { return }
             var page = try await readInitialWindow(child, holding: view.scrollAnchor)
             guard current() else { return }
             page.messages = await withAccounting(page.messages, view: view, workspaceID: child.workspaceID)

@@ -48,6 +48,12 @@ extension WorkspaceModel {
     func refresh(_ id: String) {
         sidebarSearchStorage?.journalChanged()
         guard let item = record(id), let host = hosts[item.workspaceID], opened.contains(id) else { return }
+        // A side can pin its owner after the owner's display is evicted, as
+        // well as when it opened only for the budget. Both read authoritative
+        // numeric state without recreating a transcript on accounting events.
+        if displays[id] == nil, budgetDependencySessions.contains(id) || releasedHelperSessions.contains(id) {
+            refreshBudgetState(id); releaseUnusedBudgetSessions(); return
+        }
         // Written only when new: every write runs `displays`' observers, which
         // scan every display, and this runs on every event of every chat.
         let view: SessionDisplay

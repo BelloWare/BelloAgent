@@ -435,7 +435,8 @@ import CoreText
         if let faces = usageFaces {
             fullUsageSizer.update(label: faces.full.label, warningTail: faces.full.warningTail, scope: nil)
             compactUsageSizer.update(label: faces.compact.label, warningTail: faces.compact.warningTail, scope: nil)
-            usage.accessibilityName = "Token usage: " + stats.usageLabel
+            usage.accessibilityName = "Token usage: " + [stats.usageLabel, stats.costAttribution].compactMap { $0 }.joined(separator: " · ")
+            usage.toolTip = stats.usageHelp
         }
         // The context pill keeps one room for each showing of its chat.
         let meter = ContextMeterPresentation(context: context, capacity: session.hasWork ? nil : selectedContextWindow.map(Double.init))

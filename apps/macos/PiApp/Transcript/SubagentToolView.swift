@@ -56,11 +56,13 @@ struct SubagentToolView: Equatable, Sendable {
     let messageKind: String?
     let target: SubagentTarget?
     let summary: SubagentSummary?
+    let cost: SubagentCostPresentation?
     let task: String, description: String, result: String, error: String?
     let status: SubagentStatus
     let truncated: Bool
     init(_ tool: ToolView) {
         originalAvailability = tool.originalSubagentAvailability
+        cost = tool.subagentCost
         operation = tool.name
         number = tool.subagentNumber
         effort = tool.subagentEffort

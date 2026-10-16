@@ -223,7 +223,79 @@ actor MetadataStore {
             }
             guard result == SQLITE_DONE else { throw StoreError.unavailable }
         }
+        values += try budgetAncestorRecords(of: values.map(\.0))
         unlistedChats = max(0, try count(kind: "chat") - values.count)
+        return try migrateLoadedChats(values, profiles: profiles)
+    }
+
+    /// The complete durable graph, independent of the presentation window.
+    /// Reads metadata only; discarded draft content is never materialized.
+    func sideBudgetAncestry() throws -> [String: [String: [String]]] {
+        let database = try ready()
+        var statement: OpaquePointer?
+        let sql = "SELECT c.id,c.value FROM records c WHERE c.kind='chat' AND NOT EXISTS(SELECT 1 FROM records d WHERE d.kind='session-deleted' AND d.id=c.id)"
+        guard sqlite3_prepare_v2(database,sql,-1,&statement,nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        var records: [String:ChatRecord] = [:], present = Set<String>()
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            if let text = sqlite3_column_text(statement,0) {
+                let id = String(cString:text); present.insert(id)
+                let size = Int(sqlite3_column_bytes(statement,1))
+                if size <= Self.recordByteLimit("chat"), let bytes = sqlite3_column_blob(statement,1),
+                   let chat = try? JSONDecoder().decode(ChatRecord.self,from:Data(bytes:bytes,count:size)), chat.id == id { records[id] = chat }
+            }
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else { throw StoreError.unavailable }
+        var result: [String:[String:[String]]] = [:]
+        for chat in records.values where !chat.isSubagent && chat.parentSessionID != nil {
+            var current = chat, parents: [String] = [], seen: Set<String> = [chat.id], valid = true
+            while let id = current.persistedBudgetParentID {
+                guard seen.insert(id).inserted, parents.count < 128 else { valid = false; break }
+                guard let parent = records[id] else {
+                    // Undecodable metadata is not proof of deletion. Preserve
+                    // its prior projection until the damaged record is repaired.
+                    if present.contains(id) { valid = false }
+                    break
+                }
+                guard parent.workspaceID == chat.workspaceID, !parent.isSubagent else { break }
+                parents.append(id); current = parent
+            }
+            if valid { result[chat.workspaceID,default:[:]][chat.id] = parents }
+        }
+        return result
+    }
+
+    /// Loaded sides and managed children retain their actual budget ancestry
+    /// outside the ordinary chat window. A fork source is only provenance.
+    func loadBudgetAncestors(of chats: [ChatRecord], profiles: [ProfileRecord] = []) throws -> [ChatRecord] {
+        try migrateLoadedChats(budgetAncestorRecords(of: chats), profiles: profiles)
+    }
+    private func budgetAncestorRecords(of chats: [ChatRecord]) throws -> [(ChatRecord, Int64)] {
+        let database = try ready()
+        var seen = Set(chats.map(\.id)), checked = Set<String>(), pending = chats, values: [(ChatRecord, Int64)] = []
+        while let child = pending.popLast() {
+            guard let id = child.persistedBudgetParentID, !seen.contains(id), checked.insert(child.workspaceID + "\u{0}" + id).inserted,
+                  try get(String.self, kind: "session-deleted", id: id) == nil else { continue }
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, "SELECT value,revision FROM records WHERE kind='chat' AND id=?", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, id, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { continue }
+            guard result == SQLITE_ROW else { throw StoreError.unavailable }
+            let size = Int(sqlite3_column_bytes(statement, 0))
+            guard size <= Self.recordByteLimit("chat"), let bytes = sqlite3_column_blob(statement, 0) else { continue }
+            decodedChats += 1
+            guard let parent = try? JSONDecoder().decode(ChatRecord.self, from: Data(bytes: bytes, count: size)),
+                  parent.id == id, !parent.isSubagent, parent.workspaceID == child.workspaceID else { continue }
+            seen.insert(id); values.append((parent, sqlite3_column_int64(statement, 1))); pending.append(parent)
+        }
+        return values
+    }
+    private func migrateLoadedChats(_ records: [(ChatRecord, Int64)], profiles: [ProfileRecord]) throws -> [ChatRecord] {
+        var values = records
         var upgraded: [(ChatRecord, Int64)] = []
         for index in values.indices {
             let previous = values[index].0
@@ -718,16 +790,25 @@ actor MetadataStore {
     /// it: launch settling every background request a quit left, at once.
     /// Rebase discovery on the owner's latest durable organization in one
     /// actor turn. A delayed scan cannot restore a deleted or moved family.
-    func beginFamilyDeletion(_ members: [SessionDeletionRecord]) throws {
+    func beginFamilyDeletion(_ members: [SessionDeletionRecord], repairCompleted: Bool = false) throws {
         try transaction {
             guard let owner = members.first?.ownerID, members.contains(where: { $0.id == owner }),
                   Set(members.map(\.id)).count == members.count, Set(members.map(\.workspaceID)).count == 1,
                   members.allSatisfy({ $0.ownerID == owner && ($0.id == owner || UUID(uuidString: $0.id) != nil) }) else { throw StoreError.invalidRecord }
-            for member in members {
+            for var member in members {
+                if member.id == owner { member.repairCompleted = repairCompleted ? true : nil }
                 try put(owner, kind: "session-deleted", id: member.id)
                 try put(member, kind: SessionDeletionRecord.kind, id: member.id)
             }
         }
+    }
+
+    func completeFamilyDeletionRepair(_ owner: String) throws {
+        guard var record = try get(SessionDeletionRecord.self,kind:SessionDeletionRecord.kind,id:owner),
+              record.id == owner, record.ownerID == owner,
+              try get(String.self,kind:"session-deleted",id:owner) == owner else { throw StoreError.invalidRecord }
+        record.repairCompleted = true
+        try put(record,kind:SessionDeletionRecord.kind,id:owner)
     }
 
     /// Recovery must see the complete durable manifest, including families

@@ -94,6 +94,7 @@ extension AgentSession {
         let update: @Sendable (JSON) async -> Void = { [weak self] update in await self?.toolUpdate(call.id,update) }
         // Stopped while its arguments were prepared: it never began.
         try Task.checkCancellation()
+        try await enforceToolBudget()
         showToolInvocation(call); toolInvocationsBegan.insert(call.id)
         // Refused before anything runs; `read_only` reads as a rejection.
         if readOnly || !Self.isEditing(call), let refusal=sideRefusal(call) { throw refusal }
@@ -205,6 +206,11 @@ extension AgentSession {
     /// workspace are not serialized, not even two edits of one file: the owner
     /// removed every editing lock (2026-10-08).
     func runToolBatch(_ calls: [ToolCall]) async throws {
+        do { try await enforceToolBudget() }
+        catch {
+            for call in calls { try recordTool(call,result:resultText("Not executed: \((error as? AgentError)?.message ?? "Budget unavailable")",error:true),started:nil,state:.failed) }
+            throw error
+        }
         toolInvocationsBegan.removeAll(); runStatus = .waitingTool
         for call in calls {
             setToolStateOwner(call.id)
@@ -217,6 +223,7 @@ extension AgentSession {
         if let coordinator = agentCoordinator {
             for call in calls where SubagentSteeringContract.names.contains(call.name) {
                 do {
+                    try await enforceToolBudget()
                     let key = try agentToolKey(call)
                     let receipt = try await (isSubagent ? coordinator.report(call,key:key,child:self) : coordinator.prepare(call,key:key,parent:self))
                     agentPreparedResults[call.id] = agentToolWire(receipt,key:key)

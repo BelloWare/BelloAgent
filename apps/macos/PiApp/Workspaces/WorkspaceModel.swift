@@ -47,6 +47,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     let agentFamilyRequests = PassthroughSubject<String, Never>()
     var deletingFamilies: Set<String> = []
     var familyFileRecycler: (([URL]) async throws -> Void)?
+    var familyDeletionStep: ((String) throws -> Void)?
     var runHoldWrites: [String: Task<Void, Never>] = [:]
     /// Launch's reading of the journals the holds name (tests wait on it).
     var runHoldVerification: Task<Void, Never>?
@@ -240,6 +241,7 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var projectSidebarWrites: [String: Task<Void, Never>] = [:]
     var dirtyProjectSidebarStates: Set<String> = []
     @Published var workspaceChangesInFlight: Set<String> = []
+    var budgetOwnerChanges: Set<String> = []
     @Published var installPreparing = false
     @Published var showConversationContent = false
     var contentSessionID: String?
@@ -305,6 +307,10 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Suspends legacy cost accounting in opening-race fixtures.
     var costSeedRead: (@MainActor (ChatRecord) async -> WireValue?)?
     var costLimitWrites: [String: (token: UUID, task: Task<Void, Error>)] = [:]
+    var budgetStates: [String: SessionBudgetState] = [:]
+    /// Numeric-work probe for streaming regressions; never counts transcript work.
+    var budgetFamilyRefreshVisits = 0
+    var sideBudgetRestoreRevision = 0
     var skillCatalogLoads: [String: (token: UUID, scope: String, task: Task<Void, Never>)] = [:]
     /// Retained gateway totals for chats without a loaded display, keyed by chat id.
     let chatAccounting = SessionAccountingCache()
@@ -432,7 +438,14 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     /// Owned by `WorkspaceHosts.swift`: how many callers are waiting on that
     /// open, so the last one out cleans up.
     var sessionOpenCallers: [String: Int] = [:]
+    /// Budget dependencies pin ancestors even while an open waits behind a
+    /// close or connection switch, before session opening itself begins.
+    var budgetOpenCallers: [String: Int] = [:]
     var opened: Set<String> = []
+    /// Runtimes opened solely to supply a saved side's budget, and explicit
+    /// display releases that the helper may have refused while a side pinned it.
+    var budgetDependencySessions: Set<String> = []
+    var releasedHelperSessions: Set<String> = []
     /// Owned by `WorkspaceConnectionSwitch.swift`: a chat's move to another
     /// connection under way, which every open of the chat waits for, and how
     /// many times each chat has moved, so an open begun before is known stale.

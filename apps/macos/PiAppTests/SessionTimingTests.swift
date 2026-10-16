@@ -962,6 +962,13 @@ final class SessionTimingTests: XCTestCase {
                 metrics.frame = CGRect(x: 12, y: 12, width: width, height: metrics.height(forWidth: width))
                 hosted.layer?.backgroundColor = hosted.piCGColor(.piWindow)
                 window.setContentSize(NSSize(width: width + 24, height: 80))
+                // The rate label fades from the previous fixture value. A
+                // sleep before drawing can end before that transaction even
+                // starts under parallel load; capture only its settled face.
+                try await eventually("The sidebar rate label never finished its transition") {
+                    hosted.layoutSubtreeIfNeeded(); window.displayIfNeeded(); CATransaction.flush()
+                    return ConversationPaneTests.views(PiKit.TextLine.self, in: metrics).allSatisfy { $0.layer?.animation(forKey: "label") == nil }
+                }
                 let rendered = try await renderedText(window, filename: "sidebar-metrics-\(Int(width))-\(id).jpg")
                 XCTAssertEqual(hosted.bounds.width, width + 24, accuracy: 0.5)
                 XCTAssertTrue(rendered.contains("12.34"), "Cost must remain visible at \(width)pt: \(rendered)")

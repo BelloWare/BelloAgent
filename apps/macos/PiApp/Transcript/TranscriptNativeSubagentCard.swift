@@ -70,12 +70,15 @@ import AppKit
             if let progress = summary.progress {
                 fields.append(.init(label: "Requests", value: String(progress.requests)))
                 fields.append(.init(label: "Time", value: TranscriptActivity.formatDuration(progress.elapsedMs)))
-                let unknown = progress.unreported
+                let unknown = value.cost?.unreportedRequests ?? progress.unreported
                 let note = unknown > 0 ? "\(unknown) " + (unknown == 1 ? "request's" : "requests'") + " cost unknown" : nil
-                fields.append(.init(label: "Cost", value: compactGatewayUSD(progress.usd), note: note))
+                fields.append(.init(label: "Cost", value: compactGatewayUSD(value.cost?.spentUSD ?? progress.usd), note: [note, value.cost?.costAttribution ?? (historical ? "Counts toward original parent chat" : "Counts toward parent chat")].compactMap { $0 }.joined(separator: " · ")))
                 fields.append(.init(label: "Tokens", value: (progress.inputTokens.map(String.init) ?? "Unknown") + " input · " + (progress.outputTokens.map(String.init) ?? "unknown") + " output"))
                 if !progress.preview.isEmpty, !value.status.terminal, !historical { lines.append(progress.preview) }
             }
+        }
+        if value.summary?.progress == nil, let cost = value.cost, let spent = cost.spentUSD {
+            fields.append(.init(label:"Cost",value:compactGatewayUSD(spent),note:[cost.unreportedNote,cost.costAttribution ?? "Counts toward parent chat"].compactMap { $0 }.joined(separator:" · ")))
         }
         updateDetails(fields)
         hasInformation = !lines.isEmpty; information.isHidden = !hasInformation

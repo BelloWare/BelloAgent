@@ -9,11 +9,12 @@ final class SessionOrganizationTests: XCTestCase {
         model.workspaces = [WorkspaceRecord(id: "w", path: root.path, trusted: true)]
         let parent = chat("parent", order: 3), other = chat("other", order: 1)
         var child = chat("child", order: 2); child.parentSessionID = parent.id
+        child.path = root.appendingPathComponent("Workspaces/w/Sessions/side_child.jsonl").path
         model.chats = [parent, child, other]
         let parentView = SessionDisplay(id: parent.id), childView = SessionDisplay(id: child.id)
         parentView.historyState = .empty; parentView.selectionMetadataLoaded = true
         childView.historyState = .empty; childView.selectionMetadataLoaded = true
-        childView.draft = "Keep this side draft"; childView.state = "running"
+        childView.draft = "Keep this side draft"; childView.state = "running"; childView.runState = .running
         model.displays = [parent.id: parentView, child.id: childView]
         model.sides[parent.id] = SideRecord(id: child.id, parentID: parent.id, workspaceID: "w", profileID: "p", title: child.title, kept: true)
         model.selectedID = parent.id; model.selected = parentView; model.focusedSessionID = parent.id
@@ -31,11 +32,12 @@ final class SessionOrganizationTests: XCTestCase {
         model.selectAdjacentChat(-1)
         try await eventually("the parent focused again") { model.selectedID == parent.id && model.focusedSessionID == parent.id }
         XCTAssertEqual(model.sides[parent.id]?.id, child.id)
+        model.questions.answer = { _ in XCTFail("A running dependent must block before confirmation"); return false }
         model.deleteChat(parent.id)
-        XCTAssertEqual(model.error, "Close the side panel before deleting its parent.")
+        XCTAssertEqual(model.error, "Wait for “child” to finish its work and queued messages before changing this chat.")
         XCTAssertNotNil(model.record(parent.id)); XCTAssertNotNil(model.record(child.id))
         XCTAssertEqual(childView.draft, "Keep this side draft")
-        childView.state = "idle"
+        childView.state = "idle"; childView.runState = .idle
         await model.store?.close()
     }
 

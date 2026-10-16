@@ -6,6 +6,116 @@ import XCTest
 final class AccountingScaleTests: XCTestCase {
     private let recordCount = 100_000
 
+    func testDirectOwnerLookupsStayIndexedWithThirtyThousandUnrelatedAttempts() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at:root) }
+        let archive = PayloadArchive(root:root,now:{ Date(timeIntervalSince1970:2000) })
+        try await archive.configure(quota:1_048_576,bodyRetention:100,metricRetention:1000)
+        let db = try CaptureDatabase(url:root.appendingPathComponent("requests.sqlite"))
+        try db.execute("""
+        WITH RECURSIVE sequence(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM sequence WHERE n<29999)
+        INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,model,outcome,wall,updated,metadata,
+            metrics_retained,dispatch,cost_usd,budget_owner,local_owner,delegation)
+        SELECT 'attempt-'||n,CASE WHEN n<5 THEN 'side' ELSE 'child-'||n END,'workspace','turn','turn',
+            'fixture','fixture','fixture','completed',1995,1995,X'7b7d',1,100,0.125,
+            CASE WHEN n<10 THEN 'side' ELSE 'unrelated-'||n END,
+            CASE WHEN n<10 THEN 'side' ELSE 'unrelated-'||n END,'delegation'
+        FROM sequence
+        """)
+        // Reopening an already-current archive must add the new index too;
+        // no projection migration or fresh database may be required.
+        try db.execute("DROP INDEX IF EXISTS attempts_local_owner")
+        try CaptureLineage.prepare(db,migrate:false)
+        for (name,sql,args) in [
+            ("inspector",PayloadArchive.subagentStatisticsSQL,[CaptureSQLValue.text("side"),.text("workspace")]),
+            ("side_registration",PayloadArchive.sideBudgetAttemptsSQL,[.text("workspace"),.text("side"),.text("workspace"),.text("side")])
+        ] {
+            let previous = sql.replacingOccurrences(of:"local_owner",with:"budget_owner")
+            let beforeOld = db.virtualMachineSteps
+            let expected = try db.rows(previous,args)
+            let oldSteps = db.virtualMachineSteps-beforeOld
+            let before = db.virtualMachineSteps
+            let actual = try db.rows(sql,args)
+            let steps = db.virtualMachineSteps-before
+            if name == "inspector" {
+                XCTAssertEqual(actual.first?["requests"]?.number,10)
+                XCTAssertEqual(actual.first?["cost"]?.double,1.25)
+            } else {
+                XCTAssertEqual(Set(actual.compactMap { $0["id"]?.string }),Set(expected.compactMap { $0["id"]?.string }))
+                XCTAssertEqual(actual.count,10)
+            }
+            print("DIRECT_OWNER_SCALE attempts=30000 matches=10 lookup=\(name) previous_steps=\(oldSteps) current_steps=\(steps)")
+            XCTAssertLessThanOrEqual(steps,oldSteps*2+100,"\(name) must seek direct membership, not scan unrelated attempts")
+            XCTAssertLessThan(steps,1000,"Neither lookup may visit unrelated attempts")
+        }
+        let before = try await archive.virtualMachineSteps()
+        _ = try await archive.recordSideBudgets(["side":["main"]],workspaceID:"workspace")
+        let steps = try await archive.virtualMachineSteps()-before
+        print("DIRECT_OWNER_SCALE attempts=30000 matches=10 lookup=registration_with_projection current_steps=\(steps)")
+        XCTAssertLessThan(steps,10_000,"The real registration path must stay bounded by its ten matching requests")
+        let projected = try db.rows("SELECT COUNT(*) AS n FROM family_recipients WHERE owner='main'")
+        XCTAssertEqual(projected.first?["n"]?.number,10)
+        try await archive.close()
+    }
+
+    func testThirtyThousandReferenceAttemptsMaterializeMembershipOncePerScope() async throws {
+        let root = try folder(); defer { try? FileManager.default.removeItem(at:root) }
+        let archive = PayloadArchive(root:root,now:{ Date(timeIntervalSince1970:2000) })
+        try await archive.configure(quota:1_048_576,bodyRetention:100,metricRetention:1000)
+        let db = try CaptureDatabase(url:root.appendingPathComponent("requests.sqlite"))
+        try db.transaction {
+            try db.execute("""
+            WITH RECURSIVE sequence(n) AS (VALUES(0) UNION ALL SELECT n+1 FROM sequence WHERE n<29999)
+            INSERT INTO attempts(id,session,workspace,turn,purpose,api,alias,model,outcome,wall,updated,metadata,
+                metrics_retained,dispatch,cost_usd,cost_status,input_tokens,output_tokens,budget_owner,local_owner)
+            SELECT 'attempt-'||n,CASE WHEN n<29700 THEN 'root-'||(n%3) ELSE 'child-'||(n%3) END,
+                CASE WHEN n%19=0 THEN 'other' ELSE 'workspace' END,'turn-'||(n%10),'turn','fixture','fixture','fixture',
+                'completed',1995,1995,X'7b7d',CASE WHEN n%17=0 THEN 0 ELSE 1 END,
+                CASE WHEN n%10=0 THEN NULL ELSE 100 END,0.125,'reported',100,20,'root-'||(n%3),'root-'||(n%3)
+            FROM sequence
+            """)
+            try db.execute("INSERT INTO family_recipients(attempt,owner,kind,child) SELECT id,budget_owner,'subagent',session FROM attempts WHERE session!=budget_owner")
+        }
+        XCTAssertEqual(try db.rows("SELECT COUNT(*) AS n FROM family_recipients").first?["n"]?.number,300)
+        // This is the previous indexed join (before shared side ancestry).
+        // It has identical populations for this fixture. Compare real aggregate
+        // work, not a time threshold vulnerable to other streams on this Mac.
+        func previous(_ scopes: [SessionUsageScope]) throws -> [SessionUsageScope:GatewayTotals] {
+            let wanted = "WITH wanted(wanted_session,wanted_workspace) AS (VALUES " + scopes.map { _ in "(?,?)" }.joined(separator:",") + ") "
+            let args = scopes.flatMap { [CaptureSQLValue.text($0.sessionID),.text($0.workspaceID)] }
+            let join = "FROM wanted CROSS JOIN attempts ON (attempts.session=wanted.wanted_session OR attempts.budget_owner=wanted.wanted_session) AND attempts.workspace=wanted.wanted_workspace"
+            var totals = Dictionary(uniqueKeysWithValues:scopes.map { ($0,GatewayTotals()) })
+            for row in try db.rows("\(wanted) SELECT wanted_session AS session,wanted_workspace AS workspace,\(PayloadArchive.gatewayAggregateSQL) \(join) WHERE metrics_retained=1 AND dispatch IS NOT NULL GROUP BY wanted_workspace,wanted_session",args) {
+                let scope = SessionUsageScope(sessionID:try XCTUnwrap(row["session"]?.string),workspaceID:try XCTUnwrap(row["workspace"]?.string))
+                totals[scope] = PayloadArchive.gatewayTotals(row,sessionID:scope.sessionID)
+            }
+            for row in try db.rows("\(wanted) SELECT wanted_session AS session,wanted_workspace AS workspace,COUNT(*) AS n \(join) WHERE metrics_retained=0 GROUP BY wanted_workspace,wanted_session",args) {
+                let scope = SessionUsageScope(sessionID:try XCTUnwrap(row["session"]?.string),workspaceID:try XCTUnwrap(row["workspace"]?.string))
+                totals[scope,default:GatewayTotals()].expiredRecords = Int(row["n"]?.number ?? 0)
+            }
+            return totals
+        }
+        let selected = (0..<3).map { SessionUsageScope(sessionID:"root-\($0)",workspaceID:"workspace") }
+            + [SessionUsageScope(sessionID:"root-0",workspaceID:"other")]
+        for scopes in [[selected[0]],selected] {
+            // Warm the production connection and retention sweep independently.
+            _ = try previous(scopes); _ = try await archive.sessionReferenceTotals(scopes:scopes)
+            var oldMS: [Double] = [], currentMS: [Double] = [], oldSteps = 0, currentSteps = 0
+            for _ in 0..<5 {
+                let oldStart = ProcessInfo.processInfo.systemUptime, beforeOld = db.virtualMachineSteps
+                let expected = try previous(scopes)
+                oldMS.append((ProcessInfo.processInfo.systemUptime-oldStart)*1000); oldSteps = db.virtualMachineSteps-beforeOld
+                let before = try await archive.virtualMachineSteps(), start = ProcessInfo.processInfo.systemUptime
+                let actual = try await archive.sessionReferenceTotals(scopes:scopes)
+                currentMS.append((ProcessInfo.processInfo.systemUptime-start)*1000)
+                currentSteps = try await archive.virtualMachineSteps()-before
+                XCTAssertEqual(actual,expected,"Own and delegated requests, expired rows, tokens and project scoping remain identical")
+            }
+            print(String(format:"REFERENCE_SCALE attempts=30000 recipients=300 scopes=%d previous_ms=%.3f current_ms=%.3f previous_steps=%d current_steps=%d",scopes.count,oldMS.sorted()[2],currentMS.sorted()[2],oldSteps,currentSteps))
+            XCTAssertLessThanOrEqual(currentSteps,oldSteps*5/4+5000,"Family membership must not be rebuilt for every candidate attempt")
+        }
+        try await archive.close()
+    }
+
     private func folder() throws -> URL {
         let base = testEnvironment("PI_BUILD_ROOT") ?? NSTemporaryDirectory()
         let root = URL(fileURLWithPath: base).appendingPathComponent("accounting-scale-" + UUID().uuidString)

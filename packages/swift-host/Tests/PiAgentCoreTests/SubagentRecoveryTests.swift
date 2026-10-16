@@ -2,6 +2,24 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentRecoveryTests: XCTestCase {
+    func testNativeCostsAllowAnUnstartedLegacyChildWithoutAJournal() async throws {
+        let fixture = try RecoveryFixture(); defer { fixture.remove() }
+        try fixture.write()
+        let host = NativeHostService(emit:{ _ in })
+        _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(fixture.root.path),"directory":JSON(fixture.root.path),"resources":["codexHome":JSON(fixture.root.appendingPathComponent("codex").path)]])
+        _ = try await host.command("session.open",sessionID:"parent",params:["profile":fixture.profile.raw,"apiKey":"fixture","path":JSON(fixture.root.appendingPathComponent("parent.jsonl").path)])
+        let page = try await host.command("subagent.list",sessionID:"parent",params:["includeCosts":true])
+        XCTAssertEqual(page["children"].list.first?["status"].text,"not_executed")
+        XCTAssertTrue(page["costs"]["child"].isNull,"No child ledger exists; do not fabricate a zero snapshot")
+        XCTAssertFalse(FileManager.default.fileExists(atPath:fixture.root.appendingPathComponent("child.jsonl").path))
+        try Data("damaged existing journal\n".utf8).write(to:fixture.root.appendingPathComponent("child.jsonl"))
+        do {
+            _ = try await host.command("subagent.list",sessionID:"parent",params:["includeCosts":true])
+            XCTFail("The optional absent ledger must not hide damaged existing history")
+        } catch {}
+        await host.shutdown()
+    }
+
     func testCapturedTerminalCostRepairsOwnerAndMirrorExactlyOnceBeforeResume() async throws {
         let fixture = try RecoveryFixture(); defer { fixture.remove() }
         try fixture.write(childStatus: .running, admission: "dispatched")

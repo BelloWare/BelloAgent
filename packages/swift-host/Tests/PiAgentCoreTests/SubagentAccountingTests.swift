@@ -2,6 +2,49 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentAccountingTests: XCTestCase {
+    func testFamilyCostAndTokensSurviveFailedStoppedResumedRequestsAndReload() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        func open(_ path: String? = nil) throws -> AgentSession {
+            try AgentSession(id: "parent", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
+                readOnly: true, resources: Resources(cwd: root, home: root), client: ScriptClient([]),
+                tools: DisabledTools(), traces: TraceStore(), resumePath: path)
+        }
+        var owner = try open()
+        await owner.setCostLimit(1)
+        var records: [JSON] = []
+        for (index, outcome) in ["failed", "cancelled", "completed"].enumerated() {
+            var cost = costRecord("child-attempt-\(index)", usd: 0.4, revision: index + 1)
+            cost["outcome"] = JSON(outcome); cost["sourceSessionId"] = JSON("child-\(index % 2)")
+            cost["purpose"] = JSON(index == 2 ? "compaction" : "turn")
+            cost["usage"] = ["input":100, "output":20, "cacheRead":40, "reasoning":5, "total":120]
+            records.append(cost)
+            try await owner.appendAccounting(kind: JournalRecordKind.cost, data: cost)
+        }
+        do { try await owner.enforceCostLimit(); XCTFail("All child attempts must count against the parent's budget") }
+        catch { XCTAssertEqual((error as? AgentError)?.code, "cost_limit") }
+        // Raising the budget permits a user resume; settled requests stay charged.
+        await owner.setCostLimit(2); try await owner.enforceCostLimit()
+        var resumed = costRecord("child-resumed", usd: 0.3, revision: 4)
+        resumed["usage"] = ["input":200, "output":30, "cacheRead":50, "reasoning":10, "total":230]
+        records.append(resumed)
+        try await owner.appendAccounting(kind: JournalRecordKind.cost, data: resumed)
+        let path = await owner.path
+        for reload in [false, true, true] {
+            if reload { await owner.close(); owner = try open(path) }
+            for cost in records { try await owner.appendAccounting(kind: JournalRecordKind.cost, data: cost) }
+            let snapshot = await owner.costSnapshot
+            XCTAssertEqual(try XCTUnwrap(snapshot["spentUSD"].double), 1.5, accuracy: 1e-9)
+            XCTAssertEqual(snapshot["reportedRequests"].int, 4)
+            XCTAssertEqual(snapshot["familyUsage"]["input"].double, 500)
+            XCTAssertEqual(snapshot["familyUsage"]["output"].double, 90)
+            XCTAssertEqual(snapshot["familyUsage"]["cacheRead"].double, 170)
+            XCTAssertEqual(snapshot["familyUsage"]["reasoning"].double, 25)
+            XCTAssertEqual(snapshot["familyUsage"]["total"].double, 590)
+            XCTAssertEqual(snapshot["familyUsage"]["unknownRequests"].int, 0)
+        }
+        await owner.close()
+    }
+
     func testNullUsageFieldsRemainAnUnknownRequest() throws {
         var ledger = AttemptAccounting(), spend = SessionSpend()
         var unknown = costRecord("physical", usd: nil, revision: 1)

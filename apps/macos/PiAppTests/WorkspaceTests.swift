@@ -301,7 +301,7 @@ final class WorkspaceTests: XCTestCase {
         model.chats = [chat]; let display = SessionDisplay(id: "chat"); display.state = "running"; model.displays["chat"] = display
         XCTAssertTrue(model.workspaceHasActiveWork("w"))
         do { try await model.addFolders([second.path], to: "w"); XCTFail("Active work must refuse folder changes") }
-        catch { XCTAssertTrue(error.localizedDescription.contains("Stop this project's work")) }
+        catch { XCTAssertTrue(error.localizedDescription.contains("Running"),"Name the chat whose work blocks the folder change") }
         do { try await model.removeWorkspace("w"); XCTFail("A workspace with chats must not be removed") }
         catch { XCTAssertTrue(error.localizedDescription.contains("chat")) }
         XCTAssertEqual(model.workspaces[0].paths, [third.path])
