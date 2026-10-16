@@ -622,7 +622,7 @@ public actor AgentSession {
         for permit in requestPermits.values { permit.cancel() }
         // A cost-limit pause parks this owner's sub-agent turns for Resume
         // instead of cancelling them. The coordinator stops their runs.
-        if costPaused, !isSubagent, let coordinator = agentCoordinator { Task { await coordinator.pause(owner:self) } }
+        if costPaused, !isSubagent, let coordinator = agentCoordinator { Task { await coordinator.pause(owner:self,generation:cancelledGeneration) } }
         else { familyCancelled?(cancelledGeneration) }
         managedCancellation?()
         // The run may already have reached its terminal state while its
@@ -648,7 +648,7 @@ public actor AgentSession {
     public func close() async {
         cancelHistoryLoads(); closed=true; stop(); await runTask?.value
         // A paused family keeps its turns for Resume after the next open.
-        if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self) }
+        if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:stopCount) }
         if !isSubagent { await agentCoordinator?.drain(owner:id) }
         if !isSubagent { await subagentCoordinator?.release(owner: id, runtimeID: displayEpoch) }
         journal=nil

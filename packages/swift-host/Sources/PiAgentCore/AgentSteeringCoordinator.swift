@@ -26,6 +26,9 @@ actor AgentSteeringCoordinator {
     /// Owners paused at their family's cost limit: nothing of theirs starts,
     /// and their turns are parked rather than sealed until `resumeParked`.
     var paused: Set<String> = []
+    /// The owner Stop generation each Resume covers: a pause scheduled by an
+    /// earlier Stop that arrives after the Resume is ignored.
+    var resumedThrough: [String:Int] = [:]
     /// Runners whose turn the cost-limit gate or admission ended.
     var budgetStopped: Set<String> = []
     init(open: @escaping Open = { env, plan in try AgentSteeringCoordinator.makeChild(env,plan) }, settled: @escaping SubagentCoordinator.Settled = { await $0.close() }) {
@@ -188,8 +191,11 @@ actor AgentSteeringCoordinator {
             try await job.owner.appendAgentRecord(JournalRecordKind.agentTurnState,job.turn)
             // A resumed turn whose task was delivered goes on from its own
             // context; one parked before it began is sent its task now.
-            if job.resuming, await child.agentTurnBegan(job.turn) { try await child.continueAgentTurn(job.turn) }
-            else { try await child.startAgentTurn(job.turn) }
+            switch job.resuming ? await child.agentTurnStart(job.turn) : .fresh {
+            case .delivered: try await child.continueAgentTurn(job.turn)
+            case .accepted: try await child.releaseAgentTurn(job.turn)
+            case .fresh: try await child.startAgentTurn(job.turn)
+            }
             await child.waitForSubagent()
             job.turn.result = await child.agentResult(job.turn,plan:job.plan,cancelled:jobs[id]?.cancelled == true)
             job.turn.status = job.turn.result!.status
@@ -250,7 +256,8 @@ actor AgentSteeringCoordinator {
     }
     /// The owner paused at its family's cost limit (`AgentSession.stop` while
     /// `costPaused`): stop running turns and park queued ones. Idempotent.
-    func pause(owner: AgentSession) async {
+    func pause(owner: AgentSession, generation: Int) async {
+        guard generation >= resumedThrough[owner.id, default: -1] else { return }
         paused.insert(owner.id)
         for job in Array(jobs.values) where job.owner === owner {
             if job.allocated {
@@ -266,11 +273,20 @@ actor AgentSteeringCoordinator {
     /// Resume: every unsealed turn of this owner goes on under the owner's
     /// current execution, in acceptance order, through the ordinary slots.
     /// Turns parked across a relaunch are found in the journal, not memory.
-    func resumeParked(owner parent: AgentSession) async throws {
+    func resumeParked(owner parent: AgentSession, generation: Int) async throws {
+        resumedThrough[parent.id] = max(resumedThrough[parent.id, default: -1], generation)
+        // The pause's runners finish parking (or sealing) first: a turn still
+        // settling is otherwise neither resumed nor left for the next Resume.
+        let wake = signal(parent.id)
+        while jobs.values.contains(where: { $0.owner === parent }) {
+            let revision = await wake.revision
+            guard jobs.values.contains(where: { $0.owner === parent }) else { break }
+            await wake.wait(after:revision)
+        }
         paused.remove(parent.id)
         let state = await parent.agentState()
         let parked = state.turns.values.filter { !$0.status.terminal && jobs[$0.id] == nil }
-        guard !parked.isEmpty else { return }
+        guard !parked.isEmpty else { pump(parent.id); return }
         let env = try await parent.delegationEnvironment()
         let order = { (turn: AgentChildTurn) in state.operations[AgentOperation.id(turn.call)]?.acceptedAt ?? 0 }
         let plans = await parent.subagents.plans.values

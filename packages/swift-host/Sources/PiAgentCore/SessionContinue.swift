@@ -40,17 +40,17 @@ extension AgentSession {
         !isSubagent && agentCoordinator != nil && subagents.family?.turns.values.contains { !$0.status.terminal } == true
     }
     /// Ends a cost-limit pause for a Resume, in memory: the caller persists
-    /// (and restores `CostPauseState` if that fails). The next run resumes the
-    /// parked turns. Returns the sides the app resumes as well.
+    /// (and restores `CostPauseState` on any failure). The next run releases
+    /// the coordinator's hold and resumes parked turns. Returns the sides the
+    /// app resumes as well; each stays listed until it resumes itself
+    /// (`forgetPausedMember`), so a lost reply or failed fan-out can retry.
     func endCostPause() -> [String] {
-        guard costPaused else { return [] }
+        guard costPaused else { return costPausedMembers }
         costPaused = false; budgetStopIssued = false
         if familyStopReason?.code == Self.costLimitCode { familyStopReason = nil }
         if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
-        resumingCostPause = hasParkedAgentTurns
-        let members = costPausedMembers; costPausedMembers = []
-        if let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
-        return members
+        resumingCostPause = !isSubagent && agentCoordinator != nil
+        return costPausedMembers
     }
     struct CostPauseState { var paused: Bool, members: [String], reason: AgentError?, issued: Bool, code: String?, message: String? }
     var costPauseState: CostPauseState { .init(paused:costPaused,members:costPausedMembers,reason:familyStopReason,issued:budgetStopIssued,code:errorCode,message:errorMessage) }
@@ -97,7 +97,10 @@ extension AgentSession {
         let receiptKey = Self.continuePrefix + commandID
         if let receipt = commands.last(where: { $0["commandId"].text == commandID }) {
             guard receipt["turnId"].text == receiptKey else { throw AgentError("command_conflict", "Command identity already used for another command") }
-            return ["accepted": true, "duplicate": true, "continued": true, "state": receipt["state"]]
+            var reply: JSON = ["accepted": true, "duplicate": true, "continued": true, "state": receipt["state"]]
+            // A retried family Resume still learns which sides wait for it.
+            if !costPausedMembers.isEmpty { reply["pausedMembers"] = .array(costPausedMembers.map(JSON.string)) }
+            return reply
         }
         guard runTask == nil else { throw AgentError("session_busy", "Run already active") }
         guard queueEdit == nil else { throw Self.editHeldError }
@@ -105,10 +108,15 @@ extension AgentSession {
         // sub-agent turns go on with the run; its sides are named for the app.
         let paused = costPauseState
         var members: [String] = []
-        if costPaused {
-            try enforceCostLimit()
-            members = endCostPause()
+        if costPaused { try enforceCostLimit() }
+        // Every refusal from here on leaves the pause exactly as it was.
+        var committed = false
+        defer {
+            if !committed, paused.paused { restoreCostPause(paused) }
+            // A side that resumed no longer needs its root to name it.
+            if committed, paused.paused, let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
         }
+        if costPaused { members = endCostPause() }
         let familyOnly = paused.paused && hasParkedAgentTurns
         let tailContinues = continuationTail.map { Self.continues(from: $0) } ?? false || hasPendingAgentEvents
         // With nothing of its own cut off, the run waits for the resumed
@@ -123,6 +131,9 @@ extension AgentSession {
                     commands.removeAll { $0["turnId"].text == receiptKey }; restoreCostPause(paused); queuePaused = true; throw error
                 }
                 event("state")
+                // No run: release the coordinator's hold now.
+                resumingCostPause = false; committed = true
+                if !isSubagent, let coordinator = agentCoordinator { let generation = stopCount; Task { try? await coordinator.resumeParked(owner:self,generation:generation) } }
                 return ["accepted": true, "continued": false, "resumedFamily": true, "pausedMembers": .array(members.map(JSON.string))]
             }
             // Pi: from an answered context (or none: a first message stopped
@@ -136,6 +147,7 @@ extension AgentSession {
             // the same command sent again releases nothing twice.
             commandState(Submission(commandID: commandID, turnID: receiptKey, text: ""), "completed")
             do { try resumeQueue() } catch { commands.removeAll { $0["turnId"].text == receiptKey }; restoreCostPause(paused); throw error }
+            committed = true
             var reply: JSON = ["accepted": true, "continued": false, "resumedQueue": true]
             if paused.paused { reply["resumedFamily"] = true; reply["pausedMembers"] = .array(members.map(JSON.string)) }
             return reply
@@ -161,6 +173,7 @@ extension AgentSession {
             restoreCostPause(paused)
             throw error
         }
+        committed = true
         launch()
         var reply: JSON = ["accepted": true, "continued": true]
         if paused.paused { reply["resumedFamily"] = true; reply["pausedMembers"] = .array(members.map(JSON.string)) }

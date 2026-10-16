@@ -121,7 +121,7 @@ final class FamilyLimitPauseTests: XCTestCase {
             await owner.beginResumeFixture()
             let presented = await owner.activeTaskPresentation?.executionID, execution = try XCTUnwrap(presented)
             await client.releaseAll()
-            try await coordinator.resumeParked(owner:owner)
+            try await coordinator.resumeParked(owner:owner,generation:1)
             try await eventually { await coordinator.jobs.isEmpty }
             let resumed = await owner.agentState(), dispatched = await client.children
             XCTAssertTrue(resumed.turns.values.allSatisfy { $0.status == .completed },label)
@@ -480,5 +480,170 @@ private actor LimitHeldTools: ToolExecuting {
         started = true; starts += 1
         do { while true { try await Task.sleep(for:.milliseconds(2)) } }
         catch { cancelled = true; cancellations += 1; throw error }
+    }
+}
+
+/// Review round 1 (Codex) regressions for the Resume lifecycle.
+extension FamilyLimitPauseTests {
+    private func steeringOwner(_ root: URL, client: any ModelClient, coordinator: AgentSteeringCoordinator) async throws -> AgentSession {
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+            readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
+        await owner.enableFamilyBudget(); await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+        return owner
+    }
+    private func startChild(_ owner: AgentSession, _ coordinator: AgentSteeringCoordinator, _ id: String, newTask: Bool = true) async throws -> String {
+        let call = ToolCall(id:id,name:"subagent_start",arguments:["task":JSON("Worker \(id)"),"mode":"background"])
+        let key = try await owner.agentFixtureCall(call,newTask:newTask)
+        let receipt = try await coordinator.prepare(call,key:key,parent:owner)
+        return try XCTUnwrap(receipt["child_id"].text)
+    }
+
+    /// A Resume with no parked turn still releases the coordinator's hold:
+    /// later delegation runs instead of queueing forever.
+    func testResumeWithoutParkedTurnsReleasesTheCoordinatorHold() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = LimitRunClient(mode:"queued"), coordinator = AgentSteeringCoordinator()
+        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        await owner.beginResumeFixture()
+        await owner.fixtureCostPause()
+        await coordinator.pause(owner:owner,generation:0)
+        let held = await coordinator.paused.contains("parent"); XCTAssertTrue(held)
+        let reply = try await owner.continueRun(commandID:"resume")
+        XCTAssertEqual(reply["resumedFamily"].flag,true); XCTAssertEqual(reply["continued"].flag,false)
+        try await eventually(timeout:.seconds(2)) { !(await coordinator.paused.contains("parent")) }
+        await client.releaseAll()
+        _ = try await startChild(owner, coordinator, "after")
+        try await eventually(timeout:.seconds(3)) { await client.children.count == 1 }
+        await coordinator.drain(); await owner.close()
+    }
+
+    /// Resume waits for the pause's runners to finish parking: a turn still
+    /// settling is resumed, not stranded without a continuation.
+    func testResumeWaitsForTurnsStillParking() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = LimitRunClient(mode:"queued"), coordinator = AgentSteeringCoordinator()
+        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        await coordinator.fixturePause("parent")
+        let child = try await startChild(owner, coordinator, "settling")
+        let target = AgentTurnTarget(childID:child,turn:1)
+        await owner.beginResumeFixture(); await client.releaseAll()
+        let resume = Task { try await coordinator.resumeParked(owner:owner,generation:0) }
+        try await Task.sleep(for:.milliseconds(100))
+        let early = await owner.agentState().turns[target.id]?.continuations
+        XCTAssertNil(early,"Nothing is resumed while the turn is still settling")
+        await coordinator.pause(owner:owner,generation:0)   // the pause's runner parks it now
+        try await resume.value
+        try await eventually { await owner.agentState().turns[target.id]?.status == .completed }
+        let resumed = await owner.agentState().turns[target.id]
+        XCTAssertEqual(resumed?.continuations?.count,1)
+        await coordinator.drain(); await owner.close()
+    }
+
+    /// Delivery is decided from durable evidence: a task whose row left the
+    /// loaded window (compaction, checkpoint) still continues; one accepted
+    /// but not delivered is released, never submitted a second time.
+    func testResumedTurnStartUsesDurableEvidence() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = LimitRunClient(mode:"queued"), coordinator = AgentSteeringCoordinator()
+        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        await coordinator.fixturePause("parent")
+        _ = try await startChild(owner, coordinator, "evidence")
+        let jobs = await coordinator.jobs, job = try XCTUnwrap(jobs.values.first), turn = job.turn, child = try XCTUnwrap(job.child)
+        let fresh = await child.agentTurnStart(turn); XCTAssertEqual(fresh,.fresh)
+        await child.fixtureReceipt(turn.inputID,state:"delivered")
+        let delivered = await child.agentTurnStart(turn)
+        XCTAssertEqual(delivered,.delivered,"A receipt proves delivery when the row is not loaded")
+        await child.fixtureForgetReceipts()
+        await child.fixtureQueue(Submission(commandID:turn.executionID,turnID:turn.inputID,text:turn.task))
+        var resumedTurn = turn; resumedTurn.continuations = [AgentTurnContinuation(parentExecutionID:turn.parentExecutionID,generation:0,runtimeID:turn.runtimeID,epoch:turn.epoch)]
+        try await child.resumeAgentTurn(resumedTurn,owner:owner,coordinator:coordinator)
+        let accepted = await child.agentTurnStart(resumedTurn), kept = await child.queue.map(\.turnID)
+        XCTAssertEqual(accepted,.accepted); XCTAssertEqual(kept,[turn.inputID],"The accepted task is kept for release")
+        await child.close(); await owner.close()
+    }
+
+    /// A resumed child that had already answered still takes its final
+    /// boundary: steering accepted for that turn is delivered, not dropped.
+    func testAnsweredResumedChildDeliversPendingSteeringBeforeSealing() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = AnsweringChildClient(), coordinator = AgentSteeringCoordinator()
+        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        let child = try await startChild(owner, coordinator, "answered")
+        try await eventually { await client.waiting }
+        await coordinator.fixturePause("parent")
+        await client.release()
+        try await eventually { await coordinator.jobs.isEmpty }
+        let target = AgentTurnTarget(childID:child,turn:1)
+        let parked = await owner.agentState().turns[target.id]?.status; XCTAssertEqual(parked,.queued)
+        let sequence = await owner.agentState().sequence
+        let steer = AgentFamilyMessage(id:"steer-1",sequence:sequence + 1,childID:child,turn:1,author:"parent",kind:"steer",text:"Also check escapes",task:"Worker",epoch:"e")
+        try await owner.appendAgentRecord(JournalRecordKind.agentMessage,steer)
+        await owner.beginResumeFixture()
+        try await coordinator.resumeParked(owner:owner,generation:1)
+        try await eventually { await owner.agentState().turns[target.id]?.status.terminal == true }
+        let message = await owner.agentState().messages["steer-1"], requests = await client.requests
+        XCTAssertEqual(message?.disposition,"delivered")
+        XCTAssertEqual(requests,2,"The answered turn asks again only to answer the steering")
+        await coordinator.drain(); await owner.close()
+    }
+
+    /// Side membership survives the root's Resume until each side resumes;
+    /// a retried Resume still names them; a refused Resume changes nothing.
+    func testRootKeepsPausedSidesUntilTheyResumeAndRefusalsChangeNothing() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([answer("Went on")]),tools:RecordingTools(),traces:TraceStore())
+        await owner.enableFamilyBudget(); await owner.setCostLimit(5)
+        try await owner.append(ChatMessage(role:"user",content:[textBlock("Go on")]))
+        await owner.fixtureCostPause()
+        await owner.notePausedMember("side-a"); await owner.notePausedMember("side-b")
+        // An invalid override fails validation after the pause was checked.
+        do { _ = try await owner.continueRun(commandID:"bad",overrides:["input":5]); XCTFail("Invalid input accepted") } catch {}
+        let stillPaused = await owner.costPaused, kept = await owner.costPausedMembers
+        XCTAssertTrue(stillPaused,"A refused Resume leaves the pause"); XCTAssertEqual(kept,["side-a","side-b"])
+        await owner.stop()
+        let reply = try await owner.continueRun(commandID:"resume")
+        XCTAssertEqual(reply["pausedMembers"].list.compactMap(\.text),["side-a","side-b"])
+        let retained = await owner.costPausedMembers; XCTAssertEqual(retained,["side-a","side-b"])
+        await owner.stop()
+        let again = try await owner.continueRun(commandID:"resume")
+        XCTAssertEqual(again["duplicate"].flag,true)
+        XCTAssertEqual(again["pausedMembers"].list.compactMap(\.text),["side-a","side-b"],"A lost reply can be retried")
+        await owner.forgetPausedMember("side-a")
+        let left = await owner.costPausedMembers; XCTAssertEqual(left,["side-b"])
+        await owner.close()
+    }
+}
+
+private extension AgentSession {
+    func fixtureCostPause() {
+        costPaused = true; queuePaused = true; errorCode = AgentSession.costLimitCode; errorMessage = costPausedMessage
+        if runTask == nil { state = .paused; runStatus = .cancelled }
+    }
+    func fixtureReceipt(_ turnID: String, state: String) { commands.append(["commandId":JSON(UUID().uuidString),"turnId":JSON(turnID),"state":JSON(state),"status":JSON(state)]) }
+    func fixtureForgetReceipts() { commands.removeAll() }
+    func fixtureQueue(_ submission: Submission) { queue.append(submission) }
+}
+
+/// The child's first request is held until released, then answers; any
+/// later request answers too. Costs are tiny.
+private actor AnsweringChildClient: ModelClient {
+    var waiting = false, released = false, requests = 0
+    func release() { released = true }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
+        throw AgentError("fixture_unscoped","Expected admission")
+    }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,cacheSessionID:String,turnID:String,purpose:String,lifecycle:RequestLifecycle?,onObservation:@escaping @Sendable(RequestObservation) async -> Void,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
+        let hooks = try XCTUnwrap(lifecycle), attempt = UUID().uuidString
+        let permit = try await hooks.admitAttempt(attempt); defer { permit.finish() }
+        try await hooks.willDispatch(attempt)
+        requests += 1
+        if requests == 1 { waiting = true; while !released { try await Task.sleep(for:.milliseconds(2)) } }
+        var observation = RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:"turn",fingerprint:"fixture",profile:profile)
+        observation.monitoring = ["outcome":"completed","gateway":["cost":["status":"reported","usd":0.001]]]
+        try await hooks.settleAttempt(.init(scope:hooks.scope,observation:observation,dispatched:true))
+        await onObservation(observation)
+        var reply = answer(requests == 1 ? "Child answer" : "Steered answer"); reply.message.requestAttemptIDs = [attempt]
+        return reply
     }
 }

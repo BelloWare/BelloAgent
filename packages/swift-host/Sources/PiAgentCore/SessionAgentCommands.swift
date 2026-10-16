@@ -88,13 +88,26 @@ extension AgentSession {
         budgetOwner = owner; budgetOwnerGeneration = continuation.generation
         agentLease = turn; agentTurnClosed = false; agentCoordinator = coordinator
         managedProgress = { [weak coordinator] in await coordinator?.progress(turn.target) }
-        queue.removeAll(); steering.removeAll(); queuePaused = false
+        // The turn's own task may be accepted but not yet delivered: it is the
+        // input this Resume releases, never a second submission of it.
+        queue.removeAll { $0.turnID != turn.inputID }; steering.removeAll(); queuePaused = false
         managedCancellation = { Task { await coordinator.stop(owner:owner.id,target:turn.target,human:false) } }
         if costPaused { costPaused = false; errorCode = nil; errorMessage = nil; try persistState() }
     }
-    /// Whether this child's history already holds the turn's task: a resumed
-    /// turn then continues its run instead of being sent its task again.
-    func agentTurnBegan(_ turn: AgentChildTurn) -> Bool { history.contains { $0.id == turn.inputID } }
+    enum AgentTurnStart { case fresh, accepted, delivered }
+    /// How far a resumed turn's task got, from durable evidence (its command
+    /// receipt survives compaction and checkpoints; the loaded history window
+    /// alone does not): never sent, accepted and waiting, or delivered.
+    func agentTurnStart(_ turn: AgentChildTurn) -> AgentTurnStart {
+        if queue.contains(where: { $0.turnID == turn.inputID }) { return .accepted }
+        if history.contains(where: { $0.id == turn.inputID }) { return .delivered }
+        return commands.contains { $0["turnId"].text == turn.inputID } ? .delivered : .fresh
+    }
+    /// Sends the turn's accepted task that a pause held before delivery.
+    func releaseAgentTurn(_ turn: AgentChildTurn) throws {
+        guard agentLease?.executionID == turn.executionID, !closed, runTask == nil, queue.contains(where: { $0.turnID == turn.inputID }) else { throw SubagentRecovery.damaged() }
+        queuePaused = false; try persistState(); launch()
+    }
     /// Continues a resumed turn from its context as it stands, like `run.continue`.
     func continueAgentTurn(_ turn: AgentChildTurn) throws {
         guard agentLease?.executionID == turn.executionID, !closed, runTask == nil else { throw SubagentRecovery.damaged() }

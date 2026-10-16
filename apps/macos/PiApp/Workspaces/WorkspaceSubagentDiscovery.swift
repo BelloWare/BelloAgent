@@ -52,7 +52,7 @@ extension WorkspaceModel {
             value.link == found.header.link && value.revision > 0 &&
                 ((value.turn ?? 1) > (found.turn ?? 1) || ((value.turn ?? 1) == (found.turn ?? 1) && (!found.hasTerminalRecord || value.status == found.status))) ? value : nil
         }
-        let summary = live ?? retained ?? SubagentSummary(link: found.header.link, description: found.header.description, model: found.header.model.model, status: found.status, revision: 0, turn: found.turn, executionID: found.executionID, effort: found.effort ?? found.header.model.thinkingLevel)
+        let summary = live ?? retained ?? SubagentSummary(link: found.header.link, description: found.header.description, model: found.header.model.model, status: found.status, revision: 0, turn: found.turn, executionID: found.executionID, effort: found.effort ?? found.header.model.thinkingLevel, costPaused: found.costPaused ? true : nil)
         if let live, let previous, !live.supersedes(previous) { return }
         if subagentSummaries[child.id] != summary { subagentSummaries[child.id] = summary }
         if live != nil { observeSubagentCost(summary) }

@@ -61,7 +61,9 @@ extension WorkspaceModel {
         Task {
             defer { for view in views { view.resuming = false }; updateHostActivity(workspaceID: item.workspaceID) }
             var members: [String] = []
-            if root.id == item.id || isCostPaused(root.id) {
+            var rootPaused = root.id == item.id || isCostPaused(root.id)
+            if !rootPaused { rootPaused = await rootReadsCostPaused(root) }
+            if rootPaused {
                 guard let reply = await performResume(root, view: displays[root.id], member: root.id != item.id) else { return }
                 members = reply["pausedMembers"]?.array?.compactMap(\.string) ?? []
             }
@@ -72,6 +74,16 @@ extension WorkspaceModel {
                 _ = await performResume(member, view: displays[id], member: true)
             }
         }
+    }
+
+    /// A side's root after a relaunch need not have a display or a budget
+    /// reading yet: ask its helper (as a budget dependency) before deciding
+    /// whether the whole family resumes from the root.
+    func rootReadsCostPaused(_ root: ChatRecord) async -> Bool {
+        guard let host = try? await open(root, budgetDependency: true),
+              let status = try? await host.request("session.status", sessionID: root.id, params: ["budgetOnly": .bool(true)]).object else { return false }
+        observeCost(status, sessionID: root.id)
+        return status["cost"]?.object?["paused"]?.bool == true
     }
 
     /// One `run.continue`, recorded as a pending intent first for a durable

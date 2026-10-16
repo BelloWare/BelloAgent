@@ -153,7 +153,7 @@ extension AgentSession {
                 // under this run's execution, before anything is asked again.
                 if resumingCostPause, !isSubagent {
                     resumingCostPause=false
-                    try await agentCoordinator?.resumeParked(owner:self)
+                    try await agentCoordinator?.resumeParked(owner:self,generation:stopCount)
                 }
                 // Nothing of the parent's own was cut off: wait for the resumed
                 // family as the turn's end would, and ask the model only once
@@ -189,8 +189,11 @@ extension AgentSession {
                     // settles without asking the model about the old context.
                     if rounds == 1, !retryFirstRequest, !continued, !startedFollowUp, !drained { break }
                     // A resumed sub-agent turn that had already answered when
-                    // its family paused has nothing to ask the model again.
+                    // its family paused has nothing to ask the model again. It
+                    // still takes its final boundary: steering accepted
+                    // meanwhile is delivered (and answered) before it seals.
                     if rounds == 1, continued, isSubagent, !drained, let tail=continuationTail, !Self.continues(from:tail) {
+                        if let coordinator=agentCoordinator, try await coordinator.boundary(self,final:true) { continue }
                         try finishPresentedTask("completed")
                         if let activeSubmission { commandState(activeSubmission,"completed") }; self.activeSubmission=nil
                         break
