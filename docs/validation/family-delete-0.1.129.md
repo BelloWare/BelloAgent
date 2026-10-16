@@ -102,13 +102,38 @@ The scenes are generated titles only: few sides, 240 sides, a missing project wi
 
 See [Full gate result](#full-gate-result).
 
+## Review round 1 and owner answers (2026-10-17)
+
+Codex review findings:
+
+- **Overlapping pending deletions.** Deleting a chat now first finishes this project's other interrupted deletions. Before adopting any side, it also checks that the side has no tombstone, failing closed with "An earlier deletion of … is still finishing". A new manifest therefore never overwrites another intent's owner receipt.
+  - `testDeletingMainFinishesAnInterruptedSideDeletionInsteadOfAdoptingIt` interrupts a side deletion at `files:side`, hides the nested member from the chat window, then deletes main.
+  - On the pre-fix code (mutation R1, which removes both changes), main's deletion overwrote the side's receipts ("main" instead of "side"). The resumed deletion then failed with "The desktop record could not be saved".
+  - With only the finish-first step removed (R1b), the guard fails closed and names the unfinished deletion.
+- **Published sides without a chat row.** `savedSideDescendants` now also reads `side-keep` intents that have no chat row and no tombstone. A side whose journal was published while registration failed is therefore listed, trashed and has its intent removed.
+  - `testPublishedSideWithoutAChatRowGoesWithItsChat` covers this.
+  - On the pre-fix code (R2), the journal and intent survived and no tombstone was written.
+
+Owner answers:
+
+- **Untrusted project.** Deletion is allowed and the one step that needs the helper is skipped. `deletionProjectUnavailable` reports an untrusted project, so a side is deleted without the helper. The confirmation names the skipped step: "Skipped: copying unreported spend from interrupted requests into “…”, which needs the project's helper." `testMissingOrRemovedProjectDeletesOnlyTheChatsOwnFiles` now also covers `untrusted`. With the mutation R3, the side deletion failed with the trust error.
+- **Button label.** The action is "Delete Side" when the target is a side; main chats keep "Delete Chat". A mutation (R4) showed the confirmation test catches a regression.
+- **Damaged side record.** The app itself never writes one. The never-delete-on-a-guess fallback covers only damage from outside the app.
+- **Downgrade retry and capture projection rows.** Both are kept as described below.
+
+The UI tests that delete through the confirmation now wait for the family's deleting mark to clear, not only for the record to disappear. The "missing side" case had raced the final unmark.
+
+The rerun of the earlier mutations M1–M5 gave the same results on the new code. Run with the regenerated deletion gallery and its "Delete Side" and new skip copy (checked by eye), `FamilyDeletionTests` passed 9/9.
+
+The merge of `origin/dev/next` (flakes workstream, a2691e9c) kept both 0.1.129 entries. The flakes workstream attributes the first gate's 11 gallery file-viewer timeouts to its own Finder-activating probe, and it fixed the 50 KB expansion heartbeat.
+
 ## Needs owner decision
 
-- **Untrusted project.** A side in an untrusted project still cannot be deleted while its helper is not running, because the ancestor repair needs a trusted helper and the existing trust error is shown. Main chats are unaffected. The conservative choice keeps that behavior. The alternative is to skip the repair and name it, as for a missing folder.
+- Untrusted project: answered (allow, skip the check).
 - **Downgrade.** An older app that finds an interrupted 0.1.129 family intent cannot finish it, because its journal-name rule rejects `side_` members. It reports the incomplete deletion and keeps the intent until this version or a later one runs.
 - **Damaged intermediate record.** A side below an unreadable intermediate side's metadata cannot be proven part of the family. It is left in place and becomes an independent chat after deletion, which is the 0.1.128 orphan behavior. It is never deleted on a guess.
 - **Capture projection rows.** Capture-archive `side_budgets` projection rows for deleted sides stay, as they did for side deletion in 0.1.128. Their captures are cleared, so no total is affected.
-- **Button label.** The confirmation's action stays "Delete Chat" for sides too.
+- Button label: answered ("Delete Side").
 
 ## Full gate result
 
@@ -130,3 +155,23 @@ Neither failure involves deletion code:
 
 - **Serial-lane failure.** `SubagentPerformanceTests.testFiftyKilobyteMarkdownResultInALongChatKeepsTheMainThreadResponsive` measured a 101.7 ms gap against its 100 ms bound. This is a timing bound in transcript rendering, which this branch does not change. The class passed 2/2 when run alone on the same build.
 - **Gallery failures.** All 11 were file-viewer waits ("folder menu is visible", "preview to load", "long-path fixture is read"), which this branch does not change. Rerun alone under the lock on the same build, `UIScreenshotTests` passed 3/3 with 0 failures and 230 screenshots.
+
+## Full gate result, round 1
+
+`verify-release.sh` was run on bb6e3107 (round-1 fixes merged with `origin/dev/next`) under the shared lock (58 min 50 s).
+
+| Suite | Result |
+| --- | --- |
+| Native serial lane | 887 executed, 43 skipped, 1 failing test (2 assertions) |
+| Native parallel lane (8 clones) | 2,637 passed, 0 failed, 38 skipped |
+| Helper cost | 5/5 |
+| Helper | 963 executed, 7 skipped, 0 failures |
+| Wire | 36 OK |
+| Concurrent | 4 OK |
+| Acceptance | 3 OK |
+| Python | 86 OK |
+| Gallery | 3/3, 230 screenshots |
+
+The earlier 50 KB perf and gallery failures did not recur.
+
+The serial-lane failure was `SubagentOpeningTests.testLiveDiscoverySurvivesTopicMovesAndLosesAuthorityWhenTheHelperExits`: the child status was still `running` where `interrupted` was expected after the helper exited. This is sub-agent discovery after a helper exit, not deletion; the class does not call deletion. It is unchanged by this branch and passed 12/12 in each of five runs alone on the same build. It is handed to the flakes workstream; I did not try to fix it.
