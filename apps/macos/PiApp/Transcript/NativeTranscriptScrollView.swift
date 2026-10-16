@@ -192,6 +192,8 @@ final class TranscriptNativeScrollView: NSScrollView {
     private let marker = TranscriptSurfaceMarker()
     private let emptyLabel = NSTextField(labelWithString: "Ready for a conversation.")
     private var rows: [TranscriptRowContainer] = []
+    /// Prepared alongside row reconciliation, never by a layout/Find tick.
+    private(set) var messageRows: [String: [TranscriptRowContainer]] = [:]
     private var snapshot: TranscriptPage.Snapshot?
     private var environment: TranscriptRowEnvironment?
     private var rowWidth: CGFloat = 0
@@ -569,29 +571,33 @@ final class TranscriptNativeScrollView: NSScrollView {
         // The same rows in the same places need no index by id to be found.
         var retained = sameRows ? [:] : Dictionary(uniqueKeysWithValues: rows.map { ($0.itemID, $0) })
         let freshIDs = snapshot?.fresh ?? []
+        messageRows.removeAll(keepingCapacity: true)
         rows = items.enumerated().map { index, item in
             let fresh: Bool
             if !freshIDs.isEmpty, case .block(let block) = item {
                 fresh = block.message.map { freshIDs.contains($0.id) } ?? block.activity.contains { freshIDs.contains($0.id) }
             } else { fresh = false }
-            if let row = sameRows ? previous[index] : retained.removeValue(forKey: item.id) {
+            let row: TranscriptRowContainer
+            if let existing = sameRows ? previous[index] : retained.removeValue(forKey: item.id) {
+                row = existing
                 if row.update(item: item, fresh: fresh, actions: actionRelay.forwarded, environment: environment) {
                     changedFrom = min(changedFrom, index)
                     if motion?.changes.contains(where: { $0.rowID == row.itemID }) == true { motionNeedsRetarget = true }
                 }
                 if previous.indices.contains(index), previous[index] !== row { changedFrom = min(changedFrom, index) }
-                row.layoutIndex = index
-                return row
-            }
-            changedFrom = min(changedFrom, index)
-            rowsBuiltCount += 1
-            let row = TranscriptRowContainer(item: item, fresh: fresh, actions: actionRelay.forwarded, environment: environment,
+            } else {
+                changedFrom = min(changedFrom, index)
+                rowsBuiltCount += 1
+                row = TranscriptRowContainer(item: item, fresh: fresh, actions: actionRelay.forwarded, environment: environment,
                                              geometryCache: geometryCache, geometrySessionID: snapshot?.sessionID, disclosure: disclosure,
                                              toolInputs: toolInputs)
-            wire(row)
+                wire(row)
+            }
             // An immutable warm row can borrow its exact baseline while still
             // detached. Cache misses mount for native measurement in layoutRows.
             row.layoutIndex = index
+            if TranscriptLayoutClock.recording { TranscriptLayoutClock.messageRowVisits += 1 }
+            for id in Set(item.messageIDs) { messageRows[id, default: []].append(row) }
             return row
         }
         // A clip notification can arrive before the queued layout. Its host

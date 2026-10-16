@@ -4,6 +4,8 @@
 
 ## 0.1.128
 
+- [x] Release-gate repairs: side wire coverage asserts separate physical spend and shared main limits; sidebar press/cut-out fixtures use indented topic chats; rendered Find waits for expanding row geometry; child shortcuts retain command ownership; large agent results reuse completed Markdown segments and cached message-to-row lookups. [Validation](docs/validation/gate-fix-0.1.128.md).
+
 - [x] Released child costs use durable ledger revisions across native updates, terminal lists, cold original readers and helper restart. Progress cannot override newer accounting. Unloaded child mirrors replay once per batch off the host actor while runtime writers stay gated. The transcript measurement benchmark reserves its scrollbar gutter before measuring, eliminating its first-window width race. [Round 19 validation](docs/validation/sub-cost-0.1.128.md#lead-review-round-19-durable-child-cost-revisions-and-host-responsiveness).
 
 - [ ] Round-19 native validation follow-up: its single full lane passed 2,627 tests, skipped 38 and failed one context-reading assertion (nil fraction briefly after helper shutdown). The unchanged class passed 3/3 alone; the cause remains unconfirmed. The corrected transcript measurement passed in the lane and all five loaded repetitions. [Exact results and isolated rerun](docs/validation/sub-cost-0.1.128.md#lead-review-round-19-durable-child-cost-revisions-and-host-responsiveness).

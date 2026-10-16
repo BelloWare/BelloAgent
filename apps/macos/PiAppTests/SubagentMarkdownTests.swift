@@ -423,6 +423,50 @@ final class SubagentMarkdownTests: XCTestCase {
             XCTAssertNil(value, "Unsafe links never become actions")
         }
     }
+    @MainActor func testFindWaitsForMarkdownGrowthDuringDisclosureMotion() async throws {
+        let source = String(repeating: "A **retained** observation.\n\n", count: 120) + "Last **unique** result."
+        let (model, pane, window) = try await findFixture([
+            ("question", ["role": .string("user"), "content": .string("Review")]),
+            ("reply", ["role": .string("assistant"), "content": .array([
+                .object(["type": .string("toolCall"), "id": .string("call"), "name": .string("subagent"), "arguments": .object(["task": .string("Short task")])])])]),
+            ("result", ["role": .string("toolResult"), "toolName": .string("subagent"), "toolCallId": .string("call"), "content": .string(try Self.tool(result: source).output)]),
+            ("done", ["role": .string("assistant"), "content": .string("Done.")])
+        ])
+        let revealed = await model.revealInTranscript(sessionID: "agent-find", messageID: "reply", toolCallID: "call")
+        XCTAssertTrue(revealed)
+        let document = pane.document
+        try await eventually("Mounted result card") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: document).contains { $0.source == source }
+        }
+        document.finishDisclosureMotion()
+        let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptAgentMarkdown.self, in: document).first { $0.source == source })
+        var owner: NSView? = body
+        while owner != nil && !(owner is TranscriptRowContainer) { owner = owner?.superview }
+        let work = try XCTUnwrap(owner as? TranscriptRowContainer)
+        // Hold the same geometry pin the document uses during disclosure.
+        // Text can finish its asynchronous expansion before that motion ends.
+        work.beginDisclosureMotion(contentHeight: work.bounds.height, keepingContentPlaced: false)
+        defer { work.endDisclosureMotion() }
+        pane.showFind(); pane.find.setQuery("Last unique result")
+        try await eventually("Expanded text while the row is moving") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return !pane.find.searching && body.isComplete
+        }
+        XCTAssertTrue(document.focusPending, "Find cannot finish against the pinned former height")
+        XCTAssertNil(document.resolveFocus()?.target)
+        work.endDisclosureMotion()
+        try await eventually("Find after native height validation") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return !document.focusPending && document.focusText != nil
+        }
+        let text = try XCTUnwrap(document.focusText), range = document.focusRange
+        let manager = try XCTUnwrap(text.layoutManager), container = try XCTUnwrap(text.textContainer)
+        var glyph = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)
+        glyph.origin.x += text.textContainerOrigin.x; glyph.origin.y += text.textContainerOrigin.y
+        let clip = pane.scrollView.contentView, rect = text.convert(glyph, to: clip)
+        XCTAssertTrue(clip.bounds.intersects(rect), "clip=\(clip.bounds) match=\(rect)")
+    }
     @MainActor func testDelegatedTaskHeaderUsesMarkdownWithoutChangingTheSavedRow() throws {
         let session = SessionDisplay(id: "child")
         session.isManagedSubagent = true; session.delegatedTask = Self.rich; session.subagentNumbers = ["child": 2]
@@ -456,6 +500,26 @@ final class SubagentMarkdownTests: XCTestCase {
         body.markdown.textView.setSelectedRange(range)
         body.update(large, environment: .init())
         XCTAssertEqual(body.markdown.textView.selectedRange(), range, "A repeated paint keeps the existing native selection")
+    }
+    @MainActor func testIncrementalExpansionKeepsOrderedMarkersAndReplacedTextExact() async throws {
+        let body = TranscriptAgentMarkdown(label: "Result", identity: "prefix")
+        let list = (1...105).map { "\($0). A **numbered** observation with enough words to wrap in a narrow pane." }.joined(separator: "\n")
+        let source = list + "\n\n> A final **quoted** result.\n\n```swift\nlet finished = true\n```"
+        for text in [source, source.replacingOccurrences(of: "observation", with: "replacement")] {
+            body.update(text, environment: .init())
+            for _ in 0..<2 {
+                body.setExpanded(true)
+                try await eventually("Complete ordered result") { body.isComplete }
+                let expected = Self.assistant(text)
+                XCTAssertEqual(body.markdown.textView.string, expected.textView.string)
+                for width: CGFloat in [220, 520] {
+                    XCTAssertEqual(body.markdown.measure(width: width).height, expected.measure(width: width).height,
+                                   "The list marker column follows its complete item count, including 99 to 100")
+                }
+                body.setExpanded(false)
+                XCTAssertFalse(body.isComplete)
+            }
+        }
     }
     @MainActor func testExpandingAndFoldingKeepTheResultAtTheReadingPosition() async throws {
         let source = Self.rich + "\n\n" + String(repeating: "A **retained** observation.\n\n", count: 90)
