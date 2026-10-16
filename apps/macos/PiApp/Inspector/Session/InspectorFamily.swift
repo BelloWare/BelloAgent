@@ -9,11 +9,13 @@ struct InspectorSubagentGroup: Equatable {
     var requests = 0
     var cost: Double?
     var costSamples = 0
+    var number: Int? = nil
+    var effort: String? = nil
     var id: String { summary.link.delegationID }
-    var title: String { summary.description.isEmpty ? "Sub-agent" : summary.description }
+    var title: String { SubagentLabel.title(number, summary.description) }
     var detail: String {
         let coverage = costSamples < requests ? (costSamples == 0 ? " · cost unreported" : " · cost partly unreported") : ""
-        return summary.presentationLabel + " · \(requests) request" + (requests == 1 ? "" : "s") + (cost.map { " · " + compactGatewayUSD($0) } ?? "") + coverage
+        return summary.presentationLabel + (effort.map { " · " + $0 } ?? "") + " · \(requests) request" + (requests == 1 ? "" : "s") + (cost.map { " · " + compactGatewayUSD($0) } ?? "") + coverage
     }
 }
 
@@ -75,6 +77,8 @@ enum CaptureSubagents {
 }
 
 extension PayloadArchive {
+    static let subagentStatisticsSQL = "SELECT delegation,COUNT(*) AS requests,COUNT(cost_usd) AS samples,SUM(cost_usd) AS cost FROM attempts WHERE local_owner=? AND workspace=? AND metrics_retained=1 AND dispatch IS NOT NULL GROUP BY delegation"
+
     func forgetSubagentRelationships(sessionID: String, workspaceID: String) throws {
         let db = try dashboardDatabase()
         try db.transaction {
@@ -89,7 +93,7 @@ extension PayloadArchive {
         guard Self.inspectorScope(owner, workspaceID) else { throw CaptureFailure.unavailable }
         return try await dashboardReader().run(consumer: "inspector") { engine in
             let args: [CaptureSQLValue] = [.text(owner),.text(workspaceID)]
-            let stats = try engine.db.rows("SELECT delegation,COUNT(*) AS requests,COUNT(cost_usd) AS samples,SUM(cost_usd) AS cost FROM attempts WHERE budget_owner=? AND workspace=? AND metrics_retained=1 GROUP BY delegation", args)
+            let stats = try engine.db.rows(Self.subagentStatisticsSQL, args)
             let byID = Dictionary(uniqueKeysWithValues: stats.compactMap { row in row["delegation"]?.string.map { ($0,row) } })
             return try engine.db.rows("SELECT summary FROM subagent_groups WHERE owner=? AND workspace=? ORDER BY rowid", args).map { row in
                 guard let bytes = row["summary"]?.data else { throw CaptureFailure.corrupt }
@@ -120,5 +124,57 @@ extension SubagentSummary {
         else if status.terminal && deliveryState == "pending" { state = status.label + " · pending delivery" }
         else { state = status.label }
         return state + " · turn \(turn)"
+    }
+}
+
+struct InspectorSideGroup: Equatable {
+    var id: String
+    var requests: Int
+    var cost: Double?
+    var costSamples: Int
+    var detail: String {
+        "\(requests) request" + (requests == 1 ? "" : "s") + " · " + compactGatewayUSD(cost) + (costSamples < requests ? " · cost partly unreported" : "")
+    }
+}
+
+extension PayloadArchive {
+    func inspectorSides(owner: String, workspaceID: String) async throws -> [InspectorSideGroup] {
+        guard Self.inspectorScope(owner, workspaceID) else { throw CaptureFailure.unavailable }
+        return try await dashboardReader().run(consumer: "inspector") { engine in
+            try engine.db.rows("SELECT f.child,COUNT(*) AS requests,COUNT(a.cost_usd) AS samples,SUM(a.cost_usd) AS cost FROM family_recipients f JOIN attempts a ON a.id=f.attempt WHERE f.owner=? AND f.kind='side' AND a.workspace=? AND a.metrics_retained=1 AND a.dispatch IS NOT NULL GROUP BY f.child ORDER BY MIN(a.wall),f.child", [.text(owner),.text(workspaceID)]).compactMap { row in
+                guard let child = row["child"]?.string else { return nil }
+                return InspectorSideGroup(id: child, requests: Int(row["requests"]?.number ?? 0), cost: row["cost"]?.double, costSamples: Int(row["samples"]?.number ?? 0))
+            }
+        }
+    }
+}
+
+// Desktop relationships also adopt retained requests from older helpers that
+// predate side request scopes. Only identities are stored, never side content.
+extension PayloadArchive {
+    // Explicit indexed populations avoid SQLite choosing a workspace-wide
+    // scan for the OR. UNION deduplicates a side's own requests.
+    static let sideBudgetAttemptsSQL = "SELECT id FROM attempts WHERE workspace=? AND session=? UNION SELECT id FROM attempts WHERE workspace=? AND local_owner=?"
+
+    @discardableResult func recordSideBudgets(_ sides: [String: [String]], workspaceID: String) throws -> Set<String> {
+        let db = try dashboardDatabase()
+        var affected = Set<String>()
+        try db.transaction {
+            for (side, parents) in sides {
+                guard parents.count <= 128, Set(parents).count == parents.count,
+                      !parents.contains(side), ([side,workspaceID] + parents).allSatisfy({ Self.inspectorScope($0) }) else { throw CaptureFailure.sequence }
+                let bytes = try JSONEncoder().encode(parents)
+                let previous = try db.rows("SELECT parents FROM side_budgets WHERE workspace=? AND side=?", [.text(workspaceID),.text(side)]).first?["parents"]?.data
+                if previous == bytes { continue }
+                affected.insert(side); affected.formUnion(parents)
+                if let previous { affected.formUnion(try JSONDecoder().decode([String].self,from:previous)) }
+                try db.execute("INSERT INTO side_budgets(workspace,side,parents) VALUES(?,?,?) ON CONFLICT(workspace,side) DO UPDATE SET parents=excluded.parents", [.text(workspaceID),.text(side),.blob(bytes)])
+                for row in try db.rows(Self.sideBudgetAttemptsSQL, [.text(workspaceID),.text(side),.text(workspaceID),.text(side)]) {
+                    if let id = row["id"]?.string { try CaptureLineage.projectSides(parents,localOwner:side,id:id,db:db) }
+                }
+            }
+        }
+        for (side, parents) in sides { savedSideBudgets[workspaceID + "\u{0}" + side] = parents }
+        return affected
     }
 }

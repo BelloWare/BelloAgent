@@ -93,7 +93,7 @@ extension AgentSession {
         do {
             let snapshot=try await resources.resolve(), definitions=await sessionDefinitions()
             try validateCompaction(revision,profile:originalProfile)
-            let instructions=Self.requestInstructions((appliedSnapshot ?? snapshot).prompt)
+            let instructions=Self.requestInstructions((appliedSnapshot ?? snapshot).prompt, tools: definitions)
             let policy=compactionPolicy, sessionID=id
             let worker=Task.detached(priority:.userInitiated) {
                 try CompactionPlanner.prepare(frozen:frozen,profile:originalProfile,instructions:instructions,definitions:definitions,

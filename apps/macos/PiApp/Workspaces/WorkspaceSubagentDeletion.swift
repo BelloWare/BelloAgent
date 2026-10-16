@@ -11,6 +11,8 @@ extension WorkspaceModel {
     func deleteSubagentFamily(_ parent: ChatRecord) async throws {
         guard !parent.isSubagent, !parent.imported, let store, displays[parent.id]?.hasWork != true,
               displays[parent.id]?.loading != true else { throw HostError.failure("Stop work before deleting this family.") }
+        try beginBudgetOwnerChange(parent.id)
+        defer { budgetOwnerChanges.remove(parent.id) }
         let existing = try await store.pendingFamilyDeletions().filter { $0.ownerID == parent.id }
         if !existing.isEmpty { try await finishFamilyDeletion(existing); return }
         guard deletingFamilies.insert(parent.id).inserted else { throw HostError.failure("This family is already being deleted.") }
@@ -21,14 +23,8 @@ extension WorkspaceModel {
         let owner = SessionDeletionRecord(id: parent.id, ownerID: parent.id, workspaceID: parent.workspaceID, path: parentPath)
         // Reject unsupported paths before detaching the runtime or committing
         // tombstones, which intentionally prevent this chat from reopening.
-        _ = try familyDeletionJournal(owner)
-        if let host = hosts[parent.workspaceID] {
-            // The helper knows queued/settling children which metadata may
-            // never have seen. It refuses to unload an unsettled owner.
-            if host.isReady { _ = try await host.request("session.forget", sessionID: parent.id) }
-            else { try await host.settleCaptureIfStopping() }
-        }
-        opened.remove(parent.id)
+        try await prepareFamilyDeletion(owner)
+        helperSessionDidUnload(parent.id)
         // Read after the runtime is detached: no last-millisecond delegation
         // can escape the manifest. App opens are blocked during this operation.
         var plans: [DiscoveredSubagent] = []
@@ -52,10 +48,38 @@ extension WorkspaceModel {
         for member in members where member.id != parent.id {
             _ = try familyDeletionJournal(member)
             if let host = hosts[parent.workspaceID], host.isReady { _ = try await host.request("session.forget", sessionID: member.id) }
-            opened.remove(member.id)
+            helperSessionDidUnload(member.id)
         }
-        try await store.beginFamilyDeletion(members); durable = true
+        try await store.beginFamilyDeletion(members, repairCompleted: true); durable = true
+        members[0].repairCompleted = true // committed by beginFamilyDeletion above
         try await finishFamilyDeletion(members)
+    }
+
+    private func prepareFamilyDeletion(_ owner: SessionDeletionRecord) async throws {
+        let journal = try familyDeletionJournal(owner)
+        var host = hosts[owner.workspaceID]
+        if host?.isReady != true {
+            try await host?.settleCaptureIfStopping()
+            // A missing journal has no ledger left to repair. Inspection
+            // errors must not be mistaken for absence and permit cleanup.
+            guard let journal else { return }
+            do {
+                let values = try journal.resourceValues(forKeys: [.isRegularFileKey])
+                guard values.isRegularFile == true else { throw StoreError.invalidRecord }
+            } catch let error as NSError where error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) { return }
+            try await ensureConfiguration()
+            guard let workspace = workspace(for: owner.workspaceID) else { throw HostError.failure("Restore this chat's project before deleting it so saved side costs can be repaired.") }
+            host = try await self.host(for: workspace)
+        }
+        guard let host else { return }
+        cancelIdle(workspaceID: owner.workspaceID)
+        defer { scheduleIdle(workspaceID: owner.workspaceID, host: host) }
+        // The helper refuses unsettled work and repairs surviving side ledgers
+        // from the owner's committed charges, even with no loaded runtime or
+        // capture evidence. Await that durable repair before tombstones/Trash.
+        // Starting only the project helper needs no model profile/credential.
+        try await releaseIdleBudgetDependents(of:owner.id,host:host)
+        _ = try await host.request("session.forget", sessionID: owner.id)
     }
 
     func markPendingFamilyDeletions() async {
@@ -86,9 +110,26 @@ extension WorkspaceModel {
     private func finishFamilyDeletion(_ members: [SessionDeletionRecord]) async throws {
         guard let store, let owner = members.first?.ownerID else { return }
         deletingFamilies.insert(owner)
-        // Keep the parent until its children are gone, so a partial failure
-        // still has an obvious entry from which the user can retry deletion.
-        for member in members.sorted(by: { ($0.id == owner ? 1 : 0, $0.id) < ($1.id == owner ? 1 : 0, $1.id) }) {
+        guard let record = members.first(where: { $0.id == owner }),
+              try await store.get(String.self, kind: "session-deleted", id: owner) == owner else { throw StoreError.invalidRecord }
+        if record.repairCompleted != true {
+            // An older app's intent is not proof that it repaired side mirrors.
+            // Retry before any cleanup, using the persisted owner even when it
+            // is absent from the current chat-list window.
+            try await prepareFamilyDeletion(record)
+            helperSessionDidUnload(owner)
+            try await store.completeFamilyDeletionRepair(owner)
+        }
+        try familyDeletionStep?("repaired")
+        // Validate the complete manifest before deleting any file. Remove the
+        // owner journal first: a cold family scan must never discover a side
+        // whose children have already been intentionally removed. The repair
+        // receipt and owner metadata remain until every file is cleaned up.
+        for member in members {
+            guard member.ownerID == owner, try await store.get(String.self, kind: "session-deleted", id: member.id) == owner else { throw StoreError.invalidRecord }
+            _ = try familyDeletionJournal(member)
+        }
+        for member in members.sorted(by: { ($0.id == owner ? 0 : 1, $0.id) < ($1.id == owner ? 0 : 1, $1.id) }) {
             guard member.ownerID == owner, try await store.get(String.self, kind: "session-deleted", id: member.id) == owner else { throw StoreError.invalidRecord }
             let directory = try subagentDirectory(member.workspaceID)
             let journal = try familyDeletionJournal(member)
@@ -99,7 +140,7 @@ extension WorkspaceModel {
                 let names: [String]
                 do { names = try FileManager.default.contentsOfDirectory(atPath: directory.path) }
                 catch let error as NSError where error.domain == NSCocoaErrorDomain && [NSFileNoSuchFileError, NSFileReadNoSuchFileError].contains(error.code) { names = [] }
-                var files = names.filter { $0 == journal.lastPathComponent || $0 == journal.lastPathComponent + ".meta" || $0 == journal.lastPathComponent + ".promotion" || $0.hasPrefix(journal.lastPathComponent + ".stream") || JournalCheckpoint.isTemporary($0, for: journal) }
+                var files = names.filter { $0 == journal.lastPathComponent || $0 == journal.lastPathComponent + ".meta" || $0 == journal.lastPathComponent + ".origin" || $0 == journal.lastPathComponent + ".promotion" || $0.hasPrefix(journal.lastPathComponent + ".stream") || JournalCheckpoint.isTemporary($0, for: journal) }
                     .sorted().map { directory.appendingPathComponent($0) }
                 let outputs = try ToolOutputOwnership.directory(root: directory.appendingPathComponent("tool-output"), sessionID: member.id)
                 // Use throwing inspection: an I/O failure must retain the intent.
@@ -117,18 +158,32 @@ extension WorkspaceModel {
                     }
                 }
             }
+            try familyDeletionStep?("files:" + member.id)
+        }
+        // Keep the owner's retry entry/repair proof until child metadata and
+        // intents are gone too. Retrying never needs a deleted child journal.
+        for member in members.sorted(by: { ($0.id == owner ? 1 : 0, $0.id) < ($1.id == owner ? 1 : 0, $1.id) }) {
             forgetReadState(member.id); forgetRunHold(member.id)
-            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: member.id) }
+            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: member.id) }
             try await store.removeAll(kind: "receipt:\(member.id)")
             try await store.removeAll(kind: "pending:\(member.id)")
-            contextReadings.removeValue(forKey: member.id); subagentSummaries.removeValue(forKey: member.id)
-            chats.removeAll { $0.id == member.id }; displays.removeValue(forKey: member.id); opened.remove(member.id)
+            contextReadings.removeValue(forKey: member.id); subagentSummaries.removeValue(forKey: member.id); subagentEfforts.removeValue(forKey: member.id)
+            for (parentID, info) in sides where parentID == member.id || info.id == member.id {
+                sides.removeValue(forKey:parentID)
+                if info.pending { displays.removeValue(forKey:info.id); forgetOpened(info.id) }
+                else { displays[info.id]?.presentation.cancel() }
+            }
+            chats.removeAll { $0.id == member.id }; displays.removeValue(forKey: member.id); helperSessionDidUnload(member.id)
             forgetOpened(member.id)
             if selectedID == member.id { selectedID = nil; selected = nil }
             if focusedSessionID == member.id { focusedSessionID = nil }
             try await removeDeletedCapturePreference(sessionID: member.id)
+            try familyDeletionStep?("metadata:" + member.id)
             try await store.remove(kind: SessionDeletionRecord.kind, id: member.id)
+            if member.id != owner { try familyDeletionStep?("intent:" + member.id) }
         }
+        try await restoreSideBudgets()
+        for id in displays.keys { refreshCostReading(id) }
         deletingFamilies.remove(owner)
     }
 }

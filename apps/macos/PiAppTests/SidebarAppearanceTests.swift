@@ -212,7 +212,8 @@ final class SidebarAppearanceTests: XCTestCase {
         try changes("a row was marked") { model.markedSessionIDs = ["long", "unread", "running"] }
         try changes("a chat was pinned") { model.chats[1].pinnedAt = Date() }
         try changes("a chat was archived") { model.chats[3].archivedAt = Date() }
-        try changes("a branch was folded") { model.collapsedSidebarSides.insert("running") }
+        model.collapsedSidebarSides.insert("running")
+        XCTAssertEqual(previous, try frame(), "Legacy folds do not change the main-chat list")
         try changes("a session went live") {
             let display = SessionDisplay(id: "grouped"); display.state = "running"
             model.displays["grouped"] = display
@@ -271,9 +272,11 @@ final class SidebarAppearanceTests: XCTestCase {
             guard let index = model.chats.firstIndex(where: { $0.id == "arrived" }) else { return }
             model.chats[index].topicID = "topic"
         }
-        try changes("a side conversation opened under a chat") {
+        try changes("a side starts working and the parent badge appears") {
             model.sides["long"] = SideRecord(id: "side-of-long", parentID: "long", workspaceID: project.id,
                                              profileID: "fixture", title: "Side conversation")
+            let side = SessionDisplay(id: "side-of-long"); side.runState = .running
+            model.displays[side.id] = side
         }
         try changes("a chat inside the topic was marked") { model.markedSessionIDs = ["grouped", "arrived"] }
         try changes("more chats than a page arrived") {

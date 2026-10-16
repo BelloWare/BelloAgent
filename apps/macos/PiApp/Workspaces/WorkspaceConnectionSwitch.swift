@@ -16,6 +16,7 @@ extension WorkspaceModel {
         if side(chatID) != nil || item.parentSessionID != nil { return "Side conversations keep their parent's connection." }
         if isSessionOpening(chatID) { return "Wait for this chat's connection to finish opening." }
         if let view = displays[chatID], view.hasWork || view.loading { return "Wait for this chat to finish its current work first." }
+        if let busy = runningBudgetDependent(of:chatID) { return budgetMemberBusy(busy) }
         if workspaceChangesInFlight.contains(item.workspaceID) { return "Wait for this project's folder changes to finish." }
         return nil
     }
@@ -42,6 +43,8 @@ extension WorkspaceModel {
         // awaits drained used to make the pill do nothing at all.
         if let blocker = connectionSwitchBlocker(for: chatID) { error = blocker; return }
         guard var updated = record(chatID), updated.profileID != profileID else { return }
+        do { try beginBudgetOwnerChange(chatID) } catch { self.error = error.localizedDescription; return }
+        defer { budgetOwnerChanges.remove(chatID) }
         // From here on the chat is the change's: an open, a send, a prewarm
         // or an automatic context waits for it, then opens wherever the chat
         // is, and one leased before it is stale (`requireConnection`). Without
@@ -58,9 +61,10 @@ extension WorkspaceModel {
         do {
             // A close sent when the chat's display was let go of lands first.
             if let closing = sessionClosings[chatID] { await closing.task.value }
+            if let host = hosts[updated.workspaceID], host.isReady { try await releaseIdleBudgetDependents(of:chatID,host:host) }
             if opened.contains(chatID) {
                 guard let host = hosts[updated.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing the connection.") }
-                _ = try await host.request("session.close", sessionID: chatID); opened.remove(chatID)
+                _ = try await host.request("session.close", sessionID: chatID); helperSessionDidUnload(chatID)
             }
             try await connectionSwitchSteps?("closed")
             // A chat never sent has no record yet (`materializeChat`): writing

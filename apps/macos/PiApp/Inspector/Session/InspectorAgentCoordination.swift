@@ -15,6 +15,7 @@ extension SessionInspectorModel {
             let state = try await workspace.history.agentCoordination(path: URL(fileURLWithPath: path), ownerID: owner)
             let linked = try await archive.coordinationRequests(state.entries, ownerID: owner, workspaceID: scope.workspaceID)
             guard !Task.isCancelled else { return }
+            numberSubagentGroups(state.subagentNumbers)
             coordination = linked.map { value in
                 var entry = value
                 if workspace.displays[owner]?.busy != true && entry.disposition == "pending" { entry.disposition = "held" }
@@ -41,15 +42,17 @@ extension SessionInspectorModel {
         let session = consuming ? entry.recipientID : entry.sourceSessionID
         if session == scope.sessionID || groups.contains(where: { $0.summary.link.childSessionID == session }) {
             setFamilyFilter(.family); focus(.request(attempt))
-        } else { workspace?.openInspector(session: session, focus: .request(attempt)) }
+        } else { workspace?.openInspector(session: session, focus: .request(attempt), originalForkID: originalForkID) }
     }
     func showCoordinationSource(_ entry: AgentCoordinationEntry) {
         guard let workspace else { return }
+        if originalForkID != nil { reveal(workspace, entry.sourceSessionID, entry.sourceMessageID); return }
         bringMainWindowForward()
         Task { await workspace.showAgentSource(entry) }
     }
     func showCoordinationDelivery(_ entry: AgentCoordinationEntry) {
         guard let workspace, let message = entry.recipientMessageID else { return }
+        if originalForkID != nil { reveal(workspace, entry.recipientID, message); return }
         bringMainWindowForward()
         Task { _ = await workspace.revealMessage(sessionID: entry.recipientID, messageID: message) }
     }

@@ -38,6 +38,12 @@ final class ForkCloneReaderTests: XCTestCase {
 
     func testAClonedForkReadsAsTheHelperReadsIt() async throws {
         let whole = try fixture(withMetadata: false), fromMetadata = try fixture(withMetadata: true)
+        for path in [whole, fromMetadata] {
+            let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+            let header = try JSONDecoder().decode([String: WireValue].self, from: bytes.prefix { $0 != 10 })
+            try await HistoryReader().validateIdentity(path: path, id: try XCTUnwrap(header["id"]?.string))
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), bytes)
+        }
         let full = try await HistoryReader().read(path: whole)
         let partial = try await HistoryReader().read(path: fromMetadata)
         for page in [full, partial] {

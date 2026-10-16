@@ -148,6 +148,7 @@ struct TranscriptRowEnvironment: Equatable {
     /// clips to the frame the motion is interpolating. Resizing the tree on
     /// every tick is the SwiftUI re-layout the motion exists to avoid.
     private var pinnedContentHeight: CGFloat?
+    private var contentChangedDuringMotion = false
     /// The part of the row the motion is revealing or hiding fades while the
     /// frame moves. It is one mask over the region the two states do not
     /// share, so every disclosure fades the same way — a turn's work, a tool
@@ -189,6 +190,10 @@ struct TranscriptRowEnvironment: Equatable {
             updateRoot()
         }
         needsLayout = true
+        if contentChangedDuringMotion {
+            contentChangedDuringMotion = false
+            contentSizeChanged()
+        }
     }
     /// The region the two states do not share, and how visible it is. The
     /// part both states have stays solid; the rest fades out as it goes and
@@ -740,7 +745,10 @@ struct TranscriptRowEnvironment: Equatable {
         // While the document is moving this row between two measured
         // heights, it owns the geometry: the tree is deliberately taller
         // than the frame and has nothing to report.
-        guard pinnedContentHeight == nil else { return }
+        // Asynchronous Markdown can grow while disclosure owns the frame.
+        // Keep that invalidation until the pin is released, or the document
+        // retains the preview height and clamps Find to the wrong destination.
+        guard pinnedContentHeight == nil else { contentChangedDuringMotion = true; return }
         // A token the message's own surface has already measured: the row has
         // the new height, and the page has already been placed around it.
         guard !streamingHeightKnown else { return }

@@ -3,6 +3,214 @@ import XCTest
 @testable import PiApp
 
 final class SubagentDiscoveryTests: XCTestCase {
+    @MainActor func testInheritedPlanCacheRevalidatesAppendsRewritesAndOwnerIdentity() async throws {
+        for kind in AgentForkKind.allCases {
+            let root = scratchRoot("plans-cache-" + kind.rawValue)
+            let model = try SubagentOrganizationTests.fixture(root)
+            registerWorkspaceFixtureTeardown(model, root: root)
+            let family = try Self.family(model)
+            let source = URL(fileURLWithPath: model.chats[0].path!)
+            var rows = try String(contentsOf: source, encoding: .utf8).split(separator: "\n").map {
+                try JSONDecoder().decode([String: WireValue].self, from: Data($0.utf8))
+            }
+            rows[0]["id"] = .string(kind.id)
+            let path = source.deletingLastPathComponent().appendingPathComponent(kind.id + ".jsonl")
+            func encode(_ rows: [[String: WireValue]]) throws -> Data {
+                var bytes = Data(); for row in rows { bytes.append(try JSONEncoder().encode(row)); bytes.append(10) }; return bytes
+            }
+            try encode(rows).write(to: path)
+            var fork = model.chats[0]; fork.id = kind.id; fork.path = path.path; fork.parentSessionID = kind.parentID(model.chats[0].id)
+            model.chats.append(fork); model.displays[fork.id] = SessionDisplay(id: fork.id)
+            let miss = try await model.history.subagentPlans(path: path, ownerID: fork.id, childID: UUID().uuidString, includeInherited: true)
+            XCTAssertTrue(miss.isEmpty, "A targeted miss must not cache an incomplete plan set")
+            await model.readInheritedSubagents(fork, current: { true })
+            XCTAssertEqual(model.inheritedSubagents[fork.id]?.map { $0.target.sessionID }, [family.child])
+            let scanned = await model.history.subagentScannedBytes
+            // Reuse across filter choices without losing inherited ordinals.
+            let owned = try await model.history.subagentPlans(path: path, ownerID: fork.id)
+            XCTAssertTrue(owned.isEmpty)
+            let child = try await model.history.subagentPlans(path: path, ownerID: fork.id, childID: family.child, includeInherited: true)
+            XCTAssertEqual(child.first?.number, 1)
+            XCTAssertEqual(child.first?.header.link.childSessionID, family.child)
+            await model.readInheritedSubagents(fork, current: { true })
+            let reused = await model.history.subagentScannedBytes
+            XCTAssertEqual(reused, scanned, "The exact revision needs no second plan scan")
+            var plan = rows[1], data = try XCTUnwrap(plan["data"]?.object), origin = try XCTUnwrap(data["origin"]?.object)
+            var link = try XCTUnwrap(origin["link"]?.object)
+            let next = UUID().uuidString
+            link["childSessionID"] = .string(next); origin["link"] = .object(link)
+            data["origin"] = .object(origin); plan["data"] = .object(data)
+            let file = try FileHandle(forWritingTo: path); try file.seekToEnd(); try file.write(contentsOf: encode([plan])); try file.close()
+            await model.readInheritedSubagents(fork, current: { true })
+            XCTAssertEqual(model.inheritedSubagents[fork.id]?.map { $0.target.sessionID }, [family.child, next])
+            XCTAssertEqual(model.inheritedSubagents[fork.id]?.map(\.number), [1, 2])
+            // Same-size rewrites with restored mtime still invalidate the cache.
+            let old = try Data(contentsOf: path), date = try FileManager.default.attributesOfItem(atPath: path.path)[.modificationDate]
+            let replacement = UUID().uuidString
+            let edited = Data(String(decoding: old, as: UTF8.self).replacingOccurrences(of: next, with: replacement).utf8)
+            XCTAssertEqual(edited.count, old.count)
+            let writer = try FileHandle(forWritingTo: path); try writer.write(contentsOf: edited); try writer.close()
+            if let date { try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: path.path) }
+            await model.readInheritedSubagents(fork, current: { true })
+            XCTAssertEqual(model.inheritedSubagents[fork.id]?.map { $0.target.sessionID }, [family.child, replacement])
+            do {
+                _ = try await model.history.subagentPlans(path: path, ownerID: "wrong-owner", includeInherited: true)
+                XCTFail("A cached path cannot bypass journal-owner validation")
+            } catch { XCTAssertTrue(error is StoreError) }
+            try FileManager.default.removeItem(at: path)
+            do {
+                _ = try await model.history.subagentPlans(path: path, ownerID: fork.id, includeInherited: true)
+                XCTFail("Removed journals cannot reuse cached plans")
+            } catch { }
+        }
+    }
+
+    @MainActor func testForkOwnedNumbersFollowPersistedInheritedStarts() async throws {
+        for kind in AgentForkKind.allCases { try await checkForkOwnedNumbersFollowPersistedInheritedStarts(kind) }
+    }
+    @MainActor private func checkForkOwnedNumbersFollowPersistedInheritedStarts(_ kind: AgentForkKind) async throws {
+        let root = scratchRoot("fork-numbers"), model = try SubagentOrganizationTests.fixture(scratchRoot("fork-numbers-model"))
+        registerWorkspaceFixtureTeardown(model, root: model.root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let family = try Self.family(model), source = URL(fileURLWithPath: model.chats[0].path!)
+        var rows = try String(contentsOf:source,encoding:.utf8).split(separator:"\n").map { try JSONDecoder().decode([String:WireValue].self,from:Data($0.utf8)) }
+        rows[0]["id"] = .string("fork")
+        var own = rows[1], data = own["data"]!.object!, origin = data["origin"]!.object!, link = origin["link"]!.object!
+        let ownID = UUID().uuidString
+        link["childSessionID"] = .string(ownID); link["budgetOwnerSessionID"] = .string("fork")
+        var call = link["call"]!.object!; call["parentSessionID"] = .string("fork"); link["call"] = .object(call)
+        origin["link"] = .object(link); data["origin"] = .object(origin); own["data"] = .object(data); rows.append(own)
+        let path = family.path.deletingLastPathComponent().appendingPathComponent("fork.jsonl")
+        var bytes = Data(); for row in rows { bytes.append(try JSONEncoder().encode(row)); bytes.append(10) }; try bytes.write(to:path)
+        let plans = try await model.history.subagentPlans(path:path,ownerID:"fork")
+        XCTAssertEqual(plans.count,1); XCTAssertEqual(plans.first?.number,2)
+        XCTAssertEqual(plans.first?.header.link.childSessionID,ownID)
+        // A copied receipt reserves its ordinal but grants no coordination
+        // authority. Replayed starts and follow-ups must not reserve more.
+        rows += [rows[1], own]
+        for id in [family.child, ownID] {
+            rows.append(["customType":.string("pi-app.agent-operation.v1"), "data":.object([
+                "key":.object(["parentSessionID":.string("fork"), "assistantMessageID":.string("send"), "toolCallID":.string(id)]),
+                "turn":.object(["childID":.string(id), "turn":.number(2), "inputID":.string("input-" + id)])])])
+            rows.append(["customType":.string("pi-app.subagent-turn-terminal.v1"), "data":.object(["childID":.string(id), "turn":.number(2)])])
+        }
+        rows.append(["customType":.string("pi-app.family-run.v1"), "data":.object(["heldChildren":.array([.string(family.child), .string(ownID)])])])
+        bytes = Data(); for row in rows { bytes.append(try JSONEncoder().encode(row)); bytes.append(10) }; try bytes.write(to:path)
+        let coordination = try await model.history.agentCoordination(path:path, ownerID:"fork")
+        XCTAssertEqual(coordination.subagentNumbers, [family.child:1, ownID:2])
+        XCTAssertEqual(coordination.entries.map(\.childID), [ownID, ownID])
+        XCTAssertEqual(coordination.entries.map(\.subagentNumber), [2, 2])
+        XCTAssertEqual(coordination.heldChildren, [ownID], "Copied children remain outside the fork's authority")
+        let cached = try await model.history.agentCoordination(path:path, ownerID:"fork")
+        XCTAssertEqual(cached, coordination)
+        var fork = model.chats[0]; fork.id = "fork"; fork.path = path.path; fork.parentSessionID = kind.parentID("chat-parent")
+        model.chats.append(fork)
+        let display = SessionDisplay(id:fork.id); model.displays[fork.id] = display
+        await model.readInheritedSubagents(fork, current: { true })
+        XCTAssertEqual(model.inheritedSubagents[fork.id]?.map { $0.target.sessionID }, [family.child], kind.rawValue)
+        display.subagentNumbers = [family.child:1, ownID:2]
+        model.applyAgentCoordination(coordination, parentID:fork.id)
+        XCTAssertEqual(display.subagentNumbers[ownID], 2, "Coordination cannot replace the discovery ordinal")
+        var tool = SubagentSteeringPresentationTests.tool
+        var metadata = tool.nativeSubagent!.object!; metadata["sessionId"] = .string(ownID); tool.nativeSubagent = .object(metadata)
+        XCTAssertEqual(display.presentAgentState(.init(id:"reply",role:"assistant",text:"",tools:[tool])).tools?.first?.subagentNumber, 2)
+        let header = try XCTUnwrap(plans.first?.header)
+        let summary = SubagentSummary(link:header.link,description:header.description,model:header.model.model,status:.completed,revision:1)
+        try await model.traces.configure(quota:nil,bodyRetention:86_400,metricRetention:86_400)
+        try await model.traces.recordSubagent(summary,workspaceID:fork.workspaceID)
+        let inspector = SessionInspectorModel(scope:.init(sessionID:fork.id,workspaceID:fork.workspaceID),title:"Fork",archive:model.traces,workspace:model,
+            usageLoader:{ _, _, _ in throw CaptureFailure.unavailable })
+        inspector.setVisible(true); defer { inspector.setVisible(false) }
+        try await eventually("Inspector loads the fork's owned family") { inspector.indexLoaded }
+        XCTAssertEqual(inspector.groups.count, 1)
+        XCTAssertEqual(inspector.groups.first?.number, 2)
+        XCTAssertTrue(inspector.groups.first?.title.hasPrefix("Sub-agent 2 ·") == true)
+        XCTAssertEqual(try Data(contentsOf:path), bytes)
+    }
+    @MainActor func testOlderRecoveryOriginKeepsReciprocalDiscoveryAndLiveFollowUpsAttached() async throws {
+        for missing in [WireValue?.none, .null] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+            model.chats.remove(at: 1)
+            let family = try Self.recoveryFamily(model) { origin in
+                var selected = origin["model"]!.object!; selected["reasoning"] = missing; origin["model"] = .object(selected)
+            }
+            let store = try XCTUnwrap(model.store), parent = model.chats[0]
+            try await store.putChats(model.chats)
+            let before = try [Data(contentsOf:family.path),Data(contentsOf:URL(fileURLWithPath:parent.path!))]
+            let discovered = try await model.history.discoverSubagents(directory:family.path.deletingLastPathComponent(),parents:model.chats)
+            let found = try XCTUnwrap(discovered.first { $0.header.link.childSessionID == family.child })
+            XCTAssertNil(found.issue,"Missing optional capabilities are compatible with the owning plan")
+            await model.reconcileSubagents()
+            let child = try XCTUnwrap(model.record(family.child))
+            XCTAssertNil(child.delegationIssue); XCTAssertEqual(child.parentSessionID,parent.id)
+            let saved = try await store.get(ChatRecord.self,kind:"chat",id:child.id)
+            XCTAssertNil(saved?.delegationIssue); XCTAssertEqual(saved?.parentSessionID,parent.id)
+            try await model.traces.configure(quota:nil,bodyRetention:86_400,metricRetention:86_400)
+            let summary = SubagentSummary(link:found.header.link,description:found.header.description,model:found.header.model.model,status:.running,revision:1,turn:2)
+            try await model.registerListedSubagent(summary,parent:parent,task:"Follow-up")
+            await model.reconcileSubagents()
+            XCTAssertNil(model.record(child.id)?.delegationIssue)
+            XCTAssertEqual(model.record(child.id)?.parentSessionID,parent.id)
+            XCTAssertEqual(model.subagentSummaries[child.id]?.turn,2)
+            XCTAssertEqual(model.subagentSummaries[child.id]?.status,.running)
+            XCTAssertEqual(try [Data(contentsOf:family.path),Data(contentsOf:URL(fileURLWithPath:parent.path!))],before)
+            XCTAssertTrue(model.hosts.isEmpty); XCTAssertTrue(model.sessionOpenings.isEmpty)
+        }
+    }
+
+    @MainActor func testRecoveryOriginCompatibilityRejectsExplicitCapabilitiesAndOtherDifferences() async throws {
+        for field in ["reasoning-empty","reasoning-different","model","readOnly","tools","resourceRevision","frozenResources","description","link","unknown-field"] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
+            model.chats.remove(at: 1)
+            let family = try Self.recoveryFamily(model) { origin in
+                var selected = origin["model"]!.object!; selected.removeValue(forKey:"reasoning")
+                if field == "reasoning-empty" { selected["reasoning"] = .array([]) }
+                if field == "reasoning-different" { selected["reasoning"] = .array([.string("high")]) }
+                if field == "model" { selected["model"] = .string("different-model") }
+                origin["model"] = .object(selected)
+                switch field {
+                case "readOnly": origin[field] = .bool(false)
+                case "tools": origin[field] = .array([])
+                case "resourceRevision", "description", "unknown-field": origin[field] = .string("different")
+                case "frozenResources": origin[field] = .object(["prompt":.string("different")])
+                case "link":
+                    var link = origin[field]!.object!; link["parentTurnID"] = .string("different-turn"); origin[field] = .object(link)
+                default: break
+                }
+            }
+            try await model.store?.putChats(model.chats)
+            await model.reconcileSubagents()
+            let child = try XCTUnwrap(model.record(family.child),field)
+            XCTAssertNotNil(child.delegationIssue,field); XCTAssertNil(child.parentSessionID,field)
+            XCTAssertTrue(model.hosts.isEmpty)
+        }
+    }
+
+    @MainActor private static func recoveryFamily(_ model: WorkspaceModel, change: (inout [String:WireValue]) -> Void) throws -> (child: String, path: URL) {
+        let family = try self.family(model), parent = URL(fileURLWithPath:model.chats[0].path!)
+        func rows(_ path: URL) throws -> [[String:WireValue]] {
+            try String(contentsOf:path,encoding:.utf8).split(separator:"\n").map { try JSONDecoder().decode([String:WireValue].self,from:Data($0.utf8)) }
+        }
+        func write(_ values: [[String:WireValue]], _ path: URL) throws {
+            var data = Data(); for row in values { data.append(try JSONEncoder().encode(row)); data.append(10) }; try data.write(to:path)
+        }
+        var parentRows = try rows(parent), childRows = try rows(family.path)
+        var origin = childRows[2]["data"]!.object!, selected = origin["model"]!.object!
+        selected["reasoning"] = .array([.string("low"),.string("high")]); origin["model"] = .object(selected)
+        origin["tools"] = .array([.string("read")]); origin["resourceRevision"] = .string("frozen")
+        origin["frozenResources"] = .object(["prompt":.string("Frozen instructions")])
+        var plan = parentRows[1]["data"]!.object!; plan["origin"] = .object(origin)
+        parentRows[1] = ["type":.string("custom"),"customType":.string("pi-app.agent-operation.v1"),"data":.object(["plan":.object(plan)])]
+        change(&origin); childRows[2]["data"] = .object(origin)
+        childRows[1]["customType"] = .string("pi-app.native.v3")
+        childRows[3]["customType"] = .string("pi-app.subagent-turn-terminal.v1")
+        childRows[3]["data"] = .object(["childID":.string(family.child),"turn":.number(1),"executionID":.string("recovered"),"status":.string("not_executed")])
+        try write(parentRows,parent); try write(childRows,family.path)
+        return family
+    }
+
     @MainActor func testDiscoveryPublicationCannotUndoANewerTopicMoveOrArchive() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
@@ -175,6 +383,9 @@ final class SubagentDiscoveryTests: XCTestCase {
     }
 
     @MainActor func testForeignTerminalAndCopiedParentCannotClaimAChild() async throws {
+        for kind in AgentForkKind.allCases { try await checkForeignTerminalAndCopiedParentCannotClaimAChild(kind) }
+    }
+    @MainActor private func checkForeignTerminalAndCopiedParentCannotClaimAChild(_ kind: AgentForkKind) async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(model, root: root)
         model.chats.remove(at: 1)
@@ -189,7 +400,7 @@ final class SubagentDiscoveryTests: XCTestCase {
         await model.reconcileSubagents()
         XCTAssertEqual(model.subagentSummaries[family.child]?.status, .interrupted)
         let parent = model.chats[0], forkID = "copied-parent"
-        var fork = parent; fork.id = forkID
+        var fork = parent; fork.id = forkID; fork.parentSessionID = kind.parentID(parent.id)
         let forkPath = URL(fileURLWithPath: try XCTUnwrap(parent.path)).deletingLastPathComponent().appendingPathComponent(forkID + ".jsonl")
         let source = try String(contentsOfFile: try XCTUnwrap(parent.path), encoding: .utf8)
         var copied = source.split(separator: "\n").map(String.init)

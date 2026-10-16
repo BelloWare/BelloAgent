@@ -10,6 +10,35 @@ struct SubagentHeader: Codable, Sendable {
 }
 
 extension HistoryReader {
+    /// Explicit cold original readers cannot start a helper. Read only their
+    /// own numeric mirrors, off the UI actor, with the same durable revision
+    /// as live events. No transcript content escapes this projection.
+    func subagentCost(path: URL, directory: URL, expected: SubagentTarget) throws -> [String:WireValue]? {
+        let header = try subagentHeader(path:path,directory:directory,expected:expected)
+        let stamp = HistoryReader.currentRevision(path:path.path)
+        let file = try FileHandle(forReadingFrom:path); defer { try? file.close() }
+        var pending = Data(), value = ChildCostProjection()
+        let costMarker = Data("pi-app.cost".utf8)
+        while let bytes = try file.read(upToCount:65_536), !bytes.isEmpty {
+            try Task.checkCancellation(); pending.append(bytes)
+            while let end = pending.firstIndex(of:10) {
+                let line = Data(pending[..<end]); pending.removeSubrange(...end)
+                guard line.count <= 33_554_432 else { throw StoreError.unreadableRecord }
+                guard line.range(of:costMarker) != nil else { continue }
+                let row = try JSONDecoder().decode([String:WireValue].self,from:line)
+                guard row["type"]?.string == "custom", let kind = row["customType"]?.string, let data = row["data"] else { continue }
+                try value.consume(kind:kind,data:JSONEncoder().encode(data),child:header.link.childSessionID,
+                    owner:header.link.budgetOwnerSessionID,delegation:header.link.delegationID)
+            }
+            guard pending.count <= 33_554_432 else { throw StoreError.unreadableRecord }
+        }
+        // A live append will publish its own revision through native events;
+        // replacement or a partial write must not validate an older cache.
+        guard pending.isEmpty, stamp != nil, stamp == HistoryReader.currentRevision(path:path.path) else { return nil }
+        return ["spentUSD":.number(value.usd),"reportedRequests":.number(Double(value.reported)),
+                "unreportedRequests":.number(Double(value.unreported)),"accountingRevision":.number(Double(value.revision))]
+    }
+
     func subagentHeader(path: URL, directory: URL, expected: SubagentTarget) throws -> SubagentHeader {
         guard UUID(uuidString: expected.sessionID) != nil,
               path.resolvingSymlinksInPath().deletingLastPathComponent() == directory.resolvingSymlinksInPath(),

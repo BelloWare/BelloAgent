@@ -74,6 +74,9 @@ struct SessionCostReading: Equatable, Sendable {
     var spentUSD: Double? = nil
     var reportedRequests = 0
     var unreportedRequests = 0
+    var costAttribution: String?
+    var budgetOwnerID: String?
+    var budgetSpentUSD: Double?
 
     /// From this share of the limit on, the figure reads as a warning.
     static let warningFraction = 0.8
@@ -89,17 +92,20 @@ struct SessionCostReading: Equatable, Sendable {
         guard let cap = limit.usd, cap > 0, let spent, spent.isFinite, spent >= 0 else { return nil }
         return spent / cap
     }
-    var fraction: Double? { fraction(spent: spentUSD) }
+    var fraction: Double? { fraction(spent: budgetOwnerID == nil ? spentUSD : budgetSpentUSD) }
     /// At 80% of the limit or more.
-    func warning(spent: Double?) -> Bool { (fraction(spent: spent) ?? 0) >= Self.warningFraction }
+    func warning(spent: Double?) -> Bool { (fraction(spent: budgetOwnerID == nil ? spent : budgetSpentUSD) ?? 0) >= Self.warningFraction }
     var warning: Bool { warning(spent: spentUSD) }
     /// The next model request would not go.
     var reached: Bool { (fraction ?? 0) >= 1 }
+    /// Continue waits for authoritative spend, including a shared owner that
+    /// has no transcript display. Retained captures may have expired.
+    var held: Bool { reached || (budgetOwnerID == nil ? spentUSD : budgetSpentUSD) == nil }
     /// "$4.12 of $5.00" under a limit, "$4.12" with none; nil with no spend.
     func figure(spent: Double?) -> String? {
         guard let spent, spent.isFinite, spent >= 0 else { return nil }
         let amount = compactGatewayUSD(spent)
-        guard let cap = limit.usd else { return amount }
+        guard budgetOwnerID == nil, let cap = limit.usd else { return amount }
         return amount + " of " + CostLimit.dollars(cap)
     }
     var figure: String? { figure(spent: spentUSD) }
@@ -110,4 +116,18 @@ struct SessionCostReading: Equatable, Sendable {
     }
     /// Which limit this is, in words: "Default · $25.00", "This chat · No limit".
     var source: String { (override == nil ? "Default · " : "This chat · ") + limit.label }
+}
+
+/// An immutable, app-only overlay shared by card projections. Keep this a
+/// reference: embedding the full reading in ToolView/SubagentToolView inflates
+/// the nested transcript plan's debug stack frames on helper-sized threads.
+final class SubagentCostPresentation: Sendable, Equatable {
+    let spentUSD: Double?, unreportedRequests: Int, unreportedNote: String?, costAttribution: String?
+    init(_ reading: SessionCostReading) {
+        spentUSD = reading.spentUSD; unreportedRequests = reading.unreportedRequests
+        unreportedNote = reading.unreportedNote; costAttribution = reading.costAttribution
+    }
+    static func == (lhs: SubagentCostPresentation, rhs: SubagentCostPresentation) -> Bool {
+        lhs.spentUSD == rhs.spentUSD && lhs.unreportedRequests == rhs.unreportedRequests && lhs.costAttribution == rhs.costAttribution
+    }
 }

@@ -63,12 +63,13 @@ extension AgentSession {
     }
     /// The tools a request offers: the session's own, as pi offers its tools,
     /// except that a read-only side offers its parent's (SessionSide.swift).
-    func sessionDefinitions(subagentModels: [SubagentModelGrant]? = nil) async -> [ToolDefinition] {
+    func sessionDefinitions(subagentModels: [SubagentModelGrant]? = nil, profile: Profile? = nil) async -> [ToolDefinition] {
         var definitions = await tools.definitions(readOnly: offersReadOnlyTools)
         // A running turn keeps its grant. Idle previews describe the next
         // request, including after reopening before any turn has run.
         if agentCoordinator != nil, isSubagent || canDelegate {
-            definitions += SubagentSteeringContract.definitions(child:isSubagent,models:runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants)
+            definitions += SubagentSteeringContract.definitions(child:isSubagent,models:runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants,
+                profile:profile ?? turnProfile,connectionSupportsReasoning:self.profile.raw["reasoning"].flag == true)
         } else if canDelegate { definitions.append(SubagentSpec.definition(models: runTask != nil ? turnSubagentModels : subagentModels ?? subagentModelGrants)) }
         return definitions
     }
@@ -93,6 +94,7 @@ extension AgentSession {
         let update: @Sendable (JSON) async -> Void = { [weak self] update in await self?.toolUpdate(call.id,update) }
         // Stopped while its arguments were prepared: it never began.
         try Task.checkCancellation()
+        try await enforceToolBudget()
         showToolInvocation(call); toolInvocationsBegan.insert(call.id)
         // Refused before anything runs; `read_only` reads as a rejection.
         if readOnly || !Self.isEditing(call), let refusal=sideRefusal(call) { throw refusal }
@@ -204,6 +206,11 @@ extension AgentSession {
     /// workspace are not serialized, not even two edits of one file: the owner
     /// removed every editing lock (2026-10-08).
     func runToolBatch(_ calls: [ToolCall]) async throws {
+        do { try await enforceToolBudget() }
+        catch {
+            for call in calls { try recordTool(call,result:resultText("Not executed: \((error as? AgentError)?.message ?? "Budget unavailable")",error:true),started:nil,state:.failed) }
+            throw error
+        }
         toolInvocationsBegan.removeAll(); runStatus = .waitingTool
         for call in calls {
             setToolStateOwner(call.id)
@@ -216,6 +223,7 @@ extension AgentSession {
         if let coordinator = agentCoordinator {
             for call in calls where SubagentSteeringContract.names.contains(call.name) {
                 do {
+                    try await enforceToolBudget()
                     let key = try agentToolKey(call)
                     let receipt = try await (isSubagent ? coordinator.report(call,key:key,child:self) : coordinator.prepare(call,key:key,parent:self))
                     agentPreparedResults[call.id] = agentToolWire(receipt,key:key)

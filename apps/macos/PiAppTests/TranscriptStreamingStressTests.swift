@@ -24,7 +24,7 @@ class TranscriptStressTestCase: XCTestCase {
         private var pageChanges: AnyCancellable?
 
         init(_ session: SessionDisplay, width: CGFloat = 820, height: CGFloat = 560,
-             cache: TranscriptGeometryCache = TranscriptGeometryCache()) {
+             cache: TranscriptGeometryCache = TranscriptGeometryCache(), scrollerStyle: NSScroller.Style? = nil) {
             self.session = session
             self.cache = cache
             scroll = TranscriptNativeScrollView(frame: CGRect(x: 0, y: 0, width: width, height: height))
@@ -36,6 +36,14 @@ class TranscriptStressTestCase: XCTestCase {
             window.isReleasedWhenClosed = false
             window.contentView = scroll
             window.makeKeyAndOrderFront(nil)
+            // Settle AppKit's initial tiling before a once-per-width benchmark
+            // populates the document. Installing the window can reset its
+            // preferred scroller style and leave a pending 15pt gutter change.
+            if let scrollerStyle {
+                scroll.scrollerStyle = scrollerStyle
+                scroll.autohidesScrollers = scrollerStyle == .overlay
+                scroll.tile(); scroll.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            }
             page.state = "idle"
             page.bind(session)
             pageChanges = page.objectWillChange.sink { [weak self] _ in
@@ -1170,7 +1178,7 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
         let session = SessionDisplay(id: "open-cost")
         session.messages = Self.history(turns: turns)
         let started = ProcessInfo.processInfo.systemUptime
-        let stage = Stage(session); defer { stage.close() }
+        let stage = Stage(session,scrollerStyle:.legacy); defer { stage.close() }
         let opened = ProcessInfo.processInfo.systemUptime - started
         let measuredToOpen = stage.rows.reduce(0) { $0 + $1.measurementCount }
         // Three rows per turn since the chronology pass: the reader's
@@ -1186,6 +1194,19 @@ final class TranscriptPageStressTests: TranscriptStressTestCase {
                      stage.rows.count, opened * 1000, measuredToOpen, exact * 1000))
         for row in stage.rows { XCTAssertEqual(row.measurementCount, 1, "row \(row.itemID) was measured \(row.measurementCount) times to open the chat") }
         assertStacked(stage, "the opened chat")
+    }
+
+    @MainActor func testOpeningAtEachReservedScrollerWidthMeasuresRowsOnce() async throws {
+        for paneWidth: CGFloat in [480,920] {
+            let session = SessionDisplay(id:"stable-scroller-\(paneWidth)")
+            session.messages = Self.history(turns:50)
+            let stage = Stage(session,width:paneWidth,scrollerStyle:.legacy); defer { stage.close() }
+            let width = stage.scroll.contentSize.width
+            await stage.settleUntilExact(paced:true)
+            XCTAssertEqual(stage.scroll.contentSize.width,width,"The once-per-width measurement assertion needs a stable viewport")
+            for row in stage.rows { XCTAssertEqual(row.measurementCount,1,"\(paneWidth): \(row.itemID)") }
+            assertStacked(stage,"stable scroller \(paneWidth)")
+        }
     }
 
     @MainActor func testSwitchingBetweenTwoLongChatsKeepsEachOnesGeometry() async throws {

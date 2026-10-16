@@ -2,7 +2,84 @@ import AppKit
 import XCTest
 @testable import PiApp
 
+/// The two persisted fork shapes: whole-chat forks deliberately have no ancestry.
+enum AgentForkKind: String, CaseIterable {
+    case wholeChat = "whole-chat", fromReply = "from-reply"
+    var id: String { "fork-" + rawValue }
+    func parentID(_ source: String) -> String? { self == .fromReply ? source : nil }
+}
+
 final class SubagentTranscriptTests: XCTestCase {
+    @MainActor func testHistoricalForkCardSurvivesAppearanceChangesWithoutASessionUpdate() throws {
+        for kind in AgentForkKind.allCases { try checkHistoricalForkCardSurvivesAppearanceChangesWithoutASessionUpdate(kind) }
+    }
+    @MainActor private func checkHistoricalForkCardSurvivesAppearanceChangesWithoutASessionUpdate(_ kind: AgentForkKind) throws {
+        var tool = Self.tool; tool.nativeSubagent = Self.metadata
+        let session = SessionDisplay(id:kind.id)
+        session.messages = [TranscriptMessage(id:"question",role:"user",text:"Review the parser"),
+                            TranscriptMessage(id:"reply",role:"assistant",text:"Delegating the review",tools:[tool])]
+        session.disclosure.setOpen(true,.work("reply"))
+        session.disclosure.setOpen(true,.tool(ToolOccurrence.key("reply",tool.id)))
+        let pane = NativeTranscriptPane(frame:NSRect(x:0,y:0,width:700,height:500))
+        let window = NSWindow(contentRect:pane.frame,styleMask:[.borderless],backing:.buffered,defer:false)
+        window.appearance = NSAppearance(named:.aqua); window.contentView = pane
+        defer { window.contentView = nil }
+        var environment = TranscriptRowEnvironment(view:pane); environment.sessionID = session.id
+        var called = false
+        let actions = TranscriptActions(openSubagent:{ _ in called = true },inspectSubagent:{ _ in called = true },stopSubagent:{ _ in called = true })
+        pane.update(session:session,state:"idle",actions:actions,environment:environment,reduceMotion:true)
+        func checkHistory(_ color: TranscriptColorScheme) throws {
+            pane.layoutSubtreeIfNeeded(); pane.document.layoutSubtreeIfNeeded()
+            XCTAssertEqual(pane.environment.colorScheme,color)
+            XCTAssertEqual(pane.environment.sessionID,session.id)
+            let card = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeSubagentCard.self,in:pane).first)
+            let buttons = ConversationPaneTests.views(PiKit.Button.self,in:card)
+            let open = try XCTUnwrap(buttons.first { $0.accessibilityIdentifier() == "open-subagent" })
+            XCTAssertEqual(open.title,"Open")
+            XCTAssertEqual(open.accessibilityLabel(),SubagentToolView.historicalNotice)
+            for id in ["open-subagent", "inspect-subagent", "stop-subagent"] {
+                let button = try XCTUnwrap(buttons.first { $0.accessibilityIdentifier() == id })
+                XCTAssertTrue(button.isHidden || !button.isEnabled)
+                button.onPress?()
+            }
+            XCTAssertFalse(called)
+            // Historical navigation stays disabled; copying saved Markdown is
+            // still a local reading action, including after appearance changes.
+            let copies = buttons.filter { $0.accessibilityLabel()?.hasSuffix("as Markdown") == true }
+            XCTAssertEqual(copies.count, 2)
+            XCTAssertTrue(copies.allSatisfy(\.isEnabled))
+            XCTAssertTrue(ConversationPaneTests.views(TranscriptPlainTextView.self,in:card).contains { $0.string.contains("From the original chat") })
+        }
+        try checkHistory(.light)
+        for (appearance,color) in [(NSAppearance.Name.darkAqua,TranscriptColorScheme.dark),(.aqua,.light)] {
+            window.appearance = NSAppearance(named:appearance)
+            // Deliver AppKit's notification explicitly for this offscreen
+            // window. No session update may restore the missing context.
+            pane.viewDidChangeEffectiveAppearance()
+            try checkHistory(color)
+        }
+    }
+
+    @MainActor func testHistoricalForkCardHasNoSourceNavigationOrControls() throws {
+        for kind in AgentForkKind.allCases { try checkHistoricalForkCardHasNoSourceNavigationOrControls(kind) }
+    }
+    @MainActor private func checkHistoricalForkCardHasNoSourceNavigationOrControls(_ kind: AgentForkKind) throws {
+        var tool = Self.tool; tool.nativeSubagent = Self.metadata; tool.state = "running"
+        var environment = TranscriptRowEnvironment(); environment.sessionID = kind.id
+        var called = false
+        let actions = TranscriptActions(openSubagent:{ _ in called = true },inspectSubagent:{ _ in called = true },stopSubagent:{ _ in called = true })
+        let row = TranscriptNativeActionRow()
+        row.update(tool:tool,open:true,fetched:nil,environment:environment,toggle:{},openFile:nil,actions:actions)
+        let buttons = ConversationPaneTests.views(PiKit.Button.self,in:row)
+        for id in ["open-subagent","inspect-subagent","stop-subagent"] {
+            let button = try XCTUnwrap(buttons.first { $0.accessibilityIdentifier() == id })
+            XCTAssertTrue(button.isHidden || !button.isEnabled)
+            button.onPress?()
+        }
+        XCTAssertFalse(called,"Even a retained action must not navigate into the source's live child")
+        XCTAssertEqual(buttons.first { $0.accessibilityIdentifier() == "open-subagent" }?.title,"Open")
+        XCTAssertTrue(ConversationPaneTests.views(TranscriptPlainTextView.self,in:row).contains { $0.string.contains("From the original chat") })
+    }
     static let link = SubagentLink(delegationID: "delegation", childSessionID: "chat-child", budgetOwnerSessionID: "chat-parent",
                                   call: .init(parentSessionID: "chat-parent", assistantMessageID: "reply", toolCallID: "call"),
                                   parentTurnID: "turn", parentExecutionID: "execution")
@@ -21,14 +98,54 @@ final class SubagentTranscriptTests: XCTestCase {
         tool.subagent = SubagentSummary(link: Self.link, description: "Review", model: "fixture", status: .running, revision: 1,
             tools: ["read"], progress: .init(phase: "streaming", elapsedMs: 1000, requests: 2, tools: 1, preview: "Checking the parser",
                 usd: 0.04, reported: 2, unreported: 1, inputTokens: 100, outputTokens: 20))
+        tool.subagentEffort = "high"
         let row = TranscriptNativeActionRow()
         row.update(tool: tool, open: true, fetched: nil, environment: .init(), toggle: {}, openFile: nil)
-        let body = try XCTUnwrap(ConversationPaneTests.views(TranscriptPlainTextView.self, in: row.card!).first).string
-        XCTAssertEqual(body, "Model: fixture\nTools: read\n2 requests · 1 tools completed · 1s\nReported $0.04 · 2 reported · 1 cost unknown\nTokens: 100 input · 20 output\nChecking the parser")
+        let card = try XCTUnwrap(row.card)
+        for (key, value) in [("Model", "fixture"), ("Effort", "high"), ("Tools", "read · 1 completed"),
+                             ("Requests", "2"), ("Time", "1s"), ("Cost", "$0.04"), ("Tokens", "100 input · 20 output")] {
+            let label = try XCTUnwrap(ConversationPaneTests.views(PiKit.TextLine.self, in: card).first { $0.line.text == key })
+            XCTAssertEqual(label.line.font, PiKit.Font.caption)
+            let field = try XCTUnwrap(ConversationPaneTests.views(PiKit.SelectableText.self, in: card).first { $0.stringValue == value })
+            XCTAssertEqual(field.font, PiKit.Font.caption)
+            XCTAssertEqual(field.accessibilityLabel(), key)
+        }
+        let note = try XCTUnwrap(ConversationPaneTests.views(PiKit.WrappedText.self, in: card).first { $0.text == "1 request's cost unknown · Counts toward parent chat" })
+        XCTAssertEqual(note.color, .piInkSecondary)
+        let copies = ConversationPaneTests.views(PiKit.Button.self, in: card).filter { $0.title == "Copy" }
+        XCTAssertEqual(copies.count, 2, "Only Task and Result have Copy actions")
+        XCTAssertTrue(ConversationPaneTests.views(TranscriptPlainTextView.self, in: card).allSatisfy { !$0.string.contains("Reported") && !$0.string.contains("Model:") })
         XCTAssertEqual(SessionCostReading(limit: .usd(1), spentUSD: 0.04).figure, "$0.04 of $1.00")
         XCTAssertEqual(InspectorSubagentGroup(summary: tool.subagent!, requests: 2, cost: 0.04, costSamples: 2).detail, "Running · 2 requests · $0.04")
         var totals = GatewayTotals(); totals.requests = 2; totals.costSamples = 2; totals.costUSD = 0.04
         XCTAssertEqual(ChatRowStats(totals: totals).costLabel, "$0.04")
+    }
+
+    @MainActor func testCardDetailsOmitKnownCostCaveatAndWrapInNarrowPanes() throws {
+        for unknown in [0, 2] {
+            var tool = Self.tool
+            tool.subagent = .init(link: Self.link, description: "Review", model: "fixture-model-with-a-long-name", status: .completed, revision: 1,
+                tools: ["read", "grep", "find"], progress: .init(phase: "done", elapsedMs: 8000, requests: 2, tools: 3, preview: "",
+                    usd: 0.002, reported: 1, unreported: unknown, inputTokens: 1800, outputTokens: 420))
+            let card = TranscriptNativeSubagentCard(); card.configure(.subagent(SubagentToolView(tool)))
+            let details = try XCTUnwrap(card.subviews.first { $0.accessibilityIdentifier() == "subagent-details" })
+            let notes = ConversationPaneTests.views(PiKit.WrappedText.self, in: details).map(\.text)
+            XCTAssertEqual(notes, unknown == 0 ? ["Counts toward parent chat"] : ["2 requests' cost unknown · Counts toward parent chat"])
+            XCTAssertFalse(ConversationPaneTests.views(PiKit.TextLine.self, in: details).contains { $0.line.text == "Effort" })
+            XCTAssertTrue(ConversationPaneTests.views(PiKit.SelectableText.self, in: details).contains { $0.stringValue == compactGatewayUSD(0.002) })
+            for width in [272.0, 500.0, 850.0] {
+                card.frame = .init(x: 0, y: 0, width: width, height: card.plan(width: width).height)
+                card.needsLayout = true; card.layoutSubtreeIfNeeded()
+                for text in ConversationPaneTests.views(PiKit.SelectableText.self, in: details) {
+                    XCTAssertTrue(details.bounds.contains(text.convert(text.bounds, to: details)), "Every value fits the grid at \(width)")
+                    XCTAssertGreaterThanOrEqual(text.frame.height, text.height(forWidth: text.frame.width))
+                    let label = try XCTUnwrap(ConversationPaneTests.views(PiKit.TextLine.self, in: details).first { $0.line.text == text.accessibilityLabel() })
+                    let keyBaseline = label.convert(.zero, to: details).y + label.line.baseline(scale: label.piScale)
+                    let valueBaseline = text.convert(.zero, to: details).y + text.firstBaselineOffsetFromTop
+                    XCTAssertEqual(keyBaseline, valueBaseline, accuracy: 0.5, "\(label.line.text) aligns with its value's first line")
+                }
+            }
+        }
     }
 
     func testOfflineAndFastProjectionKeepDurableChildNavigation() throws {
@@ -67,6 +184,9 @@ final class SubagentTranscriptTests: XCTestCase {
         XCTAssertFalse(bench.model.canOpenSide("chat-child"))
     }
     @MainActor func testCardActionsUseSavedIdentityAndCopiedCardsCannotStopTheOriginal() throws {
+        for kind in AgentForkKind.allCases { try checkCardActionsUseSavedIdentityAndCopiedCardsCannotStopTheOriginal(kind) }
+    }
+    @MainActor private func checkCardActionsUseSavedIdentityAndCopiedCardsCannotStopTheOriginal(_ kind: AgentForkKind) throws {
         var tool = Self.tool; tool.nativeSubagent = Self.metadata
         var environment = TranscriptRowEnvironment(); environment.sessionID = "chat-parent"
         var calls: [String] = []
@@ -81,9 +201,9 @@ final class SubagentTranscriptTests: XCTestCase {
             button.onPress?()
         }
         XCTAssertEqual(calls, ["open:chat-child", "inspect:delegation"])
-        // A running copied card may navigate but has no Stop affordance.
+        // A copied card is saved history and has no Stop affordance.
         tool.output = "{\"status\":\"running\",\"text\":\"\",\"truncated\":false}"; tool.state = "running"
-        environment.sessionID = "fork"
+        environment.sessionID = kind.id
         row.update(tool: tool, open: true, fetched: nil, environment: environment, toggle: {}, openFile: nil, actions: relay.forwarded)
         XCTAssertTrue(try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: row).first { $0.accessibilityIdentifier() == "stop-subagent" }).isHidden)
         environment.sessionID = "chat-parent"

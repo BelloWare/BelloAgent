@@ -188,6 +188,12 @@ extension WorkspaceModel {
         guard location.sessionID == view.id else { return }
         view.composerEditor = editor; view.composerLocation = location
         view.completionParse?.cancel()
+        // A queue edit replaces text only. Its original skills stay with the
+        // helper; slash text here must not consume Return or add new chips
+        // which the queued-save validator would then refuse.
+        guard view.queueEditingID == nil else {
+            view.completionToken = nil; view.completionVisible = false; return
+        }
         guard let token = SlashCompletionToken.local(in: editor.string as NSString, at: location, directInput: view.directCommand) else {
             view.completionToken = nil; if view.completionVisible { view.completionVisible = false }; return
         }
@@ -235,6 +241,7 @@ extension WorkspaceModel {
         if view.completionSelectionID != id { view.completionSelectionID = id }
     }
     func completionKey(_ key: UInt16, modifiers: NSEvent.ModifierFlags = [], view: SessionDisplay) -> Bool {
+        guard view.queueEditingID == nil else { return false }
         guard modifiers.intersection([.command, .shift, .option, .control]).isEmpty else { return false }
         let choices = completions(view); guard view.completionVisible else { return false }
         if key == 53 { view.completionVisible = false; view.completionParse?.cancel(); return true }
@@ -250,7 +257,7 @@ extension WorkspaceModel {
         return false
     }
     func chooseCompletion(_ choice: CommandCompletion, view: SessionDisplay) {
-        guard !view.recoveringDraft else { return }
+        guard !view.recoveringDraft, view.queueEditingID == nil else { return }
         guard let token = view.completionToken, let editor = view.composerEditor,
               editor.completionLocation == token.location, editor.selectedRange() == token.location.selectedRangeUTF16,
               !editor.hasMarkedText(), view.composerLocation == token.location,
@@ -270,7 +277,7 @@ extension WorkspaceModel {
         view.completionVisible = false; view.completionToken = nil; view.completionParse?.cancel()
     }
     func canSelectSkill(_ skill: SkillDescriptor, view: SessionDisplay) -> Bool {
-        guard !view.recoveringDraft else { return false }
+        guard !view.recoveringDraft, view.queueEditingID == nil else { return false }
         guard let workspaceID = record(view.id)?.workspaceID, skillEnabledInBelloAgent(skill.id), skill.canSelect,
               view.skillCatalog.authorizes, view.skillCatalog.scope == skillScope(sessionID: view.id, workspaceID: workspaceID) else { return false }
         return view.skillCatalog.entries.contains { $0.skill.id == skill.id && $0.skill.canSelect && $0.skill.contentHash == skill.contentHash && $0.skill.metadataHash == skill.metadataHash }

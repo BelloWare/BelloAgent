@@ -47,7 +47,7 @@ struct JournalReplayConsumer {
     private(set) var r = JournalReplay()
     private var id: String
     private var header: JournalCheckpoint.Check?
-    private let marker: JournalCheckpoint.Check?
+    private var marker: JournalCheckpoint.Check?
     // The newest run state's record, for a checkpoint: its bytes, where it
     // is, and the key it holds the state under.
     private var stateSource: (line: Data, offset: UInt64, key: String)?
@@ -100,6 +100,7 @@ struct JournalReplayConsumer {
         r.subagents.retarget(id)
         r.accounting = (try? JSONDecoder().decode(AttemptAccounting.self, from: saved["accounting"].data())) ?? AttemptAccounting()
         r.spend.add(record: saved["spend"]); r.spendTracked=saved["spendTracked"].flag == true
+        r.accounting.restoreUsageCoverage(spend:r.spend)
         r.failedCompactionFingerprint=saved["failedCompactionFingerprint"].text
         r.contextRecovery=saved["contextRecovery"]; r.compactionState=saved["compactionState"]; r.parentInfo=saved["parentInfo"]
         ordinalMax=saved["presentationOrdinal"].int ?? 0
@@ -119,17 +120,7 @@ struct JournalReplayConsumer {
         }
         let item=try JSON.parse(line)
         try r.subagents.consume(item, sessionID: id)
-        if item["customType"].text == JournalRecordKind.subagentCall,
-           item["data"]["origin"]["link"]["call"]["parentSessionID"].text == id,
-           !item["data"]["adoptionSeed"].isNull {
-            try r.accounting.consume(kind: JournalRecordKind.cost, data: item["data"]["adoptionSeed"], spend: &r.spend)
-            r.spendTracked = true
-        }
-        if item["customType"].text == JournalRecordKind.agentOperation,
-           item["ownerID"].text == id, !item["data"]["plan"]["adoptionSeed"].isNull {
-            try r.accounting.consume(kind:JournalRecordKind.cost,data:item["data"]["plan"]["adoptionSeed"],spend:&r.spend)
-            r.spendTracked = true
-        }
+        if try r.accounting.consumeRecord(item,sessionID:id,spend:&r.spend) { r.spendTracked = true; return }
         if item["customType"].text == JournalRecordKind.rebind {
             // Named already when the checkpoint resumed from lists it.
             if !rebinds.contains(where: { $0.offset == lineStart }) {
@@ -139,9 +130,6 @@ struct JournalReplayConsumer {
             // resumes there and checks it rather than reading everything.
             r.captured?.rebinds = rebinds
             return
-        }
-        if let kind = item["customType"].text, [JournalRecordKind.budgetAttempt, JournalRecordKind.cost, JournalRecordKind.costUpdate].contains(kind) {
-            try r.accounting.consume(kind: kind, data: item["data"], spend: &r.spend); r.spendTracked = true; return
         }
         if item["type"].text == "message" {
             let message=try ChatMessage(id:required(item["id"],"message id"),pi:item["message"]); r.history.append(message); if !["execution","requestLedger"].contains(message.kind ?? "") { r.context.append(message) }; r.visible.append(message)
@@ -247,6 +235,12 @@ struct JournalReplayConsumer {
     /// the same places, in the journal of session `id`, whose header is
     /// `header`. The checkpoints it takes from here on are the clone's.
     mutating func retarget(id: String, header: JournalCheckpoint.Check?) { self.id = id; self.header = header; r.subagents.retarget(id) }
+    /// Promotion changes only the marker bytes, preserving every record's
+    /// place. Keep cached checkpoints usable without replaying the transcript.
+    mutating func retarget(marker: JournalCheckpoint.Check?) {
+        self.marker = marker
+        if let marker { r.captured?.marker = marker; r.resumedFrom?.marker = marker }
+    }
     /// The connection changes a cloned journal kept (`SessionJournal.clone`):
     /// those before where the clone ends.
     mutating func retarget(rebinds: [JournalCheckpoint.Check]) {

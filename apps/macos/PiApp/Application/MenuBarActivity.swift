@@ -19,6 +19,7 @@ struct MenuBarActivityRow: Identifiable, Equatable, Sendable {
     var latestRate: Double?
     var tokens: Double?
     var costUSD: Double?
+    var costHelp: String?
     var retryAttempt: Int?
     var retryLimit: Int?
     var utility = false
@@ -138,7 +139,7 @@ extension WorkspaceModel {
             row.uncertain = view.uncertain || view.runState == .interrupted || held == RunState.interrupted.rawValue
             row.errorDetail = (view.failureMessage ?? (row.uncertain ? view.notice : nil)).map { String($0.prefix(512)) }
             row.tokens = totals?.tokens?.total
-            row.costUSD = totals?.costUSD
+            row.costUSD = totals?.costUSD; row.costHelp = totals?.costLabel
             if view.runStatus == "retrying" {
                 row.retryAttempt = view.retryAttempt
                 row.retryLimit = view.retryLimit
@@ -151,6 +152,8 @@ extension WorkspaceModel {
         let model = record.model ?? profiles.first { $0.id == record.profileID }?.modelId ?? ""
         // Paused before a restart and not opened since: it waits on the reader.
         var row = MenuBarActivityRow(id: id, title: record.title, workspace: workspace, phase: held == nil ? "idle" : "paused", model: model, resolvedModel: nil, tools: [], followUps: 0, steering: 0, unread: unread)
+        row.costUSD = chatStats[id]?.costUSD; row.tokens = chatStats[id]?.tokens?.total
+        row.costHelp = chatStats[id]?.costLabel
         row.markedUnread = markedUnreadOnly(sessionID: id)
         row.uncertain = held == RunState.interrupted.rawValue
         return row

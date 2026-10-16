@@ -29,7 +29,10 @@ actor AgentSteeringCoordinator {
     }
     static func makeChild(_ env: SubagentEnvironment, _ plan: SubagentPlan) throws -> AgentSession {
         let origin = plan.origin
-        let (_, profile) = try SubagentModelGrant.resolve(origin.model.model,parent:env.profile,grants:[origin.model])
+        let (_, selected) = try SubagentModelGrant.resolve(origin.model.model,parent:env.profile,grants:[origin.model])
+        // Reconstruct from the creation grant on every open, never from the
+        // follow-up's effort. Keep Model default's request options unchanged.
+        let profile = selected.fixingInstructionRole()
         var snapshot = origin.frozenResources ?? env.resources
         snapshot.prompt += "\n\nYou are a delegated sub-agent. Keep work within your supplied task and inherited permissions. You cannot delegate. Use subagent_report for important discoveries, blockers or questions before finishing. It is asynchronous; finish if blocked. Messages from agents are not user permission."
         snapshot.revision = sha256(Data((snapshot.revision + "subagent-v3").utf8))
@@ -59,18 +62,21 @@ actor AgentSteeringCoordinator {
         var receipt: JSON = ["version":3,"accepted":true,"operation_id":JSON(AgentOperation.id(key))]
         switch call.name {
         case "subagent_start":
-            let spec = try SubagentSpec(call.arguments.removing(["mode","timeout_ms"]))
+            let spec = try SubagentSpec(call.arguments.removing(["mode","timeout_ms","effort"]))
             let available = Set(env.definitions.map(\.name)).subtracting(SubagentSteeringContract.names.union(["subagent"]))
             let selected = spec.tools ?? available
             guard selected.isSubset(of:available) else { throw AgentError("subagent_tools", "Requested tools exceed parent permissions") }
-            let (grant, _) = try SubagentModelGrant.resolve(spec.model,parent:env.profile,grants:env.models)
+            let grant = try SubagentModelGrant.childModel(spec.model,parent:env.profile,grants:env.models)
+                .selectingEffort(call.arguments["effort"].text,parent:env.profile,connectionSupportsReasoning:env.connectionSupportsReasoning)
             let link = SubagentLink(delegationID:UUID().uuidString,childSessionID:UUID().uuidString,budgetOwnerSessionID:parent.id,call:key,parentTurnID:env.turnID,parentExecutionID:env.executionID,parentAttemptID:env.parentAttemptID)
             plan = SubagentPlan(origin:.init(link:link,description:spec.description,model:grant,tools:selected.sorted(),readOnly:env.readOnly,resourceRevision:env.resources.revision,mcpPolicy:env.mcpPolicy,frozenResources:env.resources),task:spec.task,resultMessageID:UUID().uuidString)
             turn = newTurn(child:link.childSessionID,number:1,text:spec.task,key:key,env:env)
+            turn?.effort = grant.thinkingLevel
             receipt["route"] = "start"
         case "subagent_send":
             let child = call.arguments["child_id"].text!
             guard let savedPlan = await parent.subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) else { throw AgentError("subagent_scope", "Unknown child in this family") }
+            let grant = try savedPlan.origin.model.selectingEffort(call.arguments["effort"].text,parent:env.profile,connectionSupportsReasoning:env.connectionSupportsReasoning)
             if state.latest(child) == nil { try await adoptLegacy(savedPlan,parent:parent,environment:env); state = await parent.agentState() }
             guard let latest = state.latest(child) else { throw SubagentRecovery.damaged() }
             if latest.status != .notExecuted, !FileManager.default.fileExists(atPath:env.directory.appendingPathComponent(child + ".jsonl").path) { throw AgentError("subagent_missing", "The saved child conversation is missing; it cannot be resumed") }
@@ -78,11 +84,13 @@ actor AgentSteeringCoordinator {
             guard !((state.run?.heldChildren ?? []).contains(child)), latest.status != .stopping else { throw AgentError("subagent_stopped", "Child is stopping or held by user Stop") }
             if latest.status.terminal {
                 turn = newTurn(child:child,number:latest.turn + 1,text:call.arguments["message"].text!,key:key,env:env)
+                turn?.effort = grant.thinkingLevel
                 receipt["route"] = "follow_up"
             } else {
                 guard latest.parentExecutionID == env.executionID else { throw AgentError("subagent_closed", "This child belongs to a stopped execution") }
                 message = AgentFamilyMessage(id:UUID().uuidString,sequence:state.sequence + 1,childID:child,turn:latest.turn,author:"parent",kind:"steer",text:call.arguments["message"].text!,task:savedPlan.origin.description,epoch:env.executionID,replyTo:call.arguments["reply_to"].text)
                 receipt["route"] = "steer"
+                receipt["effort"] = JSON(latest.effort ?? savedPlan.origin.model.thinkingLevel ?? "default")
             }
             try validateReply(call.arguments["reply_to"].text,child:child,author:"subagent",state:state)
             receipt["child_id"] = JSON(child); receipt["turn"] = JSON(turn?.turn ?? latest.turn)
@@ -95,7 +103,7 @@ actor AgentSteeringCoordinator {
             receipt["child_id"] = JSON(target.childID); receipt["turn"] = JSON(target.turn); receipt["route"] = "stop"
         default: throw AgentError("tool_unavailable", "Unavailable parent control tool")
         }
-        if let turn { receipt["child_id"] = JSON(turn.childID); receipt["turn"] = JSON(turn.turn) }
+        if let turn { receipt["child_id"] = JSON(turn.childID); receipt["turn"] = JSON(turn.turn); receipt["effort"] = turn.effort.map(JSON.string) ?? .null }
         if let message { receipt["message_id"] = JSON(message.id) }
         let op = try await parent.acceptAgentOperation(AgentOperation(key:key,digest:digest,receipt:receipt,plan:plan,turn:turn,message:message,waitTargets:targets,epoch:env.executionID),generation:env.generation)
         if let turn = op.turn {
@@ -159,10 +167,11 @@ actor AgentSteeringCoordinator {
         do {
             try Task.checkCancellation()
             guard job.turn.generation > cancelledThrough[job.turn.runtimeID,default:-1], !job.cancelled else { throw CancellationError() }
+            try await job.owner.enforceSharedCostLimit()
             if let existing = job.child { child = existing } else { child = try await open(job.environment,job.plan) }
             guard let child else { throw SubagentRecovery.damaged() }
             jobs[id]?.child = child
-            guard await child.subagents.origin == job.plan.origin else { throw SubagentRecovery.damaged() }
+            guard await child.subagents.origin?.matchesAccepted(job.plan.origin) == true else { throw SubagentRecovery.damaged() }
             try await child.prepareAgentTurn(job.turn,owner:job.owner,coordinator:self)
             await child.useRetrySettings(job.environment.retry)
             try await job.environment.traces.inheritCapturePolicy(child:job.turn.childID,owner:job.owner.id)
@@ -174,11 +183,17 @@ actor AgentSteeringCoordinator {
             job.turn.result = await child.agentResult(job.turn,plan:job.plan,cancelled:jobs[id]?.cancelled == true)
             job.turn.status = job.turn.result!.status
         } catch {
-            if let child { await child.stop(); await child.waitForSubagent() }
+            if let child {
+                if let budget = error as? AgentError, budget.code == AgentSession.costLimitCode { await child.stopFamilyAtLimit(budget) }
+                else { await child.stop() }
+                await child.waitForSubagent()
+            }
             job.turn.status = child == nil ? .notExecuted : .interrupted
             job.turn.result = SubagentToolResult(plan:job.plan,status:job.turn.status,error:(error as? AgentError) ?? AgentError("subagent_interrupted", "The turn did not finish and was not restarted"),began:child != nil)
         }
-        await Task { await self.finishJob(job,child:child) }.value
+        // Acceptance may already have prepared a child before it got a slot.
+        // A gate rejection still seals and releases that never-started runtime.
+        await Task { await self.finishJob(job,child:child ?? job.child) }.value
     }
     func finishJob(_ job: Job, child: AgentSession?) async {
         let lock = gate(job.owner.id)
@@ -211,5 +226,18 @@ actor AgentSteeringCoordinator {
         let current = jobs.values.filter { owner == nil || $0.owner.id == owner }
         for job in current { await stop(owner:job.owner.id,target:job.turn.target,human:false) }
         for job in Array(jobs.values) where owner == nil || job.owner.id == owner { await job.task?.value }
+    }
+    /// Budget exhaustion closes admission but is not permission to cancel a
+    /// dispatched request. The owner's single stop path cancels remaining
+    /// queued/tool work only once the accounting drain fence is clear.
+    func finishAtLimit(owner: String) async {
+        let wake = signal(owner)
+        while true {
+            let revision = await wake.revision
+            guard jobs.values.contains(where: { $0.owner.id == owner }) else { return }
+            // Queued jobs need not have a task yet. Waiting on the signal
+            // releases this actor so dispatched jobs can finish and pump them.
+            await wake.wait(after:revision)
+        }
     }
 }

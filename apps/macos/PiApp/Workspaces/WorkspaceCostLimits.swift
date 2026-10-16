@@ -1,4 +1,38 @@
 import AppKit
+import Combine
+
+/// Durable spend observed from the helper, with no transcript, context or
+/// retained request rows. Owners can serve side budgets without a display.
+@MainActor final class SessionBudgetState: ObservableObject {
+    @Published var reading: SessionCostReading
+    var limitSent: CostLimit?
+    var readTask: Task<Void,Never>?
+    var readID = UUID()
+    var dirty = false
+    var childCostCursor: SubagentCostCursor?
+    /// The child's durable ledger revision, shared by live native events,
+    /// status and cold list reads. Progress clocks never supersede it.
+    var childLedgerRevision: Int?
+    init(_ reading: SessionCostReading) { self.reading = reading }
+}
+
+/// Orders accepted progress without keeping its prose or making dollars
+/// monotonic: a later accounting correction can legitimately reduce them.
+struct SubagentCostCursor {
+    var turn: Int, revision: Int
+    var epoch: String?
+    var elapsed: Double
+    init?(_ summary: SubagentSummary) {
+        guard let progress = summary.progress else { return nil }
+        turn = summary.turn ?? 1; revision = summary.revision
+        epoch = summary.progressEpoch; elapsed = progress.elapsedMs
+    }
+    func follows(_ previous: Self) -> Bool {
+        if turn != previous.turn { return turn > previous.turn }
+        guard revision >= previous.revision else { return false }
+        return epoch != previous.epoch || elapsed > previous.elapsed
+    }
+}
 
 /// What the cost-limit notice in a transcript asks for.
 enum CostLimitNoticeAction: Sendable { case raise, continueRun }
@@ -10,30 +44,139 @@ enum CostLimitNoticeAction: Sendable { case raise, continueRun }
 extension WorkspaceModel {
     /// The limit every chat without its own runs under.
     var defaultCostLimit: CostLimit { configuration.defaultChatCostLimit }
-    /// The limit a chat runs under: its own, else the Settings default.
-    func costLimit(for item: ChatRecord) -> CostLimit {
-        if let owner = item.delegation?.budgetOwnerSessionID, let parent = record(owner), !parent.isSubagent { return parent.costLimit ?? defaultCostLimit }
-        return item.costLimit ?? defaultCostLimit
+    /// Only actual sides inherit budgets; forks also have parentSessionID.
+    func sideBudgetParent(_ item: ChatRecord) -> String? {
+        guard !item.isSubagent else { return nil }
+        if item.path != nil { return item.persistedBudgetParentID }
+        // Only an unpublished side draft lacks a journal. A mounted saved
+        // fork is pane placement, never an accounting relationship.
+        return side(item.id).flatMap { !$0.kept ? $0.parentID : nil }
     }
+    func budgetOwner(for item: ChatRecord) -> ChatRecord {
+        var current = item, seen: Set<String> = [item.id]
+        while let id = current.delegation?.budgetOwnerSessionID ?? sideBudgetParent(current),
+              seen.insert(id).inserted, let parent = record(id), parent.workspaceID == item.workspaceID { current = parent }
+        return current
+    }
+    func costLimit(for item: ChatRecord) -> CostLimit { budgetOwner(for: item).costLimit ?? defaultCostLimit }
     func costLimit(for id: String) -> CostLimit { record(id).map(costLimit(for:)) ?? defaultCostLimit }
+
+    /// Metadata is read at restore/open boundaries, never during view layout.
+    /// Recheck the chat generation after the actor hop so deletion cannot be
+    /// undone by a stale ancestor read. Tombstones are checked by the store.
+    func retainBudgetAncestors(for additional: ChatRecord? = nil) async throws {
+        guard let store else { return }
+        while true {
+            let revision = chatsRevision
+            var records = chats
+            if let additional, record(additional.id) == nil { records.append(additional) }
+            let ids = Set(records.map(\.id))
+            guard records.contains(where: { $0.persistedBudgetParentID.map { !ids.contains($0) } == true }) else { return }
+            let ancestors = try await store.loadBudgetAncestors(of: records, profiles: profiles)
+            try Task.checkCancellation()
+            guard !isShutDown else { throw CancellationError() }
+            if revision != chatsRevision { continue }
+            let added = ancestors.filter { record($0.id) == nil && !deletingFamilies.contains($0.id) }
+            if !added.isEmpty { chats.append(contentsOf: added) }
+            return
+        }
+    }
+
+    func restoreSideBudgets() async throws {
+        sideBudgetRestoreRevision &+= 1
+        let revision = sideBudgetRestoreRevision
+        try await retainBudgetAncestors()
+        // Keep recovery precedes archive startup. Registration is already
+        // durable; the projection is rebuilt when the archive opens below.
+        guard await traces.isOpen else { return }
+        guard let store else { return }
+        let workspaces = try await store.sideBudgetAncestry()
+        guard !isShutDown, !Task.isCancelled, revision == sideBudgetRestoreRevision else { return }
+        for (workspace, sides) in workspaces {
+            guard revision == sideBudgetRestoreRevision else { return }
+            let affected = try await traces.recordSideBudgets(sides, workspaceID: workspace)
+            // Orphans retain their display and row caches. Re-read the numeric
+            // projection when ancestry changes, including managed children and
+            // former ancestors; waiting for another request leaves stale help.
+            guard !affected.isEmpty else { continue }
+            for item in chats where item.workspaceID == workspace && (affected.contains(item.id) || item.delegation.map({ affected.contains($0.budgetOwnerSessionID) }) == true) {
+                if displays[item.id] != nil || chatStats[item.id] != nil { scheduleAccounting(item.id,workspaceID:workspace) }
+            }
+        }
+    }
 
     /// The chat's reading with its current limit and what its helper last
     /// said of its spend.
     func costReading(for id: String) -> SessionCostReading {
-        var reading = displays[id]?.footer.cost ?? SessionCostReading()
-        reading.override = record(id)?.costLimit; reading.defaultLimit = defaultCostLimit; reading.limit = costLimit(for: id)
+        var reading = budgetStates[id]?.reading ?? displays[id]?.footer.cost ?? SessionCostReading()
+        if reading.budgetOwnerID != nil { reading.costAttribution = nil }
+        reading.budgetOwnerID = nil; reading.budgetSpentUSD = nil
+        reading.override = record(id).map { budgetOwner(for: $0).costLimit } ?? nil; reading.defaultLimit = defaultCostLimit; reading.limit = costLimit(for: id)
+        if let item = record(id) {
+            let owner = budgetOwner(for: item)
+            if owner.id != id {
+                reading.budgetOwnerID = owner.id
+                reading.budgetSpentUSD = budgetStates[owner.id]?.reading.spentUSD ?? displays[owner.id]?.footer.cost.spentUSD
+                reading.costAttribution = "Counts toward " + owner.title
+            }
+        }
         return reading
     }
     /// Puts a chat's limit on its display: the footer's figure and the stop notice.
     func refreshCostReading(_ id: String) {
-        displays[id]?.applyCostReading(costReading(for: id))
+        let reading = costReading(for:id)
+        if let budget = budgetStates[id], budget.reading != reading { budget.reading = reading }
+        displays[id]?.applyCostReading(reading)
+        if let owner = record(id)?.delegation?.budgetOwnerSessionID, let display = displays[owner] {
+            let value = reading.spentUSD == nil ? nil : SubagentCostPresentation(reading)
+            if display.subagentCosts[id] != value { display.subagentCosts[id] = value }
+        }
+    }
+    func budgetState(for id: String) -> SessionBudgetState {
+        if let state = budgetStates[id] { return state }
+        let state = SessionBudgetState(costReading(for:id)); budgetStates[id] = state
+        return state
+    }
+    private func refreshBudgetFamily(_ owner: String) {
+        for id in Set(displays.keys).union(budgetStates.keys) {
+            budgetFamilyRefreshVisits += 1
+            if id == owner || record(id).map({ budgetOwner(for:$0).id == owner }) == true { refreshCostReading(id) }
+        }
+    }
+
+    /// Coalesced cost-only use of the existing status read. No transcript
+    /// display is allocated; a retired host/runtime cannot publish a late reply.
+    func refreshBudgetState(_ id: String) {
+        guard let item = record(id), opened.contains(id), let host = hosts[item.workspaceID], host.isReady else { return }
+        let state = budgetState(for:id); state.dirty = true
+        guard state.readTask == nil else { return }
+        let connection = host.connectionID
+        let readID = UUID(); state.readID = readID
+        state.readTask = Task { [weak self, weak state] in
+            guard let self, let state else { return }
+            defer { if state.readID == readID { state.readTask = nil } }
+            while state.dirty, !Task.isCancelled, !isShutDown {
+                state.dirty = false
+                do {
+                    let snapshot = try await host.request("session.status",sessionID:id,params:["budgetOnly":.bool(true)]).object ?? [:]
+                    guard !Task.isCancelled, state.readID == readID, opened.contains(id), hosts[item.workspaceID] === host,
+                          host.connectionID == connection, budgetStates[id] === state else { return }
+                    observeCost(snapshot,sessionID:id)
+                } catch { return }
+            }
+        }
+    }
+    func retireBudgetRead(_ id: String) {
+        budgetStates[id]?.readID = UUID()
+        budgetStates[id]?.readTask?.cancel(); budgetStates[id]?.readTask = nil
+        budgetStates[id]?.limitSent = nil
     }
 
     /// Sets a chat's own limit, or with nil lets it follow the default. The
     /// choice is saved with the chat and reaches its helper session at once:
     /// the next model request is checked against it, in a run that is going too.
     func setCostLimit(_ limit: CostLimit?, for id: String) async throws {
-        guard record(id)?.isSubagent != true else { throw HostError.failure("This sub-agent uses its parent chat’s cost limit. Change the limit in the parent.") }
+        guard let item = record(id), budgetOwner(for: item).id == id else { throw HostError.failure("This chat uses its parent’s cost limit. Change the limit in the parent.") }
         if let limit, !limit.isValid { throw HostError.failure("Enter an amount in US dollars above $0.00, up to $1,000,000.00.") }
         // An editor can choose again before the previous write finishes.
         // Compare with the saved value only after that choice settles, so
@@ -68,10 +211,8 @@ extension WorkspaceModel {
                     }
                 }
             }
-        } else if let side = side(id) {
-            sides[side.parentID]?.costLimit = limit
         } else { throw HostError.failure("This chat is no longer available.") }
-        refreshCostReading(id); displays[id]?.costLimitChanged()
+        refreshBudgetFamily(id); displays[id]?.costLimitChanged()
     }
     /// Saves the Settings default. Every chat that follows it is told.
     func setDefaultCostLimit(_ limit: CostLimit) async throws {
@@ -81,6 +222,7 @@ extension WorkspaceModel {
     /// The default changed (Settings saved, the vault read again): every
     /// open chat that follows it shows and enforces the new one.
     func defaultCostLimitChanged() {
+        for id in budgetStates.keys { refreshCostReading(id) }
         for (id, view) in displays {
             refreshCostReading(id)
             if record(id).map({ $0.costLimit == nil }) ?? false { view.costLimitChanged() }
@@ -90,8 +232,9 @@ extension WorkspaceModel {
     /// Tells a chat's loaded helper session the limit it runs under. A chat
     /// with no session loaded is told when one opens (`costLimitParams`).
     func sendCostLimit(_ id: String) async {
-        guard opened.contains(id), let item = record(id), !item.isSubagent, let host = hosts[item.workspaceID], host.isReady else { return }
+        guard opened.contains(id), let item = record(id), budgetOwner(for: item).id == id, let host = hosts[item.workspaceID], host.isReady else { return }
         let limit = costLimit(for: item)
+        budgetState(for:id).limitSent = limit
         displays[id]?.costLimitSent = limit
         // A failed send is not retried from here: the next change sends again,
         // and a snapshot showing the old limit asks only for a limit not yet tried.
@@ -113,10 +256,9 @@ extension WorkspaceModel {
         if let costSeedRead { return await costSeedRead(item) }
         // A chat whose journal the helper creates records every cost from its first request.
         guard item.path != nil else { return nil }
-        var totals = displays[item.id]?.footer.gateway ?? chatStats[item.id]
-        if (totals?.requests ?? 0) == 0 {
-            totals = try? await traces.gatewayAccounting(sessionID: item.id, workspaceID: item.workspaceID, messages: []).session
-        }
+        // The helper adopts saved-side journals separately. A family footer
+        // here would seed those same physical attempts a second time.
+        let totals = try? await traces.sessionMetrics(sessionID: item.id, workspaceID: item.workspaceID, until: Date(), includeFamily: false).gateway
         guard let totals, totals.requests > 0 else { return nil }
         let reported = max(0, totals.costSamples)
         return .object(["usd": .number(reported > 0 ? max(0, totals.costUSD ?? 0) : 0), "reported": .number(Double(reported)),
@@ -126,19 +268,55 @@ extension WorkspaceModel {
     /// under. A helper that runs under another limit than the chat's (a
     /// change it missed) is told the chat's once.
     func observeCost(_ snapshot: [String: WireValue], view: SessionDisplay) {
+        observeCost(snapshot,sessionID:view.id)
+    }
+    func observeCost(_ snapshot: [String: WireValue], sessionID id: String) {
         guard let cost = snapshot["cost"]?.object else { return }
-        var reading = costReading(for: view.id)
+        let state = budgetState(for:id)
+        if record(id)?.isSubagent == true {
+            let revision = cost["accountingRevision"]?.nonnegativeInteger
+            if let previous = state.childLedgerRevision, revision.map({ $0 < previous }) ?? true { return }
+            if let revision { state.childLedgerRevision = revision }
+        }
+        // A direct snapshot also fences the progress already received. A
+        // repeated list response cannot undo this newer accounting reading.
+        if let summary = subagentSummaries[id], let cursor = SubagentCostCursor(summary),
+           state.childCostCursor.map({ cursor.follows($0) }) ?? true { state.childCostCursor = cursor }
+        let previous = state.reading
+        var reading = costReading(for:id)
         reading.spentUSD = cost["spentUSD"]?.number
         reading.reportedRequests = cost["reportedRequests"]?.nonnegativeInteger ?? 0
         reading.unreportedRequests = cost["unreportedRequests"]?.nonnegativeInteger ?? 0
-        view.applyCostReading(reading)
-        guard record(view.id)?.isSubagent != true else { return }
+        if state.reading != reading { state.reading = reading }
+        displays[id]?.applyCostReading(reading)
+        if reading != previous { refreshBudgetFamily(id) }
+        if reading.spentUSD != previous.spentUSD || reading.reportedRequests != previous.reportedRequests || reading.unreportedRequests != previous.unreportedRequests {
+            if let owner = record(id)?.delegation?.budgetOwnerSessionID {
+                subagentFamilies.removeValue(forKey:owner)
+                displays[owner]?.subagentCosts[id] = SubagentCostPresentation(reading)
+            }
+            noteActivityChanged(id)
+        }
+        guard let item = record(id), budgetOwner(for: item).id == item.id else { return }
         let helper: CostLimit = cost["limitUSD"]?.number.map(CostLimit.usd) ?? .unlimited
-        if helper != reading.limit, view.costLimitSent != reading.limit {
-            view.costLimitSent = reading.limit
-            let id = view.id
+        if helper != reading.limit, state.limitSent != reading.limit {
+            state.limitSent = reading.limit
+            displays[id]?.costLimitSent = reading.limit
             Task { await sendCostLimit(id) }
         }
+    }
+
+    /// Validated live summaries carry the child's own lifetime ledger. Keep
+    /// numeric state current even after its reader/runtime leaves `opened`.
+    /// Called only after origin, connection and summary-order validation.
+    func observeSubagentCost(_ summary: SubagentSummary) {
+        guard let progress = summary.progress, let cursor = SubagentCostCursor(summary) else { return }
+        let state = budgetState(for:summary.link.childSessionID)
+        guard state.childLedgerRevision == nil else { return }
+        guard state.childCostCursor.map({ cursor.follows($0) }) ?? true else { return }
+        state.childCostCursor = cursor
+        observeCost(["cost":.object(["spentUSD":.number(progress.usd),
+            "reportedRequests":.number(Double(progress.reported)),"unreportedRequests":.number(Double(progress.unreported))])],sessionID:summary.link.childSessionID)
     }
 
     /// The notice's two actions: open the limit editor over the button, or
@@ -147,8 +325,11 @@ extension WorkspaceModel {
         guard record(sessionID)?.isSubagent != true else { return }
         switch action {
         case .raise:
-            guard let anchor, let view = displays[sessionID] else { return }
-            CostLimitPopover.shared.toggle(model: self, footer: view.footer, sessionID: sessionID, anchor: anchor)
+            guard let anchor, let item = record(sessionID) else { return }
+            let owner = budgetOwner(for: item)
+            if owner.id != sessionID { openInspector(session: owner.id, focus: .overview); return }
+            guard let view = displays[owner.id] else { return }
+            CostLimitPopover.shared.toggle(model: self, footer: view.footer, sessionID: owner.id, anchor: anchor)
         case .continueRun: continueAfterCostLimit(sessionID)
         }
     }
@@ -157,13 +338,14 @@ extension WorkspaceModel {
     /// follow-ups go on after it; a run that stopped between turns resumes
     /// its queue instead.
     func continueAfterCostLimit(_ id: String) {
-        guard !installPreparing, let item = record(id), !costReading(for: id).reached else { return }
+        guard !installPreparing, let item = record(id), !costReading(for: id).held else { return }
         guard !item.isArchived else { displays[id]?.notice = Self.archivedNotice; return }
         Task {
             do {
                 let lease = try connectionLease(for: item)
                 let host = try await open(item)
                 try requireConnection(lease)
+                guard !costReading(for:id).held else { return }
                 do { _ = try await host.request("turn.retry", sessionID: id, params: turnOverrides(for: item)) }
                 catch HostError.rejected(let code, _) where code == "nothing_to_retry" {
                     _ = try await host.request("queue.resume", sessionID: id)
@@ -196,4 +378,13 @@ extension WorkspaceModel {
         }
     }
     func close() { presenter.close(); sessionID = nil }
+}
+
+// A durable relationship, independent of which pane displays the chat.
+extension ChatRecord {
+    var persistedBudgetParentID: String? {
+        if let delegation { return delegation.budgetOwnerSessionID }
+        guard let path, URL(fileURLWithPath: path).lastPathComponent == "side_" + id + ".jsonl" else { return nil }
+        return parentSessionID
+    }
 }

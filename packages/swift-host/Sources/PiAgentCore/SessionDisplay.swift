@@ -160,7 +160,7 @@ extension AgentSession {
                 // Retain its model-visible result verbatim; navigation is a
                 // local projection from this owner's durable accepted plan.
                 let status = card["state"]?.text == "unknown" ? SubagentStatus.interrupted : SubagentStatus(rawValue: card["state"]?.text ?? "") ?? .interrupted
-                let summary = SubagentSummary(link: plan.origin.link, description: plan.origin.description, model: plan.origin.model.model, status: status, revision: 0, tools: plan.origin.tools)
+                let summary = SubagentSummary(link: plan.origin.link, description: plan.origin.description, model: plan.origin.model.model, status: status, revision: 0, tools: plan.origin.tools, effort: plan.origin.model.thinkingLevel)
                 card["subagent"] = (try? subagentJSON(summary)) ?? .null
             }
             states[id] = merging(.object(card), fields)

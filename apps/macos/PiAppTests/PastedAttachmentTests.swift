@@ -5,6 +5,58 @@ import XCTest
 final class PastedAttachmentTests: XCTestCase {
     private let png = Data([137, 80, 78, 71, 13, 10, 26, 10, 0])
 
+    @MainActor func testDismissedCopiesKeepJournalAttachmentReferencesAcrossRelaunch() async throws {
+        let root = scratchRoot("dismissed-copy-images"), model = makeWorkspaceModel(stateRoot: root)
+        let old = PastedImageStorage(root: root), store = try XCTUnwrap(model.store)
+        let images = try (0..<4).map { _ in try AttachmentRecord.inspect(old.write(png)) }
+        var journals: [URL: Data] = [:]
+        // Different preserved copies can reuse an ID. Dismissing the second
+        // must not forget the first file's historical-edit or queue references.
+        for index in 0..<2 {
+            let file = root.appendingPathComponent("copy-\(index).jsonl")
+            var bytes = try SideKeepRecoveryTests.journal(id: "different-header")
+            let row: WireValue = .object([index == 0 ? "userInput" : "queue": .object(["attachments": .array([images[index].wire])])])
+            bytes.append(try JSONEncoder().encode(row)); bytes.append(10); try bytes.write(to: file)
+            let chat = ChatRecord(id: "copy", workspaceID: "w", title: "Preserved copy", path: file.path, profileID: "p")
+            try await store.put(SideKeepIntent(chat: chat), kind: "side-keep", id: chat.id)
+            try await store.dismissSideKeep(chat)
+            journals[file] = bytes
+        }
+        // Keep following the journal, including a helper's later final write;
+        // a one-time inventory of attachment names is insufficient.
+        let first = root.appendingPathComponent("copy-0.jsonl")
+        var appended = try XCTUnwrap(journals[first])
+        appended.append(try JSONEncoder().encode(images[2].wire)); appended.append(10)
+        try appended.write(to: first); journals[first] = appended
+        let inventory = try await store.pastedImageReferences(root: root)
+        XCTAssertEqual(inventory.journals, Set(journals.keys.map(\.path)))
+        model.shutdown(); try await model.traces.close(); await store.close()
+        let reopened = makeWorkspaceModel(stateRoot: root)
+        reopened.launching = false
+        await reopened.reconcileSideKeeps()
+        XCTAssertTrue(reopened.chats.isEmpty); XCTAssertTrue(reopened.sideKeepIssues.isEmpty)
+        let pending = try await reopened.store?.list(SideKeepIntent.self, kind: "side-keep")
+        XCTAssertTrue(pending?.isEmpty == true)
+        try await reopened.cleanupPastedImages()
+        for image in images.prefix(3) { XCTAssertEqual(try? Data(contentsOf: URL(fileURLWithPath: image.path)), png) }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: images[3].path), "Unrelated orphans still get cleaned up")
+        for (file, bytes) in journals { XCTAssertEqual(try Data(contentsOf: file), bytes) }
+        XCTAssertTrue(reopened.hosts.isEmpty)
+    }
+
+    @MainActor func testDismissedMissingJournalStillDefersAttachmentCleanup() async throws {
+        let root = scratchRoot("dismissed-missing-images"), model = makeWorkspaceModel(stateRoot: root)
+        let image = try PastedImageStorage(root: root).write(png), store = try XCTUnwrap(model.store)
+        let chat = ChatRecord(id: "copy", workspaceID: "w", title: "Missing copy", path: root.appendingPathComponent("missing.jsonl").path, profileID: "p")
+        try await store.put(SideKeepIntent(chat: chat), kind: "side-keep", id: chat.id)
+        try await store.dismissSideKeep(chat)
+        model.launching = false
+        do { try await model.cleanupPastedImages(); XCTFail("An unreadable retained source must defer cleanup") } catch {}
+        XCTAssertEqual(try? Data(contentsOf: image), png)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: chat.path!))
+        await model.reconcileSideKeeps(); XCTAssertTrue(model.sideKeepIssues.isEmpty)
+    }
+
     @MainActor func testPastedImageSurvivesReopeningAfterTheClipboardSourceIsGone() async throws {
         let root = scratchRoot("pasted-durable")
         let model = WorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))

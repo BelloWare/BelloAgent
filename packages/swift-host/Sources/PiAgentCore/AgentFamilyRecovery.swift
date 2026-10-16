@@ -49,7 +49,7 @@ enum AgentFamilyRecovery {
                     if row["type"].text == "message", let id = row["id"].text { childRows[id] = try ChatMessage(id:id,pi:row["message"]) }
                 }
                 bytes = reader.size
-                guard childState.origin == plan.origin || childState.origin == nil && markerOnly else { throw SubagentRecovery.damaged() }
+                guard childState.origin?.matchesAccepted(plan.origin) == true || childState.origin == nil && markerOnly else { throw SubagentRecovery.damaged() }
             }
             func childWrite<T: Encodable>(_ kind: String, _ data: T) throws {
                 guard exists else { return }
@@ -69,22 +69,22 @@ enum AgentFamilyRecovery {
                       admission["state"].text == "dispatched", admission["sourceSessionId"].text == childID,
                       admission["budgetOwnerSessionId"].text == owner, admission["delegationId"].text == plan.origin.link.delegationID,
                       let scope = try? JSONDecoder().decode(RequestScope.self,from:admission["scope"].data()), scope.valid,
-                      scope.delegation == plan.origin.link,
-                      cost["sourceSessionId"] == admission["sourceSessionId"], cost["budgetOwnerSessionId"] == admission["budgetOwnerSessionId"],
-                      cost["delegationId"] == admission["delegationId"] else { throw SubagentRecovery.damaged() }
+                      scope.delegation == plan.origin.link else { throw SubagentRecovery.damaged() }
                 if let number = scope.childTurn {
                     guard let turn = state.family!.turns[AgentTurnTarget(childID:childID,turn:number).id], turn.parentExecutionID == scope.parentExecutionID else { throw SubagentRecovery.damaged() }
                 }
-                let prior = accounting.attempts[id]?.contribution
-                if prior == nil || prior?["unreported"].int == 1 && cost["reported"].int == 1 {
-                    var value = cost; value["accountingRevision"] = JSON(accounting.revision + 1)
-                    try charge(prior == nil ? JournalRecordKind.cost : JournalRecordKind.costUpdate,value)
+                if let update = try FamilyCharge.merge(cost,into:accounting.attempts[id],revision:accounting.revision,
+                    child:.init(accepted:plan.origin,observed:childState.origin),failure:SubagentRecovery.damaged()) {
+                    try charge(update.kind,update.data)
                 }
             }
             for entry in accounting.attempts.values where entry.admission?["sourceSessionId"].text == childID {
                 guard let cost = entry.contribution, let id = cost["attemptId"].text else { continue }
-                let prior = childAccounting.attempts[id]?.contribution
-                if prior == nil || prior?["unreported"].int == 1 && cost["reported"].int == 1 { try childWrite(prior == nil ? JournalRecordKind.cost : JournalRecordKind.costUpdate,cost) }
+                if let update = try FamilyCharge.merge(cost,into:childAccounting.attempts[id],revision:childAccounting.revision,
+                    admission:entry.admission,child:.init(accepted:plan.origin,observed:childState.origin),failure:SubagentRecovery.damaged()) {
+                    try childWrite(update.kind,update.data)
+                    try childAccounting.consume(kind:update.kind,data:update.data,spend:&childSpend)
+                }
             }
             // Owner acceptance may precede the child-side report receipt mirror.
             for op in state.family!.operations.values where op.key.parentSessionID == childID {
@@ -102,7 +102,10 @@ enum AgentFamilyRecovery {
             let turns = state.family!.turns.values.filter { $0.childID == childID }.sorted { $0.turn < $1.turn }
             for original in turns {
                 var terminal = original
-                if let evidence = childState.family?.turns[original.id], evidence.status.terminal {
+                if var evidence = childState.family?.turns[original.id], evidence.status.terminal {
+                    // An older helper may seal a child before its accepted
+                    // turn was mirrored. The owner's acceptance retains effort.
+                    if evidence.effort == nil { evidence.effort = original.effort }
                     guard evidence.executionID == original.executionID, evidence.parentExecutionID == original.parentExecutionID,
                           let result = evidence.result, result.status == evidence.status,
                           result.metadata["sessionId"].text == childID, result.metadata["delegationId"].text == plan.origin.link.delegationID,
@@ -155,6 +158,7 @@ extension AgentChildTurn {
         result?.envelope["version"] = 3; result?.envelope["child_id"] = JSON(childID); result?.envelope["turn"] = JSON(turn)
         result?.metadata["version"] = 2; result?.metadata["turn"] = JSON(turn); result?.metadata["executionID"] = JSON(executionID)
         result?.metadata["parentAssistantMessageId"] = JSON(call.assistantMessageID); result?.metadata["toolCallId"] = JSON(call.toolCallID)
+        if let effort { result?.envelope["effort"] = JSON(effort); result?.metadata["effort"] = JSON(effort) }
         result?.messageID = nil
     }
 }

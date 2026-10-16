@@ -4,7 +4,7 @@ import XCTest
 
 /// Native tracking runs a nested AppKit event loop, so these fixtures run alone.
 @MainActor final class SidebarNativeBindingTests: XCTestCase, SerialTestLane {
-    private enum Pool: String { case chat, side, panel }
+    private enum Pool: String { case chat, side }
     private struct Unchecked<Value>: @unchecked Sendable { let value: Value }
 
     private func event(_ type: NSEvent.EventType, button: NSButton, window: NSWindow) throws -> NSEvent {
@@ -47,22 +47,12 @@ import XCTest
                 document.layoutSubtreeIfNeeded()
             }
             mounted = { document.views.values.first }
-        case .panel:
-            let document = SidesPanelListDocument(model: model, newSide: NSView(), empty: NSView(), glide: PiKit.SelectionGlide())
-            document.content = { .init(entry: $0, stats: ChatRowStats(totals: nil), unread: false, failed: false, enabled: true) }
-            scroll.documentView = document
-            replace = { id in
-                document.update([.init(entry: SidesPanelEntry(id: id, title: id, open: false, saved: true), unread: false)], hasParent: true)
-                document.frame = CGRect(x: 0, y: 0, width: 280, height: max(320, document.height(forWidth: 280)))
-                document.refreshVisible(); document.layoutSubtreeIfNeeded()
-            }
-            mounted = { document.rows.values.first }
         }
         replace("original")
         window.orderFront(nil); scroll.layoutSubtreeIfNeeded(); window.displayIfNeeded()
         let original = try XCTUnwrap(mounted())
         func mainButton(_ view: NSView) throws -> PiKit.SelectableRow {
-            try XCTUnwrap((view as? SidebarChatRowView)?.row ?? (view as? SidebarSideRowView)?.row ?? (view as? SidesPanelRowView)?.row)
+            try XCTUnwrap((view as? SidebarChatRowView)?.row ?? (view as? SidebarSideRowView)?.row)
         }
         let button: PiKit.ButtonBase
         if embedded {
@@ -72,8 +62,7 @@ import XCTest
         var fired: [String] = []
         button.onPress = { [weak original] in
             guard let original else { fired.append("released"); return }
-            fired.append((original as? SidebarChatRowView)?.chat.id ?? (original as? SidebarSideRowView)?.state.id
-                ?? (original as? SidesPanelRowView)?.content?.entry.id ?? "retired")
+            fired.append((original as? SidebarChatRowView)?.chat.id ?? (original as? SidebarSideRowView)?.state.id ?? "retired")
         }
         let release = Unchecked(value: try event(.leftMouseUp, button: button, window: window))
         let trackingButton = Unchecked(value: button)
@@ -106,7 +95,7 @@ import XCTest
 
     func testSidebarChatPoolDoesNotReuseANativeTrackingRow() throws { try assertHeldButtonCannotBeRecycled(.chat) }
     func testSidebarSidePoolDoesNotReuseANativeTrackingRow() throws { try assertHeldButtonCannotBeRecycled(.side) }
-    func testSidesPanelPoolDoesNotReuseANativeTrackingRow() throws { try assertHeldButtonCannotBeRecycled(.panel) }
+
     func testSidebarPoolAlsoProtectsEmbeddedNativeButtons() throws { try assertHeldButtonCannotBeRecycled(.chat, embedded: true) }
     func testNativeTrackingKeepsItsStartingBindingWhenAnAttachedRowIsRebound() throws {
         try assertHeldButtonCannotBeRecycled(.chat, directRebind: true)

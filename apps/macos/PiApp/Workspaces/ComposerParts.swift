@@ -162,6 +162,7 @@ import QuartzCore
 /// line of detail under it.
 @MainActor final class ComposerEditBanner: NSView, PiKit.WidthSizing {
     let cancel: PiKit.Button
+    let save: PiKit.Button
     private let title: PiKit.TextLine
     private let detail: ShellText
     private let spinner: PiSpinnerView
@@ -170,8 +171,11 @@ import QuartzCore
     private let stack: ShellStack
     private let row: ShellStack
 
-    init(title text: String, accessibilityName: String, cancel: @escaping () -> Void, review: @escaping () -> Void = {}) {
+    init(title text: String, accessibilityName: String, cancel: @escaping () -> Void, review: @escaping () -> Void = {}, save: (() -> Void)? = nil) {
         self.cancel = PiKit.Button("Cancel", style: .ghost, action: cancel)
+        self.save = PiKit.Button("Save", style: .primary, compact: true, action: save ?? {})
+        self.save.isHidden = save == nil
+        self.save.setAccessibilityLabel("Save Queued Message")
         title = PiKit.TextLine(PiKit.Line(text, font: .systemFont(ofSize: 11.5, weight: .semibold), color: .labelColor))
         detail = ShellText("", font: PiKit.Font.caption, color: .piInkSecondary)
         spinner = PiKit.spinner(controlSize: .mini)
@@ -183,6 +187,7 @@ import QuartzCore
             .spacer(4),
             .view(spinner),
             .view(self.cancel),
+            .view(self.save),
         ])
         stack = ShellStack(.vertical, spacing: 4, padding: NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8), [
             .view(row, .fill), .view(detail, .fill), .view(self.review),
@@ -198,13 +203,14 @@ import QuartzCore
 
     /// Sets what it says and offers; returns whether anything changed.
     func update(title text: String? = nil, detail value: String, detailColor: NSColor = .piInkSecondary, maximumLines: Int = .max,
-                waiting: Bool = false, cancelEnabled: Bool, offersReview: Bool = false, reviewEnabled: Bool = true) {
+                waiting: Bool = false, cancelEnabled: Bool, offersReview: Bool = false, reviewEnabled: Bool = true, saveEnabled: Bool = false) {
         var changed = false
         if let text, title.line.text != text { title.line.text = text; changed = true }
         if detail.runs != [ShellText.Run(text: value, color: detailColor)] { detail.set(value, color: detailColor); changed = true }
         if detail.maximumLines != maximumLines { detail.maximumLines = maximumLines; changed = true }
         if spinner.isHidden == waiting { spinner.isHidden = !waiting; changed = true }
         if cancel.isEnabled != cancelEnabled { cancel.isEnabled = cancelEnabled }
+        save.isEnabled = saveEnabled
         if review.isHidden == offersReview { review.isHidden = !offersReview; changed = true }
         if review.isEnabled != reviewEnabled { review.isEnabled = reviewEnabled }
         if changed { stack.relayoutAll(); invalidateIntrinsicContentSize(); needsLayout = true }

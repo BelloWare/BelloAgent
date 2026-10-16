@@ -2,23 +2,69 @@ import Foundation
 
 /// Normative schemas from subagents-steering.md. Validation is strict, without coercion.
 enum SubagentSteeringContract {
+    static let delegationPolicy = "Start sub-agents only when the user explicitly asks for sub-agents/agents, delegation, or parallel work; otherwise do the work yourself, even for large tasks."
     static let parentNames = ["subagent_start", "subagent_send", "subagent_wait", "subagent_status", "subagent_stop"]
     static let names = Set(parentNames + ["subagent_report"])
-    static func definitions(child: Bool, models: [SubagentModelGrant] = []) -> [ToolDefinition] {
-        (child ? ["subagent_report"] : parentNames).map { name in
+    static func definitions(child: Bool, models: [SubagentModelGrant] = [], profile: Profile? = nil, connectionSupportsReasoning: Bool) -> [ToolDefinition] {
+        // Catalog refresh order is not authority. Canonicalize the app-owned
+        // enums, including members of capability branches, for prompt caching.
+        let models = models.sorted { $0.model < $1.model }
+        return (child ? ["subagent_report"] : parentNames).map { name in
             var schema = schemas[name]!
             if name == "subagent_start", !models.isEmpty { schema["properties"]["model"]["enum"] = .array(models.map { JSON($0.model) }) }
+            if let profile, name == "subagent_start" {
+                var inherited = SubagentModelGrant.inherited(profile)
+                inherited.reasoning = models.first { $0.model == profile.model }?.reasoning
+                let inheritedLevels = inherited.supportedEfforts(parent:profile,connectionSupportsReasoning:connectionSupportsReasoning)
+                let groups = Dictionary(grouping:models) { $0.supportedEfforts(parent:profile,connectionSupportsReasoning:connectionSupportsReasoning) }
+                // Most connections use one capability set. Keep their schema
+                // compact; only differing models need conditional branches.
+                if groups.keys.allSatisfy({ $0 == inheritedLevels }) {
+                    schema = effortVariant(schema,levels:inheritedLevels)
+                    return ToolDefinition(name, descriptions[name]!, schema)
+                }
+                var variants = [effortVariant(schema,levels:inheritedLevels)]
+                variants[0]["properties"] = variants[0]["properties"].removing(["model"])
+                for levels in groups.keys.sorted(by: { $0.joined() < $1.joined() }) {
+                    var variant = effortVariant(schema,levels:levels)
+                    variant["properties"]["model"]["enum"] = .array(groups[levels]!.map { JSON($0.model) })
+                    variant["required"] = .array(schema["required"].list + ["model"])
+                    variants.append(variant)
+                }
+                schema = effortVariants(schema,variants)
+            } else if name == "subagent_send" {
+                // Lifetime family membership is unbounded. Keep every request
+                // independent of history; the coordinator validates the chosen
+                // child's frozen capabilities before accepting the operation.
+                schema = effortVariant(schema,levels:Profile.thinkingLevels)
+                schema["properties"]["effort"]["description"] = "Reasoning effort for a follow-up; the child's model must support it. Omit to inherit the parent's current effort; use \"default\" for the model's own default."
+            }
             return ToolDefinition(name, descriptions[name]!, schema)
         }
     }
     static let descriptions: [String:String] = [
-        "subagent_start": "Start a child with a self-contained task and fresh conversation. Choose background to continue working, or wait for a bounded wait. Children share project files and this chat's cost limit. Results and child messages arrive automatically at your next safe boundary. Children cannot delegate.",
-        "subagent_send": "Message one of your existing children. A queued/running turn receives steering at its next safe boundary. A finished child starts a follow-up turn with its previous conversation. This call returns an acceptance receipt; use wait if you need the answer before proceeding.",
+        "subagent_start": "Start a child with a self-contained task and fresh conversation. Choose background to continue working, or wait for a bounded wait. Children share project files and this chat's cost limit. Results and child messages arrive automatically at your next safe boundary. Children cannot delegate. " + delegationPolicy,
+        "subagent_send": "Message one of your existing children. A queued/running turn receives steering at its next safe boundary. A finished child starts a follow-up turn with its previous conversation. Optional effort applies only to a follow-up; steering keeps the running turn's effort. This call returns an acceptance receipt; use wait if you need the answer before proceeding.",
         "subagent_wait": "Wait for one, any or all of the selected child turns to settle. A child report or user steering can wake this wait early so you can respond. Inspect wake_reason and pending_count; timeout leaves children running. Results are delivered once through your agent-event lane, not copied into this tool response.",
         "subagent_status": "List your children's latest state, or read a page of a saved result. Reading never starts a child or marks an automatic event delivered.",
         "subagent_stop": "Stop this specific child turn, including queued work. Its saved conversation remains available. No accepted step is rerun. Wait for settlement before sending a new follow-up.",
         "subagent_report": "Send your parent an important discovery, partial result, blocker or question before you finish. This queues a durable message; it does not wait for a reply. Keep working where possible. If blocked, report the question and finish with the blocker so your parent can answer in a follow-up. Do not send routine progress, acknowledgements or repeated reminders.",
     ]
+    static func effortVariant(_ schema: JSON, levels: [String]) -> JSON {
+        var result = schema
+        if !levels.isEmpty {
+            result["properties"]["effort"] = ["type":"string","enum":.array(levels.map(JSON.string)),
+                "description":"Reasoning effort for the chosen child model. Omit to inherit the parent's current effort; use \"default\" for the model's own default."]
+        }
+        return result
+    }
+    static func effortVariants(_ schema: JSON, _ variants: [JSON]) -> JSON {
+        guard !variants.isEmpty else { return schema }
+        let levels = Profile.thinkingLevels.filter { level in variants.contains { $0["properties"]["effort"]["enum"].list.contains(JSON(level)) } }
+        var result = effortVariant(schema,levels:levels)
+        result["oneOf"] = .array(variants)
+        return result
+    }
     static let schemas: [String:JSON] = [
         "subagent_start": try! JSON.parse(Data(#"{"type":"object","properties":{"task":{"type":"string","minLength":1,"maxLength":262144},"description":{"type":"string","minLength":1,"maxLength":120},"mode":{"type":"string","enum":["background","wait"]},"timeout_ms":{"type":"integer","minimum":0,"maximum":60000,"default":60000},"model":{"type":"string","minLength":1,"maxLength":512},"tools":{"type":"array","items":{"type":"string","minLength":1,"maxLength":512},"uniqueItems":true}},"required":["task","mode"],"additionalProperties":false}"#.utf8)),
         "subagent_send": try! JSON.parse(Data(#"{"type":"object","properties":{"child_id":{"type":"string","minLength":1,"maxLength":512},"message":{"type":"string","minLength":1,"maxLength":262144},"expected_turn":{"type":"integer","minimum":1},"reply_to":{"type":"string","minLength":1,"maxLength":512}},"required":["child_id","message"],"additionalProperties":false}"#.utf8)),
@@ -31,7 +77,13 @@ enum SubagentSteeringContract {
 
 extension SubagentSteeringContract {
     static func validate(_ name: String, _ value: JSON) throws {
-        guard let schema = schemas[name], matches(value, schema) else { throw invalid() }
+        guard var schema = schemas[name] else { throw invalid() }
+        // Model-specific membership is checked against the frozen grant by
+        // the coordinator; shape validation remains strict and uncoerced.
+        if name == "subagent_start" || name == "subagent_send" {
+            schema["properties"]["effort"] = ["type":"string","minLength":1,"maxLength":64]
+        }
+        guard matches(value, schema) else { throw invalid() }
         for key in ["task", "message", "reason"] where value.map[key] != nil {
             guard let text = value[key].text, !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
                   text.utf8.count <= (name == "subagent_report" ? 4096 : key == "reason" ? 1024 : 262144) else { throw invalid() }

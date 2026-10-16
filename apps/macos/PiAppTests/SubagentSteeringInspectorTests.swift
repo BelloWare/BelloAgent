@@ -76,6 +76,38 @@ final class SubagentSteeringInspectorTests: XCTestCase {
         try await archive.close()
     }
 
+    func testSideOwnedCoordinationLinksUseTheDirectOwnerAcrossOrphaning() async throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let archive = PayloadArchive(root: root)
+        try await archive.configure(quota: nil, bodyRetention: 86_400, metricRetention: 86_400)
+        let sideAttempt = UUID().uuidString, childAttempt = UUID().uuidString
+        for (session, id) in [("side", sideAttempt), ("child", childAttempt)] {
+            var scope = try XCTUnwrap(subagentCaptureScope(source: session, owner: "side").object)
+            if session == "side" { scope.removeValue(forKey: "delegation") }
+            scope["sideParents"] = .array([.string("main")]); scope["agentDeliveryIDs"] = .array([.string("steer"), .string("report")])
+            let metadata: [String: WireValue] = ["attemptId": .string(id), "sessionId": .string(session), "turnId": .string("turn"), "purpose": .string("turn"),
+                "api": .string("openai-responses"), "mode": .string("off"), "outcome": .string("completed"), "wallTimestamp": .number(Date().timeIntervalSince1970),
+                "messageIds": .array([.string("delivery")]), "outputMessageIds": .array([.string("call")]), "requestScope": .object(scope)]
+            try await archive.begin(metadata, workspace: "w"); try await archive.finish(metadata)
+        }
+        let entries = [AgentCoordinationEntry(id: "steer", childID: "child", turn: 1, kind: "steer", author: "parent",
+                sourceSessionID: "side", sourceMessageID: "call", recipientID: "child", recipientMessageID: "delivery", disposition: "pending"),
+            AgentCoordinationEntry(id: "report", childID: "child", turn: 1, kind: "report", author: "subagent",
+                sourceSessionID: "child", sourceMessageID: "call", recipientID: "side", recipientMessageID: "delivery", disposition: "pending")]
+        for parents in [["main"], []] {
+            try await archive.recordSideBudgets(["side": parents], workspaceID: "w")
+            let links = try await archive.coordinationRequests(entries, ownerID: "side", workspaceID: "w")
+            XCTAssertEqual(links.map(\.sourceAttemptID), [sideAttempt, childAttempt])
+            XCTAssertEqual(links.map(\.consumingAttemptID), [childAttempt, sideAttempt])
+            let foreign = try await archive.coordinationRequests(entries, ownerID: "unrelated", workspaceID: "w")
+            XCTAssertTrue(foreign.allSatisfy { $0.sourceAttemptID == nil && $0.consumingAttemptID == nil })
+            let otherProject = try await archive.coordinationRequests(entries, ownerID: "side", workspaceID: "foreign")
+            XCTAssertTrue(otherProject.allSatisfy { $0.sourceAttemptID == nil && $0.consumingAttemptID == nil })
+        }
+        try await archive.close()
+    }
+
     @MainActor func testJournalProjectsEachTurnSourceDeliveryAndUserStopHold() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let workspace = try SubagentOrganizationTests.fixture(root); registerWorkspaceFixtureTeardown(workspace, root: root)

@@ -403,6 +403,24 @@ final class HistoryExtentTests: XCTestCase {
     /// start, no room above it) keeps their row of the chat when the room is
     /// measured again.
     @MainActor func testAReaderInRoomBelowKeepsTheirPlaceWhenTheRoomIsMeasuredAgain() async throws {
+        try await roomBelowKeepsPlace()
+    }
+
+    @MainActor func testRoomBelowMeasurementWaitsForAnObsoletePositionReadToDrain() async throws {
+        try await roomBelowKeepsPlace(delayObsoleteRead: true)
+    }
+
+    private actor RoomReadGate {
+        var waiting: CheckedContinuation<Void, Never>?
+        var calls = 0
+        func enter() async {
+            calls += 1
+            if calls == 1 { await withCheckedContinuation { waiting = $0 } }
+        }
+        func release() { waiting?.resume(); waiting = nil }
+    }
+
+    @MainActor private func roomBelowKeepsPlace(delayObsoleteRead: Bool = false) async throws {
         let chat = try await LongChatScroll(turns: 200)
         registerWorkspaceFixtureTeardown(chat.model, root: chat.root)
         addTeardownBlock { @MainActor in chat.close() }
@@ -410,16 +428,38 @@ final class HistoryExtentTests: XCTestCase {
         await chat.model.revealStartOfChat(sessionID: chat.chat.id)
         try await eventually("Home never read the chat's first page") { chat.draw(); return chat.view.olderPage.cursor == nil && chat.view.messages.first?.id == "u0" }
         for _ in 0..<10 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
-        chat.model.historyWindowLoader = { _, _, _, _ in try await Task.sleep(for: .seconds(60)); throw CancellationError() }
+        let gate = delayObsoleteRead ? RoomReadGate() : nil
+        addTeardownBlock { await gate?.release() }
+        chat.model.historyWindowLoader = { _, _, _, _ in
+            await gate?.enter()
+            try await Task.sleep(for: .seconds(60)); throw CancellationError()
+        }
         let scroll = try XCTUnwrap(chat.scroll), document = try XCTUnwrap(chat.document), page = try XCTUnwrap(chat.page)
         XCTAssertEqual(document.leadingSpace, 0, "No room above the chat's first page")
         let clip = scroll.contentView
         clip.setBoundsOrigin(NSPoint(x: 0, y: document.frame.height * 0.6)); scroll.reflectScrolledClipView(clip)
+        if let gate {
+            try await eventually("The first position read never reached its gate", until: { chat.draw(); return await gate.waiting != nil })
+            // Hold the cancelled read at its next safe point while a later
+            // geometry/position notification asks for the adjacent row.
+            clip.setBoundsOrigin(NSPoint(x: 0, y: clip.bounds.minY + document.roomRowHeight)); scroll.reflectScrolledClipView(clip)
+        }
         for _ in 0..<5 { chat.draw(); try await Task.sleep(for: .milliseconds(10)) }
         func place() throws -> Int {
             let extent = try XCTUnwrap(page.snapshot?.extent), last = try XCTUnwrap(document.retainedRows.last)
             return extent.firstAfter + Int((clip.bounds.minY - last.frame.maxY) / document.roomRowHeight)
         }
+        if let gate {
+            XCTAssertNotEqual(chat.view.jumpReading, try place(), "The setup must exercise a pending replacement")
+            Task { await gate.release() }
+        }
+        // Quiet geometry corrections can change the requested row while its
+        // obsolete read is still cancelling. Five frames are not a completion
+        // fence: begin the measurement assertion at the actual settled read.
+        try await eventually("The position read never caught up with the measured room", until: {
+            chat.draw()
+            return chat.view.jumpReading == (try place()) && chat.view.jumpWanted == nil && chat.view.jumpTask?.isCancelled == false
+        })
         let before = try place()
         XCTAssertEqual(chat.view.jumpReading, before, "The read under way is for where the reader is")
         page.measuredHistoryRowHeight(document.roomRowHeight * 1.5, over: page.historyRowHeightSample, width: page.historyRowHeightWidth ?? 0)

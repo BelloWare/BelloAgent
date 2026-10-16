@@ -58,6 +58,7 @@ public actor NativeHostService {
     private var cwd: URL?, roots: [URL]=[], directory: URL?, resources: Resources?, mcp: MCPManager?, nativeTools: NativeTools?
     private let traces: TraceStore, capture: CaptureDelivery
     private let runtimeGate=AsyncGate()
+    private let childBudgetReadings = ChildBudgetReadings()
     private var subagentCoordinator: SubagentCoordinator?
     private var sessions:[String:AgentSession]=[:], profiles:[String:(Profile,String)]=[:]
     private var subagentReaders: Set<String> = []
@@ -73,6 +74,8 @@ public actor NativeHostService {
     private var retrySettings = PiProviderRules.RetrySettings()
     /// Test seam for a Stop overtaking capability discovery or skill freezing.
     var beforeSubmissionPreflight: (@Sendable () async -> Void)?
+    /// Test seam for a slow disk mirror while unrelated commands arrive.
+    var beforeChildCostMirror: (@Sendable () -> Void)?
     public init(output: @escaping @Sendable (HostOutput)->Void) {
         self.output=output
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
@@ -221,19 +224,27 @@ public actor NativeHostService {
     /// no resource, and drops itself once the host is gone (`weak self`);
     /// retaining one handle per event would cost more than the work it tracks.
     private func notification() -> @Sendable (String,Int)->Void { { [weak self] id, seq in Task { await self?.mark(id,seq) } } }
+    private func observeChildCosts(_ child: AgentSession) async {
+        let id = child.id
+        await child.observeChildCosts { [weak self] cost in Task { await self?.publishChildCost(cost,id:id) } }
+    }
+    private func publishChildCost(_ cost: JSON, id: String) {
+        emit(["v":1,"kind":"event","hostEpoch":JSON(epoch),"sessionId":JSON(id),"type":"session.cost","payload":cost])
+    }
     /// A chat's runtime, built off this actor, which every other chat's
     /// commands go through: opening a chat or a fork parses and replays its
     /// whole journal. (A side starts from its parent's context instead.)
-    private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, prepared: JournalReplayConsumer? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
+    private func makeSession(_ id: String, profile: Profile, apiKey: String, readOnly: Bool, resources: Resources, tools: any ToolExecuting, resumePath: String? = nil, prepared: JournalReplayConsumer? = nil, costSeed: SessionSpend? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, titleTask: Bool = false, utilityPurpose: String = "title") async throws -> AgentSession {
         guard let cwd, let directory else { throw AgentError("workspace_required", "Open a workspace first") }
         try await releaseFamilyReaders(owner: id)
         let client=ProviderClient(traces:traces), traces=traces, outcomes=unknownToolOutcomes, changed=notification()
         let session = try await Task.detached(priority:.userInitiated) {
-            try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
+            try AgentSession(id:id,profile:profile,apiKey:apiKey,cwd:cwd,directory:directory,readOnly:readOnly,resources:resources,client:client,tools:tools,traces:traces,resumePath:resumePath,prepared:prepared,costSeed:costSeed,seed:seed,parent:parent,autoCompaction:!titleTask,titleTask:titleTask,utilityPurpose:utilityPurpose,unknownToolOutcomes:outcomes,changed:changed)
         }.value
         await adoptRetrySettings(session)
         if let origin = await session.subagents.origin {
             try await traces.inheritCapturePolicy(child: id, owner: origin.link.budgetOwnerSessionID)
+            await observeChildCosts(session)
         }
         if SubagentPolicy.enabled {
             if subagentCoordinator == nil {
@@ -270,6 +281,7 @@ public actor NativeHostService {
             throw AgentError("subagent_scope", "The child no longer belongs to this open workspace and parent")
         }
         sessions[childID] = child; profiles[childID] = (profile, apiKey)
+        await observeChildCosts(child)
         await adoptRetrySettings(child)
     }
     private func openAgentChild(_ environment: SubagentEnvironment, _ plan: SubagentPlan) async throws -> AgentSession {
@@ -279,7 +291,7 @@ public actor NativeHostService {
                 guard await old.unloadIfIdle() else { throw AgentError("session_busy", "Child is still settling") }
                 sessions.removeValue(forKey:id); profiles.removeValue(forKey:id)
             }
-            let child = try AgentSteeringCoordinator.makeChild(environment,plan)
+            let child = try await Task.detached(priority:.userInitiated) { try AgentSteeringCoordinator.makeChild(environment,plan) }.value
             do { try await registerSubagent(child,profile:await child.profile,apiKey:environment.apiKey,parent:environment.parent) }
             catch { await child.close(); throw error }
             return child
@@ -329,7 +341,7 @@ public actor NativeHostService {
         let workspace=OpenWorkspace(cwd:cwd,directory:directory,resources:resources,mcp:mcp,nativeTools:nativeTools)
         if let result=try await workspaceCommand(method,sessionID:sessionID,params:params,in:workspace) { return result }
         let id=try identity(sessionID.map { JSON($0) } ?? params["sessionId"])
-        if let result=try await namedSessionCommand(method,id:id,params:params) { return result }
+        if let result=try await namedSessionCommand(method,id:id,params:params,directory:directory) { return result }
         guard let session=sessions[id] else { throw AgentError(AgentErrorCode.sessionMissing, "Session runtime is not loaded") }
         if let result=try await sessionCommand(method,id:id,session:session,params:params,in:workspace) { return result }
         guard !quiesced, !closing else { throw AgentError("closing", "Host is closing or quiesced") }
@@ -463,12 +475,23 @@ public actor NativeHostService {
                 guard params["backgroundTask"].isNull || titleTask else { throw AgentError("invalid_params", "Unknown background task") }
                 let sessionResources = titleTask ? Resources(cwd: cwd, titleTask: true, utility: utility) : resources
                 let tools: any ToolExecuting = titleTask || params["connectionTest"].flag == true ? DisabledTools() : nativeTools
-                let session=try await makeSession(id,profile:profile,apiKey:key,readOnly:titleTask || mode == "read-only",resources:sessionResources,tools:tools,resumePath:params["path"].text,titleTask:titleTask,utilityPurpose:utility)
+                let session=try await makeSession(id,profile:profile,apiKey:key,readOnly:titleTask || mode == "read-only",resources:sessionResources,tools:tools,resumePath:params["path"].text,costSeed:costSeed,titleTask:titleTask,utilityPurpose:utility)
                 sessions[id]=session; profiles[id]=(profile,key); await adoptRetrySettings(session)
                 if await session.isSubagent { subagentReaders.insert(id) }
+                if await session.isSideChat, let parentID = await session.parentInfo["parentSessionId"].text {
+                    do {
+                        if let parent = sessions[parentID] { try await session.bindSideBudget(to: parent) }
+                        else if try SideBudgetRecovery.parentExists(parentID, directory:directory) {
+                            throw AgentError("side_budget_parent", "Open the parent chat before continuing this side")
+                        }
+                        // Deleting a parent preserves saved sides. A genuinely
+                        // orphaned side opens with its own spend and limit.
+                    } catch {
+                        sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); await session.close(); throw error
+                    }
+                }
                 if let handoff=params["handoff"]["text"].text, !handoff.isEmpty { try await session.addHandoff(handoff) }
                 if let costLimit { await session.setCostLimit(costLimit) }
-                if let costSeed { await session.adoptSpendSeed(costSeed) }
                 return session
             }
             if !params["subagentModels"].isNull { try await session.configureSubagentModels(JSONDecoder().decode([SubagentModelGrant].self, from: params["subagentModels"].data())) }
@@ -515,19 +538,96 @@ public actor NativeHostService {
         }
     }
     /// Commands on a chat by its id, whether it is open here or not.
-    private func namedSessionCommand(_ method:String, id:String, params:JSON) async throws -> JSON? {
+    private func namedSessionCommand(_ method:String, id:String, params:JSON, directory:URL) async throws -> JSON? {
         if method.hasPrefix("debug.") { return try await traces.command(method,session:id,params:params) }
         switch method {
+        case "session.releaseDependents":
+            return try await withRuntimeGate {
+                let family = try await loadedBudgetFamily(id,directory:directory)
+                // Inspect every runtime before releasing any writer. This also
+                // catches hidden owners/readers and work between HTTP requests.
+                for (value, _) in family.sorted(by: { $0.1 > $1.1 }) {
+                    guard await value.canUnload else { throw busyBudgetMember(value.id,names:params["names"]) }
+                }
+                var released: [JSON] = []
+                for (value, _) in family.sorted(by: { $0.1 > $1.1 }) where value.id != id {
+                    guard await value.unloadIfIdle() else { throw busyBudgetMember(value.id,names:params["names"]) }
+                    await didUnloadBudgetMember(value)
+                    released.append(JSON(value.id))
+                }
+                return ["accepted":true,"released":.array(released)]
+            }
         case "session.forget":
             try await withRuntimeGate {
-                if let existing=sessions[id] {
-                    guard await existing.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
-                    sessions.removeValue(forKey:id);profiles.removeValue(forKey:id); subagentReaders.remove(id)
+                let family = try await loadedBudgetFamily(id,directory:directory)
+                // Preflight the whole family before detaching any writer. The
+                // surviving saved sides reopen as independent orphaned chats.
+                for (value, _) in family {
+                    guard await value.canUnload else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
+                }
+                // Deleting a side can remove the only priced/token evidence
+                // after its ancestor's append failed. Repair surviving owners
+                // before downward mirrors, detachment, capture clearing or Trash.
+                let ancestors = try await Task.detached { try SideBudgetRecovery.ancestors(of:id,directory:directory) }.value
+                for ancestor in ancestors.reversed() {
+                    let records = try await Task.detached { try SideBudgetRecovery.deletionRecords(side:id,ancestor:ancestor,directory:directory) }.value
+                    let committed: [JSON]
+                    if let runtime = sessions[ancestor] {
+                        try await runtime.importDeletionRecords(records)
+                        committed = await runtime.committedSideCharges()
+                    } else {
+                        committed = try await Task.detached {
+                            try SideBudgetRecovery.importDeletionRecords(records,owner:ancestor,directory:directory)
+                            return try SideBudgetRecovery.committedSideCharges(owner:ancestor,directory:directory)
+                        }.value
+                    }
+                    try await mirrorFamilyCharges(committed,owner:ancestor,directory:directory)
+                }
+                let costs: [JSON]
+                if let owner = sessions[id] { costs = await owner.committedSideCharges() }
+                else { costs = try await Task.detached { try SideBudgetRecovery.committedSideCharges(owner:id,directory:directory) }.value }
+                try await mirrorFamilyCharges(costs,owner:id,directory:directory)
+                for (value, _) in family.sorted(by: { $0.1 > $1.1 }) {
+                    guard await value.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
+                    await didUnloadBudgetMember(value)
                 }
             }
             _=try await traces.command("debug.clear",session:id,params:[:]); return ["accepted":true]
         default: return nil
         }
+    }
+    /// Runtime ancestry governs loaded sides; persisted ancestry also finds a
+    /// side-owned child reader opened without its direct owner's runtime.
+    /// Call under the runtime gate. Pane placement never defines this family.
+    private func loadedBudgetFamily(_ id: String, directory: URL) async throws -> [(AgentSession,Int)] {
+        var family: [(AgentSession,Int)] = []
+        var owners: Set<String> = [id]
+        for value in sessions.values {
+            let parents = await value.sideBudgetIDs
+            if value.id == id || parents.contains(id) { family.append((value,parents.count)); owners.insert(value.id) }
+        }
+        var coldOwners: [String:Bool] = [:]
+        for value in sessions.values where !owners.contains(value.id) {
+            guard let owner = await value.subagents.origin?.link.budgetOwnerSessionID else { continue }
+            if !owners.contains(owner), coldOwners[owner] == nil {
+                // Only a loaded reader's direct ancestry is relevant to release.
+                // Do not enumerate unrelated saved sides on the host actor.
+                coldOwners[owner] = try await Task.detached {
+                    try SideBudgetRecovery.ancestors(of:owner,directory:directory).contains(id)
+                }.value
+            }
+            if owners.contains(owner) || coldOwners[owner] == true { family.append((value,129)) }
+        }
+        return family.sorted { $0.0.id < $1.0.id }
+    }
+    private func busyBudgetMember(_ id: String, names: JSON) -> AgentError {
+        let name = String((names[id].text ?? id).prefix(120))
+        return AgentError("side_budget_busy","Wait for “\(name)” to finish its work and queued messages before changing this chat.")
+    }
+    private func didUnloadBudgetMember(_ value: AgentSession) async {
+        sessions.removeValue(forKey:value.id); profiles.removeValue(forKey:value.id); subagentReaders.remove(value.id)
+        dirty.removeValue(forKey:value.id)
+        emit(["v":1,"kind":"event","hostEpoch":JSON(epoch),"sessionId":JSON(value.id),"seq":JSON(await value.sequence),"type":"session.unloaded","payload":[:]])
     }
     /// Commands on an open chat that a quiesced workspace still answers:
     /// reads, a stop, and a side kept or closed. A fork and a new side
@@ -539,13 +639,35 @@ public actor NativeHostService {
         case "budget.attempts": return try await session.budgetAttempts(after: params["after"].text)
         case "budget.reconcile":
             return try await withRuntimeGate {
-                try await releaseFamilyReaders(owner: id)
-                return try await session.reconcileCapturedAccounting(params["evidence"].list)
+                let result = try await session.reconcileCapturedAccounting(params["evidence"].list, mirrorChildren:false)
+                let ids = params["evidence"].list.compactMap { $0["attemptId"].text }
+                let costs = await session.sharedCharges(ids)
+                try await mirrorFamilyCharges(costs,owner:id,directory:session.directory)
+                return result
             }
         case "subagent.list":
             let cursor = try boundedInt(params["cursor"], maximum: Int.max), limit = try boundedInt(params["limit"], fallback: 100, maximum: 256)
             let coordinator = subagentCoordinator ?? SubagentCoordinator()
-            return await coordinator.list(parent: session, cursor: cursor, limit: limit)
+            var page = await coordinator.list(parent: session, cursor: cursor, limit: limit)
+            // Opt-in desktop projection. The coordinator's model-facing
+            // list/progress/result contract is unchanged.
+            if params["includeCosts"].flag == true {
+                let children = page["children"].list
+                page["costs"] = try await withRuntimeGate {
+                    guard sessions[id] === session else { throw AgentError(AgentErrorCode.sessionMissing,"Session runtime is not loaded") }
+                    let plans = await session.subagents.plans
+                    var result: JSON = [:]
+                    for summary in children {
+                        guard let delegation = summary["link"]["delegationID"].text, let plan = plans[delegation],
+                              plan.origin.link.budgetOwnerSessionID == id else { continue }
+                        let childID = plan.origin.link.childSessionID
+                        if let child = sessions[childID] { result[childID] = await child.costSnapshot }
+                        else { result[childID] = try await childBudgetReadings.read(plan:plan,directory:session.directory,allowMissing:summary["status"].text == "not_executed") }
+                    }
+                    return result
+                }
+            }
+            return page
         case "subagent.stop":
             if let coordinator = await session.agentCoordinator, await session.subagents.family != nil {
                 let target = AgentTurnTarget(childID:try required(params["childId"],"child id"),turn:try boundedInt(params["turn"],fallback:0,maximum:Int.max))
@@ -560,6 +682,9 @@ public actor NativeHostService {
             }
             await session.stop(); return ["accepted":true]
         case "session.status":
+            // Native budget owners need no transcript/context/capture read.
+            // This is the same authoritative numeric ledger as a full status.
+            if params["budgetOnly"].flag == true { return ["cost":await session.costSnapshot] }
             var statusParams = params; statusParams["includeMessages"] = false
             return await session.snapshot(statusParams)
         case "session.edit.prepare": return try await session.prepareEdit(identity(params["messageId"]),offset:boundedInt(params["offset"],maximum:262144),expectedTimeline:params["sourceTimeline"].text,expectedTextDigest:params["sourceTextDigest"].text)
@@ -600,13 +725,13 @@ public actor NativeHostService {
             }
         case "side.open":
             guard !quiesced else { throw AgentError("quiesced", "Workspace is quiesced for update") }
-            let sideID=try identity(params["sideSessionId"]), costLimit=try AgentSession.costLimit(params["costLimit"])
+            let sideID=try identity(params["sideSessionId"])
             return try await withRuntimeGate {
                 guard sessions[sideID] == nil, let (profile,key)=profiles[id] else { throw AgentError("side_conflict", "Side identity is already in use") }
                 let seed=await session.sideSeed()
                 let side=try await makeSession(sideID,profile:profile,apiKey:key,readOnly:true,resources:resources,tools:nativeTools,seed:seed.messages,parent:seed.info)
-                // A side is a session of its own: its own spend and limit.
-                if let costLimit { await side.setCostLimit(costLimit) }
+                // Legacy side.open costLimit values are ignored; the parent owns spending.
+                try await side.bindSideBudget(to: session)
                 let saved=try await side.preserveSide()
                 sessions[sideID]=side; profiles[sideID]=(profile,key); await adoptRetrySettings(side)
                 _=try await traces.command("debug.mode",session:sideID,params:["mode":JSON(await traces.mode(id))])
@@ -683,12 +808,70 @@ public actor NativeHostService {
         case "session.close":
             return try await withRuntimeGate {
                 guard sessions[id] === session else { throw AgentError(AgentErrorCode.sessionMissing, "Session runtime is not loaded") }
+                // Loaded sides and unsettled managed work retain their writer,
+                // including tool/queue phases with no dispatched model request.
+                if await hasBudgetDependents(id) { throw AgentError("session_busy", "Wait for managed work and close loaded side sessions before unloading their budget owner") }
                 guard await session.unloadIfIdle() else { throw AgentError("session_busy", "Stop work and close/keep side chats before unloading") }
                 sessions.removeValue(forKey:id); profiles.removeValue(forKey:id); subagentReaders.remove(id)
                 return ["accepted":true]
             }
         default: return nil
         }
+    }
+    /// Call only while holding the runtime gate, so disk and live mirrors can
+    /// never acquire competing writers between discovery and persistence.
+    private func mirrorFamilyCharges(_ costs: [JSON], owner id: String, directory: URL) async throws {
+        guard !costs.isEmpty else { return }
+        // Loaded readers need the same accepted-origin authority as disk
+        // mirrors. Resolve each needed direct owner once, even without its
+        // runtime. Discarded sides with no surviving reader need no authority.
+        var plans: [String:[String:SubagentPlan]] = [:]
+        for child in sessions.values where child.id != id {
+            let managed = await child.isSubagent
+            for cost in costs {
+                var accepted: SubagentOrigin?
+                if managed, cost["sourceSessionId"].text == child.id {
+                    guard let delegation = cost["delegationId"].text, let owner = cost["budgetOwnerSessionId"].text else { throw AttemptAccounting.damaged() }
+                    if plans[owner] == nil {
+                        if let session = sessions[owner] { plans[owner] = await session.subagents.plans }
+                        else { plans[owner] = try await Task.detached { try SideBudgetRecovery.childPlans(owner:owner,directory:directory) }.value }
+                    }
+                    guard let plan = plans[owner]?[delegation] else { throw AttemptAccounting.damaged() }
+                    accepted = plan.origin
+                }
+                try await child.mirrorSharedCharge(cost,acceptedOrigin:accepted)
+            }
+        }
+        let loaded = Set(sessions.keys)
+        let sideReadings = try await Task.detached { try SideBudgetRecovery.mirrorCapturedCosts(costs,owner:id,directory:directory,loaded:loaded) }.value
+        for (child,cost) in sideReadings { publishChildCost(cost,id:child) }
+        var mirrors: [(SubagentPlan,URL,[JSON])] = []
+        for owner in sessions.values {
+            let plans = await owner.subagents.plans
+            var batches: [String:[JSON]] = [:]
+            for cost in costs {
+                guard let delegation = cost["delegationId"].text,
+                      let plan = plans[delegation], sessions[plan.origin.link.childSessionID] == nil else { continue }
+                batches[delegation,default:[]].append(cost)
+            }
+            for (delegation,batch) in batches { mirrors.append((plans[delegation]!,owner.directory,batch)) }
+        }
+        let beforeMirror = beforeChildCostMirror
+        let readings = try await Task.detached {
+            try mirrors.map { plan, directory, costs in
+                beforeMirror?()
+                return (plan.origin.link.childSessionID,try SubagentRecovery.mirrorCapturedCosts(costs,plan:plan,directory:directory))
+            }
+        }.value
+        for (child,cost) in readings { publishChildCost(cost,id:child) }
+    }
+
+    private func hasBudgetDependents(_ id: String) async -> Bool {
+        for session in sessions.values where session.id != id {
+            if await session.sideBudgetIDs.contains(id) { return true }
+            if let owner = await session.budgetOwner, owner.id == id, !(await session.canUnload) { return true }
+        }
+        return false
     }
     /// `roots` (1…16 absolute directories, primary first) or the legacy single
     /// `cwd`. Duplicates collapse after canonicalization; order is preserved.
@@ -762,6 +945,7 @@ public actor NativeHostService {
         let id=try identity(params["newSessionId"]), destination=sessions.appendingPathComponent(id+".jsonl")
         let reader=try JournalRecordReader(source,allowIncompleteTail:true)
         guard var header=try reader.next(), header["type"].text == "session", header["version"].int == 3 else { throw AgentError("legacy_session","Only a native chat can be recovered this way") }
+        let sourceID = try identity(header["id"])
         header["id"]=JSON(id)
         var copy=try header.data(); copy.append(10)
         // Every record after the header moves by the difference in its length.
@@ -774,17 +958,31 @@ public actor NativeHostService {
         let file=FileHandle(fileDescriptor:fd,closeOnDealloc:true)
         defer { try? file.close(); try? FileManager.default.removeItem(at:temporary) }
         try file.write(contentsOf:copy)
-        var branch=JournalChainCheck(), count=0, native=false
+        var branch=JournalChainCheck(), count=0, native=false, parentInfo: JSON = .null
         while var line=try reader.nextLine() {
             if !line.isEmpty {
                 let item=try JSON.parse(line), rid=try identity(item["id"])
                 guard branch.extend(rid, parent: item["parentId"].text) else { throw AgentError("session_damaged","The journal is damaged before its last record; nothing was recovered") }
                 count += 1
-                if item["customType"].text == JournalRecordKind.marker { native=true }
+                let kind = item["customType"].text
+                if kind == JournalRecordKind.marker || kind == JournalRecordKind.steeringMarker { native=true }
+                if kind == JournalRecordKind.subagentOrigin { throw AgentError("subagent_managed", "A managed child cannot be recovered as an independent chat") }
+                if kind == JournalRecordKind.sideOrigin || kind == JournalRecordKind.forkOrigin { parentInfo = item["data"] }
             }
             line.append(10); try file.write(contentsOf:line)
         }
         guard native else { throw AgentError("legacy_session","Only a native chat can be recovered this way") }
+        if parentInfo["parentSessionId"].text != nil, parentInfo["relationship"].text != "fork" {
+            // Recovery creates an independent chat with the desktop's own
+            // default limit. Keep every complete historical byte, then retire
+            // the old side relationship before the copy becomes discoverable.
+            // Reusing it would duplicate old attempts in the original family.
+            let provenance: JSON = ["type":"custom","customType":JSON(JournalRecordKind.sideOrigin),
+                "id":JSON(UUID().uuidString),"parentId":branch.last.map { JSON($0) } ?? .null,
+                "data":["relationship":"recovered-copy","sourceSessionId":JSON(sourceID)]]
+            var line = try provenance.data(); line.append(10); try file.write(contentsOf:line); count += 1
+        }
+        try reader.checkUnchanged()
         try file.synchronize(); try file.close()
         guard link(temporary.path,destination.path) == 0 else { throw AgentError("session_exists","A chat with that identity already exists") }
         // A reply the helper was streaming goes with the copy, which then

@@ -5,6 +5,11 @@ import XCTest
     var frames: [[String: WireValue]] = []
 }
 
+@MainActor private final class WeakRefreshDisplay {
+    weak var value: SessionDisplay?
+    init(_ value: SessionDisplay) { self.value = value }
+}
+
 @MainActor private struct RefreshFixture {
     let root: URL
     let model: WorkspaceModel
@@ -57,6 +62,62 @@ final class WorkspaceRefreshLifecycleTests: XCTestCase {
             value["messages"] = .array([.object(["id":.string("question"),"role":.string("user"),"text":.string(text)])])
         }
         return value
+    }
+
+    @MainActor private func showNoticeSnapshot(_ f: RefreshFixture, preflight: String?, state: String = "paused") async throws {
+        let index = f.commands.frames.count
+        f.model.refresh(f.chat.id)
+        try await wait { f.commands.frames.count == index + 1 }
+        var result = snapshot(sequence: Double(index + 1), revision: "notice:\(index + 1)", text: "Question")
+        result["state"] = .string(state); result["runStatus"] = .string(state)
+        if let preflight { result["preflightError"] = .string(preflight) }
+        try reply(f.commands.frames[index], on: f.host, result: result)
+        try await wait { !f.view.snapshotInFlight }
+    }
+
+    @MainActor func testClearingQueueEditNoticeImmediatelyKeepsThePreflightPart() async throws {
+        let f = try await fixture()
+        f.view.queueEditNotice = "Cancellation is not confirmed."
+        try await showNoticeSnapshot(f, preflight: "Run stopped.")
+        XCTAssertEqual(f.view.notice, "Cancellation is not confirmed.\nRun stopped.")
+        let requests = f.commands.frames.count
+        f.view.queueEditNotice = ""
+        XCTAssertEqual(f.view.notice, "Run stopped.", "A cleared component must not await another snapshot")
+        XCTAssertEqual(f.commands.frames.count, requests)
+    }
+
+    @MainActor func testReplacingQueueEditNoticeImmediatelyKeepsThePreflightPart() async throws {
+        let f = try await fixture()
+        f.view.queueEditNotice = "Cancellation is not confirmed."
+        try await showNoticeSnapshot(f, preflight: "Run stopped.")
+        f.view.queueEditNotice = "The rewrite is in the composer."
+        XCTAssertEqual(f.view.notice, "The rewrite is in the composer.\nRun stopped.")
+        try await showNoticeSnapshot(f, preflight: nil)
+        XCTAssertEqual(f.view.notice, "The rewrite is in the composer.", "Removing preflight keeps the queued-edit component")
+        f.view.queueEditNotice = ""
+        XCTAssertEqual(f.view.notice, "", "Removing both parts leaves no stale composition")
+    }
+
+    @MainActor func testClearingPreflightThenQueueEditNoticeRemovesBothParts() async throws {
+        let f = try await fixture()
+        f.view.queueEditNotice = "Keep the rewrite."
+        try await showNoticeSnapshot(f, preflight: "Run stopped.")
+        try await showNoticeSnapshot(f, preflight: nil)
+        XCTAssertEqual(f.view.notice, "Keep the rewrite.")
+        f.view.queueEditNotice = ""
+        XCTAssertEqual(f.view.notice, "")
+    }
+
+    @MainActor func testFailedRunNoticeIsNotDuplicatedInTheComposerComposition() async throws {
+        let f = try await fixture()
+        f.view.queueEditNotice = "Keep the rewrite."
+        try await showNoticeSnapshot(f, preflight: "Provider failed.", state: "failed")
+        XCTAssertEqual(f.view.failureMessage, "Provider failed.")
+        XCTAssertEqual(f.view.notice, "Keep the rewrite.", "The transcript already presents a failed run's explanation")
+        try await showNoticeSnapshot(f, preflight: "Run stopped.")
+        XCTAssertNil(f.view.failureMessage)
+        f.view.queueEditNotice = ""
+        XCTAssertEqual(f.view.notice, "Run stopped.")
     }
 
     @MainActor func testCompletionFetchesFinalMetricsEvenInsideTheLiveThrottle() async throws {
@@ -774,7 +835,7 @@ extension WorkspaceRefreshLifecycleTests {
         try await wait { f.commands.frames.filter { $0["method"]?.string == "session.close" }.count == 2 }
         let closes = f.commands.frames.filter { $0["method"]?.string == "session.close" }
         XCTAssertEqual(closes.map { $0["sessionId"]?.string }, ["other-0", "other-2"], "The two oldest idle chats are let go of; the running one is not")
-        XCTAssertEqual(f.model.opened, Set([f.chat.id] + (1...8).filter { $0 != 2 }.map { "other-\($0)" }))
+        XCTAssertEqual(f.model.opened, Set([f.chat.id] + (0..<9).map { "other-\($0)" }), "A close can be rejected; loaded state remains until acknowledgement")
         let reopened = RefreshCommandLog(), other = try XCTUnwrap(f.model.record("other-0"))
         let reopen = Task { @MainActor in _ = try? await f.model.open(other); reopened.frames.append([:]) }
         for _ in 0..<50 { await Task.yield() }
@@ -784,6 +845,132 @@ extension WorkspaceRefreshLifecycleTests {
         try await wait { !reopened.frames.isEmpty }
         await reopen.value
         XCTAssertNil(f.model.sessionClosings["other-0"])
+        try reply(closes[1], on: f.host, result: ["accepted": .bool(true)])
+        try await wait { f.model.sessionClosings["other-2"] == nil }
+        XCTAssertEqual(f.model.opened, Set([f.chat.id] + (1...8).filter { $0 != 2 }.map { "other-\($0)" }), "Acknowledged closes release their loaded state")
+        try await f.host.shutdownAndWait()
+    }
+
+    @MainActor func testEightDisplayCacheAlsoReleasesEvictedSideBudgetWriters() async throws {
+        let f = try await fixture()
+        for index in 0..<9 {
+            let parent = "owner-\(index)", side = "side-\(index)"
+            f.model.chats.append(ChatRecord(id: parent, workspaceID: "project", title: parent, profileID: "profile"))
+            f.model.chats.append(ChatRecord(id: side, workspaceID: "project", title: side, path: "/fixture/side_" + side + ".jsonl", profileID: "profile", parentSessionID: parent))
+            let display = SessionDisplay(id: side); display.used = Date(timeIntervalSince1970: Double(index))
+            f.model.displays[side] = display; f.model.opened.formUnion([parent, side]); f.model.budgetDependencySessions.insert(parent)
+        }
+        let selection = Task { await f.model.select("side-8", reopensSide: false) }
+        defer { selection.cancel() }
+        try await wait { f.commands.frames.filter { $0["method"]?.string == "session.close" }.count == 2 }
+        let sides = f.commands.frames.filter { $0["method"]?.string == "session.close" }
+        XCTAssertEqual(Set(sides.compactMap { $0["sessionId"]?.string }), ["side-0", "side-1"])
+        for frame in sides { try reply(frame, on: f.host, result: ["accepted": .bool(true)]) }
+        try await wait { f.commands.frames.filter { $0["method"]?.string == "session.close" }.count == 4 }
+        let owners = f.commands.frames.filter { $0["method"]?.string == "session.close" && $0["sessionId"]?.string?.hasPrefix("owner-") == true }
+        XCTAssertEqual(Set(owners.compactMap { $0["sessionId"]?.string }), ["owner-0", "owner-1"])
+        for frame in owners { try reply(frame, on: f.host, result: ["accepted": .bool(true)]) }
+        try await wait { f.model.sessionClosings.isEmpty }
+        XCTAssertEqual(f.model.displays.count, 8)
+        XCTAssertEqual(f.model.opened.count, 15, "Seven retained sides, their seven writers, and the original directly opened chat")
+        XCTAssertEqual(f.model.budgetDependencySessions.count, 7)
+        try await f.host.shutdownAndWait()
+    }
+
+    @MainActor func testEvictedOwnerStaysDisplayFreeUntilItsRunningSideCloses() async throws {
+        let f = try await fixture(), ownerID = "owner", sideID = "saved-side"
+        let owner = ChatRecord(id:ownerID,workspaceID:"project",title:"Owner",profileID:"profile",costLimit:.usd(1))
+        let side = ChatRecord(id:sideID,workspaceID:"project",title:"Side",path:"/fixture/side_saved-side.jsonl",profileID:"profile",parentSessionID:ownerID)
+        f.model.chats += [owner,side]
+        // A directly opened owner has no dependency-only marker. Closing its
+        // side pane leaves the running saved side and both runtimes loaded.
+        f.model.displays[ownerID] = SessionDisplay(id:ownerID)
+        f.model.displays[ownerID]?.used = Date(timeIntervalSince1970:0)
+        f.model.opened.formUnion([ownerID,sideID])
+        _ = f.model.mountSide(side,beside:ownerID)
+        f.model.displays[sideID]?.loading = false
+        f.model.displays[sideID]?.runState = .running
+        f.model.displays[sideID]?.used = Date(timeIntervalSince1970:1)
+        for index in 0..<6 {
+            let id = "other-\(index)"
+            f.model.chats.append(ChatRecord(id:id,workspaceID:"project",title:id,profileID:"profile"))
+            let display = SessionDisplay(id:id); display.used = Date(timeIntervalSince1970:Double(index + 2))
+            f.model.displays[id] = display
+        }
+        var tracked: [ObjectIdentifier:WeakRefreshDisplay] = [:]
+        func assertLiveDisplays(_ expected: Int, _ phase: String, file: StaticString = #filePath, line: UInt = #line) {
+            for view in f.model.displays.values { tracked[ObjectIdentifier(view)] = WeakRefreshDisplay(view) }
+            XCTAssertEqual(f.model.displays.count,expected,phase,file:file,line:line)
+            XCTAssertEqual(tracked.values.filter { $0.value != nil }.count,expected,"Live SessionDisplays: \(phase)",file:file,line:line)
+        }
+        let departedOwner = WeakRefreshDisplay(try XCTUnwrap(f.model.displays[ownerID]))
+        let departedSide = WeakRefreshDisplay(try XCTUnwrap(f.model.displays[sideID]))
+        assertLiveDisplays(9,"before eviction")
+        f.model.closeSide(sideID)
+        try await wait { f.model.sides[ownerID] == nil && f.model.displays[sideID]?.loading == false }
+        XCTAssertTrue(f.model.displays[sideID]?.hasWork == true)
+        await f.model.select("other-5",reopensSide:false)
+        try await wait { departedOwner.value == nil }
+        assertLiveDisplays(8,"owner evicted while its side runs")
+        XCTAssertNil(f.model.displays[ownerID])
+        XCTAssertTrue(f.model.opened.contains(ownerID))
+        XCTAssertTrue(f.model.releasedHelperSessions.contains(ownerID))
+        XCTAssertFalse(f.model.budgetDependencySessions.contains(ownerID))
+        XCTAssertTrue(f.commands.frames.isEmpty,"The dependent pins the owner; the closed pane does not unpin it")
+
+        for (index, spend) in [0.4,0.9,1.2].enumerated() {
+            // Each side settlement emits a session.changed event for its
+            // authoritative owner, entering this same refresh method.
+            let count = f.commands.frames.count
+            f.model.refresh(ownerID)
+            try await wait { f.commands.frames.count > count }
+            let frame = f.commands.frames[count]
+            XCTAssertEqual(frame["method"]?.string,"session.status")
+            XCTAssertEqual(frame["params"]?.object,["budgetOnly":.bool(true)],"No transcript, context, task or metrics read for a released owner")
+            assertLiveDisplays(8,"side settlement \(index), before reply")
+            var value = snapshot(sequence:Double(index + 1),revision:"runtime:\(index + 1)")
+            value["cost"] = .object(["spentUSD":.number(spend),"limitUSD":.number(1),"reportedRequests":.number(Double(index + 1))])
+            try reply(frame,on:f.host,result:value)
+            try await wait {
+                f.model.costReading(for:sideID).budgetSpentUSD == spend &&
+                    f.model.budgetStates[ownerID]?.readTask == nil && f.model.displays[ownerID]?.snapshotInFlight != true
+            }
+            XCTAssertEqual(f.model.budgetStates[ownerID]?.reading.spentUSD,spend)
+            XCTAssertEqual(f.model.displays[sideID]?.footer.cost.budgetSpentUSD,spend)
+            XCTAssertNil(f.model.displays[ownerID])
+            assertLiveDisplays(8,"side settlement \(index), after reply")
+        }
+        XCTAssertTrue(f.model.displays[sideID]?.costLimitHeld == true)
+
+        // The side finishes and another selection evicts its now-idle display.
+        // Its acknowledged close must release the owner, deepest member first.
+        f.model.displays[sideID]?.runState = .idle
+        f.model.chats.append(ChatRecord(id:"next",workspaceID:"project",title:"Next",profileID:"profile"))
+        await f.model.select("next",reopensSide:false)
+        try await wait { departedSide.value == nil && f.commands.frames.contains { $0["method"]?.string == "session.close" && $0["sessionId"]?.string == sideID } }
+        let closeSide = try XCTUnwrap(f.commands.frames.first { $0["method"]?.string == "session.close" && $0["sessionId"]?.string == sideID })
+        XCTAssertFalse(f.commands.frames.contains { $0["method"]?.string == "session.close" && $0["sessionId"]?.string == ownerID })
+        assertLiveDisplays(8,"side display evicted")
+        try reply(closeSide,on:f.host,result:["accepted":.bool(true)])
+        try await wait { f.commands.frames.contains { $0["method"]?.string == "session.close" && $0["sessionId"]?.string == ownerID } }
+        let closeOwner = try XCTUnwrap(f.commands.frames.first { $0["method"]?.string == "session.close" && $0["sessionId"]?.string == ownerID })
+        // A late accounting notification during the owner's close still must
+        // not rebuild it, and its reply cannot outlive that runtime.
+        let count = f.commands.frames.count
+        f.model.refresh(ownerID)
+        try await wait { f.commands.frames.count > count }
+        let late = f.commands.frames[count]
+        XCTAssertEqual(late["params"]?.object,["budgetOnly":.bool(true)])
+        assertLiveDisplays(8,"owner close in flight")
+        try reply(closeOwner,on:f.host,result:["accepted":.bool(true)])
+        try await wait { !f.model.opened.contains(ownerID) && f.model.sessionClosings.isEmpty }
+        try reply(late,on:f.host,result:["cost":.object(["spentUSD":.number(99)])])
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(f.model.budgetStates[ownerID]?.reading.spentUSD,1.2)
+        XCTAssertFalse(f.model.opened.contains(sideID))
+        XCTAssertFalse(f.model.releasedHelperSessions.contains(ownerID))
+        XCTAssertNil(f.model.displays[ownerID]); XCTAssertNil(f.model.displays[sideID])
+        assertLiveDisplays(8,"both runtimes closed")
         try await f.host.shutdownAndWait()
     }
 

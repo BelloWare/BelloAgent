@@ -44,6 +44,9 @@ public actor AgentSession {
     let cwd: URL, directory: URL, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore
     var apiKey: String
     let changed: @Sendable (String, Int) -> Void
+    /// Native numeric observations survive reader eviction. This is separate
+    /// from progress, tool results and the model-visible event lane.
+    var childCostObserver: (@Sendable (JSON) -> Void)?
     /// Settings saved while a run is going: they wait until it ends.
     var pendingConfiguration: (profile: Profile, apiKey: String)?
     // history: every journal message in order. context: live model context.
@@ -95,10 +98,16 @@ public actor AgentSession {
     var accounting = AttemptAccounting()
     var accountingFailure: AgentError?
     var familyBudgetEnabled = false
+    var sideBudgetParents: [AgentSession] = []
+    var sideBudgetIDs: [String] = []
+    var sideBudgetMembers: [String: [String]] = [:]
+    var sideBudgetStops: [String: @Sendable () async -> Void] = [:]
     weak var budgetOwner: AgentSession?
     var budgetOwnerGeneration = 0
     var requestPermits: [String: RequestPermit] = [:]
+    var inFlightBudgetAttempts = Set<String>()
     var familyStopReason: AgentError?
+    var budgetStopIssued = false
     var familyCancelled: (@Sendable (Int) -> Void)?
     var subagentCoordinator: SubagentCoordinator?
     var agentCoordinator: AgentSteeringCoordinator?
@@ -172,6 +181,7 @@ public actor AgentSession {
     var taskRootID: String?
     var activeTaskPresentation: TaskPresentationRecord?
     var recentTaskPresentations: [TaskPresentationRecord] = []
+    var taskCompletion = TaskCompletionProjection()
     var partialStartedAt: Double?
     var presentationUtility = false
     var cachedPresentationTimeline: String?
@@ -226,7 +236,9 @@ public actor AgentSession {
     var pendingRequestLinks: [String: [String]] = [:]
     var toolHistory = ToolHistoryIndex()
     var toolStateOwners: [String: String] = [:]
-    var modelActive = false
+    var modelActive = false {
+        didSet { if oldValue && !modelActive { stopFamilyAtLimit() } }
+    }
     var assistantMessageCount = 0
     var latestAssistantMessageID: String?
     let autoCompaction: Bool
@@ -321,7 +333,7 @@ public actor AgentSession {
     }
     /// `prepared`: the replay of the journal at `resumePath`, made as a fork
     /// wrote it (`forked`); used only while it is the whole journal as it is.
-    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, resumePath: String? = nil, prepared: JournalReplayConsumer?, subagentOrigin: SubagentOrigin? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
+    init(id: String, profile: Profile, apiKey: String, cwd: URL, directory: URL, readOnly: Bool, resources: Resources, client: any ModelClient, tools: any ToolExecuting, traces: TraceStore, resumePath: String? = nil, prepared: JournalReplayConsumer?, costSeed: SessionSpend? = nil, subagentOrigin: SubagentOrigin? = nil, seed: [ChatMessage]? = nil, parent: JSON = .null, autoCompaction: Bool = true, titleTask: Bool = false, utilityPurpose: String = "title", unknownToolOutcomes: Bool = true, compactionPolicy: CompactionPolicy = CompactionPolicy(), displayClock: @escaping @Sendable () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }, beforeJournalAppend: @escaping @Sendable (JSON) throws -> Void = { _ in }, beforeJournalSynchronize: @escaping @Sendable () throws -> Void = {}, changed: @escaping @Sendable (String, Int) -> Void = {_,_ in}) throws {
         self.id=id; self.profile=profile; self.apiKey=apiKey; self.cwd=cwd; self.directory=directory; self.readOnly=readOnly; self.resources=resources; self.client=client; self.tools=tools; self.traces=traces; self.changed=changed; self.autoCompaction=autoCompaction; self.titleTask=titleTask; self.utilityPurpose=utilityPurpose; self.reportsUnknownToolOutcomes=unknownToolOutcomes; self.displayClock=displayClock; self.compactionPolicy=compactionPolicy
         if let seed {
             history=seed; context=seed; boundary=seed; visible=seed; toolHistory=ToolHistoryIndex(seed); parentInfo=parent; ephemeral=true
@@ -346,12 +358,36 @@ public actor AgentSession {
         let replayed=try consumer.finished(); durable=consumer
         history=replayed.history; visible=replayed.visible; context=replayed.context; versions=replayed.versions
         spend=replayed.spend; spendTracked=replayed.spendTracked; accounting=replayed.accounting; subagents=replayed.subagents
-        familyBudgetEnabled = !subagents.plans.isEmpty
+        familyBudgetEnabled = !replayed.subagents.plans.isEmpty || replayed.accounting.attempts.values.contains {
+            $0.admission != nil || $0.contribution?["sideParents"].isNull == false
+        }
         guard opened.markerKind == JournalRecordKind.steeringMarker || (opened.markerKind == JournalRecordKind.childMarker) == (replayed.subagents.origin != nil) else { throw AgentError("session_damaged", "Managed child marker and origin must agree") }
         assistantMessageCount=replayed.assistantMessageCount; latestAssistantMessageID=replayed.latestAssistantMessageID
         pendingRequestLinks=replayed.pendingRequestLinks; recentTaskPresentations=replayed.recentTaskPresentations
         compactionState=replayed.compactionState; contextRecovery=replayed.contextRecovery
         failedCompactionFingerprint=replayed.failedCompactionFingerprint; parentInfo=replayed.parentInfo
+        // Seed only the physical chat's pre-ledger history, before adopting
+        // saved-side charges. Otherwise side recovery would mark the ledger
+        // tracked and suppress the chat's own legacy cost seed.
+        if !spendTracked, let costSeed {
+            var data = costSeed.record; data["source"] = "app-request-log"
+            try opened.append(["type":"custom","customType":JSON(JournalRecordKind.cost),"data":data], flush:true)
+            try accounting.consume(kind:JournalRecordKind.cost,data:data,spend:&spend); spendTracked = true
+        }
+        if resumePath != nil, subagents.origin == nil {
+            let family = try SideBudgetRecovery.savedFamily(owner:id,directory:directory)
+            // Recovery imports nested ledgers before their runtimes bind. The
+            // same validated persisted origins authorize those cold mirrors.
+            sideBudgetMembers = Dictionary(uniqueKeysWithValues:family.map { ($0.origin.id,$0.parents) })
+            for incoming in try SideBudgetRecovery.charges(owner: id, directory: directory, family:family) {
+                guard var record = try SideBudgetRecovery.adoption(incoming,accounting:accounting) else { continue }
+                record.data["accountingRevision"] = JSON(accounting.revision + 1)
+                var next = accounting, total = spend
+                try next.consume(kind:record.kind,data:record.data,spend:&total)
+                try opened.append(["type":"custom","customType":JSON(record.kind),"data":AttemptAccounting.journalData(record.data)],flush:true)
+                accounting = next; spend = total; spendTracked = true; familyBudgetEnabled = true
+            }
+        }
         presentationOrdinal=replayed.presentationOrdinal; rowSpans=replayed.rowSpans; olderRows=replayed.olderRows
         if replayed.resumed { checkpointLineage=opened.resumedFrom?.lineage; partialHistory=true }
         liveStateSource=replayed.stateSource
@@ -482,6 +518,7 @@ public actor AgentSession {
                     if let child = op.receipt["child_id"].text,
                        let plan = subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) {
                         result.nativeSubagent = ["version":2,"sessionId":JSON(child),"delegationId":JSON(plan.origin.link.delegationID),"budgetOwnerSessionId":JSON(id),"parentAssistantMessageId":JSON(key.assistantMessageID),"toolCallId":JSON(callID),"turn":op.receipt["turn"],"route":op.receipt["route"],"status":"accepted","effects":"completed"]
+                        if let effort = receipt["effort"].text { result.nativeSubagent?["effort"] = JSON(effort) }
                     }
                 } else { result.content = [textBlock("Not accepted before interruption. No control command was replayed.")]; result.toolStats?["outcome"] = "not_executed" }
             }
@@ -542,6 +579,7 @@ public actor AgentSession {
     /// history for a reader that has to catch up.
     static let retainedEvents = 4096, retainedEventSlack = 512
     func event(_ type: String, _ payload: JSON = [:]) {
+        if type == "cost.spend" { childCostObserver?(payload) }
         monitoring.activity(activityPhase, at: nowMS())
         sequence += 1; events.append(["seq":JSON(sequence),"type":JSON(type),"payload":payload])
         if events.count > Self.retainedEvents+Self.retainedEventSlack { events.removeFirst(events.count-Self.retainedEvents) }
@@ -572,8 +610,12 @@ public actor AgentSession {
         else if state != .error { state = .paused }
         event("state")
     }
+    var canUnload: Bool {
+        isIdle && !ephemeral && requestPermits.isEmpty && inFlightBudgetAttempts.isEmpty &&
+        (managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true)
+    }
     public func unloadIfIdle() -> Bool {
-        guard isIdle, !ephemeral, managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true else { return false }
+        guard canUnload else { return false }
         cancelHistoryLoads(); closed=true; journal=nil
         if !isSubagent, let coordinator = subagentCoordinator {
             let owner = id, runtimeID = displayEpoch

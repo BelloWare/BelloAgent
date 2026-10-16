@@ -16,15 +16,17 @@ import AppKit
         let focus = InspectorButtonFocus(in: self); defer { focus?.restore(in: self) }
         guard let group = inspector.groups.first(where: { $0.id == delegationID }) else { return }
         let link = group.summary.link
-        var actions: [NSView] = [PiKit.Button("Open sub-agent", symbol: "text.bubble", style: .ghost) { [weak inspector] in inspector?.showInChat() }]
+        let open = PiKit.Button("Open " + SubagentLabel.name(group.number), symbol: "text.bubble", style: .ghost) { [weak inspector] in inspector?.showInChat() }
+        open.toolTip = "Open " + group.title; open.setAccessibilityLabel(open.toolTip)
+        var actions: [NSView] = [open]
         if let parent = link.parentAttemptID {
             actions.append(PiKit.Button("Parent request", symbol: "arrow.turn.up.left", style: .ghost) { [weak inspector] in inspector?.focus(.request(parent)) })
         }
         actions.append(PiKit.Button("Originating tool", symbol: "arrow.up.left", style: .ghost) { [weak inspector] in
             inspector?.showSubagentParent(link)
         })
-        var views: [NSView] = [InspectorPageHeader(group.title, subtitle: group.summary.model, badges: [PiKit.Badge(text: group.summary.presentationLabel, tone: group.summary.status == .completed ? .success : .neutral)], actions: []),
-                               inspectorText(group.detail, color: .piInkSecondary), inspectorRow(actions.map { .view($0) }, spacing: 8)]
+        var views: [NSView] = [InspectorPageHeader(group.title, subtitle: [group.summary.model, group.effort].compactMap { $0 }.joined(separator: " · "), badges: [PiKit.Badge(text: group.summary.presentationLabel, tone: group.summary.status == .completed ? .success : .neutral)], actions: []),
+                               inspectorText(group.detail + " · Counts toward " + (inspector.workspace?.record(link.budgetOwnerSessionID)?.title ?? "parent chat"), color: .piInkSecondary), inspectorRow(actions.map { .view($0) }, spacing: 8)]
         let entries = inspector.coordination.filter { $0.childID == link.childSessionID }
         if !entries.isEmpty { views.append(inspector.coordinationMenu(entries)) }
         let requests = inspector.index.requests.filter { $0.delegationID == delegationID }.sorted { ($0.wall,$0.id) < ($1.wall,$1.id) }

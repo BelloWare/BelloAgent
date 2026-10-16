@@ -5,9 +5,101 @@ import AppKit
 
 /// Real helper navigation over a generated loopback stream. The fixture's
 /// explicit barrier keeps a child active until its viewer has attached.
+private final class AttachmentHistoryGate: @unchecked Sendable {
+    let entered: XCTestExpectation
+    let release = DispatchSemaphore(value: 0)
+    init(_ entered: XCTestExpectation) { self.entered = entered }
+    func hold() { entered.fulfill(); release.wait() }
+}
+private extension HistoryReader {
+    func holdAttachment(_ gate: AttachmentHistoryGate) { gate.hold() }
+}
+
 final class SubagentOpeningTests: XCTestCase, SerialTestLane {
+    @MainActor func testVisibleChildAttachmentSurvivesAnUnrelatedMainSelection() async throws {
+        let (_, model, _, parent, target) = try await fixture()
+        await model.select(parent.id)
+        let entered = expectation(description: "History actor held before the child header read")
+        let gate = AttachmentHistoryGate(entered)
+        defer { gate.release.signal() }
+        let hold = Task { await model.history.holdAttachment(gate) }
+        await fulfillment(of: [entered], timeout: 5)
+        let opening = Task { await model.openSubagentTab(target.sessionID) }
+        try await eventually("Child presentation started") { model.displays[target.sessionID]?.historyState == .loading }
+        let other = ChatRecord(id: "unrelated-main", workspaceID: parent.workspaceID, title: "Other", path: nil, profileID: parent.profileID)
+        model.chats.append(other)
+        let selection = Task { await model.select(other.id, focusesComposer: false) }
+        try await eventually("Unrelated main selected") { model.selectedID == other.id }
+        gate.release.signal(); await hold.value; await selection.value; _ = await opening.value
+        XCTAssertTrue(model.subagentTabIsShown(target.sessionID))
+        XCTAssertTrue(model.opened.contains(target.sessionID))
+        XCTAssertFalse(model.displays[target.sessionID]?.historyState == .loading)
+        XCTAssertFalse(model.displays[target.sessionID]?.messages.isEmpty == true)
+    }
+
+    @MainActor func testCardHeaderValidationDoesNotOverrideANewerTabChoice() async throws {
+        let (_, model, _, parent, target) = try await fixture()
+        await model.select(parent.id)
+        let held = expectation(description: "Header reader held"), began = expectation(description: "Card opening began")
+        let gate = AttachmentHistoryGate(held); defer { gate.release.signal() }
+        let hold = Task { await model.history.holdAttachment(gate) }
+        await fulfillment(of: [held], timeout: 5)
+        let opening = Task { began.fulfill(); return await model.openSubagent(target) }
+        await fulfillment(of: [began], timeout: 5)
+        let file = model.tabs.open(kind: HostedTab.kind, key: "newer-file") { HostedTab(key: "newer-file", title: "File", symbol: "doc") }
+        gate.release.signal(); await hold.value
+        let opened = await opening.value
+        XCTAssertFalse(opened)
+        XCTAssertNil(model.subagentTab(target.sessionID))
+        XCTAssertTrue(model.tabs.pane.shownTab(sideAvailable: model.paneSideAvailable) === file)
+    }
+
+    @MainActor func testForkActionOnARunningFamilyCreatesAnIndependentChat() async throws {
+        for kind in AgentForkKind.allCases { try await checkForkActionOnARunningFamilyCreatesAnIndependentChat(kind) }
+    }
+    @MainActor private func checkForkActionOnARunningFamilyCreatesAnIndependentChat(_ kind: AgentForkKind) async throws {
+        let (setup, model, host, parent, target) = try await fixture(background:true)
+        await model.select(parent.id)
+        try await eventually("Parent never reached its final family wait") { model.displays[parent.id]?.familyWaiting == true }
+        let source = try XCTUnwrap(model.record(parent.id)?.path)
+        let child = try XCTUnwrap(model.record(target.sessionID)?.path)
+        let before = try [Data(contentsOf:URL(fileURLWithPath:source)),Data(contentsOf:URL(fileURLWithPath:child))]
+        if kind == .wholeChat { model.forkSession(parent.id) }
+        else { model.forkFromReply(sessionID: parent.id, messageID: target.assistantID) }
+        try await eventually("Fork action did not settle") { model.displays[parent.id]?.loading == false && !model.forkingReplies.contains(parent.id) }
+        XCTAssertNil(model.error)
+        let fork = try XCTUnwrap(model.chats.first { $0.id != parent.id && !$0.isSubagent })
+        XCTAssertEqual(model.selectedID,fork.id)
+        XCTAssertEqual(fork.parentSessionID, kind.parentID(parent.id))
+        XCTAssertEqual(model.inheritedSubagents[fork.id]?.map { $0.target.sessionID }, [target.sessionID])
+        XCTAssertTrue(model.subagentChildren(of:fork.id).isEmpty)
+        let state = try await host.request("session.snapshot",sessionID:fork.id)
+        XCTAssertEqual(state.object?["cost"]?.object?["spentUSD"]?.number,0)
+        let children = try await host.request("subagent.list",sessionID:fork.id)
+        XCTAssertEqual(children.object?["children"]?.array?.count,0)
+        XCTAssertEqual(try [Data(contentsOf:URL(fileURLWithPath:source)),Data(contentsOf:URL(fileURLWithPath:child))],before)
+        let originalOpened = await model.openOriginalSubagent(target,from:fork.id)
+        XCTAssertTrue(originalOpened)
+        XCTAssertEqual(model.selectedID,fork.id)
+        model.stop(sessionID:target.sessionID)
+        model.send(steer:true,sessionID:target.sessionID)
+        model.stopSubagent(target,from:fork.id)
+        for _ in 0..<20 { await Task.yield() }
+        let forkAfterRead = try await host.request("session.snapshot",sessionID:fork.id)
+        XCTAssertEqual(forkAfterRead.object?["cost"]?.object?["spentUSD"]?.number,0)
+        let afterOriginal = try await host.request("subagent.list",sessionID:parent.id)
+        XCTAssertEqual(afterOriginal.object?["children"]?.array?.first?.object?["status"]?.string,"running")
+        XCTAssertEqual(try [Data(contentsOf:URL(fileURLWithPath:source)),Data(contentsOf:URL(fileURLWithPath:child))],before)
+        if let tab = model.subagentTab(target.sessionID) { model.tabs.close(tab) }
+        try Data().write(to:setup.root.appendingPathComponent("release-child"))
+        try await waitForParent(parent.id,host:host)
+        _ = try await host.request("turn.submit",sessionID:fork.id,params:["text":.string("Continue this independent fork"),"clientTurnId":.string(UUID().uuidString)])
+        try await waitForParent(fork.id,host:host)
+        XCTAssertNil(model.error)
+    }
     @MainActor func testColdParentOpenRepairsCapturedChildChargeBeforeReturningItsHost() async throws {
         let (_, model, host, parent, target) = try await fixture()
+        model.observeCost(["cost":.object(["spentUSD":.number(0),"reportedRequests":.number(0),"accountingRevision":.number(0)])],sessionID:target.sessionID)
         var requests: [[String: WireValue]] = []
         let deadline = ContinuousClock.now.advanced(by: .seconds(10))
         repeat {
@@ -29,6 +121,10 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
         let reopened = try await model.open(try XCTUnwrap(model.record(parent.id)))
         let state = try await reopened.request("session.status", sessionID: parent.id)
         XCTAssertGreaterThanOrEqual(state.object?["cost"]?.object?["spentUSD"]?.number ?? -1, 0.2)
+        try await eventually("Cold repair did not refresh the released child's numeric state") {
+            model.costReading(for:target.sessionID).spentUSD == 0.2
+        }
+        XCTAssertNil(model.displays[target.sessionID]); XCTAssertFalse(model.opened.contains(target.sessionID))
         await model.openSubagent(target)
         XCTAssertNil(model.error)
         let child = try await reopened.request("session.status", sessionID: target.sessionID)
@@ -68,11 +164,15 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
                 try await eventually("Inspector never indexed the child") { value.index.requests.contains { $0.sessionID == target.sessionID } }
                 let request = try XCTUnwrap(value.index.requests.first { $0.sessionID == target.sessionID })
                 value.focus(.request(request.id)); value.showInChat()
-                try await eventually("Inspector never selected the child") { model.selectedID == target.sessionID && model.selected?.historyState != .loading }
-                await model.navigationTask?.value
+                // The Inspector owns its Task; navigationTask is unrelated.
+                // A tab can be visible before its scheduled load has begun.
+                try await eventually("Inspector never finished opening the child") {
+                    model.subagentTabIsShown(target.sessionID) && model.pendingSubagentOpening?.reader.key != target.sessionID &&
+                        model.subagentTab(target.sessionID)?.loading == nil && model.displays[target.sessionID]?.historyState != .loading
+                }
             case "search":
                 await model.openFromSidebar(target.sessionID)
-                let row = try XCTUnwrap(model.selected?.messages.first)
+                let row = try XCTUnwrap(model.displays[target.sessionID]?.messages.first)
                 await SidebarSearchReveal.reveal(model, chatID: target.sessionID, messageID: row.id)
             case "launch", "cold launch":
                 if route == "cold launch" {
@@ -111,7 +211,14 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
         for route in ["Back", "standalone Inspector", "family Inspector", "standalone Parent request", "family Parent request"] {
             await model.openSubagent(target)
             model.latestVersion(sessionID: parent.id)
-            if route == "Back" { await model.backToSubagentParent(target.sessionID) }
+            if route == "Back" {
+                let before = model.displays[parent.id]?.reveal
+                await model.backToSubagentParent(target.sessionID)
+                XCTAssertEqual(model.focusedSessionID, parent.id)
+                XCTAssertNil(model.displays[parent.id]?.versionView)
+                XCTAssertEqual(model.displays[parent.id]?.reveal, before, "Side-pane Back only focuses the main chat")
+                continue
+            }
             else {
                 let inspector = SessionInspectorModel(scope: .init(sessionID: route.hasPrefix("family") ? parent.id : target.sessionID, workspaceID: parent.workspaceID), title: "Child", archive: model.traces, workspace: model, usageLoader: { _,_,_ in throw CancellationError() })
                 inspector.setVisible(true)
@@ -192,7 +299,7 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(model.opened.contains(target.sessionID), "A new explicit open can attach normally")
     }
 
-    @MainActor private func fixture(ancestor: Bool = false) async throws -> (GatewayWorkspace, WorkspaceModel, HostSupervisor, ChatRecord, SubagentTarget) {
+    @MainActor private func fixture(ancestor: Bool = false, background: Bool = false) async throws -> (GatewayWorkspace, WorkspaceModel, HostSupervisor, ChatRecord, SubagentTarget) {
         let setup = try await gatewayWorkspace("subagent-opening", projectID: "subagent-opening")
         let model = WorkspaceModel(stateRoot: setup.state, vault: setup.vault)
         model.automaticContextOperation = { _, _ in throw CancellationError() }
@@ -210,7 +317,7 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
             _ = try await host.request("turn.submit", sessionID: parent.id, params: ["text":.string("Earlier task"), "clientTurnId":.string("ancestor")])
             try await waitForParent(parent.id, host: host)
         }
-        _ = try await host.request("turn.submit", sessionID: parent.id, params: ["text":.string("delegate opening fixture"), "clientTurnId":.string(UUID().uuidString)])
+        _ = try await host.request("turn.submit", sessionID: parent.id, params: ["text":.string("delegate opening fixture" + (background ? " in background" : "")), "clientTurnId":.string(UUID().uuidString)])
         try await eventually("Child never reached its streaming barrier", timeout: .seconds(30)) {
             FileManager.default.fileExists(atPath: setup.root.appendingPathComponent("child-streaming").path)
         }

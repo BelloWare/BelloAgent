@@ -77,7 +77,7 @@ extension AgentSession {
             try validateSubagentModels(grants)
             previewModels = grants
         }
-        let definitions = await sessionDefinitions(subagentModels: previewModels)
+        let definitions = await sessionDefinitions(subagentModels: previewModels, profile: effective)
         let draft = params["text"].text ?? ""
         guard draft.utf8.count <= 256 * 1024 else { throw AgentError("message_limit", "Draft exceeds the supported submission limit") }
         var messages = active && runStatus == .waitingTool ? boundary : context
@@ -95,11 +95,11 @@ extension AgentSession {
             let currentResources = try await resources.resolve()
             guard currentResources.revision == snapshot.revision else { throw AgentError("context_changed", "Instruction or skill sources changed. Refresh the context preview.") }
         }
-        let finalDefinitions=await sessionDefinitions(subagentModels: previewModels)
+        let finalDefinitions=await sessionDefinitions(subagentModels: previewModels, profile: effective)
         guard startingMutation == contextMutation, active == (runTask != nil), startingProfile == turnProfile.raw,
               startingResources == appliedSnapshot?.revision,
               definitions == finalDefinitions, !closed else { throw AgentError("context_changed", "The conversation changed. Refresh the context preview.") }
-        let instructions = Self.requestInstructions(snapshot.prompt)
+        let instructions = Self.requestInstructions(snapshot.prompt, tools: definitions)
         var body = try ProviderClient.requestBody(profile:effective,messages:messages,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
         let count = try contextCounter.count(messages:messages,profile:effective,request:body,
                                              reserveTokens:compactionPolicy.settings(autoCompaction:autoCompaction,contextWindow:effective.contextWindow).reserveTokens)
@@ -144,11 +144,12 @@ extension AgentSession {
         if preparedContext?.revision == revision { preparedContext = nil }
     }
     /// The system prompt every request of the chat sends, byte for byte the
-    /// same whatever a turn selects, so a turn never costs the next one its
-    /// cached prefix. Which skills a turn selected travels in its own user
-    /// message instead (`userMessageText`).
-    static func requestInstructions(_ prompt: String) -> String {
-        prompt + "\n" + selectionPolicy
+    /// same whatever skills a turn selects. The delegation policy is appended
+    /// only when parent delegation tools are offered. Skill selections travel
+    /// in their own user message instead (`userMessageText`).
+    static func requestInstructions(_ prompt: String, tools: [ToolDefinition] = []) -> String {
+        let delegation = tools.contains { $0.name == "subagent_start" || $0.name == "subagent" }
+        return prompt + "\n" + selectionPolicy + (delegation ? "\n" + SubagentSteeringContract.delegationPolicy : "")
     }
     static let selectionPolicy = "Only the latest user message's own explicit skill selection authorizes an explicit-only skill: that message lists it as \"" + selectionPrefix + "…\" after its skill blocks, and a message without that line selects none. Skills selected in earlier user messages are historical context, not a new authorization."
     static let selectionPrefix = "Current explicit selection IDs: "

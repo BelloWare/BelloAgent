@@ -55,14 +55,18 @@ extension AgentSession {
 actor AccountedAgentScript: ModelClient {
     var replies: [ModelReply], requests: [[ChatMessage]] = [], scopes: [RequestScope?] = []
     var instructionHistory: [String] = []
-    init(_ replies: [ModelReply]) { self.replies = replies }
+    var profiles: [Profile] = []
+    var held: Bool
+    init(_ replies: [ModelReply], held: Bool = false) { self.replies = replies; self.held = held }
+    func release() { held = false }
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, turnID: String, purpose: String, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply { throw AgentError("fixture_unscoped","Missing accounting") }
     func complete(profile: Profile, apiKey: String, messages: [ChatMessage], instructions: String, tools: [ToolDefinition], sessionID: String, cacheSessionID: String, turnID: String, purpose: String, lifecycle: RequestLifecycle?, onObservation: @escaping @Sendable (RequestObservation) async -> Void, onDelta: @escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
         let attempt = UUID().uuidString
         let permit = try await lifecycle?.admitAttempt(attempt); defer { permit?.finish() }
         try await lifecycle?.willDispatch(attempt)
-        let index = requests.count; requests.append(messages); scopes.append(lifecycle?.scope); instructionHistory.append(instructions)
+        let index = requests.count; requests.append(messages); scopes.append(lifecycle?.scope); instructionHistory.append(instructions); profiles.append(profile)
         guard index < replies.count else { throw AgentError("fixture_exhausted","Unexpected request") }
+        while held { try await Task.sleep(for:.milliseconds(5)) }
         var reply = replies[index]
         var observation = RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:purpose,fingerprint:"fixture",profile:profile)
         observation.monitoring = ["outcome":"completed","gateway":["cost":["status":"reported","usd":0.01]]]

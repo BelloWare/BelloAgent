@@ -1,5 +1,27 @@
 # Bello Agent — Native Swift implementation and continuation design
 
+## Sides and sub-agent navigation (0.1.128)
+
+A single Pi pill at the main conversation column’s top right lists its open/kept
+sides, nested saved forks and numbered sub-agents as a compact indented tree.
+Both leave normal sidebar lists; search retains
+parent-labelled results. The parent row shows one activity spinner and a compact
+working count, with running/queued agents and working sides distinguished in
+VoiceOver. The old hover sides panel and its pin preference are removed.
+The pill stays left of the pane divider; sides and read-only child tabs open beside
+the main chat. Unsent side drafts remain memory-only. See the
+[display amendment](docs/design/subagents.md#01128-display-update--owner-decision-2026-10-15).
+Hosted readers keep command ownership: managed children cannot delete the selected
+main chat, and family menus always address a visible picker. Sub-agent tasks,
+results and reports share the assistant Markdown surface and selection-copy path,
+with cached bounded previews, full-source Copy buttons and rendered Find; large
+results parse off the main thread.
+[Reader navigation ownership](docs/design/subagents.md#reader-navigation-ownership)
+defines async read, reveal and Source cancellation across main and hosted readers.
+Retired initial loads restart when their reader becomes visible; no-op tab choices
+and unrelated windows leave them intact. Forks open inherited sub-agents as
+original-chat references, preserving read-only mode through tabs and Inspectors.
+
 ## Webhook when a chat finishes (0.1.105)
 
 Settings → Chats & notifications → Webhook (`WebhookSettings`, kept in the Keychain vault as
@@ -1234,7 +1256,7 @@ send `truncation: disabled` and reject alternative output-limit parameters.
 Generic settings cannot replace input/model/tools, force a nontext format,
 truncate history, enable provider compaction or bypass execution controls. The
 appended instruction is request-local and never enters ordinary conversation
-history. A side session keeps its parent's cache affinity but its own accounting.
+history. A side session keeps its parent's cache affinity and its own physical request identity. Since 0.1.128, its spend and tokens also count toward the main chat, and all sides use that chat's budget. Forks retain independent budgets.
 Prefix preservation is not a guarantee of a real provider cache hit.
 
 Generation allowance G is the lesser of 16,384 tokens, the declared output

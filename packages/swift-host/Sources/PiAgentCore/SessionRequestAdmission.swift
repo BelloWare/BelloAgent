@@ -23,15 +23,16 @@ extension AgentSession {
                                  ownerGeneration: isSubagent ? budgetOwnerGeneration : stopCount, delegation: subagents.origin?.link)
         scope.childTurn = agentLease?.turn; scope.parentExecutionID = agentLease?.parentExecutionID
         if agentCoordinator != nil, let requestMessages { scope.agentDeliveryIDs = requestMessages.flatMap { $0.nativeAgentDelivery?["eventIds"].list.compactMap(\.text) ?? [] } }
+        scope = await owner.sharedRequestScope(scope)
         let admittedScope = scope
         return RequestLifecycle(scope: admittedScope, admitAttempt: { [weak self, weak owner] attempt in
             guard let self, let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }
-            let permit = try await owner.admitAttempt(scope: admittedScope, attemptID: attempt, allowsPausedQueue: allowsPausedQueue)
+            let permit = try await owner.admitSharedAttempt(scope: admittedScope, attemptID: attempt, allowsPausedQueue: allowsPausedQueue)
             await self.attachRequestPermit(permit, generation: sourceGeneration)
             return permit
         }, willDispatch: { [weak owner] attempt in
             guard let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }
-            try await owner.dispatchAttempt(scope: admittedScope, attemptID: attempt, allowsPausedQueue: allowsPausedQueue)
+            try await owner.dispatchSharedAttempt(scope: admittedScope, attemptID: attempt, allowsPausedQueue: allowsPausedQueue)
         }, settleAttempt: { [weak self, weak owner] settlement in
             guard let self, let owner else { throw AgentError("accounting_unavailable", "The budget owner is unavailable") }
             try await self.settleFamilyAttempt(settlement, owner: owner)
@@ -56,8 +57,9 @@ extension AgentSession {
     }
     func admitAttempt(scope: RequestScope, attemptID: String, allowsPausedQueue: Bool = false) throws -> RequestPermit {
         try validateRequestOwner(scope)
+        try enforceCostLimit()
         guard !closed, !queuePaused || allowsPausedQueue, scope.ownerGeneration == stopCount else { throw CancellationError() }
-        try Task.checkCancellation(); try enforceCostLimit()
+        try Task.checkCancellation()
         guard accounting.attempts[attemptID] == nil else { throw AttemptAccounting.damaged() }
         var admission: JSON = ["attemptId":JSON(attemptID), "sourceSessionId":JSON(scope.sourceSessionID), "budgetOwnerSessionId":JSON(id),
                                "purpose":JSON(scope.purpose), "state":"admitted", "scope":try subagentJSON(scope), "accountingRevision":JSON(accounting.revision + 1)]
@@ -72,7 +74,7 @@ extension AgentSession {
         try permit.check(); try enforceCostLimit()
         guard var record = accounting.attempts[attemptID]?.admission, record["scope"] == (try subagentJSON(scope)) else { throw AttemptAccounting.damaged() }
         record["state"] = "dispatched"; record["accountingRevision"] = JSON(accounting.revision + 1)
-        do { try appendAccounting(kind: JournalRecordKind.budgetAttempt, data: record) }
+        do { try appendAccounting(kind: JournalRecordKind.budgetAttempt, data: record); inFlightBudgetAttempts.insert(attemptID) }
         catch { failFamilyAccounting(error); throw error }
     }
     /// Already-admitted attempts may settle after Stop or while close waits.
@@ -82,30 +84,40 @@ extension AgentSession {
         guard let admission = accounting.attempts[attempt]?.admission,
               admission["scope"] == (try subagentJSON(settlement.scope)), observation.sessionID == settlement.scope.sourceSessionID,
               observation.turnID == settlement.scope.turnID, observation.purpose == settlement.scope.purpose else { throw AttemptAccounting.damaged() }
-        defer { requestPermits.removeValue(forKey: attempt)?.finish() }
+        defer { requestPermits.removeValue(forKey: attempt)?.finish(); inFlightBudgetAttempts.remove(attempt); stopFamilyAtLimit() }
         if !settlement.dispatched {
             var record = admission; record["state"] = "not_dispatched"; record["accountingRevision"] = JSON(accounting.revision + 1)
             try appendAccounting(kind: JournalRecordKind.budgetAttempt, data: record)
             return nil
         }
         if let previous = accounting.attempts[attempt]?.contribution { return previous }
-        let data = contribution(observation, owner: id, delegation: settlement.scope.delegation?.delegationID)
-        try appendAccounting(kind: JournalRecordKind.cost, data: data)
+        var data = contribution(observation, owner: settlement.scope.budgetOwnerSessionID, delegation: settlement.scope.delegation?.delegationID)
+        if let parents = settlement.scope.sideParents { data["sideParents"] = .array(parents.map { JSON($0) }) }
+        if let update = try FamilyCharge.merge(data,into:accounting.attempts[attempt],revision:accounting.revision,scope:subagentJSON(settlement.scope)) {
+            try appendAccounting(kind:update.kind,data:update.data)
+        }
         stopFamilyAtLimit()
-        return data
+        return accounting.attempts[attempt]?.contribution
     }
     private func settleFamilyAttempt(_ settlement: AttemptSettlement, owner: AgentSession) async throws {
         defer { requestPermits.removeValue(forKey: settlement.observation.attemptID)?.finish() }
+        let origin = subagents.origin
+        let accepted = await owner.subagents.plans[settlement.scope.delegation?.delegationID ?? ""]?.origin
+        let child = origin.map { FamilyCharge.Child(accepted:accepted ?? $0,observed:$0) }
         do {
-            if let data = try await owner.settleOwnedAttempt(settlement), isSubagent {
-                try appendAccounting(kind: JournalRecordKind.cost, data: data)
+            if let data = try await owner.settleSharedAttempt(settlement), isSubagent,
+               let update = try FamilyCharge.merge(data,into:accounting.attempts[settlement.observation.attemptID],revision:accounting.revision,child:child) {
+                try appendAccounting(kind:update.kind,data:update.data)
             }
         } catch {
             // Preserve terminal evidence locally if the owner's append failed.
             // Recovery validates it against the owner's admission before use.
             if isSubagent, settlement.dispatched, accounting.attempts[settlement.observation.attemptID]?.contribution == nil {
                 let data = contribution(settlement.observation, owner: settlement.scope.budgetOwnerSessionID, delegation: settlement.scope.delegation?.delegationID)
-                _ = try? appendAccounting(kind: JournalRecordKind.cost, data: data)
+                if let update = try? FamilyCharge.merge(data,into:accounting.attempts[settlement.observation.attemptID],revision:accounting.revision,
+                       scope:subagentJSON(settlement.scope),child:child) {
+                    _ = try? appendAccounting(kind:update.kind,data:update.data)
+                }
             }
             await owner.failFamilyAccounting(error)
             throw error
@@ -116,9 +128,21 @@ extension AgentSession {
         familyStopReason = accountingFailure
         stop()
     }
-    func stopFamilyAtLimit() {
-        guard familyBudgetEnabled, costLimitReached else { return }
-        do { try enforceCostLimit() } catch { familyStopReason = error as? AgentError }
+    /// The only budget-induced Stop. Admission/tool gates close immediately;
+    /// cancellation waits for every dispatched request and the model callback
+    /// (including requests begun before the family ledger existed). Rechecked
+    /// on settlement, modelActive clearing, corrections and budget errors.
+    func stopFamilyAtLimit(_ inherited: AgentError? = nil) {
+        if inherited?.code == Self.costLimitCode { familyStopReason = inherited }
+        if familyBudgetEnabled, costLimitReached {
+            do { try enforceCostLimit() } catch { familyStopReason = error as? AgentError }
+        }
+        guard familyStopReason?.code == Self.costLimitCode, !budgetStopIssued,
+              inFlightBudgetAttempts.isEmpty, !modelActive else { return }
+        budgetStopIssued = true
         stop()
+        // Sides retain their ancestors, so callbacks hold only weak runtimes.
+        // A side with a running tool must stop too; it has no local USD limit.
+        for notify in sideBudgetStops.values { Task { await notify() } }
     }
 }

@@ -10,7 +10,7 @@ struct SessionReference {
         var lines = [
             "Bello Agent session",
             "App session ID: \(chat.id)",
-            "Title: \(chat.title)",
+            "Title: \(chat.displayTitle)",
             "Project ID: \(chat.workspaceID)"
         ]
         if let parent = chat.parentSessionID { lines.append("Parent session ID: \(parent)") }

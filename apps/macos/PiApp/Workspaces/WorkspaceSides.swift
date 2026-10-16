@@ -16,14 +16,32 @@ struct SideRecord: Identifiable, Equatable {
     var modelOutputLimit: Int? = nil
     var outputBudgetVersion: Int? = 1
     var topicID: String?
-    /// The side's own cost limit; nil runs it under the Settings default.
+    /// Legacy value retained for decoding only; sides follow the main budget.
     var costLimit: CostLimit? = nil
     /// What follows its chat's title in a new side's, until its first
     /// message names it.
     static let titleSuffix = " — side"
     var chat: ChatRecord { .init(id: id, workspaceID: workspaceID, title: title, path: nil, profileID: profileID, toolMode: ChatRecord.readOnlyTools, model: model, thinkingLevel: thinkingLevel, contextWindow: contextWindow, maxOutputTokens: maxOutputTokens, modelOutputLimit: modelOutputLimit, outputBudgetVersion: outputBudgetVersion, topicID: topicID, parentSessionID: parentID, costLimit: costLimit) }
 }
-struct SideKeepIntent: Codable, Sendable { var chat: ChatRecord }
+struct SideKeepIntent: Codable, Sendable {
+    /// Attachment discovery only: never listed for automatic registration.
+    static let retainedKind = "side-keep-retained"
+    var chat: ChatRecord
+}
+
+/// The exact pending copy consumed by a successful registration. A delayed
+/// caller can acknowledge it without replaying chat/draft writes.
+struct SideKeepRegistration: Codable, Sendable {
+    static let kind = "side-keep-registration"
+    var expected: ChatRecord
+    var path: String?
+}
+
+enum SideKeepState: Sendable {
+    case pending(SideKeepIntent)
+    case registered(chat: ChatRecord, expected: ChatRecord)
+    case missing
+}
 
 extension WorkspaceModel {
     /// Both are asked for once per sidebar row, and the sidebar redraws on every
@@ -174,8 +192,8 @@ extension WorkspaceModel {
         let result: [String: WireValue]
         var written = false
         do {
-            // A side is a session of its own, with its own spend and limit.
-            result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id), "costLimit": costLimit(for: info.chat).wire]).object ?? [:]
+            // Sides share the main chat’s budget.
+            result = try await host.request("side.open", sessionID: parentID, params: ["sideSessionId": .string(id)]).object ?? [:]
             written = true
             guard result["sessionId"]?.string == id, sides[parentID]?.id == id else { throw HostError.failure("Side identity changed; reopen this project before creating another side.") }
             try await registerKeptSide(id: id, path: result["path"]?.string)
@@ -342,12 +360,16 @@ extension WorkspaceModel {
     func showSide(_ id: String, revealInSidebar: Bool = true) async {
         guard !installPreparing, let child = chats.first(where: { $0.id == id }), !child.isSubagent, let parentID = child.parentSessionID, record(parentID) != nil, !child.imported else { return }
         if let shown = sides[parentID], shown.id == id { await selectSide(id, revealInSidebar: revealInSidebar); return }
+        tabs.showSide()
+        let paneIntent = tabs.navigationRevision, selection = selectionRevision, changesParent = selectedID != parentID
+        let revision = messageNavigationRevision, pageChange = page == .chats ? 0 : 1
         if let shown = sides[parentID], shown.pending, !(await discardPendingSide(shown)) { return }
+        guard !Task.isCancelled, messageNavigationRevision == revision, tabs.navigationRevision == paneIntent, selectionRevision == selection else { return }
         if let shown = sides[parentID], !shown.kept || shown.keeping { error = "Wait for the current side to finish opening before switching."; return }
         if revealInSidebar { quietSidebarReveal = [] }
         // This side is the one asked for, not the one the parent last showed.
         if selectedID != parentID { await passingThrough(parentID) { await select(parentID, revealInSidebar: revealInSidebar, reopensSide: false, focusesComposer: false) } }
-        guard selectedID == parentID else { return }
+        guard !Task.isCancelled, messageNavigationRevision == revision + (changesParent ? 1 + pageChange : 0), tabs.navigationRevision == paneIntent, selectionRevision == selection + (changesParent ? 1 : 0), selectedID == parentID else { return }
         let view = mountSide(child, beside: parentID)
         page = .chats; focusedSessionID = id
         if revealInSidebar { revealProjectChat(child) }
@@ -356,12 +378,11 @@ extension WorkspaceModel {
     /// Puts a saved child chat in its parent's side pane, waiting to be read.
     /// The side shown there before keeps its display and any running work.
     func mountSide(_ child: ChatRecord, beside parentID: String) -> SessionDisplay {
+        releasedHelperSessions.remove(child.id)
         if let previous = sides[parentID] { displays[previous.id]?.presentation.cancel() }
         let view = displays[child.id] ?? SessionDisplay(id: child.id); view.used = Date(); displays[child.id] = view
         adoptContextReading(view, item: child)
-        let cached = view.hasPresentedRows
-        view.presentation.begin(); view.presentationGeneration = view.presentation.generation
-        view.historyState = .loading; view.refreshingCachedRows = cached; view.draftReady = false
+        view.beginHistoryPresentation(); view.draftReady = false
         view.browsingHistory = true; view.publishTranscript()
         var info = SideRecord(id: child.id, parentID: parentID, workspaceID: child.workspaceID, profileID: child.profileID, title: child.title, kept: true, model: child.model, thinkingLevel: child.thinkingLevel, contextWindow: child.contextWindow, maxOutputTokens: child.maxOutputTokens, modelOutputLimit: child.modelOutputLimit, outputBudgetVersion: child.outputBudgetVersion)
         info.topicID = effectiveTopicID(for: child)
@@ -372,11 +393,15 @@ extension WorkspaceModel {
     /// Restores a saved child's draft, anchor, pending intents and history into
     /// its display, mirroring what selecting a chat does for the main pane.
     func loadSideDisplay(_ child: ChatRecord, view: SessionDisplay) async {
-        let id = child.id, generation = view.presentationGeneration
+        let id = child.id, generation = view.presentationGeneration, navigation = transcriptNavigation(child.id)
+        let paneIntent = tabs.navigationRevision
         let task = Task { [weak self, weak view] in
             guard let self, let view else { return }
-            @MainActor func current() -> Bool { !Task.isCancelled && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentationGeneration == generation }
+            defer { view.finishHistoryPresentation(generation); self.resumeVisibleReaders() }
+            @MainActor func current() -> Bool { !Task.isCancelled && navigation.isCurrent(in: self) && self.tabs.navigationRevision == paneIntent && self.selectedID == child.parentSessionID && self.sides[child.parentSessionID ?? ""]?.id == id && self.displays[id] === view && view.presentationGeneration == generation }
             do {
+                await self.readInheritedSubagents(child, current: current)
+                guard current() else { return }
                 let oldDraft = view.savedDraft
                 let metadata = try await self.store?.selectionMetadata(id: id, draft: !view.selectionMetadataLoaded, anchor: !view.selectionMetadataLoaded && view.scrollAnchor == nil)
                 guard current() else { return }
@@ -397,7 +422,9 @@ extension WorkspaceModel {
                 guard current() else { return }
                 self.adoptInitialHistory(page, into: view)
                 if self.opened.contains(id) { self.refresh(id) }
-            } catch is CancellationError { }
+            } catch is CancellationError {
+                if current() { view.historyState = .failed("History reading was interrupted. Try loading it again.") }
+            }
             catch { if current() { view.historyState = .failed(error.localizedDescription); view.refreshingCachedRows = false; view.notice = error.localizedDescription } }
         }
         view.presentation.navigation = task
@@ -447,7 +474,7 @@ extension WorkspaceModel {
                 // Registration can be retried from the preserved recovery
                 // intent. It must not prevent this snapshot from updating the
                 // transcript, run state, Stop control and queue afterwards.
-                self.error = "The side's saved history could not be registered. Its recovery intent was preserved. \(error.localizedDescription)"
+                await reportSideKeepFailure(id: id, title: info.title, error: error)
             }
         }
     }
@@ -466,10 +493,22 @@ extension WorkspaceModel {
         return settled(lhs) == settled(rhs)
     }
     func registerKeptSide(id: String, path: String?) async throws {
-        guard let store, let intent = try await store.get(SideKeepIntent.self, kind: "side-keep", id: id), let expected = intent.chat.path,
-              let path, Self.sameFile(path, expected) else {
-            if chats.contains(where: { $0.id == id }) { return }
-            throw HostError.failure("Keep needs its saved recovery intent and expected conversation file.")
+        guard let store, let path else { throw HostError.failure("Keep could not match this chat to its saved file.") }
+        let intent: SideKeepIntent
+        switch try await store.sideKeepState(id: id) {
+        case .pending(let pending): intent = pending
+        case .registered(let chat, let expected):
+            guard Self.sameFile(path, chat.path) else {
+                throw HostError.failure("Keep could not match this chat to its saved file.")
+            }
+            try await history.validateIdentity(path: path, id: id)
+            await finishSideKeepRegistration(chat, expected: expected)
+            return
+        case .missing:
+            throw HostError.failure("Keep could not match this chat to its saved file.")
+        }
+        guard Self.sameFile(path, intent.chat.path) else {
+            throw HostError.failure("Keep could not match this chat to its saved file.")
         }
         try await history.validateIdentity(path: path, id: id)
         let view = displays[id]
@@ -490,7 +529,12 @@ extension WorkspaceModel {
         if let profile = profiles.first(where: { $0.id == retained.profileID }) { retained.migrateOutputBudget(profile: profile) }
         // The transaction resolves a concurrent parent move and returns its
         // durable organization instead of the stale recovery intent's group.
-        retained = try await store.commitKeptSide(retained, draft: draft)
+        retained = try await store.commitKeptSide(retained, draft: draft, expected: intent.chat)
+        await finishSideKeepRegistration(retained, expected: intent.chat)
+    }
+    private func finishSideKeepRegistration(_ saved: ChatRecord, expected: ChatRecord) async {
+        var retained = saved
+        let id = retained.id
         retained.topicID = effectiveTopicID(for: retained)
         if let index = chats.firstIndex(where: { $0.id == id }) {
             if (retained.organizationRevision ?? 0) >= (chats[index].organizationRevision ?? 0) {
@@ -499,17 +543,37 @@ extension WorkspaceModel {
         } else { chats.insert(retained, at: 0) }
         if let info = side(id) { sides[info.parentID]?.kept = true; sides[info.parentID]?.keeping = false; sides[info.parentID]?.keepRequested = false; sides[info.parentID]?.topicID = chats.first(where: { $0.id == id })?.topicID }
         await retainSideReadState(id)
+        sideKeepResolutionRevision &+= 1
+        sideKeepIssues.removeAll { $0.chat == expected }
+        do { try await restoreSideBudgets() }
+        catch { self.error = "The chat was saved, but its family cost totals could not be refreshed: " + error.localizedDescription }
     }
     func reconcileSideKeeps() async {
+        guard !reconcilingSideKeeps else { return }
+        reconcilingSideKeeps = true; defer { reconcilingSideKeeps = false }
         do {
-            for intent in try await store?.list(SideKeepIntent.self, kind: "side-keep") ?? [] {
-                do {
-                    guard let path = intent.chat.path else { continue }
-                    if FileManager.default.fileExists(atPath: path) { try await registerKeptSide(id: intent.chat.id, path: path) }
-                    else { try await store?.remove(kind: "side-keep", id: intent.chat.id) }
-                } catch { self.error = "A previous conversation copy needs review. Its file and recovery intent were preserved. \(error.localizedDescription)" }
+            while true {
+                let revision = sideKeepResolutionRevision
+                var issues: [SideKeepIssue] = []
+                for intent in try await store?.list(SideKeepIntent.self, kind: "side-keep") ?? [] {
+                    do {
+                        guard let path = intent.chat.path else { throw HostError.failure("No file location was saved for this chat.") }
+                        try await registerKeptSide(id: intent.chat.id, path: path)
+                    } catch {
+                        // A missing file may still be awaiting publication. Keep
+                        // the registration until it succeeds or is dismissed.
+                        if let current = try await store?.get(SideKeepIntent.self, kind: "side-keep", id: intent.chat.id), current.chat == intent.chat {
+                            issues.append(sideKeepIssue(intent, error: error))
+                        }
+                    }
+                }
+                // An answer or live keep may settle an earlier item while a later
+                // file is checked. Re-read rather than resurrecting its old notice.
+                guard revision == sideKeepResolutionRevision else { continue }
+                sideKeepIssues = issues.sorted { $0.id < $1.id }
+                break
             }
-        } catch { self.error = "A previous conversation copy needs review. Its file and recovery intent were preserved. \(error.localizedDescription)" }
+        } catch { self.error = "Saved conversation copies could not be checked. \(error.localizedDescription)" }
     }
     func closeSide(_ id: String) {
         guard let info = side(id), let view = displays[id], !view.loading, !info.keeping else { return }
@@ -604,7 +668,7 @@ extension WorkspaceModel {
         for info in sides.values.filter({ $0.workspaceID == workspaceID && !$0.kept && !$0.pending }) {
             let view = displays[info.id]
             let typed = view.map { !Self.unsentDraft(of: $0, to: info.parentID).isBlank } ?? false
-            sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id); opened.remove(info.id)
+            sides.removeValue(forKey: info.parentID); displays.removeValue(forKey: info.id); helperSessionDidUnload(info.id)
             forgetReadState(info.id)
             // The side is gone, but nothing the user typed into it is: the
             // draft moves as a closed side's does, from the display kept here.
@@ -638,7 +702,7 @@ extension WorkspaceModel {
         parent.draft = draft; parent.directCommand = false; parent.completionVisible = false; draftChanged(parent)
     }
     func enableEditing(_ id: String) {
-        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else { error = "Close the saved side panel and wait for idle before changing tools."; return }
+        guard let item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true else { error = "Wait for this chat to finish its work before changing tools."; return }
         guard store != nil else { error = StoreError.unavailable.localizedDescription; return }
         let question = ChatQuestion(title: "Enable editing tools for this saved chat?",
                                     detail: "Future turns may run shell commands and change files in this project with your account's permissions.",
@@ -650,15 +714,18 @@ extension WorkspaceModel {
     }
     func enableEditingAfterConfirmation(_ id: String) async throws {
         guard let store else { throw StoreError.unavailable }
-        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true, side(id) == nil else {
-            throw HostError.failure("Close the saved side panel and wait for idle before changing tools.")
+        guard var item = chats.first(where: { $0.id == id && !$0.imported && $0.connectionTest != true && $0.workspaceID != WorkspaceRecord.scratchID }), item.toolMode == ChatRecord.readOnlyTools, displays[id]?.hasWork != true, displays[id]?.loading != true else {
+            throw HostError.failure("Wait for this chat to finish its work before changing tools.")
         }
         let view = displays[id]
+        try beginBudgetOwnerChange(id)
+        defer { budgetOwnerChanges.remove(id) }
         view?.loading = true
         defer { view?.loading = false }
+        if let host = hosts[item.workspaceID], host.isReady { try await releaseIdleBudgetDependents(of:id,host:host) }
         if opened.contains(id) {
             guard let host = hosts[item.workspaceID], host.isReady else { throw HostError.failure("Wait for this project's host to recover before changing tools.") }
-            _ = try await host.request("session.close", sessionID: id); opened.remove(id)
+            _ = try await host.request("session.close", sessionID: id); helperSessionDidUnload(id)
         }
         item.toolMode = ChatRecord.editingTools
         try await store.put(item, kind: "chat", id: id)

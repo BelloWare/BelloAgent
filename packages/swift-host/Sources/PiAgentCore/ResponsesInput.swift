@@ -46,8 +46,7 @@ extension ProviderClient {
         // Pi puts the system prompt in the input: as a developer message to a
         // reasoning model, unless the gateway declares no developer role.
         if !instructions.isEmpty {
-            let developer = p.raw["reasoning"].flag == true && p.raw["compat"]["supportsDeveloperRole"].flag != false
-            input.append(["role": JSON(developer ? "developer" : "system"), "content": JSON(instructions)])
+            input.append(["role": JSON(p.instructionRole), "content": JSON(instructions)])
         }
         let images = p.raw["input"].list.contains("image")
         var msgIndex = 0

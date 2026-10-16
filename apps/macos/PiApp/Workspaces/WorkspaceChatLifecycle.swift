@@ -26,10 +26,13 @@ extension WorkspaceModel {
         }
         guard workspaces.contains(where: { $0.id == workspaceID && $0.trusted }), !workspaceChangesInFlight.contains(workspaceID) else { error = "Wait for project changes to finish and choose a trusted project."; return }
         guard requestProfiles.contains(where: { $0.id == profileChoice }) else { error = LiteLLMConfiguration.unsupportedAPIMessage; showProfiles = true; return }
-        guard let store else { error = "Desktop storage is unavailable. Resolve the storage error before creating a chat."; return }
+        guard store != nil else { error = "Desktop storage is unavailable. Resolve the storage error before creating a chat."; return }
         if let topicID, !topics.contains(where: { $0.id == topicID && $0.workspaceID == workspaceID }) {
             error = "This topic is no longer available. Choose another topic or the project."; return
         }
+        // New Chat supersedes the old draft's project choice even when it
+        // reuses that draft or waits for defaults before changing selection.
+        if let current = selectedID { pendingChatProjectChoices[current] = nil }
         if let current = selectedID, isPendingEmpty(current), let item = record(current), item.workspaceID == workspaceID, item.profileID == profileChoice, effectiveTopicID(for: item) == topicID {
             displays[current]?.composerFocusRequest += 1; return
         }
@@ -39,33 +42,42 @@ extension WorkspaceModel {
         Task { defer { workspaceChangesInFlight.remove(workspaceID); if let id = selectedID { scheduleAutomaticContext(id) } }
             do {
                 await pendingChoice?.value
-                var item = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: ChatRecord.defaultTitle, path: nil, profileID: profileID)
-                let remembered = try await store.get(ChatModelDefaults.self, kind: ChatModelDefaults.recordKind, id: profileID)
-                // On upgrade there may be a chosen model in the current chat
-                // but no defaults record yet. Never inherit another gateway.
-                let previous = previousChatID.flatMap(record).flatMap { $0.profileID == profileID && !$0.isBackgroundTask ? ChatModelDefaults(chat: $0) : nil }
-                (remembered ?? previous)?.apply(to: &item, profile: profiles.first { $0.id == profileID })
-                if remembered?.outputBudgetVersion == nil, item.outputBudgetVersion == 1, remembered != nil {
-                    try await store.put(ChatModelDefaults(chat: item), kind: ChatModelDefaults.recordKind, id: profileID)
-                }
-                // Removing a topic during the reads above must not leave a
-                // newly created chat assigned to a deleted group.
-                item.topicID = topicID.flatMap { id in topics.contains(where: { $0.id == id && $0.workspaceID == workspaceID }) ? id : nil }
-                // Configuration can change while the defaults are read. Never
-                // create a chat for a project that disappeared or lost trust.
-                guard workspaces.contains(where: { $0.id == workspaceID && $0.trusted && !$0.isScratch }) else {
-                    error = "Choose a trusted project before starting a chat."; return
-                }
+                let item = try await newChatRecord(workspaceID: workspaceID, profileID: profileID, previousChatID: previousChatID, topicID: topicID)
                 // Created on screen only; the first send writes it (materializeChat).
                 pendingChatIDs.insert(item.id); chats.insert(item, at: 0); await select(item.id)
             }
             catch { self.error = error.localizedDescription } }
     }
+    /// Shared by New Chat and its unsaved project picker. Project resources
+    /// remain owned by the destination helper; only model choices are inherited.
+    func newChatRecord(workspaceID: String, profileID: String, previousChatID: String?, topicID: String?) async throws -> ChatRecord {
+        guard let store else { throw StoreError.unavailable }
+        var item = ChatRecord(id: UUID().uuidString, workspaceID: workspaceID, title: ChatRecord.defaultTitle, path: nil, profileID: profileID)
+        let remembered = try await store.get(ChatModelDefaults.self, kind: ChatModelDefaults.recordKind, id: profileID)
+        let previous = previousChatID.flatMap(record).flatMap { $0.profileID == profileID && !$0.isBackgroundTask ? ChatModelDefaults(chat: $0) : nil }
+        (remembered ?? previous)?.apply(to: &item, profile: profiles.first { $0.id == profileID })
+        if remembered?.outputBudgetVersion == nil, item.outputBudgetVersion == 1, remembered != nil {
+            try await store.put(ChatModelDefaults(chat: item), kind: ChatModelDefaults.recordKind, id: profileID)
+        }
+        item.topicID = topicID.flatMap { id in topics.contains(where: { $0.id == id && $0.workspaceID == workspaceID }) ? id : nil }
+        guard workspaces.contains(where: { $0.id == workspaceID && $0.trusted && !$0.isScratch }) else {
+            throw HostError.failure("Choose a trusted project before starting a chat.")
+        }
+        return item
+    }
     /// Writes a pending chat's record before its first message, rename,
     /// archive, connection change or helper session needs it.
     func materializeChat(_ id: String) async throws {
         guard pendingChatIDs.contains(id), let item = chats.first(where: { $0.id == id }) else { return }
+        // A first use owns the project even if its write fails and the chat
+        // becomes eligible again. Never revive a choice made before that use.
+        pendingChatProjectChoices[id] = nil
         guard let store else { throw StoreError.unavailable }
+        pendingChatSaveCounts[id, default: 0] += 1
+        defer {
+            let remaining = pendingChatSaveCounts[id, default: 1] - 1
+            pendingChatSaveCounts[id] = remaining > 0 ? remaining : nil
+        }
         try await store.put(item, kind: "chat", id: id)
         PerformanceProbe.shared.count("pendingChatCreationWrites")
         // Navigation can discard a still-empty placeholder while this actor
@@ -88,7 +100,7 @@ extension WorkspaceModel {
     /// Drops a pending chat that never received a message. Nothing was written.
     func discardPendingChat(_ id: String) {
         guard pendingChatIDs.remove(id) != nil else { return }
-        chats.removeAll { $0.id == id }; displays.removeValue(forKey: id); opened.remove(id)
+        chats.removeAll { $0.id == id }; displays.removeValue(forKey: id); helperSessionDidUnload(id)
         forgetOpened(id)
         if selectedID == id { selectedID = nil; selected = nil }
         if focusedSessionID == id { focusedSessionID = nil }
@@ -183,14 +195,20 @@ extension WorkspaceModel {
             chats.insert(copy, at: 0); await select(copy.id)
         } catch { self.error = error.localizedDescription } }
     }
-    func deleteChat() { deleteChat(selectedID) }
+    var canDeleteCommandChat: Bool {
+        conversationCommandsEnabled && conversationCommandID().flatMap(record).map { !$0.isSubagent } == true
+    }
+    func deleteChat() {
+        guard canDeleteCommandChat else { return }
+        deleteChat(conversationCommandID())
+    }
     /// Deletes any chat by id, so archived chats can go straight from the sidebar.
     func deleteChat(_ id: String?) {
         guard let id, let item = record(id), !item.isSubagent else { return }
         if pendingChatIDs.contains(id) { discardPendingChat(id); return }
         guard let store else { error = StoreError.unavailable.localizedDescription; return }
-        if sides[id] != nil { error = "Close the side panel before deleting its parent."; return }
-        if side(id) != nil { error = "Close this side panel before deleting its chat."; return }
+        if let info = side(id), info.pending { Task { await discardPendingSide(info) }; return }
+        if let busy = runningBudgetDependent(of:id) { error = budgetMemberBusy(busy); return }
         guard displays[id]?.hasWork != true, displays[id]?.loading != true else { error = "Stop work and remove queued submissions before deleting this chat"; return }
         Task {
             do {
@@ -208,7 +226,8 @@ extension WorkspaceModel {
                 let count = managed.count
                 let question = ChatQuestion(title: item.isArchived ? "Delete the archived chat “\(item.title)”?" : "Delete this chat?",
                     detail: (item.imported ? "Remove its app index and draft. The imported original stays in place." : "Move its managed conversation files to Trash and remove its draft and retained trace bodies.")
-                        + (count > 0 ? " Includes \(count) managed sub-agent\(count == 1 ? "" : "s")." : ""), action: "Delete Chat")
+                        + (count > 0 ? " Includes \(count) managed sub-agent\(count == 1 ? "" : "s")." : "")
+                        + (sides[id]?.pending == true ? " Its unsent side draft is also removed." : ""), action: "Delete Chat")
                 if !questions.ask(question, about: item.id, destructive: true, answered: { [weak self] confirmed in
                     guard let self, confirmed, self.record(item.id) != nil else { return }
                     self.performDelete(item, store: store)
@@ -227,11 +246,11 @@ extension WorkspaceModel {
                 if host.isReady { _ = try await host.request("session.forget", sessionID: item.id) }
                 else { try await host.settleCaptureIfStopping() }
             }
-            opened.remove(item.id)
+            helperSessionDidUnload(item.id)
             try removeRetiredCaptureSpools(sessionID: item.id)
             try await traces.clear(sessionID: item.id)
             forgetReadState(item.id); forgetRunHold(item.id)
-            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: item.id) }
+            for kind in ["chat", "draft", "anchor", "capture-preference", "handoff", "side-keep", SideKeepRegistration.kind, "session-read", RunHoldRecord.kind, ContextReading.recordKind, JournalSlimMark.kind] { try await store.remove(kind: kind, id: item.id) }
             contextReadings.removeValue(forKey: item.id)
             try await store.removeAll(kind: "receipt:\(item.id)")
             for intent in try await store.list(CommandIntent.self, kind: "pending:\(item.id)") { try await store.remove(kind: "pending:\(item.id)", id: intent.id) }

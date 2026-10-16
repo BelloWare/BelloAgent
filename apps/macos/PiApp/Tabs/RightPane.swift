@@ -110,8 +110,8 @@ import Combine
     override func layout() {
         flush()
         super.layout()
-        // The workspace can resize this pane after its model update (for
-        // example when pinning the sides panel). Give the composer the
+        // The workspace can resize this pane after its model update when
+        // its divider moves. Give the composer the
         // current enclosing proposal before measuring its control minimum.
         if width != bounds.width, let side, let sideView {
             width = bounds.width

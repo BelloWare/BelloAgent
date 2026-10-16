@@ -223,7 +223,79 @@ actor MetadataStore {
             }
             guard result == SQLITE_DONE else { throw StoreError.unavailable }
         }
+        values += try budgetAncestorRecords(of: values.map(\.0))
         unlistedChats = max(0, try count(kind: "chat") - values.count)
+        return try migrateLoadedChats(values, profiles: profiles)
+    }
+
+    /// The complete durable graph, independent of the presentation window.
+    /// Reads metadata only; discarded draft content is never materialized.
+    func sideBudgetAncestry() throws -> [String: [String: [String]]] {
+        let database = try ready()
+        var statement: OpaquePointer?
+        let sql = "SELECT c.id,c.value FROM records c WHERE c.kind='chat' AND NOT EXISTS(SELECT 1 FROM records d WHERE d.kind='session-deleted' AND d.id=c.id)"
+        guard sqlite3_prepare_v2(database,sql,-1,&statement,nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        var records: [String:ChatRecord] = [:], present = Set<String>()
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            if let text = sqlite3_column_text(statement,0) {
+                let id = String(cString:text); present.insert(id)
+                let size = Int(sqlite3_column_bytes(statement,1))
+                if size <= Self.recordByteLimit("chat"), let bytes = sqlite3_column_blob(statement,1),
+                   let chat = try? JSONDecoder().decode(ChatRecord.self,from:Data(bytes:bytes,count:size)), chat.id == id { records[id] = chat }
+            }
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else { throw StoreError.unavailable }
+        var result: [String:[String:[String]]] = [:]
+        for chat in records.values where !chat.isSubagent && chat.parentSessionID != nil {
+            var current = chat, parents: [String] = [], seen: Set<String> = [chat.id], valid = true
+            while let id = current.persistedBudgetParentID {
+                guard seen.insert(id).inserted, parents.count < 128 else { valid = false; break }
+                guard let parent = records[id] else {
+                    // Undecodable metadata is not proof of deletion. Preserve
+                    // its prior projection until the damaged record is repaired.
+                    if present.contains(id) { valid = false }
+                    break
+                }
+                guard parent.workspaceID == chat.workspaceID, !parent.isSubagent else { break }
+                parents.append(id); current = parent
+            }
+            if valid { result[chat.workspaceID,default:[:]][chat.id] = parents }
+        }
+        return result
+    }
+
+    /// Loaded sides and managed children retain their actual budget ancestry
+    /// outside the ordinary chat window. A fork source is only provenance.
+    func loadBudgetAncestors(of chats: [ChatRecord], profiles: [ProfileRecord] = []) throws -> [ChatRecord] {
+        try migrateLoadedChats(budgetAncestorRecords(of: chats), profiles: profiles)
+    }
+    private func budgetAncestorRecords(of chats: [ChatRecord]) throws -> [(ChatRecord, Int64)] {
+        let database = try ready()
+        var seen = Set(chats.map(\.id)), checked = Set<String>(), pending = chats, values: [(ChatRecord, Int64)] = []
+        while let child = pending.popLast() {
+            guard let id = child.persistedBudgetParentID, !seen.contains(id), checked.insert(child.workspaceID + "\u{0}" + id).inserted,
+                  try get(String.self, kind: "session-deleted", id: id) == nil else { continue }
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(database, "SELECT value,revision FROM records WHERE kind='chat' AND id=?", -1, &statement, nil) == SQLITE_OK else { throw StoreError.unavailable }
+            defer { sqlite3_finalize(statement) }
+            sqlite3_bind_text(statement, 1, id, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { continue }
+            guard result == SQLITE_ROW else { throw StoreError.unavailable }
+            let size = Int(sqlite3_column_bytes(statement, 0))
+            guard size <= Self.recordByteLimit("chat"), let bytes = sqlite3_column_blob(statement, 0) else { continue }
+            decodedChats += 1
+            guard let parent = try? JSONDecoder().decode(ChatRecord.self, from: Data(bytes: bytes, count: size)),
+                  parent.id == id, !parent.isSubagent, parent.workspaceID == child.workspaceID else { continue }
+            seen.insert(id); values.append((parent, sqlite3_column_int64(statement, 1))); pending.append(parent)
+        }
+        return values
+    }
+    private func migrateLoadedChats(_ records: [(ChatRecord, Int64)], profiles: [ProfileRecord]) throws -> [ChatRecord] {
+        var values = records
         var upgraded: [(ChatRecord, Int64)] = []
         for index in values.indices {
             let previous = values[index].0
@@ -554,7 +626,7 @@ actor MetadataStore {
             let name = String(cString: kind)
             let chat: ChatRecord?
             if name == "chat" { chat = try JSONDecoder().decode(ChatRecord.self, from: data) }
-            else if name == "side-keep" { chat = try JSONDecoder().decode(SideKeepIntent.self, from: data).chat }
+            else if name == "side-keep" || name == SideKeepIntent.retainedKind { chat = try JSONDecoder().decode(SideKeepIntent.self, from: data).chat }
             else { chat = nil }
             if let chat {
                 let path = chat.path ?? root.appendingPathComponent("Workspaces/\(chat.workspaceID)/Sessions/\(chat.id).jsonl").path
@@ -619,11 +691,23 @@ actor MetadataStore {
         draft.requireSubmissionReview(commands)
         try put(draft, kind: "draft", id: sessionID)
     }
-    @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord) throws -> ChatRecord {
-        let database = try ready()
-        guard sqlite3_exec(database, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
-        transactionDrafts = []  // told once committed (`transaction`)
-        do {
+    @discardableResult func commitKeptSide(_ proposed: ChatRecord, draft: DraftRecord, expected: ChatRecord) throws -> ChatRecord {
+        try transaction {
+            guard proposed.id == expected.id else { throw StoreError.staleRevision }
+            let pending = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id)
+            if pending == nil {
+                // Another registration may have won while this caller read the
+                // header. A receipt proves which copy won; an ID alone cannot.
+                // Return its current organization without touching newer typing.
+                guard let completed = try sideKeepRegistration(id: expected.id),
+                      completed.expected == expected else { throw StoreError.staleRevision }
+                return completed.chat
+            }
+            // Identity reads suspend outside this transaction. Dismissal, a
+            // replacement or another receipt may have consumed their intent.
+            // Compare the captured intent before path/organization migration;
+            // no chat or draft write is allowed without that exact pending copy.
+            guard pending?.chat == expected else { throw StoreError.staleRevision }
             var chat = proposed
             if let existing = try get(ChatRecord.self, kind: "chat", id: chat.id) {
                 // Replaying a keep receipt must preserve an independent rename
@@ -637,11 +721,45 @@ actor MetadataStore {
                 chat.topicID = parent?.workspaceID == chat.workspaceID ? parent?.topicID : nil
             }
             try put(chat, kind: "chat", id: chat.id); try put(draft, kind: "draft", id: chat.id); try remove(kind: "side-keep", id: chat.id)
+            try put(SideKeepRegistration(expected: expected, path: chat.path), kind: SideKeepRegistration.kind, id: chat.id)
+            // The registered chat now owns this reference. Other dismissed
+            // paths with the same ID remain independently protected.
+            try remove(kind: SideKeepIntent.retainedKind, id: sideKeepRetentionID(expected))
             guard let saved = try get(ChatRecord.self, kind: "chat", id: chat.id) else { throw StoreError.invalidRecord }
-            guard sqlite3_exec(database, "COMMIT", nil, nil, nil) == SQLITE_OK else { throw StoreError.unavailable }
-            flushTransactionDrafts()
             return saved
-        } catch { transactionDrafts = nil; sqlite3_exec(database, "ROLLBACK", nil, nil, nil); throw error }
+        }
+    }
+    /// A commit may precede its caller's sidebar publication. Read its receipt
+    /// and current chat atomically, without treating a replacement as settled.
+    func sideKeepState(id: String) throws -> SideKeepState {
+        try transaction {
+            if let pending = try get(SideKeepIntent.self, kind: "side-keep", id: id) { return .pending(pending) }
+            if let completed = try sideKeepRegistration(id: id) { return .registered(chat: completed.chat, expected: completed.expected) }
+            return .missing
+        }
+    }
+    private func sideKeepRegistration(id: String) throws -> (chat: ChatRecord, expected: ChatRecord)? {
+        guard let receipt = try get(SideKeepRegistration.self, kind: SideKeepRegistration.kind, id: id),
+              let saved = try get(ChatRecord.self, kind: "chat", id: id),
+              receipt.expected.id == id, saved.id == id,
+              saved.workspaceID == receipt.expected.workspaceID, saved.path == receipt.path else { return nil }
+        return (saved, receipt.expected)
+    }
+    private func sideKeepRetentionID(_ chat: ChatRecord) throws -> String {
+        // Preserve each file, including replacements that reuse a chat ID.
+        let identity = try JSONEncoder().encode([chat.workspaceID, chat.id, chat.path] as [String?])
+        return SHA256.hash(data: identity).map { String(format: "%02x", $0) }.joined()
+    }
+    /// Only the exact pending copy reviewed by the confirmation can be
+    /// dismissed. Keep its journal discoverable for attachment retention,
+    /// without leaving an automatic-registration intent or changing its bytes.
+    func dismissSideKeep(_ expected: ChatRecord) throws {
+        try transaction {
+            guard let current = try get(SideKeepIntent.self, kind: "side-keep", id: expected.id) else { return }
+            guard current.chat == expected else { throw StoreError.staleRevision }
+            try put(current, kind: SideKeepIntent.retainedKind, id: sideKeepRetentionID(current.chat))
+            try remove(kind: "side-keep", id: expected.id)
+        }
     }
     /// A handoff must never reappear as an empty chat after a partial write.
     func commitPortableHandoff(_ chat: ChatRecord, draft: DraftRecord, provenance: WireValue?) throws {
@@ -672,16 +790,25 @@ actor MetadataStore {
     /// it: launch settling every background request a quit left, at once.
     /// Rebase discovery on the owner's latest durable organization in one
     /// actor turn. A delayed scan cannot restore a deleted or moved family.
-    func beginFamilyDeletion(_ members: [SessionDeletionRecord]) throws {
+    func beginFamilyDeletion(_ members: [SessionDeletionRecord], repairCompleted: Bool = false) throws {
         try transaction {
             guard let owner = members.first?.ownerID, members.contains(where: { $0.id == owner }),
                   Set(members.map(\.id)).count == members.count, Set(members.map(\.workspaceID)).count == 1,
                   members.allSatisfy({ $0.ownerID == owner && ($0.id == owner || UUID(uuidString: $0.id) != nil) }) else { throw StoreError.invalidRecord }
-            for member in members {
+            for var member in members {
+                if member.id == owner { member.repairCompleted = repairCompleted ? true : nil }
                 try put(owner, kind: "session-deleted", id: member.id)
                 try put(member, kind: SessionDeletionRecord.kind, id: member.id)
             }
         }
+    }
+
+    func completeFamilyDeletionRepair(_ owner: String) throws {
+        guard var record = try get(SessionDeletionRecord.self,kind:SessionDeletionRecord.kind,id:owner),
+              record.id == owner, record.ownerID == owner,
+              try get(String.self,kind:"session-deleted",id:owner) == owner else { throw StoreError.invalidRecord }
+        record.repairCompleted = true
+        try put(record,kind:SessionDeletionRecord.kind,id:owner)
     }
 
     /// Recovery must see the complete durable manifest, including families
@@ -727,6 +854,7 @@ actor MetadataStore {
         // header and reciprocal parent plan rebuild an absent identity; a
         // conflicting identity or a different file still fails above.
         child.delegation = link
+        if let number = found.number, number > 0 { child.subagentNumber = number }
         child.path = path
         // Small metadata preview; the complete task remains in the owner's
         // journal and the ordinary child's user message once it starts.
@@ -872,6 +1000,9 @@ struct ChatRecord: Codable, Sendable, Identifiable, Hashable {
     var parentSessionID: String?
     /// Managed task identity. Unlike a side, this chat has no independent input.
     var delegation: SubagentLink?
+    /// A cache of the unique accepted start's position in the parent journal.
+    /// Never an execution identity; old records rebuild it during discovery.
+    var subagentNumber: Int?
     var delegationTask: String?
     var delegationIssue: String?
     var isSubagent: Bool { delegation != nil }
@@ -968,6 +1099,7 @@ extension ChatRecord {
         organizationRevision = try c.decodeIfPresent(Int64.self, forKey: .organizationRevision); topicID = try c.decodeIfPresent(String.self, forKey: .topicID)
         parentSessionID = try c.decodeIfPresent(String.self, forKey: .parentSessionID); costLimit = try c.decodeIfPresent(CostLimit.self, forKey: .costLimit)
         delegation = try c.decodeIfPresent(SubagentLink.self, forKey: .delegation)
+        subagentNumber = try c.decodeIfPresent(Int.self, forKey: .subagentNumber).flatMap { $0 > 0 ? $0 : nil }
         delegationTask = try c.decodeIfPresent(String.self, forKey: .delegationTask)
         delegationIssue = try c.decodeIfPresent(String.self, forKey: .delegationIssue)
         costLimitRevision = try c.decodeIfPresent(Int64.self, forKey: .costLimitRevision)

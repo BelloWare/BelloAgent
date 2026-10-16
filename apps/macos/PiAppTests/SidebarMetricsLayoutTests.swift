@@ -220,7 +220,7 @@ final class SidebarMetricsLayoutTests: XCTestCase {
             ("interrupted", false, "Interrupted"), ("error", false, "Failed"), ("running", true, "Opening")
         ]
         // The vocabulary itself: "Working" is still what a working run is
-        // called (the sides panel shows it); the sidebar row leaves it out
+        // called (the family picker shows it); the sidebar row leaves it out
         // (see testAWorkingChatShowsNoStateWordInItsSidebarRow).
         for (state, loading, label) in expected {
             XCTAssertEqual(PiSessionState.label(state, loading: loading), label)

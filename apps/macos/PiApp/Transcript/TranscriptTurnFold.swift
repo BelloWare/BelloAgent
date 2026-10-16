@@ -56,14 +56,12 @@ struct TurnFoldSpec: Equatable, Sendable {
     var messages = 0
     var subagents = 0
 
-    /// "3 tool calls · 1 message", "2 subagents", and — when a turn only
-    /// thought — the line that says so without counting anything.
+    /// Child work stays inside the disclosure, including its counts.
     var label: String {
         var parts: [String] = []
         if toolCalls > 0 { parts.append("\(toolCalls) tool call\(toolCalls == 1 ? "" : "s")") }
         if messages > 0 { parts.append("\(messages) message\(messages == 1 ? "" : "s")") }
-        if subagents > 0 { parts.append("\(subagents) subagent\(subagents == 1 ? "" : "s")") }
-        return parts.isEmpty ? "Thought for a while" : parts.joined(separator: " · ")
+        return parts.isEmpty ? (subagents > 0 ? "Work details" : "Thought for a while") : parts.joined(separator: " · ")
     }
     /// A delegation call is a subagent, not a tool call, wherever its name says so.
     static func isSubagent(_ name: String) -> Bool { name == "subagent" || name.hasPrefix("subagent_") }
@@ -85,8 +83,14 @@ enum TranscriptTurnFold {
     /// Rows a turn's fold never touches: the reader's own message, the turn's
     /// receipts, and anything that reports a failure.
     static func independent(_ message: TranscriptMessage) -> Bool {
-        message.role == "user" || message.role == "system"
+        guard !agentContent(message) else { return false }
+        return message.role == "user" || message.role == "system"
             || ["branch", "failure", "notice", "compaction"].contains(message.kind ?? "")
+    }
+
+    private static func agentContent(_ message: TranscriptMessage) -> Bool {
+        message.nativeAgentDelivery != nil || message.kind == "agent_message"
+            || (message.kind == "notice" && (message.id.hasPrefix("family-wait:") || message.id.hasPrefix("family-pending:")))
     }
 
     /// Folds every finished turn of a page. Returns the items unchanged when
@@ -110,7 +114,7 @@ enum TranscriptTurnFold {
             inserts.append((spec.at, .block(spec.control)))
         }
         for (index, item) in items.enumerated() {
-            guard case .message(let message) = item, message.role == "user", message.kind == nil else { continue }
+            guard case .message(let message) = item, message.role == "user", message.kind == nil, message.nativeAgentDelivery == nil else { continue }
             // The next message of the reader's ends this display turn.
             if let turn = opened { close(turn.index + 1 ..< index, group: turn.id, ended: true) }
             opened = (index, message.id)
@@ -183,6 +187,7 @@ enum TranscriptTurnFold {
             case .message(let message):
                 if independent(message) { continue }
                 if message.kind == "requestInfo", message.id == answerRow { continue }
+                if agentContent(message) { spec.subagents += 1 }
                 members.append(index)
             case .block(let block):
                 if block.presentation == .summary || block.presentation == .turnFold { continue }
@@ -236,7 +241,7 @@ enum TranscriptTurnFold {
     /// only whitespace draw nothing and say nothing.
     private static func content(_ item: TranscriptItem) -> Bool {
         switch item {
-        case .message(let message): return !independent(message) && message.kind != "requestInfo"
+        case .message(let message): return !independent(message) && !agentContent(message) && message.kind != "requestInfo"
         case .block(let block):
             if block.presentation == .summary || block.presentation == .turnFold { return false }
             if let part = block.part, ["text", "refusal"].contains(part.part.kind) { return TaskTranscriptPlan.visible(part.text) }

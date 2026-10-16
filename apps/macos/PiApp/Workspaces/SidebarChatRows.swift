@@ -17,6 +17,7 @@ struct ChatRowStats: Equatable {
     var busy = false
     var loading = false
     var costUSD: Double?
+    var costHelp: String?
     var cacheHits = 0
     var cacheMisses = 0
     var requests = 0
@@ -39,6 +40,9 @@ struct ChatRowStats: Equatable {
     private(set) var recencyLabel: String?
     init(totals: GatewayTotals?, timing: SessionTimingHistory? = nil, now: Date = Date()) {
         self.timing = timing
+        // Ordinary and empty chats keep their existing row announcement.
+        // Only family attribution adds an explanation to the compact cost.
+        costHelp = totals.flatMap { $0.sideCost != nil || $0.subagentCost != nil || $0.budgetOwnerID != nil ? $0.costLabel : nil }
         costUSD = totals?.costUSD; cacheHits = totals?.cacheHits ?? 0; cacheMisses = totals?.cacheMisses ?? 0; requests = totals?.requests ?? 0
         tokens = totals?.tokens?.total; tokenSamples = totals?.tokens?.samples ?? 0
         inputTokens = totals?.tokens?.input; outputTokens = totals?.tokens?.output; cachedTokens = totals?.cacheReadTokens
@@ -230,6 +234,7 @@ struct ChatRowStats: Equatable {
         if let state { stateLine.line = PiKit.Line(state.text, font: Self.stateFont, color: state.color) }
         costLine.isHidden = stats.costLabel == nil
         costLine.line = PiKit.Line(stats.costLabel ?? "", font: Self.font, color: .piInkTertiary)
+        costLine.toolTip = stats.costHelp; costLine.setAccessibilityLabel(stats.costHelp ?? stats.costLabel)
         rate.isHidden = stats.timing == nil
         rate.presentation = stats.timing.map(SessionRatePresentation.init(history:))
         let showsTokens = form.showsTokens && !stats.busy && stats.tokensLabel != nil && form != .stacked
@@ -287,6 +292,7 @@ struct ChatRowStats: Equatable {
         var subtitle: String
         var symbol: String
         var selected: Bool
+        var familyActivity = FamilyActivity()
         var unreadCount = 0
         var unreadFailure = false
         var markedUnreadOnly = false
@@ -312,10 +318,12 @@ struct ChatRowStats: Equatable {
             if run.holdsQueue { words.append(run == .interrupted ? "paused, run interrupted" : "paused") }
             if unreadCount > 0 { words.append("unread") } else if unreadFailure { words.append("run failed") }
             if hasDraft { words.append("has a draft") }
+            if let cost = stats.costHelp { words.append(cost) }
+            if familyActivity.active > 0 { words.append(familyActivity.label) }
             return words.joined(separator: ", ")
         }
         var help: String {
-            subtitle + (stats.requests > 0 ? " · \(stats.requests) requests · cache \(stats.cacheHits) hit / \(stats.cacheMisses) miss" : "")
+            subtitle + (stats.costHelp.map { " · " + $0 } ?? "") + (stats.requests > 0 ? " · \(stats.requests) requests · cache \(stats.cacheHits) hit / \(stats.cacheMisses) miss" : "")
         }
     }
     private(set) var content: Content?
@@ -329,6 +337,7 @@ struct ChatRowStats: Equatable {
     /// The row's run is marked by its spinner, for tests.
     var showsSpinner: Bool { spinner != nil }
     private let title = PiKit.TextLine()
+    let agentBadge = AgentRunningBadge()
     private let pin = PiKit.SymbolView(PiKit.Symbol("pin.fill", size: 9), color: .piInkTertiary)
     /// Something unsent waits in the chat's composer.
     let draftMark = PiKit.SymbolView(PiKit.Symbol("pencil", size: 10, weight: .semibold), color: .piInkSecondary)
@@ -352,7 +361,7 @@ struct ChatRowStats: Equatable {
 
     override init(frame: NSRect) {
         controls = ShellStack(.horizontal, spacing: 4, [.view(archiveButton), .view(confirm), .view(keep), .view(chevron)])
-        row1 = ShellStack(.horizontal, spacing: 4, [.view(title, .flexible), .view(draftMark), .view(pin), .spacer(4), .view(dot), .view(controls)])
+        row1 = ShellStack(.horizontal, spacing: 4, [.view(title, .flexible), .view(agentBadge), .view(draftMark), .view(pin), .spacer(4), .view(dot), .view(controls)])
         tags = ShellStack(.horizontal, spacing: 4, [.view(projectTag), .view(topicTag)])
         super.init(frame: frame)
         title.truncation = .end; subtitle.truncation = .end
@@ -413,8 +422,9 @@ struct ChatRowStats: Equatable {
         let before = content
         guard new != before else { return }
         content = new
+        agentBadge.update(new.familyActivity)
         // The icon, or a spinner while it works.
-        let working = new.stats.busy || new.stats.loading
+        let working = new.stats.busy || new.stats.loading || new.familyActivity.active > 0
         if working, spinner == nil {
             let view = PiSpinnerView(frame: NSRect(x: 0, y: 0, width: 11, height: 11))
             view.configure(lineWidth: 1.6, turning: !PiKit.Motion.reduced)

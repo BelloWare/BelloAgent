@@ -6,7 +6,7 @@ import Foundation
 extension AgentSession {
     func launch(compactOnly: Bool = false) {
         turnSubagentModels = activeSubmission?.subagentModels ?? subagentModelGrants
-        if !costLimitReached, accountingFailure == nil { familyStopReason = nil }
+        if !costLimitReached, accountingFailure == nil { familyStopReason = nil; budgetStopIssued = false }
         presentationUtility = compactOnly || titleTask
         if retrying || continuing, let root = taskRootID {
             beginPresentedTask(root)
@@ -67,13 +67,16 @@ extension AgentSession {
             let started=nowMS(); var measured=false
             defer { if !measured { modelRequestsMs += nowMS()-started } }
             do {
+                modelActive = true
                 let reply = try await client.complete(profile:profile,apiKey:apiKey,messages:messages,instructions:instructions,tools:tools,sessionID:id,cacheSessionID:promptCacheSessionID,turnID:turnID,purpose:purpose,lifecycle:try await requestLifecycle(turnID:turnID,purpose:purpose,requestMessages:messages),onObservation:{ [weak self] observation in await self?.observeOperation(observation,generation:generation,operation:operation) },onDelta:onDelta)
                 modelReplyMs = nowMS()-started; modelRequestsMs += modelReplyMs; measured = true
                 return reply
             } catch is UnexplainedIncompleteCancellation {
+                modelActive = false
                 try discardIncompleteReply()
                 throw CancellationError()
             } catch let error as AgentError {
+                modelActive = false
                 modelRequestsMs += nowMS()-started; measured = true
                 if error.code == "provider_incomplete_unexplained" || error.discardIncompleteReply {
                     // Discard this attempt even when retrying is disabled or
@@ -114,7 +117,7 @@ extension AgentSession {
     /// and again whenever a compaction or delivered steering changed it.
     func prepareRequest(_ snapshot: ResourceSnapshot) async throws -> PreparedRequest {
         let definitions=await sessionDefinitions()
-        let instructions=Self.requestInstructions(snapshot.prompt)
+        let instructions=Self.requestInstructions(snapshot.prompt, tools: definitions)
         let body=try ProviderClient.requestBody(profile:turnProfile,messages:requestContext,instructions:instructions,tools:definitions,sessionID:id,cacheSessionID:promptCacheSessionID)
         let count=try countContext(requestContext,request:body); currentContextCount=count
         return PreparedRequest(snapshot:snapshot,definitions:definitions,instructions:instructions,body:body,count:count)
@@ -303,7 +306,15 @@ extension AgentSession {
             // original outcome before that internal Stop, and leave ordinary
             // chats on their existing failure path until a family is accepted.
             let cancelled = Task.isCancelled || error is CancellationError
-            if !isSubagent, subagents.family != nil, let coordinator = agentCoordinator {
+            modelActive = false
+            let budgetError = familyStopReason?.code == Self.costLimitCode ? familyStopReason : (error as? AgentError).flatMap { $0.code == Self.costLimitCode ? $0 : nil }
+            if let budgetError, familyBudgetEnabled || isSubagent {
+                stopFamilyAtLimit(budgetError)
+                if !isSubagent, let coordinator = agentCoordinator {
+                    state = .stopping; setFamilyWaiting(true); event("state")
+                    await Task { await coordinator.finishAtLimit(owner:id) }.value
+                }
+            } else if budgetError == nil, !isSubagent, subagents.family != nil, let coordinator = agentCoordinator {
                 let owner = id, runtime = displayEpoch, generation = stopCount
                 stop()
                 await Task { await coordinator.cancel(owner:owner,runtimeID:runtime,through:generation); await coordinator.drain(owner:owner) }.value

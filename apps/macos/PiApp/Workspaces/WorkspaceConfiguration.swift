@@ -24,6 +24,9 @@ extension WorkspaceModel {
         return lease
     }
     func requireConnection(_ lease: ConnectionLease) throws {
+        if let item = record(lease.chatID), budgetOwnerIsChanging(item) || workspaceChangesInFlight.contains(item.workspaceID) {
+            throw connectionChanged
+        }
         guard !deletingProfiles.contains(lease.profileID),
               profileDeletionGenerations[lease.profileID, default: 0] == lease.deletionGeneration,
               profiles.contains(where: { $0.id == lease.profileID }) else { throw connectionUnavailable }
@@ -46,15 +49,15 @@ extension WorkspaceModel {
                     do {
                         _ = try await host.request("turn.stop", sessionID: item.id)
                         _ = try await host.request("session.close", sessionID: item.id)
-                        opened.remove(item.id)
+                        helperSessionDidUnload(item.id)
                     } catch HostError.rejected(let code, _) where code == "session_missing" {
-                        opened.remove(item.id)
+                        helperSessionDidUnload(item.id)
                     } catch {
                         // A live busy runtime remains tracked; host loss has
                         // already cleared it and must not be undone here.
-                        if !host.isReady, hosts[item.workspaceID] === host { opened.remove(item.id) }
+                        if !host.isReady, hosts[item.workspaceID] === host { helperSessionDidUnload(item.id) }
                     }
-                } else if hosts[item.workspaceID] === host { opened.remove(item.id) }
+                } else if hosts[item.workspaceID] === host { helperSessionDidUnload(item.id) }
                 throw gone
             }
             throw error
@@ -117,6 +120,7 @@ extension WorkspaceModel {
             try await traces.configure(key: saved.captureKey, quota: saved.capture.quotaUnlimited ? nil : saved.capture.quotaBytes,
                                        bodyRetention: Double(saved.capture.retentionDays) * 86400,
                                        metricRetention: Double(saved.dashboard.metricRetentionDays) * 86400)
+            try await restoreSideBudgets()
             return true
         } catch { self.error = "Request archive: " + error.localizedDescription; return false }
     }
@@ -244,7 +248,10 @@ extension WorkspaceModel {
                     }
                 } catch {
                     // A helper without the command: an idle session reopens with the new settings on its next turn.
-                    if displays[id]?.hasWork != true { _ = try? await host.request("session.close", sessionID: id); opened.remove(id) }
+                    if displays[id]?.hasWork != true {
+                        do { _ = try await host.request("session.close", sessionID: id); helperSessionDidUnload(id) }
+                        catch { releaseHelperSession(id) }
+                    }
                 }
             }
         }
@@ -283,7 +290,7 @@ extension WorkspaceModel {
                 _ = try await host.request("turn.stop", sessionID: item.id)
                 do {
                     _ = try await host.request("session.close", sessionID: item.id)
-                    opened.remove(item.id)
+                    helperSessionDidUnload(item.id)
                 } catch {
                     // Stop is asynchronous; an unloading rejection must not
                     // make a still-live runtime disappear from our tracking.

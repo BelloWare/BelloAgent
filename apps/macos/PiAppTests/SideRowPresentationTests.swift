@@ -27,19 +27,4 @@ import XCTest
         XCTAssertEqual(view.row.accessibilityLabel(), "Side conversation, paused")
         XCTAssertTrue(model.chats.isEmpty, "Drawing an unsaved side must not persist it")
     }
-
-    func testSidesPanelUsesSidebarStateWordsAndKeepsItsBusyIndicator() {
-        let entry = SidesPanelEntry(id: "side", title: "Side conversation", open: true, saved: false)
-        for (state, loading, expected) in [("running", false, nil), ("tool", false, nil),
-                                          ("queued", false, "Waiting"), ("stopping", false, "Stopping"),
-                                          ("paused", false, "Paused"), ("running", true, "Opening")] as [(String, Bool, String?)] {
-            var stats = ChatRowStats(totals: nil)
-            stats.state = state; stats.loading = loading
-            stats.busy = ["running", "tool", "queued", "stopping"].contains(state)
-            let content = SidesPanelRowView.Content(entry: entry, stats: stats, unread: false, failed: false, enabled: true)
-            XCTAssertEqual(content.lead, expected, state)
-            XCTAssertFalse(content.spoken.contains("Working"), state)
-            XCTAssertEqual(content.working, stats.busy || loading, "The spinner stays")
-        }
-    }
 }

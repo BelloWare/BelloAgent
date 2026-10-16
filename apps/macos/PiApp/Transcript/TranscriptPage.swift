@@ -59,6 +59,16 @@ struct ContentGeometry: Equatable {
     }
 
     @Published private(set) var snapshot: Snapshot?
+    private struct MessageRows {
+        var first: String
+        var last: String
+        var body: String?
+    }
+    /// Only identities, prepared when the planner changes row membership.
+    /// A layout or Find tick must not copy every retained message to locate
+    /// the same anchor again. Cosmetic streaming patches keep membership.
+    private var messageRows: [String: MessageRows] = [:]
+    private var drawingOwners: [String: String] = [:]
     @Published var projectionError: String?
     var liveTurn: TurnSummary? {
         if let turn = snapshot?.liveTurn { return turn }
@@ -296,6 +306,7 @@ struct ContentGeometry: Equatable {
         reset()
         scrollView?.transcriptReading.bind(scope: session.id + ":" + session.presentationGeneration.uuidString)
         frames = [:]
+        messageRows = [:]; drawingOwners = [:]
         snapshot = nil; detached = false; earlierWaits = false; earlierWaitsForReader = false
         subscription = session.presentationChanges.combineLatest(session.$viewportRequest).sink { [weak self, weak session] input, request in
             guard let self, let session else { return }
@@ -513,6 +524,7 @@ struct ContentGeometry: Equatable {
         initialized = true
         // The rows changed, so which row holds the anchor may have changed too.
         pendingAnchorRow = nil
+        if !sameIdentities { indexMessageRows(items, messages: page) }
         snapshot = next
         PerformanceProbe.shared.transcriptSnapshotApplied(session.id, deltaAt: session.displayObservedAt)
         scheduleSettle()
@@ -746,11 +758,30 @@ struct ContentGeometry: Equatable {
     /// The message whose row draws `messageID`: itself, or for a tool's
     /// result shown inside its call's card, the reply that made the call.
     func drawingMessageID(for messageID: String) -> String {
-        guard let snapshot, !snapshot.items.contains(where: { $0.messageIDs.contains(messageID) }),
-              let at = snapshot.messages.firstIndex(where: { $0.id == messageID }), let call = snapshot.messages[at].toolCallID,
-              // The call the planner pairs it with: the latest one before it.
-              let issuer = snapshot.messages[..<at].last(where: { $0.role == "assistant" && ($0.tools ?? []).contains { $0.id == call } }) else { return messageID }
-        return issuer.id
+        drawingOwners[messageID] ?? messageID
+    }
+    private func indexMessageRows(_ items: [TranscriptItem], messages: [TranscriptMessage]) {
+        messageRows.removeAll(keepingCapacity: true); drawingOwners.removeAll(keepingCapacity: true)
+        for item in items {
+            if TranscriptLayoutClock.recording { TranscriptLayoutClock.messageRowVisits += 1 }
+            for id in item.messageIDs {
+                if messageRows[id] == nil { messageRows[id] = MessageRows(first: item.id, last: item.id) }
+                else { messageRows[id]?.last = item.id }
+            }
+            if case .block(let block) = item, block.presentation == .body, let id = block.message?.id,
+               messageRows[id]?.body == nil { messageRows[id]?.body = item.id }
+        }
+        var issuers: [String: String] = [:]
+        for message in messages {
+            // The same pairing as the planner: the latest issuer before the
+            // result, unless the result already has a row of its own.
+            if messageRows[message.id] == nil, let call = message.toolCallID, let issuer = issuers[call] {
+                drawingOwners[message.id] = issuer
+            }
+            if message.role == "assistant" {
+                for tool in message.tools ?? [] { issuers[tool.id] = message.id }
+            }
+        }
     }
     /// Makes `needle` in message `messageID` something the page draws, as a
     /// browser's find reveals hidden text: the finished turn that folded the
@@ -769,19 +800,28 @@ struct ContentGeometry: Equatable {
         var changed = false
         func open(_ part: TranscriptDisclosure.Part) { if !disclosure.isOpen(part) { disclosure.setOpen(true, part); changed = true } }
         func has(_ text: String?) -> Bool { !needle.isEmpty && text.map { !transcriptRanges(of: needle, in: $0 as NSString, flexible: true).isEmpty } ?? false }
+        func has(_ tool: ToolView) -> Bool {
+            if has(tool.output) || has(tool.input) { return true }
+            guard SubagentToolView.isControl(tool.name) else { return false }
+            let value = SubagentToolView(tool)
+            // The search already warmed these shared parses off the main
+            // actor. A phrase crossing Markdown marks must also open its card.
+            return has(TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(value.task))) ||
+                has(TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(value.result)))
+        }
         // A result drawn as a row of its own (its call is not on the page)
         // opens under its own line.
         if message.kind == "toolResult", drawing == message.id, has(message.text) { open(.compaction(message.id)) }
         let call = scoped ?? message.toolCallID
         if blocks.isEmpty, let drawn = snapshot.messages.first(where: { $0.id == drawing }) {
             // A row of one message: its cards are keyed by call.
-            for tool in drawn.tools ?? [] where tool.id == call || has(tool.output) || has(tool.input) { open(.tool(tool.id)) }
+            for tool in drawn.tools ?? [] where tool.id == call || has(tool) { open(.tool(tool.id)) }
             if has(drawn.thinking) { open(.reasoning(drawn.id)) }
         }
         for block in blocks {
             for reply in block.replies {
                 // Cards are keyed as the row draws them (`TranscriptRowDisclosure`).
-                for tool in reply.tools ?? [] where tool.id == call || has(tool.output) || has(tool.input) {
+                for tool in reply.tools ?? [] where tool.id == call || has(tool) {
                     open(.tool(block.presentation == .work ? ToolOccurrence.key(reply.id, tool.id) : tool.id))
                     if block.activity.contains(where: { $0.id == reply.id }) || block.presentation == .work { open(.work(block.key)) }
                 }
@@ -979,31 +1019,14 @@ struct ContentGeometry: Equatable {
     }
     /// A message folded into a block scrolls to the block that holds it.
     private func rowIdentifier(for messageID: String) -> String {
-        guard let snapshot else { return messageID }
         let messageID = drawingMessageID(for: messageID)
-        if let body = snapshot.items.first(where: { item in
-            if case .block(let block) = item { return block.presentation == .body && block.message?.id == messageID }; return false
-        }) { return body.id }
-        for item in snapshot.items {
-            switch item {
-            case .message(let message): if message.id == messageID { return item.id }
-            case .block(let block): if block.replies.contains(where: { $0.id == messageID }) { return item.id }
-            }
-        }
-        return messageID
+        return messageRows[messageID]?.body ?? messageRows[messageID]?.first ?? messageID
     }
     /// The row a message ends in. A response read in order is a header line,
     /// its parts and its accounting line, every one of them carrying the
     /// response's id: its end is the last of them, not the header.
     private func endRowIdentifier(for messageID: String) -> String {
-        guard let snapshot else { return messageID }
-        for item in snapshot.items.reversed() {
-            switch item {
-            case .message(let message): if message.id == messageID { return item.id }
-            case .block(let block): if block.replies.contains(where: { $0.id == messageID }) { return item.id }
-            }
-        }
-        return messageID
+        messageRows[messageID]?.last ?? messageID
     }
     /// Whether the end of a reply is on the screen: what counts it as read.
     func replyEndIsOnScreen(_ messageID: String) -> Bool {

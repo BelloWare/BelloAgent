@@ -1,5 +1,40 @@
 # Sub-agent steering and follow-ups — design v3 delta
 
+## 0.1.128 presentation amendment
+
+The owner's 2026-10-15 display changes replace child and side sidebar rows and the
+hover sides panel with one [main-column Sides and Agents picker](subagents.md#01128-display-update--owner-decision-2026-10-15).
+The parent badge distinguishes working sides, running agents and queued agents.
+Saved-side and child search results name their parent. The picker and restored child
+tabs preserve numbering, view/Stop, typed-message links and family Inspector.
+Embedded Back only focuses the parent; delayed history reads preserve that decision.
+Full child windows have sibling access and route their own Find/Stop shortcuts.
+Saved sides and reply forks retain their own delegation families, indented under
+their actual parents in the main picker at every depth; Stop and Inspector still address the actual delegation owner. Each hosted
+reader has one navigation token for opens, reveals, Find, paging and version reads,
+retained across pane/window moves. Back, hide, close or a newer destination retires
+its pending work; unrelated main-window selection and Reports leave popped-out
+reads intact. Native responder changes and the key child window determine menu
+availability and command targets as well as keyboard shortcuts. The
+[reader navigation ownership rule](subagents.md#reader-navigation-ownership) also
+applies to every stage of Source and Inspector reveals and sidebar search hits.
+Task, result and report prose uses the assistant Markdown reader, with bounded
+previews, ordinary assistant selection copy, full-source Copy buttons and
+rendered-text Find. Typed authorship and
+delivery metadata stay separate from the Markdown source. Managed readers cannot
+invoke Delete Chat on their selected main chat; family menus use a visible anchor.
+Picker metadata, card headers/details, child headers and family Inspector show
+the turn's accepted effort. Inherited effort uses its actual level, `default`
+reads “model default”, and models without effort controls omit it. The accepted
+model grant supplies legacy values; later follow-ups update current surfaces
+while older send receipts retain their own turn's effort. This is display metadata
+derived from the policy stream's saved fields, without new journal writes.
+Original sub-agents reached from a fork remain read-only through tab restore,
+Inspector navigation and source links. Their copied starts reserve numbers before
+the fork’s own agents, without granting steering or charging the fork.
+Unsent side drafts remain memory-only. No steering, model-visible or journal
+contract changes accompany this UI amendment.
+
 **Status:** Proposed; implementation has not started. Two owner choices are recorded at the end.
 
 **Date:** 2026-10-14
@@ -69,7 +104,7 @@ The following are the normative input JSON Schemas. Also validate nonblank text 
 
 ### 3.1 `subagent_start`
 
-Description: “Start a child with a self-contained task and fresh conversation. Choose background to continue working, or wait for a bounded wait. Children share project files and this chat's cost limit. Results and child messages arrive automatically at your next safe boundary. Children cannot delegate.”
+Description: “Start a child with a self-contained task and fresh conversation. Choose background to continue working, or wait for a bounded wait. Children share project files and this chat's cost limit. Results and child messages arrive automatically at your next safe boundary. Children cannot delegate. Start sub-agents only when the user explicitly asks for sub-agents/agents, delegation, or parallel work; otherwise do the work yourself, even for large tasks.”
 
 ```json
 {
@@ -93,11 +128,19 @@ Description: “Start a child with a self-contained task and fresh conversation.
 
 `task` is at most 256 KiB; `description` at most 480 bytes. Model grants, local label derivation and frozen initial instructions follow v2. The advertised `model` property adds the existing picker-grant enum when available; helper validation remains authoritative. Omitted `tools` inherits effective work tools; `[]` removes all work tools. The child-only reporting tool is lifecycle machinery and remains available even with `tools: []`; this is an explicit extension of v2's tool-free-child meaning.
 
+**0.1.128 addition:** `subagent_start` and `subagent_send` also accept optional string `effort`. The start schema has the chosen model's supported reasoning levels plus `default`, using the existing catalog/profile capabilities; models without effort control omit the property, and different capability sets use disjoint model branches. The send schema always advertises the fixed effort vocabulary, independently of family history; it never enumerates child IDs or scans retained plans. The coordinator validates the addressed child's frozen capabilities and rejects unsupported or unknown explicit values before acceptance. Picker grants carry optional `reasoning` capabilities (`nil`: unreported, `[]`: no control). Omission inherits the parent's current effective effort at acceptance, using model default when the child model cannot support it. Accepted start plans retain the chosen `model.thinkingLevel`; each new child turn also saves optional `effort`. Missing fields in older journals inherit the saved model grant. Recovery never starts accepted work. `SubagentSummary.effort`, start/send receipts and metadata, terminal results, and both status actions expose the saved effort. The provider builder and capture policy are unchanged.
+
+For models without catalog reasoning data, capabilities use the saved connection's reasoning flag independently of the parent's current effort; choosing Model default does not erase them. When older v3 recovery writes omit optional effort or origin capabilities, replay retains the accepted turn's effort and validates the origin against the owner's accepted capability list. Explicit conflicts remain errors. Older family checkpoints without the effort-format marker are discarded as caches and rebuilt from the unchanged journals.
+
+Desktop reciprocal discovery uses the same missing-capability rule, comparing the complete raw origin after filling only an absent/null `model.reasoning` from the accepted parent origin. Conflicting explicit capability lists, tools, resources and other origin differences remain quarantined; a compatible recovered child retains its parent relationship through live follow-up registration.
+
+The final sentence of the start description is also appended as exactly one parent system-prompt line when delegation tools are offered (including the legacy synchronous tool). Children, disabled delegation, and unrelated prompt text are unchanged.
+
 `mode` is required. `timeout_ms` is allowed only for `wait`; otherwise reject it. Background returns after durable acceptance, without waiting for a slot or a provider request. Wait is the same accepted start followed by the wait semantics below for turn 1. A timeout or early wake never cancels the child. There is no unbounded synchronous mode that can trap a child report behind the parent's wait.
 
 ### 3.2 `subagent_send`
 
-Description: “Message one of your existing children. A queued/running turn receives steering at its next safe boundary. A finished child starts a follow-up turn with its previous conversation. This call returns an acceptance receipt; use wait if you need the answer before proceeding.”
+Description: “Message one of your existing children. A queued/running turn receives steering at its next safe boundary. A finished child starts a follow-up turn with its previous conversation. Optional effort applies only to a follow-up; steering keeps the running turn's effort. This call returns an acceptance receipt; use wait if you need the answer before proceeding.”
 
 ```json
 {
@@ -114,6 +157,10 @@ Description: “Message one of your existing children. A queued/running turn rec
 ```
 
 At most 256 KiB of UTF-8. `expected_turn`, when supplied, must equal the latest accepted turn number at acceptance; otherwise return `stale_turn` with the current number and do nothing. `reply_to` must name a report from this child to this parent; it is correlation, not authority or an automatic reply obligation. Use it for answers to questions. It cannot reference another family.
+
+An explicit `effort` is validated against the existing child's model. It applies only when the accepted route is `follow_up`; a `steer` receipt reports the running turn's unchanged effort. Omitted effort on a follow-up inherits the parent's current effective effort and is frozen for that new turn.
+
+The fixed send enum is `default`, `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The coordinator requires the addressed child's model to support the selected value. Unsupported values, including any explicit effort for a child without effort control, return `subagent_effort` with no accepted operation or request. Its property description is: “Reasoning effort for a follow-up; the child's model must support it. Omit to inherit the parent's current effort; use "default" for the model's own default.”
 
 The coordinator linearizes sends and terminal commits:
 

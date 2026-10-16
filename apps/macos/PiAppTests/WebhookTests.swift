@@ -210,6 +210,118 @@ final class WebhookTests: XCTestCase {
         XCTAssertNil(tracker.observe(snapshot("idle")))
     }
 
+    func testFamilyWaitAndAgentInboxCannotFinishTheUsersRun() {
+        var tracker = WebhookFinishTracker()
+        _ = tracker.observe(snapshot("idle", commands: []), baseline: true)
+        _ = tracker.observe(snapshot("running", commands: [("user", "delivered")]))
+        var waiting = snapshot("idle", commands: [("user", "completed")])
+        waiting["familyWaiting"] = .bool(true)
+        XCTAssertNil(tracker.observe(waiting), "A completed receipt is not whole-family completion")
+        var inbox = snapshot("idle")
+        inbox["agentInboxPending"] = .number(1)
+        XCTAssertNil(tracker.observe(inbox), "A report waiting for synthesis still belongs to the same run")
+        XCTAssertEqual(tracker.observe(snapshot("idle")), "completed")
+        XCTAssertNil(tracker.observe(snapshot("idle")))
+    }
+
+    func testTaskFenceOwnsCompletionEvenIfAReceiptArrivesDuringAnIdleGap() throws {
+        var tracker = WebhookFinishTracker()
+        func task(_ active: Bool, ended: Bool = false) throws -> WireValue {
+            var record = TaskPresentationRecord(rootID: "human-input", executionID: "user-run", startedAt: 1)
+            if ended { record.endedAt = 2; record.outcome = "completed" }
+            let projection = TaskPresentationProjection(sessionID: "parent", epoch: "e1", timeline: "root", sequence: 1,
+                sourceRevision: "r", active: active ? record : nil, recent: ended ? [record] : [])
+            return try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(projection))
+        }
+        var initial = snapshot("idle", commands: []); initial["taskPresentation"] = try task(false)
+        _ = tracker.observe(initial, baseline: true)
+        var running = snapshot("running", commands: [("user", "delivered")]); running["taskPresentation"] = try task(true)
+        XCTAssertNil(tracker.observe(running))
+        XCTAssertNil(tracker.observe(snapshot("idle", commands: [("user", "completed")])), "The last task is still active: a background child's receipt/report cannot end it")
+        var finished = snapshot("idle"); finished["taskPresentation"] = try task(false, ended: true)
+        XCTAssertEqual(tracker.observe(finished), "completed")
+        XCTAssertNil(tracker.observe(snapshot("idle", commands: [("agent-report", "completed")])), "Receipts alone cannot open another notification run")
+        XCTAssertNil(tracker.observe(finished), "The same task fence is consumed once")
+    }
+
+    func testTaskHistorySwitchIsSilentAndFailedFamilyWithHeldReportsWaitsForUser() throws {
+        var tracker = WebhookFinishTracker()
+        func state(_ execution: String, outcome: String?, timeline: String = "root", epoch: String = "e1", run: String = "idle") throws -> [String: WireValue] {
+            var record = TaskPresentationRecord(rootID: "user", executionID: execution, startedAt: 1)
+            if let outcome { record.endedAt = 2; record.outcome = outcome }
+            let projection = TaskPresentationProjection(sessionID: "parent", epoch: epoch, timeline: timeline, sequence: 1,
+                sourceRevision: execution, active: outcome == nil ? record : nil, recent: outcome == nil ? [] : [record])
+            var result = snapshot(run, epoch: epoch)
+            result["taskPresentation"] = try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(projection))
+            return result
+        }
+        XCTAssertNil(tracker.observe(try state("old", outcome: "completed"), baseline: true))
+        XCTAssertNil(tracker.observe(try state("historical", outcome: "completed", timeline: "selected-version")), "Selecting history is not a user-started run")
+        XCTAssertNil(tracker.observe(try state("resume", outcome: nil, timeline: "selected-version", run: "running")))
+        var failure = try state("resume", outcome: "failed", timeline: "selected-version", run: "error")
+        failure["agentInboxPending"] = .number(1) // Child report held for explicit Resume.
+        XCTAssertEqual(tracker.observe(failure), "failed", "The family is drained; its failed parent now waits for the user")
+        XCTAssertNil(tracker.observe(failure))
+        XCTAssertNil(tracker.observe(try state("restart", outcome: "completed", epoch: "e2")), "A reopened helper sets a silent baseline")
+        XCTAssertNil(tracker.observe(try state("user-resume", outcome: nil, epoch: "e2", run: "running")))
+        XCTAssertEqual(tracker.observe(try state("user-resume", outcome: "completed", epoch: "e2")), "completed")
+    }
+
+    private func taskSnapshot(_ roots: [String], timeline: String = "root", revision: Int, outcome: String = "completed", legacy: Bool = false) -> [String: WireValue] {
+        var value = snapshot(outcome == "failed" ? "error" : "idle")
+        var task: [String: WireValue] = ["version":.number(1), "epoch":.string("e1"), "timeline":.string(timeline),
+            "recent":.array(roots.map { .object(["rootID":.string("turn-" + $0), "executionID":.string($0), "outcome":.string(outcome)]) })]
+        if !legacy { task["completion"] = .object(["revision":.number(Double(revision)), "outcome":.string(outcome)]) }
+        value["taskPresentation"] = .object(task)
+        return value
+    }
+
+    func testLazyHistoryRestoresTerminalsWithoutCompletingANewRun() {
+        for legacy in [false, true] {
+            var tracker = WebhookFinishTracker()
+            var initial = taskSnapshot(["loaded"], revision: 0, legacy: legacy)
+            initial["commands"] = snapshot("idle", commands: [("old", "completed"), ("loaded", "completed")])["commands"]
+            XCTAssertNil(tracker.observe(initial, baseline: true))
+            let restored = taskSnapshot(["old", "loaded"], revision: 0, legacy: legacy)
+            XCTAssertNil(tracker.observe(restored), "Checkpoint history restores terminal keys without changing epoch or timeline")
+            XCTAssertNil(tracker.observe(snapshot("idle")), "The following idle delta must stay silent too")
+            XCTAssertNil(tracker.observe(taskSnapshot([], timeline: "historical", revision: 0, legacy: legacy)))
+            XCTAssertNil(tracker.observe(restored), "Revealing the same history again is still not executed work")
+        }
+    }
+
+    func testFastEditCompletionSurvivesTheTimelineChange() {
+        for legacy in [false, true] {
+            for outcome in ["completed", "failed"] {
+                var tracker = WebhookFinishTracker()
+                var initial = taskSnapshot(["old"], revision: 0, legacy: legacy)
+                initial["commands"] = snapshot("idle", commands: [("old", "completed")])["commands"]
+                XCTAssertNil(tracker.observe(initial, baseline: true))
+                var edited = taskSnapshot(["replacement"], timeline: "edited-branch", revision: 1, outcome: outcome, legacy: legacy)
+                edited["commands"] = snapshot("idle", commands: [("old", "completed"), ("replacement", outcome)])["commands"]
+                XCTAssertEqual(tracker.observe(edited), outcome, "An accepted edit can finish before its first active snapshot")
+                XCTAssertNil(tracker.observe(edited), "One notification for the replacement task")
+            }
+        }
+    }
+
+    @MainActor func testChildSnapshotBeforeMetadataRepairCannotSendAWebhook() throws {
+        let root = URL(fileURLWithPath: scratchBase()).appendingPathComponent("webhook-child-" + UUID().uuidString)
+        let model = makeWorkspaceModel(stateRoot: root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        // An older desktop row lacks delegation metadata; the helper knows its role.
+        model.chats = [ChatRecord(id: "child", workspaceID: "project", title: "Child", profileID: "fixture")]
+        let display = SessionDisplay(id: "child"); model.displays[display.id] = display
+        var settings = WebhookSettings(); settings.enabled = true; settings.url = "http://127.0.0.1:1/no-send"; settings.parameters = ""
+        model.configuration.webhook = settings
+        model.observeWebhookFinish(sessionID: "child", snapshot: snapshot("idle", commands: []), baseline: true)
+        var child = snapshot("idle", commands: [("managed-turn", "completed")]); child["subagentStatus"] = .string("completed")
+        model.observeWebhookFinish(sessionID: "child", snapshot: child, baseline: false)
+        XCTAssertTrue(model.webhookTasks.isEmpty, "Opening a child in any tab must not schedule delivery, even before ChatRecord repair")
+        model.observeWebhookFinish(sessionID: "child", snapshot: snapshot("idle", commands: [("later-child-turn", "completed")]), baseline: false)
+        XCTAssertTrue(model.webhookTasks.isEmpty, "A later delta cannot forget the runtime child role")
+    }
+
     // MARK: Sending
 
     /// A finished chat's webhook, which nobody is watching, is sent once more

@@ -68,6 +68,7 @@ extension WorkspaceModel {
         if let id = metadataSession, record(id)?.workspaceID == workspaceID { sessions.insert(id) }
         if let scope = try? CaptureLineage.scope(metadata), record(scope.budgetOwnerSessionID)?.workspaceID == workspaceID {
             sessions.insert(scope.budgetOwnerSessionID)
+            sessions.formUnion((scope.sideParents ?? []).filter { record($0)?.workspaceID == workspaceID })
         }
         let inheritedVisible = visible.filter { $0.key != metadataSession }
         // Metadata already names its owner. Only links need to resolve it;
@@ -77,10 +78,19 @@ extension WorkspaceModel {
            let target = try? await traces.accountingTarget(attemptID: attempt, workspaceID: workspaceID, visibleMessageIDs: inheritedVisible.values.reduce(into: Set<String>()) { $0.formUnion($1) }) {
             if record(target.sessionID)?.workspaceID == workspaceID { sessions.insert(target.sessionID) }
             if let owner = target.budgetOwnerSessionID, record(owner)?.workspaceID == workspaceID { sessions.insert(owner) }
+            sessions.formUnion(target.familySessionIDs.filter { record($0)?.workspaceID == workspaceID })
             outputs.formUnion(target.outputMessageIDs)
         } else if type == "interrupted" {
             for id in displays.keys where record(id)?.workspaceID == workspaceID {
                 sessions.insert(id)
+            }
+        }
+        for id in Array(sessions) {
+            guard var item = record(id) else { continue }
+            var seen: Set<String> = [id]
+            while let parentID = item.delegation?.budgetOwnerSessionID ?? sideBudgetParent(item), seen.insert(parentID).inserted,
+                  let parent = record(parentID), parent.workspaceID == workspaceID {
+                sessions.insert(parentID); item = parent
             }
         }
         guard !isShutDown, !Task.isCancelled else { return }
@@ -238,7 +248,13 @@ extension WorkspaceModel {
         } else { _ = beginChatStatsQuery(id) }
         let changed = chatStats[id] != totals
         chatAccounting.publish(totals, sessionID: id)
-        if changed { noteActivityChanged(id) }
+        if changed {
+            if let owner = record(id)?.delegation?.budgetOwnerSessionID { subagentFamilies.removeValue(forKey:owner) }
+            noteActivityChanged(id)
+            for child in displays.keys where child != id {
+                if let item = record(child), budgetOwner(for: item).id == id { refreshCostReading(child) }
+            }
+        }
     }
 
     func refreshAccounting(_ view: SessionDisplay, workspaceID: String, includeMessages: Bool = true, query: (@MainActor () async throws -> SessionGatewayAccounting)? = nil) async {

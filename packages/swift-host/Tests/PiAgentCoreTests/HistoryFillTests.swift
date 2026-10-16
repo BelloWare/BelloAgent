@@ -51,6 +51,26 @@ final class HistoryFillTests: XCTestCase {
     }
     private let chatID = "chat-0001"
 
+    func testRestoringCheckpointTaskRecordsNeverPublishesALiveCompletion() async throws {
+        let chat = try chat(); defer { try? FileManager.default.removeItem(at: chat.root) }
+        let path = try await source(chat)
+        for full in [false, true] {
+            let session = try chat.session(chatID, client: ScriptClient([answer("New live answer")]), resume: path)
+            let before = await session.snapshot(["includeMessages":false])["taskPresentation"]
+            XCTAssertEqual(before["completion"]["revision"].int, 0)
+            if full { try await session.loadFullHistory() } else { try await session.loadOlderRows() }
+            let restored = await session.snapshot(["includeMessages":false])["taskPresentation"]
+            XCTAssertGreaterThan(restored["recent"].list.count, before["recent"].list.count, "Exercise the actual lazy terminal restoration")
+            XCTAssertEqual(restored["epoch"], before["epoch"]); XCTAssertEqual(restored["timeline"], before["timeline"])
+            XCTAssertEqual(restored["completion"]["revision"].int, 0, "History is never a live completion")
+            try await send(session, UUID().uuidString, "New task")
+            let finished = await session.snapshot(["includeMessages":false])["taskPresentation"]
+            XCTAssertEqual(finished["completion"]["revision"].int, 1)
+            XCTAssertEqual(finished["completion"]["outcome"].text, "completed")
+            await session.close()
+        }
+    }
+
     /// A chat with tools, an edit, a compaction and turns after it, closed.
     private func source(_ chat: Chat) async throws -> String {
         let session = try chat.session(chatID, client: ScriptClient([

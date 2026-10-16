@@ -17,14 +17,23 @@ import AppKit
     @Published private(set) var index = InspectorIndex()
     @Published private(set) var indexLoaded = false
     @Published var coordination: [AgentCoordinationEntry] = []
+    @Published private(set) var sideGroups: [InspectorSideGroup] = []
     @Published private(set) var groups: [InspectorSubagentGroup] = []
+    func numberSubagentGroups(_ numbers: [String: Int]) {
+        let numbered = groups.map { value in
+            var group = value; group.number = numbers[group.summary.link.childSessionID] ?? group.number
+            group.effort = workspace?.subagentEffortLabel(group.summary.link.childSessionID, summary: group.summary)
+            return group
+        }
+        if numbered != groups { groups = numbered }
+    }
     @Published private(set) var familyFilter: InspectorFamilyFilter = .family
     private var linkedRow: InspectorRequestRow?
     private var lookedUpRequest: String?
     var filterLabel: String {
         switch familyFilter {
         case .chat: "This chat only"
-        case .family: "This chat + sub-agents"
+        case .family: "Whole chat family"
         case .child(let id): groups.first { $0.summary.link.childSessionID == id }?.title ?? "Sub-agent"
         }
     }
@@ -73,6 +82,7 @@ import AppKit
     let request: InspectorRequestModel
     let next: NextRequestModel
     let archive: PayloadArchive
+    @Published var originalForkID: String?
     weak var workspace: WorkspaceModel?
     /// Each chart's pointer selection, held without being observed.
     let timelineSelection = PiChartSelection()
@@ -348,7 +358,12 @@ import AppKit
                 self.signature = key
                 let groups = try await archive.inspectorSubagents(owner: scope.sessionID, workspaceID: scope.workspaceID)
                 guard !Task.isCancelled else { return }
-                self.groups = groups
+                self.groups = groups.map { value in
+                    var group = value; group.number = self.workspace?.record(value.summary.link.childSessionID)?.subagentNumber
+                    group.effort = self.workspace?.subagentEffortLabel(value.summary.link.childSessionID, summary: value.summary)
+                    return group
+                }
+                self.sideGroups = try await archive.inspectorSides(owner: scope.sessionID, workspaceID: scope.workspaceID)
                 await self.readAgentCoordination()
                 guard !Task.isCancelled else { return }
                 self.lastRead = (read.rows, live, read.older)
@@ -529,8 +544,14 @@ import AppKit
     }
 
     nonisolated static func summaries(messages: [TranscriptMessage], lifecycle: TaskPresentationProjection?) -> [String: TurnSummary] {
+        collectSummaries(TranscriptActivity.blocks(of:messages,lifecycle:lifecycle))
+    }
+
+    // Keep the large enum/summary extraction frame off the stack while the
+    // transcript planner runs on a cooperative worker's smaller stack.
+    @inline(never) nonisolated private static func collectSummaries(_ items: [TranscriptItem]) -> [String: TurnSummary] {
         var result: [String: TurnSummary] = [:]
-        for item in TranscriptActivity.blocks(of: messages, lifecycle: lifecycle) {
+        for item in items {
             guard case .block(let block) = item, let turn = block.turn else { continue }
             if let id = block.turnID ?? turn.taskRootID ?? turn.requests.compactMap(\.turn).first { result[id] = turn }
         }
@@ -614,7 +635,7 @@ import AppKit
     /// "Fork from here" on a request's page: a new chat that ends at the
     /// reply this request produced, opened in the main window.
     func forkFromRequest(_ attemptID: String) {
-        guard let workspace else { return }
+        guard originalForkID == nil, let workspace else { return }
         guard let row = index.request(attemptID), row.delegationID == nil else { return }
         let sessionID = row.sessionID ?? scope.sessionID
         guard workspace.canForkFromReply(sessionID) else { return }
@@ -642,23 +663,30 @@ import AppKit
                 showSubagentParent(group.summary.link); return
             }
             let archive = archive, fallback = index.request(id)?.turn
+            let navigation = workspace.transcriptNavigation(sessionID, advancing: true)
             Task { [weak self] in
                 let links = try? await archive.linkedMessages(attemptID: id)
-                guard self != nil else { return }
-                self?.reveal(workspace, sessionID, links?.output.first ?? fallback)
+                guard !Task.isCancelled, navigation.isCurrent(in: workspace), let self, self.page == .request(id) else { return }
+                self.reveal(workspace, sessionID, links?.output.first ?? fallback, navigation: navigation)
             }
         case .subagent(let id):
-            if let group = groups.first(where: { $0.id == id }) { bringMainWindowForward(); Task { await workspace.openSubagent(SubagentTarget(group.summary.link)) } }
+            if let group = groups.first(where: { $0.id == id }) { reveal(workspace, group.summary.link.childSessionID, nil) }
         case .overview, .nextRequest: reveal(workspace, sessionID, nil)
         }
     }
 
-    private func reveal(_ workspace: WorkspaceModel, _ sessionID: String, _ message: String?) {
+    func reveal(_ workspace: WorkspaceModel, _ sessionID: String, _ message: String?, navigation: TranscriptNavigationToken? = nil) {
         bringMainWindowForward()
         let target = groups.first { $0.summary.link.childSessionID == sessionID }.map { SubagentTarget($0.summary.link) }
+            ?? (originalForkID == nil ? nil : workspace.record(sessionID)?.delegation.map(SubagentTarget.init))
+        let navigation = navigation ?? workspace.transcriptNavigation(sessionID, advancing: true)
         Task {
-            if let target { guard await workspace.openSubagent(target) else { return } }
-            _ = await workspace.revealMessage(sessionID: sessionID, messageID: message)
+            guard !Task.isCancelled, navigation.isCurrent(in: workspace) else { return }
+            if let fork = self.originalForkID {
+                if let target { _ = await workspace.openOriginalSubagent(target, from: fork, sourceMessage: message) }
+                else { _ = await workspace.revealMessage(sessionID: fork, messageID: message, origin: navigation.reader) }
+            } else if let target { _ = await workspace.openSubagent(target, sourceMessage: message) }
+            else { _ = await workspace.revealMessage(sessionID: sessionID, messageID: message) }
         }
     }
     /// A standalone child Inspector has no owned delegation groups. Resolve
@@ -667,24 +695,30 @@ import AppKit
     func showOriginatingTool(_ row: InspectorRequestRow) {
         guard let workspace, let parent = row.parentSessionID else { return }
         let child = row.sessionID ?? scope.sessionID
+        let navigation = workspace.transcriptNavigation(child, advancing: true)
         Task { [weak self] in
             guard let self else { return }
             let groups = self.groups.isEmpty ? (try? await archive.inspectorSubagents(owner: parent, workspaceID: scope.workspaceID)) ?? [] : self.groups
+            guard !Task.isCancelled, navigation.isCurrent(in: workspace) else { return }
             let link = workspace.record(child)?.delegation ?? groups.first(where: { $0.id == row.delegationID })?.summary.link
-            guard !Task.isCancelled, let link, link.valid, link.childSessionID == child,
+            guard let link, link.valid, link.childSessionID == child,
                   link.delegationID == row.delegationID, link.call.parentSessionID == parent,
                   link.call.assistantMessageID == row.parentAssistantID, link.call.toolCallID == row.parentToolCallID,
                   workspace.record(parent)?.workspaceID == scope.workspaceID else {
                 focusNotice = "The originating delegation is no longer available."; return
             }
-            showSubagentParent(link)
+            showSubagentParent(link, navigation: navigation)
         }
     }
-    func showSubagentParent(_ link: SubagentLink) {
+    func showSubagentParent(_ link: SubagentLink, navigation: TranscriptNavigationToken? = nil) {
         guard let workspace else { return }
         bringMainWindowForward()
+        let navigation = navigation ?? workspace.transcriptNavigation(link.childSessionID, advancing: true)
         Task {
-            await workspace.openSubagentParent(link)
+            guard !Task.isCancelled, navigation.isCurrent(in: workspace) else { return }
+            if let fork = self.originalForkID {
+                _ = await workspace.revealMessage(sessionID: fork, messageID: link.call.assistantMessageID, origin: navigation.reader)
+            } else { await workspace.openSubagentParent(link, origin: navigation.reader) }
         }
     }
     /// The app's main window: the one that is not an Inspector and can be main.

@@ -2,7 +2,7 @@ import XCTest
 @testable import PiAgentCore
 
 final class SubagentAdmissionTests: XCTestCase {
-    func testLateCorrectionReachingTheLimitCancelsCurrentFamilyPermits() async throws {
+    func testLateCorrectionReachingTheLimitLetsDispatchedRequestsFinish() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let owner = try familyFixture(root: root), profile = try fixtureProfile()
         await owner.enableFamilyBudget(); await owner.setCostLimit(0.5)
@@ -14,7 +14,7 @@ final class SubagentAdmissionTests: XCTestCase {
         var correction = try XCTUnwrap(entry)
         correction["usd"] = 0.6; correction["reported"] = 1; correction["unreported"] = 0; correction["accountingRevision"] = 100
         try await owner.correctAccounting(correction)
-        XCTAssertThrowsError(try current.check())
+        XCTAssertNoThrow(try current.check())
         let reason = await owner.familyStopReason, spend = await owner.spend
         XCTAssertEqual(reason?.code, "cost_limit"); XCTAssertEqual(spend.usd, 0.6)
         XCTAssertEqual(spend.unreported, 1, "The still-running attempt is unknown, never free")
@@ -39,7 +39,7 @@ final class SubagentAdmissionTests: XCTestCase {
         XCTAssertEqual(captures["attempts"].list.first?["attemptId"].text, settlements[0].observation.attemptID)
     }
 
-    func testSharedLimitCancelsPermitsButStillAcceptsLateChildAccounting() async throws {
+    func testSharedLimitFinishesDispatchedRequestsBeforeStoppingFamily() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let owner = try familyFixture(root: root), profile = try fixtureProfile()
         await owner.enableFamilyBudget(); await owner.beginPresentedTask("turn")
@@ -57,7 +57,7 @@ final class SubagentAdmissionTests: XCTestCase {
         let a = try await own.admitAttempt("own"), b = try await delegated.admitAttempt("child-physical")
         try await own.willDispatch("own"); try await delegated.willDispatch("child-physical")
         try await own.settleAttempt(AttemptSettlement(scope: own.scope, observation: billingObservation(profile: profile, session: "parent", attempt: "own", cost: 0.6), dispatched: true))
-        XCTAssertThrowsError(try b.check()); XCTAssertThrowsError(try a.check())
+        XCTAssertNoThrow(try b.check()); XCTAssertNoThrow(try a.check())
         // Cancellation may report a final charge. Both journals retain the same
         // physical attempt, and only the owner total includes both sessions.
         try await delegated.settleAttempt(AttemptSettlement(scope: delegated.scope, observation: billingObservation(profile: profile, session: "child", attempt: "child-physical", cost: 0.2), dispatched: true))

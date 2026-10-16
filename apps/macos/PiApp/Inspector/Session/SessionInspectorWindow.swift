@@ -5,7 +5,7 @@ import Combine
 /// left at, and reads that stop whenever it is minimised, covered or closed.
 @MainActor final class SessionInspectorWindowController: NSWindowController, NSWindowDelegate {
     static let identifier = "session-inspector-window"
-    let inspector: SessionInspectorModel
+    private(set) var inspector: SessionInspectorModel
     private(set) var isClosed = false
     private var observations: Set<AnyCancellable> = []
     var onClose: (() -> Void)?
@@ -65,7 +65,7 @@ import Combine
         model.$chats.combineLatest(model.$sides).sink { [weak self] chats, sides in
             let record = chats.first { $0.id == scope.sessionID && $0.workspaceID == scope.workspaceID }
                 ?? sides.values.first { $0.id == scope.sessionID && $0.workspaceID == scope.workspaceID }?.chat
-            if let record { self?.updateTitle(record.title) }
+            if let record { self?.updateTitle(record.displayTitle) }
         }.store(in: &observations)
         if let display = model.displays[scope.sessionID] { inspector.observe(footer: display.footer, display: display) }
     }
@@ -74,6 +74,19 @@ import Combine
     func follow(_ display: SessionDisplay?) {
         guard !isClosed else { return }
         inspector.follow(display)
+    }
+
+    /// A pending chat chose another project. Retire every old-scope read and
+    /// preview, while keeping the window's frame, ordering and hidden state.
+    func rebind(inspector replacement: SessionInspectorModel, model: WorkspaceModel) {
+        guard !isClosed, let window else { return }
+        inspector.setVisible(false)
+        inspector.follow(nil)
+        inspector = replacement
+        window.contentView = SessionInspectorView(inspector: replacement, topInset: 28)
+        updateTitle(replacement.title)
+        observe(model: model)
+        replacement.setVisible(isOnScreen)
     }
 
     func windowDidMiniaturize(_ notification: Notification) { guard !isClosed else { return }; inspector.setVisible(false) }
@@ -103,8 +116,8 @@ import Combine
     /// window that closed never hands its Inspector to a new one.
     private struct Entry {
         weak var owner: WorkspaceModel?
-        let scope: SessionUsageScope
         let controller: SessionInspectorWindowController
+        @MainActor var scope: SessionUsageScope { controller.inspector.scope }
     }
     private var entries: [Entry] = []
     var count: Int { entries.count }
@@ -115,7 +128,7 @@ import Combine
     }
 
     @discardableResult
-    func show(model: WorkspaceModel, sessionID: String, workspaceID: String, title: String, focus: InspectorFocus) -> SessionInspectorWindowController {
+    func show(model: WorkspaceModel, sessionID: String, workspaceID: String, title: String, focus: InspectorFocus, originalForkID: String? = nil) -> SessionInspectorWindowController {
         // An Inspector whose project window is gone has nothing to follow.
         for entry in entries where entry.owner == nil { entry.controller.close() }
         let scope = SessionUsageScope(sessionID: sessionID, workspaceID: workspaceID)
@@ -124,17 +137,35 @@ import Combine
             controller = existing
             controller.updateTitle(title)
         } else {
-            let inspector = SessionInspectorModel(scope: scope, title: title, archive: model.traces, workspace: model,
-                                                  usageLoader: { [archive = model.traces] scope, until, offset in
-                try await archive.sessionMetrics(sessionID: scope.sessionID, workspaceID: scope.workspaceID, until: until, offset: offset, includeFamily: scope.includeFamily)
-            })
-            controller = SessionInspectorWindowController(inspector: inspector)
-            controller.onClose = { [weak self, weak controller] in self?.entries.removeAll { $0.controller === controller } }
-            entries.append(Entry(owner: model, scope: scope, controller: controller))
+            controller = SessionInspectorWindowController(inspector: makeInspector(model: model, scope: scope, title: title))
+            controller.onClose = { [weak self, weak controller, weak model] in
+                self?.entries.removeAll { $0.controller === controller }
+                model?.releaseUnusedBudgetSessions()
+            }
+            entries.append(Entry(owner: model, controller: controller))
         }
+        // Provenance belongs to this opening, not the reused session window.
+        controller.inspector.originalForkID = originalForkID
         controller.observe(model: model)
         controller.present(focus)
         return controller
+    }
+
+    /// Called after the guarded pending-chat swap. Match the old owner and
+    /// project exactly; report windows for other scopes keep their identity.
+    func rebindPendingChat(model: WorkspaceModel, previousWorkspaceID: String, chat: ChatRecord) {
+        let previous = SessionUsageScope(sessionID: chat.id, workspaceID: previousWorkspaceID)
+        let destination = SessionUsageScope(sessionID: chat.id, workspaceID: chat.workspaceID)
+        for entry in entries where entry.owner === model && entry.scope == previous {
+            entry.controller.rebind(inspector: makeInspector(model: model, scope: destination, title: chat.title), model: model)
+        }
+    }
+
+    private func makeInspector(model: WorkspaceModel, scope: SessionUsageScope, title: String) -> SessionInspectorModel {
+        SessionInspectorModel(scope: scope, title: title, archive: model.traces, workspace: model,
+                              usageLoader: { [archive = model.traces] scope, until, offset in
+            try await archive.sessionMetrics(sessionID: scope.sessionID, workspaceID: scope.workspaceID, until: until, offset: offset, includeFamily: scope.includeFamily)
+        })
     }
 
     /// A project window's displays changed: each Inspector follows its chat's

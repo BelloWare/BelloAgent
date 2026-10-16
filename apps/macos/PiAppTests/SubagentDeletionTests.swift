@@ -15,6 +15,7 @@ final class SubagentDeletionTests: XCTestCase {
             try FileManager.default.moveItem(at: old, to: journal); model.chats[0].path = journal.path
             let parent = model.chats[0], store = try XCTUnwrap(model.store)
             try await store.putChats(model.chats)
+            try await store.put(SideKeepRegistration(expected: parent, path: parent.path), kind: SideKeepRegistration.kind, id: parent.id)
             let files = [journal, family.path] + [".meta", ".stream"].map { URL(fileURLWithPath: journal.path + $0) }
             for file in files.dropFirst(2) { try Data("fixture".utf8).write(to: file) }
             model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at: url) } }
@@ -23,6 +24,8 @@ final class SubagentDeletionTests: XCTestCase {
             XCTAssertNil(model.record(parent.id))
             let pending = try await store.pendingFamilyDeletions()
             XCTAssertTrue(pending.isEmpty)
+            let receipt = try await store.get(SideKeepRegistration.self, kind: SideKeepRegistration.kind, id: parent.id)
+            XCTAssertNil(receipt)
         }
     }
 
@@ -80,7 +83,7 @@ final class SubagentDeletionTests: XCTestCase {
         let family = try SubagentDiscoveryTests.family(model)
         let store = try XCTUnwrap(model.store), parent = try XCTUnwrap(model.record("chat-parent"))
         for chat in model.chats { try await store.put(chat, kind: "chat", id: chat.id) }
-        for suffix in [".meta", ".stream", ".stream-unrestored-fixture", ".promotion"] { try Data("fixture".utf8).write(to: URL(fileURLWithPath: family.path.path + suffix)) }
+        for suffix in [".meta", ".origin", ".stream", ".stream-unrestored-fixture", ".promotion"] { try Data("fixture".utf8).write(to: URL(fileURLWithPath: family.path.path + suffix)) }
         let parentPromotion = URL(fileURLWithPath: try XCTUnwrap(parent.path) + ".promotion")
         try Data("private parent promotion fixture".utf8).write(to: parentPromotion)
         let temporary = family.path.deletingLastPathComponent().appendingPathComponent("." + family.path.lastPathComponent + ".meta." + UUID().uuidString)
@@ -98,6 +101,7 @@ final class SubagentDeletionTests: XCTestCase {
         try await model.deleteSubagentFamily(parent)
         XCTAssertNil(model.record(parent.id)); XCTAssertFalse(FileManager.default.fileExists(atPath: family.path.path))
         XCTAssertTrue(recycled.contains { $0.path == family.path.path + ".meta" })
+        XCTAssertTrue(recycled.contains { $0.path == family.path.path + ".origin" })
         XCTAssertTrue(recycled.contains { $0.path == family.path.path + ".promotion" })
         XCTAssertFalse(FileManager.default.fileExists(atPath: parentPromotion.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.path))
@@ -122,10 +126,13 @@ final class SubagentDeletionTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: family.path.path))
         let intents = try await store.list(SessionDeletionRecord.self, kind: SessionDeletionRecord.kind)
         XCTAssertEqual(Set(intents.map(\.id)), Set([parent.id, family.child]))
-        model.shutdown()
+        await model.stopHostsAndWait(); model.shutdown()
         try await model.traces.close(); await store.close()
-        let reopened = WorkspaceModel(stateRoot: model.root, vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        // A real relaunch retains the project's configuration. The recovery
+        // barrier can start its helper without opening any conversation.
+        let reopened = WorkspaceModel(stateRoot: model.root, vault: model.vault)
         defer { reopened.shutdown() }
+        addTeardownBlock { @MainActor in await reopened.stopHostsAndWait() }
         let nextStore = try XCTUnwrap(reopened.store)
         reopened.chats = try await nextStore.loadChats()
         try await reopened.traces.configure(quota: nil, bodyRetention: 86_400, metricRetention: 86_400)

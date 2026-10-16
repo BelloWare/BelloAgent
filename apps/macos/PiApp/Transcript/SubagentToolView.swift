@@ -7,6 +7,9 @@ struct SubagentTarget: Equatable, Sendable {
     var turn: Int? = nil
     var messageID: String? = nil
     var receiptSource = false
+    func isHistorical(in sourceID: String?) -> Bool {
+        sourceID.map { $0 != ownerID && $0 != sessionID } ?? false
+    }
     init(_ link: SubagentLink) {
         delegationID = link.delegationID; sessionID = link.childSessionID; ownerID = link.budgetOwnerSessionID
         assistantID = link.call.assistantMessageID; toolCallID = link.call.toolCallID
@@ -31,30 +34,47 @@ struct SubagentTarget: Equatable, Sendable {
 }
 
 struct SubagentToolView: Equatable, Sendable {
+    static let historicalNotice = "From the original chat"
     static func isControl(_ name: String) -> Bool { name == "subagent" || ["subagent_start", "subagent_send", "subagent_wait", "subagent_status", "subagent_stop", "subagent_report"].contains(name) }
+    let originalAvailability: OriginalSubagentAvailability?
     let operation: String
+    let number: Int?
+    let effort: String?
+    /// The accepted turn's saved receipt, before any live display overlay.
+    let receiptEffort: String?
+    let childID: String?
+    var name: String { SubagentLabel.name(number) }
+    var title: String { SubagentLabel.title(number, description) }
     let route: String?
     let receiptTurn: Int?
     let accepted: Bool?
     let messageReference: AgentMessageReference?
+    let receiptMessageID: String?
     let messageState: String?
     let heldByUser: Bool
     let wakeReason: String?
     let messageKind: String?
     let target: SubagentTarget?
     let summary: SubagentSummary?
+    let cost: SubagentCostPresentation?
     let task: String, description: String, result: String, error: String?
     let status: SubagentStatus
     let truncated: Bool
     init(_ tool: ToolView) {
+        originalAvailability = tool.originalSubagentAvailability
+        cost = tool.subagentCost
         operation = tool.name
+        number = tool.subagentNumber
+        effort = tool.subagentEffort
         let input = tool.input.data(using: .utf8).flatMap { try? JSONDecoder().decode(WireValue.self, from: $0) }?.object ?? [:]
         let output = tool.output.data(using: .utf8).flatMap { try? JSONDecoder().decode(WireValue.self, from: $0) }?.object ?? [:]
+        receiptEffort = tool.nativeSubagent?.object?["effort"]?.string ?? output["effort"]?.string
         accepted = output["accepted"]?.bool
         messageState = tool.agentDeliveryState
         heldByUser = tool.agentHeldByUser == true
         wakeReason = output["wake_reason"]?.string
         messageKind = input["kind"]?.string
+        receiptMessageID = output["message_id"]?.string
         messageReference = output["child_id"]?.string.flatMap { child in
             output["turn"]?.nonnegativeInteger.map { AgentMessageReference(childID: child, turn: $0, eventID: output["message_id"]?.string, recipient: true) }
         }
@@ -67,6 +87,7 @@ struct SubagentToolView: Equatable, Sendable {
            reference.childID == destination?.sessionID, reference.turn == destination?.turn,
            let id = reference.eventID, !id.isEmpty, id.utf8.count <= 512 { destination?.messageID = id }
         target = destination
+        childID = destination?.sessionID ?? output["child_id"]?.string ?? input["child_id"]?.string
         task = input["task"]?.string ?? input["message"]?.string ?? input["reason"]?.string ?? (tool.name == "subagent_wait" ? "Wait for selected child turns to settle." : tool.input)
         description = summary?.description ?? input["description"]?.string ?? String(task.split(whereSeparator: \.isWhitespace).joined(separator: " ").prefix(120))
         let savedState = (output["status"]?.string == "accepted" || output["accepted"]?.bool == true) ? SubagentStatus.queued : tool.state == "unknown" ? SubagentStatus.interrupted : SubagentStatus(rawValue: tool.state) ?? .queued
@@ -76,6 +97,9 @@ struct SubagentToolView: Equatable, Sendable {
         truncated = output["truncated"]?.bool == true || tool.truncated
     }
     var label: String {
+        statusLabel + (effort.map { " · " + $0 } ?? "")
+    }
+    private var statusLabel: String {
         if operation != "subagent" {
             if accepted == false { return "Not accepted" }
             if heldByUser { return "Stopped by you" + ((operation == "subagent_start" ? summary?.turn ?? receiptTurn : receiptTurn).map { " · turn \($0)" } ?? "") }
@@ -92,8 +116,8 @@ struct SubagentToolView: Equatable, Sendable {
             if operation == "subagent_report" { return "To parent · queued for delivery" + suffix }
             if operation == "subagent_wait" {
                 guard let wakeReason else { return "Waiting for sub-agents" }
-                let reason = ["message":"new report", "steering":"new guidance", "settled":"turns settled", "empty":"no pending turns", "timeout":"timeout", "stopped":"stopped"][wakeReason] ?? wakeReason
-                return "Wait ended · " + reason
+                let reason = ["message":"new report", "steering":"new guidance", "settled":"agents finished", "empty":"no agents to wait for", "timeout":"wait time elapsed", "stopped":"stopped"][wakeReason]
+                return "Wait ended" + (reason.map { " · " + $0 } ?? "")
             }
             if let summary, operation == "subagent_start" || summary.turn == receiptTurn { return summary.presentationLabel }
             if route == "follow_up" { return "Follow-up accepted" + suffix }

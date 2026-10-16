@@ -129,10 +129,10 @@ final class WorkspaceDurabilityTests: XCTestCase {
         XCTAssertEqual(model.chats.map(\.id), ["valid"])
         let damaged = try await store.get(SideKeepIntent.self, kind: "side-keep", id: "damaged")
         let registered = try await store.get(SideKeepIntent.self, kind: "side-keep", id: "valid")
-        XCTAssertNotNil(damaged); XCTAssertNil(registered); XCTAssertNotNil(model.error)
+        XCTAssertNotNil(damaged); XCTAssertNil(registered); XCTAssertEqual(model.sideKeepIssues.map(\.id), ["damaged"])
         model.sides["parent"] = .init(id: "unregistered", parentID: "parent", workspaceID: "w", profileID: "p", title: "Unregistered")
         await model.applySideStatus(id: "unregistered", result: ["ephemeral": .bool(false), "path": .string("missing")])
-        XCTAssertTrue(model.error?.contains("recovery intent") == true)
+        XCTAssertTrue(model.error?.contains("Could not add “Unregistered” to saved chats.") == true)
         XCTAssertFalse(model.sides["parent"]?.kept ?? true)
         model.shutdown(); try await model.traces.close(); await store.close()
     }

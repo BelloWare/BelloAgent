@@ -4,7 +4,7 @@ import Combine
 /// The workspace window's content: the sidebar under the window's chrome,
 /// its resize handle, and the content column — the error strip over the
 /// chat (or what shows in its place) with its pane beside it, the pages laid
-/// over them, and the sides panel at the right edge or docked as a column.
+/// over them.
 @MainActor final class WorkspaceRootView: NSView, InheritsReducedMotion {
     // SwiftUI's 600pt minimum excluded the titlebar's safe-area space.
     static let minimumWindowSize = NSSize(width: 920, height: 628)
@@ -29,9 +29,6 @@ import Combine
     private(set) var rightPane: RightPaneView?
     private var page: NSView?
     private var shownPage: WorkspacePage?
-    private var edge: SidesPanelEdgeView?
-    private var pinnedPanel: SidesPanelView?
-    private let pinnedLine = ShellHairline()
     private let visibility = ConversationPageVisibilityView()
     private let activityHook = WindowActivityGuard.HookView()
     private let activityGuard: WindowActivityGuard.Coordinator
@@ -50,7 +47,7 @@ import Combine
     var reducesMotion: Bool { inheritedReduceMotion || PiKit.Motion.reduced }
     /// What was shown last, so a change that shows nothing new does nothing.
     private struct Geometry: Equatable {
-        var sidebarWidth: CGFloat, pinned: Bool, cover: Bool, fraction: Double, showsPane: Bool, page: WorkspacePage
+        var sidebarWidth: CGFloat, cover: Bool, fraction: Double, showsPane: Bool, page: WorkspacePage
     }
     private var shownGeometry: Geometry?
     private var shownChat: (session: ObjectIdentifier, chat: ChatRecord, enabled: Bool)?
@@ -191,6 +188,8 @@ import Combine
 
     func refresh() {
         let enabled = inheritedEnabled && !model.installPreparing
+        let windowTitle = model.chat.flatMap { $0.isSubagent ? $0.displayTitle + " — Bello Agent" : nil } ?? "Bello Agent"
+        if window?.title != windowTitle { window?.title = windowTitle }
         let onChats = model.page == .chats
         applySidebarWidth()
         chromeController.focusedSessionID = model.focusedSessionID ?? model.selectedID
@@ -199,6 +198,14 @@ import Combine
         // The error strip, above the content column.
         errorStrip.inheritedEnabled = enabled
         errorStrip.show(model.error)
+        if column.review?.issues != model.sideKeepIssues {
+            column.review = model.sideKeepIssues.isEmpty ? nil : SideKeepNoticeView(issues: model.sideKeepIssues,
+                open: { [weak model] in model?.openSideKeepFile($0) },
+                reveal: { [weak model] in model?.showSideKeepFile($0) },
+                dismiss: { [weak model] in model?.dismissSideKeep($0, over: $1) },
+                retry: { [weak model] in Task { await model?.reconcileSideKeeps() } })
+        }
+        column.review?.inheritedEnabled = enabled
 
         // The chat, or what shows in its place.
         if let session = model.selected, let chat = model.chat {
@@ -266,28 +273,6 @@ import Combine
         }
         if let page { WorkspacePages.update(page, enabled: enabled, reduceMotion: reducesMotion) }
 
-        // The sides panel: at the edge, or docked.
-        if model.sidesPanelPinned {
-            if edge != nil { column.edge = nil; edge = nil }
-            let panel = pinnedPanel ?? SidesPanelView(model: model, parentID: model.selectedID, pinned: true)
-            if pinnedPanel == nil { pinnedPanel = panel; addSubview(pinnedLine); addSubview(panel) }
-            panel.parentID = model.selectedID
-            panel.inheritedEnabled = enabled
-            panel.motionReduced = reducesMotion
-        } else {
-            if let panel = pinnedPanel { panel.removeFromSuperview(); pinnedLine.removeFromSuperview(); pinnedPanel = nil }
-            if onChats, !model.launching, let parentID = model.selectedID, model.sidesPanelAvailable(for: parentID) {
-                if let edge { edge.show(parentID: parentID) } else {
-                    let view = SidesPanelEdgeView(model: model, parentID: parentID, reveal: model.sidesPanelReveal)
-                    view.reducesMotion = { [weak self] in self?.reducesMotion ?? PiKit.Motion.reduced }
-                    column.edge = view
-                    edge = view
-                }
-                edge?.inheritedEnabled = enabled
-                edge?.motionReduced = reducesMotion
-            } else if edge != nil { column.edge = nil; edge = nil }
-        }
-
         // Focus and visibility of what a page or a tab covers.
         let covered: Set<String> = side.flatMap { side in pane.shownTab(sideAvailable: true) != nil ? [side.info.id] : nil } ?? []
         let visibilityKey = "\(onChats)|\(model.focusedSessionID ?? "")|" + covered.sorted().joined(separator: ",")
@@ -311,7 +296,7 @@ import Combine
         } else if let cover = installCover { cover.removeFromSuperview(); installCover = nil }
 
         // The window lays out again only when its geometry changed.
-        let geometry = Geometry(sidebarWidth: sidebarWidth, pinned: model.sidesPanelPinned, cover: model.installPreparing,
+        let geometry = Geometry(sidebarWidth: sidebarWidth, cover: model.installPreparing,
                                 fraction: sideFraction, showsPane: showsPane, page: model.page)
         if geometry != shownGeometry { shownGeometry = geometry; needsLayout = true; chats.needsLayout = true }
     }
@@ -345,12 +330,7 @@ import Combine
         // The hairline at the boundary, its handle centred on it.
         let thickness = PiKit.ResizeHandle.hitThickness
         sidebarHandle.frame = CGRect(x: width + 0.5 - thickness / 2, y: 0, width: thickness, height: bounds.height)
-        var right = bounds.width
-        if let panel = pinnedPanel {
-            panel.frame = CGRect(x: bounds.width - SidesPanelMetrics.width, y: 0, width: SidesPanelMetrics.width, height: bounds.height)
-            pinnedLine.frame = CGRect(x: panel.frame.minX - 1, y: 0, width: 1, height: bounds.height)
-            right = pinnedLine.frame.minX
-        }
+        let right = bounds.width
         column.frame = CGRect(x: width + 1, y: 0, width: max(0, right - width - 1), height: bounds.height)
         if let cover = installCover {
             let size = cover.intrinsicContentSize
@@ -362,17 +342,15 @@ import Combine
     }
 }
 
-/// The content column: the error strip, then the chat's region under it,
-/// the sides panel's edge laid over both at the right.
+/// The content column: the error strip, then the chat's region under it.
 @MainActor final class WorkspaceContentColumn: NSView {
     var strip: WorkspaceErrorStrip? { didSet { replace(oldValue, strip) } }
+    var review: SideKeepNoticeView? { didSet { replace(oldValue, review) } }
     var region: NSView? { didSet { replace(oldValue, region) } }
-    var edge: NSView? { didSet { replace(oldValue, edge) } }
     private func replace(_ old: NSView?, _ new: NSView?) {
         guard old !== new else { return }
         old?.removeFromSuperview()
         if let new { addSubview(new) }
-        if let edge, edge.superview === self { addSubview(edge, positioned: .above, relativeTo: nil) }
         needsLayout = true
     }
     override init(frame: NSRect) { super.init(frame: frame); wantsLayer = true }
@@ -384,8 +362,11 @@ import Combine
         super.layout()
         let stripHeight = strip?.height(forWidth: bounds.width) ?? 0
         strip?.frame = CGRect(x: 0, y: 0, width: bounds.width, height: stripHeight)
-        region?.frame = CGRect(x: 0, y: stripHeight, width: bounds.width, height: max(0, bounds.height - stripHeight))
-        edge?.frame = bounds
+        let reviewWidth = min(740, max(0, bounds.width - 32))
+        let reviewHeight = review.map { $0.height(forWidth: reviewWidth) + 24 } ?? 0
+        review?.frame = CGRect(x: (bounds.width - reviewWidth) / 2, y: stripHeight + 12, width: reviewWidth, height: reviewHeight - 24)
+        let top = stripHeight + reviewHeight
+        region?.frame = CGRect(x: 0, y: top, width: bounds.width, height: max(0, bounds.height - top))
     }
 }
 

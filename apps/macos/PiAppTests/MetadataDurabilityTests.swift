@@ -200,7 +200,7 @@ extension MetadataDurabilityTests {
         chat.delegation = SubagentLink(delegationID: "d", childSessionID: chat.id, budgetOwnerSessionID: "pp",
                                       call: .init(parentSessionID: "pp", assistantMessageID: "reply", toolCallID: "call"),
                                       parentTurnID: "turn", parentExecutionID: "execution")
-        chat.delegationTask = "Delegated task"; chat.delegationIssue = "Saved recovery notice"
+        chat.delegationTask = "Delegated task"; chat.delegationIssue = "Saved recovery notice"; chat.subagentNumber = 2
         for child in Mirror(reflecting: chat).children {
             let inner = Mirror(reflecting: child.value)
             if inner.displayStyle == .optional { XCTAssertFalse(inner.children.isEmpty, "fixture leaves \(child.label ?? "?") nil") }
@@ -213,7 +213,7 @@ extension MetadataDurabilityTests {
         // Optionals absent from a row stay nil (an upgrade fills them in), not
         // the defaults a new record starts with.
         let sparse = try JSONDecoder().decode(ChatRecord.self, from: Data(#"{"id":"c","workspaceID":"w","title":"T","profileID":"p","toolMode":"read-only","imported":true}"#.utf8))
-        XCTAssertNil(sparse.sidebarOrder); XCTAssertNil(sparse.outputBudgetVersion)
+        XCTAssertNil(sparse.sidebarOrder); XCTAssertNil(sparse.outputBudgetVersion); XCTAssertNil(sparse.subagentNumber)
         XCTAssertEqual(sparse.toolMode, ChatRecord.readOnlyTools); XCTAssertTrue(sparse.imported)
         let keys = try JSONSerialization.jsonObject(with: try encoder.encode(sparse)) as? [String: Any]
         XCTAssertEqual(Set(keys?.keys.map { $0 } ?? []), ["id", "workspaceID", "title", "profileID", "toolMode", "imported"])

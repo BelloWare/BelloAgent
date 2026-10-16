@@ -12,11 +12,13 @@ final class QueuePanelGalleryTests: XCTestCase {
     private struct Scene { let name: String; let count: Int; var collapsed = false; var editing = false; var heldElsewhere = false; var terminal = false; var width: CGFloat = 920; var tallDraft = false }
 
     @MainActor func testQueuePanelScenes() async throws {
-        let folder = ProcessInfo.processInfo.environment["PI_APP_QUEUE_GALLERY"].map(URL.init(fileURLWithPath:))
+        let folder = testEnvironment("PI_APP_QUEUE_GALLERY").map(URL.init(fileURLWithPath:))
         if let folder { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
         let scenes = [Scene(name: "queue-1", count: 1), Scene(name: "queue-5", count: 5), Scene(name: "queue-20", count: 20),
                       Scene(name: "queue-64-limit", count: 64), Scene(name: "queue-20-collapsed", count: 20, collapsed: true),
                       Scene(name: "queue-5-editing", count: 5, editing: true), Scene(name: "queue-5-held-after-restart", count: 5, heldElsewhere: true),
+                      Scene(name: "queue-5-editing-wide", count: 5, editing: true, width: 1240),
+                      Scene(name: "queue-5-editing-narrow", count: 5, editing: true, width: 420),
                       Scene(name: "queue-20-terminal-tall-draft", count: 20, terminal: true, tallDraft: true),
                       Scene(name: "queue-5-split-terminal", count: 5, terminal: true, width: 460)]
         for scene in scenes {
@@ -34,7 +36,8 @@ final class QueuePanelGalleryTests: XCTestCase {
                 pane.session.draft = scene.tallDraft ? (0..<20).map { "Line \($0) of a long draft" }.joined(separator: "\n") : "A thought still being typed."
                 await pane.settle(16)
                 if scene.editing {
-                    pane.model.editQueued("q2", sessionID: pane.session.id)
+                    let row = try XCTUnwrap(ConversationPaneTests.views(QueueRowView.self, in: pane.hosted).first { $0.state?.item.id == "q2" })
+                    row.edit.performClick(nil)
                     try await eventually("The edit never opened") { pane.session.queueEditingID == "q2" }
                 }
                 if scene.heldElsewhere {
@@ -50,6 +53,13 @@ final class QueuePanelGalleryTests: XCTestCase {
                     dump(pane.hosted, 0)
                 }
                 let field = try XCTUnwrap(ConversationPaneTests.views(ComposerTextView.self, in: pane.hosted).first?.enclosingScrollView)
+                if scene.editing {
+                    let banner = try XCTUnwrap(ConversationPaneTests.views(ComposerEditBanner.self, in: pane.hosted).first)
+                    XCTAssertTrue(banner.save.isEnabled, scene.name)
+                    XCTAssertEqual(banner.save.accessibilityLabel(), "Save Queued Message")
+                    XCTAssertTrue(banner.bounds.contains(banner.save.convert(banner.save.bounds, to: banner)), scene.name)
+                    XCTAssertFalse(banner.convert(banner.bounds, to: nil).intersects(field.convert(field.bounds, to: nil)), scene.name)
+                }
                 if let list = ConversationPaneTests.views(NSScrollView.self, in: pane.hosted).first(where: { $0 is QueueListScrollView }) {
                     XCTAssertFalse(scene.collapsed, "\(scene.name): a collapsed panel shows no rows")
                     XCTAssertLessThanOrEqual(list.frame.height, QueuePanel.visibleRows * QueuePanel.rowHeight + 2 * QueuePanel.sectionHeaderHeight + 0.5, scene.name)
