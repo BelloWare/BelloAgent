@@ -2,6 +2,10 @@
 
 **Released 2026-10-16:** 0.1.128 (build 132, tag `v0.1.128`) is the latest release; record `docs/validation/Bello-Agent-0.1.128-2026-10-16.md`.
 
+## 0.1.129
+
+- [x] Cost limit pauses the whole family at once and only Resume continues it (owner, 2026-10-16): in-flight requests and tools are cancelled like Stop, unsealed sub-agent turns are parked (queued, never not_executed), the pause survives relaunch and helper restart, raising the limit resumes nothing, and Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).
+
 ## 0.1.128
 
 - [x] Release-gate repairs: side wire coverage asserts separate physical spend and shared main limits; sidebar press/cut-out fixtures use indented topic chats; rendered Find waits for expanding row geometry; child shortcuts retain command ownership; large agent results reuse completed Markdown segments and cached message-to-row lookups. [Validation](docs/validation/gate-fix-0.1.128.md).
