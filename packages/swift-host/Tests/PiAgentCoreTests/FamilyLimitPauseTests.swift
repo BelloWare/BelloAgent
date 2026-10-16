@@ -563,11 +563,19 @@ extension FamilyLimitPauseTests {
     }
 
     /// A resumed child that had already answered still takes its final
-    /// boundary: steering accepted for that turn is delivered, not dropped.
-    func testAnsweredResumedChildDeliversPendingSteeringBeforeSealing() async throws {
+    /// boundary before its run ends: its turn is sealed (or pending steering
+    /// delivered) before the final request links are written, so a parent
+    /// message sent meanwhile becomes a follow-up, never stranded steering.
+    func testAnsweredResumedChildSealsAtItsFinalBoundary() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
-        let client = AnsweringChildClient(), coordinator = AgentSteeringCoordinator()
+        let client = AnsweringChildClient(), probe = FinalLinksProbe()
+        let coordinator = AgentSteeringCoordinator(open:{ env, plan in
+            let child = try AgentSteeringCoordinator.makeChild(env,plan)
+            await child.fixtureFinalLinks { await probe.observe() }
+            return child
+        })
         let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        await probe.watch(owner)
         let child = try await startChild(owner, coordinator, "answered")
         try await eventually { await client.waiting }
         await coordinator.fixturePause("parent")
@@ -575,15 +583,13 @@ extension FamilyLimitPauseTests {
         try await eventually { await coordinator.jobs.isEmpty }
         let target = AgentTurnTarget(childID:child,turn:1)
         let parked = await owner.agentState().turns[target.id]?.status; XCTAssertEqual(parked,.queued)
-        let sequence = await owner.agentState().sequence
-        let steer = AgentFamilyMessage(id:"steer-1",sequence:sequence + 1,childID:child,turn:1,author:"parent",kind:"steer",text:"Also check escapes",task:"Worker",epoch:"e")
-        try await owner.appendAgentRecord(JournalRecordKind.agentMessage,steer)
+        await probe.reset(target)
         await owner.beginResumeFixture()
         try await coordinator.resumeParked(owner:owner,generation:1)
         try await eventually { await owner.agentState().turns[target.id]?.status.terminal == true }
-        let message = await owner.agentState().messages["steer-1"], requests = await client.requests
-        XCTAssertEqual(message?.disposition,"delivered")
-        XCTAssertEqual(requests,2,"The answered turn asks again only to answer the steering")
+        let seen = await probe.seen, requests = await client.requests
+        XCTAssertEqual(seen,.completed,"Sealed at the final boundary, before the run's last writes")
+        XCTAssertEqual(requests,1,"An answered turn asks nothing again")
         await coordinator.drain(); await owner.close()
     }
 
@@ -623,6 +629,19 @@ private extension AgentSession {
     func fixtureReceipt(_ turnID: String, state: String) { commands.append(["commandId":JSON(UUID().uuidString),"turnId":JSON(turnID),"state":JSON(state),"status":JSON(state)]) }
     func fixtureForgetReceipts() { commands.removeAll() }
     func fixtureQueue(_ submission: Submission) { queue.append(submission) }
+    func fixtureFinalLinks(_ probe: @escaping @Sendable () async -> Void) { beforeFinalRequestLinks = probe }
+}
+
+/// Records the owner's view of a turn when a resumed child's run reaches its
+/// final request-link writes.
+private actor FinalLinksProbe {
+    var owner: AgentSession?, target: AgentTurnTarget?, seen: SubagentStatus?
+    func watch(_ owner: AgentSession) { self.owner = owner }
+    func reset(_ target: AgentTurnTarget) { self.target = target; seen = nil }
+    func observe() async {
+        guard let owner, let target, seen == nil else { return }
+        seen = await owner.agentState().turns[target.id]?.status
+    }
 }
 
 /// The child's first request is held until released, then answers; any
