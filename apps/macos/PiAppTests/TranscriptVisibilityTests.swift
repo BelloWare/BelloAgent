@@ -20,6 +20,8 @@ final class TranscriptVisibilityTests: XCTestCase {
         // clip movement between reconciliation and the queued layout pass.
         document.update(snapshot: replacement, actions: stage.actions, environment: stage.environment)
         XCTAssertTrue(obsolete.allSatisfy { $0.superview == nil }, "Reconciliation detaches the old history")
+        XCTAssertTrue(document.rows(drawing: "old-0").isEmpty, "Find must not retain a row removed by a history replacement")
+        XCTAssertEqual(document.rows(drawing: "new-0").map(\.itemID), ["new-0"])
         let layouts = document.layoutPassCount
         clip.setBoundsOrigin(NSPoint(x: clip.bounds.minX, y: clip.bounds.minY + 1))
         XCTAssertEqual(document.layoutPassCount, layouts, "The scroll notification ran before queued layout")

@@ -23,6 +23,7 @@ import AppKit
     private(set) var prepared = false
     private var reading: AgentMarkdownReading?
     private var visibleCharacters = 1_200
+    private var adoptedCharacters = 0
     private var expansion: Task<Void, Never>?
     var isComplete: Bool { reading.map { visibleCharacters >= $0.characters } ?? false }
     var awaitingFindText: Bool { !prepared || expanded && !isComplete }
@@ -56,7 +57,7 @@ import AppKit
         copy.setAccessibilityLabel("Copy " + (accessibilityName ?? title).lowercased() + " as Markdown")
         guard text != source || self.environment != environment else { return }
         let replaced = text != source
-        if replaced { expanded = false; reading = nil; visibleCharacters = 1_200 }
+        if replaced { expanded = false; reading = nil; visibleCharacters = 1_200; adoptedCharacters = 0 }
         source = text; self.environment = environment
         preparation?.cancel(); expansion?.cancel(); generation = UUID(); let generation = generation
         if let reading { adopt(reading); if expanded { finishExpansion() }; return }
@@ -75,7 +76,9 @@ import AppKit
         self.reading = reading
         guard let environment else { return }
         markdown.update(blocks: reading.prefix(visibleCharacters), style: .prose, capsWidth: true, streaming: false,
-                        headings: reading.headings, environment: environment, sourceText: source)
+                        headings: reading.headings, environment: environment, sourceText: source,
+                        extendingPrefix: adoptedCharacters > 0 && visibleCharacters > adoptedCharacters)
+        adoptedCharacters = visibleCharacters
         markdown.bindCodeCopyTargets(reading.codeCopyTargets)
         prepared = true; markdown.isHidden = false; needsLayout = true
     }

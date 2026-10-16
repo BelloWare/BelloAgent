@@ -131,7 +131,6 @@ import AppKit
         model.focusedSessionID = key
     }
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if pane?.performKeyEquivalent(with: event) == true { return true }
         guard let model, let pane, let window = pane.window, event.window === window,
               window.attachedSheet == nil, !(window.childWindows ?? []).contains(where: { $0.isVisible && $0.canBecomeKey }),
               model.subagentTabIsShown(key), model.subagentReaderCommandsEnabled(key),
@@ -146,7 +145,11 @@ import AppKit
         case ("g", [.command, .shift]) where display.findHost?.findIsOpen == true: find = .previous
         case ("f", [.command, .option]): model.inspectConversation(key); return true
         case (".", .command): if originalForkID == nil { model.stop(sessionID: key) }; return true
-        default: return false
+        // Publish every child Find command through the same owner before the
+        // transcript's native Shift-Command-G handler can consume it directly.
+        // Other pane commands still use their native responder path, inside
+        // the same sheet/popover and reader-visibility boundary.
+        default: return pane.performKeyEquivalent(with: event)
         }
         if let find { model.revealSerial += 1; display.findCommand = .init(kind: find, serial: model.revealSerial) }
         return true

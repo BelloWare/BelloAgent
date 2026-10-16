@@ -59,6 +59,8 @@ final class SubagentPerformanceTests: XCTestCase, SerialTestLane {
         print("PERF agent-markdown bytes=\(source.utf8.count) coldMs=\((ProcessInfo.processInfo.systemUptime - before) * 1000) worstDrawMs=\(worst) heartbeatMs=\(worstGap) markdownBatchMs=\(worstMarkdownBatch) updateMs=\(coldUpdate) layoutMs=\(coldLayout) draws=\(iterations) measures=\(body.markdown.layoutPasses)")
         await Task.yield(); heartbeat = ProcessInfo.processInfo.systemUptime; worstGap = 0; worst = 0; worstMarkdownBatch = 0
         let expanding = ProcessInfo.processInfo.systemUptime
+        let visits = body.markdown.reconciledBlockVisits
+        let messageRows = TranscriptLayoutClock.messageRowVisits
         body.setExpanded(true)
         try await eventually("Complete expanded Markdown", timeout: .seconds(30)) {
             let start = ProcessInfo.processInfo.systemUptime
@@ -68,10 +70,14 @@ final class SubagentPerformanceTests: XCTestCase, SerialTestLane {
         }
         monitor.cancel(); await monitor.value
         XCTAssertEqual(body.markdown.textView.string, Self.rendered(source))
+        XCTAssertLessThanOrEqual(body.markdown.reconciledBlockVisits - visits, body.markdown.retainedBlockCount * 2,
+                                 "Expansion must not compare every already drawn list item again for each text batch")
+        XCTAssertEqual(TranscriptLayoutClock.messageRowVisits, messageRows,
+                       "Growing a result must reuse the message-to-row lookup, without searching settled history during layout")
         XCTAssertLessThan(worstGap, 100, "Expanding the entire result must yield between native text batches")
         XCTAssertLessThan(worstMarkdownBatch, 50)
         XCTAssertLessThan(worst, 50)
-        print("PERF agent-markdown-expanded ms=\((ProcessInfo.processInfo.systemUptime - expanding) * 1000) worstDrawMs=\(worst) heartbeatMs=\(worstGap) markdownBatchMs=\(worstMarkdownBatch)")
+        print("PERF agent-markdown-expanded ms=\((ProcessInfo.processInfo.systemUptime - expanding) * 1000) worstDrawMs=\(worst) heartbeatMs=\(worstGap) markdownBatchMs=\(worstMarkdownBatch) blockVisits=\(body.markdown.reconciledBlockVisits - visits) messageRowVisits=\(TranscriptLayoutClock.messageRowVisits - messageRows)")
     }
     @MainActor private static func rendered(_ source: String) -> String { SubagentMarkdownTests.assistant(source).textView.string }
     @MainActor func testFourProgressCardsDoNotRebuildTheSidebarOrSettledTranscript() async throws {

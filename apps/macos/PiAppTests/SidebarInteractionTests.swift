@@ -251,13 +251,15 @@ final class SidebarInteractionTests: XCTestCase {
 
     // MARK: Hosted rows
 
-    /// The archive button, the confirm/cancel pair and the side chevron are cut
+    /// The archive button and the confirm/cancel pair are cut
     /// out of the drag surface by measured bounds. They have to stay cut out
     /// after the row re-renders with different controls and after a resize.
     @MainActor func testRowControlCutOutsFollowTheRowThroughRerendersAndResizes() throws {
         var chats = (0..<4).map { chat("chat\($0)", order: Int64($0)) }
-        chats.append(chat("child", order: 9, parent: "chat0"))
-        let fixture = try fixture(chats: chats)
+        // Sides live in the family picker. Topic chats still indent in the
+        // sidebar, and exercise the same local-coordinate cut-outs.
+        chats.append(chat("child", order: 9, topic: "topic"))
+        let fixture = try fixture(chats: chats, topics: [TopicRecord(id: "topic", workspaceID: "project", title: "Topic")])
         defer { fixture.teardown() }
 
         func cutOuts() -> [(view: TopicSessionDragSurfaceView, controls: [CGRect])] {
@@ -283,6 +285,16 @@ final class SidebarInteractionTests: XCTestCase {
                           "An indented row's cut-out \(control) must stay inside \(indented.view.bounds)")
         }
 
+        let child = try XCTUnwrap(ConversationPaneTests.views(SidebarChatRowView.self, in: fixture.hosted).first { $0.chat.id == "child" })
+        let archive = try XCTUnwrap(ConversationPaneTests.views(PiKit.IconButton.self, in: child).first { $0.accessibilityLabel() == "Archive chat" })
+        XCTAssertTrue(archive.accessibilityPerformPress())
+        settle(fixture)
+        let expanded = try XCTUnwrap(indented.view.controls.first)
+        XCTAssertGreaterThan(expanded.width, try XCTUnwrap(indented.controls.first).width,
+                             "The confirmation replaces one icon with two working controls")
+        fixture.model.chats[4].title = "Renamed topic chat"
+        settle(fixture)
+
         // Narrowing the sidebar moves every trailing control. The surfaces must
         // follow, or the buttons stop responding at the new width.
         fixture.window.setContentSize(NSSize(width: 200, height: 900))
@@ -295,20 +307,25 @@ final class SidebarInteractionTests: XCTestCase {
                 XCTAssertGreaterThan(control.midX, row.view.bounds.midX, "The row's buttons stay at its trailing edge")
             }
         }
+        let keep = try XCTUnwrap(ConversationPaneTests.views(PiKit.IconButton.self, in: child).first { $0.accessibilityLabel() == "Keep chat" })
+        XCTAssertTrue(keep.accessibilityPerformPress())
+        settle(fixture)
+        XCTAssertLessThan(try XCTUnwrap(indented.view.controls.first).width, expanded.width,
+                          "Cancelling restores the icon's cut-out at the new width")
     }
 
     /// The press surface end to end, driven through the application's event
     /// queue: a press on the body of a row is that row's press, and a press on
-    /// the row's own buttons is declined so the button SwiftUI drew underneath
+    /// the row's own buttons is declined so the native button underneath
     /// gets it. Command marks rather than opens, which routes the same press to
     /// a synchronous answer; the surface passes the press's own modifiers on,
     /// so a mark appearing is proof the surface claimed the press.
     @MainActor func testARealPressMarksFromTheRowBodyAndNeverFromItsOwnButtons() async throws {
-        let chats = [chat("parent", order: 1), chat("child", order: 2, parent: "parent"), chat("other", order: 3)]
-        let fixture = try fixture(chats: chats)
+        let chats = [chat("parent", order: 1), chat("child", order: 2, topic: "topic"), chat("other", order: 3)]
+        let fixture = try fixture(chats: chats, topics: [TopicRecord(id: "topic", workspaceID: "project", title: "Topic")])
         defer { fixture.teardown() }
         fixture.model.selectedID = "other"
-        XCTAssertEqual(surfaces(fixture.hosted).count, 3, "The parent, its child and the loose chat are listed")
+        XCTAssertEqual(surfaces(fixture.hosted).count, 3, "The topic chat and two project chats are listed")
 
         // The body of an indented child row belongs to that row.
         let indented = try XCTUnwrap(surfaces(fixture.hosted).min { $0.bounds.width < $1.bounds.width })
@@ -317,24 +334,26 @@ final class SidebarInteractionTests: XCTestCase {
                        "A press on the body of an indented row still reaches the row")
 
         // Its own buttons do not: pressing them must leave the marks alone.
-        let parent = try XCTUnwrap(surfaces(fixture.hosted).max { ($0.controls.first?.width ?? 0) < ($1.controls.first?.width ?? 0) })
+        let parentRow = try XCTUnwrap(ConversationPaneTests.views(SidebarChatRowView.self, in: fixture.hosted).first { $0.chat.id == "parent" })
+        let parent = try XCTUnwrap(surfaces(parentRow).first)
         let controls = try XCTUnwrap(parent.controls.first)
         fixture.model.clearSessionMarks()
         try press(at: CGPoint(x: controls.maxX - 8, y: controls.midY), in: parent, fixture: fixture, modifiers: .command)
-        XCTAssertTrue(fixture.model.markedSessionIDs.isEmpty, "The chevron is the row's own button, not a press on the row")
-        // And the chevron does its job for a chat that is not open: such a
-        // row was drawn without the chevron's action, so its sides could not
-        // be folded until the chat was opened (since 0.1.100). Pressed again
-        // it unfolds them. Command, as above: the test app is not in front,
-        // and a plain click on a window in the background only brings it
-        // forward, while a Command-click acts on it.
-        XCTAssertEqual(fixture.model.collapsedSidebarSides, ["parent"], "The chevron folds the sides of a chat that is not open")
-        try press(at: CGPoint(x: controls.maxX - 8, y: controls.midY), in: parent, fixture: fixture, modifiers: .command)
-        XCTAssertTrue(fixture.model.collapsedSidebarSides.isEmpty, "and unfolds them again")
+        XCTAssertTrue(fixture.model.markedSessionIDs.isEmpty, "Archive is the row's own button, not a press on the row")
+        let confirm = try XCTUnwrap(ConversationPaneTests.views(PiKit.Button.self, in: parentRow).first { $0.accessibilityIdentifier() == "confirmArchive" })
+        XCTAssertFalse(confirm.isHidden, "The press reaches Archive and opens its confirmation")
+        let expanded = try XCTUnwrap(parent.controls.first)
+        XCTAssertGreaterThan(expanded.width, controls.width)
+        // The newly revealed Keep button also belongs to the row's controls.
+        let keep = try XCTUnwrap(ConversationPaneTests.views(PiKit.IconButton.self, in: parentRow).first { $0.accessibilityLabel() == "Keep chat" })
+        let keepPoint = keep.convert(CGPoint(x: keep.bounds.midX, y: keep.bounds.midY), to: parent)
+        try press(at: keepPoint, in: parent, fixture: fixture, modifiers: .command)
+        XCTAssertTrue(confirm.isHidden, "Keep cancels the confirmation")
+        XCTAssertFalse(fixture.model.record("parent")!.isArchived)
         XCTAssertTrue(fixture.model.markedSessionIDs.isEmpty)
 
         // The body of that same row, a few points to the left of its buttons, is.
-        let folded = try XCTUnwrap(surfaces(fixture.hosted).max { ($0.controls.first?.width ?? 0) < ($1.controls.first?.width ?? 0) })
+        let folded = parent
         let after = try XCTUnwrap(folded.controls.first)
         try press(at: CGPoint(x: after.minX - 12, y: after.midY), in: folded, fixture: fixture, modifiers: .command)
         XCTAssertEqual(fixture.model.markedSessionIDs, ["other", "parent"], "The body of a row is the row's press")

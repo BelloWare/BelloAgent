@@ -375,7 +375,7 @@ import AppKit
     /// and bodies handed their blocks).
     func update(blocks source: [MarkdownBlock], style: MarkdownStyle, capsWidth: Bool, streaming: Bool,
                 headings: [MarkdownCopyTarget], environment: TranscriptRowEnvironment, identities: [MarkdownBlockIdentity]? = nil,
-                sourceText: String? = nil, sourceRanges: [Range<Int>]? = nil) {
+                sourceText: String? = nil, sourceRanges: [Range<Int>]? = nil, extendingPrefix: Bool = false) {
         let ids = identities?.count == source.count ? identities! : source.indices.map { MarkdownBlockIdentity(generation: 0, sourceOffset: $0) }
         let records = source.indices.map { index in
             StreamingMarkdownRecord(id: ids[index], range: sourceRanges.flatMap { $0.indices.contains(index) ? $0[index] : nil } ?? 0..<0,
@@ -383,14 +383,16 @@ import AppKit
         }
         drewReading = false
         reconcile(records, unchangedPrefix: 0, sourceText: sourceText,
-                  inputs: Inputs(style: style, capsWidth: capsWidth, streaming: streaming, headings: headings, environment: environment))
+                  inputs: Inputs(style: style, capsWidth: capsWidth, streaming: streaming, headings: headings, environment: environment),
+                  unchangedSegments: extendingPrefix && sourceText != nil && sourceText == priorSourceText ? max(0, segments.count - 1) : 0)
     }
 
     /// Sets the text for `records`. The records before `unchangedPrefix` are
     /// the ones the last update drew, unchanged; the rest are compared with
     /// the blocks drawn, and the text is replaced only from the first
     /// character that reads differently.
-    private func reconcile(_ records: [StreamingMarkdownRecord], unchangedPrefix: Int, sourceText: String?, inputs: Inputs) {
+    private func reconcile(_ records: [StreamingMarkdownRecord], unchangedPrefix: Int, sourceText: String?, inputs: Inputs,
+                           unchangedSegments: Int = 0) {
         let clock = TranscriptLayoutClock.recording ? TranscriptLayoutClock.now : 0
         defer { if TranscriptLayoutClock.recording { TranscriptLayoutClock.markdownUpdateSeconds += TranscriptLayoutClock.now - clock } }
         guard let storage = textView.textStorage else { return }
@@ -432,9 +434,14 @@ import AppKit
             }
         }
         var compared = 0
+        // A longer prefix of the same immutable reading keeps every completed
+        // segment. Only its last segment could have been cut partway through.
+        // Still check identity and list-marker geometry (9 -> 10, for example),
+        // and never use this shortcut for replacement, folding or restyling.
         while sameText, compared < units.count, keep < segments.count, segments[keep].identity == units[compared].identity,
-              segments[keep].item == units[compared].item, segments[keep].block == units[compared].block {
-            reconciledBlockVisits += 1
+              segments[keep].item == units[compared].item,
+              keep < unchangedSegments || segments[keep].block == units[compared].block {
+            if keep >= unchangedSegments { reconciledBlockVisits += 1 }
             segments[keep].record = units[compared].record
             keep += 1; compared += 1
         }

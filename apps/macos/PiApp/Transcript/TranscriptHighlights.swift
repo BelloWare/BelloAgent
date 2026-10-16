@@ -231,7 +231,7 @@ extension TranscriptNativeDocument {
     /// The rows that draw message `id`, in reading order: one, or several
     /// for a response laid out as a timeline (its header, then its parts).
     func rows(drawing id: String) -> [TranscriptRowContainer] {
-        retainedRows.filter { $0.contentItem.messageIDs.contains(id) }
+        messageRows[id] ?? []
     }
     func row(drawing id: String) -> TranscriptRowContainer? { rows(drawing: id).first }
 
@@ -288,7 +288,9 @@ extension TranscriptNativeDocument {
                     // Text adoption precedes the row's asynchronous height
                     // validation. Do not finish Find against the former frame
                     // and clamp its destination to the old document height.
-                    if let prose = view as? TranscriptAgentMarkdown { return prose.awaitingFindText || row.needsMountedValidation }
+                    if let prose = view as? TranscriptAgentMarkdown {
+                        return prose.awaitingFindText || row.isInDisclosureMotion || row.needsMountedValidation
+                    }
                     return view.subviews.contains { !$0.isHidden && preparing($0) }
                 }
                 if preparing(row) { if pending == nil { pending = row }; blocked = true; continue }

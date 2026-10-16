@@ -54,6 +54,9 @@ import Foundation
     /// row's id to prove the ids unique, or to find rows that came or went.
     /// A token keeps every row's identity, so it must take none.
     static var identityWalks = 0
+    /// Source rows inspected to locate a message's drawing/anchor rows.
+    /// Content reconciliation may rebuild the lookup; layout must reuse it.
+    static var messageRowVisits = 0
     /// What a reply's native surface spent taking tokens, and the part of it
     /// that was the markdown reading of the text, so a fixture can tell the
     /// surface's own share from the parser's.
@@ -69,7 +72,7 @@ import Foundation
         rowAttachmentSeconds = 0; rowDetachmentSeconds = 0
         placementSeconds = 0; validationSeconds = 0; intrinsicInvalidations = 0
         streamingAppends = 0; streamingEstimates = 0; streamingRebuilds = 0
-        disclosureReads = 0; disclosurePrunes = 0; identityWalks = 0
+        disclosureReads = 0; disclosurePrunes = 0; identityWalks = 0; messageRowVisits = 0
         markdownAppendSeconds = 0; markdownReadingSeconds = 0
     }
 }

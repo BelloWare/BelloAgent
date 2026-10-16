@@ -32,6 +32,48 @@ final class TranscriptUpdateIsolationTests: XCTestCase {
         XCTAssertEqual(calls.count, 6, "A stale row must not keep its closed conversation's action owner alive")
     }
 
+    @MainActor func testMessageLookupTracksMembershipChangesInARetainedRow() throws {
+        let page = TranscriptPage()
+        let document = TranscriptNativeDocument(page: page)
+        var block = TranscriptNativeRowParityTests.block("shared", .work,
+            message: TranscriptMessage(id: "first", role: "assistant", text: "First reply"))
+        // The same reply can be mentioned by both the body and work. It must
+        // still find this row once, or Find counts every rendered match twice.
+        block.activity = [try XCTUnwrap(block.message)]
+        var snapshot = TranscriptPage.Snapshot(sessionID: "lookup", messages: [], items: [.block(block)], fresh: [], sequence: 1)
+        document.update(snapshot: snapshot, actions: .init(), environment: .init())
+        let row = try XCTUnwrap(document.row(drawing: "first"))
+        XCTAssertEqual(document.rows(drawing: "first").count, 1)
+        block.message = TranscriptMessage(id: "second", role: "assistant", text: "Replacement reply")
+        block.activity = []
+        snapshot.items = [.block(block)]; snapshot.sequence += 1
+        document.update(snapshot: snapshot, actions: .init(), environment: .init())
+        XCTAssertTrue(document.row(drawing: "second") === row, "The native row keeps its identity")
+        XCTAssertTrue(document.rows(drawing: "first").isEmpty, "Its old source must stop resolving immediately")
+        snapshot.sessionID = "other"; snapshot.items = []; snapshot.sequence += 1
+        document.update(snapshot: snapshot, actions: .init(), environment: .init())
+        XCTAssertTrue(document.rows(drawing: "second").isEmpty, "A different chat cannot retain the old lookup")
+    }
+
+    @MainActor func testToolResultLookupKeepsTheLatestPrecedingIssuerAcrossPageChanges() {
+        let session = SessionDisplay(id: "result-lookup"), page = TranscriptPage()
+        func reply(_ id: String) -> TranscriptMessage {
+            .init(id: id, role: "assistant", text: id, tools: [
+                ToolView(id: "reused-call", name: "bash", state: "completed", input: "{}", output: "result", durationMs: nil, truncated: false)
+            ])
+        }
+        let result = TranscriptMessage(id: "result", role: "toolResult", text: "result", toolCallID: "reused-call")
+        session.messages = [TranscriptMessage(id: "question", role: "user", text: "Run"), reply("first"), result, reply("later")]
+        page.bind(session)
+        XCTAssertEqual(page.drawingMessageID(for: "result"), "first", "A later reuse cannot take the earlier result")
+        session.messages = [TranscriptMessage(id: "question", role: "user", text: "Run"), reply("first"), reply("later"), result]
+        XCTAssertEqual(page.drawingMessageID(for: "result"), "later", "A replaced page uses its new pairing")
+        session.messages[2].text += " continues"
+        XCTAssertEqual(page.drawingMessageID(for: "result"), "later", "A cosmetic patch keeps the pairing")
+        page.bind(SessionDisplay(id: "empty"))
+        XCTAssertEqual(page.drawingMessageID(for: "result"), "result", "A new chat must not inherit the previous issuer")
+    }
+
     @MainActor func testOtherSessionRepaintsDoNotReconcileUnchangedHistory() {
         let session = SessionDisplay(id: "stable-visible-session")
         session.messages = messages()

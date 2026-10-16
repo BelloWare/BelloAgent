@@ -886,11 +886,36 @@ class NativeIntegration(unittest.TestCase):
         self.peer.command('turn.retry', {}, session); value = self.settled(session)
         self.assertEqual(value['state'], 'idle', value.get('preflightError')); self.assertNotIn('errorCode', value)
         self.assertAlmostEqual(value['cost']['spentUSD'], 0.0246); self.assertEqual(value['cost']['reportedRequests'], 2)
-        # A side and a fork are sessions of their own, with their own limit and spend.
+        # A side reports its own spend but charges the main chat's shared limit.
+        # Legacy side limits on open/configure cannot override that authority.
         side = self.peer.command('side.open', {'sideSessionId': 'cost-side', 'costLimit': {'usd': 2}}, session)
         self.assertEqual(side['sessionId'], 'cost-side')
         state = self.peer.command('session.status', session='cost-side')
-        self.assertEqual(state['cost']['limitUSD'], 2); self.assertEqual(state['cost']['spentUSD'], 0)
+        self.assertIsNone(state['cost']['limitUSD']); self.assertEqual(state['cost']['spentUSD'], 0)
+        self.peer.command('session.configure', {'costLimit': {'usd': 0.0001}}, 'cost-side')
+        self.peer.command('session.configure', {'costLimit': {'usd': 0.03}}, session)
+        self.submit('cost-side', 'side question'); state = self.settled('cost-side')
+        self.assertIsNone(state['cost']['limitUSD'])
+        self.assertAlmostEqual(state['cost']['spentUSD'], 0.0123)
+        self.assertEqual(state['cost']['reportedRequests'], 1)
+        main = self.peer.command('session.status', session=session)['cost']
+        self.assertAlmostEqual(main['spentUSD'], 0.0369)
+        self.assertEqual(main['reportedRequests'], 3); self.assertTrue(main['reached'])
+        sent = len(Fixture.requests)
+        refused = self.peer.command('turn.submit', {'clientTurnId': str(uuid.uuid4()), 'text': 'over budget'}, session, fail=True)
+        self.assertEqual(refused['code'], 'cost_limit')
+        # The side accepts the human input; shared admission then rejects its
+        # run before dispatch, with the owner's cost-limit error.
+        self.submit('cost-side', 'over budget')
+        rejected = self.settled('cost-side')
+        self.assertEqual(rejected['state'], 'error'); self.assertEqual(rejected['errorCode'], 'cost_limit')
+        self.assertEqual(len(Fixture.requests), sent, 'Both main and side stop at the shared budget')
+        self.peer.command('session.configure', {'costLimit': {'usd': 1}}, session)
+        self.submit('cost-side', 'after raising the main limit'); state = self.settled('cost-side')
+        self.assertEqual(state['state'], 'idle', state.get('preflightError'))
+        self.assertAlmostEqual(state['cost']['spentUSD'], 0.0246)
+        self.assertAlmostEqual(self.peer.command('session.status', session=session)['cost']['spentUSD'], 0.0492)
+        # A fork still starts with an independent limit and zero spend.
         fork = self.peer.command('session.fork', {'forkSessionId': 'cost-fork', 'costLimit': {'usd': None}}, session)
         state = self.peer.command('session.status', session='cost-fork')
         self.assertIsNone(state['cost']['limitUSD']); self.assertEqual(state['cost']['spentUSD'], 0)
@@ -1367,14 +1392,36 @@ class NativeIntegration(unittest.TestCase):
         self.assertEqual(parent_body['prompt_cache_key'], 's')
         self.assertEqual((side_headers['session_id'], side_headers['x-client-request-id']), ('s', 's'))
         self.assertEqual((side_headers['x-session-id'], side_body['metadata']['session_id']), ('cache-side', 'cache-side'))
-        # The side's attempts and spend are its own.
+        # Captures retain physical ownership. A side shows its own contribution;
+        # the parent's total includes both physical requests, exactly once.
         attempts = self.peer.command('debug.list', session='cache-side')['attempts']
         self.assertEqual([a['sessionId'] for a in attempts], ['cache-side'])
-        self.assertEqual(len(self.peer.command('debug.list', session='s')['attempts']), 1)
-        self.assertAlmostEqual(self.peer.command('session.status', session='cache-side')['cost']['spentUSD'], 0.0123)
-        self.assertAlmostEqual(self.peer.command('session.status', session='s')['cost']['spentUSD'], 0.0123)
+        parent_attempts = self.peer.command('debug.list', session='s')['attempts']
+        self.assertEqual([a['sessionId'] for a in parent_attempts], ['s'])
+        physical_ids = {a['attemptId'] for a in attempts + parent_attempts}
+        self.assertEqual(len(physical_ids), 2)
         snapshot = self.peer.command('session.snapshot', session='cache-side')
         self.assertNotIn('side conversation', json.dumps(snapshot['messages']), 'the note is never a row')
+        parent_snapshot = self.peer.command('session.snapshot', session='s')
+        for target, path, total, count in [('s', parent_snapshot['path'], 0.0246, 2), ('cache-side', snapshot['path'], 0.0123, 1)]:
+            costs = [r['data'] for r in map(json.loads, pathlib.Path(path).read_bytes().splitlines()) if r.get('customType') == 'pi-app.cost.v1']
+            charged = [r for r in costs if r.get('attemptId')]
+            self.assertEqual(len(charged), count, target)
+            self.assertEqual({r['attemptId'] for r in charged}, physical_ids if target == 's' else {attempts[0]['attemptId']})
+            self.assertAlmostEqual(sum(r.get('usd', 0) for r in costs), total, target)
+        # Binding a saved side again and replaying both journals cannot add a
+        # second mirror. Check both displays after each cold reopen as well.
+        for reopening in range(3):
+            if reopening:
+                self.peer.command('session.close', session='cache-side')
+                self.peer.command('session.close', session='s')
+                self.open(model='billing-limit', session='s', path=parent_snapshot['path'])
+                self.open(model='billing-limit', session='cache-side', path=snapshot['path'])
+            for target, total, count in [('cache-side', 0.0123, 1), ('s', 0.0246, 2)]:
+                cost = self.peer.command('session.status', session=target)['cost']
+                self.assertAlmostEqual(cost['spentUSD'], total, target)
+                self.assertEqual(cost['reportedRequests'], count, target)
+                self.assertEqual(cost['unreportedRequests'], 0, target)
     def test_side_close_preserves_active_work_and_fork_has_independent_complete_context(self):
         before=len(Fixture.requests)
         self.open(model='slow')

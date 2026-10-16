@@ -1037,6 +1037,9 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         let (model, _) = try fixture()
         let tab = try await open("chat-child", in: model)
         let container = model.tabs.popOut(tab), window = try XCTUnwrap(model.tabs.window(of: container))
+        // Exercise the native transcript's shortcut path as well as the tab's,
+        // independently of when the window server publishes the key window.
+        model.conversationWindow = { window }
         NSApp.unhide(nil); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil); window.makeKey()
         for _ in 0..<10 { window.contentView?.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(10)) }
         let pane = try XCTUnwrap(tab.pane), display = try XCTUnwrap(model.displays[tab.key])
@@ -1067,8 +1070,11 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
         XCTAssertTrue(TabHost.tabKey(try key(".", [.command, .capsLock]), in: window))
         let sheet = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 100), styleMask: [.titled], backing: .buffered, defer: false)
         sheet.isReleasedWhenClosed = false; window.beginSheet(sheet, completionHandler: nil)
+        let serial = model.revealSerial
         XCTAssertFalse(TabHost.tabKey(try key("f"), in: window))
         XCTAssertFalse(TabHost.tabKey(try key("F", [.command, .capsLock]), in: window))
+        XCTAssertFalse(TabHost.tabKey(try key("G", [.command, .shift, .capsLock]), in: window))
+        XCTAssertEqual(model.revealSerial, serial, "A native sheet owns Find even with an open child Find bar")
         window.endSheet(sheet); sheet.orderOut(nil); sheet.close()
         model.tabs.moveToPane(tab)
         XCTAssertFalse(model.subagentReaderCommandsEnabled(tab.key), "The Reports page still covers a reader embedded in the workspace")
