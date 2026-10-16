@@ -78,6 +78,11 @@
             value = "1"
             isEnabled = "YES">
          </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "ZDOTDIR"
+            value = "$(PROJECT_TEMP_DIR)/PiAppTests-Home"
+            isEnabled = "YES">
+         </EnvironmentVariable>
       </EnvironmentVariables>
    </TestAction>
    <LaunchAction

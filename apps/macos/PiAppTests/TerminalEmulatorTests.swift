@@ -257,16 +257,32 @@ final class TerminalEmulatorTests: XCTestCase {
 }
 
 extension TerminalEmulatorTests {
-    /// The panel's own shell start: the login shell with the app's environment must read the user's rc files.
+    /// The panel's own shell start: the login shell with the app's environment
+    /// reads the user's login and rc files. Tests point zsh at files of their
+    /// own (ZDOTDIR, in the scheme) rather than the developer's; this one
+    /// writes a login and an rc file there and finds what each set.
     @MainActor func testPanelShellReadsTheLoginAndRcFiles() async throws {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        try XCTSkipUnless(shell.hasSuffix("/zsh"), "The rc files written here are zsh's")
+        let folder = scratchRoot("terminal-rc-files")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try "export RC_PROBE_LOGIN=from-zprofile\n".write(to: folder.appendingPathComponent(".zprofile"), atomically: true, encoding: .utf8)
+        try "alias rcprobe='print -r -- alias-from-zshrc'\n".write(to: folder.appendingPathComponent(".zshrc"), atomically: true, encoding: .utf8)
+        let previous = ProcessInfo.processInfo.environment["ZDOTDIR"]
+        setenv("ZDOTDIR", folder.path, 1)
+        defer {
+            if let previous { setenv("ZDOTDIR", previous, 1) } else { unsetenv("ZDOTDIR") }
+            try? FileManager.default.removeItem(at: folder)
+        }
         let session = TerminalSession(workspaceID: "rc-probe", directory: NSTemporaryDirectory())
-        for _ in 0..<200 where !session.emulator.screenText.contains("%") && !session.emulator.screenText.contains("$") { try await Task.sleep(for: .milliseconds(25)) }
-        session.process.write(Data("print -r -- MARK1; print -r -- aliases=$(alias | wc -l | tr -d ' ') nvm=$(whence -w nvm 2>&1 | cut -c1-20) brew=$(whence -p brew 2>&1 | cut -c1-40) node=$(whence -p node 2>&1 | cut -c1-60); print -r -- MARK2\n".utf8))
-        for _ in 0..<200 where !session.emulator.screenText.contains("MARK2") { try await Task.sleep(for: .milliseconds(25)) }
-        let text = session.emulator.screenText
-        session.process.write(Data("exit\n".utf8))
-        try await Task.sleep(for: .milliseconds(300))
-        XCTAssertTrue(text.contains("MARK2"), text)
+        defer { session.process.terminate() }
+        session.process.write(Data("print -r -- MARK1 $RC_PROBE_LOGIN; rcprobe; print -r -- MARK2\n".utf8))
+        try await eventually("the shell answers", timeout: .seconds(20)) {
+            (0..<session.emulator.lineCount).contains { session.emulator.text(atLine: $0).hasPrefix("MARK2") }
+        }
+        let lines = (0..<session.emulator.lineCount).map { session.emulator.text(atLine: $0) }
+        XCTAssertTrue(lines.contains { $0.hasPrefix("MARK1 from-zprofile") }, "The login file was read: \(lines)")
+        XCTAssertTrue(lines.contains { $0.hasPrefix("alias-from-zshrc") }, "and the rc file: \(lines)")
     }
 
     func testAsciiRunsRespectWideCharactersAndTrimmedHistoryStaysCounted() {

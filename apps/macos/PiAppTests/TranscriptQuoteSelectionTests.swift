@@ -162,6 +162,13 @@ final class TranscriptQuoteSelectionTests: XCTestCase {
         stage.window.makeFirstResponder(code)
         let range = (code.string as NSString).range(of: "result")
         code.setSelectedRange(range)
+        // The bar goes when its window resigns key, as it should when the
+        // reader switches apps. In the parallel lane another test host
+        // activating itself does that, and the bar was gone before the ask.
+        final class Flag: @unchecked Sendable { var raised = false }
+        let resignedKey = Flag()
+        let resigning = NotificationCenter.default.addObserver(forName: NSWindow.didResignKeyNotification, object: stage.window, queue: .main) { _ in resignedKey.raised = true }
+        defer { NotificationCenter.default.removeObserver(resigning) }
         stage.document.quoteSelection.presentSelection()
         XCTAssertEqual(stage.document.quoteSelection.selectedQuote?.text, "result")
         session.messages[0].text += "print(result)\n"; stage.refresh(); await stage.settle()
@@ -170,6 +177,9 @@ final class TranscriptQuoteSelectionTests: XCTestCase {
         defer { clipboard.releaseGlobally() }
         XCTAssertTrue(code.writeSelection(to: clipboard, types: code.writablePasteboardTypes))
         XCTAssertEqual(clipboard.string(forType: .string), "result")
+        // Another process took the key: the selection that survived streaming
+        // shows its bar again, as it would when the reader comes back.
+        if resignedKey.raised { stage.document.quoteSelection.presentSelection() }
         stage.document.quoteSelection.askInSideChat()
         XCTAssertEqual(emitted, [TranscriptQuote(messageID: "code-reply", text: "result")])
     }

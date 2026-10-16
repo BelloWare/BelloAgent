@@ -380,9 +380,12 @@ final class PiSheetWindowTests: XCTestCase {
         // left: nothing but the few views TextKit keeps of the Resources
         // sheet's text view, which AppKit holds after the text view has gone.
         autoreleasepool { window.contentView = NSView() }
-        try await eventually("every closed sheet's views to be let go of", seconds: allowance) {
-            autoreleasepool { everything.allSatisfy { $0().map { String(describing: type(of: $0)).hasPrefix("_NSText") } ?? true } }
-        }
+        let survivors = { autoreleasepool { everything.compactMap { $0() }.map { String(describing: type(of: $0)) }.filter { !$0.hasPrefix("_NSText") } } }
+        try await eventually("every closed sheet's views to be let go of", seconds: allowance) { survivors().isEmpty }
+        // Which views a closed sheet left alive, and in what, says what kept them.
+        let left = autoreleasepool { everything.compactMap { $0() }.filter { !String(describing: type(of: $0)).hasPrefix("_NSText") }
+            .map { "\(type(of: $0)) window=\($0.window.map { String(describing: type(of: $0)) } ?? "none") superview=\($0.superview.map { String(describing: type(of: $0)) } ?? "none")" } }
+        if !left.isEmpty { XCTFail("Closed sheets' views still alive: \(Dictionary(left.map { ($0, 1) }, uniquingKeysWith: +))") }
     }
 
     /// A sheet opened again opens in the same window and hosting view, filled

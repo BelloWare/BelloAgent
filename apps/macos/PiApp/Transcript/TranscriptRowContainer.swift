@@ -48,7 +48,14 @@ struct TranscriptRowEnvironment: Equatable {
     /// chat used to cost. The row keeps what it is, what it measured and what
     /// the reader opened in it either way.
     private var hosted: (NSView & TranscriptRowContent)?
-    private(set) var item: TranscriptItem
+    /// Kept with the item: every layout pass reads each row's id several
+    /// times, and working it out copies the whole item (its messages, tools
+    /// and accounting) each time. That copying was a fifth of a long chat's
+    /// idle measuring slice, which competes with what the reader is doing.
+    private(set) var item: TranscriptItem { didSet { itemID = item.id; sharedMeasurementMiss = nil } }
+    private struct SharedMeasurementAsk: Equatable { let width: CGFloat, backingScale: CGFloat, stores: UInt64 }
+    private var sharedMeasurementMiss: SharedMeasurementAsk?
+    private(set) var itemID: String
     private var fresh: Bool
     private var actions: TranscriptActions
     private var environment: TranscriptRowEnvironment
@@ -112,7 +119,6 @@ struct TranscriptRowEnvironment: Equatable {
     private(set) var nativeSizingPasses = 0
     private(set) var intrinsicValidationCount = 0
     private(set) var sharedMeasurementHits = 0
-    var itemID: String { item.id }
     var contentItem: TranscriptItem { item }
     /// The values this row is drawn with, for checks that a change reached it.
     var renderingEnvironment: TranscriptRowEnvironment { environment }
@@ -284,7 +290,7 @@ struct TranscriptRowEnvironment: Equatable {
     init(item: TranscriptItem, fresh: Bool, actions: TranscriptActions, environment: TranscriptRowEnvironment = TranscriptRowEnvironment(),
          geometryCache: TranscriptGeometryCache? = nil, geometrySessionID: String? = nil, disclosure: TranscriptDisclosure? = nil,
          toolInputs: TranscriptToolInputs? = nil) {
-        self.item = item; self.fresh = fresh; self.actions = actions; self.environment = environment
+        self.item = item; self.itemID = item.id; self.fresh = fresh; self.actions = actions; self.environment = environment
         self.geometryCache = geometryCache; self.geometrySessionID = geometrySessionID
         self.disclosureStore = disclosure
         self.toolInputs = toolInputs
@@ -545,11 +551,15 @@ struct TranscriptRowEnvironment: Equatable {
     /// Only a new, unmeasured native host can borrow default-state geometry.
     /// No retained local disclosure state is ever replaced by a shared size.
     func restoreSharedMeasurement(width: CGFloat, backingScale: CGFloat) {
-        guard measurementCount == 0, measurements.isEmpty, let geometryCache, let geometrySessionID,
-              TranscriptGeometryCache.permits(item),
+        guard measurementCount == 0, measurements.isEmpty, let geometryCache, let geometrySessionID else { return }
+        // Every layout pass asks each row not yet measured; one that found
+        // nothing at this width asks again only once something was stored.
+        let ask = SharedMeasurementAsk(width: width, backingScale: backingScale, stores: geometryCache.stores)
+        guard ask != sharedMeasurementMiss else { return }
+        guard TranscriptGeometryCache.permits(item),
               let size = geometryCache.measurement(sessionID: geometrySessionID, item: item, fresh: fresh,
                                                    environment: environment, disclosure: disclosure,
-                                                   width: width, backingScale: backingScale) else { return }
+                                                   width: width, backingScale: backingScale) else { sharedMeasurementMiss = ask; return }
         measurements = [size]; measurementScale = backingScale
         restoredMeasurementNeedsValidation = true
         sharedMeasurementHits += 1

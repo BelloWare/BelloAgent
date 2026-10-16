@@ -158,8 +158,15 @@ final class TranscriptRevealTests: XCTestCase {
         let target = questions[questions.count / 2].id
         let revealed = await chat.model.revealInTranscript(sessionID: chat.chat.id, messageID: target)
         XCTAssertTrue(revealed)
-        try await eventually("The message never landed") {
-            chat.draw(); return landing(chat, target).map { abs($0 - TranscriptReveal.landing) <= 1 } ?? false
+        do {
+            try await eventually("The message never landed") {
+                chat.draw(); return landing(chat, target).map { abs($0 - TranscriptReveal.landing) <= 1 } ?? false
+            }
+        } catch {
+            // Where it stood instead, and whether the page still had the row, says which step missed.
+            XCTFail("landing=\(String(describing: landing(chat, target))) expected=\(TranscriptReveal.landing) scrollY=\(chat.scroll?.contentView.bounds.minY ?? -1) " +
+                    "documentHeight=\(chat.document?.frame.height ?? -1) messages=\(chat.view.messages.count) hasTarget=\(chat.view.messages.contains { $0.id == target })")
+            throw error
         }
     }
 

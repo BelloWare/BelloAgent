@@ -30,6 +30,11 @@ import AppKit
     let entryByteLimit: Int
     private(set) var byteCost = 0
     var count: Int { entries.count }
+    /// Counts the entries stored: a row that found none can only find one
+    /// after another is stored, so it need not look again before then.
+    private(set) var stores: UInt64 = 0
+    /// Measurements asked for, found or not.
+    private(set) var lookups = 0
 
     init(countLimit: Int = 1_000, byteLimit: Int = 16 << 20, entryByteLimit: Int = 256 << 10) {
         self.countLimit = max(0, countLimit)
@@ -94,6 +99,7 @@ import AppKit
 
     func measurement(sessionID: String, item: TranscriptItem, fresh: Bool, environment: TranscriptRowEnvironment,
                      disclosure: TranscriptRowDisclosure = .default, width: CGFloat, backingScale: CGFloat) -> CGSize? {
+        lookups &+= 1
         let key = Key(sessionID: sessionID, rowID: item.id, width: width, backingScale: backingScale)
         guard var entry = entries[key] else { return nil }
         guard entry.item == item, entry.fresh == fresh, entry.environment.hasSameGeometry(as: environment), entry.disclosure == disclosure else {
@@ -120,7 +126,7 @@ import AppKit
         }
         clock &+= 1
         entries[key] = Entry(item: item, fresh: fresh, environment: environment, disclosure: disclosure, size: size, cost: cost, accessed: clock)
-        byteCost += cost
+        byteCost += cost; stores &+= 1
     }
 
     func invalidate(sessionID: String, item: TranscriptItem, width: CGFloat, backingScale: CGFloat) {
