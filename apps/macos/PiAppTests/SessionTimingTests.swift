@@ -974,7 +974,8 @@ final class SessionTimingTests: XCTestCase {
                 XCTAssertTrue(rendered.contains("12.34"), "Cost must remain visible at \(width)pt: \(rendered)")
                 // All 100 tokens over TTFT + span = one second.
                 if item.output == nil {
-                    XCTAssertFalse(rendered.contains("unavailable") || rendered.contains("latest"), "No measured rate leaves the slot empty at \(width)pt: \(rendered)")
+                    XCTAssertFalse(rendered.contains("unavailable") || rendered.contains("latest"), "No measured rate leaves the slot empty at \(width)pt: \(rendered) " +
+                                   "(the app draws: \(metrics.shownRate ?? "nothing"); occluded: \(!window.occlusionState.contains(.visible)); on screen: \(window.isOnActiveSpace && window.isVisible))")
                 } else {
                     XCTAssertTrue(rendered.contains("latest 100"), "The complete rate label must remain visible at \(width)pt: \(rendered)")
                 }
