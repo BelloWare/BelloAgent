@@ -278,6 +278,11 @@ actor AgentSteeringCoordinator {
     /// current execution, in acceptance order, through the ordinary slots.
     /// Turns parked across a relaunch are found in the journal, not memory.
     func resumeParked(owner parent: AgentSession, generation: Int) async throws {
+        // The pause's own hold may not have arrived yet: apply it first, so
+        // every running turn parks under the old execution.
+        if !paused.contains(parent.id), jobs.values.contains(where: { $0.owner === parent }), generation > resumedThrough[parent.id, default: -1] {
+            await pause(owner:parent,generation:generation)
+        }
         resumedThrough[parent.id] = max(resumedThrough[parent.id, default: -1], generation)
         // The pause's runners finish parking (or sealing) first: a turn still
         // settling is otherwise neither resumed nor left for the next Resume.

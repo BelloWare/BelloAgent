@@ -218,6 +218,12 @@ extension AgentSession {
         runTask != nil || !queue.isEmpty || !steering.isEmpty || delivering != nil ||
         subagents.family?.turns.values.contains { !$0.status.terminal } == true
     }
+    /// What a Resume would go on with once a paused run has ended.
+    var hasWorkAfterCostPause: Bool {
+        !costPendingCalls.isEmpty || !queue.isEmpty || !steering.isEmpty || !costPausedMembers.isEmpty || hasPendingAgentEvents ||
+        subagents.family?.turns.values.contains { !$0.status.terminal } == true ||
+        continuationTail.map { Self.continues(from: $0) } ?? false
+    }
     /// The family reached its limit: pause at once, durably, before anything
     /// is cancelled. Called only through `stopFamilyAtLimit`. A chat with no
     /// unfinished work only closes its gates; a side that pauses tells its
@@ -267,6 +273,13 @@ extension AgentSession {
     func forgetPausedMember(_ side: String) {
         guard let index = costPausedMembers.firstIndex(of: side) else { return }
         costPausedMembers.remove(at: index)
+        // Paused only for that side, with nothing of its own: no longer paused.
+        if costPaused, runTask == nil, !hasWorkAfterCostPause {
+            costPaused = false; queuePaused = false
+            if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
+            if state != .error { state = .idle; runStatus = .idle }
+            event("state")
+        }
         try? persistState()
     }
     /// A kept side's journal starts with the spend its unkept runtime counted.

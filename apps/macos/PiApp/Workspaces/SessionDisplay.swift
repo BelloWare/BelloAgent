@@ -351,7 +351,7 @@ struct TranscriptVersionView: Equatable, Sendable {
             // Before the helper reads the spend (a chat read from its journal):
             // Resume is offered, and the helper refuses it at the limit.
             row.failureCode = Self.costPausedRaisedCode
-            row.detail = "Resume goes on with this chat and every paused side and sub-agent once the limit is above the spend."
+            row.detail = "Resume goes on from where the work stopped, with any paused sides and sub-agents, once the limit is above the spend."
         } else if costLimitHeld {
             row.failureCode = Self.costPausedCode
             row.detail = [(shared ? "Raise the main chat’s limit above the spend." : "Raise the limit above the spend.") + " Nothing resumes until you choose Resume.",
@@ -359,7 +359,7 @@ struct TranscriptVersionView: Equatable, Sendable {
         } else {
             row.failureCode = Self.costPausedRaisedCode
             row.detail = (reading.limit.usd == nil ? "There is no limit now." : "The limit is now \(reading.limit.label).")
-                + " Resume goes on with this chat and every paused side and sub-agent" + (queued ? "; queued messages go after it." : ".")
+                + " Resume goes on from where the work stopped, with any paused sides and sub-agents" + (queued ? "; queued messages go after it." : ".")
         }
         return row
     }

@@ -57,6 +57,29 @@ private actor BillingClient: ModelClient {
     }
 }
 
+/// A tool that runs until released, then returns its real result.
+private actor SlowTools: ToolExecuting {
+    private(set) var started = 0, finished = 0, cancelled = 0
+    private var released = false
+    func release() { released = true }
+    func definitions(readOnly: Bool) -> [ToolDefinition] { [ToolDefinition("first","test",[:]),ToolDefinition("second","test",[:])] }
+    func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON {
+        started += 1
+        do { while !released { try await Task.sleep(for: .milliseconds(2)) } } catch { cancelled += 1; throw error }
+        finished += 1
+        return resultText("REAL " + call.name)
+    }
+}
+
+/// Records each call with how many turn requests its client had made.
+private actor RequestCountingTools: ToolExecuting {
+    let client: BillingClient
+    private(set) var calls: [(name: String, requests: Int)] = []
+    init(client: BillingClient) { self.client = client }
+    func definitions(readOnly: Bool) -> [ToolDefinition] { [ToolDefinition("first","test",[:]),ToolDefinition("second","test",[:])] }
+    func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON { calls.append((call.name, await client.turnRequests)); return resultText("done " + call.name) }
+}
+
 /// Every call writes a large result, so a context rejection finds history to summarize.
 private actor EvidenceTools: ToolExecuting {
     private(set) var count = 0
@@ -107,31 +130,111 @@ final class CostLimitTests: XCTestCase {
         await reopened.close()
     }
 
-    /// Two tool rounds cost 6 cents against a 5-cent limit: the second
-    /// request was sent below the limit and its tool ran, and the third —
-    /// the answer — never goes. A follow-up queued behind the run stays queued.
-    func testRunStopsBeforeTheNextRequestOnceSpendReachesTheLimit() async throws {
+    /// Two tool rounds cost 6 cents against a 5-cent limit (owner,
+    /// 2026-10-17: every chat pauses). The second reply crosses the limit: the
+    /// chat pauses at once and that reply's tool call is held, not run. A
+    /// follow-up queued behind the run stays queued. After a raise, Resume
+    /// runs the held call first, from the same reply (no new request), then
+    /// asks for the answer, then sends the follow-up.
+    func testRunPausesWhenSpendReachesTheLimitAndHeldToolsRunFirstOnResume() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
-        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.03), .reply(toolReply(["second"]), cost: 0.03), .reply(answer("Done"), cost: 0.01)], hold: [2])
-        let tools = RecordingTools()
+        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.03), .reply(toolReply(["second"]), cost: 0.03), .reply(answer("Done"), cost: 0.01), .reply(answer("Follow-up done"), cost: 0.01)], hold: [2])
+        let tools = RequestCountingTools(client: client)
         let s = try await session(root, client: client, tools: tools, limit: 0.05)
         try await send(s, "Work through it")
         try await eventually { await client.holding }
         try await send(s, "And then this")
         await client.release()
-        let state = try await settled(s)
-        let turnRequests = await client.turnRequests, ran = await tools.calls
+        var state = try await settled(s)
+        var turnRequests = await client.turnRequests, ran = await tools.calls
         XCTAssertEqual(turnRequests, 2, "The request after the limit was reached must not be sent")
-        XCTAssertEqual(ran, ["first", "second"], "The request in flight when the limit was reached is never cut; its tool runs")
-        XCTAssertEqual(state["state"].text, "error"); XCTAssertEqual(state["errorCode"].text, "cost_limit")
-        XCTAssertEqual(state["preflightError"].text, "This chat reached its $0.05 cost limit ($0.06 spent). Raise the limit to continue.")
+        XCTAssertEqual(ran.map(\.name), ["first"], "The crossing reply's call is held, never run at the limit")
+        XCTAssertEqual(state["state"].text, "paused"); XCTAssertEqual(state["errorCode"].text, "cost_limit"); XCTAssertEqual(state["costPaused"].flag, true)
+        XCTAssertEqual(state["preflightError"].text, "Paused at the cost limit: $0.06 spent of $0.05. Raise the limit above the spend, then choose Resume.")
         XCTAssertEqual(state["cost"]["limitUSD"].double, 0.05); XCTAssertEqual(state["cost"]["reached"].flag, true)
         assertSpend(state, usd: 0.06, reported: 2, unreported: 0)
         XCTAssertEqual(state["queueCount"].int, 1, "The follow-up stays queued"); XCTAssertEqual(state["queuePaused"].flag, true)
-        // Sending again is refused where it was typed, with the same words.
         do { try await send(s, "One more"); XCTFail("A chat at its limit must refuse a new message") }
-        catch let error as AgentError { XCTAssertEqual(error.code, "cost_limit"); XCTAssertEqual(error.message, state["preflightError"].text) }
+        catch let error as AgentError { XCTAssertEqual(error.code, "cost_limit") }
+        do { try await s.requireCostResumeRoom(); XCTFail("Resume at the limit") } catch { XCTAssertEqual((error as? AgentError)?.code, "cost_limit") }
+        await s.setCostLimit(1)
+        let still = await s.snapshot(); XCTAssertEqual(still["costPaused"].flag, true, "Raising alone resumes nothing")
+        try await s.requireCostResumeRoom()
+        _ = try await s.continueRun(commandID: "resume")
+        state = try await settled(s)
+        turnRequests = await client.turnRequests; ran = await tools.calls
+        XCTAssertEqual(ran.map(\.name), ["first", "second"])
+        XCTAssertEqual(ran.last?.requests, 2, "The held call ran before any new model request")
+        XCTAssertEqual(turnRequests, 4); XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
+        let users = await s.history.filter { $0.role == "user" }.map(\.text)
+        XCTAssertEqual(users.last, "And then this")
         await s.close()
+    }
+
+    /// Owner, 2026-10-17: a tool already running when the chat reaches its
+    /// limit is not cut. It finishes with its real result; then no request
+    /// goes, and the chat is paused. Quit while it still runs: the quit
+    /// interrupts it as Stop does, and the reopened chat is still paused.
+    func testARunningToolSurvivesThePauseAndARelaunchKeepsThePause() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        for quitEarly in [false, true] {
+            let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.02), .reply(answer("Done"), cost: 0.01)])
+            let tools = SlowTools()
+            let s = try await session(root, client: client, tools: tools, limit: 1)
+            try await send(s, "Work")
+            try await eventually { await tools.started == 1 }
+            await s.setCostLimit(0.01)   // already spent 0.02: the chat pauses now
+            try await eventually { await s.snapshot()["costPaused"].flag == true }
+            let running = await s.isRunning; XCTAssertTrue(running, "The tool is still running")
+            var path = await s.path
+            if quitEarly {
+                await s.close()
+            } else {
+                await tools.release()
+                let state = try await settled(s)
+                let finished = await tools.finished, cut = await tools.cancelled, requests = await client.turnRequests
+                XCTAssertEqual(finished, 1); XCTAssertEqual(cut, 0); XCTAssertEqual(requests, 1, "No request after the tool")
+                XCTAssertEqual(state["state"].text, "paused"); XCTAssertEqual(state["costPaused"].flag, true)
+                let kept = await s.history.contains { $0.role == "toolResult" && $0.text == "REAL first" }
+                XCTAssertTrue(kept, "Its real result is kept")
+                path = await s.path; await s.close()
+            }
+            let sessionID = await s.id
+            let reopened = try await session(root, id: sessionID, client: client, tools: tools, limit: 0.01, resume: path)
+            let state = await reopened.snapshot()
+            XCTAssertEqual(state["costPaused"].flag, true, "Still paused after the relaunch"); XCTAssertEqual(state["state"].text, "paused")
+            let result = await reopened.history.last { $0.role == "toolResult" }?.text ?? ""
+            XCTAssertTrue(quitEarly ? result.contains("interrupted") || result.contains("Interrupted") : result == "REAL first", result)
+            await reopened.setCostLimit(1)
+            _ = try await reopened.continueRun(commandID: "resume")
+            let resumed = try await settled(reopened)
+            XCTAssertEqual(resumed["state"].text, "idle", resumed["preflightError"].encoded())
+            let requests = await client.turnRequests; XCTAssertEqual(requests, 2, "Resume asks once; the tool is not run again")
+            await reopened.close()
+        }
+    }
+
+    /// Calls the pause held before they started stay pending across a
+    /// relaunch (no invented outcome) and run on Resume before any request.
+    func testHeldToolCallsSurviveARelaunchAndRunFirstOnResume() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.06), .reply(answer("Done"), cost: 0.01)])
+        let tools = RequestCountingTools(client: client)
+        let s = try await session(root, id: "held", client: client, tools: tools, limit: 0.05)
+        try await send(s, "Work")
+        let state = try await settled(s)
+        XCTAssertEqual(state["costPaused"].flag, true)
+        let path = await s.path; await s.close()
+        let reopened = try await session(root, id: "held", client: client, tools: tools, limit: 0.05, resume: path)
+        let pending = await reopened.history.filter { $0.role == "toolResult" }
+        XCTAssertTrue(pending.isEmpty, "A held call gets no invented outcome")
+        await reopened.setCostLimit(1)
+        _ = try await reopened.continueRun(commandID: "resume")
+        let done = try await settled(reopened)
+        let ran = await tools.calls, requests = await client.turnRequests
+        XCTAssertEqual(ran.map(\.name), ["first"]); XCTAssertEqual(ran.first?.requests, 1, "Ran before any new request")
+        XCTAssertEqual(requests, 2); XCTAssertEqual(done["state"].text, "idle", done["preflightError"].encoded())
+        await reopened.close()
     }
 
     /// No limit, or a limit removed, never stops a run however much it spends.
@@ -152,36 +255,32 @@ final class CostLimitTests: XCTestCase {
         }
     }
 
-    /// A limit changed while a request is in flight is the one the next
-    /// request is checked against: lowered, the run stops there; raised
-    /// after a stop, the stopped turn continues where it stopped.
-    func testRaisingTheLimitMidSessionContinues() async throws {
+    /// A limit lowered below the spend while a request is in flight: that
+    /// request's reply pauses the chat with its tool call held; raising the
+    /// limit resumes nothing; Resume runs the held call, then goes on.
+    func testLoweringTheLimitMidRequestPausesAndResumeGoesOn() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.02), .reply(toolReply(["second"]), cost: 0.02), .reply(answer("Done"), cost: 0.02)], hold: [1, 2])
         let tools = RecordingTools()
         let s = try await session(root, client: client, tools: tools, limit: 1)
         try await send(s, "Work")
         try await eventually { await client.holding }
-        // Lowered below what the request in flight will cost: that request
-        // still completes, and the run stops before the next one.
         await s.setCostLimit(0.01)
         await client.release()
         var state = try await settled(s)
         var requests = await client.turnRequests
-        XCTAssertEqual(requests, 1); XCTAssertEqual(state["errorCode"].text, "cost_limit")
-        XCTAssertEqual(state["preflightError"].text, "This chat reached its $0.01 cost limit ($0.02 spent). Raise the limit to continue.")
-        // Raised: the stopped turn continues from where it stopped, with no restart.
+        var ran = await tools.calls
+        XCTAssertEqual(requests, 1); XCTAssertTrue(ran.isEmpty); XCTAssertEqual(state["costPaused"].flag, true)
         await s.setCostLimit(0.03)
         state = await s.snapshot()
-        XCTAssertEqual(state["cost"]["reached"].flag, false); XCTAssertEqual(state["cost"]["limitUSD"].double, 0.03)
-        try await s.retryRun()
+        XCTAssertEqual(state["cost"]["reached"].flag, false); XCTAssertEqual(state["costPaused"].flag, true)
+        do { try await s.retryRun(); XCTFail("Retry is not the pause's Resume") } catch {}
+        _ = try await s.continueRun(commandID: "resume")
         try await eventually { await client.holding }
-        // Raised again while the second request is in flight: the third goes.
         await s.setCostLimit(1)
         await client.release()
         state = try await settled(s)
-        requests = await client.turnRequests
-        let ran = await tools.calls
+        requests = await client.turnRequests; ran = await tools.calls
         XCTAssertEqual(requests, 3); XCTAssertEqual(ran, ["first", "second"])
         XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded()); XCTAssertTrue(state["errorCode"].isNull)
         assertSpend(state, usd: 0.06, reported: 3, unreported: 0)
@@ -210,7 +309,7 @@ final class CostLimitTests: XCTestCase {
         // At the limit: the rejected request's own cost reaches it, and the
         // recovery's summary request is never sent.
         do {
-            let client = BillingClient(turns: [.reply(toolReply(["write"]), cost: 0.04), .fail(rejected, cost: 0.02)],
+            let client = BillingClient(turns: [.reply(toolReply(["write"]), cost: 0.04), .fail(rejected, cost: 0.02), .reply(answer("Resumed"), cost: 0.01)],
                                        summaries: [.reply(answer("Should not be requested"), cost: 0.005)])
             let tools = EvidenceTools()
             let s = try await session(root, client: client, tools: tools, limit: 0.05, policy: Self.smallTail)
@@ -220,7 +319,7 @@ final class CostLimitTests: XCTestCase {
             let writes = await tools.count
             XCTAssertEqual(summaries, 0, "A recovery summary is a model request and must not go at the limit")
             XCTAssertEqual(writes, 1)
-            XCTAssertEqual(state["state"].text, "error"); XCTAssertEqual(state["errorCode"].text, "cost_limit")
+            XCTAssertEqual(state["state"].text, "paused"); XCTAssertEqual(state["errorCode"].text, "cost_limit")
             XCTAssertEqual(state["compaction"]["phase"].text, "failed"); XCTAssertEqual(state["compaction"]["errorCode"].text, "cost_limit")
             assertSpend(state, usd: 0.06, reported: 2, unreported: 0)
             // A manual compaction at the limit stops before its summary request too.
@@ -228,11 +327,11 @@ final class CostLimitTests: XCTestCase {
             state = try await settled(s)
             summaries = await client.summaryRequests
             XCTAssertEqual(summaries, 0); XCTAssertEqual(state["errorCode"].text, "cost_limit")
-            // Raised, a stop with nothing left to continue ends on Resume.
+            // Raised, Resume goes on from where the pause left the run.
             await s.setCostLimit(1)
-            try await s.resumeQueue()
-            state = await s.snapshot()
-            XCTAssertEqual(state["state"].text, "idle"); XCTAssertTrue(state["errorCode"].isNull); XCTAssertTrue(state["preflightError"].isNull)
+            _ = try await s.continueRun(commandID: "resume")
+            state = try await settled(s)
+            XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded()); XCTAssertTrue(state["errorCode"].isNull); XCTAssertTrue(state["preflightError"].isNull)
             await s.close()
         }
     }
@@ -355,7 +454,7 @@ final class CostLimitTests: XCTestCase {
         try await send(s, "Work through it")
         let state = try await settled(s)
         XCTAssertEqual(state["errorCode"].text, "cost_limit")
-        XCTAssertEqual(state["preflightError"].text, "This chat reached its $2.68 cost limit ($2.68 spent). Raise the limit to continue.")
+        XCTAssertEqual(state["preflightError"].text, "Paused at the cost limit: $2.68 spent of $2.68. Raise the limit above the spend, then choose Resume.")
         await s.close()
     }
 }

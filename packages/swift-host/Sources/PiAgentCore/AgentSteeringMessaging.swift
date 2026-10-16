@@ -47,6 +47,8 @@ extension AgentSteeringCoordinator {
         let lock = gate(session.id), wake = signal(session.id)
         while true {
             try Task.checkCancellation()
+            // Paused at the cost limit: the run ends here, holding its family.
+            if await session.costPaused { throw AgentSession.costHoldError }
             let revision = await wake.revision
             try await lock.acquire()
             do {
@@ -158,6 +160,8 @@ extension AgentSteeringCoordinator {
             let elapsed = start.duration(to:.now), ms = Int(elapsed.components.seconds * 1000 + elapsed.components.attoseconds / 1_000_000_000_000_000)
             let reason: String?
             if targets.isEmpty { reason = "empty" }
+            // Held at the cost limit: a wait ends (it is not cut) and says so.
+            else if await parent.costPaused { reason = "paused" }
             else if mode == "any" ? completed > 0 : completed == targets.count { reason = "settled" }
             else if inbox { reason = "message" }
             else if await parent.hasAgentUserSteering { reason = "steering" }

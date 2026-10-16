@@ -38,9 +38,10 @@ final class FamilyLimitPauseTests: XCTestCase {
             await owner.limitFixturePhase(model:phase == .ownRequest || phase == .preLedgerRequest,
                 tools:phase == .tools || crosser == .waitedChild)
             try await finish(crossing.0,"crossing",cost:0.6)
-            // No drain fence: the Stop is issued by the crossing settlement.
-            let stopped = await owner.stopCount
-            XCTAssertEqual(stopped,1,"\(label): the family stops at once")
+            // No drain fence, and not Stop (owner, 2026-10-17): the crossing
+            // settlement cuts the other model requests and nothing else.
+            let stopped = await owner.stopCount, issued = await owner.budgetStopIssued
+            XCTAssertEqual(stopped,0,"\(label): the pause is not Stop"); XCTAssertTrue(issued,label)
             if let held {
                 // A side's request is cancelled by its own pause, delivered
                 // from the root without waiting for anything to settle.
@@ -51,7 +52,7 @@ final class FamilyLimitPauseTests: XCTestCase {
             }
             await owner.stopFamilyAtLimit()
             let again = await owner.stopCount, spend = await owner.spend
-            XCTAssertEqual(again,1,"\(label): one Stop per exhaustion")
+            XCTAssertEqual(again,0,"\(label): repeated readings change nothing")
             XCTAssertEqual(spend.usd,held == nil || phase == .childrenDispatched ? 0.6 : 0.7,accuracy:1e-9,label)
             XCTAssertEqual(spend.unreported,phase == .childrenDispatched ? 1 : 0,"\(label): unknown cost stays unknown")
             do { _ = try await crossing.0.admitAttempt("denied"); XCTFail("\(label): admitted past the limit") }
@@ -252,12 +253,19 @@ final class FamilyLimitPauseTests: XCTestCase {
         try await eventually { await tools.started }
         let held = try await start(owner,"held"), crossing = try await start(side,"crossing")
         try await finish(crossing.0,"crossing",cost:0.6)
-        // No request has to settle first: the root's dispatched request and
-        // the nested side's tool are both cancelled.
+        // The root's dispatched request is cut at once; the nested side's
+        // running tool is not (owner, 2026-10-17): it finishes for real.
         XCTAssertThrowsError(try held.1.check())
+        try await eventually(timeout:.seconds(2)) { await nested.costPaused }
+        try await Task.sleep(for:.milliseconds(100))
+        let cut = await tools.cancelled, busy = await nested.isRunning
+        XCTAssertFalse(cut,"A running tool survives the pause"); XCTAssertTrue(busy)
+        await tools.release()
         try await eventually(timeout:.seconds(2)) { !(await nested.isRunning) }
-        let cancelled = await tools.cancelled, code = await nested.errorCode, state = await nested.state, paused = await nested.costPaused
-        XCTAssertTrue(cancelled); XCTAssertEqual(code,"cost_limit"); XCTAssertEqual(state,.paused); XCTAssertTrue(paused)
+        let code = await nested.errorCode, state = await nested.state, paused = await nested.costPaused
+        XCTAssertEqual(code,"cost_limit"); XCTAssertEqual(state,.paused); XCTAssertTrue(paused)
+        let result = await nested.history.last { $0.role == "toolResult" }?.text
+        XCTAssertEqual(result,"REAL RESULT 1","The tool's real result is recorded")
         try await eventually { await owner.costPausedMembers == ["nested"] }
         let rootPaused = await owner.costPaused, sidePaused = await side.costPaused
         XCTAssertTrue(rootPaused,"The root shows the family's pause"); XCTAssertFalse(sidePaused,"An idle side has nothing to resume")
@@ -274,7 +282,8 @@ final class FamilyLimitPauseTests: XCTestCase {
         let resumed = try await nested.continueRun(commandID:"resume-nested")
         XCTAssertEqual(resumed["continued"].flag,true)
         try await eventually { await tools.starts == 2 }
-        let after = await nested.costPaused, members = await owner.costPausedMembers
+        let after = await nested.costPaused, members = await owner.costPausedMembers, cuts = await tools.cancellations
+        XCTAssertEqual(cuts,0)
         XCTAssertFalse(after); XCTAssertTrue(members.isEmpty)
         await nested.stop()
         try await finish(held.0,"held",cost:0.1)
@@ -292,11 +301,15 @@ final class FamilyLimitPauseTests: XCTestCase {
         _ = try await side.submit(Submission(commandID:"command",turnID:"turn",text:"Work"),steer:false)
         try await eventually { await tools.started }
         await owner.setCostLimit(0.5)
+        try await eventually(timeout:.seconds(2)) { await side.costPaused }
+        let stops = await owner.stopCount, running = await side.isRunning
+        XCTAssertEqual(stops,0); XCTAssertTrue(running,"Its tool goes on")
+        await tools.release()
         try await eventually(timeout:.seconds(2)) { !(await side.isRunning) }
-        let paused = await side.costPaused, stops = await owner.stopCount
-        XCTAssertTrue(paused); XCTAssertEqual(stops,1)
+        let finished = await tools.finished, cuts = await tools.cancellations
+        XCTAssertEqual(finished,1); XCTAssertEqual(cuts,0)
         await owner.setCostLimit(0.5); await owner.stopFamilyAtLimit()
-        let again = await owner.stopCount; XCTAssertEqual(again,1)
+        let again = await owner.stopCount; XCTAssertEqual(again,0)
         await owner.setCostLimit(2)
         try await Task.sleep(for:.milliseconds(50))
         let starts = await tools.starts, still = await side.costPaused
@@ -377,6 +390,7 @@ final class FamilyLimitPauseTests: XCTestCase {
 
 private extension AgentSteeringCoordinator {
     func fixturePause(_ owner: String) { paused.insert(owner) }
+    func fixturePark(_ id: String) async { if let job = jobs[id] { await park(job,child:job.child) } }
 }
 
 private extension AgentSession {
@@ -472,14 +486,18 @@ private actor LimitRunClient: ModelClient {
     }
 }
 
+/// Each invocation runs until `release()` lets it finish with its real result.
 private actor LimitHeldTools: ToolExecuting {
     var started = false, cancelled = false
-    var starts = 0, cancellations = 0
+    var starts = 0, cancellations = 0, releases = 0, finished = 0
+    func release() { releases += 1 }
     func definitions(readOnly:Bool) -> [ToolDefinition] { [ToolDefinition("first","Held fixture tool",[:])] }
     func invoke(_ call:ToolCall,readOnly:Bool) async throws -> JSON {
-        started = true; starts += 1
-        do { while true { try await Task.sleep(for:.milliseconds(2)) } }
+        started = true; starts += 1; let number = starts
+        do { while releases < number { try await Task.sleep(for:.milliseconds(2)) } }
         catch { cancelled = true; cancellations += 1; throw error }
+        finished += 1
+        return resultText("REAL RESULT \(number)")
     }
 }
 
@@ -506,7 +524,7 @@ extension FamilyLimitPauseTests {
         let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
         await owner.beginResumeFixture()
         await owner.fixtureCostPause()
-        await coordinator.pause(owner:owner,generation:0)
+        await coordinator.pause(owner:owner,generation:1)
         let held = await coordinator.paused.contains("parent"); XCTAssertTrue(held)
         let reply = try await owner.continueRun(commandID:"resume")
         XCTAssertEqual(reply["resumedFamily"].flag,true); XCTAssertEqual(reply["continued"].flag,false)
@@ -527,11 +545,11 @@ extension FamilyLimitPauseTests {
         let child = try await startChild(owner, coordinator, "settling")
         let target = AgentTurnTarget(childID:child,turn:1)
         await owner.beginResumeFixture(); await client.releaseAll()
-        let resume = Task { try await coordinator.resumeParked(owner:owner,generation:0) }
+        let resume = Task { try await coordinator.resumeParked(owner:owner,generation:1) }
         try await Task.sleep(for:.milliseconds(100))
         let early = await owner.agentState().turns[target.id]?.continuations
         XCTAssertNil(early,"Nothing is resumed while the turn is still settling")
-        await coordinator.pause(owner:owner,generation:0)   // the pause's runner parks it now
+        await coordinator.fixturePark(target.id)   // the pause's runner parks it now
         try await resume.value
         try await eventually { await owner.agentState().turns[target.id]?.status == .completed }
         let resumed = await owner.agentState().turns[target.id]
@@ -623,7 +641,7 @@ extension FamilyLimitPauseTests {
 
 private extension AgentSession {
     func fixtureCostPause() {
-        costPaused = true; queuePaused = true; errorCode = AgentSession.costLimitCode; errorMessage = costPausedMessage
+        costPaused = true; queuePaused = true; costPauseCount &+= 1; errorCode = AgentSession.costLimitCode; errorMessage = costPausedMessage
         if runTask == nil { state = .paused; runStatus = .cancelled }
     }
     func fixtureReceipt(_ turnID: String, state: String) { commands.append(["commandId":JSON(UUID().uuidString),"turnId":JSON(turnID),"state":JSON(state),"status":JSON(state)]) }

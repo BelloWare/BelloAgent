@@ -132,10 +132,11 @@ extension AgentSteeringBoundaryTests {
 }
 
 extension AgentSteeringBoundaryTests {
-    /// A child's charge crossing the limit pauses the family at once: the
-    /// parent's unrelated tool is cancelled, no further request is admitted
-    /// and the child's turn is held, not sealed. Raising the limit resumes
-    /// nothing; Resume finishes the child and the parent.
+    /// A child's charge crossing the limit pauses the family at once: no
+    /// further request is admitted and the child's turn is held, not sealed.
+    /// The parent's running unrelated tool is not cut (owner, 2026-10-17): it
+    /// finishes with its real result. Raising the limit resumes nothing;
+    /// Resume finishes the child and the parent.
     func testChildCostLimitPausesParentInUnrelatedToolUntilResume() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         let tools = AgentBudgetHoldTools(), client = AgentBudgetClient(), coordinator = AgentSteeringCoordinator()
@@ -144,7 +145,14 @@ extension AgentSteeringBoundaryTests {
         await parent.enableSubagents(SubagentCoordinator()); await parent.enableAgentSteering(coordinator)
         await parent.setCostLimit(0.015)
         _ = try await parent.submit(Submission(commandID:"command",turnID:"user",text:"Parallel work"),steer:false)
+        try await eventually { await parent.costPaused }
+        try await Task.sleep(for:.milliseconds(100))
+        let cut = await tools.cancelled, busy = await parent.isRunning
+        XCTAssertFalse(cut,"The running tool is not cancelled"); XCTAssertTrue(busy)
+        await tools.release()
         try await eventually { let busy = await parent.isRunning, jobs = await coordinator.jobs.isEmpty; return !busy && jobs }
+        let finished = await parent.history.contains { $0.role == "toolResult" && $0.text == "HOLD FINISHED" }
+        XCTAssertTrue(finished,"Its real result is recorded")
         let spend = await parent.spend, family = await parent.agentState(), entered = await tools.entered, calls = await client.requests
         XCTAssertTrue(entered)
         XCTAssertEqual(spend.usd,0.02,accuracy:0.000001)
@@ -167,11 +175,14 @@ extension AgentSteeringBoundaryTests {
     }
 }
 actor AgentBudgetHoldTools: ToolExecuting {
-    var entered = false
+    var entered = false, released = false, cancelled = false
+    func release() { released = true }
     func definitions(readOnly: Bool) -> [ToolDefinition] { [ToolDefinition("hold","fixture unrelated tool",["type":"object","properties":[:]])] }
     func invoke(_ call: ToolCall, readOnly: Bool) async throws -> JSON {
         entered = true
-        while true { try await Task.sleep(for:.seconds(1)) }
+        do { while !released { try await Task.sleep(for:.milliseconds(5)) } }
+        catch { cancelled = true; throw error }
+        return resultText("HOLD FINISHED")
     }
 }
 actor AgentBudgetClient: ModelClient {

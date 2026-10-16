@@ -64,8 +64,10 @@ final class SubagentAdmissionTests: XCTestCase {
         let total = await owner.spend, local = await child.spend
         XCTAssertEqual(total.usd, 0.8, accuracy: 1e-9); XCTAssertEqual(local.usd, 0.2)
         XCTAssertEqual(total.reported, 2); XCTAssertEqual(local.reported, 1)
+        // The cut requests stay cut after a raise (a fixture child without a
+        // turn holds nothing to pause; real turns park, see FamilyLimitPauseTests).
         await owner.setCostLimit(2)
-        do { _ = try await delegated.admitAttempt("stale"); XCTFail("Raising the limit cannot revive old child work") } catch {}
+        XCTAssertThrowsError(try b.check()); XCTAssertThrowsError(try a.check())
         await child.close(); await owner.close()
     }
 

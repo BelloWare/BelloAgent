@@ -26,7 +26,7 @@ final class CostPausePresentationTests: XCTestCase {
         view.applyCostReading(SessionCostReading(limit: .usd(5), spentUSD: 0.6, reportedRequests: 3))
         card = try XCTUnwrap(view.presentedMessages.last)
         XCTAssertEqual(card.failureCode, SessionDisplay.costPausedRaisedCode)
-        XCTAssertEqual(card.detail, "The limit is now $5.00. Resume goes on with this chat and every paused side and sub-agent.")
+        XCTAssertEqual(card.detail, "The limit is now $5.00. Resume goes on from where the work stopped, with any paused sides and sub-agents.")
         // Later figures reach the card while it is paused.
         view.applyCostReading(SessionCostReading(limit: .usd(6), spentUSD: 0.7, reportedRequests: 4))
         XCTAssertEqual(view.presentedMessages.last?.text, "$0.70 spent of the $6.00 limit.")

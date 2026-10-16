@@ -110,6 +110,12 @@ final class CostPauseFamilyTests: XCTestCase {
         XCTAssertEqual(first.runHolds[parent.id]?.state, "paused")
         let sent = try await Self.captures(setup.base).count, sideSent = cut.count
         let cutParent = try await Self.captures(setup.base).filter { $0.sessionID == parent.id }.count
+        if fromSide {
+            // Relaunch onto another chat: nothing reads the root before Resume.
+            let other = ChatRecord(id: "other-" + UUID().uuidString, workspaceID: setup.workspace.id, title: "Other", path: nil, profileID: setup.profile.id)
+            first.chats.append(other); try await first.store?.put(other, kind: "chat", id: other.id)
+            await first.select(other.id); await first.flushSelection()
+        }
         try await quit(first)
 
         let second = await launch(setup)
@@ -147,7 +153,7 @@ final class CostPauseFamilyTests: XCTestCase {
         try await second.setCostLimit(.usd(1), for: parent.id)
         await waitFor("The card never offered Resume") { reopened.presentedMessages.last?.failureCode == SessionDisplay.costPausedRaisedCode }
         XCTAssertTrue(reopened.offersResume)
-        XCTAssertTrue(reopened.presentedMessages.last?.detail?.contains("every paused side and sub-agent") == true)
+        XCTAssertTrue(reopened.presentedMessages.last?.detail?.contains("with any paused sides and sub-agents") == true)
         try await Task.sleep(for: .milliseconds(400))
         let afterRaise = try await Self.captures(setup.base).count
         XCTAssertEqual(afterRaise, sent, "Raising the limit resumes nothing")

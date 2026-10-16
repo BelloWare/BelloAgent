@@ -116,7 +116,7 @@ struct SubagentToolView: Equatable, Sendable {
             if operation == "subagent_report" { return "To parent · queued for delivery" + suffix }
             if operation == "subagent_wait" {
                 guard let wakeReason else { return "Waiting for sub-agents" }
-                let reason = ["message":"new report", "steering":"new guidance", "settled":"agents finished", "empty":"no agents to wait for", "timeout":"wait time elapsed", "stopped":"stopped"][wakeReason]
+                let reason = ["message":"new report", "steering":"new guidance", "settled":"agents finished", "empty":"no agents to wait for", "timeout":"wait time elapsed", "stopped":"stopped", "paused":"paused at the cost limit"][wakeReason]
                 return "Wait ended" + (reason.map { " · " + $0 } ?? "")
             }
             if let summary, operation == "subagent_start" || summary.turn == receiptTurn { return summary.presentationLabel }

@@ -116,8 +116,9 @@ extension AgentSession {
     /// The held calls of the newest reply, in its order, still without results.
     func heldToolCalls() -> ([ToolCall], [String]) {
         let held = Set(costPendingCalls)
-        guard let reply = context.last(where: { $0.role == "assistant" }) else { return ([], []) }
-        let answered = Set(context.compactMap { $0.role == "toolResult" ? $0.toolCallId : nil })
+        guard let index = context.lastIndex(where: { $0.role == "assistant" }) else { return ([], []) }
+        // Providers may reuse call IDs across replies: only this reply's results count.
+        let reply = context[index], answered = Set(context[context.index(after:index)...].compactMap { $0.role == "toolResult" ? $0.toolCallId : nil })
         let calls = reply.content.compactMap { block -> ToolCall? in
             guard block["type"].text == "toolCall", let id = block["id"].text, let name = block["name"].text, held.contains(id), !answered.contains(id) else { return nil }
             return ToolCall(id:id,name:name,arguments:block["arguments"])
@@ -417,6 +418,15 @@ extension AgentSession {
         if let pending=pendingConfiguration { apply(profile:pending.profile, apiKey:pending.apiKey) }
         // The pause landed as the run was settling: the run's own outcome
         // stays, but the chat waits for the family's Resume.
+        if costPaused, !isSubagent, !hasWorkAfterCostPause {
+            // The reply that crossed the limit was the run's last word:
+            // nothing waits for Resume. The chat is simply at its limit, and
+            // a new message is refused there as before.
+            costPaused = false; queuePaused = false
+            if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
+            if state != .error { state = .idle; runStatus = .idle }
+            if let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
+        }
         if costPaused, state != .error {
             queuePaused=true; state = .paused; runStatus = .cancelled
             errorCode=Self.costLimitCode; errorMessage=errorMessage ?? costPausedMessage
