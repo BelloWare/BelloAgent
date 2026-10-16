@@ -63,6 +63,18 @@ final class ContextReadingTests: XCTestCase {
         return (meter.fraction, meter.detailLabel)
     }
 
+    /// Everything the pill's reading depends on, for a failure message.
+    @MainActor private func footerState(_ model: WorkspaceModel, _ view: SessionDisplay, chat: String) -> String {
+        let footer = view.footer, item = model.record(chat)
+        let saved = footer.retainedContext, kept = model.contextReadings[chat]
+        return "retained=\(saved != nil) kept=\(kept != nil) keptStands=\(kept.flatMap { k in item.map { model.contextReadingStands(k, for: $0) } } ?? false) " +
+            "serving=\(model.servingContextReading(view) != nil) prepared=\(footer.preparedContext != nil) state=\(footer.contextState.keys.sorted()) " +
+            "preparing=\(footer.preparingContext) submission=\(footer.pendingContextSubmission != nil) busy=\(view.busy) run=\(view.runState) " +
+            "draft=\(view.draft.count) opened=\(model.opened.contains(chat)) hosts=\(model.hosts.count) " +
+            "binding=\(saved.map { s in item.map { ContextPreviewBinding($0) == s.binding } ?? false } ?? false) " +
+            "revision=\(saved.map { $0.configurationRevision == model.configuration.revision } ?? false) shown=\(model.displayedContext(view))"
+    }
+
     /// A chat with one turn, counted by its helper as the reader saw it, then quit.
     @MainActor private func countedChat(_ setup: Setup) async throws -> (chat: ChatRecord, shown: [String: WireValue]) {
         let first = launch(setup)
@@ -120,10 +132,19 @@ final class ContextReadingTests: XCTestCase {
         await waitFor("The helper's exit was never seen") { !second.opened.contains(chat.id) }
         let settled = Date().addingTimeInterval(2)
         while Date() < settled {
-            XCTAssertEqual(pill(second, view).fraction, before.fraction, "The figures stay when the helper goes")
+            let now = pill(second, view)
+            // A miss says which input the pill had lost, so the next one explains itself.
+            XCTAssertEqual(now.fraction, before.fraction, "The figures stay when the helper goes: \(footerState(second, view, chat: chat.id))")
             try await Task.sleep(for: .milliseconds(50))
         }
         XCTAssertFalse(second.opened.contains(chat.id), "and the chat is not opened again to count them")
+        // The helper's figures arrive while it is still opening the chat, and
+        // an automatic count can be scheduled in that moment. Pending when
+        // the helper goes, it must not take the standing reading away until
+        // its next look lets it go: it once said "calculating" instead.
+        view.footer.preparingContext = true
+        XCTAssertEqual(pill(second, view).fraction, before.fraction, "A count left pending by a helper that went keeps the reading: \(footerState(second, view, chat: chat.id))")
+        second.cancelAutomaticContext(chat.id); view.footer.preparingContext = false
     }
 
     @MainActor func testTypingStillCountsTheDraft() async throws {
@@ -168,5 +189,6 @@ final class ContextReadingTests: XCTestCase {
         let reopened = try XCTUnwrap(third.displays[chat.id])
         XCTAssertNil(third.servingContextReading(reopened), "A reading counted from another journal does not stand")
         await waitFor("The chat was never counted again for its changed journal") { !third.hosts.isEmpty && reopened.footer.preparedContext != nil }
+        if reopened.footer.preparedContext == nil { XCTFail("Not counted: \(footerState(third, reopened, chat: chat.id))") }
     }
 }

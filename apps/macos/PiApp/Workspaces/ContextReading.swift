@@ -58,10 +58,14 @@ extension WorkspaceModel {
     /// The saved reading the pill shows: only while the helper has published
     /// nothing for the chat and the next request is the one it counted, with
     /// an empty composer. `forScheduling` leaves out the estimate the
-    /// scheduler itself turns on.
+    /// scheduler itself turns on. So does a chat no helper has open: the
+    /// scheduler starts no count over a reading that stands there, and one
+    /// still pending is let go of at its next look. A helper's figures arrive
+    /// while it is still opening the chat; a count scheduled in that moment
+    /// used to say "calculating" over the reading after the helper had gone.
     func servingContextReading(_ view: SessionDisplay, forScheduling: Bool = false) -> ContextReading? {
         guard let reading = view.footer.retainedContext, view.footer.contextState.isEmpty, view.footer.preparedContext == nil,
-              forScheduling || !view.footer.preparingContext, view.footer.pendingContextSubmission == nil,
+              forScheduling || !view.footer.preparingContext || !opened.contains(view.id), view.footer.pendingContextSubmission == nil,
               !view.busy, view.runState == .idle, view.draft.isEmpty, view.skills.isEmpty, view.attachments.isEmpty, !view.directCommand,
               view.editingMessageID == nil, view.queueEditingID == nil,
               let item = record(view.id), reading.binding == ContextPreviewBinding(item),
