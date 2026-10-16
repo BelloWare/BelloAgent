@@ -256,7 +256,14 @@ actor MetadataStore {
     /// Parents precede their children. Forks are provenance, never members;
     /// a damaged intermediate record keeps its descendants out of the set.
     func savedSideDescendants(of owner: String, workspaceID: String) throws -> [(chat: ChatRecord, depth: Int)] {
-        let records = try durableChatGraph().records
+        var records = try durableChatGraph().records
+        // A side whose journal was published but whose chat row was never
+        // registered keeps only its keep intent. It is still a saved side of
+        // this family, and launch recovery would otherwise register it.
+        for intent in try list(SideKeepIntent.self, kind: "side-keep") where records[intent.chat.id] == nil {
+            guard try get(String.self, kind: "session-deleted", id: intent.chat.id) == nil else { continue }
+            records[intent.chat.id] = intent.chat
+        }
         var children: [String: [ChatRecord]] = [:]
         for chat in records.values where chat.workspaceID == workspaceID && !chat.isSubagent && !chat.imported {
             if let parent = chat.persistedBudgetParentID { children[parent, default: []].append(chat) }

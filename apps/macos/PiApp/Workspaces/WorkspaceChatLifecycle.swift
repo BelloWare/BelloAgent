@@ -227,7 +227,7 @@ extension WorkspaceModel {
                 if count > 0 { detail += " Includes \(count) managed sub-agent\(count == 1 ? "" : "s")." }
                 if isSide { detail += " Its spend stays counted in “\(budgetOwner(for: item).title)”." }
                 if ([item.id] + family.map(\.chat.id)).contains(where: { self.sides[$0]?.pending == true }) { detail += " Its unsent side draft is also removed." }
-                var question = ChatQuestion(title: title, detail: detail, action: "Delete Chat")
+                var question = ChatQuestion(title: title, detail: detail, action: isSide ? "Delete Side" : "Delete Chat")
                 question.list = .init(heading: family.isEmpty ? "" : "Saved sides deleted with it (\(family.count))",
                                       items: family.map { .init(title: $0.chat.title, depth: $0.depth) }, notes: preview.skipped)
                 if !questions.ask(question, about: item.id, destructive: true, answered: { [weak self] confirmed in

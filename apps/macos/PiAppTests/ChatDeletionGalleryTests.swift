@@ -17,11 +17,11 @@ final class ChatDeletionGalleryTests: XCTestCase, SerialTestLane {
             ("many", "Delete this chat and its sides?", "Move its managed conversation files to Trash and remove its draft and retained trace bodies. All 240 of its saved sides go with it, with their sub-agents.", many, []),
             ("missing-project", "Delete this side and its sides?", "Move its managed conversation files to Trash and remove its draft and retained trace bodies. Its saved side goes with it, with its sub-agents. Its spend stays counted in “Parser review”.", [.init(title: "Escaped scalar spans")],
              ["This chat's project folder is missing. Only Bello's own copy of the chat is removed; nothing in the project folder is touched.",
-              "Skipped: checking for costs from interrupted requests that were not yet copied into “Parser review”. That check needs the project folder. Spend already counted there stays counted."]),
+              "Skipped: copying unreported spend from interrupted requests into “Parser review”, which needs the project's helper. Spend already counted there stays counted."]),
             ("no-sides", "Delete this chat?", "Move its managed conversation files to Trash and remove its draft and retained trace bodies.", [], ["This chat's project folder is missing. Only Bello's own copy of the chat is removed; nothing in the project folder is touched."]),
         ]
         for (name, title, detail, items, notes) in scenes {
-            var question = ChatQuestion(title: title, detail: detail, action: "Delete Chat")
+            var question = ChatQuestion(title: title, detail: detail, action: title.contains("side and") ? "Delete Side" : "Delete Chat")
             question.list = .init(heading: items.isEmpty ? "" : "Saved sides deleted with it (\(items.count))", items: items, notes: notes)
             for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 for size in [NSSize(width: 1240, height: 760), NSSize(width: 340, height: 520)] {

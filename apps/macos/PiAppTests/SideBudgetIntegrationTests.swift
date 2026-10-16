@@ -630,6 +630,7 @@ final class FamilyDeletionTests: XCTestCase {
         XCTAssertNil(model.error)
         let question = try XCTUnwrap(asked.first), list = try XCTUnwrap(question.list)
         XCTAssertEqual(question.title,"Delete this chat and its sides?")
+        XCTAssertEqual(question.action,"Delete Chat")
         XCTAssertTrue(question.detail.contains("All 3 of its saved sides go with it"),question.detail)
         XCTAssertEqual(list.heading,"Saved sides deleted with it (3)")
         XCTAssertEqual(list.items.map(\.title),["sibling","side","nested"],"Each side under its parent, by name")
@@ -641,6 +642,7 @@ final class FamilyDeletionTests: XCTestCase {
         try await eventually("The side's confirmation is asked") { !asked.isEmpty || model.error != nil }
         let side = try XCTUnwrap(asked.first)
         XCTAssertEqual(side.title,"Delete this side and its sides?")
+        XCTAssertEqual(side.action,"Delete Side","Owner decision 2026-10-17")
         XCTAssertEqual(side.list?.items.map(\.title),["nested"])
         XCTAssertTrue(side.detail.contains("Its spend stays counted in “Main”."),side.detail)
     }
@@ -698,7 +700,7 @@ final class FamilyDeletionTests: XCTestCase {
     }
 
     @MainActor func testMissingOrRemovedProjectDeletesOnlyTheChatsOwnFiles() async throws {
-        for project in ["missing","removed"] {
+        for project in ["missing","removed","untrusted"] {
             for target in ["main","side"] {
                 let label = project + " " + target
                 let model = try await sideBudgetFixture()
@@ -708,6 +710,8 @@ final class FamilyDeletionTests: XCTestCase {
                 try Data("not chat data".utf8).write(to:sentinel)
                 if project == "missing" {
                     try await model.updateConfiguration { $0.workspaces[0].paths = [folder.appendingPathComponent("moved-away").path] }
+                } else if project == "untrusted" {
+                    try await model.updateConfiguration { $0.workspaces[0].trusted = false }
                 } else {
                     try await model.updateConfiguration { $0.workspaces = [] }
                 }
@@ -716,7 +720,7 @@ final class FamilyDeletionTests: XCTestCase {
                 model.questions.answer = { asked = $0; return true }
                 deleteAll(model)
                 model.deleteChat(target)
-                try await eventually(label + ": deletion finishes") { model.record(target) == nil || model.error != nil }
+                try await eventually(label + ": deletion finishes") { model.record(target) == nil && !model.deletingFamilies.contains(target) || model.error != nil }
                 XCTAssertNil(model.error,label)
                 let notes = try XCTUnwrap(asked?.list?.notes)
                 XCTAssertTrue(notes.first?.contains("nothing in the project folder is touched") == true,label)
@@ -728,6 +732,51 @@ final class FamilyDeletionTests: XCTestCase {
                 if target == "side" { XCTAssertNotNil(model.record("main")); XCTAssertNotNil(model.record("sibling")) }
             }
         }
+    }
+
+    @MainActor func testDeletingMainFinishesAnInterruptedSideDeletionInsteadOfAdoptingIt() async throws {
+        let model = try await sideBudgetFixture(), store = try XCTUnwrap(model.store)
+        try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
+        let nestedPath = URL(fileURLWithPath:try XCTUnwrap(model.record("nested")?.path))
+        deleteAll(model)
+        model.familyDeletionStep = { step in if step == "files:side" { throw StoreError.unavailable } }
+        do { try await model.deleteSubagentFamily(try XCTUnwrap(model.record("side"))); XCTFail("No interruption") } catch { }
+        model.familyDeletionStep = nil
+        // The interrupted side's nested member is outside the chat window.
+        model.chats.removeAll { $0.id == "nested" }
+        try await model.deleteSubagentFamily(try XCTUnwrap(model.record("main")))
+        for id in ["side","nested"] {
+            let tombstone = try await store.get(String.self,kind:"session-deleted",id:id)
+            XCTAssertEqual(tombstone,"side","The earlier deletion keeps its own receipts")
+        }
+        let intents = try await store.pendingFamilyDeletions()
+        XCTAssertTrue(intents.isEmpty)
+        try await assertGone(model,["main","sibling"],owner:"main","main")
+        XCTAssertNil(model.record("side"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath:nestedPath.path))
+        await model.resumeFamilyDeletions()
+        XCTAssertNil(model.error)
+    }
+
+    @MainActor func testPublishedSideWithoutAChatRowGoesWithItsChat() async throws {
+        let model = try await sideBudgetFixture(), store = try XCTUnwrap(model.store)
+        try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
+        // side.open published the journal, but registering its chat failed.
+        let path = try model.subagentDirectory("w").appendingPathComponent("side_pending.jsonl")
+        try Data("{\"type\":\"session\",\"version\":3,\"id\":\"pending\"}\n".utf8).write(to:path)
+        let pending = ChatRecord(id:"pending",workspaceID:"w",title:"Published side",path:path.path,profileID:"p",toolMode:ChatRecord.readOnlyTools,parentSessionID:"side")
+        try await store.put(SideKeepIntent(chat:pending),kind:"side-keep",id:pending.id)
+        var asked: ChatQuestion?
+        model.questions.answer = { asked = $0; return true }
+        deleteAll(model)
+        model.deleteChat("main")
+        try await eventually("Deletion finishes") { model.record("main") == nil && !model.deletingFamilies.contains("main") || model.error != nil }
+        XCTAssertNil(model.error)
+        XCTAssertTrue(asked?.list?.items.map(\.title).contains("Published side") == true)
+        try await assertGone(model,["main","side","nested","sibling","pending"],owner:"main","pending side")
+        XCTAssertFalse(FileManager.default.fileExists(atPath:path.path))
+        let intent = try await store.get(SideKeepIntent.self,kind:"side-keep",id:"pending")
+        XCTAssertNil(intent,"Launch recovery must not register it later")
     }
 
     @MainActor func testOrphanedSideFromAnEarlierVersionStaysUntilItIsDeletedItself() async throws {

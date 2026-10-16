@@ -58,15 +58,18 @@ extension WorkspaceModel {
     func deletionProjectUnavailable(_ workspaceID: String) -> String? {
         guard let workspace = workspace(for: workspaceID) else { return "This chat's project was removed from Bello." }
         guard !workspace.isScratch else { return nil }
-        do { try requireProjectFolders(workspace); return nil }
+        do { try requireProjectFolders(workspace) }
         catch { return "This chat's project folder is missing." }
+        // Owner decision (2026-10-17): an untrusted project cannot start its
+        // helper either; deletion skips the same step rather than refusing.
+        return workspace.trusted ? nil : "This chat's project is not trusted."
     }
 
     /// The text a confirmation and a result name for a skipped repair.
     func skippedRepairNote(_ root: ChatRecord) -> String {
         let owner = budgetOwner(for: root)
         let name = owner.id == root.id ? "its parent chat" : "“\(owner.title)”"
-        return "Skipped: checking for costs from interrupted requests that were not yet copied into \(name). That check needs the project folder. Spend already counted there stays counted."
+        return "Skipped: copying unreported spend from interrupted requests into \(name), which needs the project's helper. Spend already counted there stays counted."
     }
 
     /// A deleted side's surviving ancestors need the helper's ledger repair;
@@ -111,6 +114,9 @@ extension WorkspaceModel {
         defer { budgetOwnerChanges.remove(parent.id) }
         let existing = try await store.pendingFamilyDeletions().filter { $0.ownerID == parent.id }
         if !existing.isEmpty { try await finishFamilyDeletion(existing); return [] }
+        // An interrupted deletion of a side below this chat owns its members'
+        // receipts. Finish it first; a new manifest never adopts them.
+        try await finishOtherPendingDeletions(parent)
         guard deletingFamilies.insert(parent.id).inserted else { throw HostError.failure("This family is already being deleted.") }
         var durable = false, blocked: Set<String> = [parent.id]
         defer { if !durable { deletingFamilies.subtract(blocked) } }
@@ -123,7 +129,12 @@ extension WorkspaceModel {
         var members = [owner]
         var known: Set<String> = [parent.id]
         for side in try await savedSideDescendants(of: parent) where known.insert(side.chat.id).inserted {
-            if deletingFamilies.insert(side.chat.id).inserted { blocked.insert(side.chat.id) }
+            // Fail closed rather than overwrite another deletion's receipt.
+            guard deletingFamilies.insert(side.chat.id).inserted,
+                  try await store.get(String.self, kind: "session-deleted", id: side.chat.id) == nil else {
+                throw HostError.failure("An earlier deletion of “\(side.chat.title)” is still finishing. Try again in a moment.")
+            }
+            blocked.insert(side.chat.id)
             members.append(SessionDeletionRecord(id: side.chat.id, ownerID: parent.id, workspaceID: parent.workspaceID, path: side.chat.path, sideDepth: side.depth))
         }
         // Reject unsupported paths before detaching the runtime or committing
@@ -211,6 +222,18 @@ extension WorkspaceModel {
         try await releaseIdleBudgetDependents(of:owner.id,host:host)
         _ = try await host.request("session.forget", sessionID: owner.id, params: descendantsDeleted ? ["descendantsDeleted": .bool(true)] : [:])
         return []
+    }
+
+    /// Finishes this project's other interrupted deletions first. One may be
+    /// rooted at a side below `root` and own its members' receipts; a new
+    /// manifest never adopts those. A deletion that still cannot finish is
+    /// left for its own retry, and the tombstone check below fails closed.
+    private func finishOtherPendingDeletions(_ root: ChatRecord) async throws {
+        guard let store else { return }
+        let groups = Dictionary(grouping: try await store.pendingFamilyDeletions(), by: \.ownerID)
+        for (owner, members) in groups.sorted(by: { $0.key < $1.key }) where owner != root.id && members.first?.workspaceID == root.workspaceID {
+            try? await finishFamilyDeletion(members)
+        }
     }
 
     func markPendingFamilyDeletions() async {
