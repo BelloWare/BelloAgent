@@ -89,6 +89,43 @@ final class SideBudgetCrashMatrixTests: XCTestCase {
         }
     }
 
+    /// 0.1.129: deleting a chat deletes every saved side below it. Damaged
+    /// evidence in a deleted descendant cannot block that deletion, and no
+    /// descendant journal is rewritten on its way to Trash.
+    func testFamilyDeletionSkipsMirrorsIntoDeletedDescendants() async throws {
+        for loaded in [false,true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            _ = try fixture(root,shape:.current,crash:.afterAll)
+            let url = file("child",root)
+            let rows = try String(contentsOf:url,encoding:.utf8).split(separator:"\n").map { line -> String in
+                var record = try JSON.parse(Data(line.utf8))
+                if record["customType"].text == JournalRecordKind.cost { record["data"]["scope"]["sideParents"] = ["foreign"] }
+                return record.encoded()
+            }
+            try Data((rows.joined(separator:"\n") + "\n").utf8).write(to:url)
+            let before = try ["side","child"].map { try Data(contentsOf:file($0,root)) }, host = try await host(root)
+            if loaded { _ = try await open(host,"child",root) }
+            do { _ = try await host.command("session.forget",sessionID:"main",params:["descendantsDeleted":true]) }
+            catch { XCTFail("A deleted descendant's evidence must not block its family's deletion (loaded=\(loaded)): \(error)") }
+            for id in ["main","child"] { let value = await host.loadedSession(id); XCTAssertNil(value) }
+            await host.shutdown()
+            XCTAssertEqual(try ["side","child"].map { try Data(contentsOf:file($0,root)) },before,"loaded=\(loaded)")
+        }
+    }
+
+    func testMemberForgetAfterTheRootRepairLeavesAncestorsUntouched() async throws {
+        for repaired in [false,true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            _ = try fixture(root,shape:.current,crash:.beforeMain)
+            let before = try Data(contentsOf:file("main",root)), host = try await host(root)
+            _ = try await host.command("session.forget",sessionID:"side",params:repaired ? ["descendantsDeleted":true,"ancestorsRepaired":true] : ["descendantsDeleted":true])
+            await host.shutdown()
+            let after = try Data(contentsOf:file("main",root))
+            if repaired { XCTAssertEqual(after,before,"An already-repaired member must not write its ancestors again") }
+            else { XCTAssertNotEqual(after,before,"The deleted root still repairs its surviving ancestor") }
+        }
+    }
+
     func testDiscardedSideChargesDoNotRequirePlansForUnrelatedLoadedChats() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
         _ = try fixture(root,shape:.current,crash:.afterAll)

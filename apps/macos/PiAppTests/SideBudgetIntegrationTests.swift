@@ -65,7 +65,7 @@ final class BudgetOwnerUnloadTests: XCTestCase {
         }
     }
 
-    @MainActor func testDeleteActionAllowsAnIdleVisibleSideAndKeepsItsSavedChat() async throws {
+    @MainActor func testDeleteActionAllowsAnIdleVisibleSideAndDeletesItWithItsChat() async throws {
         let model = try await sideBudgetFixture(), side = try XCTUnwrap(model.record("side"))
         _ = try await model.open(side)
         model.sides["main"] = SideRecord(id:side.id,parentID:"main",workspaceID:"w",profileID:"p",title:side.title,kept:true)
@@ -75,7 +75,7 @@ final class BudgetOwnerUnloadTests: XCTestCase {
         try await eventually("Deletion must reach its confirmation and finish") { model.record("main") == nil || model.error != nil }
         XCTAssertNil(model.error)
         XCTAssertNil(model.record("main"))
-        XCTAssertNotNil(model.record("side"),"A saved dependent survives owner deletion")
+        XCTAssertNil(model.record("side"),"A saved side goes with its chat (0.1.129)")
         XCTAssertNil(model.sides["main"],"Remove the deleted parent's pane relationship")
     }
 
@@ -255,7 +255,7 @@ final class SideBudgetIntegrationTests: XCTestCase {
         }
     }
 
-    @MainActor func testDeletingWithNoReadyHelperRepairsSavedSideCostsBeforeTrashingOwner() async throws {
+    @MainActor func testDeletingMainWithNoReadyHelperTrashesTheWholeFamilyWithoutStartingOne() async throws {
         for state in ["absent", "stopped", "stopping"] {
             let model = try await sideBudgetFixture(), parent = try XCTUnwrap(model.record("main"))
             let original = try XCTUnwrap(model.hosts["w"])
@@ -267,85 +267,51 @@ final class SideBudgetIntegrationTests: XCTestCase {
                 original.shutdown()
             }
             XCTAssertFalse(model.hosts["w"]?.isReady == true)
-            let captures = try await model.traces.list(sessionID:"nested")
-            XCTAssertTrue(captures.isEmpty,"No retained capture can rescue this orphan")
-            // Repair needs the project helper, not a provider or an opened
-            // owner runtime. Deleting works even after its connection is gone.
-            let profiles = model.configuration.profiles
+            // Nothing survives that could need a repaired ledger, so neither
+            // a connection nor the project helper is needed.
             try await model.updateConfiguration { $0.profiles = [] }
-            var recycled = false
+            var recycled: [URL] = []
             model.familyFileRecycler = { urls in
-                if urls.contains(where: { $0.path == parent.path }) {
-                    recycled = true
-                    for path in paths {
-                        let cost = try self.lastFixtureCost(path)
-                        XCTAssertEqual(cost["usd"]?.number,0.9,state + ": repair must precede Trash")
-                        XCTAssertEqual(cost["reported"]?.number,1,state)
-                        XCTAssertEqual(cost["unreported"]?.number,0,state)
-                        XCTAssertEqual(cost["usage"]?.object?["output"]?.number,20,state)
-                    }
-                    XCTAssertTrue(model.opened.isEmpty,"Repair must not open conversation runtimes")
-                    XCTAssertTrue(model.displays.isEmpty,"Repair must not allocate hidden transcripts")
-                }
+                recycled += urls
+                XCTAssertTrue(model.opened.isEmpty,"Deletion must not open conversation runtimes")
+                XCTAssertTrue(model.displays.isEmpty,"Deletion must not allocate hidden transcripts")
                 for url in urls { try FileManager.default.removeItem(at:url) }
             }
-            try await model.deleteSubagentFamily(parent)
-            XCTAssertTrue(recycled,state)
-            XCTAssertNil(model.record(parent.id))
-            try await model.updateConfiguration { $0.profiles = profiles }
-            try await model.setCostLimit(.usd(0.5),for:"side")
-            for _ in 0..<2 {
-                let host = try await model.open(try XCTUnwrap(model.record("nested")))
-                for id in ["side","nested"] {
-                    let status = try await host.request("session.status",sessionID:id,params:["budgetOnly":.bool(true)])
-                    XCTAssertEqual(status.object?["cost"]?.object?["spentUSD"]?.number,0.9,state)
-                    XCTAssertEqual(status.object?["cost"]?.object?["reportedRequests"]?.number,1,state)
-                    XCTAssertEqual(status.object?["cost"]?.object?["unreportedRequests"]?.number,0,state)
-                }
-                XCTAssertTrue(model.costReading(for:"nested").reached,"The corrected orphan enforces its surviving owner's limit")
-                try await host.shutdownAndWait()
+            let skipped = try await model.deleteSubagentFamily(parent)
+            XCTAssertTrue(skipped.isEmpty,state)
+            XCTAssertFalse(model.hosts["w"]?.isReady == true,state + ": no helper starts for a whole-family deletion")
+            for path in paths + [URL(fileURLWithPath:try XCTUnwrap(parent.path))] {
+                XCTAssertTrue(recycled.contains(path),state + ": " + path.lastPathComponent)
+                XCTAssertFalse(FileManager.default.fileExists(atPath:path.path),state)
             }
-            XCTAssertFalse(FileManager.default.fileExists(atPath:try XCTUnwrap(parent.path)))
+            for id in ["main","side","nested","sibling"] { XCTAssertNil(model.record(id),state + ": " + id) }
         }
     }
 
-    @MainActor func testColdOwnerMirrorFailureCannotCommitDeletionAndCanRetry() async throws {
-        let model = try await sideBudgetFixture(), parent = try XCTUnwrap(model.record("main"))
-        try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
-        let paths = try interruptedSideMirror(model,foreignSideIdentity:true)
-        let owner = URL(fileURLWithPath:try XCTUnwrap(parent.path)), before = try Data(contentsOf:owner)
-        let store = try XCTUnwrap(model.store)
-        var recycled = false
-        model.familyFileRecycler = { _ in recycled = true }
-        do { try await model.deleteSubagentFamily(parent); XCTFail("Failed mirror must keep the owner's only evidence") }
-        catch let HostError.rejected(code, _) { XCTAssertEqual(code,"accounting_damaged") }
-        XCTAssertFalse(recycled)
-        XCTAssertEqual(try Data(contentsOf:owner),before)
-        XCTAssertNotNil(model.record(parent.id))
-        let saved = try await store.get(ChatRecord.self,kind:"chat",id:parent.id)
-        let tombstone = try await store.get(String.self,kind:"session-deleted",id:parent.id)
-        let intents = try await store.pendingFamilyDeletions()
-        XCTAssertNotNil(saved); XCTAssertNil(tombstone); XCTAssertTrue(intents.isEmpty)
-        XCTAssertFalse(model.deletingFamilies.contains(parent.id))
-        // Fix the fixture's foreign identity and retry the same operation.
-        let damaged = try XCTUnwrap(paths.first)
-        var rows = try fixtureJournalRows(damaged)
-        var cost = try XCTUnwrap(rows[rows.count - 1]["data"]?.object)
-        cost["budgetOwnerSessionId"] = .string("nested"); rows[rows.count - 1]["data"] = .object(cost)
-        var data = Data(); for row in rows { data.append(try JSONEncoder().encode(row)); data.append(10) }
-        try data.write(to:damaged)
-        model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at:url) } }
-        try await model.deleteSubagentFamily(parent)
-        XCTAssertEqual(try lastFixtureCost(damaged)["usd"]?.number,0.9)
-        XCTAssertNil(model.record(parent.id))
+    @MainActor func testDamagedSideEvidenceCannotBlockDeletingTheWholeFamily() async throws {
+        for warm in [false,true] {
+            let model = try await sideBudgetFixture(), parent = try XCTUnwrap(model.record("main"))
+            try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
+            let paths = try interruptedSideMirror(model,foreignSideIdentity:true)
+            // A ready helper takes the runtime path; nothing is opened, since
+            // opening any member already rejects the damaged family ledger.
+            if warm { _ = try await model.host(for:try XCTUnwrap(model.workspace(for:"w"))) }
+            model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at:url) } }
+            do { try await model.deleteSubagentFamily(parent) }
+            catch { XCTFail("warm=\(warm): a deleted side's damaged ledger blocked its family: \(error)") }
+            XCTAssertNil(model.record(parent.id))
+            for path in paths { XCTAssertFalse(FileManager.default.fileExists(atPath:path.path)) }
+            let intents = try await XCTUnwrap(model.store).pendingFamilyDeletions()
+            XCTAssertTrue(intents.isEmpty)
+        }
     }
 
-    @MainActor func testColdOwnerHelperStartFailureKeepsTheDeletionRetryable() async throws {
-        let model = try await sideBudgetFixture(), parent = try XCTUnwrap(model.record("main"))
+    @MainActor func testColdSideHelperStartFailureKeepsTheDeletionRetryable() async throws {
+        let model = try await sideBudgetFixture(), parent = try XCTUnwrap(model.record("side"))
         try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
         _ = try interruptedSideMirror(model)
         // A project change temporarily prevents helper startup. No tombstone
-        // or file cleanup may precede the successful repair acknowledgement.
+        // or file cleanup may precede the surviving main chat's repair.
         model.workspaceChangesInFlight.insert("w")
         var recycled = false
         model.familyFileRecycler = { _ in recycled = true }
@@ -355,11 +321,13 @@ final class SideBudgetIntegrationTests: XCTestCase {
         let tombstone = try await store.get(String.self,kind:"session-deleted",id:parent.id)
         XCTAssertTrue(intents.isEmpty); XCTAssertNil(tombstone); XCTAssertFalse(recycled)
         XCTAssertNotNil(model.record(parent.id)); XCTAssertFalse(model.deletingFamilies.contains(parent.id))
+        XCTAssertFalse(model.deletingFamilies.contains("nested"),"Release the blocked descendants too")
         XCTAssertTrue(FileManager.default.fileExists(atPath:try XCTUnwrap(parent.path)))
         model.workspaceChangesInFlight.remove("w")
         model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at:url) } }
         try await model.deleteSubagentFamily(parent)
-        XCTAssertNil(model.record(parent.id))
+        XCTAssertNil(model.record(parent.id)); XCTAssertNil(model.record("nested"))
+        XCTAssertNotNil(model.record("main")); XCTAssertNotNil(model.record("sibling"))
     }
 
     @MainActor func testPendingColdOwnerDeletionRepairsBeforeRetryingTrash() async throws {
@@ -480,12 +448,16 @@ final class SideBudgetIntegrationTests: XCTestCase {
         try await model.traces.recordSideBudgets(["side":["main"],"nested":["side","main"]],workspaceID:"w")
         model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at:url) } }
         try await model.deleteSubagentFamily(parent)
+        for id in ["side","nested","sibling"] {
+            let tombstone = try await store.get(String.self,kind:"session-deleted",id:id)
+            XCTAssertEqual(tombstone,"main","Unlisted sides go with their chat")
+            let saved = try await store.get(ChatRecord.self,kind:"chat",id:id)
+            XCTAssertNil(saved)
+        }
         for _ in 0..<2 {
             try await model.restoreSideBudgets()
-            let mappings = await model.traces.savedSideBudgets
-            XCTAssertEqual(mappings["w\u{0}side"],[])
-            XCTAssertEqual(mappings["w\u{0}nested"],["side"])
-            XCTAssertNil(model.record("side"),"Repairing accounting must not expand the chat window with descendants")
+            XCTAssertNil(model.record("side"),"Deleted sides must not reappear in the chat window")
+            XCTAssertNil(model.record("nested"))
             model.chats = try await store.loadChats()
         }
     }
@@ -500,21 +472,20 @@ final class SideBudgetIntegrationTests: XCTestCase {
         XCTAssertEqual(status.object?["cost"]?.object?["limitUSD"]?.number, 0.75)
     }
 
-    @MainActor func testRestoreKeepsUnlistedAncestorsAndOnlyRetiresDeletedParents() async throws {
+    @MainActor func testRestoreKeepsUnlistedAncestorsAndDeletingMainRemovesItsListedDescendant() async throws {
         let model = try await sideBudgetFixture(), side = try XCTUnwrap(model.record("nested"))
         model.chats = [side]
         try await model.restoreSideBudgets()
-        var parents = await model.traces.savedSideBudgets
+        let parents = await model.traces.savedSideBudgets
         XCTAssertEqual(parents["w\u{0}nested"], ["side", "main"])
         XCTAssertEqual(model.budgetOwner(for: side).id, "main")
         let parent = try XCTUnwrap(model.record("main"))
         model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at: url) } }
         try await model.deleteSubagentFamily(parent)
-        parents = await model.traces.savedSideBudgets
-        XCTAssertEqual(parents["w\u{0}nested"], ["side"])
-        XCTAssertNil(model.record("main"))
-        _ = try await model.open(side)
-        XCTAssertEqual(model.budgetOwner(for: side).id, "side")
+        XCTAssertNil(model.record("main")); XCTAssertNil(model.record("nested"))
+        do { _ = try await model.open(side); XCTFail("A deleted side cannot reopen") }
+        catch { XCTAssertEqual(error.localizedDescription, "This chat is being deleted.") }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(side.path)))
     }
 
     @MainActor func testLastDependentReleaseUnloadsImplicitAncestorsButKeepsDirectUses() async throws {
@@ -614,6 +585,169 @@ final class SideBudgetIntegrationTests: XCTestCase {
 
 }
 
+/// Owner decisions (2026-10-16): one Delete removes a chat with its saved
+/// sides at every depth and their sub-agents; a missing project no longer
+/// blocks deletion. Generated fixtures only; no provider request is sent.
+final class FamilyDeletionTests: XCTestCase {
+    @MainActor private func deleteAll(_ model: WorkspaceModel) { model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at:url) } } }
+    @MainActor private func assertGone(_ model: WorkspaceModel, _ ids: [String], owner: String, _ label: String) async throws {
+        let store = try XCTUnwrap(model.store)
+        for id in ids {
+            XCTAssertNil(model.record(id),label + ": " + id)
+            let saved = try await store.get(ChatRecord.self,kind:"chat",id:id)
+            XCTAssertNil(saved,label + ": " + id)
+            let tombstone = try await store.get(String.self,kind:"session-deleted",id:id)
+            XCTAssertEqual(tombstone,owner,label + ": " + id)
+            XCTAssertFalse(model.deletingFamilies.contains(id),label + ": " + id)
+        }
+        let intents = try await store.pendingFamilyDeletions()
+        XCTAssertTrue(intents.isEmpty,label)
+    }
+
+    @MainActor func testDeletingMainDeletesEverySavedSideAtEveryDepthAndTheirSubagents() async throws {
+        for (warm, listed) in [(false,true),(true,true),(false,false)] {
+            let label = "warm=\(warm) listed=\(listed)"
+            let model = try await sideBudgetFixture()
+            let paths = try ["main","side","nested","sibling"].map { URL(fileURLWithPath:try XCTUnwrap(model.record($0)?.path)) }
+            try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
+            let child = try appendManagedChild(model,owner:"nested")
+            if warm { _ = try await model.open(try XCTUnwrap(model.record("nested"))) }
+            if !listed { model.chats = model.chats.filter { $0.id == "main" } }
+            deleteAll(model)
+            try await model.deleteSubagentFamily(try XCTUnwrap(model.record("main")))
+            try await assertGone(model,["main","side","nested","sibling",child.id],owner:"main",label)
+            for path in paths + [child.path] { XCTAssertFalse(FileManager.default.fileExists(atPath:path.path),label + ": " + path.lastPathComponent) }
+            XCTAssertTrue(model.opened.isEmpty,label)
+        }
+    }
+
+    @MainActor func testConfirmationListsTheSidesThatGoWithTheChat() async throws {
+        let model = try await sideBudgetFixture()
+        var asked: [ChatQuestion] = []
+        model.questions.answer = { asked.append($0); return false }
+        model.deleteChat("main")
+        try await eventually("The confirmation is asked") { !asked.isEmpty || model.error != nil }
+        XCTAssertNil(model.error)
+        let question = try XCTUnwrap(asked.first), list = try XCTUnwrap(question.list)
+        XCTAssertEqual(question.title,"Delete this chat and its sides?")
+        XCTAssertTrue(question.detail.contains("All 3 of its saved sides go with it"),question.detail)
+        XCTAssertEqual(list.heading,"Saved sides deleted with it (3)")
+        XCTAssertEqual(list.items.map(\.title),["sibling","side","nested"],"Each side under its parent, by name")
+        XCTAssertEqual(list.items.map(\.depth),[1,1,2])
+        XCTAssertTrue(list.notes.isEmpty)
+        XCTAssertNotNil(model.record("side"),"Cancel deletes nothing")
+        asked.removeAll()
+        model.deleteChat("side")
+        try await eventually("The side's confirmation is asked") { !asked.isEmpty || model.error != nil }
+        let side = try XCTUnwrap(asked.first)
+        XCTAssertEqual(side.title,"Delete this side and its sides?")
+        XCTAssertEqual(side.list?.items.map(\.title),["nested"])
+        XCTAssertTrue(side.detail.contains("Its spend stays counted in “Main”."),side.detail)
+    }
+
+    @MainActor func testConfirmationLimitsALongListAndTheSheetScrolls() async throws {
+        let items = (0..<260).map { ChatQuestion.List.Item(title:"Side \($0)",depth:$0 % 3 + 1) }
+        var question = ChatQuestion(title:"Delete this chat and its sides?",detail:"Move its managed conversation files to Trash.",action:"Delete Chat")
+        question.list = .init(heading:"Saved sides deleted with it (260)",items:items,notes:["This chat's project folder is missing."])
+        let sheet = ChatQuestionSheet(question:question,list:try XCTUnwrap(question.list),destructive:true,parentSize:NSSize(width:900,height:600),answer:{ _ in })
+        sheet.frame = CGRect(origin:.zero,size:sheet.intrinsicContentSize); sheet.layoutSubtreeIfNeeded()
+        XCTAssertLessThan(sheet.bounds.height,600); XCTAssertTrue(sheet.review.scrolls)
+        let rows = ConversationPaneTests.views(ShellText.self,in:sheet).filter { $0.accessibilityIdentifier().hasPrefix("chat-question-item-") }
+        XCTAssertEqual(rows.count,ChatQuestion.List.shownLimit)
+        XCTAssertTrue(ConversationPaneTests.views(ShellText.self,in:sheet).contains { $0.text == "and 60 more" })
+        for button in [sheet.cancel,sheet.confirm] { XCTAssertTrue(sheet.bounds.contains(button.convert(button.bounds,to:sheet))) }
+        XCTAssertEqual(sheet.cancel.keyEquivalent,"\r","Return chooses Cancel for a destructive question")
+        XCTAssertTrue(question.list?.plainText.contains("and 240 more") == true,"The windowless alert form is limited too")
+    }
+
+    @MainActor func testDeletingASideDeletesItsDescendantsAndKeepsItsSpendCountedInMain() async throws {
+        let model = try await sideBudgetFixture()
+        try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
+        _ = try interruptedSideMirror(model,terminalOwner:"nested")
+        deleteAll(model)
+        try await model.deleteSubagentFamily(try XCTUnwrap(model.record("side")))
+        try await assertGone(model,["side","nested"],owner:"side","side")
+        XCTAssertNotNil(model.record("main")); XCTAssertNotNil(model.record("sibling"))
+        let host = try await model.open(try XCTUnwrap(model.record("sibling")))
+        let status = try await host.request("session.status",sessionID:"main",params:["budgetOnly":.bool(true)])
+        XCTAssertEqual(status.object?["cost"]?.object?["spentUSD"]?.number,0.9,"Owner decision: a deleted side's spend stays counted")
+    }
+
+    @MainActor func testInterruptedFamilyDeletionResumesAndNeverReopensASide() async throws {
+        for interruption in ["files:main","files:side","files:nested","metadata:sibling","intent:nested","metadata:side"] {
+            let model = try await sideBudgetFixture(), store = try XCTUnwrap(model.store)
+            try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
+            var interrupted = false
+            deleteAll(model)
+            model.familyDeletionStep = { step in if step == interruption { interrupted = true; throw StoreError.unavailable } }
+            do { try await model.deleteSubagentFamily(try XCTUnwrap(model.record("main"))); XCTFail("No interruption at \(interruption)") }
+            catch { XCTAssertTrue(interrupted,"\(interruption): \(error)") }
+            let intents = try await store.pendingFamilyDeletions()
+            for intent in intents where ["side","nested","sibling"].contains(intent.id) { XCTAssertNotNil(intent.sideDepth,interruption) }
+            // A relaunch blocks every member until the retry finishes.
+            model.deletingFamilies.removeAll(); await model.markPendingFamilyDeletions()
+            for id in ["side","nested","sibling"] where model.record(id) != nil {
+                do { _ = try await model.open(try XCTUnwrap(model.record(id))); XCTFail("\(interruption): \(id) reopened") }
+                catch { XCTAssertEqual(error.localizedDescription,"This chat is being deleted.") }
+            }
+            model.familyDeletionStep = nil
+            await model.resumeFamilyDeletions()
+            XCTAssertNil(model.error,interruption)
+            try await assertGone(model,["main","side","nested","sibling"],owner:"main",interruption)
+        }
+    }
+
+    @MainActor func testMissingOrRemovedProjectDeletesOnlyTheChatsOwnFiles() async throws {
+        for project in ["missing","removed"] {
+            for target in ["main","side"] {
+                let label = project + " " + target
+                let model = try await sideBudgetFixture()
+                try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
+                let folder = URL(fileURLWithPath:try XCTUnwrap(model.workspace(for:"w")?.path))
+                let sentinel = folder.appendingPathComponent("project-file.txt")
+                try Data("not chat data".utf8).write(to:sentinel)
+                if project == "missing" {
+                    try await model.updateConfiguration { $0.workspaces[0].paths = [folder.appendingPathComponent("moved-away").path] }
+                } else {
+                    try await model.updateConfiguration { $0.workspaces = [] }
+                }
+                XCTAssertNotNil(model.deletionProjectUnavailable("w"),label)
+                var asked: ChatQuestion?
+                model.questions.answer = { asked = $0; return true }
+                deleteAll(model)
+                model.deleteChat(target)
+                try await eventually(label + ": deletion finishes") { model.record(target) == nil || model.error != nil }
+                XCTAssertNil(model.error,label)
+                let notes = try XCTUnwrap(asked?.list?.notes)
+                XCTAssertTrue(notes.first?.contains("nothing in the project folder is touched") == true,label)
+                XCTAssertEqual(notes.contains { $0.hasPrefix("Skipped:") },target == "side",label + ": only a side's surviving ancestors need the folder")
+                let deleted = target == "main" ? ["main","side","nested","sibling"] : ["side","nested"]
+                try await assertGone(model,deleted,owner:target,label)
+                XCTAssertFalse(model.hosts["w"]?.isReady == true,label + ": no helper for a missing project")
+                XCTAssertTrue(FileManager.default.fileExists(atPath:sentinel.path),label + ": the project folder is never touched")
+                if target == "side" { XCTAssertNotNil(model.record("main")); XCTAssertNotNil(model.record("sibling")) }
+            }
+        }
+    }
+
+    @MainActor func testOrphanedSideFromAnEarlierVersionStaysUntilItIsDeletedItself() async throws {
+        let model = try await sideBudgetFixture(), store = try XCTUnwrap(model.store)
+        try await XCTUnwrap(model.hosts["w"]).shutdownAndWait()
+        let directory = try model.subagentDirectory("w"), path = directory.appendingPathComponent("side_orphan.jsonl")
+        try Data("{\"type\":\"session\",\"version\":3,\"id\":\"orphan\"}\n".utf8).write(to:path)
+        let orphan = ChatRecord(id:"orphan",workspaceID:"w",title:"Recovered side",path:path.path,profileID:"p",toolMode:ChatRecord.readOnlyTools,parentSessionID:"deleted-in-0.1.128")
+        try await store.put(orphan,kind:"chat",id:orphan.id); model.chats.append(orphan)
+        deleteAll(model)
+        try await model.deleteSubagentFamily(try XCTUnwrap(model.record("main")))
+        XCTAssertNotNil(model.record("orphan"),"Never delete user data retroactively")
+        XCTAssertTrue(FileManager.default.fileExists(atPath:path.path))
+        XCTAssertFalse(model.deletionNeedsAncestorRepair(orphan),"An orphan is its own budget owner")
+        try await model.deleteSubagentFamily(orphan)
+        try await assertGone(model,["orphan"],owner:"orphan","orphan")
+        XCTAssertFalse(FileManager.default.fileExists(atPath:path.path))
+    }
+}
+
 // This class opens the real Inspector window; run it alone in the serial lane.
 final class SideBudgetInspectorLifetimeTests: XCTestCase, SerialTestLane {
     @MainActor func testRaiseLimitFromNestedSideHasAnEditableOwnerWithoutADisplay() async throws {
@@ -696,6 +830,32 @@ extension XCTestCase {
             if id != "main" { sides.append(path) }
         }
         return sides
+    }
+
+    /// A completed managed sub-agent owned by a saved side: its accepted
+    /// plan in the owner's journal and its own child journal beside it.
+    @MainActor fileprivate func appendManagedChild(_ model: WorkspaceModel, owner: String) throws -> (id: String, path: URL) {
+        let path = URL(fileURLWithPath:try XCTUnwrap(model.record(owner)?.path))
+        var link = SubagentTranscriptTests.link
+        link.childSessionID = UUID().uuidString; link.budgetOwnerSessionID = owner; link.call.parentSessionID = owner
+        let origin: WireValue = .object([
+            "link":try JSONDecoder().decode(WireValue.self,from:JSONEncoder().encode(link)),
+            "description":.string("Deletion fixture"),"model":.object(["model":.string("fixture")]),
+            "tools":.array([]),"readOnly":.bool(true),"resourceRevision":.string("fixture")])
+        func append(_ kind: String, _ value: [String:WireValue], to file: URL) throws {
+            let rows = try fixtureJournalRows(file), id = UUID().uuidString
+            let row: [String:WireValue] = ["type":.string("custom"),"customType":.string(kind),"id":.string(id),
+                "parentId":rows.last?["type"]?.string == "session" ? .null : (rows.last?["id"] ?? .null),"data":.object(value)]
+            var bytes = try Data(contentsOf:file); bytes.append(try JSONEncoder().encode(row)); bytes.append(10)
+            try bytes.write(to:file)
+        }
+        try append("pi-app.subagent-call.v1",["origin":origin,"task":.string("Private fixture"),"resultMessageID":.string("result")],to:path)
+        let child = path.deletingLastPathComponent().appendingPathComponent(link.childSessionID + ".jsonl")
+        let header: [String:WireValue] = ["type":.string("session"),"version":.number(3),"id":.string(link.childSessionID)]
+        var bytes = try JSONEncoder().encode(header); bytes.append(10); try bytes.write(to:child)
+        try append("pi-app.native.v2",["version":.number(2)],to:child)
+        try append("pi-app.subagent-origin.v1",try XCTUnwrap(origin.object),to:child)
+        return (link.childSessionID, child)
     }
 
     @MainActor fileprivate func sideBudgetFixture() async throws -> WorkspaceModel {

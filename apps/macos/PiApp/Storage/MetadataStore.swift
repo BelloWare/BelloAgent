@@ -231,23 +231,7 @@ actor MetadataStore {
     /// The complete durable graph, independent of the presentation window.
     /// Reads metadata only; discarded draft content is never materialized.
     func sideBudgetAncestry() throws -> [String: [String: [String]]] {
-        let database = try ready()
-        var statement: OpaquePointer?
-        let sql = "SELECT c.id,c.value FROM records c WHERE c.kind='chat' AND NOT EXISTS(SELECT 1 FROM records d WHERE d.kind='session-deleted' AND d.id=c.id)"
-        guard sqlite3_prepare_v2(database,sql,-1,&statement,nil) == SQLITE_OK else { throw StoreError.unavailable }
-        defer { sqlite3_finalize(statement) }
-        var records: [String:ChatRecord] = [:], present = Set<String>()
-        var step = sqlite3_step(statement)
-        while step == SQLITE_ROW {
-            if let text = sqlite3_column_text(statement,0) {
-                let id = String(cString:text); present.insert(id)
-                let size = Int(sqlite3_column_bytes(statement,1))
-                if size <= Self.recordByteLimit("chat"), let bytes = sqlite3_column_blob(statement,1),
-                   let chat = try? JSONDecoder().decode(ChatRecord.self,from:Data(bytes:bytes,count:size)), chat.id == id { records[id] = chat }
-            }
-            step = sqlite3_step(statement)
-        }
-        guard step == SQLITE_DONE else { throw StoreError.unavailable }
+        let (records, present) = try durableChatGraph()
         var result: [String:[String:[String]]] = [:]
         for chat in records.values where !chat.isSubagent && chat.parentSessionID != nil {
             var current = chat, parents: [String] = [], seen: Set<String> = [chat.id], valid = true
@@ -265,6 +249,49 @@ actor MetadataStore {
             if valid { result[chat.workspaceID,default:[:]][chat.id] = parents }
         }
         return result
+    }
+
+    /// Saved sides at every depth below `owner`, from the complete durable
+    /// graph, so sides outside the chat-list window go with their chat too.
+    /// Parents precede their children. Forks are provenance, never members;
+    /// a damaged intermediate record keeps its descendants out of the set.
+    func savedSideDescendants(of owner: String, workspaceID: String) throws -> [(chat: ChatRecord, depth: Int)] {
+        let records = try durableChatGraph().records
+        var children: [String: [ChatRecord]] = [:]
+        for chat in records.values where chat.workspaceID == workspaceID && !chat.isSubagent && !chat.imported {
+            if let parent = chat.persistedBudgetParentID { children[parent, default: []].append(chat) }
+        }
+        var result: [(chat: ChatRecord, depth: Int)] = [], queue = [(owner, 0)], seen: Set<String> = [owner], next = 0
+        while next < queue.count {
+            let (id, depth) = queue[next]; next += 1
+            guard depth < 128 else { continue }
+            for child in (children[id] ?? []).sorted(by: { $0.id < $1.id }) where seen.insert(child.id).inserted {
+                result.append((child, depth + 1)); queue.append((child.id, depth + 1))
+            }
+        }
+        return result
+    }
+
+    /// Every decodable, non-deleted chat record, and the ids present at all.
+    private func durableChatGraph() throws -> (records: [String: ChatRecord], present: Set<String>) {
+        let database = try ready()
+        var statement: OpaquePointer?
+        let sql = "SELECT c.id,c.value FROM records c WHERE c.kind='chat' AND NOT EXISTS(SELECT 1 FROM records d WHERE d.kind='session-deleted' AND d.id=c.id)"
+        guard sqlite3_prepare_v2(database,sql,-1,&statement,nil) == SQLITE_OK else { throw StoreError.unavailable }
+        defer { sqlite3_finalize(statement) }
+        var records: [String:ChatRecord] = [:], present = Set<String>()
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            if let text = sqlite3_column_text(statement,0) {
+                let id = String(cString:text); present.insert(id)
+                let size = Int(sqlite3_column_bytes(statement,1))
+                if size <= Self.recordByteLimit("chat"), let bytes = sqlite3_column_blob(statement,1),
+                   let chat = try? JSONDecoder().decode(ChatRecord.self,from:Data(bytes:bytes,count:size)), chat.id == id { records[id] = chat }
+            }
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else { throw StoreError.unavailable }
+        return (records, present)
     }
 
     /// Loaded sides and managed children retain their actual budget ancestry
@@ -794,7 +821,7 @@ actor MetadataStore {
         try transaction {
             guard let owner = members.first?.ownerID, members.contains(where: { $0.id == owner }),
                   Set(members.map(\.id)).count == members.count, Set(members.map(\.workspaceID)).count == 1,
-                  members.allSatisfy({ $0.ownerID == owner && ($0.id == owner || UUID(uuidString: $0.id) != nil) }) else { throw StoreError.invalidRecord }
+                  members.allSatisfy({ $0.ownerID == owner && ($0.id == owner || ($0.sideDepth == nil ? UUID(uuidString: $0.id) != nil : $0.isSavedSide)) }) else { throw StoreError.invalidRecord }
             for var member in members {
                 if member.id == owner { member.repairCompleted = repairCompleted ? true : nil }
                 try put(owner, kind: "session-deleted", id: member.id)
