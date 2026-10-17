@@ -14,6 +14,7 @@
   - the family-delete gallery's 11 file-viewer timeouts, caused by this workstream's Finder-activating probe.
 
   Rule: runs that change app focus hold the full-lane lock. [Validation](docs/validation/flakes-0.1.129.md).
+- [x] External review fixes (core): HTTP MCP answers a server ping mid-call (BUG-002); promoting a queued message to steering wakes a waiting parent (BUG-003); completion webhooks read the finished task from history, not stale rows (BUG-004); terminal keys go to the input method while composing (BUG-005); a side covered by a tab keeps its failure mark (BUG-009); text after a NUL is searchable, index version 2 (BUG-010); `Application/JSON` is JSON (BUG-011). Gate: one known 1 pt Settings geometry miss, 3/3 alone. [Validation](docs/validation/bugs-core-0.1.129.md).
 - [ ] Still unexplained, each with failure diagnostics now:
   - `SessionTimingTests.testNarrowSidebarKeepsStateCostAndRateVisibleWithoutOverflow`: stale "latest 100 tok/s" OCR, 3 of 5 lanes on `dev/a129-flakes`;
   - `ContextReadingTests.testAChangedModelOrJournalCountsAgain`: the 66.7 s hang, 1/48 then 0/160;
