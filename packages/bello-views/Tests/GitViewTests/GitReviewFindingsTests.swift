@@ -73,6 +73,47 @@ final class GitReviewFindingsTests: XCTestCase {
         }
     }
 
+    /// An orphan branch whose name is the start of another branch's
+    /// (`topic` beside `topic/work`) is still unborn: unstage and discard work.
+    func testOrphanBranchBesideANamespacedBranchIsUnborn() async throws {
+        let service = GitService()
+        try identity()
+        try git(["commit", "-q", "--allow-empty", "-m", "Base"]); try git(["branch", "topic/work"]); try git(["switch", "-q", "--orphan", "topic"])
+        try write("staged.txt", "staged\n"); try write("chosen.txt", "chosen\n"); try git(["add", "--", "staged.txt", "chosen.txt"])
+        let unborn = try await service.isUnbornBranch(in: root.path)
+        XCTAssertTrue(unborn)
+        try await service.unstage(["staged.txt"], in: root.path)
+        XCTAssertEqual(try indexed(), ["chosen.txt"])
+        let entries = try await service.status(in: root.path).entries
+        try await service.discard([try XCTUnwrap(entries.first { $0.path == "chosen.txt" })], in: root.path)
+        XCTAssertEqual(try indexed(), [])
+        XCTAssertNil(read("chosen.txt")); XCTAssertEqual(read("staged.txt"), "staged\n")
+    }
+
+    /// Discarding a newly added submodule before the first commit takes only
+    /// its index entry: `.gitmodules` (its own row) stays staged as it was,
+    /// and nothing inside the submodule's folder is touched.
+    func testDiscardBeforeTheFirstCommitLeavesAnAddedSubmodulesContentsAndGitmodules() async throws {
+        let service = GitService()
+        let sub = folder.appendingPathComponent("sub")
+        try FileManager.default.createDirectory(at: sub, withIntermediateDirectories: true)
+        let fixture = ["PATH": "/usr/bin:/bin", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "LC_ALL": "C"]
+        for args in [["init", "-q", "-b", "main", sub.path], ["-C", sub.path, "-c", "user.name=F", "-c", "user.email=f@example.invalid", "commit", "-q", "--allow-empty", "-m", "Sub"]] {
+            try git(args, environment: fixture)
+        }
+        try git(["-c", "protocol.file.allow=always", "submodule", "add", "-q", sub.path, "mod"])
+        try write("mod/dirty.txt", "inside the submodule\n")
+        let gitmodules = try git(["ls-files", "-s", "--", ".gitmodules"]), text = read(".gitmodules")
+        let entries = try await service.status(in: root.path).entries
+        let module = try XCTUnwrap(entries.first { $0.path == "mod" })
+        try await service.discard([module], in: root.path)
+        XCTAssertEqual(try indexed(), [".gitmodules"])
+        XCTAssertEqual(try git(["ls-files", "-s", "--", ".gitmodules"]), gitmodules)
+        XCTAssertEqual(read(".gitmodules"), text)
+        XCTAssertEqual(read("mod/dirty.txt"), "inside the submodule\n")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("mod/.git").path))
+    }
+
     // MARK: BUG-007, the configuration location the app was given
 
     func testGitKeepsTheAppsXDGConfigurationButNotRepositoryOverrides() async throws {

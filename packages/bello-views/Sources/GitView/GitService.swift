@@ -640,7 +640,12 @@ public actor GitService {
             // Before the first commit every tracked row is an initial
             // addition, and its baseline is no file at all: what `restore`
             // does against HEAD for a path HEAD lacks. Only the chosen paths.
-            try await runBatched(["rm", "-f", "-q", "--ignore-unmatch", "--"], paths: rows.map(\.path), in: root, "Discarding changes")
+            // An added submodule loses only its index entry, as `restore`
+            // leaves its folder: nothing inside it is removed.
+            let gitlinks = try await gitlinks(rows.map(\.path), in: root)
+            let files = rows.map(\.path).filter { !gitlinks.contains($0) }
+            if !gitlinks.isEmpty { try await runBatched(["rm", "--cached", "-f", "-q", "--ignore-unmatch", "--"], paths: gitlinks.sorted(), in: root, "Discarding changes") }
+            if !files.isEmpty { try await runBatched(["rm", "-f", "-q", "--ignore-unmatch", "--"], paths: files, in: root, "Discarding changes") }
             if !untracked.isEmpty { try await runBatched(["clean", "-f", "--"], paths: untracked, in: root, "Removing untracked files") }
             return
         }
@@ -744,8 +749,21 @@ public actor GitService {
         // `show-ref --verify` answers the same for a missing and a damaged
         // ref; `for-each-ref` lists nothing for a missing one, warns about a
         // damaged loose one and fails on damaged packed refs.
+        // Its pattern also matches refs below it (`topic/work` for `topic`),
+        // so only the exact name counts as the branch existing.
         let listed = try await run(["for-each-ref", "--format=%(refname)", branch], in: root)
-        return listed.status == 0 && listed.stdout.isEmpty && listed.stderr.isEmpty
+        return listed.status == 0 && listed.stderr.isEmpty && !listed.text.split(separator: "\n").contains { $0 == branch }
+    }
+    /// Which of these paths the index holds as submodules (gitlinks).
+    private func gitlinks(_ paths: [String], in root: String) async throws -> Set<String> {
+        var found: Set<String> = []
+        for batch in Self.batches(of: Self.literal(paths), prefix: ["ls-files", "-s", "-z", "--"]) {
+            let output = try require(await run(["ls-files", "-s", "-z", "--"] + batch, in: root), "Reading the index")
+            for record in output.text.split(separator: "\0") where record.hasPrefix("160000 ") {
+                if let tab = record.firstIndex(of: "\t") { found.insert(String(record[record.index(after: tab)...])) }
+            }
+        }
+        return found
     }
 
     /// HEAD's full commit id, or nil before the first commit.
