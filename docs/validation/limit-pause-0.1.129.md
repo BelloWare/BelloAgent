@@ -270,6 +270,25 @@ close (it ends with its runtime; `testClosingAnUnkeptPausedSideTakesItOffItsRoot
 | P2 a summary request checked only the chat's own pause | It asks `enforceCostHold` (own, ancestors', owner and coordinator holds) before every attempt | `FamilyLimitPauseTests.testASidesSummaryRequestWaitsForTheFamilysResume` (`r8-summary-hold`) |
 | P2 the cold reader ignored sides still waiting for an accepted Resume | A saved `costPausedMembers` without an active run reads as the family's pause (`pausedForResume`), as the helper's `membersPendingResume` | native `RunHoldTests.testAJournalWithSidesStillWaitingReadsAsPaused` |
 
+## Known, for 0.1.130
+
+Owner decision: 0.1.129 ships after review round 11. Codex round 12 (at 7201fcbf) found
+these; they are not fixed in 0.1.129.
+
+- **P1, a stopped child is requeued by recovery after a crash.** The reader stops a child,
+  the family then reaches its limit, and the helper exits before the child seals. Recovery of
+  the paused family keeps the turn queued and ignores the durable Stop
+  (`family.run.heldChildren`), so Resume restarts it. Fix: exclude durably stopped turns from
+  parking (`AgentFamilyRecovery`) and recover their terminal outcome.
+- **P2, Stop racing an accepted Resume leaves child tools running.** A Stop after
+  `continueRun` cleared the pause but before the run reached `resumeParked`
+  (`costResumePending`) sends the ordinary cancellation, which the still-paused coordinator
+  ignores. Fix: route a pending cost Resume through the halt path in `stop()`.
+- **P2, the side-pause fan-out is lost if the helper exits before its callbacks.** The root
+  saves its pause, then notifies its sides asynchronously. An exit in between leaves those
+  sides neither paused nor listed, so the root's Resume skips them. Fix: persist the pending
+  fan-out with the pause, or reconcile it on recovery.
+
 ## Owner rule of 2026-10-17 — evidence
 
 | Requirement | Test | Mutation |
