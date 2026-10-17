@@ -2,6 +2,18 @@
 
 **Released 2026-10-18:** 0.1.129 (build 133, tag `v0.1.129`) is the latest release; record `docs/validation/Bello-Agent-0.1.129-2026-10-18.md`.
 
+## 0.1.130
+
+- [x] GIT-FILES-1: Git preserves project-path whitespace, so Discard cannot target a trimmed sibling repository. [Validation](docs/validation/a130-gitfiles-0.1.130.md).
+- [x] GIT-FILES-2: Image/PDF previews finish active reads during sibling-folder activity, then recheck queued changes.
+- [x] GIT-FILES-3: Identical normal and inverse terminal glyphs keep distinct cached foreground colours.
+- [x] GIT-FILES-4: Preview identities include device and nanosecond change time, detecting same-size, timestamp-preserving overwrites.
+- [x] APP-UI-1: Show Terminal requires Chats; deferred focus respects page/visibility/enabled state, and covered terminals restore focus on return. Needs owner decision: keep the command disabled on Reports/Background rather than navigate to Chats.
+- [x] Git path sweep: hunk review accepts repository roots ending in a newline.
+- [x] Git path sweep: watchers preserve whitespace in external Git/common-directory paths, including embedded newlines.
+- [x] Git path sweep: reword detects active operation markers under newline-containing paths.
+- [x] Git path sweep: reword runs post-rewrite hooks in configured directories ending in a newline. [Validation](docs/validation/a130-gitfiles-0.1.130.md).
+
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).

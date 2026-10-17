@@ -30,7 +30,7 @@ import CoreText
         static func < (a: Position, b: Position) -> Bool { a.line != b.line ? a.line < b.line : a.column < b.column }
     }
     private struct Selection { var start: Position; var end: Position }
-    private struct LineKey: Hashable { var text: String; var foreground: TerminalColor; var bold: Bool; var italic: Bool; var dim: Bool; var dark: Bool }
+    private struct LineKey: Hashable { var text: String; var foreground: TerminalColor; var inverse: Bool; var bold: Bool; var italic: Bool; var dim: Bool; var dark: Bool }
 
     private var boldFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .bold)
     private var italicFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -415,7 +415,7 @@ import CoreText
         context.restoreGState()
     }
     private func line(for text: String, style: CellStyle) -> CachedLine {
-        let key = LineKey(text: text, foreground: style.inverse ? style.background : style.foreground, bold: style.bold, italic: style.italic, dim: style.dim, dark: isDark)
+        let key = LineKey(text: text, foreground: style.inverse ? style.background : style.foreground, inverse: style.inverse, bold: style.bold, italic: style.italic, dim: style.dim, dark: isDark)
         if let cached = lineCache[key] { return cached }
         let typeface = style.bold && style.italic ? boldItalicFont : style.bold ? boldFont : style.italic ? italicFont : font
         // No kerning and no ligatures: each character keeps its own cell.

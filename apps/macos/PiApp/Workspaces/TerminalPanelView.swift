@@ -163,7 +163,12 @@ import Combine
         if before == nil || chromeHeight != chrome { sizeChanged?() }
     }
     private func focusSoon() {
-        DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.session?.focus() } }
+        DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated {
+            guard let self, self.inheritedEnabled, self.model.page == .chats, !self.isHiddenOrHasHiddenAncestor,
+                  let window = self.window, let session = self.session, session.view.window === window,
+                  session.view.isDescendant(of: self) else { return }
+            session.focus()
+        } }
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()

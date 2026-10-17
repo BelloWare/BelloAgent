@@ -70,10 +70,9 @@ import CoreServices
         let marker = root + "/.git"
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: marker, isDirectory: &isDirectory), !isDirectory.boolValue,
-              let text = try? String(contentsOfFile: marker, encoding: .utf8),
-              let line = text.split(whereSeparator: { $0.isNewline }).first(where: { $0.hasPrefix("gitdir:") })
+              let text = try? String(contentsOfFile: marker, encoding: .utf8), text.hasPrefix("gitdir: ")
         else { return nil }
-        let named = line.dropFirst("gitdir:".count).trimmingCharacters(in: .whitespaces)
+        let named = Self.metadataPath(String(text.dropFirst("gitdir: ".count)))
         guard !named.isEmpty else { return nil }
         let absolute = named.hasPrefix("/") ? named : root + "/" + named
         let resolved = URL(fileURLWithPath: absolute, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
@@ -82,10 +81,17 @@ import CoreServices
 
     nonisolated static func commonDirectory(of gitDirectory: String) -> String? {
         guard let text = try? String(contentsOfFile: gitDirectory + "/commondir", encoding: .utf8) else { return nil }
-        let named = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let named = Self.metadataPath(text)
         guard !named.isEmpty else { return nil }
         let absolute = named.hasPrefix("/") ? named : gitDirectory + "/" + named
         return URL(fileURLWithPath: absolute, isDirectory: true).standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    /// Git's metadata files accept LF or CRLF, including repeated terminators.
+    nonisolated private static func metadataPath(_ text: String) -> String {
+        var bytes = text.utf8[...]
+        while let last = bytes.last, last == 10 || last == 13 { bytes = bytes.dropLast() }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     func start() {
