@@ -124,3 +124,20 @@ The class passed 3/3 after the change.
   oracles. It covers matching at once, on the second attempt, on the third, and never (+1 and −1).
   - Mutation (one attempt): 8 failures.
 - Reruns: WebhookExchangeTests + WebhookTests 22/22; SettingsFullDocumentGeometryTests 2/2.
+
+## Final gate (add1ae60)
+
+`verify-release.sh` under the full-lane lock, 54 min 24 s, all passed:
+
+| Suite | Result |
+| --- | --- |
+| Native serial lane | 890 tests, 42 skipped, 0 failures |
+| Native parallel lane | 2,634 passed, 0 failed, 38 skipped |
+| Helper cost | 5 passed |
+| Helper suite | 966 tests, 7 skipped, 0 failures |
+| Gallery | 3 passed, 230 screenshots |
+| Wire / concurrent / acceptance | 36 / 4 / 3, all passed |
+| Python | 86 passed |
+
+The real Settings comparison matched on its first oracle: no `ORACLE-REMEASURED` line came from
+it. The 16 such lines in the log are the deterministic retry test's.
