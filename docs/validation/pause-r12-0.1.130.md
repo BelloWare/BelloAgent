@@ -4,7 +4,8 @@ Branch `dev/a130-pause-r12`, based on `dev/next` at `141666ca`.
 This implements the three findings deferred from 0.1.129 in
 [limit-pause-0.1.129.md](limit-pause-0.1.129.md#known-for-01130).
 The initial implementation and evidence below were committed as `68491378`.
-The subsequent review fixes are recorded in the [follow-up](#follow-up-review-of-68491378).
+The subsequent review fixes are recorded in the [first follow-up](#follow-up-review-of-68491378)
+and [round 2](#round-2-review-of-3a1dfbda).
 
 ## Changes and decisions
 
@@ -274,3 +275,126 @@ sources were unchanged throughout these final runs. The native runner released
 its shared lock and removed automatic result bundles; no clone folders remain
 under this workstream's build root. No unresolved finding or owner decision
 remains from this review.
+
+## Round-2 review of 3a1dfbda
+
+Both findings were confirmed against the pushed branch:
+
+- Reader Stop acquired the family gate before cancelling an allocated child.
+  The delivery boundary can hold that gate throughout `agent-delivery`
+  compaction, delaying cancellation of that request or a sibling's live tool.
+  Reader Stop now signals cancellation of an allocated, non-parking job first.
+  It still acquires the shared gate for durable Stop, terminal writes and the
+  fresh state read; queued/parked turns retain the previous serialization with
+  Resume installation. The normal gated cancellation remains necessary when
+  Resume installs a job while Stop waits.
+- Cold recovery promoted descendant-only pending fan-out to an intermediate
+  side's own pause. Binding that idle side after an accepted root Resume added
+  an unexpected member and paused the root again. Recovery now distinguishes
+  sides with a saved parent and no work of their own from roots, orphaned sides
+  and sides with their own unfinished work. An idle intermediate retains the
+  descendant membership for transfer to the root, without an ancestor hold.
+  Roots and orphan families still recover their aggregate pause.
+
+### Round-2 same-pattern sweep
+
+- **Sibling cancellation:** the new held-compaction fixture also stops a
+  sibling's running tool while leaving the compaction request untouched. Both
+  reader wire routes, `subagent.stop` and managed-child `turn.stop`, call this
+  same coordinator method. Parent Stop/close, family halt, runtime cancellation
+  and draining already signal live cancellation before terminal serialization.
+  Model-issued `subagent_stop` retains its existing gated command admission.
+- **Idle ancestors at every depth:** the crash fixture covers one and two idle
+  intermediate sides, opening them before or after the root's Resume, and the
+  same nested family after its original parent journal is missing. Only the
+  active leaf is returned in the Resume reply; one leaf Resume completes it and
+  all app snapshots become idle with empty paused-member lists.
+- Rechecked membership writers, pause fan-outs and turn snapshot/write paths.
+  Runtime fan-out already distinguishes own work through `hasCostPausableWork`;
+  binding moves recovered membership off every intermediate to the root.
+  Resume's snapshot/install, parking and sealing still share the family gate.
+  Pre-gate cancellation marks only the current live job; the later state writes
+  use a fresh gated read. No additional unsafe path was found.
+
+No owner decision or new production path is needed. Permission, tool, capture,
+vault and data boundaries and the owner's cost-pause behavior are unchanged.
+
+### Round-2 failing-first and mutation evidence
+
+The two new tests exercise real session/coordinator paths with generated
+journals, scripted accounted requests and a cancellable held tool:
+
+- `testReaderStopCancelsLiveWorkWhileDeliveryCompactionHoldsTheGate` checks the
+  app's compaction snapshot is actively summarizing for `agent-delivery`, then
+  requires the held request or sibling tool to observe cancellation within one
+  second, before the fixture releases it. It also checks the stopped child list
+  result and the cancelled compaction snapshot.
+- `testRecoveryDoesNotPauseIdleAncestorsOfTheResumedLeaf` checks app snapshot
+  state, pause flags, paused-member lists, the root's Resume reply and successful
+  leaf completion across all six ancestry/open-order cases.
+
+With the final tests and both production files restored to `3a1dfbda`, both
+tests failed after a successful build: **91 assertions, zero unexpected
+failures**, including both Stop-cancellation cases (`logs/round2-red-final.log`).
+The Stop test produced 2 failures and the recovery test 89.
+The production fixes were restored after every run by the mutation script's
+`finally` block.
+
+`python3 "$B/check-round2-mutations.py"` also caught both mutations after
+successful builds (`logs/round2-mutations.log`):
+
+| Mutation | Failing assertions | Log |
+| --- | ---: | --- |
+| Defer live cancellation until after acquiring the gate | 1 | `logs/round2-mutation-cancel-after-gate.log` |
+| Promote every pending descendant fan-out to the intermediate's own pause | 91 | `logs/round2-mutation-pause-idle-ancestors.log` |
+
+### Round-2 validation
+
+All runs use this workstream's build root and generated fixture data. There are
+no UI source changes and no gallery regeneration. From the worktree root:
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter 'FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|AgentSteering|PausedFamilyCompactionTests|CompactionSafetyTests|CompactionQueueTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/bundle/Helpers/pi-native-host"
+bash "$B/check-round2-native.sh"
+```
+
+The native runner acquires/releases the shared full-lane lock for each command
+below, keeping the family and lifecycle classes alone. It reuses the assigned
+DerivedData and removes the automatic result bundles after each run.
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/CostPausePresentationTests \
+  -only-testing:PiAppTests/CostLimitTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/CostPauseFamilyTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/LifecycleHelperTests
+```
+
+| Suite | Result | Log |
+| --- | --- | --- |
+| Focused helper classes | 179 passed, 0 failed (including all 47 FamilyLimitPause tests) | `logs/round2-focused.log` |
+| Full helper suite | 1,021 passed, 7 skipped, 0 failed (1,028 total; 388.9 s) | `logs/round2-helper-full.log` |
+| Release bundle helper build | Passed | `logs/round2-bundle.log` |
+| Native RunHold/CostPausePresentation/CostLimit | 37 passed (18 / 6 / 13), 0 failed | `logs/round2-native-pause.log` |
+| Native CostPauseFamily, alone | 3 passed, 0 failed | `logs/round2-native-family.log` |
+| Native LifecycleHelper, alone | 11 passed, 0 failed | `logs/round2-native-lifecycle.log` |
+| Wire | 36 passed, 0 failed | `logs/round2-wire.log` |
+| Concurrent | 4 passed, 0 failed | `logs/round2-concurrent.log` |
+| Acceptance | 3 passed, 0 failed | `logs/round2-acceptance.log` |
+
+The seven helper skips are unchanged opt-in fixture/performance tests. No
+unrelated test failed. Production and test sources stayed unchanged throughout
+the final restored-source runs. The native runner released the shared lock;
+no result bundles or clone directories remain under this build root. Both
+review findings are resolved; no additional unresolved finding or owner
+decision remains.

@@ -6,6 +6,7 @@
 
 - [x] Cost-limit pause round 12 (`dev/a130-pause-r12`): durable child Stops survive recovery and live parking; Stop during pending Resume halts child tools; side-pause fan-out survives a helper restart, including an idle root. [Validation](docs/validation/pause-r12-0.1.130.md).
 - [x] Round-12 follow-up: recovered side Resume membership transfers to the root and clears after completion; child Stop and Resume installation share the family gate. [Validation](docs/validation/pause-r12-0.1.130.md#follow-up-review-of-68491378).
+- [x] Round-12 second follow-up: child Stop cancels live work before waiting for delivery compaction; recovering idle intermediate sides preserves an accepted family Resume. [Validation](docs/validation/pause-r12-0.1.130.md#round-2-review-of-3a1dfbda).
 
 ## 0.1.129
 

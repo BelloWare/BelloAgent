@@ -1616,6 +1616,180 @@ extension FamilyLimitPauseTests {
     }
 }
 
+/// Follow-up review round 2: Stop stays prompt through the family gate,
+/// and descendant-only recovery does not invent an intermediate's pause.
+extension FamilyLimitPauseTests {
+    func testReaderStopCancelsLiveWorkWhileDeliveryCompactionHoldsTheGate() async throws {
+        for stopSibling in [false,true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let client = DeliveryCompactionClient(), tools = LimitHeldTools(), opened = OpenedChildren()
+            let coordinator = AgentSteeringCoordinator(open:{ env, plan in
+                let child = try AgentSession(id:plan.origin.link.childSessionID,profile:env.profile,apiKey:env.apiKey,cwd:env.cwd,
+                    directory:env.directory,readOnly:true,resources:Resources(frozen:env.resources),client:env.client,
+                    tools:env.tools,traces:env.traces,resumePath:env.directory.appendingPathComponent(plan.origin.link.childSessionID + ".jsonl").path,autoCompaction:false)
+                await opened.add(child)
+                if plan.task == "Worker compacting" { try await child.fixtureCompactionHistory() }
+                return child
+            })
+            let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+                readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore())
+            await owner.enableFamilyBudget(); await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+            let compacting = try await startChild(owner,coordinator,"compacting")
+            try await owner.fixtureAcceptedReceipt("compacting")
+            try await eventually { await client.turnWaiting }
+            var target = compacting
+            if stopSibling {
+                target = try await startChild(owner,coordinator,"tooling",newTask:false)
+                try await owner.fixtureAcceptedReceipt("tooling")
+                try await eventually { await tools.started }
+            }
+            let send = ToolCall(id:"steer",name:"subagent_send",arguments:["child_id":JSON(compacting),"message":JSON(String(repeating:"s",count:240000))])
+            let key = try await owner.agentFixtureCall(send)
+            _ = try await coordinator.prepare(send,key:key,parent:owner)
+            await client.releaseTurn()
+            try await eventually { await client.summaryWaiting }
+            let children = await opened.children, child = try XCTUnwrap(children.first)
+            let before = await child.snapshot()
+            XCTAssertEqual(before["compaction"]["reason"].text,"agent-delivery")
+            XCTAssertEqual(before["compaction"]["phase"].text,"summarizing")
+            let stoppedID = target
+            let stop = Task { try await coordinator.stop(parent:owner,target:.init(childID:stoppedID,turn:1),human:true) }
+            // Do not release the summary to make Stop pass. The real request
+            // (or the sibling's tool) must observe cancellation while held.
+            do {
+                try await eventually(timeout:.seconds(1)) {
+                    if stopSibling { return await tools.cancelled }
+                    return await client.summaryCancelled
+                }
+            } catch { }
+            let summaryCancelled = await client.summaryCancelled
+            if stopSibling { XCTAssertFalse(summaryCancelled,"Stopping a sibling must leave this compaction alone") }
+            await client.releaseSummary(); await tools.release()
+            try await stop.value
+            try await eventually { await coordinator.jobs.isEmpty }
+            let listed = await coordinator.list(parent:owner,cursor:0,limit:10)["children"].list
+            let status = listed.first { $0["link"]["childSessionID"].text == target }?["status"].text
+            XCTAssertEqual(status,"interrupted")
+            if !stopSibling {
+                let snapshot = await child.snapshot()
+                XCTAssertTrue(snapshot["latestSuccessfulCompaction"].isNull,"Stop must not wait for a successful summary")
+                XCTAssertEqual(snapshot["compaction"]["phase"].text,"cancelled")
+            }
+            await owner.close()
+        }
+    }
+
+    func testRecoveryDoesNotPauseIdleAncestorsOfTheResumedLeaf() async throws {
+        for (orphan, depth) in [(false,1),(false,2),(true,2)] { for resumeFirst in [true,false] {
+            let root = try temporaryDirectory(), crash = root.appendingPathComponent("crash")
+            defer { try? FileManager.default.removeItem(at:root) }
+            let original = try familyFixture(root:root), gate = OpenGate(), tools = LimitHeldTools()
+            let owner = orphan ? try await side("family",parent:original,root:root) : original
+            if orphan { _ = try await owner.keep(whenFinished:false) }
+            var ancestors = [owner]
+            for index in 0..<depth {
+                let intermediate = try await side("idle-\(index)",parent:ancestors.last!,root:root)
+                _ = try await intermediate.keep(whenFinished:false); ancestors.append(intermediate)
+            }
+            let leaf = try await side("leaf",parent:ancestors.last!,root:root,client:LimitRunClient(mode:"side-tool"),tools:tools)
+            _ = try await leaf.keep(whenFinished:false)
+            _ = try await leaf.submit(Submission(commandID:"work",turnID:"work",text:"Use the tool"),steer:false)
+            try await eventually { await tools.started }
+            for ancestor in ancestors { await ancestor.fixtureDelaySidePauses(gate) }
+            // This mirrors an idle owner's durable fan-out, without a
+            // request or pending input of its own.
+            await owner.stopFamilyAtLimit(AgentSession.costHoldError)
+            try await eventually { await gate.waiting }
+            for index in 1..<ancestors.count { try await ancestors[index].bindSideBudget(to:ancestors[index-1]) }
+            try FileManager.default.createDirectory(at:crash,withIntermediateDirectories:true)
+            for file in try FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:nil) where file.pathExtension == "jsonl" {
+                if orphan, file.lastPathComponent == "parent.jsonl" { continue }
+                try FileManager.default.copyItem(at:file,to:crash.appendingPathComponent(file.lastPathComponent))
+            }
+            await gate.open(); await tools.release(); await leaf.close()
+            for ancestor in ancestors.reversed() { await ancestor.close() }
+            if orphan { await original.close() }
+            let client = AccountedAgentScript([answer("Leaf completed")])
+            func reopen(_ id: String) throws -> AgentSession {
+                let file = try XCTUnwrap(SideBudgetRecovery.journalURL(id,directory:crash))
+                return try AgentSession(id:id,profile:fixtureProfile(),apiKey:"fixture",cwd:crash,directory:crash,readOnly:true,
+                    resources:Resources(cwd:crash,home:crash),client:client,tools:RecordingTools(),traces:TraceStore(),resumePath:file.path)
+            }
+            let restored = try reopen(orphan ? "family" : "parent")
+            await restored.setCostLimit(5)
+            var reply: JSON = .null
+            if resumeFirst { reply = try await restored.continueRun(commandID:"resume-root") }
+            var restoredAncestors = [restored]
+            for index in 0..<depth {
+                let intermediate = try reopen("idle-\(index)")
+                try await intermediate.bindSideBudget(to:restoredAncestors.last!)
+                restoredAncestors.append(intermediate)
+                let snapshot = await intermediate.snapshot()
+                XCTAssertEqual(snapshot["state"].text,"idle","Descendant-only recovery must not pause an idle side")
+                XCTAssertNotEqual(snapshot["costPaused"].flag,true)
+                XCTAssertTrue(snapshot["cost"]["pausedMembers"].list.isEmpty)
+            }
+            let restoredLeaf = try reopen("leaf")
+            try await restoredLeaf.bindSideBudget(to:restoredAncestors.last!)
+            if !resumeFirst { reply = try await restored.continueRun(commandID:"resume-root") }
+            XCTAssertEqual(reply["pausedMembers"].list,["leaf"],"Only actual paused work joins family Resume")
+            let rootSnapshot = await restored.snapshot()
+            XCTAssertEqual(rootSnapshot["queuePaused"].flag,false,"Binding must not undo the accepted root Resume")
+            XCTAssertTrue(rootSnapshot["preflightError"].isNull)
+            _ = try await restoredLeaf.continueRun(commandID:"resume-leaf")
+            try await eventually { !(await restoredLeaf.isRunning) }
+            do { try await eventually(timeout:.seconds(1)) { await restored.costPausedMembers.isEmpty } } catch { }
+            let requests = await client.requests.count; XCTAssertEqual(requests,1,"The original Resume completes the leaf")
+            for member in [restoredLeaf] + restoredAncestors.reversed() {
+                let snapshot = await member.snapshot()
+                XCTAssertEqual(snapshot["state"].text,"idle")
+                XCTAssertNotEqual(snapshot["costPaused"].flag,true)
+                XCTAssertTrue(snapshot["cost"]["pausedMembers"].list.isEmpty)
+                await member.close()
+            }
+        } }
+    }
+}
+
+private actor DeliveryCompactionClient: ModelClient {
+    var turnWaiting = false, summaryWaiting = false, summaryCancelled = false
+    var turnReleased = false, summaryReleased = false
+    func releaseTurn() { turnReleased = true }
+    func releaseSummary() { summaryReleased = true }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
+        throw AgentError("fixture_unscoped","Expected admission")
+    }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,cacheSessionID:String,turnID:String,purpose:String,lifecycle:RequestLifecycle?,onObservation:@escaping @Sendable(RequestObservation) async -> Void,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
+        let hooks = try XCTUnwrap(lifecycle), attempt = UUID().uuidString
+        let permit = try await hooks.admitAttempt(attempt); defer { permit.finish() }
+        try await hooks.willDispatch(attempt)
+        var observation = RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:purpose,fingerprint:"fixture",profile:profile)
+        observation.monitoring = ["outcome":"completed","gateway":["cost":["status":"reported","usd":0.01]]]
+        do {
+            var reply = answer("Completed")
+            if purpose == "compaction" {
+                summaryWaiting = true
+                while !summaryReleased { try permit.check(); try await Task.sleep(for:.milliseconds(2)) }
+                reply = answer("Earlier work completed; retain the current task.")
+            } else if messages.contains(where: { $0.text == "Worker tooling" }) {
+                if !messages.contains(where: { $0.role == "toolResult" }) { reply = toolReply(["first"]) }
+            } else {
+                turnWaiting = true
+                while !turnReleased { try permit.check(); try await Task.sleep(for:.milliseconds(2)) }
+                reply.usage = [:] // Size the generated history, not answer()'s tiny usage baseline.
+            }
+            try permit.check()
+            try await hooks.settleAttempt(.init(scope:hooks.scope,observation:observation,dispatched:true))
+            await onObservation(observation); reply.message.requestAttemptIDs = [attempt]; return reply
+        } catch {
+            if purpose == "compaction" { summaryCancelled = true }
+            observation.monitoring["outcome"] = "cancelled"
+            try? await hooks.settleAttempt(.init(scope:hooks.scope,observation:observation,dispatched:true))
+            throw error
+        }
+    }
+}
+
 private actor ResumeDefinitionTools: ToolExecuting {
     var gate: OpenGate?
     func hold(_ gate: OpenGate) { self.gate = gate }
@@ -1627,6 +1801,16 @@ private actor ResumeDefinitionTools: ToolExecuting {
 }
 
 private extension AgentSession {
+    func fixtureCompactionHistory() throws {
+        for index in 0..<6 {
+            var input = ChatMessage(role:"user",content:[textBlock("Earlier task \(index)")])
+            input.taskRootID = input.id
+            var reply = ChatMessage(role:"assistant",content:[textBlock(String(repeating:"x",count:30000))])
+            reply.taskRootID = input.id
+            try append(input); try append(reply)
+        }
+    }
+
     func fixtureAcceptedReceipt(_ call: String) throws {
         let operation = try XCTUnwrap(subagents.family?.operations.values.first { $0.key.toolCallID == call })
         var result = ChatMessage(role:"toolResult",content:[textBlock(operation.receipt.encoded())])

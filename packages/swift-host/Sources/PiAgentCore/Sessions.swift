@@ -530,7 +530,14 @@ public actor AgentSession {
                 return try SideBudgetRecovery.pauseState(file, id:side).hasWork
             }
             for side in costPendingSidePauses where !costPausedMembers.contains(side) { costPausedMembers.append(side) }
-            if !costPendingSidePauses.isEmpty { costPaused = true }
+            if !costPendingSidePauses.isEmpty {
+                // An idle intermediate only carries its descendants' pause
+                // to the root. Roots (including orphaned sides) retain the
+                // aggregate pause until their family Resume is accepted.
+                let parent = isSideChat ? parentInfo["parentSessionId"].text : nil
+                let hasParent = try parent.map { try SideBudgetRecovery.parentExists($0,directory:directory) } ?? false
+                if !hasParent || SideBudgetRecovery.hasPauseWork(saved, family:subagents.family) { costPaused = true }
+            }
             if !costPaused, isSideChat, SideBudgetRecovery.hasPauseWork(saved, family:subagents.family),
                try SideBudgetRecovery.inheritsPendingPause(id:id,parent:parentInfo["parentSessionId"].text,directory:directory) {
                 costPaused = true
