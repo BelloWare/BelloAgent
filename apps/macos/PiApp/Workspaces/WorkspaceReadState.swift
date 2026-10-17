@@ -164,8 +164,9 @@ extension WorkspaceModel {
         var held = heldUnread[sessionID] ?? HeldUnread(count: 0, target: target)
         held.count += added; held.target = target
         held.release?.cancel()
+        let grace = visibleReplyGraceOverride ?? Self.visibleReplyGrace
         held.release = Task { [weak self] in
-            try? await Task.sleep(for: Self.visibleReplyGrace)
+            try? await Task.sleep(for: grace)
             guard !Task.isCancelled else { return }
             self?.publishHeldUnread(sessionID)
         }
