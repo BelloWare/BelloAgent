@@ -85,27 +85,78 @@ struct CaptureCredentials: Sendable {
     /// Replacements have the original byte length so captured SSE event offsets
     /// still describe the observed stream. Parsing receives the original bytes.
     struct ResponseMasker: Sendable {
-        private let patterns: [Data]
+        private struct Pattern: Sendable {
+            let literal: Data
+            let scalars: [(value: UInt32, bytes: [UInt8])]
+            let maximumBytes: Int
+            init(_ value: String) {
+                literal = Data(value.utf8)
+                scalars = value.unicodeScalars.map { ($0.value, Array(String($0).utf8)) }
+                maximumBytes = value.utf16.count * 6
+            }
+            /// Match decoded JSON characters, but return the original span.
+            /// A scalar may use literal UTF-8, a short escape or UTF-16 escapes.
+            func escapedLength(in bytes: UnsafeBufferPointer<UInt8>, at start: Int) -> Int? {
+                var offset = start, escaped = false
+                for scalar in scalars {
+                    guard offset < bytes.count else { return nil }
+                    if bytes[offset] == 92 {
+                        guard let decoded = Self.escape(in: bytes, at: offset), decoded.value == scalar.value else { return nil }
+                        offset = decoded.end; escaped = true
+                    } else {
+                        guard offset + scalar.bytes.count <= bytes.count else { return nil }
+                        for (index, byte) in scalar.bytes.enumerated() where bytes[offset + index] != byte { return nil }
+                        offset += scalar.bytes.count
+                    }
+                }
+                return escaped ? offset - start : nil
+            }
+            private static func escape(in bytes: UnsafeBufferPointer<UInt8>, at start: Int) -> (value: UInt32, end: Int)? {
+                guard start + 1 < bytes.count else { return nil }
+                let value: UInt32
+                switch bytes[start + 1] {
+                case 34, 47, 92: value = UInt32(bytes[start + 1])
+                case 98: value = 8
+                case 102: value = 12
+                case 110: value = 10
+                case 114: value = 13
+                case 116: value = 9
+                case 117:
+                    func unit(at offset: Int) -> UInt32? {
+                        guard offset + 6 <= bytes.count, bytes[offset] == 92, bytes[offset + 1] == 117 else { return nil }
+                        var unit: UInt32 = 0
+                        for index in (offset + 2)..<(offset + 6) {
+                            let digit: UInt32
+                            switch bytes[index] {
+                            case 48...57: digit = UInt32(bytes[index] - 48)
+                            case 65...70: digit = UInt32(bytes[index] - 55)
+                            case 97...102: digit = UInt32(bytes[index] - 87)
+                            default: return nil
+                            }
+                            unit = unit * 16 + digit
+                        }
+                        return unit
+                    }
+                    guard let high = unit(at: start) else { return nil }
+                    if (0xD800...0xDBFF).contains(high) {
+                        guard let low = unit(at: start + 6), (0xDC00...0xDFFF).contains(low) else { return nil }
+                        return (0x10000 + (high - 0xD800) * 0x400 + low - 0xDC00, start + 12)
+                    }
+                    guard !(0xDC00...0xDFFF).contains(high) else { return nil }
+                    return (high, start + 6)
+                default: return nil
+                }
+                return (value, start + 2)
+            }
+        }
+        private let patterns: [Pattern]
         private let suffixLength: Int
         private var pending = Data(), masked = Data()
         private(set) var replacements = 0
 
         init(_ credentials: CaptureCredentials) {
-            var patterns = Set<Data>()
-            for value in credentials.values where !value.isEmpty {
-                patterns.insert(Data(value.utf8))
-                if let quoted = try? JSON(value).data(), quoted.count >= 2 {
-                    let escaped = quoted.subdata(in: 1..<quoted.count - 1)
-                    patterns.insert(escaped)
-                    // JSON permits either spelling for a slash. Gateways need
-                    // not use our request encoder's withoutEscapingSlashes flag.
-                    if let text = String(data: escaped, encoding: .utf8) {
-                        patterns.insert(Data(text.replacingOccurrences(of: "/", with: "\\/").utf8))
-                    }
-                }
-            }
-            self.patterns = patterns.filter { !$0.isEmpty }
-            suffixLength = max(0, (patterns.map(\.count).max() ?? 1) - 1)
+            patterns = credentials.values.filter { !$0.isEmpty }.map(Pattern.init)
+            suffixLength = max(0, (patterns.map(\.maximumBytes).max() ?? 1) - 1)
         }
 
         mutating func feed(_ bytes: Data, final: Bool = false) -> Data {
@@ -115,11 +166,23 @@ struct CaptureCredentials: Sendable {
             guard count > 0 else { return Data() }
             for pattern in patterns {
                 var offset = 0
-                while offset < count, let range = pending.range(of: pattern, in: offset..<pending.count), range.lowerBound < count {
+                while offset < count, let range = pending.range(of: pattern.literal, in: offset..<pending.count), range.lowerBound < count {
                     // Search against original bytes, including overlapping
                     // matches; otherwise masking one key can expose another.
                     masked.replaceSubrange(range, with: repeatElement(UInt8(42), count: range.count))
                     replacements += 1; offset = range.lowerBound + 1
+                }
+            }
+            if pending.contains(92) {
+                pending.withUnsafeBytes { raw in
+                    let bytes = raw.bindMemory(to: UInt8.self)
+                    for pattern in patterns {
+                        for offset in 0..<count where bytes[offset] == 92 || bytes[offset] == pattern.literal.first {
+                            guard let length = pattern.escapedLength(in: bytes, at: offset) else { continue }
+                            masked.replaceSubrange(offset..<(offset + length), with: repeatElement(UInt8(42), count: length))
+                            replacements += 1
+                        }
+                    }
                 }
             }
             let result = Data(masked.prefix(count))

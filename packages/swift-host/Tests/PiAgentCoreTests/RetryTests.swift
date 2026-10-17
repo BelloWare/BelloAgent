@@ -21,6 +21,16 @@ private actor FlakyClient: ModelClient {
     }
 }
 
+private actor TimedFailureClient: ModelClient {
+    var started = false, released = false
+    func fail() { released = true }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable (StreamDelta) async throws -> Void) async throws -> ModelReply {
+        started = true; try await onDelta(.text("Partial response"))
+        while !released { try await Task.sleep(for:.milliseconds(2)) }
+        throw AgentError("provider_http","Provider returned HTTP 401. Fixture rejection.")
+    }
+}
+
 /// Fails its first request as a dropped connection, then holds every later
 /// request until it is cancelled: a retried request the reader stops.
 private actor HeldRetryClient: ModelClient {
@@ -33,6 +43,29 @@ private actor HeldRetryClient: ModelClient {
 }
 
 final class RetryTests: XCTestCase {
+    func testStoppedRequestKeepsModelTimeAcrossReopen() async throws { try await failedModelTime(stopped: true) }
+    func testNonretryableRequestKeepsModelTimeAcrossReopen() async throws { try await failedModelTime(stopped: false) }
+    private func failedModelTime(stopped: Bool) async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = TimedFailureClient(), directory = root.appendingPathComponent("state")
+        let session = try AgentSession(id:"timed",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:directory,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
+        _ = try await session.submit(Submission(commandID:"c",turnID:"t",text:"Work"),steer:false)
+        try await eventually { await client.started }
+        try await Task.sleep(for:.milliseconds(100))
+        if stopped { await session.stop() } else { await client.fail() }
+        try await eventually { !(await session.isRunning) }
+        let state = await session.snapshot(), measured = await session.modelRequestsMs
+        XCTAssertEqual(state["runStatus"].text,stopped ? "cancelled" : "failed")
+        XCTAssertGreaterThanOrEqual(measured,100)
+        XCTAssertEqual(state["turnMetrics"]["modelMs"].double,measured,"Every request outcome counts exactly once")
+        XCTAssertEqual(state["turnMetrics"]["sessionModelMs"].double,measured)
+        let saved = await session.path, path = try XCTUnwrap(saved); await session.close()
+        let reopened = try AgentSession(id:"timed",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:directory,readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),resumePath:path)
+        let restored = await reopened.snapshot()
+        XCTAssertEqual(restored["turnMetrics"]["sessionModelMs"].double,measured)
+        await reopened.close()
+    }
+
     /// Pi's retry settings with a shorter back-off, so a test waits less than 2, 4 and 8 seconds.
     private func session(_ client: FlakyClient, root: URL, baseDelayMs: Double = 250) async throws -> AgentSession {
         let session=try AgentSession(id:"s",profile:fixtureProfile(),apiKey:"test",cwd:root,directory:root.appendingPathComponent("state"),readOnly:false,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore(),autoCompaction:false)
@@ -192,6 +225,9 @@ final class RetryTests: XCTestCase {
         let state=await session.snapshot()
         let reply=try XCTUnwrap(state["messages"].list.last { $0["role"].text == "assistant" && $0["text"].text == "done" })
         let replyMs=try XCTUnwrap(reply["modelMs"].double), turnMs=try XCTUnwrap(state["turnMetrics"]["modelMs"].double)
+        let measured = await session.modelRequestsMs
+        XCTAssertEqual(turnMs, measured, "Successful retries count each attempt once")
+        XCTAssertEqual(state["turnMetrics"]["sessionModelMs"].double, measured)
         print("PERF model-time-with-retry replyModelMs=\(replyMs) turnModelMs=\(turnMs)")
         XCTAssertLessThan(replyMs, 500, "the reply's model time is its own request, not the back-off before it")
         XCTAssertLessThan(turnMs, 500, "the turn's model time sums its requests, not the waits between them")

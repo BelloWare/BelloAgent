@@ -90,6 +90,7 @@ actor AgentSteeringCoordinator {
             turn = newTurn(child:link.childSessionID,number:1,text:spec.task,key:key,env:env)
             turn?.effort = grant.thinkingLevel
             receipt["route"] = "start"
+            if call.arguments["mode"].text == "wait", let turn { targets = [turn.target] }
         case "subagent_send":
             let child = call.arguments["child_id"].text!
             guard let savedPlan = await parent.subagents.plans.values.first(where: { $0.origin.link.childSessionID == child }) else { throw AgentError("subagent_scope", "Unknown child in this family") }

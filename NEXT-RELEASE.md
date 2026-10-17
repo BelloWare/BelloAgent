@@ -2,6 +2,13 @@
 
 **Released 2026-10-18:** 0.1.129 (build 133, tag `v0.1.129`) is the latest release; record `docs/validation/Bello-Agent-0.1.129-2026-10-18.md`.
 
+## 0.1.130
+
+- [x] Capture masks JSON-escaped credential echoes without changing response byte offsets. [Validation](docs/validation/a130-helper-0.1.130.md).
+- [x] Start-with-wait IDs work in status listings immediately and after reopening, including older saved starts. [Validation](docs/validation/a130-helper-0.1.130.md).
+- [x] Reopened cost-paused chats seed sides and whole-chat forks from the last complete tool boundary; the parent keeps its held calls for Resume. [Validation](docs/validation/a130-helper-0.1.130.md).
+- [x] Failed and stopped model requests retain their elapsed time in turn/session totals across reopening; retry backoff stays excluded. [Validation](docs/validation/a130-helper-0.1.130.md).
+
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).
