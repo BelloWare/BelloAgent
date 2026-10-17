@@ -162,7 +162,56 @@ extension AgentSession {
         // Written with the run's records: an attempt's cost is as durable as
         // the reply it paid for. A failed write leaves the figure in memory.
         _ = try? journal?.append(["type":"custom","customType":JSON(SessionSpend.recordType),"data":data], flush: journalFlushesEachRecord)
+        // Every chat pauses at its limit (owner, 2026-10-17), not only families.
+        stopFamilyAtLimit()
     }
+    /// Cuts every model request this session has in flight (and a retry's
+    /// back-off): request permits cancel their streams; the run's request
+    /// task covers a chat that has none. The crossing request has already
+    /// returned its reply by the time it is counted.
+    func abortModelRequests() {
+        for permit in requestPermits.values { permit.cancel() }
+        modelRequestAbort?()
+    }
+    /// The gate before every model request and tool batch: nothing starts
+    /// while this chat, or a child's owner, waits at the cost limit, even
+    /// after the limit is raised and before Resume.
+    func enforceCostHold() async throws {
+        if costPaused { throw Self.costHoldError }
+        // A side shares its family's pause as it shares its spend: the
+        // latched pause of any ancestor holds it, whatever the limit now says.
+        for parent in sideBudgetParents where await parent.costPaused { throw Self.costHoldError }
+        // A child also waits for its coordinator to release the hold: the
+        // owner's Resume first parks it, then resumes it under its execution.
+        if isSubagent, let budgetOwner {
+            if await budgetOwner.costPaused { throw Self.costHoldError }
+            if let agentCoordinator, await agentCoordinator.paused.contains(budgetOwner.id) { throw Self.costHoldError }
+        }
+    }
+    /// Work a cost-limit pause holds for Resume, which belongs to the run
+    /// as it stands: an edit cannot abandon it.
+    var holdsCostPausedWork: Bool {
+        costPaused || costResumePending || !costPendingCalls.isEmpty || costPendingCompaction || hasParkedAgentTurns
+    }
+    /// A root's own pause is over (its Resume accepted) but sides it names
+    /// still wait: the family's Resume is not done. Shown as the family's
+    /// pause, with Resume offered; it holds nothing of the root's own.
+    var membersPendingResume: Bool { !isSubagent && !costPaused && !costPausedMembers.isEmpty && runTask == nil }
+    /// Whether a call that failed before it began failed because of the
+    /// pause: the hold itself, or an admission the pause closed (delegation
+    /// unavailable once the queue paused, a parent execution no longer
+    /// accepting agent commands). Such a call is held for Resume, never
+    /// given a permanent failure; one that is really unavailable fails then.
+    static let pauseClosedAdmissionCodes: Set<String> = ["tool_unavailable", "subagent_closed"]
+    func failedByCostPause(_ error: Error) async -> Bool {
+        guard let code = (error as? AgentError)?.code else { return false }
+        if code == Self.costLimitCode { return true }
+        guard Self.pauseClosedAdmissionCodes.contains(code) else { return false }
+        do { try await enforceCostHold(); return false } catch { return true }
+    }
+    /// A tool card's state for a call the pause held before it began.
+    static let heldToolState = "queued"
+    static var costHoldError: AgentError { AgentError(costLimitCode, "Paused at the cost limit; Resume goes on from here.") }
     /// Whether the next model request may go: never once the spend the
     /// gateway reported reaches the limit. Unreported attempts are unknown,
     /// so they cannot bring a chat to its limit.
@@ -172,11 +221,148 @@ extension AgentSession {
         guard let limit = costLimitUSD, spend.usd >= limit else { return }
         throw AgentError(Self.costLimitCode, "This chat reached its \(Self.costText(limit)) cost limit (\(Self.costText(spend.usd)) spent). Raise the limit to continue.")
     }
-    /// The limit and the spend, as the snapshot carries them.
+    /// The limit and the spend, as the snapshot carries them. `paused`: work
+    /// in this chat stopped at the family's limit and waits for Resume.
     var costSnapshot: JSON {
-        ["limitUSD": costLimitUSD.map { JSON($0) } ?? .null, "spentUSD": JSON(spend.usd),
+        var value: JSON = ["limitUSD": costLimitUSD.map { JSON($0) } ?? .null, "spentUSD": JSON(spend.usd),
          "reportedRequests": JSON(spend.reported), "unreportedRequests": JSON(spend.unreported),
          "reached": JSON(costLimitReached), "accountingRevision":JSON(accounting.revision), "familyUsage":familyUsage]
+        if costPaused || membersPendingResume { value["paused"] = true }
+        // Sides still waiting for the family's Resume, also after the root's own.
+        if !costPausedMembers.isEmpty { value["pausedMembers"] = .array(costPausedMembers.map(JSON.string)) }
+        return value
+    }
+    /// What a chat paused at its family's limit says until Resume. The app
+    /// draws live figures; these are the figures at the pause.
+    var costPausedMessage: String {
+        guard sideBudgetIDs.isEmpty, let limit = costLimitUSD else {
+            return "Paused at the shared cost limit. Raise the main chat’s limit above the spend, then choose Resume."
+        }
+        return "Paused at the cost limit: \(Self.costText(spend.usd)) spent of \(Self.costText(limit)). Raise the limit above the spend, then choose Resume."
+    }
+    /// Unfinished work that a cost-limit pause must hold for Resume: a run,
+    /// pending messages, or an unsealed sub-agent turn.
+    var hasCostPausableWork: Bool {
+        runTask != nil || !queue.isEmpty || !steering.isEmpty || delivering != nil ||
+        subagents.family?.turns.values.contains { !$0.status.terminal } == true
+    }
+    /// What a Resume would go on with once a paused run has ended.
+    var hasWorkAfterCostPause: Bool {
+        !costPendingCalls.isEmpty || costPendingCompaction || !queue.isEmpty || !steering.isEmpty || !costPausedMembers.isEmpty || hasPendingAgentEvents ||
+        subagents.family?.turns.values.contains { !$0.status.terminal } == true ||
+        continuationTail.map { Self.continues(from: $0) } ?? false
+    }
+    /// A pause with nothing left to resume ends by itself; the coordinator's
+    /// hold (and its fence against the pause's late hold) is released too.
+    func clearCostPauseWithoutWork() {
+        costPaused = false; queuePaused = false
+        if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
+        if state != .error, runTask == nil || state == .paused { state = .idle; runStatus = .idle }
+        if !isSubagent, let coordinator = agentCoordinator { let generation = costPauseCount; Task { try? await coordinator.resumeParked(owner:self,generation:generation) } }
+        if let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
+    }
+    /// The family reached its limit: pause at once, durably, before anything
+    /// is cancelled. Called only through `stopFamilyAtLimit`. A chat with no
+    /// unfinished work only closes its gates; a side that pauses tells its
+    /// root, which then shows the family's pause and fans Resume out to it.
+    func pauseAtCostLimit(_ reason: AgentError) {
+        guard !isSubagent, !budgetStopIssued else { return }
+        budgetStopIssued = true; familyStopReason = reason
+        let pauses = !costPaused && hasCostPausableWork
+        if pauses {
+            costPaused = true; queuePaused = true; costPauseCount &+= 1
+            errorCode = Self.costLimitCode; errorMessage = costPausedMessage
+            markCutCompaction()
+            do { try persistState(durable:true) } catch { failFamilyAccounting(error); return }
+        }
+        // Owner, 2026-10-17: only model requests are cut, as Stop cuts them
+        // (an aborted reply is never replayed). Running tools finish with
+        // their real results; the gates (`enforceCostHold`) start nothing
+        // new. Children are held by their coordinator the same way.
+        abortModelRequests()
+        if costPaused, let coordinator = agentCoordinator {
+            let generation = costPauseCount
+            Task { await coordinator.pause(owner:self,generation:generation) }
+        }
+        if costPaused, runTask == nil { state = .paused; runStatus = .cancelled }
+        if pauses, let root = sideBudgetParents.last {
+            let member = id
+            Task { await root.notePausedMember(member) }
+        }
+        notifySidesOfPause(reason)
+        event("state")
+    }
+    /// Sides retain their ancestors, so callbacks hold only weak runtimes.
+    func notifySidesOfPause(_ reason: AgentError) {
+        let resumes = costResumeCount
+        for notify in sideBudgetStops.values { Task { await notify(reason, resumes) } }
+    }
+    /// The manual compaction under way is cut by this pause: it is pending,
+    /// with its focus, in the same record as the pause, so no crash between
+    /// the two can lose it.
+    func markCutCompaction() {
+        guard manualCompactionInFlight, !costPendingCompaction else { return }
+        costPendingCompaction = true; costPendingCompactionFocus = manualCompactionInFlightFocus
+    }
+    /// A side of this root paused: the root now shows the family's pause and
+    /// its Resume returns this side for the app to resume too. A `repair`
+    /// (the side binding again with its own durable pause) only restores a
+    /// missing membership: a side the root still lists is one its Resume
+    /// already covers (the app resumes it next), so the root is not paused
+    /// again.
+    func notePausedMember(_ side: String, repair: Bool = false) {
+        guard !closed, !isSubagent, side != id else { return }
+        let known = costPausedMembers.contains(side)
+        if repair, known { return }
+        let first = !costPaused
+        if !known { costPausedMembers.append(side) }
+        if first {
+            // The family's pause, as at the limit itself: saved, then every
+            // model request in flight cut, the children held and the other
+            // sides paused, under a new pause generation.
+            costPaused = true; queuePaused = true; costPauseCount &+= 1
+            budgetStopIssued = true; familyStopReason = Self.costHoldError
+            errorCode = Self.costLimitCode; errorMessage = costPausedMessage
+            markCutCompaction()
+            if runTask == nil { state = .paused; runStatus = .cancelled }
+        }
+        do { try persistState(durable:true) } catch { failFamilyAccounting(error); return }
+        if first {
+            abortModelRequests()
+            if let coordinator = agentCoordinator { let generation = costPauseCount; Task { await coordinator.pause(owner:self,generation:generation) } }
+            notifySidesOfPause(Self.costHoldError)
+        }
+        event("state")
+    }
+    /// The side resumed by itself: the root no longer needs to hand it out.
+    func forgetPausedMember(_ side: String) {
+        guard let index = costPausedMembers.firstIndex(of: side) else { return }
+        costPausedMembers.remove(at: index)
+        // Paused only for that side, with nothing of its own: no longer paused.
+        if costPaused, runTask == nil, !hasWorkAfterCostPause {
+            clearCostPauseWithoutWork()
+        }
+        try? persistState(durable:true)
+        event("state")
+    }
+    /// Sides deleted (with their descendants): none of them waits for a
+    /// Resume any more, and a root paused only for them is not paused.
+    func forgetDeletedMembers(_ ids: Set<String>) {
+        for side in costPausedMembers where ids.contains(side) { forgetPausedMember(side) }
+    }
+    /// Listed sides whose journal is gone (deleted while this root was not
+    /// loaded, or an unkept side that ended with its runtime) are dropped
+    /// when the root reopens; a pause held only for them ends.
+    func dropMissingPausedMembers() {
+        guard !costPausedMembers.isEmpty else { return }
+        let kept = costPausedMembers.filter { side in ((try? SideBudgetRecovery.journalURL(side, directory: directory)) ?? nil) != nil }
+        guard kept != costPausedMembers else { return }
+        costPausedMembers = kept
+        if costPaused, runTask == nil, !hasWorkAfterCostPause {
+            costPaused = false; queuePaused = !queue.isEmpty || !steering.isEmpty
+            if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
+            if state == .paused { state = queuePaused ? .paused : .idle; runStatus = queuePaused ? .cancelled : .idle }
+        }
     }
     /// A kept side's journal starts with the spend its unkept runtime counted.
     func carriedSpendRecord() -> JSON {

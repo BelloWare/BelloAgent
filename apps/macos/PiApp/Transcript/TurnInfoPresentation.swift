@@ -29,6 +29,8 @@ enum TurnInfoPresentation {
     static func outcome(_ turn: TurnSummary) -> String {
         switch turn.outcome {
         case "completed": return "Completed"
+        // Paused at the family's shared limit: Resume goes on from there.
+        case "cancelled" where turn.errorCode == SessionDisplay.costLimitCode: return "Paused · cost limit"
         case "cancelled": return "Stopped"
         case "output-limited": return "Output limit reached"
         // A stop at the chat's cost limit is deliberate, not a failure.

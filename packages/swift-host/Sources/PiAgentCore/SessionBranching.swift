@@ -14,19 +14,23 @@ extension AgentSession {
         try requireIndependentSession()
         let admittedAt = admittedAt ?? stopCount
         try checkSubmissionStop(admittedAt)
-        guard isIdle else { throw AgentError("session_busy", "Edit requires an idle session with empty queues") }
+        // Work a cost-limit pause holds (parked sub-agent turns, held tool
+        // calls, a cut compaction) is the run's, still under way: an edit is
+        // refused as it is while those turns run, so Resume never restarts
+        // an abandoned branch's work under the edited conversation.
+        guard isIdle, !holdsCostPausedWork else { throw AgentError("session_busy", "Edit requires an idle session with empty queues") }
         guard !ephemeral else { throw AgentError("side_ephemeral", "Keep this side chat before editing its messages; a branch must be durable") }
         // An edit keeps the rows before it on screen: all of them, not only
         // the ones a chat opened from its metadata file loaded.
         let capturedHead = journal?.head
         try await loadFullHistory()
         try checkSubmissionStop(admittedAt)
-        guard !closed, isIdle, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
+        guard !closed, isIdle, !holdsCostPausedWork, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
         guard try input.savedValue.data().count < 8 * 1024 * 1024 else { throw AgentError("queue_limit", "Queued content exceeds 8 MiB") }
         try validate(input,steer:false)
         try await resources.validate(input.skills, tools: await tools.capabilityIDs(readOnly: readOnly))
         try checkSubmissionStop(admittedAt)
-        guard isIdle, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
+        guard isIdle, !holdsCostPausedWork, journal?.head == capturedHead else { throw AgentError("edit_changed", "The conversation changed while preparing the edit. Select the message again.") }
         try validate(input,steer:false)
         guard let journal else { throw AgentError("session_closed", "Session runtime is unloaded") }
         let plan = try Self.planEdit(messageID, history: history, visible: visible, context: context)

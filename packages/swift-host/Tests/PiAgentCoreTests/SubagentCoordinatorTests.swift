@@ -319,6 +319,8 @@ final class SubagentCoordinatorTests: XCTestCase {
         await parent.close()
     }
 
+    /// Legacy v2 delegation (steering disabled) has no resumable child turn:
+    /// the pause still cancels every dispatched request at once.
     func testChildSettlementAtTheLimitStopsTheFamilyAndDoesNotDispatchQueuedCalls() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = DelegationClient(count: 18), registry = DelegationRegistry()
@@ -333,10 +335,15 @@ final class SubagentCoordinatorTests: XCTestCase {
         try await eventually { !(await parent.isRunning) }
         let total = await parent.spend, count = await client.started["parent"]?.count, requests = await client.parents["parent"]
         XCTAssertEqual(count, 16); XCTAssertEqual(requests, 1)
-        XCTAssertEqual(total.usd, 0.17, accuracy: 1e-8); XCTAssertEqual(total.reported, 17); XCTAssertEqual(total.unreported, 0)
+        XCTAssertEqual(total.usd, 0.02, accuracy: 1e-8); XCTAssertEqual(total.reported, 2)
+        XCTAssertEqual(total.unreported, 15, "The cancelled requests' costs stay unknown")
         let results = await parent.history.filter { $0.toolName == "subagent" }, reason = await parent.familyStopReason
         XCTAssertEqual(results.count, 18); XCTAssertEqual(reason?.code, "cost_limit")
         XCTAssertEqual(results.filter { $0.nativeSubagent?["status"].text == "not_executed" }.count, 2)
+        // The crossing child's own reply may land before its Stop does.
+        let interrupted = results.filter { $0.nativeSubagent?["status"].text == "interrupted" }.count
+        XCTAssertGreaterThanOrEqual(interrupted, 15)
+        XCTAssertEqual(interrupted + results.filter { $0.nativeSubagent?["status"].text == "completed" }.count, 16)
         for child in await registry.children { let running = await child.isRunning; XCTAssertFalse(running); await child.close() }
         await parent.close()
     }
@@ -509,7 +516,9 @@ final class SubagentCoordinatorTests: XCTestCase {
         await reopened.close()
     }
 
-    func testDurableSideAdoptsItsOwnBudgetOnFirstDelegation() async throws {
+    /// Sides never delegate (owner, 2026-10-16): a durable side's call is
+    /// refused before any plan, child or adoption seed exists.
+    func testDurableSideRefusesDelegationWithoutCreatingAChild() async throws {
         let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
         let client = DelegationClient(count: 1); await client.releaseAll()
         let side = try AgentSession(id: "side", profile: fixtureProfile(), apiKey: "fixture", cwd: root, directory: root,
@@ -518,8 +527,11 @@ final class SubagentCoordinatorTests: XCTestCase {
         _ = try await side.preserveSide()
         _ = try await side.submit(Submission(commandID: "side", turnID: "side", text: "task"), steer: false)
         try await eventually { !(await side.isRunning) }
-        let total = await side.spend, started = await client.started["side"]?.count ?? 0
-        XCTAssertEqual(started, 1); XCTAssertEqual(total.usd, 0.03, accuracy: 1e-8)
+        let total = await side.spend, started = await client.started["side"]?.count ?? 0, plans = await side.subagents.plans
+        XCTAssertEqual(started, 0); XCTAssertTrue(plans.isEmpty); XCTAssertEqual(total.usd, 0.02, accuracy: 1e-8)
+        let refusal = await side.history.last { $0.toolName == "subagent" }
+        XCTAssertEqual(refusal?.isError, true)
+        XCTAssertTrue(refusal?.text.contains("main chat") == true, refusal?.text ?? "")
         await side.close()
     }
 

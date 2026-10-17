@@ -667,7 +667,7 @@ struct ActionRowView: View {
     nonisolated static func state(of tool: ToolView) -> TranscriptRowState {
         switch TranscriptActivity.outcome(of: tool) {
         case .running: return .running
-        case .cancelled, .unknown: return .stopped
+        case .cancelled, .unknown, .held: return .stopped
         case .failed: return .failed
         case .done: return .ok
         }
@@ -684,7 +684,7 @@ struct ActionRowView: View {
         title(TranscriptActivity.actionParts(tool), outcome: TranscriptActivity.outcome(of: tool))
     }
     nonisolated private static func title(_ parts: TranscriptActivity.ActionParts, outcome: ActionOutcome) -> String {
-        outcome == .unknown || outcome == .cancelled ? TranscriptActivity.describe(parts, outcome: outcome).verb : parts.done
+        outcome == .unknown || outcome == .cancelled || outcome == .held ? TranscriptActivity.describe(parts, outcome: outcome).verb : parts.done
     }
     /// The collapsed line's summary: a failure's first line replaces the
     /// argument summary outright, because a row cannot say both.

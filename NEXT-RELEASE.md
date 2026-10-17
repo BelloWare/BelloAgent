@@ -2,6 +2,31 @@
 
 **Released 2026-10-16:** 0.1.128 (build 132, tag `v0.1.128`) is the latest release; record `docs/validation/Bello-Agent-0.1.128-2026-10-16.md`.
 
+## 0.1.129
+
+- [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).
+- [ ] Cost-limit pause, known for 0.1.130 (Codex review round 12; owner: ship 0.1.129 after round 11): a child stopped by the reader is requeued by recovery after a crash; Stop racing an accepted Resume leaves child tools running; the side-pause fan-out is lost if the helper exits before its callbacks run. [Details](docs/validation/limit-pause-0.1.129.md#known-for-01130).
+- [x] Git review findings (2026-10-16): a stash pushed by another writer during Drop/Pop is never the one lost (Git's reported drop and the reflog are checked; a wrong entry is stored back and the drop refused); Discard works before the first commit, only on a genuinely unborn branch; Git keeps the app's `XDG_CONFIG_HOME` (no `GIT_DIR`-style inheritance); a staged deletion and its untracked recreation each show their own diff. [Validation](docs/validation/bugs-git-0.1.129.md).
+- [x] Intermittent tests: ten failures given causes and fixes:
+  - a late reference definition moved the reading line (product);
+  - a pending automatic count blanked a standing context reading (product);
+  - long-chat idle measuring starved a 50 KB expansion (product; serial-lane heartbeat 101.7 → 55 ms);
+  - test shells read the developer's zsh files (scheme `ZDOTDIR`);
+  - transient chooser and quote bar closed by another host's focus (tests);
+  - redraw and Overview waits (tests);
+  - the family-delete gallery's 11 file-viewer timeouts, caused by this workstream's Finder-activating probe.
+
+  Rule: runs that change app focus hold the full-lane lock. [Validation](docs/validation/flakes-0.1.129.md).
+- [x] External review fixes (core): HTTP MCP answers a server ping mid-call (BUG-002); promoting a queued message to steering wakes a waiting parent (BUG-003); completion webhooks read the finished task from history, not stale rows (BUG-004); terminal keys go to the input method while composing (BUG-005); a side covered by a tab keeps its failure mark (BUG-009); text after a NUL is searchable, index version 2 (BUG-010); `Application/JSON` is JSON (BUG-011). Review round 1: long tasks read whole, declined IME keys reach the program. Settings 1 pt miss: caused by the frozen SwiftUI 0.1.119 oracle (±1 pt, 1/52 with neighbours); the product is 783 in 170+ runs. A disagreeing oracle is now measured again (up to twice, logged `ORACLE-REMEASURED`) while the product stays compared strictly. [Validation](docs/validation/bugs-core-0.1.129.md).
+- [ ] Still unexplained, each with failure diagnostics now:
+  - `SessionTimingTests.testNarrowSidebarKeepsStateCostAndRateVisibleWithoutOverflow`: stale "latest 100 tok/s" OCR, 3 of 5 lanes on `dev/a129-flakes`;
+  - `ContextReadingTests.testAChangedModelOrJournalCountsAgain`: the 66.7 s hang, 1/48 then 0/160;
+  - `SettingsFullDocumentGeometryTests`: a 1 pt difference, once;
+  - FileHiddenRead resume, PiSheetWindow closed-sheet release, transcript reveal and pasted-image cleanup start: not reproduced.
+- [x] Deleting a chat deletes its whole family (`dev/a129-family-delete`, owner decisions 2026-10-16): the chat, its saved sides at every depth (including unlisted ones) and their sub-agents go to Trash under one durable intent, listed by name on a Pi confirmation sheet. Deleting a side deletes its descendants and keeps its spend counted in main. A missing, removed or untrusted project no longer blocks deletion; only the app's own chat data is removed and a skipped side-cost repair is named. Sides published without a chat row go too; overlapping interrupted deletions finish first instead of being adopted. Sides get a Delete Side button. Earlier orphan sides are untouched. [Validation](docs/validation/family-delete-0.1.129.md).
+
+- [x] Inspector raw-search intermittent failure explained (`dev/a129-flake-inspector`): the test proceeded while the outline still held its empty placeholder (document applied a main-queue turn later), so "Show all" was a no-op. It now waits for the request's own rows; a 40-run probe went from 4 lost mounts to 0. Test-only. [Validation](docs/validation/flake-inspector-0.1.129.md).
+
 ## 0.1.128
 
 - [x] Release-gate repairs: side wire coverage asserts separate physical spend and shared main limits; sidebar press/cut-out fixtures use indented topic chats; rendered Find waits for expanding row geometry; child shortcuts retain command ownership; large agent results reuse completed Markdown segments and cached message-to-row lookups. [Validation](docs/validation/gate-fix-0.1.128.md).

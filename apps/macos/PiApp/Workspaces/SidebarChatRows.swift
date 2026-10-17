@@ -109,7 +109,7 @@ struct ChatRowStats: Equatable {
         }
         let run = RunState(rawValue: state)
         guard run.isStopped else { return nil }
-        return (PiSessionState.label(state, costLimited: costLimited), run == .paused ? .piInfo : costLimited ? .piWarning : .piDanger)
+        return (PiSessionState.label(state, costLimited: costLimited), run == .paused ? (costLimited ? .piWarning : .piInfo) : costLimited ? .piWarning : .piDanger)
     }
     /// The states of a chat that is simply working: a turn, or its tool step.
     static let workingStates: Set<String> = [RunState.running.rawValue, "tool"]
@@ -200,6 +200,8 @@ struct ChatRowStats: Equatable {
         }
     }
     override func layout() { super.layout(); line.frame = CGRect(x: 0, y: 0, width: bounds.width, height: bounds.height) }
+    /// The words the slot draws, for tests.
+    var shownText: String { line.line.text }
 }
 
 /// The metrics line under a chat's title: its state, cost, rate, tokens and
@@ -249,6 +251,8 @@ struct ChatRowStats: Equatable {
     }
     /// The state word the line shows, if any, for tests.
     var shownState: String? { stateLine.isHidden ? nil : stateLine.line.text }
+    /// The rate the line shows, if any, for tests.
+    var shownRate: String? { rate.isHidden ? nil : rate.shownText }
     /// Where the cost starts, for tests that check the line does not move.
     var costOrigin: CGFloat { costLine.frame.minX }
     private var lineHeight: CGFloat { PiKit.Line("Ag", font: Self.font, color: .black).lineHeight }

@@ -25,6 +25,32 @@ final class TranscriptGeometryCacheTests: XCTestCase {
         XCTAssertNil(cache.measurement(sessionID: "session", item: item("row", text: "Updated while hidden"), fresh: false, environment: environment, width: 700, backingScale: 2))
     }
 
+    /// Every layout pass offers each row not yet measured a shared height.
+    /// A row that found none asks the cache again only once something new
+    /// was stored or its content changed: asking on every pass made a long
+    /// chat's idle measuring slices, and every frame of a growing result
+    /// beside them, look all three hundred rows up again.
+    @MainActor func testARowThatFoundNoSharedHeightAsksAgainOnlyAfterAStoreOrAChange() {
+        let cache = TranscriptGeometryCache(), environment = TranscriptRowEnvironment()
+        let row = TranscriptRowContainer(item: item("row"), fresh: false, actions: TranscriptActions(), environment: environment,
+                                         geometryCache: cache, geometrySessionID: "session")
+        for _ in 0..<3 { row.restoreSharedMeasurement(width: 700, backingScale: 2) }
+        XCTAssertEqual(cache.lookups, 1, "A miss is remembered while nothing new is stored")
+        row.restoreSharedMeasurement(width: 500, backingScale: 2)
+        XCTAssertEqual(cache.lookups, 2, "Another width asks again")
+        cache.store(CGSize(width: 700, height: 64), sessionID: "session", item: item("row"), fresh: false, environment: environment, backingScale: 2)
+        row.restoreSharedMeasurement(width: 700, backingScale: 2)
+        XCTAssertEqual(row.sharedMeasurementHits, 1, "A height stored since is found")
+        let other = TranscriptRowContainer(item: item("other"), fresh: false, actions: TranscriptActions(), environment: environment,
+                                           geometryCache: cache, geometrySessionID: "session")
+        other.restoreSharedMeasurement(width: 700, backingScale: 2)
+        _ = other.update(item: item("other", text: "Changed"), fresh: false, actions: TranscriptActions(), environment: environment)
+        let before = cache.lookups
+        other.restoreSharedMeasurement(width: 700, backingScale: 2)
+        XCTAssertEqual(cache.lookups, before + 1, "A row whose content changed asks again")
+        XCTAssertEqual(other.itemID, item("other").id, "and keeps its id with its item")
+    }
+
     @MainActor func testCountPayloadAndSingleEntryLimitsRetireOldMeasurements() {
         let cache = TranscriptGeometryCache(countLimit: 2, byteLimit: 3_000, entryByteLimit: 2_000)
         let environment = TranscriptRowEnvironment()

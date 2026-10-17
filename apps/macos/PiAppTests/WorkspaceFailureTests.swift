@@ -95,9 +95,15 @@ extension WorkspaceFailureTests {
         let followUp: WireValue = .object(["commandID": .string("c1"), "turnID": .string("t-follow"), "text": .string("and then summarize"), "attachments": .array([]), "skills": .array([])])
         let cut = try journal("cut", state: ["active": .bool(true), "queue": .array([followUp]), "steering": .array([]), "runStatus": .string("running"), "queuePaused": .bool(false)])
         let stopped = try journal("stopped", state: ["active": .bool(false), "queue": .array([followUp]), "steering": .array([]), "runStatus": .string("cancelled"), "queuePaused": .bool(true)])
+        // Round 9: a crash while a started tool finished under a cost pause
+        // (the run active, the family paused), and a call the pause held.
+        let pausedCrash = try journal("paused-crash", state: ["active": .bool(true), "queue": .array([]), "steering": .array([]), "runStatus": .string("running"), "queuePaused": .bool(true), "costPaused": .bool(true)])
+        let held = try journal("held", state: ["active": .bool(false), "queue": .array([]), "steering": .array([]), "runStatus": .string("cancelled"), "queuePaused": .bool(true), "costPaused": .bool(true), "costPendingCalls": .array([.string("call-1")])])
         let model = WorkspaceModel(stateRoot: root.appendingPathComponent("app"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
         model.chats = [ChatRecord(id: "cut", workspaceID: "workspace", title: "Cut off", path: cut, profileID: "profile"),
-                       ChatRecord(id: "stopped", workspaceID: "workspace", title: "Stopped", path: stopped, profileID: "profile")]
+                       ChatRecord(id: "stopped", workspaceID: "workspace", title: "Stopped", path: stopped, profileID: "profile"),
+                       ChatRecord(id: "paused-crash", workspaceID: "workspace", title: "Paused crash", path: pausedCrash, profileID: "profile"),
+                       ChatRecord(id: "held", workspaceID: "workspace", title: "Held", path: held, profileID: "profile")]
 
         await model.select("cut")
         let display = try XCTUnwrap(model.displays["cut"])
@@ -117,6 +123,16 @@ extension WorkspaceFailureTests {
         XCTAssertFalse(paused.presentedMessages.contains { $0.kind == "failure" && $0.failureCode != SessionDisplay.pausedCode }, "A deliberate stop is no failure")
         XCTAssertEqual(paused.presentedMessages.last?.failureCode, SessionDisplay.pausedCode, "It is paused, with Resume (0.1.125)")
         XCTAssertEqual(paused.messages.first { $0.id == "call" }?.tools?.first?.state, "recorded", "Only a run cut off leaves its calls unknown")
+
+        await model.select("paused-crash")
+        let crashed = try XCTUnwrap(model.displays["paused-crash"])
+        XCTAssertTrue(crashed.costPaused)
+        XCTAssertEqual(crashed.messages.first { $0.id == "call" }?.tools?.first?.state, "unknown", "A call that may have run under the pause is unknown, never done")
+        await model.select("held")
+        let waiting = try XCTUnwrap(model.displays["held"])
+        let card = try XCTUnwrap(waiting.messages.first { $0.id == "call" }?.tools?.first)
+        XCTAssertEqual(card.state, ToolState.held, "A call the pause held is shown held")
+        XCTAssertEqual(TranscriptToolRow.title(of: card), "Paused before running", "Never “Ran”")
         model.shutdown(); await model.store?.close()
     }
 }

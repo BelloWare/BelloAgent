@@ -7,11 +7,14 @@ extension AgentSession {
         }
     }
     // Internal fixture entry as well as the sole production switch's target.
-    func enableAgentSteering(_ coordinator: AgentSteeringCoordinator) {
+    func enableAgentSteering(_ coordinator: AgentSteeringCoordinator) async {
         agentCoordinator = coordinator
         if !isSubagent {
             let owner = id, runtime = displayEpoch
             familyCancelled = { generation in Task { await coordinator.cancel(owner:owner,runtimeID:runtime,through:generation) } }
+            // A hold left by an earlier runtime of this chat (its pause ended
+            // while unloaded, e.g. its only paused side was deleted) goes.
+            if !costPaused { await coordinator.releaseStaleHold(owner:self) }
         }
     }
     func startAgentEpoch() throws {
@@ -67,11 +70,67 @@ extension AgentSession {
         guard isSubagent, !closed, runTask == nil, subagents.origin?.link.budgetOwnerSessionID == owner.id else { throw SubagentRecovery.damaged() }
         try journal?.promoteToSteering(managedChild:true)
         try appendAgentRecord(JournalRecordKind.agentTurn,turn)
-        budgetOwner = owner; budgetOwnerGeneration = turn.generation
+        budgetOwner = owner; budgetOwnerGeneration = turn.currentGeneration
         agentLease = turn; agentTurnClosed = false; agentCoordinator = coordinator
         managedProgress = { [weak coordinator] in await coordinator?.progress(turn.target) }
         queue.removeAll(); steering.removeAll(); queuePaused = false
         managedCancellation = { Task { await coordinator.stop(owner:owner.id,target:turn.target,human:false) } }
+    }
+    /// Resume after a cost-limit pause: the same turn, bound to the owner's
+    /// resumed execution. Its mirror records the continuation like the owner.
+    func resumeAgentTurn(_ turn: AgentChildTurn, owner: AgentSession, coordinator: AgentSteeringCoordinator) throws {
+        guard isSubagent, !closed, runTask == nil, subagents.origin?.link.budgetOwnerSessionID == owner.id,
+              let continuation = turn.continuations?.last else { throw SubagentRecovery.damaged() }
+        try journal?.promoteToSteering(managedChild:true)
+        // A mirror that missed earlier Resumes catches up one continuation at
+        // a time, as the owner recorded them.
+        var queued = turn; queued.status = .queued; queued.result = nil
+        if let saved = subagents.family?.turns[turn.id] {
+            for step in queued.mirrorSteps(from:saved) where step != saved { try appendAgentRecord(JournalRecordKind.agentTurnState,step) }
+        } else { try appendAgentRecord(JournalRecordKind.agentTurn,queued) }
+        budgetOwner = owner; budgetOwnerGeneration = continuation.generation
+        agentLease = turn; agentTurnClosed = false; agentCoordinator = coordinator
+        managedProgress = { [weak coordinator] in await coordinator?.progress(turn.target) }
+        // The turn's own task may be accepted but not yet delivered: it is the
+        // input this Resume releases, never a second submission of it.
+        queue.removeAll { $0.turnID != turn.inputID }; steering.removeAll(); queuePaused = false
+        managedCancellation = { Task { await coordinator.stop(owner:owner.id,target:turn.target,human:false) } }
+        if costPaused { costPaused = false; errorCode = nil; errorMessage = nil; try persistState(durable:true) }
+    }
+    enum AgentTurnStart { case fresh, accepted, delivered }
+    /// How far a resumed turn's task got, from durable evidence (its command
+    /// receipt survives compaction and checkpoints; the loaded history window
+    /// alone does not): never sent, accepted and waiting, or delivered.
+    func agentTurnStart(_ turn: AgentChildTurn) -> AgentTurnStart {
+        if queue.contains(where: { $0.turnID == turn.inputID }) { return .accepted }
+        if history.contains(where: { $0.id == turn.inputID }) { return .delivered }
+        return commands.contains { $0["turnId"].text == turn.inputID } ? .delivered : .fresh
+    }
+    /// Sends the turn's accepted task that a pause held before delivery.
+    func releaseAgentTurn(_ turn: AgentChildTurn) throws {
+        guard agentLease?.executionID == turn.executionID, !closed, runTask == nil, queue.contains(where: { $0.turnID == turn.inputID }) else { throw SubagentRecovery.damaged() }
+        queuePaused = false; try persistState(); launch()
+    }
+    /// Continues a resumed turn from its context as it stands, like `run.continue`.
+    func continueAgentTurn(_ turn: AgentChildTurn) throws {
+        guard agentLease?.executionID == turn.executionID, !closed, runTask == nil else { throw SubagentRecovery.damaged() }
+        currentTurnID = turn.inputID; taskRootID = turn.inputID
+        activeSubmission = Submission(commandID:Self.continuePrefix + turn.executionID + ":" + String(turn.continuations?.count ?? 0),turnID:Self.continuePrefix + turn.inputID,text:"",thinkingLevel:turn.effort)
+        retrySubmission = nil; continuing = true; queuePaused = false; errorMessage = nil; errorCode = nil
+        try persistState(active:true)
+        launch()
+    }
+    /// The coordinator parked this turn at the owner's cost-limit pause.
+    func parkAgentTurn(_ turn: AgentChildTurn) throws {
+        guard isSubagent else { return }
+        endSubagentProgress()
+        if let saved = subagents.family?.turns[turn.id], saved.status != turn.status || saved.continuations != turn.continuations, !saved.status.terminal {
+            try appendAgentRecord(JournalRecordKind.agentTurnState,turn)
+        }
+        costPaused = true; queuePaused = true
+        if state != .error { state = .paused; runStatus = .cancelled }
+        errorCode = Self.costLimitCode; errorMessage = "Paused at the shared cost limit. It goes on when the main chat resumes."
+        try persistState(durable:true); event("state")
     }
     func startAgentTurn(_ turn: AgentChildTurn) throws {
         guard agentLease?.executionID == turn.executionID, !closed else { throw SubagentRecovery.damaged() }

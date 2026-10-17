@@ -7,9 +7,12 @@ struct SubagentFamily: Equatable {
         var model: String
         var spend: Double?
         var effort: String? = nil
+        /// Unsealed and held at the family's cost limit until Resume.
+        var paused = false
         var active: Bool { status.map { !$0.terminal } ?? false }
         var label: String { chat.subagentShortTitle }
-        var statusLabel: String {
+        var statusLabel: String { paused && active ? "Paused" : baseStatusLabel }
+        private var baseStatusLabel: String {
             switch status {
             case .queued: "Queued"
             case .running: "Running"
@@ -26,6 +29,8 @@ struct SubagentFamily: Equatable {
     var runningCount: Int
     var queuedCount = 0
     var stoppingCount = 0
+    /// Held at the cost limit: neither working nor waiting for a slot.
+    var pausedCount = 0
     var activeCount: Int { runningCount + queuedCount + stoppingCount }
 }
 
@@ -47,12 +52,14 @@ extension WorkspaceModel {
         }.map { child in
             let summary = subagentSummaries[child.id]
             return SubagentFamily.Member(chat: child, status: summary?.status,
-                model: summary?.model ?? child.model ?? profiles.first(where: { $0.id == child.profileID })?.modelId ?? "Unknown model", spend: familyMemberSpend(child.id,progress:summary?.progress), effort: subagentEffortLabel(child.id, summary: summary))
+                model: summary?.model ?? child.model ?? profiles.first(where: { $0.id == child.profileID })?.modelId ?? "Unknown model", spend: familyMemberSpend(child.id,progress:summary?.progress), effort: subagentEffortLabel(child.id, summary: summary),
+                paused: summary?.pausedAtCostLimit == true)
         }
         let value = SubagentFamily(ownerID: ownerID, members: members,
-            runningCount: members.filter { $0.status == .running }.count,
-            queuedCount: members.filter { $0.status == .queued }.count,
-            stoppingCount: members.filter { $0.status == .stopping }.count)
+            runningCount: members.filter { $0.status == .running && !$0.paused }.count,
+            queuedCount: members.filter { $0.status == .queued && !$0.paused }.count,
+            stoppingCount: members.filter { $0.status == .stopping && !$0.paused }.count,
+            pausedCount: members.filter { $0.paused && $0.active }.count)
         subagentFamilies[ownerID] = value
         return value
     }
@@ -93,12 +100,14 @@ struct FamilyActivity: Equatable {
     var runningAgents = 0
     var queuedAgents = 0
     var stoppingAgents = 0
+    /// Held at the cost limit: named, but not activity (no spinner or badge).
+    var pausedAgents = 0
     var working: Int { workingSides + runningAgents + stoppingAgents }
     var active: Int { working + queuedAgents }
     var badge: String { working > 0 ? "\(working) working" : "\(queuedAgents) queued" }
     var label: String {
         [(workingSides, "side", "working"), (runningAgents, "sub-agent", "running"),
-         (queuedAgents, "sub-agent", "queued"), (stoppingAgents, "sub-agent", "stopping")]
+         (queuedAgents, "sub-agent", "queued"), (stoppingAgents, "sub-agent", "stopping"), (pausedAgents, "sub-agent", "paused")]
             .filter { $0.0 > 0 }.map { "\($0.0) \($0.1)\($0.0 == 1 ? "" : "s") \($0.2)" }.joined(separator: ", ")
     }
 }
@@ -136,6 +145,7 @@ struct ConversationFamily: Equatable {
     var activity: FamilyActivity {
         agentFamilies.reduce(into: FamilyActivity(workingSides: sides.filter(\.working).count)) {
             $0.runningAgents += $1.runningCount; $0.queuedAgents += $1.queuedCount; $0.stoppingAgents += $1.stoppingCount
+            $0.pausedAgents += $1.pausedCount
         }
     }
 }
@@ -198,7 +208,7 @@ extension WorkspaceModel {
                 let working = display.map { $0.busy || $0.loading } ?? false
                 let failed = unreadFailure(sessionID: chat.id) || display?.runState == .error
                 let unread = unreadOutputCount(sessionID: chat.id) > 0
-                let status = working ? "Working" : failed ? "Failed" : unread ? (markedUnreadOnly(sessionID: chat.id) ? "Unread" : "New reply") : pending ? "Draft" : chat.isArchived ? "Archived" : "Saved"
+                let status = working ? "Working" : display?.costPaused == true ? "Paused at cost limit" : failed ? "Failed" : unread ? (markedUnreadOnly(sessionID: chat.id) ? "Unread" : "New reply") : pending ? "Draft" : chat.isArchived ? "Archived" : "Saved"
                 let spend = familyMemberSpend(chat.id)
                 let side = ConversationFamily.Side(id: chat.id, title: pending ? "New side" : chat.title, status: status, working: working,
                     spend: spend, open: shown?.id == chat.id)

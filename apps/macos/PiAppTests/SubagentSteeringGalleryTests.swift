@@ -184,8 +184,11 @@ extension SubagentGalleryFixture {
             if scene == "coordination-paused" {
                 parent.failureCode = "coordination_limit"; parent.failureMessage = "The family communication allowance was reached. Accepted messages remain saved for explicit Resume."
             } else if scene == "family-cost-limit" {
-                parent.failureCode = SessionDisplay.costLimitCode; parent.failureMessage = "The parent chat’s $1.00 cost limit was reached. All sub-agents stopped."
-                parent.footer.cost = SessionCostReading(limit: .usd(1), override: .usd(1), defaultLimit: .usd(25), spentUSD: 1.03, reportedRequests: 9, unreportedRequests: 0)
+                // 0.1.129: paused at the shared limit, every turn kept for Resume.
+                for id in model.subagentSummaries.keys { model.subagentSummaries[id]?.status = .queued; model.subagentSummaries[id]?.costPaused = true }
+                child.subagentStatus = .queued; child.runState = .paused; child.costPaused = true
+                parent.costPaused = true; parent.runStatus = "cancelled"; parent.continuable = true
+                parent.applyCostReading(SessionCostReading(limit: .usd(1), override: .usd(1), defaultLimit: .usd(25), spentUSD: 1.03, reportedRequests: 9, unreportedRequests: 0))
             }
         default: break
         }

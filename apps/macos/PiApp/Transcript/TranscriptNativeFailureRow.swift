@@ -62,11 +62,20 @@ import AppKit
         /// A selected skill changed and was pinned to its current version (or
         /// taken off); `queued`: a paused queued message, which Resume sends.
         case skillChanged(queued: Bool)
+        /// The family paused at its shared cost limit: Raise limit… while the
+        /// spend is at it, then (`raised`) Resume; a sub-agent's has neither.
+        case costPaused(raised: Bool, child: Bool)
     }
     private var kind: Kind {
         let message = message
         let run = message.id.hasPrefix("failure:run:")
         if message.failureCode == SessionDisplay.pausedCode || message.failureCode == SessionDisplay.pausedResumingCode || message.failureCode == "coordination_limit" { return .paused }
+        switch message.failureCode {
+        case SessionDisplay.costPausedCode: return .costPaused(raised: false, child: false)
+        case SessionDisplay.costPausedRaisedCode, SessionDisplay.costPausedResumingCode, SessionDisplay.costPausedEditingCode: return .costPaused(raised: true, child: false)
+        case SessionDisplay.costPausedChildCode: return .costPaused(raised: false, child: true)
+        default: break
+        }
         if message.failureCode == SessionDisplay.skillRefreshedCode { return .skillChanged(queued: false) }
         if message.failureCode == SessionDisplay.skillUpdatedCode || message.failureCode == SessionDisplay.skillResumingCode { return .skillChanged(queued: true) }
         guard message.failureCode?.hasPrefix(SessionDisplay.costLimitCode) == true else { return .failure(retry: run) }
@@ -85,6 +94,9 @@ import AppKit
         case .costLimit(let raised, let run): return raised ? (run ? .continueRun : nil) : .raise
         // Nothing while a Resume is on its way.
         case .skillChanged(let queued): return queued && message.failureCode == SessionDisplay.skillUpdatedCode ? .resume : nil
+        case .costPaused(let raised, let child):
+            if child || message.failureCode == SessionDisplay.costPausedResumingCode || message.failureCode == SessionDisplay.costPausedEditingCode { return nil }
+            return raised ? .resume : .raise
         }
     }
     private var tint: NSColor {
@@ -93,6 +105,7 @@ import AppKit
         case .paused: return TranscriptNSPalette.accent
         case .costLimit(let raised, _): return raised ? TranscriptNSPalette.accent : TranscriptNSPalette.warning
         case .skillChanged: return TranscriptNSPalette.accent
+        case .costPaused(let raised, _): return raised ? TranscriptNSPalette.accent : TranscriptNSPalette.warning
         }
     }
 
@@ -123,6 +136,14 @@ import AppKit
             titleText = raised ? "Cost limit raised" : run ? "Stopped at this chat's cost limit" : "This chat is at its cost limit"
             setAccessibilityLabel((raised ? "Cost limit raised: " : "Cost limit reached: ") + message.text)
             setAccessibilityIdentifier("cost-limit-notice")
+        case .costPaused(let raised, _):
+            card.fill = raised ? TranscriptNSPalette.accentSoft : TranscriptNSPalette.warning.withAlphaComponent(0.09)
+            card.stroke = (raised ? TranscriptNSPalette.accent : TranscriptNSPalette.warning).withAlphaComponent(0.35)
+            symbol.show("pause.circle.fill", size: 15, weight: .semibold)
+            symbol.contentTintColor = tint
+            titleText = raised ? "Paused · cost limit raised" : "Paused at the cost limit"
+            setAccessibilityLabel((raised ? "Paused, cost limit raised: " : "Paused at the cost limit: ") + message.text)
+            setAccessibilityIdentifier("cost-paused-notice")
         case .skillChanged(let queued):
             card.fill = TranscriptNSPalette.accentSoft
             card.stroke = TranscriptNSPalette.accent.withAlphaComponent(0.35)
@@ -193,6 +214,9 @@ import AppKit
             if case .skillChanged = kind {
                 button.setAccessibilityIdentifier("skill-changed-resume")
                 button.toolTip = "Send the paused queued message with the updated skill; a run it stopped goes on first, and follow-ups after it go on"
+            } else if case .costPaused = kind {
+                button.setAccessibilityIdentifier("cost-paused-resume")
+                button.toolTip = "Go on with this chat and every side and sub-agent paused at the cost limit, from where each stopped. A tool call that was cut off is not run again; queued messages go after it"
             } else {
                 button.setAccessibilityIdentifier("resume-run")
                 button.toolTip = "Go on with the run from where it stopped, with this chat's current model and effort. A tool call that was cut off is not run again; queued follow-ups go on after it"

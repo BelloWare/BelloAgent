@@ -116,11 +116,20 @@ final class CatalogModelPickerTests: XCTestCase {
         try await eventually("the rows") { picker.layoutSubtreeIfNeeded(); return !self.shownRows(picker).isEmpty }
         picker.sourceSelector.performClick(nil)
         let popover = try XCTUnwrap(picker.sourceChooser)
+        // The chooser is transient: it closes when another app becomes active,
+        // as it should for the reader. In the parallel lane that other app is
+        // another test host taking the focus, and the closed chooser no longer
+        // follows its choices. What this checks is its size, so only the test closes it.
+        popover.behavior = .applicationDefined
         let before = popover.contentSize.height
         var third = ProfileRecord(); third.id = "third"; third.name = "Third"; third.baseUrl = "https://third.invalid"
         var fourth = ProfileRecord(); fourth.id = "fourth"; fourth.name = "Fourth"; fourth.baseUrl = "https://fourth.invalid"
         fixture.model.profiles += [third, fourth]
-        try await eventually("the chooser grows") { popover.contentSize.height > before + 20 }
+        do { try await eventually("the chooser grows") { popover.contentSize.height > before + 20 } } catch {
+            // Whether the popover was still open, and the app still active, says why it stayed.
+            XCTFail("chooser: shown=\(popover.isShown) height=\(popover.contentSize.height) before=\(before) open=\(picker.sourceChooser != nil) appActive=\(NSApp.isActive) keyWindow=\(NSApp.keyWindow != nil)")
+            throw error
+        }
         let grown = popover.contentSize.height
         fixture.model.profiles = [fixture.profile, fixture.other]
         try await eventually("the chooser shrinks back") { popover.contentSize.height < grown - 20 }

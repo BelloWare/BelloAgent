@@ -312,7 +312,7 @@ actor HTTPMCP: MCPTransport {
         let sentSession = session
         if let session { request.setValue(session, forHTTPHeaderField: "Mcp-Session-Id") }
         if message["method"].text != "initialize" { request.setValue(version, forHTTPHeaderField: "MCP-Protocol-Version") }
-        var code = 0, sse = false, parser = SSEParser(), body = Data()
+        var code = 0, sse = false, parser = SSEParser(), body = Data(), pings = 0
         for try await part in transport.start(request) {
             try Task.checkCancellation()
             switch part {
@@ -339,7 +339,19 @@ actor HTTPMCP: MCPTransport {
                     for event in try parser.feed(bytes) {
                         guard let v = try Self.message(event) else { continue }
                         if v["id"].text == expected, expected != nil { return try response(v) }
-                        if !v["method"].isNull && !v["id"].isNull { throw AgentError("mcp_capability", "Server requested an unsupported client capability") }
+                        if !v["method"].isNull && !v["id"].isNull {
+                            // Either party may ping (2025-06-18, 2025-11-25);
+                            // the answer is an empty result, sent in a new POST,
+                            // and this stream still carries the call's response.
+                            // A ping that cannot be answered is the server's to
+                            // act on; the deadline still bounds this exchange.
+                            guard v["method"].text == "ping" else { throw AgentError("mcp_capability", "Server requested an unsupported client capability") }
+                            pings += 1
+                            guard pings <= 64 else { throw AgentError("mcp_server_flood", "MCP server sent more than 64 pings during one request; invocation outcome may be unknown. No replay attempted.") }
+                            _ = try? await exchange(["jsonrpc":"2.0", "id":v["id"], "result":[:]], expected: nil)
+                            try Task.checkCancellation()
+                            continue
+                        }
                         if v["method"].text == "notifications/tools/list_changed" { catalogChanges += 1 }
                     }
                 } else { body.append(bytes); guard body.count <= 4 * 1024 * 1024 else { throw AgentError("mcp_limit", "MCP body exceeds 4 MiB") } }

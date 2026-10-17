@@ -101,13 +101,50 @@ public actor AgentSession {
     var sideBudgetParents: [AgentSession] = []
     var sideBudgetIDs: [String] = []
     var sideBudgetMembers: [String: [String]] = [:]
-    var sideBudgetStops: [String: @Sendable () async -> Void] = [:]
+    /// Each side's pause callback: given the pause's reason and the Resume
+    /// count it was issued under (`costResumeCount`).
+    var sideBudgetStops: [String: @Sendable (AgentError, Int) async -> Void] = [:]
+    /// Advances with each accepted Resume of a pause: a side pause issued
+    /// before it is not applied after it.
+    var costResumeCount = 0
     weak var budgetOwner: AgentSession?
     var budgetOwnerGeneration = 0
     var requestPermits: [String: RequestPermit] = [:]
     var inFlightBudgetAttempts = Set<String>()
     var familyStopReason: AgentError?
     var budgetStopIssued = false
+    /// Work here stopped at the family's cost limit and waits for Resume
+    /// (`pauseAtCostLimit`). Durable in the run state; raising the limit
+    /// alone never clears it.
+    var costPaused = false
+    /// A root's sides that paused with it, handed to the app by Resume.
+    var costPausedMembers: [String] = []
+    /// Set by a Resume of a paused family: the run resumes the parked
+    /// sub-agent turns first, and (`familyWaitResume`) with nothing of its
+    /// own to continue waits for them instead of asking the model.
+    var resumingCostPause = false
+    /// A Resume of a pause was accepted, and its run has not yet taken the
+    /// paused work (parked turns). Saved as the pause itself: a helper that
+    /// ends in between reopens paused, and the next Resume does it again.
+    var costResumePending = false
+    var familyWaitResume = false
+    /// Advances with each cost-limit pause; a Resume covers the pauses so far.
+    var costPauseCount = 0
+    /// Tool calls of a completed reply the pause held before any started:
+    /// they run first on Resume, before another model request. Durable.
+    var costPendingCalls: [String] = []
+    /// A manual compaction the pause cut: Resume runs it again, with the
+    /// focus (`/compact <instructions>`) it was given. Both durable, and
+    /// saved with the pause itself (`markCutCompaction`).
+    var costPendingCompaction = false
+    var costPendingCompactionFocus: String?
+    /// The manual compaction this run is doing, and its focus: what a pause
+    /// arriving now records as pending.
+    var manualCompactionInFlight = false
+    var manualCompactionInFlightFocus: String?
+    var compactOnResume = false
+    /// Cancels the model request (or retry back-off) under way, if any.
+    var modelRequestAbort: (@Sendable () -> Void)?
     var familyCancelled: (@Sendable (Int) -> Void)?
     var subagentCoordinator: SubagentCoordinator?
     var agentCoordinator: AgentSteeringCoordinator?
@@ -166,6 +203,8 @@ public actor AgentSession {
     var compactionFocus: String?
     /// Calls of the running tool batch whose tool has been entered.
     var toolInvocationsBegan: Set<String> = []
+    /// Calls of the running batch a cost-limit pause held at their own gate.
+    var heldBatchCalls: Set<String> = []
     var cumulativeUsage = CumulativeUsage()
     var currentTurnID="", appliedRevision: String?
     /// Where the time went: model requests versus tool execution, for the
@@ -478,7 +517,21 @@ public actor AgentSession {
                 cumulativeModelMs=ObservedDuration.valid(saved["timing"]["modelMs"].double)
                 cumulativeToolMs=ObservedDuration.valid(saved["timing"]["toolMs"].double)
             }
-            if saved["active"].flag == true { errorMessage="The previous run was interrupted. No model or tool request was replayed. Inspect tool effects before continuing." }
+            costPaused = saved["costPaused"].flag == true
+            costPausedMembers = saved["costPausedMembers"].list.compactMap(\.text)
+            costPendingCalls = saved["costPendingCalls"].list.compactMap(\.text)
+            costPendingCompaction = saved["costPendingCompaction"].flag == true
+            costPendingCompactionFocus = costPendingCompaction ? saved["costPendingCompactionFocus"].text : nil
+            // Held calls and a cut compaction go first: nothing queued is
+            // sent past them.
+            if !costPendingCalls.isEmpty || costPendingCompaction { queuePaused = true }
+            if costPaused {
+                // Paused at the family's limit, also when the helper ended
+                // mid-pause: the pause, not an interruption, is what waits.
+                queuePaused = true; runStatus = .cancelled; errorCode = Self.costLimitCode
+                errorMessage = saved["errorMessage"].text ?? "Paused at the cost limit. Raise the limit above the spend, then choose Resume."
+            }
+            else if saved["active"].flag == true { errorMessage="The previous run was interrupted. No model or tool request was replayed. Inspect tool effects before continuing." }
             else if saved["runStatus"].text == RunStatus.failed.rawValue {
                 runStatus = .failed; errorMessage=saved["errorMessage"].text ?? "Run failed."; errorCode=saved["errorCode"].text
                 skillUpdatedTurnID=saved["skillUpdatedTurnId"].text
@@ -489,10 +542,13 @@ public actor AgentSession {
         // unknown outcomes so future requests remain protocol-valid.
         let delegatedResults = try SubagentRecovery.recover(state: subagents, context: context, parent: opened, owner: id,
                                                              directory: directory, accounting: &accounting, spend: &spend)
-        try AgentFamilyRecovery.recover(state:&subagents,parent:opened,owner:id,directory:directory,accounting:&accounting,spend:&spend)
+        try AgentFamilyRecovery.recover(state:&subagents,parent:opened,owner:id,directory:directory,accounting:&accounting,spend:&spend,costPaused:costPaused)
         let recoveredTools=ToolHistoryIndex(context)
+        // Calls the pause held before they started are still pending: they
+        // run on Resume. Only calls that may have begun get unknown outcomes.
+        let held = Set(costPendingCalls)
         let unresolved=context.flatMap { message in
-            message.content.filter { message.role == "assistant" && $0["type"].text == "toolCall" && recoveredTools.results[message.id]?[$0["id"].text ?? ""] == nil }
+            message.content.filter { message.role == "assistant" && $0["type"].text == "toolCall" && recoveredTools.results[message.id]?[$0["id"].text ?? ""] == nil && !held.contains($0["id"].text ?? "") }
                 .map { (call: $0, assistant: message.id, attempts: message.requestAttemptIDs, turn: message.turn) }
         }
         for pending in unresolved {
@@ -540,6 +596,7 @@ public actor AgentSession {
         toolHistory=ToolHistoryIndex(history)
         taskRootID=context.last(where: { $0.role == "user" })?.taskRootID
         boundary=context; state=runStatus == .failed ? .error : queuePaused ? .paused : .idle
+        dropMissingPausedMembers()
         spansScannedTo=opened.size
         // The metadata file follows the journal; it is only ever a shortcut.
         if let captured=replayed.captured { try? captured.write(for: url) }
@@ -601,7 +658,12 @@ public actor AgentSession {
         let cancelledGeneration = stopCount
         stopCount &+= 1; queuePaused=true; runTask?.cancel()
         for permit in requestPermits.values { permit.cancel() }
-        familyCancelled?(cancelledGeneration)
+        // A cost-limit pause parks this owner's sub-agent turns for Resume
+        // instead of cancelling them. The coordinator stops their runs.
+        // A paused family's children are held by their coordinator, not
+        // cancelled; Stop (or close) stops their runs (`pause(halt:)`).
+        if costPaused, !isSubagent, let coordinator = agentCoordinator { let count = costPauseCount; Task { await coordinator.pause(owner:self,generation:count,halt:true) } }
+        else { familyCancelled?(cancelledGeneration) }
         managedCancellation?()
         // The run may already have reached its terminal state while its
         // final links are flushing. Nothing after that await enters the
@@ -611,8 +673,10 @@ public actor AgentSession {
         event("state")
     }
     var canUnload: Bool {
-        isIdle && !ephemeral && requestPermits.isEmpty && inFlightBudgetAttempts.isEmpty &&
-        (managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true)
+        // A parked child's accepted, undelivered task is durable queued
+        // input; it does not pin the runtime.
+        (isIdle || isSubagent && costPaused && runTask == nil && steering.isEmpty) && !ephemeral && requestPermits.isEmpty && inFlightBudgetAttempts.isEmpty &&
+        (managedCancellation == nil || subagents.terminal != nil || subagents.family?.latest(id)?.status.terminal == true || costPaused)
     }
     public func unloadIfIdle() -> Bool {
         guard canUnload else { return false }
@@ -625,8 +689,13 @@ public actor AgentSession {
     }
     public func close() async {
         cancelHistoryLoads(); closed=true; stop(); await runTask?.value
+        // A paused family keeps its turns for Resume after the next open.
+        if !isSubagent, costPaused { await agentCoordinator?.pause(owner:self,generation:costPauseCount,halt:true) }
         if !isSubagent { await agentCoordinator?.drain(owner:id) }
         if !isSubagent { await subagentCoordinator?.release(owner: id, runtimeID: displayEpoch) }
+        // An unkept side ends with its runtime: nothing of it waits for the
+        // family's Resume any more.
+        if ephemeral, let root = sideBudgetParents.last { await root.forgetPausedMember(id) }
         journal=nil
     }
 }

@@ -1,5 +1,51 @@
 # Sub-agents in Bello Agent — Design v2
 
+## 0.1.129 owner decisions, 2026-10-16 and 2026-10-17
+
+These supersede the limit-stop and side-delegation text further down.
+
+**The cost limit pauses every chat and its family; only Resume continues.**
+It applies to plain chats (no side or sub-agent ever) and to families alike,
+replacing both the 0.1.128 turn-boundary stop and the first 0.1.129 draft.
+When spend reaches the limit through any charge source (main, side, nested side,
+sub-agent, side-owned sub-agent, a late correction or a lowered limit):
+
+1. Every model request in flight in the chat or family (compaction summaries
+   included; a cut compaction is done again on Resume) is cut at once, as Stop
+   cuts it: its partial reply is kept as an interrupted row that is never sent
+   again (pi parity). Its reported cost counts; unknown stays unknown.
+2. Tools already running are **not** cut. They finish and record their real
+   results, in the main chat and in sub-agents.
+3. Nothing new starts: no model request, no tool. Tool calls of a completed reply
+   that had not started (including the reply that crossed the limit) are held
+   (`costPendingCalls`, durable; no outcome is invented for them after a
+   relaunch). On Resume they run first, then the next model request; the reply
+   that issued them is never asked for again.
+
+The pause is durable (`costPaused` in the run state, `cost.paused` and
+`costPaused` in snapshots) across quit, relaunch and helper restart. A run whose
+crossing reply was its last word, with nothing held, queued or delegated, is not
+left paused: the chat is simply at its limit and new messages are refused there.
+Unsealed sub-agent turns are parked as `queued` with no result (never
+`not_executed`), keeping their order and undelivered parent messages; a child's
+running tool finishes first. Raising the limit resumes nothing. Resume is refused
+at or over the limit with the reason. After a raise, Resume (`run.continue`) on
+the root resumes its own run and parked turns and returns the sides that paused
+(`pausedMembers`, kept until each side resumes); the app resumes each, and asks
+the root's helper first when a cold side's Resume is pressed. Resumed turns
+continue under the parent's new execution (`AgentChildTurn.continuations`); one
+whose task was delivered (by durable receipt, not the loaded window) continues
+from its context; one accepted but not delivered is released, not resubmitted;
+one that had answered still takes its final boundary before it seals. Idle sides
+stay unmarked. Paused sub-agents have no Stop of their own (Resume, then Stop).
+See `docs/validation/limit-pause-0.1.129.md` for the state machine.
+
+**Sides never start or message sub-agents.** At any depth a side refuses
+`subagent_start`, `subagent_send` and v2 `subagent` with `read_only` before any
+acceptance, pointing to the main chat. Its offered tools stay byte-identical to
+its parent's for the prompt cache. Waiting on, reading and stopping children that
+a 0.1.128 side already owns remain available; their history is unchanged.
+
 ## 0.1.128 display update — owner decision, 2026-10-15
 
 This supersedes the sidebar groups, hover sides panel and main-pane child navigation
@@ -277,7 +323,7 @@ Sides have different semantics: inherited conversation context, side-specific ca
 
 Sub-agents need fresh context, automatic return to a waiting tool call, parent-owned spending, and a managed lifecycle. They therefore use ordinary `AgentSession` machinery through a new coordinator, without calling `side.open`.
 
-An ordinary kept side may itself delegate if it is a durable, eligible project chat. The side remains the delegation/coordinator owner; optional helper-only `RequestScope.sideParents` forwards numeric admissions and charges through its side ancestry to the main budget. Provider session/cache identity and model-facing tool semantics are unchanged.
+Since 0.1.129 a side never delegates (owner, 2026-10-16); it refuses the call before acceptance. A 0.1.128 side that already owns children remains their delegation/coordinator owner; optional helper-only `RequestScope.sideParents` forwards numeric admissions and charges through its side ancestry to the main budget. Provider session/cache identity and model-facing tool semantics are unchanged.
 
 ### Core invariants
 
@@ -352,7 +398,7 @@ Do not offer it in:
 - Archived or imported read-only histories.
 - Legacy transient sides that have not been durably kept.
 
-A read-only project chat may delegate within its actual read-only permissions. A tool appearing in a side’s cache-compatible advertised list is not sufficient authorization.
+A read-only project chat may delegate within its actual read-only permissions. A tool appearing in a side’s cache-compatible advertised list is not sufficient authorization: since 0.1.129 every side refuses `subagent_start`, `subagent_send` and `subagent` when called.
 
 ### 2.3 Model selection
 
@@ -635,6 +681,7 @@ The parent is not continuable until this recovery completes. Inspection remains 
 | Action | Behavior |
 |---|---|
 | Stop parent | Close family admission, stop active children and parent work, cancel queued children |
+| Cost limit reached (0.1.129) | Pause at once: cut model requests like Stop, let running tools finish, hold unstarted calls, park unsealed child turns as queued, persist `costPaused`; Resume only after a raise |
 | Stop one child | Stop only that child; return its cancellation result; parent may continue after its batch |
 | Hide or leave a transcript | Work continues |
 | Check for Updates | No pause |
@@ -670,6 +717,8 @@ Resume:
 If the model subsequently issues a new delegation, it receives a new identity. Do not deduplicate tasks by prompt text.
 
 Managed children may have an internally paused run state after interruption, but their UI presents **Interrupted**, without an independent Resume action.
+
+A Resume after a cost-limit pause (0.1.129) is the exception: it does relaunch the parked child turns, under the parent's new execution, because they never received a terminal result. Children show **Paused at cost limit** until then, also without their own Resume.
 
 ## 5. Parent-owned budget and accounting
 
@@ -789,31 +838,31 @@ Corrupt or contradictory accounting authority blocks further family requests unt
 
 ### 5.5 Limit enforcement
 
-When the owner’s reported spend reaches its limit:
+Since 0.1.129 (owner, 2026-10-16/17) reaching the limit **pauses** the chat and its family at once, for plain chats too:
 
-1. Close admission immediately.
-2. Invalidate outstanding request permits.
-3. Cancel active provider requests, retry waits, child tools, and summaries.
-4. Cancel queued delegations.
-5. Stop the parent and hold its follow-ups.
-6. Continue accepting final accounting for already-admitted attempts.
-7. Present the owner’s cost-limit notice.
+1. Close admission and the tool gate immediately (`enforceCostHold`).
+2. Persist `costPaused` for every owner with unfinished work, before anything is cut.
+3. Cut every model request in flight (permits and the run's request task) and retry back-offs, as Stop cuts them. Running tools are not cut; they finish with real results.
+4. Hold tool calls that had not started (`costPendingCalls`); they run first on Resume.
+5. Park unsealed child turns as `queued` with no result once their runs end.
+6. Continue accepting final accounting for already-admitted attempts; unknown cost stays unknown.
+7. Present **Paused at the cost limit** with spend and limit on the main chat, paused sides and sub-agent cards/readers.
 
-This family behavior applies to delegation-enabled families. Unrelated ordinary-chat cost behavior is not otherwise redesigned by this feature.
+Lowering the limit below the current reported total also pauses. Raising or removing the limit does not restart anything; only Resume does, and only below the limit.
 
-Lowering a family’s limit below its current reported total also stops the family. Raising or removing the limit does not restart anything automatically.
+The limit cannot be a guaranteed exact billing ceiling: a request that crosses it has already been paid for, and some providers do not report cost. Display that coverage honestly.
 
-The limit cannot be a guaranteed exact billing ceiling: concurrent requests already admitted may report cost later, and some providers do not report cost. Display that coverage honestly.
+Legacy v2 delegation (steering disabled, not shipped) has no resumable child turn.
 
 ### 5.6 Budget lifetime and display
 
 The owner total includes previous turns and all delegated work, including interrupted tasks and earlier transcript versions. Editing, compaction, and archiving do not refund spend.
 
-Since 0.1.128, ordinary sides share the main chat’s budget. Their legacy per-side limit values remain readable but are ignored; forks retain independent budgets. Already-dispatched requests finish before budget enforcement stops queued/tool work. Parent journals retain numeric side usage and attempt identities, including discarded ephemeral side spend, without side content. The native archive projects those identities into family recipients so filtered totals count each physical attempt once.
+Since 0.1.128, ordinary sides share the main chat’s budget. Their legacy per-side limit values remain readable but are ignored; forks retain independent budgets. Since 0.1.129 reaching the limit pauses every member at once (§5.5). Parent journals retain numeric side usage and attempt identities, including discarded ephemeral side spend, without side content. The native archive projects those identities into family recipients so filtered totals count each physical attempt once.
 
-Budget ancestry follows the saved side origin, never which chat occupies a side pane. Mounting a fork cannot change its independent budget or acquire its source’s children. A saved side whose parent journal was deleted survives as an independent budget owner (its own saved limit, or the default); existing nested sides and managed children then charge that surviving owner. An existing but unloaded parent must open before its side. The archive retires stale ancestor projections without rewriting physical request lineage. Legacy per-side limits remain dormant while connected to a parent and become the surviving orphan’s own setting after deletion.
+Budget ancestry follows the saved side origin, never which chat occupies a side pane. Mounting a fork cannot change its independent budget or acquire its source’s children. Since 0.1.129, deleting a chat deletes its whole family: the chat, its saved sides at every depth (including sides outside the chat-list window) and every member's managed sub-agents move to Trash together under one durable intent, and the confirmation lists the sides by name. Deleting a side deletes it and its descendants; the helper first repairs the surviving ancestors' ledgers, so the side's spend stays counted in the main chat. Deleting a main chat needs no repair or helper. A chat whose project folder is missing (or whose project was removed) can be deleted: only the app's own chat data is removed, and a side's ancestor repair, which needs the project helper, is skipped and named. A saved side orphaned by an earlier version (its parent journal already deleted) survives as an independent budget owner (its own saved limit, or the default); existing nested sides and managed children then charge that surviving owner. An existing but unloaded parent must open before its side. The archive retires stale ancestor projections without rewriting physical request lineage. Legacy per-side limits remain dormant while connected to a parent and become the surviving orphan’s own setting after deletion.
 
-An explicit `session.close` rejects while loaded side runtimes pin its accounting writer. Closing pane presentation is separate. Deletion preflights and detaches idle dependents before forgetting the owner; queued, running or unsettled work blocks it. Legacy unkeyed side seeds are adopted once during binding as well as cold recovery. Reported cost corrections update registered parent admissions and validated contribution-only mirrors separately, retaining numeric ancestry across reload. No side content is copied into the parent ledger.
+An explicit `session.close` rejects while loaded side runtimes pin its accounting writer. Closing pane presentation is separate. Deletion preflights and detaches idle dependents before forgetting the owner; queued, running or unsettled work blocks it. `session.forget` takes `descendantsDeleted` (no downward mirror into the deleted subtree) and `ancestorsRepaired` (a member forgotten after its deleted root's repair writes no ancestor again). Legacy unkeyed side seeds are adopted once during binding as well as cold recovery. Reported cost corrections update registered parent admissions and validated contribution-only mirrors separately, retaining numeric ancestry across reload. No side content is copied into the parent ledger.
 
 Display:
 
@@ -1132,7 +1181,7 @@ Topic moves follow the parent. Children cannot be independently pinned, moved, a
 Deletion:
 
 - Uses the existing confirmation and settled-work requirement.
-- States how many managed children are included.
+- States how many managed children are included, and (since 0.1.129) lists the saved sides at every depth that are deleted with the chat, each with its own managed children.
 - Checks helper-owned work, including children missing from app metadata.
 - Uses a durable deletion intent/tombstone to prevent rediscovery.
 - Cleans journals, stream artifacts, checkpoints, metadata, and relevant capture relationships through existing storage paths.
@@ -1337,7 +1386,7 @@ Recovery support remains active for existing data even when the new-tool rollout
 | Child compaction | Existing compaction safeguards; every summary attempt charged to parent |
 | Child tool has uncertain effects | Preserve uncertainty in journal, card, and returned error |
 | Child fails while siblings run | Return that outcome; siblings continue unless owner/family cancellation applies |
-| Family limit reached | Close admission and stop all family work |
+| Family limit reached | Pause at once: cut model requests, let tools finish, hold unstarted calls, park unsealed turns; Resume only after a raise (0.1.129) |
 | Cost or result synchronization fails | Stop further admission; retain recovery evidence; no fabricated success |
 | Child finishes before parent result append | Recover terminal result once |
 | Parent batch contains repeated tool IDs across turns | Match full call identity |

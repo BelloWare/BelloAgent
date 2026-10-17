@@ -175,7 +175,7 @@ public struct ProviderClient: ModelClient {
                 try Task.checkCancellation()
                 switch part {
                 case .head(let code,let headers):
-                    status=code;jsonBody=headers["content-type"]?.contains("application/json") == true;await traces.head(attempt,status:code,headers:headers)
+                    status=code;jsonBody=Self.isJSONMediaType(headers["content-type"]);await traces.head(attempt,status:code,headers:headers)
                     observation.monitoring = await traces.monitoring(attempt); await onObservation(observation)
                 case .bytes(let data, let receivedAt):
                     defer { stream.consumed(data.count) }
@@ -306,6 +306,13 @@ public struct ProviderClient: ModelClient {
     /// What to do about a gateway status, after the status itself: the
     /// provider's own detail when it sent one, then the likely cause in the
     /// reader's terms, then where the captured body is when nothing else helps.
+    /// Whether a Content-Type header names JSON. Type and subtype are
+    /// case-insensitive tokens (RFC 9110 8.3.1) before any parameters.
+    static func isJSONMediaType(_ value: String?) -> Bool {
+        guard let value else { return false }
+        let media = value.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false).first ?? ""
+        return media.trimmingCharacters(in: .whitespaces).lowercased() == "application/json"
+    }
     public static func guidance(status: Int, detail: String?, attempt: String) -> String {
         let hint: String
         switch status {

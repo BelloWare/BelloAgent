@@ -41,7 +41,7 @@ extension WorkspaceModel {
               let child = try await store.registerSubagent(found, workspaceID: workspaceID) else { return }
         guard !isShutDown, !deletingFamilies.contains(found.header.link.budgetOwnerSessionID) else { return }
         try Task.checkCancellation()
-        if let connection, hosts[workspaceID]?.connectionID != connection { throw CancellationError() }
+        if let connection, !liveSubagentAuthority(workspaceID, connection: connection) { throw CancellationError() }
         publishSubagentMetadata(child)
         publishSubagentEffort(found.header.model, child: child)
         // No terminal row means only "interrupted if restored", not evidence
@@ -52,7 +52,7 @@ extension WorkspaceModel {
             value.link == found.header.link && value.revision > 0 &&
                 ((value.turn ?? 1) > (found.turn ?? 1) || ((value.turn ?? 1) == (found.turn ?? 1) && (!found.hasTerminalRecord || value.status == found.status))) ? value : nil
         }
-        let summary = live ?? retained ?? SubagentSummary(link: found.header.link, description: found.header.description, model: found.header.model.model, status: found.status, revision: 0, turn: found.turn, executionID: found.executionID, effort: found.effort ?? found.header.model.thinkingLevel)
+        let summary = live ?? retained ?? SubagentSummary(link: found.header.link, description: found.header.description, model: found.header.model.model, status: found.status, revision: 0, turn: found.turn, executionID: found.executionID, effort: found.effort ?? found.header.model.thinkingLevel, costPaused: found.costPaused ? true : nil)
         if let live, let previous, !live.supersedes(previous) { return }
         if subagentSummaries[child.id] != summary { subagentSummaries[child.id] = summary }
         if live != nil { observeSubagentCost(summary) }
@@ -78,9 +78,20 @@ extension WorkspaceModel {
         }
     }
 
+    /// A live summary speaks for a runtime only while its connection is
+    /// current and ready. With capture on, a lost helper reports `.failed`
+    /// (which interrupts its children) before `.exited` clears the connection
+    /// after capture finalization; a reply finishing in between is stale.
+    func liveSubagentAuthority(_ workspaceID: String, connection: UUID) -> Bool {
+        guard let host = hosts[workspaceID] else { return false }
+        return host.connectionID == connection && host.isReady
+    }
+
     func interruptSubagents(workspaceID: String) {
         for child in chats where child.workspaceID == workspaceID && child.isSubagent {
-            guard var summary = subagentSummaries[child.id], !summary.status.terminal else { continue }
+            // A turn held at its family's cost limit is not running: the
+            // helper's loss leaves it waiting for Resume, not interrupted.
+            guard var summary = subagentSummaries[child.id], !summary.status.terminal, summary.costPaused != true else { continue }
             summary.status = .interrupted; summary.revision = 0; summary.progress = nil; summary.progressEpoch = nil
             subagentSummaries[child.id] = summary; displays[child.id]?.subagentStatus = .interrupted
             displays[summary.link.budgetOwnerSessionID]?.childSummaries[child.id] = summary

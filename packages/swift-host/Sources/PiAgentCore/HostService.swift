@@ -560,15 +560,20 @@ public actor NativeHostService {
         case "session.forget":
             try await withRuntimeGate {
                 let family = try await loadedBudgetFamily(id,directory:directory)
-                // Preflight the whole family before detaching any writer. The
-                // surviving saved sides reopen as independent orphaned chats.
+                // Preflight the whole family before detaching any writer.
                 for (value, _) in family {
                     guard await value.canUnload else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
                 }
+                // The app deletes a chat with every saved side below it. Its
+                // descendants are not survivors, so nothing is mirrored down
+                // into them; a member forgotten after its deleted root's
+                // repair has no surviving ancestor left to repair either.
+                let descendantsDeleted = params["descendantsDeleted"].flag == true
+                let ancestorsRepaired = params["ancestorsRepaired"].flag == true
                 // Deleting a side can remove the only priced/token evidence
                 // after its ancestor's append failed. Repair surviving owners
                 // before downward mirrors, detachment, capture clearing or Trash.
-                let ancestors = try await Task.detached { try SideBudgetRecovery.ancestors(of:id,directory:directory) }.value
+                let ancestors = ancestorsRepaired ? [] : try await Task.detached { try SideBudgetRecovery.ancestors(of:id,directory:directory) }.value
                 for ancestor in ancestors.reversed() {
                     let records = try await Task.detached { try SideBudgetRecovery.deletionRecords(side:id,ancestor:ancestor,directory:directory) }.value
                     let committed: [JSON]
@@ -583,14 +588,21 @@ public actor NativeHostService {
                     }
                     try await mirrorFamilyCharges(committed,owner:ancestor,directory:directory)
                 }
-                let costs: [JSON]
-                if let owner = sessions[id] { costs = await owner.committedSideCharges() }
-                else { costs = try await Task.detached { try SideBudgetRecovery.committedSideCharges(owner:id,directory:directory) }.value }
-                try await mirrorFamilyCharges(costs,owner:id,directory:directory)
+                if !descendantsDeleted {
+                    // Older callers: surviving saved sides reopen as independent chats.
+                    let costs: [JSON]
+                    if let owner = sessions[id] { costs = await owner.committedSideCharges() }
+                    else { costs = try await Task.detached { try SideBudgetRecovery.committedSideCharges(owner:id,directory:directory) }.value }
+                    try await mirrorFamilyCharges(costs,owner:id,directory:directory)
+                }
                 for (value, _) in family.sorted(by: { $0.1 > $1.1 }) {
                     guard await value.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
                     await didUnloadBudgetMember(value)
                 }
+                // No surviving root waits for a deleted side's Resume.
+                var forgotten: Set<String> = [id]
+                for (value, _) in family { forgotten.insert(value.id) }
+                for value in sessions.values { await value.forgetDeletedMembers(forgotten) }
             }
             _=try await traces.command("debug.clear",session:id,params:[:]); return ["accepted":true]
         default: return nil
@@ -777,7 +789,10 @@ public actor NativeHostService {
         case "queue.steer": try await session.steerQueued(required(params["turnId"],"turn id")); return ["accepted":true]
         case "queue.resume": try await session.resumeQueue(); return ["accepted":true]
         case "turn.retry": try await session.retryRun(overrides: params); return ["accepted":true]
-        case "run.continue": return try await session.continueRun(commandID: commandID, overrides: params)
+        case "run.continue":
+            // A paused family resumes only below its (root's) limit.
+            try await session.requireCostResumeRoom()
+            return try await session.continueRun(commandID: commandID, overrides: params)
         case "queue.configure": try await session.configureQueue(params); return ["accepted":true]
         case "context.compact": try await session.compact(commandID:commandID,overrides:params.removing(["focus"]),focus:params["focus"].text); return ["accepted":true]
         case "mcp.invoke":

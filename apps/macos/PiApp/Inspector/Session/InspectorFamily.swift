@@ -114,10 +114,15 @@ extension SubagentSummary {
         guard revision >= previous.revision else { return false }
         return !previous.status.terminal || status.terminal || (previous.status == .interrupted && previous.revision == 0 && revision > 0)
     }
+    /// Held at its family's cost limit, waiting for Resume.
+    var pausedAtCostLimit: Bool { costPaused == true && !status.terminal }
+    /// `status.label`, or "Paused at cost limit" while the family is paused.
+    var statusLabel: String { pausedAtCostLimit ? "Paused at cost limit" : status.label }
     var presentationLabel: String {
-        guard let turn else { return status.label }
+        guard let turn else { return statusLabel }
         let state: String
-        if deliveryState == "held" { state = "Pending for parent Resume" }
+        if pausedAtCostLimit { state = "Paused at cost limit" }
+        else if deliveryState == "held" { state = "Pending for parent Resume" }
         else if parentWaiting == true && !status.terminal { state = "Waiting for sub-agent" }
         else if status == .running { state = "Running in background" }
         else if status.terminal && deliveryState == "delivered" { state = status == .completed ? "Delivered to parent" : status.label + " · delivered to parent" }

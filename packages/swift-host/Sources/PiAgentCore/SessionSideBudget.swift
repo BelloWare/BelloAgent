@@ -25,6 +25,11 @@ extension AgentSession {
             for ancestor in sideBudgetParents.reversed() { try await ancestor.importSideRecord(record, side:id, parents:sideBudgetIDs) }
         }
         try await refreshSideCharges()
+        // The root's list of paused sides follows each side's own durable
+        // pause: a crash between the two saves is repaired here.
+        if let root = sideBudgetParents.last {
+            if costPaused { await root.notePausedMember(id, repair: true) } else { await root.forgetPausedMember(id) }
+        }
     }
 
     func refreshSideCharges() async throws {
@@ -67,13 +72,13 @@ extension AgentSession {
         guard !closed, parents.contains(id), side != id else { throw AttemptAccounting.damaged() }
         if !familyBudgetEnabled { accounting.restoreUsageCoverage(spend:spend) }
         sideBudgetMembers[side] = parents; familyBudgetEnabled = true
-        sideBudgetStops[side] = { [weak self, weak runtime] in
+        sideBudgetStops[side] = { [weak self, weak runtime] reason, resumes in
             guard let self, let runtime else { return }
-            // A raised limit/new run may retire a scheduled stop before it is
-            // delivered. Read the current authority instead of a stale flag.
-            do { try await self.enforceSharedCostLimit() }
-            catch let error as AgentError where error.code == AgentSession.costLimitCode { await runtime.stopFamilyAtLimit(error) }
-            catch { }
+            // The family's pause is latched: a limit raised since does not
+            // undo it (only Resume does). A Resume accepted since the pause
+            // was issued retires it.
+            guard await self.costResumeCount == resumes else { return }
+            await runtime.stopFamilyAtLimit(reason)
         }
     }
 
@@ -83,6 +88,7 @@ extension AgentSession {
     }
 
     func enforceToolBudget() async throws {
+        try await enforceCostHold()
         guard familyBudgetEnabled || isSubagent else { return }
         if let budgetOwner { try await budgetOwner.enforceSharedCostLimit() }
         else { try await enforceSharedCostLimit() }

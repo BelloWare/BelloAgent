@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 import SwiftUI
 import AppKit
 @testable import PiApp
@@ -203,13 +204,28 @@ final class SessionStatsPopoverTests: XCTestCase {
         }
         let openMs = (ProcessInfo.processInfo.systemUptime - opened) * 1_000
         // Let the page finish what opening started (the prompts, the models
-        // table): it is still when three looks in a row find no new build.
+        // table): first what is known to come, the request index, the charts'
+        // history and the models table's usage read; then it is still when
+        // three looks in a row find no new build. Stillness alone ended early
+        // when the parallel lane's load spaced the opening's reads more than
+        // three looks apart, and the late one rebuilt the page mid-hover.
+        try await Self.waitFor("The Overview never finished opening", pane: pane) {
+            inspector.indexLoaded && inspector.timeCharts.historyLoaded && inspector.usage.snapshot != nil && !inspector.usage.loading
+        }
         var last = -1, still = 0, looks = 0
         while still < 3, looks < 60 {
             await pane.settle(2); try await Task.sleep(for: .milliseconds(100)); looks += 1
             if SessionStatsRenderCount.panels == last { still += 1 } else { still = 0; last = SessionStatsRenderCount.panels }
         }
         let open = (panels: SessionStatsRenderCount.panels, marks: SessionStatsRenderCount.marks)
+        // What the page watches, counted while the pointer moves: a rebuild
+        // during hover says which of them published.
+        var published: [String: Int] = [:]
+        let watched: [(String, ObservableObjectPublisher)] = [("inspector", inspector.objectWillChange), ("usage", inspector.usage.objectWillChange),
+                                                             ("footer", pane.session.footer.objectWillChange),
+                                                             ("budget", pane.model.budgetState(for: pane.chat.id).objectWillChange)]
+        let watching = watched.map { name, publisher in publisher.sink { _ in published[name, default: 0] += 1 } }
+        defer { watching.forEach { $0.cancel() } }
         SessionStatsRenderCount.reset()
         // What a pointer moving across the charts writes, one item at a time.
         // (A test host is not the active app, so SwiftUI's continuous hover
@@ -224,7 +240,7 @@ final class SessionStatsPopoverTests: XCTestCase {
                      openMs, open.panels, open.marks, steps, SessionStatsRenderCount.pointers, SessionStatsRenderCount.captions,
                      SessionStatsRenderCount.panels, SessionStatsRenderCount.marks))
         XCTAssertEqual(SessionStatsRenderCount.marks, 0, "Hover never rebuilds a chart's marks")
-        XCTAssertEqual(SessionStatsRenderCount.panels, 0, "nor the page around the charts")
+        XCTAssertEqual(SessionStatsRenderCount.panels, 0, "nor the page around the charts; published while hovering: \(published)")
         // The charts on screen answer; a lazy grid has not built the ones below the fold.
         XCTAssertGreaterThanOrEqual(SessionStatsRenderCount.pointers, 2, "The rule or band follows the pointer")
         XCTAssertGreaterThanOrEqual(SessionStatsRenderCount.captions, 2, "and so does the caption")

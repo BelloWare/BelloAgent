@@ -29,6 +29,7 @@ extension UIScreenshotTests {
         }
         let scenes = ["running-collapsed", "running-expanded", "parallel-queued", "completed", "failed", "cancelled",
                       "interrupted", "output-limited", "truncated", "child", "relaunch-paused", "family-cost-limit",
+                      "family-cost-limit-raised", "child-cost-paused",
                       "topics-folded", "topics-expanded", "flat-folded", "flat-expanded", "parent-unread-draft",
                       "search-child", "missing-parent", "recovery-error", "long-label-keyboard-reduced-motion"]
         var written: [String] = []
@@ -79,7 +80,7 @@ extension UIScreenshotTests {
                 controller.close(); fixture.window.makeKeyAndOrderFront(nil)
             }
         }
-        XCTAssertEqual(written.count, 92)
+        XCTAssertEqual(written.count, 100)
         try (written.joined(separator: "\n") + "\n").write(to: folder.appendingPathComponent("manifest.txt"), atomically: true, encoding: .utf8)
     }
 }
@@ -135,15 +136,18 @@ extension UIScreenshotTests {
         for index in model.chats.indices { model.chats[index].topicID = "review-topic" }
         model.projectSidebarStates = ["pane-project":ProjectSidebarState(id: "pane-project", flatTopics: scene.hasPrefix("flat"), expandedSubagents: scene.contains("expanded") || scene == "parallel-queued" || scene == "parent-unread-draft" ? [parent.id] : nil)]
         parent.runState = .running; parent.runStatus = "waiting_tool"; parent.failureCode = nil; parent.failureMessage = nil
-        parent.queuePaused = false; parent.continuable = true; parent.notice = ""; parent.draft = ""
-        parent.footer.cost = SessionCostReading(limit: .usd(1), override: .usd(1), defaultLimit: .usd(25), spentUSD: 0.18, reportedRequests: 5, unreportedRequests: 1)
-        child.isManagedSubagent = true; child.runState = .idle; child.notice = ""; child.subagentStatus = .completed
+        parent.queuePaused = false; parent.continuable = true; parent.notice = ""; parent.draft = ""; parent.costPaused = false; parent.resuming = false
+        parent.applyCostReading(SessionCostReading(limit: .usd(1), override: .usd(1), defaultLimit: .usd(25), spentUSD: 0.18, reportedRequests: 5, unreportedRequests: 1))
+        child.isManagedSubagent = true; child.runState = .idle; child.notice = ""; child.subagentStatus = .completed; child.costPaused = false
+        // 0.1.129: the shared limit pauses the family; Resume after a raise.
+        let costPaused = ["family-cost-limit", "family-cost-limit-raised", "child-cost-paused"].contains(scene)
         var status: SubagentStatus = .running
         switch scene {
         case "completed", "truncated", "child", "missing-parent", "long-label-keyboard-reduced-motion": status = .completed
         case "failed", "recovery-error": status = .failed
         case "cancelled": status = .cancelled
-        case "interrupted", "relaunch-paused", "family-cost-limit": status = .interrupted
+        case "interrupted", "relaunch-paused": status = .interrupted
+        case "family-cost-limit", "family-cost-limit-raised", "child-cost-paused": status = .queued
         case "output-limited": status = .outputLimited
         default: break
         }
@@ -155,6 +159,7 @@ extension UIScreenshotTests {
             let record = model.chats[index + 1], link = record.delegation!
             let state = scene == "parallel-queued" && index > 1 ? SubagentStatus.queued : status
             var summary = SubagentSummary(link: link, description: record.title, model: "fixture-model", status: state, revision: 1, tools: ["read", "grep", "find"])
+            if costPaused { summary.costPaused = true; summary.turn = 1 }
             summary.progress = SubagentProgress(phase: "model", elapsedMs: 8400, requests: 2, tools: 3, preview: "Checked the tokenizer; examining escape sequences.", usd: 0.04, reported: 1, unreported: 1, inputTokens: 1800, outputTokens: 420)
             model.subagentSummaries[record.id] = summary
             var tool = SubagentTranscriptTests.tool; tool.id = link.call.toolCallID; tool.state = state.terminal ? "completed" : "running"
@@ -171,16 +176,21 @@ extension UIScreenshotTests {
         parent.messages[1].responseTimeline = .canonical(parts, sourceID: "reply")
         child.messages = [TranscriptMessage(id: "task", role: "user", text: task), TranscriptMessage(id: "answer", role: "assistant", text: "The tokenizer handles UTF-8 boundaries correctly.\n\nOne error-recovery path advances the cursor before preserving its original diagnostic span. Save that span before advancing, and add a malformed-escape fixture.")]
         if scene == "relaunch-paused" { parent.runState = .interrupted; parent.queuePaused = true }
-        if scene == "family-cost-limit" {
-            parent.runState = .paused; parent.queuePaused = true; parent.failureCode = SessionDisplay.costLimitCode
-            parent.failureMessage = "The parent chat’s $1 cost limit was reached. All sub-agents stopped."
-            parent.footer.cost = SessionCostReading(limit: .usd(1), override: .usd(1), defaultLimit: .usd(25), spentUSD: 1.03, reportedRequests: 9, unreportedRequests: 1)
+        if costPaused {
+            parent.runState = .paused; parent.runStatus = "cancelled"; parent.queuePaused = true; parent.costPaused = true
+            let raised = scene == "family-cost-limit-raised"
+            parent.applyCostReading(SessionCostReading(limit: .usd(raised ? 5 : 1), override: .usd(raised ? 5 : 1), defaultLimit: .usd(25), spentUSD: 1.03, reportedRequests: 9, unreportedRequests: 1))
+            if scene == "child-cost-paused" {
+                child.runState = .paused; child.costPaused = true; child.subagentStatus = .queued
+                child.applyCostReading(SessionCostReading(limit: .usd(1), spentUSD: 0.15, reportedRequests: 2))
+                var shared = child.footer.cost; shared.budgetOwnerID = parent.id; shared.budgetSpentUSD = 1.03; child.applyCostReading(shared)
+            }
         }
         if scene == "parent-unread-draft" {
             model.readStatesRestored = true; parent.draft = "Follow up on the diagnostic span."; model.draftChatIDs = [parent.id]
             model.unreadStates[parent.id] = SessionReadState(id: parent.id, observedAssistantCount: 1, latestAssistantID: "final", unreadOutputs: 1)
         }
-        let showChild = ["child", "missing-parent", "recovery-error", "long-label-keyboard-reduced-motion"].contains(scene)
+        let showChild = ["child", "child-cost-paused", "missing-parent", "recovery-error", "long-label-keyboard-reduced-motion"].contains(scene)
         if scene == "missing-parent" { model.chats.removeAll { $0.id == parent.id }; child.notice = "The parent chat is unavailable. This saved sub-agent is view-only." }
         if scene == "recovery-error" { child.notice = "The saved origin does not match the parent’s delegation. This transcript is view-only." }
         let session = showChild ? child : parent
