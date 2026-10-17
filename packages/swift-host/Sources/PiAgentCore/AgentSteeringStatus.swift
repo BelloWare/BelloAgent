@@ -64,8 +64,8 @@ extension AgentSteeringCoordinator {
 
 extension AgentSteeringCoordinator {
     func stop(parent: AgentSession, target: AgentTurnTarget, human: Bool) async throws {
-        // Delivery can hold the gate while compacting. Cancel live work
-        // first; parked/queued turns and terminal writes still use the gate.
+        // Signal live work first; parked/queued turns and terminal writes
+        // still use the gate. Provider compaction never holds that gate.
         if let job = jobs[target.id], job.owner === parent, job.allocated, !job.parking {
             await stop(owner:parent.id,target:target,human:human)
         }

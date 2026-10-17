@@ -1751,9 +1751,206 @@ extension FamilyLimitPauseTests {
     }
 }
 
+/// Round 3: accepting Stop must both release later turns and acknowledge
+/// without waiting for an unrelated provider request.
+extension FamilyLimitPauseTests {
+    func testAStoppedParkedChildRunsAFollowUpAfterParentResume() async throws {
+        for heldTools in [false,true] { for restart in [false,true] { for mode in ["off","memory","persist"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let client = FollowUpAfterStopClient(heldTools:heldTools), traces = TraceStore(), tools = RecordingTools()
+            _ = try await traces.command("debug.mode",session:"parent",params:["mode":JSON(mode)])
+            var coordinator = AgentSteeringCoordinator()
+            var owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+                readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:traces)
+            await owner.enableFamilyBudget(); await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+            if heldTools { await owner.setCostLimit(0.5) } else { await coordinator.fixturePause("parent") }
+            let id = try await startChild(owner,coordinator,"stopped")
+            try await owner.fixtureAcceptedReceipt("stopped")
+            if !heldTools { try await owner.fixtureSavedPauseMembers([]) }
+            try await eventually { await coordinator.jobs.isEmpty }
+            try await coordinator.stop(parent:owner,target:.init(childID:id,turn:1),human:true)
+            let stopped = await coordinator.list(parent:owner,cursor:0,limit:10)["children"].list
+            XCTAssertEqual(stopped.first?["status"].text,heldTools ? "interrupted" : "not_executed")
+            if restart {
+                let path = await owner.path; await owner.close()
+                coordinator = AgentSteeringCoordinator()
+                owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+                    readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:traces,resumePath:path)
+                await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+            }
+            await owner.setCostLimit(5)
+            _ = try await owner.continueRun(commandID:"resume-parent")
+            try await eventually { !(await owner.isRunning) }
+            await client.followUp(id)
+            _ = try await owner.submit(Submission(commandID:"follow-up",turnID:"follow-up",text:"Follow up with the stopped child"),steer:false)
+            try await eventually { !(await owner.isRunning) }
+            let children = await coordinator.list(parent:owner,cursor:0,limit:10)["children"].list
+            XCTAssertEqual(children.first?["turn"].int,2)
+            XCTAssertEqual(children.first?["status"].text,"completed","restart=\(restart), capture=\(mode)")
+            let requests = await client.childRequests; XCTAssertEqual(requests,heldTools ? 2 : 1,"Only the new follow-up executes")
+            let invoked = await tools.calls; XCTAssertTrue(invoked.isEmpty,"The stopped turn's held tools never execute")
+            let unresolved = await client.unresolvedCalls; XCTAssertTrue(unresolved.isEmpty,"The next request pairs the stopped turn's held calls")
+            let retired = await client.retiredCalls; XCTAssertEqual(retired,heldTools ? ["call-0"] : [])
+            let snapshot = await owner.snapshot()
+            XCTAssertEqual(snapshot["state"].text,"idle")
+            XCTAssertNotEqual(snapshot["costPaused"].flag,true)
+            XCTAssertTrue(snapshot["preflightError"].isNull)
+            await owner.close()
+        } } }
+    }
+
+    func testBothReaderStopRoutesAcknowledgeWhileSiblingCompactionIsHeld() async throws {
+        for route in ["subagent.stop","turn.stop"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let host = NativeHostService(emit:{ _ in }), client = DeliveryCompactionClient(holdSibling:true)
+            _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(root.path),"resources":["codexHome":JSON(root.appendingPathComponent("codex").path)]])
+            _ = try await host.command("session.open",sessionID:"parent",params:["profile":try fixtureProfile().raw,"apiKey":"fixture","toolMode":"read-only"])
+            let loaded = await host.loadedSession("parent"), owner = try XCTUnwrap(loaded)
+            let original = await owner.agentCoordinator, hostCoordinator = try XCTUnwrap(original)
+            let coordinator = AgentSteeringCoordinator(open:{ env, plan in
+                let child = try await hostCoordinator.open(env.fixtureClient(client),plan)
+                if plan.task == "Worker compacting" { try await child.fixtureCompactionHistory() }
+                return child
+            },settled:{ _ in })
+            await owner.enableAgentSteering(coordinator)
+            let compacting = try await startChild(owner,coordinator,"compacting")
+            try await owner.fixtureAcceptedReceipt("compacting")
+            try await eventually { await client.turnWaiting }
+            let target = try await startChild(owner,coordinator,"tooling",newTask:false)
+            try await owner.fixtureAcceptedReceipt("tooling")
+            try await eventually { await client.siblingWaiting }
+            let send = ToolCall(id:"steer",name:"subagent_send",arguments:["child_id":JSON(compacting),"message":JSON(String(repeating:"s",count:240000))])
+            let key = try await owner.agentFixtureCall(send)
+            _ = try await coordinator.prepare(send,key:key,parent:owner)
+            await client.releaseTurn()
+            try await eventually { await client.summaryWaiting }
+            let ack = StopReply(), start = ContinuousClock.now
+            let stop = Task {
+                let reply = try await host.command(route,sessionID:route == "subagent.stop" ? "parent" : target,
+                    params:route == "subagent.stop" ? ["childId":JSON(target),"turn":1] : [:])
+                await ack.receive(reply,elapsed:start.duration(to:.now))
+            }
+            do { try await eventually(timeout:.seconds(2)) { await ack.reply != nil } } catch { }
+            if let reply = await ack.reply {
+                XCTAssertEqual(reply["accepted"].flag,true)
+                let elapsed = await ack.elapsed; XCTAssertLessThan(elapsed,.seconds(2),"\(route) must beat the 30 s host deadline")
+                print("Stop acknowledgment \(route): \(elapsed), sibling compaction still held")
+                let snapshot = try await host.command("session.snapshot",sessionID:compacting,params:[:])
+                XCTAssertEqual(snapshot["compaction"]["phase"].text,"summarizing","Acknowledged while the unrelated request is still held")
+            }
+            let cancelled = await client.summaryCancelled; XCTAssertFalse(cancelled)
+            await client.releaseSummary()
+            try await stop.value
+            try await eventually { await coordinator.jobs.isEmpty }
+            let page = try await host.command("subagent.list",sessionID:"parent",params:[:])
+            XCTAssertEqual(page["children"].list.first { $0["link"]["childSessionID"].text == target }?["status"].text,"interrupted")
+            await host.shutdown()
+        }
+    }
+
+    func testReaderStopAcknowledgesWhileParentDeliveryCompactsAndDeliveryIsRefreshed() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = DeliveryCompactionClient(holdSibling:true), opened = OpenedChildren()
+        let coordinator = AgentSteeringCoordinator(open:{ env, plan in
+            let child = try AgentSteeringCoordinator.makeChild(env,plan)
+            await opened.add(child); return child
+        })
+        var profile = try fixtureProfile().raw; profile["maxOutputTokens"] = 24000
+        let owner = try AgentSession(id:"parent",profile:Profile(profile),apiKey:"fixture",cwd:root,directory:root,
+            readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
+        await owner.enableFamilyBudget(); await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+        let id = try await startChild(owner,coordinator,"tooling")
+        try await owner.fixtureAcceptedReceipt("tooling")
+        try await eventually { await client.siblingWaiting }
+        let children = await opened.children, child = try XCTUnwrap(children.first)
+        let report = ToolCall(id:"report",name:"subagent_report",arguments:["kind":"note","message":JSON(String(repeating:"r",count:4096))])
+        let key = try await child.agentFixtureCall(report)
+        _ = try await coordinator.report(report,key:key,child:child)
+        try await owner.fixtureCompactionHistory(bytes:50000)
+        let delivery = Task { try await coordinator.boundary(owner,final:false) }
+        do { try await eventually { await client.summaryWaiting } }
+        catch {
+            print("Parent compaction fixture: \(await owner.snapshot()["compaction"])")
+            await client.releaseSummary()
+            _ = try await delivery.value
+            throw error
+        }
+        let ack = StopReply(), start = ContinuousClock.now
+        let stop = Task {
+            try await coordinator.stop(parent:owner,target:.init(childID:id,turn:1),human:true)
+            await ack.receive(["accepted":true],elapsed:start.duration(to:.now))
+        }
+        do { try await eventually(timeout:.seconds(2)) { await ack.reply != nil } } catch { }
+        if let reply = await ack.reply {
+            XCTAssertEqual(reply["accepted"].flag,true)
+            let snapshot = await owner.snapshot()
+            XCTAssertEqual(snapshot["compaction"]["phase"].text,"summarizing")
+            try await eventually { await coordinator.jobs.isEmpty }
+        }
+        let cancelled = await client.summaryCancelled; XCTAssertFalse(cancelled)
+        await client.releaseSummary()
+        try await stop.value
+        let delivered = try await delivery.value; XCTAssertTrue(delivered)
+        let events = await owner.history.compactMap(\.nativeAgentDelivery).flatMap { $0["events"].list }
+        XCTAssertEqual(events.filter { $0["kind"].text == "result" }.count,1,"Delivery is selected again after compaction, including the child's new terminal result")
+        await owner.close()
+    }
+}
+
+private actor StopReply {
+    var reply: JSON?, elapsed: Duration = .zero
+    func receive(_ reply: JSON, elapsed: Duration) { self.reply = reply; self.elapsed = elapsed }
+}
+
+private extension SubagentEnvironment {
+    func fixtureClient(_ client: any ModelClient) -> SubagentEnvironment {
+        .init(parent:parent,ownerID:ownerID,turnID:turnID,executionID:executionID,parentAttemptID:parentAttemptID,
+            generation:generation,runtimeID:runtimeID,profile:profile,apiKey:apiKey,connectionSupportsReasoning:connectionSupportsReasoning,
+            models:models,definitions:definitions,capabilities:capabilities,mcpPolicy:mcpPolicy,tools:tools,client:client,
+            resources:resources,cwd:cwd,directory:directory,readOnly:readOnly,traces:traces,retry:retry,changed:changed)
+    }
+}
+
+private actor FollowUpAfterStopClient: ModelClient {
+    var childID: String?, childRequests = 0
+    let heldTools: Bool
+    var unresolvedCalls: [String] = [], retiredCalls: [String] = []
+    init(heldTools: Bool) { self.heldTools = heldTools }
+    func followUp(_ id: String) { childID = id }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
+        throw AgentError("fixture_unscoped","Expected admission")
+    }
+    func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,cacheSessionID:String,turnID:String,purpose:String,lifecycle:RequestLifecycle?,onObservation:@escaping @Sendable(RequestObservation) async -> Void,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
+        let hooks = try XCTUnwrap(lifecycle), attempt = UUID().uuidString
+        let permit = try await hooks.admitAttempt(attempt); defer { permit.finish() }
+        try await hooks.willDispatch(attempt); try permit.check()
+        var reply = answer("Parent finished")
+        if sessionID != "parent" {
+            childRequests += 1
+            if heldTools, childRequests == 1 { reply = toolReply(["first"]) }
+            else {
+                reply = answer("Child follow-up completed")
+                let results = Set(messages.compactMap { $0.role == "toolResult" ? $0.toolCallId : nil })
+                unresolvedCalls = messages.flatMap(\.content).filter { $0["type"].text == "toolCall" }.compactMap { $0["id"].text }.filter { !results.contains($0) }
+                retiredCalls = messages.filter { $0.role == "toolResult" && $0.toolStats?["outcome"].text == "not_executed" }.compactMap(\.toolCallId)
+            }
+        }
+        else if let childID, !messages.contains(where: { $0.content.contains { $0["type"].text == "toolCall" && $0["name"].text == "subagent_send" } }) {
+            reply = agentCallReply("follow-up-child","subagent_send",["child_id":JSON(childID),"message":"Do the new follow-up"])
+        }
+        var observation = RequestObservation(sessionID:sessionID,turnID:turnID,attemptID:attempt,purpose:purpose,fingerprint:"fixture",profile:profile)
+        observation.monitoring = ["outcome":"completed","gateway":["cost":["status":"reported","usd":JSON(heldTools && sessionID != "parent" && childRequests == 1 ? 0.6 : 0.01)]]]
+        try await hooks.settleAttempt(.init(scope:hooks.scope,observation:observation,dispatched:true))
+        await onObservation(observation); reply.message.requestAttemptIDs = [attempt]; return reply
+    }
+}
+
 private actor DeliveryCompactionClient: ModelClient {
     var turnWaiting = false, summaryWaiting = false, summaryCancelled = false
+    let holdSibling: Bool
+    var siblingWaiting = false
     var turnReleased = false, summaryReleased = false
+    init(holdSibling: Bool = false) { self.holdSibling = holdSibling }
     func releaseTurn() { turnReleased = true }
     func releaseSummary() { summaryReleased = true }
     func complete(profile:Profile,apiKey:String,messages:[ChatMessage],instructions:String,tools:[ToolDefinition],sessionID:String,turnID:String,purpose:String,onDelta:@escaping @Sendable(StreamDelta) async throws -> Void) async throws -> ModelReply {
@@ -1772,7 +1969,10 @@ private actor DeliveryCompactionClient: ModelClient {
                 while !summaryReleased { try permit.check(); try await Task.sleep(for:.milliseconds(2)) }
                 reply = answer("Earlier work completed; retain the current task.")
             } else if messages.contains(where: { $0.text == "Worker tooling" }) {
-                if !messages.contains(where: { $0.role == "toolResult" }) { reply = toolReply(["first"]) }
+                if holdSibling {
+                    siblingWaiting = true
+                    while !summaryReleased { try permit.check(); try await Task.sleep(for:.milliseconds(2)) }
+                } else if !messages.contains(where: { $0.role == "toolResult" }) { reply = toolReply(["first"]) }
             } else {
                 turnWaiting = true
                 while !turnReleased { try permit.check(); try await Task.sleep(for:.milliseconds(2)) }
@@ -1801,11 +2001,11 @@ private actor ResumeDefinitionTools: ToolExecuting {
 }
 
 private extension AgentSession {
-    func fixtureCompactionHistory() throws {
+    func fixtureCompactionHistory(bytes: Int = 30000) throws {
         for index in 0..<6 {
             var input = ChatMessage(role:"user",content:[textBlock("Earlier task \(index)")])
             input.taskRootID = input.id
-            var reply = ChatMessage(role:"assistant",content:[textBlock(String(repeating:"x",count:30000))])
+            var reply = ChatMessage(role:"assistant",content:[textBlock(String(repeating:"x",count:bytes))])
             reply.taskRootID = input.id
             try append(input); try append(reply)
         }

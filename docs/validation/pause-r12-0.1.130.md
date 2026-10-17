@@ -398,3 +398,195 @@ the final restored-source runs. The native runner released the shared lock;
 no result bundles or clone directories remain under this build root. Both
 review findings are resolved; no additional unresolved finding or owner
 decision remains.
+
+## Round-3 review of 5fb1b5dc
+
+Both findings were confirmed and reproduced through observable behavior:
+
+- A reader Stop sealed the parked parent turn while the unloaded child's state
+  still said `costPaused`. The next accepted `subagent_send` follow-up inherited
+  that hold and parked without a request. `prepareAgentTurn` now retires the
+  previous turn's pause before starting a newly accepted turn. Admission of the
+  follow-up already requires the previous parent turn to be terminal; same-turn
+  `resumeAgentTurn` retains its separate continuation behavior. A closed parked
+  child's state is reconciled when the new turn opens it, without opening a
+  second writer merely to acknowledge Stop.
+- Both host Stop routes cancelled their target first but waited to persist the
+  Stop behind another child's `agent-delivery` compaction. Delivery now releases
+  the family gate before calling the provider. After compaction it reacquires
+  the gate and selects pending messages again. Stop admission and terminal writes
+  remain serialized with Resume installation, with no stale delivery snapshot
+  carried across the provider request.
+
+### Round-3 adversarial self-review and sweep
+
+Reviewed the **entire branch contribution**, including the preceding three
+commits, against fetched `origin/dev/next` (`5c52621c5db150bf6b1372eb47015c028301983c`).
+The branch-only diff uses merge base `141666ca479184d10a9791754d4c91df456599d8`;
+unrelated changes subsequently merged into `dev/next` were not reverted or
+copied into this workstream. The pre-round production diff is retained in
+`logs/round3-branch-before.diff` under this build root.
+
+The review found two additional cases of the reported patterns, both covered
+by the fixes and mutation checks:
+
+1. Clearing only the child pause would leave its held tool calls unpaired in
+   the next provider request. A fresh child turn now records `not_executed`
+   results for those calls before retiring the saved held-call list. It never
+   invokes them. The expanded follow-up fixture covers this case as well as a
+   child parked before any request, with/without restart and in Off, memory and
+   persist capture modes (12 combinations).
+2. Parent delivery held the same family gate during compaction. Both delivery
+   directions now release it. The added parent fixture stops a child while the
+   summary is held and verifies that the subsequently delivered batch includes
+   the newly sealed child result exactly once. This also checks that moving the
+   provider await out of the gate does not introduce a stale selection/write.
+
+Condition-by-condition audit below includes changed predicates and predicates
+moved into the newly gated/looped phases. All rows were checked for streaming,
+idle, paused, restart, cancellation and concurrent sibling work. Capture mode
+is not a routing predicate in any of these production paths; journal durability
+and capture policy remain separate. The new follow-up fixture exercises all
+three capture modes; the full helper/wire suites cover their capture boundaries.
+
+| Changed predicate or gated decision | States taking the changed path; intended behavior |
+| --- | --- |
+| `AgentFamilyRecovery.recover`: exclude `run.heldChildren` from the paused-unsealed branch | A durably reader-stopped child after a crash takes terminal recovery even if the owner is paused. Other unsealed children park; existing terminals stay terminal. A new epoch cannot admit a follow-up under the old epoch's Stop hold. |
+| `Coordinator.park`: `current.cancelled` / `current.allocated` | A cancelled running job finishes its terminal result; a cancelled queued job retains its already scheduled finisher. Neither parks. Existing instance/parking checks still reject stale runners and duplicate parkers. |
+| `park`: saved parent turn is terminal / child exists | A Stop that won the gate is mirrored into the live child. It is not rewritten queued or paused. Without a live child, later recovery catches up the mirror. |
+| `park`: saved status differs from queued | Only an unsealed nonqueued turn gets a queued record; already queued work is parked without a duplicate state transition. |
+| `resumeParked`: unsealed, no job / empty parked set | The same eligible turns are installed, but their snapshot and installation now share Stop's gate. Empty families release the gate and pump normally. Draining remains outside the gate so parkers/finishers can complete. |
+| `resumeParked`: plan exists / legacy resource fallback | These unchanged decisions now execute under that same gate. Missing plans fail closed; old children retain their frozen fallback resources. No credential, resource or tool grant expands. |
+| Coordinator cancellation: `human || !paused` | An explicit child Stop cancels during a family pause; automatic cancellation still leaves parked work resumable. Unknown, foreign and already cancelled jobs remain no-ops. |
+| Reader Stop: allocated, same owner, not parking | Live models/tools are signalled before gate admission. Queued, parked or foreign jobs skip this early cancellation and use the gated lookup. |
+| Reader Stop: known turn / human / latest turn / run exists / absent held child | Unknown turns are rejected; a reader Stop of the latest turn durably retains the epoch hold once. Stopping an older terminal turn cannot hold a newer turn. |
+| Reader Stop: human, unsealed, absent or parking job | A parked turn can now seal without a runner. Running/queued installed jobs use cancellation and their finisher. Terminal turns never get a second terminal transition. |
+| Reader Stop: dispatched evidence or running/stopping status | Work that may have begun reports interrupted; never-started work reports not executed. Both remain terminal after Resume/restart. |
+| Shared seal: optional child / missing result event / matching pending parent messages | Live mirrors are updated; closed children wait for recovery. Each result event is emitted once and only messages to that stopped turn become undelivered. These predicates are unchanged by extracting the shared seal path. |
+| `prepareAgentTurn`: paused or held calls / nonempty held calls | Only a fresh, owner-authorized, inactive managed-child turn retires old pause state. Held calls get cancelled-before-execution results and a durable cleared list. Ordinary first/follow-up turns have no held calls; same-turn Resume does not enter this path. |
+| `endCostPause`: existing pause | Retires pending side callbacks when Resume is accepted, leaving actual paused-member membership for the app. A refused Resume restores the pending list and generation along with the old pause. The child fresh-turn use cannot release its owner's hold. |
+| `boundary`: child lease / current job identity / cancellation | Children still use their owner's gate; roots use their own. Each pass checks cancellation and child identity. Cancellation before/after summary cannot deliver a stale message or seal a new execution. |
+| `boundary`: delivered / none / needs compaction | Normal deliveries and final seals retain the gate. Only the provider-compaction await leaves it; both parent and child loops reacquire and reselect. No final parent fence is closed merely because compaction is pending. |
+| `boundary`: final and no delivery / owner paused | A final child seals only when it has no input and is not held by the family pause; otherwise it parks. Root waiting/held-input/busy/final-fence decisions retain their prior behavior under the gate. |
+| `deliver`: input held / no pending messages / selected message count | Held/empty inboxes return no delivery. Multi-message batches still shrink in order to fit; empty selections still fail rather than skip a child's FIFO head. |
+| `deliver`: may compact and recipient can compact | A too-large single head requests one compaction outside the gate. The next pass either fits or reports the existing coordination-limit error; no unbounded compaction retry or partial delivery. Existing delivery reuse, continuation cap and cursor conditions are unchanged. |
+| `pauseAtCostLimit`: own work pauses or pending fan-out exists | Saves side fan-out even for an idle root/intermediate. It does not invent an idle session's own paused work. Every save precedes the scheduled callbacks. |
+| `rememberSidePauses`: side not already pending | Each registered descendant is retained once, including nested descendants registered with the root. No body/title/prompt is imported into the parent. |
+| `acknowledgeSidePause`: resume generation matches / side pending | Old-generation acknowledgments cannot erase a newer intent. Current acknowledgments remove only that side after its pause/root membership is durable; missing entries are harmless. |
+| `notePausedMember`: first pause | A newly paused family records pending fan-out before callbacks. Existing-member repair after an accepted Resume returns without re-pausing the root. |
+| `forgetPausedMember`: member or pending intent exists | Resume/deletion can retire either representation of that side. The old no-work check clears an aggregate pause only when no resumable own work or member remains. A pending sibling callback still retains its durable intent until acknowledged. |
+| `forgetDeletedMembers`: union of members and pending intents | Deleting an affected side also removes its not-yet-applied fan-out intent; unrelated descendants remain. |
+| Persistence: nonempty pending list | Saves only nonempty metadata, in the existing bounded state record. Off/memory/persist capture all use the same journal authority. |
+| `bindSideBudget`: an ancestor has pending intent | Binding takes the pause before acknowledging it; idle runtimes stay idle through the existing own-work check. Bound roots alone own actual Resume membership. |
+| Binding: root exists / recovered members nonempty | Recovered descendant membership transfers to the root and is durably removed from the intermediate. Orphans retain their aggregate membership until an actual parent is bound. |
+| Binding: own `costPaused` | Only a side with its own pause joins root membership. An idle intermediate transfers descendant membership without joining it or undoing an accepted root Resume. |
+| Side callback: paused runtime and bound root | Persists root membership before acknowledging fan-out; idle sides acknowledge without becoming members. Existing weak-runtime and Resume-generation checks still fence obsolete callbacks. |
+| Session restore: valid registered descendant journal / saved unfinished work | Pending intents for missing or idle sides are dropped; valid unfinished descendants become Resume members. Identity/path checks remain in `journalURL` and side registration. |
+| Session restore: pending list / saved parent exists / own saved work | Roots and orphan families recover aggregate pauses. An idle intermediate with a surviving parent carries descendants without an own hold; active/queued/already paused intermediates retain their own pause. |
+| Session restore: unpaused side with work / inherited ancestor intent | A crash before its callback cannot make an active side merely interrupted. The ancestor search also finds membership retained after root Resume, and is bounded/cycle-checked. |
+| Restore persistence: paused now but not in the saved state | Saves the inherited pause before binding can acknowledge the ancestor's intent. Already saved pauses and idle intermediates avoid that write. |
+| `Sessions.stop`: cost paused or cost Resume pending, independent owner, coordinator present | Stop/close during accepted-but-not-entered Resume halts live child tools. Managed children and ordinary nonpause cancellation keep their existing paths. |
+| `SideBudgetRecovery.pauseState`: captured journal prefix / state or branch record / custom family metadata | Reads only the open-time prefix, uses the latest state and family-turn metadata, and copies no conversation to an ancestor. Corruption fails closed. |
+| `hasPauseWork`: saved pause, active run, queue, steering, delivering or unsealed child | Each is unfinished own work; descendant-only pending membership is deliberately excluded. Idle completed sides are not promoted to paused work. |
+| `inheritsPendingPause`: unseen ancestor within depth bound / journal exists / member or pending intent contains this side | Only existing ancestry metadata can confer a hold. Missing parents become independent orphan roots; cycles/depth overflow terminate without crossing ownership boundaries. |
+
+Also swept every family-turn snapshot/write path and every membership writer.
+Acceptance, Stop, Resume installation, parking, sealing and delivery commit use
+the family gate. Runner state writes occur before child execution; the new
+no-job Stop cannot terminalize a still-installed nonparking runner behind that
+write. Status/progress reads do not change turn states. All bound membership
+writes target the root; temporary non-root membership exists only during cold
+recovery and is transferred on bind. No additional branch-introduced issue was
+found beyond the held-call and parent-compaction cases above. No owner decision,
+production switch, UI change or gallery regeneration is needed.
+
+### Round-3 failing-first, mutation and final validation
+
+The three new tests use generated journals and accounted scripted requests:
+
+- `testAStoppedParkedChildRunsAFollowUpAfterParentResume`: Stop → parent Resume
+  → real parent `subagent_send` → completed child turn 2, idle/unpaused parent
+  snapshot, no old tool execution and protocol-paired stopped calls. Twelve
+  combinations cover queued/held-tools, restart/no restart and all capture modes.
+- `testBothReaderStopRoutesAcknowledgeWhileSiblingCompactionIsHeld`: actual
+  `NativeHostService.command` replies for `subagent.stop` and managed `turn.stop`
+  must arrive within 2 seconds, before releasing the sibling's summary. The
+  sibling snapshot must still be `summarizing`; its request is not cancelled.
+- `testReaderStopAcknowledgesWhileParentDeliveryCompactsAndDeliveryIsRefreshed`:
+  the parent summary remains held while Stop completes; the refreshed delivery
+  includes the newly sealed child result once.
+
+Restoring `SessionAgentCommands.swift` and `AgentSteeringMessaging.swift` to
+`5fb1b5dc` with the final tests produced **70 failed assertions, zero unexpected
+errors**, across 3 tests after a successful build (`logs/round3-red-final.log`).
+The follow-up test accounted for 66, the two host routes for 2, and the parent
+compaction test for 2. This is the final failing-first evidence, after correcting
+the parent fixture's report schema and compaction request allowance.
+
+The baseline runner initially misread the substring `0 failures` inside
+`70 failures`; its result parser was corrected to read the numeric count. This
+was a runner assertion, not a missing or unexpected test failure. The mutation
+run below then exited successfully and restored both sources in `finally`:
+
+```sh
+python3 "$B/check-round3-mutations.py" --mutations-only
+```
+
+| Mutation | Expected failed assertions | Log |
+| --- | ---: | --- |
+| Retain the previous turn's pause in `prepareAgentTurn` | 66 | `logs/round3-mutation-retain-pause.log` |
+| Clear the held list without pairing its stopped tool calls | 9 | `logs/round3-mutation-unpaired-held-tools.log` |
+| Put provider compaction back inside the family gate, both directions | 4 | `logs/round3-mutation-compaction-under-gate.log` |
+
+Exact test/build commands from the worktree root (all logs under this build root):
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
+# Failing-first against 5fb1b5dc, then the same tests in the final class run:
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter 'FamilyLimitPauseTests.testAStoppedParkedChildRunsAFollowUpAfterParentResume|FamilyLimitPauseTests.testBothReaderStopRoutesAcknowledgeWhileSiblingCompactionIsHeld|FamilyLimitPauseTests.testReaderStopAcknowledgesWhileParentDeliveryCompactsAndDeliveryIsRefreshed'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter 'FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|AgentSteering|SubagentForkTests|Compaction'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/bundle/Helpers/pi-native-host"
+bash "$B/check-round3-native.sh"
+```
+
+The native runner holds/releases the shared full-lane lock for each focused
+command below and removes only this build root's automatic result bundles:
+
+```sh
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/CostPausePresentationTests \
+  -only-testing:PiAppTests/CostLimitTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/CostPauseFamilyTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/LifecycleHelperTests
+```
+
+| Suite | Result | Text log |
+| --- | --- | --- |
+| Affected helper tests | 257 passed, 0 failed; all 50 `FamilyLimitPauseTests` included | `logs/round3-focused.log` |
+| Full helper suite | 1,024 passed, 7 skipped, 0 failed (1,031 total; 399.9 s) | `logs/round3-helper-full.log` |
+| Release bundle helper build | Passed | `logs/round3-bundle.log` |
+| Native RunHold / CostPausePresentation / CostLimit | 37 passed (18 / 6 / 13), 0 failed | `logs/round3-native-pause.log` |
+| Native CostPauseFamily, alone | 3 passed, 0 failed | `logs/round3-native-family.log` |
+| Native LifecycleHelper, alone | 11 passed, 0 failed | `logs/round3-native-lifecycle.log` |
+| Wire | 36 passed, 0 failed | `logs/round3-wire.log` |
+| Concurrent | 4 passed, 0 failed | `logs/round3-concurrent.log` |
+| Acceptance | 3 passed, 0 failed | `logs/round3-acceptance.log` |
+
+In the full helper run, the host replies took **0.487 ms** (`subagent.stop`) and
+**0.414 ms** (`turn.stop`), with sibling compaction still held. The assertion
+allows 2 seconds, well below the supervisor's 30-second acknowledgment deadline.
+The seven helper skips are unchanged opt-in fixture/performance tests. No
+unrelated test failed. Production and test sources were unchanged throughout
+the final restored-source runs (diff fingerprint in
+`logs/round3-validated-diff.sha256`). The native runner released its shared lock;
+no result bundles or clone directories remain under this build root. No
+unresolved finding or owner decision remains.

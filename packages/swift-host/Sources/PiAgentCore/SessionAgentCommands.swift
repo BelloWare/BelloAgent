@@ -68,6 +68,15 @@ extension AgentSession {
     }
     func prepareAgentTurn(_ turn: AgentChildTurn, owner: AgentSession, coordinator: AgentSteeringCoordinator) throws {
         guard isSubagent, !closed, runTask == nil, subagents.origin?.link.budgetOwnerSessionID == owner.id else { throw SubagentRecovery.damaged() }
+        // A new accepted turn follows a terminal one. A parked Stop may
+        // have sealed only the owner while this runtime was unloaded. Retire
+        // its old pause and pair held calls without executing stopped work.
+        let paused = costPaused || !costPendingCalls.isEmpty
+        let (held, attempts) = heldToolCalls()
+        currentAttemptIDs = attempts
+        for call in held { try recordTool(call,result:resultText("Not executed: the child turn was stopped.",error:true),started:nil,state:.cancelled) }
+        costPendingCalls = []
+        _ = endCostPause()
         try journal?.promoteToSteering(managedChild:true)
         try appendAgentRecord(JournalRecordKind.agentTurn,turn)
         budgetOwner = owner; budgetOwnerGeneration = turn.currentGeneration
@@ -75,6 +84,7 @@ extension AgentSession {
         managedProgress = { [weak coordinator] in await coordinator?.progress(turn.target) }
         queue.removeAll(); steering.removeAll(); queuePaused = false
         managedCancellation = { Task { await coordinator.stop(owner:owner.id,target:turn.target,human:false) } }
+        if paused { try persistState(durable:true) }
     }
     /// Resume after a cost-limit pause: the same turn, bound to the owner's
     /// resumed execution. Its mirror records the continuation like the owner.
