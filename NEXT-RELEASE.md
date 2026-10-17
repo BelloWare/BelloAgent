@@ -11,8 +11,11 @@
 - [x] Find matches visible phrases across Markdown formatting in ordinary live and saved assistant replies, including timeline prose and text beside tool calls. Source search/copy stays unchanged. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Find searches formatted exposed reasoning and opens matching folded timeline prose, including opaque/correction parts, both live and after reopening. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Find follows View Raw in saved and unsaved replies and in completed timeline segments while later segments stream; arriving segments keep their rendered search. [Validation](docs/validation/a130-transcript-0.1.130.md).
-- [x] Refreshing Find after a source-view change preserves the selected match without creating navigation focus or moving the reader. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Refreshing Find after a source-view change preserves the reader's newest Next/Previous selection without creating navigation focus or moving the reader. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Find shares the native Markdown text builder, preserving visible list numbers, headings, code, links and table previews in saved/live replies and agent prose. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Tool Find uses the native card model's formatted JSON and decoded command/edit/read content, preserving saved/live input presentation and searchable file/agent labels. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Pending Find navigation keeps its match identity when refreshed results change its index. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find exposes and lays out an expanded tool-card body before counting matches, including quoted edit text beyond the preview. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
 ## 0.1.129
 

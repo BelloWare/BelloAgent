@@ -39,11 +39,6 @@ enum ConversationContent {
                 [$0.title, $0.label, prose($0.text), $0.note ?? ""].joined(separator: "\n")
             }.joined(separator: "\n\n")
         }
-        func toolText(_ tool: ToolView) -> String {
-            guard SubagentToolView.isControl(tool.name) else { return [tool.input, tool.output].joined(separator: "\n") }
-            let value = SubagentToolView(tool)
-            return joined([value.title, prose(value.task), prose(value.result), value.error ?? ""])
-        }
         func replyText(_ source: TranscriptMessage) -> String {
             ReplySource.shows(source, raw: rawReply) ? source.text : prose(source.text, streaming: source.isStreaming)
         }
@@ -62,6 +57,24 @@ enum ConversationContent {
         let words = [rendered ? replyText(message) : message.text,
                      rendered ? prose(message.thinking ?? "", streaming: message.isStreaming) : message.thinking ?? ""]
         return joined(words + (message.tools ?? []).map(toolText))
+    }
+    /// Search the native card's payload, keeping its file/agent label. The
+    /// argument envelope is not the command, diff or formatted JSON it draws.
+    static func toolText(_ tool: ToolView) -> String {
+        func joined(_ parts: [String]) -> String { parts.filter { !$0.isEmpty }.joined(separator: "\n") }
+        switch TranscriptToolRow.card(of: tool, fetched: nil, model: TranscriptToolRow.model(of: tool), linked: false) {
+        case .io(_, let input, let output, _, _): return joined([input, output ?? ""])
+        case .terminal(let command, let output, _): return joined([command, output])
+        case .read(let text, _, let path, _):
+            let window = TranscriptReadCardText.window(of: text)
+            return joined([path ?? "", window.lines.joined(separator: "\n"), window.note ?? ""])
+        case .diff(let request, let path, _, _, _):
+            let text = request.tooLarge ? joined(request.mode == "edit" ? [request.before, request.after] : [request.after])
+                : request.rows.map(\.text).joined(separator: "\n")
+            return joined([path ?? "", text])
+        case .subagent(let value):
+            return joined([value.title, TranscriptMarkdown.renderedText(value.task), TranscriptMarkdown.renderedText(value.result), value.error ?? ""])
+        }
     }
     /// Case-insensitive occurrences of `query` in `text`, as the find bar
     /// and the content search count them.

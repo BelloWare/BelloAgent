@@ -808,11 +808,7 @@ struct ContentGeometry: Equatable {
         }
         func has(_ tool: ToolView) -> Bool {
             if has(tool.output) || has(tool.input) { return true }
-            guard SubagentToolView.isControl(tool.name) else { return false }
-            let value = SubagentToolView(tool)
-            // The search already warmed these shared parses off the main
-            // actor. A phrase crossing Markdown marks must also open its card.
-            return has(TranscriptMarkdown.renderedText(value.task)) || has(TranscriptMarkdown.renderedText(value.result))
+            return has(ConversationContent.toolText(tool))
         }
         // A result drawn as a row of its own (its call is not on the page)
         // opens under its own line.

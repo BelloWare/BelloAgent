@@ -721,3 +721,261 @@ result bundle was requested, and the owned lane lock was released. No helper
 or wire behavior changed, so helper/wire suites were not required.
 `git diff --check` passed. No assigned issue or owner decision remains unresolved. The
 lead retains separate review, the merged full gate and merge.
+
+## Round 3: newer Find navigation and tool-card text (2026-10-18)
+
+Reviewed base: `d42dc9194a6f080b0f6ddaa42ac193b8c252cd72`. Both reported
+findings are confirmed. `round3-failing-first.log` ran before production edits:
+**28 passed, 3 failed**, 46 assertion failures, exit 65. The tool corpus was
+then corrected to preserve the existing searchable agent identity and actual
+file-path labels around the selectable payload, and a capped-edit case was
+added. `round3-corpus-failing-first.log`, still before production edits, records
+**28 passed, 4 failed**, 38 assertion failures, exit 65. The preceding
+`round3-corpus-first.log` was a test compilation failure (a missing `where:`
+label on `contains`), corrected before this valid failing-first run.
+
+### R3-1: Next/Previous during refresh — confirmed and fixed
+
+`testFindRefreshKeepsNewerNextAndPreviousSelections` holds the real search
+response with a continuation after toggling View Raw. It presses Next, then
+in a separate refresh Previous, and requires the current selection, focus
+identity, text view and highlighted range to survive completion. Before the fix:
+
+```text
+XCTAssertEqual failed: ("Optional(0)") is not equal to ("Optional(1)") - The newer 1 step wins
+XCTAssertEqual failed: ("Optional(0)") is not equal to ("Optional(2)") - The newer -1 step wins
+```
+
+The controller now captures the current `Match` immediately before replacing
+the result array, on the main actor with no intervening await. It keeps the
+existing no-new-focus refresh behavior while allowing intervening reader steps
+to win. The earlier stationary-reader and first-result-without-focus tests
+remain passing controls.
+
+### R3-2: saved generic JSON — confirmed and fixed
+
+`testFindMatchesDisplayedToolJSONInSavedAndLiveReplies` copies the key/value
+line from the mounted generic card's formatted JSON and searches it through
+a real pane, both from a generated journal and through its streaming overlay.
+Both searches failed before the fix:
+
+```text
+XCTAssertEqual failed: ("[]") is not equal to ("["reply"]")
+```
+
+Find now obtains tool payloads from `TranscriptToolRow.card`, the same
+presentation model the native card uses. Ordinary I/O cards therefore use
+`TranscriptActivity.argumentsText` formatting and bounded-input recovery.
+The card-opening predicate uses that same projection, so a hit on formatted
+JSON opens its card and receives a native text highlight.
+
+`testToolSearchProjectionEqualsNativeCardPayloadsSavedAndLive` mounts native
+cards for custom, MCP, find, grep, ls, bash, read, edit, write, subagent start,
+send and report calls. It compares their actual text views and virtualized
+card-line payloads with the saved/live projection; paths and the existing
+searchable agent row identity stay included. The first corpus covers saved,
+running and completed states (**36 comparisons**). It keeps raw JSON escapes
+for generic cards, decoded strings for commands/diffs, literal tool output,
+formatted agent prose, Unicode, nested objects/arrays and read-window notes.
+
+### Nearby tool instances
+
+The same corpus confirmed that terminal commands and edit/write payloads were
+searched as escaped JSON rather than their displayed strings, and read cards
+searched the input envelope plus bracketed source note instead of their
+displayed result/window note. These are handled by the native card-model
+projection in the same function. Generic/MCP/search/list cards share the JSON
+fix. The agent branch is a passing control: its searchable identity, rendered
+task/result and error handling are retained.
+
+`testFindOpensDecodedEditTextBeyondItsPreview` adds a quoted changed line in
+the middle of a 180-line edit. Before the fix it found no message. An initial
+fix run (`round3-fixed.log`: 31 passed, 1 failed) found the message but did not
+finish highlighting it; this intermediate failure remains recorded rather
+than counted as a successful run.
+
+The adversarial probes then isolated two additional handoffs in the functions
+being changed (`round3-adversarial-first.log`: **0 passed, 2 failed**, exit 65):
+
+- `TranscriptFind.swift`, the awaited reveal in `publish`: the old guard compared
+  `current` to the integer index captured before the await. The new
+  `testFindRefreshKeepsPendingNavigationWhenMatchIndexesChange` holds both search
+  and reveal, presses Next, lets refresh insert a hit before the selected one,
+  then supplies the missing page with a folded matching thought. Even with the
+  primary selection fix, it failed: `The original Next action opens and
+  highlights the loaded thought`. The guard now compares the selected `Match`
+  identity, retaining cancellation checks, so that pending reader action can
+  finish despite index changes.
+- `TranscriptHighlights.swift`, `expandCardsForFocus`: the quoted-edit probe
+  showed `cards=[(true, ...)]`, `pending=false`, `text=nil`. Expansion had switched
+  the diff's data from head/tail lines to its scrolling body, but layout had not
+  exposed that body when Find counted matches. The function now lays out the
+  changed action subtree before counting; the raw-text fast path remains, and
+  displayed-text matching uses the shared card projection. This keeps a newly
+  opened body from being mistaken for a message with no drawable match.
+
+After both corrections, `round3-fixed-complete.log` records **33 passed,
+0 failed**, exit 0. The final corpus adds held, failed and unknown outcomes
+plus three bounded partial-JSON inputs: **75 exact tool-card comparisons**,
+alongside the retained **90 Markdown/timeline comparisons**. Gutter controls
+and nonselectable action chrome are not tool payload; the test uses the native
+Find text units for virtualized card lines and native text views for payloads.
+
+### Adversarial self-review of the whole branch
+
+Reviewed the full diff from `141666ca479184d10a9791754d4c91df456599d8`, including
+the original fixes and both prior review rounds, then the final round-3 changes:
+
+- Reader ownership: delayed Next and Previous, an inserted earlier hit during
+  a pending reveal, stationary-reader refresh, gaining the first result without
+  focus, canceled queries/reveals, and missing selections. Publication remains
+  cancellation-guarded; only explicit navigation creates new focus.
+- Projection: saved/unsaved/streaming paths, each timeline segment's raw state,
+  literal JSON versus decoded special-card strings, partial argument recovery,
+  file/agent labels, bounded table previews and formatted prose. Tool-result
+  records keep their separate identities; retained-source search/copy still
+  uses `ConversationContent.text`.
+- Source fidelity: parsed top-level heading indexes, nested lists/quotes and
+  hidden HTML, multiline Setext headings, Unicode byte offsets, CR/CRLF/mixed
+  endings, and code-copy scanning. No clipboard-source reconstruction was added.
+- Truncation and layout: complete literal marker text versus explicitly
+  truncated inputs, edit/write tails, narrow heading controls, folded card
+  matching, and the diff body switch exposed by the new probe.
+- Boundaries and cost: no helper/wire/model-facing changes, new network loads,
+  provider calls, preference or vault changes. History search remains off the main
+  actor; shared caches are bounded/thread-safe and builders remain local.
+  Card expansion short-circuits on existing raw matches, and the added subtree
+  layout runs only when the card changes from collapsed to expanded.
+
+The two additional confirmed handoff defects above were fixed in the functions
+already under repair. The generated project changes remain only the original
+two test-file registrations. No further actionable introduced defect was found
+in this self-review; this does not replace the lead's independent review/full gate.
+
+### Round-3 mutation evidence
+
+Each mutation ran the full 33-test regression class in a fresh process, failed
+only the expected methods, exited 65 and restored the fixed file in `finally`.
+`round3-regression-final.log` then passed all 33 tests, exit 0.
+
+| Log | Deliberately broken fix | Passed | Failed | Assertion failures |
+| --- | --- | ---: | ---: | ---: |
+| `round3-mutation-selection.log` | Capture the selection before awaiting refresh | 31 | 2 | 11 |
+| `round3-mutation-match-identity.log` | Compare an awaited reveal's old integer index | 32 | 1 | 2 |
+| `round3-mutation-card-text.log` | Search ordinary tools' raw input/output envelopes | 30 | 3 | 60 |
+| `round3-mutation-card-disclosure.log` | Remove displayed-text matching when opening cards | 31 | 2 | 4 |
+| `round3-mutation-expansion-text.log` | Expand capped cards only for raw source matches | 32 | 1 | 2 |
+| `round3-mutation-expansion-layout.log` | Count matches before exposing the expanded body | 32 | 1 | 2 |
+
+The selection mutation kills both new navigation tests. The identity mutation
+isolates the delayed-reveal test. Raw-card projection kills JSON Find, quoted
+edit Find and the corpus; disclosure kills both pane-level tool searches.
+The final two mutations independently kill the capped quoted-edit test.
+
+### Round-3 validation commands and results
+
+Commands ran from this worktree with the shared lane lock held for each run
+and released in `finally`. Serial-lane classes ran alone. Fixtures used generated
+journals, an in-memory vault and isolated test-host windows. No installed app,
+live provider, real preferences, chats or Keychain was used. Text logs are under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript/validation`.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round3-failing-first.log, round3-corpus-first.log,
+# round3-corpus-failing-first.log, round3-fixed.log,
+# round3-fixed-complete.log, all six round3-mutation-*.log files,
+# round3-regression-final.log and round3-regression-visible-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round3-adversarial-first.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindRefreshKeepsPendingNavigationWhenMatchIndexesChange \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindOpensDecodedEditTextBeyondItsPreview
+
+# round3-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests \
+  -only-testing:PiAppTests/NativeTranscriptDocumentTests \
+  -only-testing:PiAppTests/NativeTranscriptSafetyTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests
+
+# round3-timeline-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptNativeTimelineBehaviourTests
+
+# round3-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentMarkdownTests
+
+# round3-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# round3-gallery-final.log
+TEST_RUNNER_PI_TRANSCRIPT_BUG_GALLERY="$PI_BUILD_ROOT/validation/gallery-round3" \
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugGalleryTests
+```
+
+| Final log | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `round3-regression-visible-final.log` | 33 | 0 | 0 |
+| `round3-affected-final.log` | 283 | 0 | 4 |
+| `round3-timeline-final.log` | 30 | 0 | 0 |
+| `round3-agent-markdown-final.log` | 19 | 0 | 0 |
+| `round3-agent-reader-final.log` | 55 | 0 | 0 |
+| `round3-gallery-final.log` | 1 | 0 | 0 |
+
+**Round-3 totals:** 420 behavior/storage/navigation tests passed, 0 failed,
+4 skipped; gallery: 1 passed, 0 failed, 3 PNGs. All final commands exited 0.
+Class counts match the Round-2 table above except the regression class now has
+33 passing tests. The four skips remain the optional history-index measurement
+and three opt-in Markdown measurements/sample captures. No unrelated test failed.
+
+The last regression run strengthens the shared native Find assertion: the
+highlight's glyph rectangle must be inside both the transcript viewport and
+any inner card scroll area. All 33 tests passed again with these assertions;
+production files were unchanged after the full final runs. The corpus covers
+75 tool-card and 90 Markdown/timeline comparisons, **165 exact comparisons**.
+
+Regenerated and visually inspected all three `validation/gallery-round3/`
+images: `transcript-light.png`, `transcript-dark.png` (760×800 points) and
+`transcript-narrow.png` (360×800). The ordered-list marker `2.` is highlighted
+in each; Real's heading Copy control fits inside the narrow viewport; the edit
+preview retains the literal marker and both changed tails. No new layout
+defect was observed in these scenes.
+
+The existing build root was reused, no clone directories remained and no named
+result bundle was requested. The owned lane lock was released. No helper or
+wire behavior changed, so helper/wire suites were not required. `git diff --check`
+passed. No assigned issue or owner decision remains unresolved. The lead retains
+independent review, the merged full gate and merge.

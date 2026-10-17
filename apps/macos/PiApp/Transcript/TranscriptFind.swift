@@ -125,7 +125,6 @@ struct TranscriptFindCommand: Equatable {
     func setQuery(_ text: String, restarting: Bool = false) {
         guard text != query || restarting else { return }
         let refreshing = restarting && text == query
-        let selected = refreshing ? current.flatMap { matches.indices.contains($0) ? matches[$0] : nil } : nil
         needsResume = false
         query = text
         task?.cancel(); stopNavigation(); failed = false
@@ -162,6 +161,7 @@ struct TranscriptFindCommand: Equatable {
             guard let self, !Task.isCancelled, self.query == text else { return }
             self.searching = false
             if refreshing {
+                let selected = self.current.flatMap { self.matches.indices.contains($0) ? self.matches[$0] : nil }
                 self.matches = refreshed
                 self.current = selected.flatMap { refreshed.firstIndex(of: $0) } ?? (refreshed.isEmpty ? nil : self.firstNearReader())
                 self.publish(focus: false)
@@ -236,10 +236,11 @@ struct TranscriptFindCommand: Equatable {
                 // A match whose rows are not on screen is landed on first; one
                 // the page draws now is brought into view in place.
                 if !pane.page.visibleMessageIDs().contains(drawing), let reveal {
-                    let id = session.id, wanted = current
+                    let id = session.id
                     navigation = Task { [weak self] in
                         let landed = await reveal(id, match.messageID)
-                        guard !Task.isCancelled, let self, self.current == wanted else { return }
+                        guard !Task.isCancelled, let self, let current = self.current,
+                              self.matches.indices.contains(current), self.matches[current] == match else { return }
                         guard landed else {
                             if self.pane?.session?.revealFailure != nil { self.pane?.findBar?.showUnreachable() }
                             return
