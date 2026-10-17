@@ -34,6 +34,16 @@
 - [x] Find resolves captured tool output ownership across history-page boundaries, preserving one occurrence per displayed payload and highlighting an already-loaded card without fetching its receipt. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Find reconciliation keeps call-input occurrences separate from receipt-owned output, including partially loaded tool cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
+- [x] Find preserves the first managed task's agent attribution after it leaves the loaded page. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Unloaded agent rows and distant tool receipts share the display's agent presentation, including child numbers. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find uses cached full tool arguments in retained, unsaved and folded cards, keyed by reply and call. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Arriving full arguments refresh Find without creating navigation focus. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find refreshes preserve an already-pending reader navigation. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find opens closed cards using their cached full arguments when locating a match. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find expands fetched edit content using the actual native card model, including matches beyond the preview. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find retains the displayed file header on linked I/O fallback cards. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Fetched sub-agent task bodies keep the original visible row heading in Find. [Validation](docs/validation/a130-transcript-0.1.130.md).
+
 ## 0.1.129
 
 - [x] Cost limit pauses every chat and its family until Resume (owner, 2026-10-16/17): at the limit every in-flight model request is cut as Stop cuts it (aborted replies are not resent), running tools finish with their real results, and nothing new starts; tool calls the pause held run first on Resume, before any new model request. Plain chats pause the same way. Sub-agent turns are parked (queued, never not_executed); the pause survives relaunch and helper restart; raising the limit resumes nothing; Resume (refused at the limit) continues the chat, its sub-agents and every paused side. Sides can no longer start or message sub-agents; offered tools unchanged. Branch `dev/a129-limit-pause`. [Validation](docs/validation/limit-pause-0.1.129.md).

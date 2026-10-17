@@ -133,9 +133,8 @@ struct TranscriptFindCommand: Equatable {
         let refreshing = restarting && text == query
         needsResume = false
         query = text
-        task?.cancel(); stopNavigation(); failed = false
-        if refreshing { pane?.document.focusPending = false }
-        else { matches = []; current = nil }
+        task?.cancel(); failed = false
+        if !refreshing { stopNavigation(); matches = []; current = nil }
         guard !text.isEmpty, let session = pane?.session, let search else { searching = false; publish(focus: false); return }
         searching = true; publish(focus: false)
         let id = session.id

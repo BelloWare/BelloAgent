@@ -672,7 +672,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
         }
         return fields
     }
-    @MainActor private func plannedPayload(_ messages: [TranscriptMessage], raw: Bool = false) -> [String: String] {
+    @MainActor private func plannedPayload(_ messages: [TranscriptMessage], raw: Bool = false, omittingOutputs: Set<String> = []) -> [String: String] {
         var payload: [String: [String]] = [:]
         for item in TaskTranscriptPlan.rows(messages, lifecycle: nil) {
             if case .message(let message) = item {
@@ -682,7 +682,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
             }
             guard case .block(let block) = item, block.presentation != .response, block.presentation != .summary else { continue }
             if block.part != nil, let message = block.message, let tool = message.tools?.first {
-                payload[message.id, default: []].append(cardPayload(tool)); continue
+                payload[message.id, default: []].append(cardPayload(tool, inputOnly: omittingOutputs.contains(message.id))); continue
             }
             let disclosure = TranscriptRowDisclosure(work: true,
                 openTools: Set(block.replies.flatMap { message in (message.tools ?? []).map { ToolOccurrence.key(message.id, $0.id) } }),
@@ -829,11 +829,9 @@ final class TranscriptBugRegressionTests: XCTestCase {
         // A visible standalone receipt keeps its own native Markdown. Its
         // payload replaces the off-page card output, not the card's input.
         // Pair identities are explicit fixture data, independent of search.
-        for (call, receipt) in pairs where captured[receipt] != nil && complete[receipt] == nil {
-            if let index = rows.firstIndex(where: { $0.id == call }) { rows[index].tools?[0].output = "" }
-        }
+        let omitted = Set(pairs.compactMap { call, receipt in captured[receipt] != nil && complete[receipt] == nil ? call : nil })
         let standalone = page.filter { $0.role == "tool" && complete[$0.id] == nil }.compactMap { captured[$0.id] }
-        return (Array(plannedPayload(rows, raw: raw).values) + standalone).joined(separator: "\n")
+        return (Array(plannedPayload(rows, raw: raw, omittingOutputs: omitted).values) + standalone).joined(separator: "\n")
     }
     @MainActor func testCapturedCallDoesNotDuplicateItsUnloadedReceipt() async throws {
         let (model, pane, window) = try await findFixture(saved: true, entries: pageBoundaryEntries())
@@ -1160,13 +1158,15 @@ final class TranscriptBugRegressionTests: XCTestCase {
         }
     }
 
-    @MainActor private func cardPayload(_ tool: ToolView) -> String {
-        let value = TranscriptToolRow.card(of: tool, fetched: nil, model: TranscriptToolRow.model(of: tool), linked: false)
-        let card = TranscriptNativeCard.make(value)
-        card.update(value, link: nil, environment: .init())
+    @MainActor private func cardPayload(_ tool: ToolView, fetched: ToolInputDocument? = nil, linked: Bool? = nil, rendered: TranscriptNativeCard? = nil, inputOnly: Bool = false) -> String {
+        let model = TranscriptToolRow.model(of: tool)
+        let value = TranscriptToolRow.card(of: tool, fetched: fetched, model: model, linked: linked ?? (model.file != nil))
+        let card = rendered ?? TranscriptNativeCard.make(value)
+        if rendered == nil { card.update(value, link: nil, environment: .init()) }
         card.frame = CGRect(x: 0, y: 0, width: 620, height: card.height(width: 620))
         card.layoutSubtreeIfNeeded()
         let payload = TranscriptNativeDocument.textUnits(in: card).compactMap { view -> String? in
+            if inputOnly, !(card is TranscriptNativeDiffCard), !TranscriptNativeDocument.isToolInput(view) { return nil }
             if let lines = view as? TranscriptCardLines { return lines.lines.map(\.text).joined(separator: "\n") }
             guard let text = view as? NSTextView, text.isSelectable else { return nil }
             return text.string
@@ -1174,8 +1174,11 @@ final class TranscriptBugRegressionTests: XCTestCase {
         // File paths and the agent's row identity are searchable labels outside
         // the selectable payload; retain them while comparing the actual body.
         switch value {
-        case .subagent(let agent): return [agent.title, payload].filter { !$0.isEmpty }.joined(separator: "\n")
-        case .diff(_, let path?, _, _, _), .read(_, _, let path?, _):
+        case .subagent:
+            let line = (card.superview as? TranscriptNativeActionRow)?.line.content
+            let heading = line.map { [$0.title, $0.summary].filter { !$0.isEmpty }.joined(separator: " · ") } ?? SubagentToolView(tool).title
+            return [heading, payload].filter { !$0.isEmpty }.joined(separator: "\n")
+        case .diff(_, let path?, _, _, _), .read(_, _, let path?, _), .io(let path?, _, _, _, _):
             let label = ConversationPaneTests.views(TranscriptLabel.self, in: card).first { !$0.isHiddenOrHasHiddenAncestor && $0.text == path }
             XCTAssertNotNil(label)
             return [label?.text ?? "", payload].filter { !$0.isEmpty }.joined(separator: "\n")
@@ -1185,6 +1188,255 @@ final class TranscriptBugRegressionTests: XCTestCase {
     private func toolEntry(_ name: String, arguments: WireValue) -> [String: WireValue] {
         ["id": .string("reply"), "message": .object(["role": .string("assistant"), "content": .array([
             .object(["type": .string("toolCall"), "id": .string("call"), "name": .string(name), "arguments": arguments])])])]
+    }
+    @MainActor func testManagedAttributedEntryKeepsItsNativeAgentCard() {
+        for metadata in [WireValue.object(["author": .string("parent"), "childId": .string("child"), "turn": .number(1), "task": .string("First task label")]), .object([:])] {
+            let fields: [String: WireValue] = ["role": .string("user"), "content": .string("Check **visible** task."), "nativeAgentDelivery": metadata]
+            let message = TranscriptMessage.project(id: "first", message: fields)
+            XCTAssertEqual(ConversationContent.transcriptText(["id": .string("first"), "message": .object(fields)], managedChild: true), rowPayload(message))
+        }
+    }
+    @MainActor func testUnloadedFirstAgentTaskMatchesItsNativeCard() async throws {
+        for events in [false, true] {
+            var metadata: [String: WireValue] = ["author": .string("parent"), "childId": .string("ordinary-find"), "turn": .number(1), "task": .string("First task label")]
+            if events { metadata["events"] = .array([.object(["kind": .string("task"), "text": .string("Check **visible** task.")])]) }
+            let entries: [WireValue] = [.object(["type": .string("message"), "id": .string("question"), "parentId": .null,
+                "message": .object(["role": .string("user"), "content": .string(events ? "hidden transport" : "Check **visible** task."), "nativeAgentDelivery": .object(metadata)])]),
+                .object(["type": .string("message"), "id": .string("reply"), "parentId": .string("question"), "message": .object(["role": .string("assistant"), "content": .string("Done.")])])]
+            let (model, pane, _) = try await findFixture(saved: true, entries: entries)
+            let session = try XCTUnwrap(model.selected)
+            var link = SubagentTranscriptTests.link; link.childSessionID = session.id
+            model.chats[0].delegation = link; session.isManagedSubagent = true
+            for numbered in [false, true] {
+                session.subagentNumbers = numbered ? [session.id: 3] : [:]
+                let shown = rowPayload(try XCTUnwrap(session.presentedMessages.first)), saved = session.messages
+                for loaded in [true, false] {
+                    if !loaded { session.messages = Array(saved.suffix(1)); pane.refresh() }
+                    let result = try await model.searchConversation(session.id, query: "", start: 0, renderedAgentProse: true)
+                    XCTAssertEqual(result.hits.first { $0.id == "question" }?.preview, shown, "events=\(events), numbered=\(numbered), loaded=\(loaded)")
+                    if !loaded, !numbered {
+                        let cold = try await model.history.searchContent(path: try XCTUnwrap(model.chats[0].path), query: "", start: 0, renderedAgentProse: true, managedChild: true)
+                        XCTAssertEqual(cold.hits.first { $0.id == "question" }?.preview, shown, "A caller without a display snapshot still keeps saved delivery metadata")
+                    }
+                    for query in ["First task label", numbered ? "Parent → Sub-agent 3" : "Parent → Sub-agent", "turn 1", "Check visible task."] {
+                        let found = try await model.searchConversation(session.id, query: query, start: 0, renderedAgentProse: true)
+                        XCTAssertEqual(found.hits.map(\.id), ["question"], query)
+                    }
+                    session.messages = saved
+                }
+            }
+        }
+    }
+    @MainActor private func openFetchedCard(_ session: SessionDisplay, pane: NativeTranscriptPane, message: TranscriptMessage, document: ToolInputDocument) async throws {
+        session.toolInputs.forget(session.toolInputs.knownIDs)
+        session.messages = [message]
+        for item in TaskTranscriptPlan.rows(session.presentedMessages, lifecycle: nil) {
+            if case .block(let block) = item {
+                session.disclosure.setOpen(true, .work(block.key))
+                if let fold = block.foldGroup { session.disclosure.setOpen(true, .turnFold(fold)) }
+            }
+        }
+        let tool = try XCTUnwrap(message.tools?.first), key = ToolOccurrence.key(message.id, tool.id)
+        session.disclosure.setOpen(true, .tool(key))
+        session.toolInputs.load = { _, _ in document }
+        session.toolInputs.request(messageID: message.id, callID: tool.id)
+        try await eventually("Generated full arguments arrive") { session.toolInputs.document(key) == document }
+        pane.refresh(); pane.layoutSubtreeIfNeeded()
+    }
+    @MainActor func testFetchedArgumentsMatchNativeCardsInEverySearchPath() async throws {
+        let corpus: [(String, WireValue, String)] = [
+            ("custom_fixture", .object(["message": .string("fetched needle"), "nested": .object(["value": .number(2)])]), "result"),
+            ("bash", .object(["command": .string("printf 'fetched needle'")]), "command result"),
+            ("edit", .object(["path": .string("fixture.txt"), "oldText": .string("old"), "newText": .string("fetched needle")]), "applied"),
+            ("write", .object(["path": .string("fixture.txt"), "content": .string("fetched needle")]), "written"),
+            ("read", .object(["path": .string("fixture.txt"), "offset": .number(17)]), "read result"),
+            ("subagent_start", .object(["description": .string("Fetched task"), "task": .string("Check **fetched** needle")]), "{\"text\":\"done\"}"),
+            ("subagent_send", .object(["child_id": .string("child"), "message": .string("Check **fetched** needle")]), "{\"accepted\":true}"),
+            ("subagent_report", .object(["kind": .string("note"), "message": .string("Check **fetched** needle")]), "{\"accepted\":true}")]
+        for mode in ["retained", "unsaved", "no-journal"] {
+            let (model, pane, _) = try await findFixture(saved: true)
+            let session = try XCTUnwrap(model.selected)
+            if mode == "no-journal" { model.chats[0].path = nil }
+            for timeline in [false, true] { for (name, arguments, output) in corpus {
+                let entry = toolEntry(name, arguments: arguments)
+                var message = TranscriptMessage.project(id: mode == "unsaved" ? "live" : "reply", message: try XCTUnwrap(entry["message"]?.object))
+                if mode == "unsaved" { message.state = "streaming" }
+                if !timeline { message.responseTimeline = nil }
+                message.tools?[0].input = "{\"path\":\"fixture.txt\",\"preview\":\"short\"}"
+                message.tools?[0].inputTruncated = true; message.tools?[0].state = "completed"; message.tools?[0].output = output
+                let full = arguments.pretty
+                let document = ToolInputDocument(input: full, truncated: false, bytes: full.utf8.count, streaming: false)
+                try await openFetchedCard(session, pane: pane, message: message, document: document)
+                let shown = cardPayload(try XCTUnwrap(session.presentedMessages.first?.tools?.first), fetched: document)
+                let item = try XCTUnwrap(TaskTranscriptPlan.rows(session.presentedMessages, lifecycle: nil).first { item in
+                    if case .block(let block) = item { return block.presentation == .work && block.replies.contains { $0.tools?.isEmpty == false } }; return false
+                })
+                var environment = TranscriptRowEnvironment(); environment.opensFiles = true
+                var actions = TranscriptActions(); actions.openFile = { _, _ in }
+                let row = TranscriptRowRenderer.content(for: item, inputs: .init(item: item, fresh: false, actions: actions, width: 620,
+                    environment: environment, disclosure: .of(item, in: session.disclosure, inputs: session.toolInputs)))
+                row.frame = CGRect(x: 0, y: 0, width: 620, height: row.settle().height); row.layoutSubtreeIfNeeded()
+                let native = try XCTUnwrap(ConversationPaneTests.views(TranscriptNativeCard.self, in: row).first)
+                XCTAssertEqual(cardPayload(try XCTUnwrap(session.presentedMessages.first?.tools?.first), fetched: document, rendered: native), shown,
+                               "The planner row renderer receives the same document: \(mode), timeline=\(timeline), \(name)")
+                let result = try await model.searchConversation(session.id, query: "", start: 0, renderedAgentProse: true)
+                XCTAssertEqual(result.hits.first { $0.id == message.id }?.preview, String(shown.prefix(240)), "\(mode), timeline=\(timeline), \(name)")
+                if name != "read" {
+                    let found = try await model.searchConversation(session.id, query: "fetched needle", start: 0, renderedAgentProse: true)
+                    XCTAssertEqual(found.hits.map(\.id), [message.id], "\(mode), timeline=\(timeline), \(name)")
+                }
+            } }
+        }
+    }
+    @MainActor func testFindRefreshesWhenFetchedArgumentsArriveWithoutNavigation() async throws {
+        let (model, pane, window) = try await findFixture(saved: true)
+        let session = try XCTUnwrap(model.selected)
+        let tool = ToolView(id: "call", name: "custom_fixture", state: "completed", input: "{\"preview\":\"short\"}", output: "", truncated: false, inputTruncated: true)
+        session.messages = [.init(id: "reply", role: "assistant", text: "", tools: [tool])]
+        pane.refresh(); pane.showFind(); pane.find.setQuery("fetched needle")
+        try await eventually("Initial search finishes") { !pane.find.searching }
+        XCTAssertTrue(pane.find.matches.isEmpty)
+        let input = "{\"message\":\"fetched needle\"}"
+        try await openFetchedCard(session, pane: pane, message: session.messages[0], document: .init(input: input, truncated: false, bytes: input.utf8.count, streaming: false))
+        try await eventually("Fetched card refresh settles") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching
+        }
+        XCTAssertEqual(pane.find.matches.map(\.messageID), ["reply"])
+        XCTAssertNil(pane.document.highlights.focus, "A new result is not a reader navigation action")
+        XCTAssertFalse(pane.document.focusPending)
+        pane.find.step(1)
+        try await assertFind("fetched needle", in: pane, window: window)
+    }
+    @MainActor func testFetchedInputsKeepTheirOccurrenceWhenCardsAreClosed() async throws {
+        let (model, pane, window) = try await findFixture(saved: true)
+        let session = try XCTUnwrap(model.selected); model.chats[0].path = nil
+        let tool = ToolView(id: "reused", name: "custom_fixture", state: "completed", input: "{}", output: "", truncated: false, inputTruncated: true)
+        session.messages = [.init(id: "first", role: "assistant", text: "", tools: [tool]), .init(id: "second", role: "assistant", text: "", tools: [tool])]
+        session.toolInputs.load = { message, _ in .init(input: "{\"message\":\"fetched \(message)\"}", truncated: false, bytes: 30, streaming: false) }
+        for id in ["first", "second"] { session.toolInputs.request(messageID: id, callID: tool.id) }
+        try await eventually("Both occurrence documents arrive") { session.toolInputs.count == 2 }
+        XCTAssertNil(session.toolInputs.document(tool.id), "An ambiguous legacy call ID cannot borrow either document")
+        pane.refresh()
+        for id in ["first", "second"] {
+            let found = try await model.searchConversation(session.id, query: "fetched " + id, start: 0, renderedAgentProse: true)
+            XCTAssertEqual(found.hits.map(\.id), [id], "Find opens the cached full document, including a closed card")
+            try await assertFind("fetched " + id, in: pane, window: window, record: id)
+            session.disclosure.setOpen(true, .tool(ToolOccurrence.key(id, tool.id)))
+            let items = TaskTranscriptPlan.rows(session.presentedMessages, lifecycle: nil)
+            let item = try XCTUnwrap(items.first { if case .block(let block) = $0 { return block.presentation == .work && block.replies.contains { $0.id == id } }; return false })
+            let disclosure = TranscriptRowDisclosure.of(item, in: session.disclosure, inputs: session.toolInputs)
+            XCTAssertEqual(disclosure.toolInputs[ToolOccurrence.key(id, tool.id)]?.input, "{\"message\":\"fetched \(id)\"}")
+        }
+    }
+    @MainActor func testFindKeepsTheFileHeaderOfAnIOFallbackCard() async throws {
+        let entry = toolEntry("write", arguments: .object(["path": .string("fallback.txt")]))
+        let (model, _, _) = try await findFixture(saved: true, content: entry["message"]?.object?["content"])
+        let session = try XCTUnwrap(model.selected), tool = try XCTUnwrap(session.presentedMessages.last?.tools?.first)
+        let shown = cardPayload(tool, linked: true)
+        XCTAssertTrue(shown.hasPrefix("fallback.txt\n"), "The production pane enables the file header's link")
+        let found = try await model.searchConversation(session.id, query: "", start: 0, renderedAgentProse: true)
+        XCTAssertEqual(found.hits.first { $0.id == "reply" }?.preview, shown)
+    }
+    @MainActor func testFetchedAgentTaskKeepsTheDisplayedRowHeading() async throws {
+        let (model, pane, _) = try await findFixture(saved: true)
+        let session = try XCTUnwrap(model.selected)
+        let tool = ToolView(id: "call", name: "subagent_start", state: "completed",
+            input: "{\"description\":\"Inline label\",\"task\":\"short\"}", output: "", truncated: false, inputTruncated: true)
+        let full = "{\"description\":\"Fetched label\",\"task\":\"Full task body\"}"
+        let document = ToolInputDocument(input: full, truncated: false, bytes: full.utf8.count, streaming: false)
+        try await openFetchedCard(session, pane: pane, message: .init(id: "reply", role: "assistant", text: "", tools: [tool]), document: document)
+        let action = TranscriptNativeActionRow()
+        action.update(tool: tool, open: true, fetched: document, environment: .init(), toggle: {}, openFile: nil)
+        XCTAssertEqual(action.line.content.summary, "Inline label")
+        let expected = action.line.content.title + " · " + action.line.content.summary + "\nFull task body"
+        let result = try await model.searchConversation(session.id, query: "", start: 0, renderedAgentProse: true)
+        XCTAssertEqual(result.hits.first { $0.id == "reply" }?.preview, expected)
+        for (query, ids) in [("Inline label", ["reply"]), ("Fetched label", [])] {
+            let found = try await model.searchConversation(session.id, query: query, start: 0, renderedAgentProse: true)
+            XCTAssertEqual(found.hits.map(\.id), ids, query)
+        }
+    }
+    @MainActor func testFetchedCardKeepsOutputOwnershipAcrossAPartialPage() async throws {
+        for name in ["custom_fixture", "write"] {
+            let arguments = WireValue.object(name == "write" ? ["path": .string("fixture.txt"), "content": .string("fetched needle")]
+                : ["message": .string("fetched needle")])
+            let (model, pane, _) = try await findFixture(saved: true, entries: pageBoundaryEntries(name, arguments: arguments, output: "outputneedle"))
+            let session = try XCTUnwrap(model.selected)
+            var call = try XCTUnwrap(session.messages.first { $0.id == "reply" })
+            call.tools?[0].input = "{\"path\":\"fixture.txt\",\"preview\":\"short\"}"; call.tools?[0].inputTruncated = true
+            let full = arguments.pretty, document = ToolInputDocument(input: full, truncated: false, bytes: full.utf8.count, streaming: false)
+            for wire in [false, true] {
+                let message = wire ? try XCTUnwrap(TranscriptMessage.page(JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode([call]))).first) : call
+                try await openFetchedCard(session, pane: pane, message: message, document: document)
+                let shown = cardPayload(try XCTUnwrap(message.tools?.first), fetched: document)
+                let found = try await model.searchConversation(session.id, query: "", start: 0, renderedAgentProse: true)
+                XCTAssertEqual(found.hits.filter { ["reply", "result"].contains($0.id) }.map(\.preview).filter { !$0.isEmpty }.joined(separator: "\n"), shown, "\(name), wire=\(wire)")
+                for query in ["fetched needle", "outputneedle"] {
+                    let hits = try await model.searchConversation(session.id, query: query, start: 0, renderedAgentProse: true)
+                    XCTAssertEqual(hits.hits.reduce(0) { $0 + ($1.count ?? 1) }, ConversationContent.occurrences(of: query, in: shown))
+                }
+            }
+        }
+    }
+    @MainActor func testFindExpandsFetchedEditTextBeyondItsPreview() async throws {
+        let (model, pane, window) = try await findFixture(saved: true)
+        let session = try XCTUnwrap(model.selected), query = "fetched middle change"
+        let source = (0..<180).map { $0 == 90 ? query : "fixture line \($0)" }.joined(separator: "\n")
+        let arguments = WireValue.object(["path": .string("fixture.txt"), "oldText": .string("old"), "newText": .string(source)]).pretty
+        let tool = ToolView(id: "call", name: "edit", state: "completed", input: "{\"path\":\"fixture.txt\",\"newText\":\"short\"}", output: "applied", truncated: false, inputTruncated: true)
+        try await openFetchedCard(session, pane: pane, message: .init(id: "reply", role: "assistant", text: "", tools: [tool]),
+                                  document: .init(input: arguments, truncated: false, bytes: arguments.utf8.count, streaming: false))
+        try await assertFind(query, in: pane, window: window)
+        XCTAssertTrue(ConversationPaneTests.views(TranscriptNativeDiffCard.self, in: pane.document).contains(where: \.expanded))
+    }
+    @MainActor func testUnloadedAgentToolKeepsItsNumberAcrossDecodeRuns() async throws {
+        var entries = pageBoundaryEntries("subagent_send", arguments: .object(["child_id": .string("child"), "message": .string("Task body")]), output: "{\"text\":\"Result body\"}")
+        var parent = "reply", spacers: [WireValue] = []
+        for i in 0..<40 {
+            let id = "spacer-\(i)"
+            spacers.append(.object(["type": .string("message"), "id": .string(id), "parentId": .string(parent), "message": .object(["role": .string("system"), "nativeKind": .string("notice"), "content": .string("Spacer")])]))
+            parent = id
+        }
+        var receipt = try XCTUnwrap(entries[1].object); receipt["parentId"] = .string(parent)
+        entries = [entries[0]] + spacers + [.object(receipt), entries[2]]
+        let (model, pane, _) = try await findFixture(saved: true, entries: entries)
+        let session = try XCTUnwrap(model.selected); session.subagentNumbers = ["child": 3]
+        let source = try XCTUnwrap(session.presentedMessages.first { $0.id == "reply" }), shown = cardPayload(try XCTUnwrap(source.tools?.first))
+        session.messages = Array(session.messages.suffix(1)); pane.refresh()
+        let found = try await model.searchConversation(session.id, query: "", start: 0, renderedAgentProse: true)
+        XCTAssertEqual(found.hits.filter { ["reply", "result"].contains($0.id) }.map(\.preview).filter { !$0.isEmpty }.joined(separator: "\n"), shown)
+        let number = try await model.searchConversation(session.id, query: "Sub-agent 3", start: 0, renderedAgentProse: true)
+        XCTAssertEqual(number.hits.map(\.id), ["reply"])
+    }
+    @MainActor func testFetchedRefreshKeepsNavigationAlreadyInFlight() async throws {
+        let (model, pane, window) = try await findFixture(saved: true, source: "needle here")
+        let session = try XCTUnwrap(model.selected)
+        let tool = ToolView(id: "call", name: "custom_fixture", state: "completed", input: "{}", output: "", truncated: false, inputTruncated: true)
+        session.messages[1].tools = [tool]
+        pane.refresh(); pane.showFind()
+        pane.find.search = { _, _, _ in .init(hits: ["reply", "target"].enumerated().map { .init(id: $0.element, position: $0.offset, preview: "needle", count: 1) }, total: 2, next: nil, revision: "fixture") }
+        var waiting: CheckedContinuation<Void, Never>?, cancelled: Bool?
+        defer { waiting?.resume() }
+        pane.find.reveal = { _, _ in
+            await withCheckedContinuation { waiting = $0 }
+            cancelled = Task.isCancelled
+            return true
+        }
+        pane.find.setQuery("needle")
+        try await eventually("Initial Find settles") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching && !pane.document.focusPending }
+        pane.find.step(1)
+        try await eventually("The reader's Next waits for a page") { waiting != nil }
+        try await openFetchedCard(session, pane: pane, message: session.messages[1], document: .init(input: "{\"message\":\"full arguments\"}", truncated: false, bytes: 28, streaming: false))
+        try await eventually("Fetched refresh settles") { !pane.find.searching }
+        session.messages += [.init(id: "target-question", role: "user", text: "Later question"), .init(id: "target", role: "assistant", text: "needle target")]
+        pane.refresh(); waiting?.resume(); waiting = nil
+        try await eventually("Pending reveal returns") { cancelled != nil }
+        XCTAssertEqual(cancelled, false, "A document arriving must not cancel the reader's Next")
+        if cancelled == false {
+            try await eventually("The reader's chosen target is highlighted") {
+                pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return pane.document.focusText?.string == "needle target" && !pane.document.focusPending
+            }
+        }
     }
     @MainActor func testFindMatchesDisplayedToolJSONInSavedAndLiveReplies() async throws {
         for saved in [true, false] {

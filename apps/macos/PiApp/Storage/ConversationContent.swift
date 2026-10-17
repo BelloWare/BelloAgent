@@ -23,12 +23,14 @@ enum ConversationContent {
         private var results: [String: ToolView] = [:]
         private(set) var drawings: [String: ContentHit.Drawing] = [:]
         private var outputCalls: Set<String> = []
-        init(_ messages: [TranscriptMessage]) {
-            self.init(TaskTranscriptPlan.rows(messages, lifecycle: nil), messages: messages)
+        private let fetchedInputs: [String: ToolInputDocument]
+        init(_ messages: [TranscriptMessage], fetchedInputs: [String: ToolInputDocument] = [:]) {
+            self.init(TaskTranscriptPlan.rows(messages, lifecycle: nil), messages: messages, fetchedInputs: fetchedInputs)
         }
         // Keep the large row values out of the planner's call frame on a
         // cooperative worker's small stack.
-        private init(_ planned: [TranscriptItem], messages: [TranscriptMessage]) {
+        private init(_ planned: [TranscriptItem], messages: [TranscriptMessage], fetchedInputs: [String: ToolInputDocument]) {
+            self.fetchedInputs = fetchedInputs
             for message in messages { rows[message.id] = [] }
             var cards: [String: [ToolView]] = [:]
             for row in planned {
@@ -64,12 +66,16 @@ enum ConversationContent {
             }
         }
         func text(_ id: String, rawReply: Bool = false, toolInputs: [String: String] = [:]) -> String {
-            if let tool = results[id] { return toolPayload(tool).output }
-            return transcriptText(rows[id] ?? [], rawReply: rawReply, omittingOutputs: outputCalls, toolInputs: toolInputs)
+            if let tool = results[id] { return payload(tool, receipt: id).output }
+            return transcriptText(rows[id] ?? [], rawReply: rawReply, omittingOutputs: outputCalls, toolInputs: toolInputs, fetchedInputs: fetchedInputs)
+        }
+        private func payload(_ tool: ToolView, receipt: String) -> (input: String, output: String) {
+            let fetched = drawings[receipt].flatMap { fetchedInputs[ToolOccurrence.key($0.messageID, $0.toolCallID)] }
+            return toolPayload(tool, fetched: fetched)
         }
         func omittedOutputs(_ id: String) -> Set<String>? {
             let calls = Set(drawings.compactMap { receipt, owner -> String? in
-                guard owner.messageID == id, let tool = results[receipt], !toolPayload(tool).output.isEmpty else { return nil }
+                guard owner.messageID == id, let tool = results[receipt], !payload(tool, receipt: receipt).output.isEmpty else { return nil }
                 return owner.toolCallID
             })
             return calls.isEmpty ? nil : calls
@@ -81,7 +87,7 @@ enum ConversationContent {
             return transcriptText(TranscriptMessage(id: entry["id"]?.string ?? "", role: "system", text: TranscriptMessage.compactionText(entry), kind: "compaction"))
         }
         let message = TranscriptMessage.project(id: entry["id"]?.string ?? "", message: entry["message"]?.object ?? [:])
-        if managedChild, message.role == "user" { return TranscriptMarkdown.renderedText(message.text) }
+        if managedChild, message.role == "user", message.nativeAgentDelivery == nil, message.kind != "agent_message" { return TranscriptMarkdown.renderedText(message.text) }
         return transcriptText(message, rawReply: rawReply)
     }
     /// Called by the history actor, never by a layout or paint pass.
@@ -90,13 +96,13 @@ enum ConversationContent {
     }
     /// Presentation belongs to the planner: a persisted system ledger may be
     /// an assistant response, with separate prose, reasoning and card rows.
-    private static func transcriptText(_ rows: [TranscriptItem], rawReply: Bool = false, omittingOutputs: Set<String> = [], toolInputs: [String: String] = [:]) -> String {
+    private static func transcriptText(_ rows: [TranscriptItem], rawReply: Bool = false, omittingOutputs: Set<String> = [], toolInputs: [String: String] = [:], fetchedInputs: [String: ToolInputDocument] = [:]) -> String {
         joined(rows.map { row in
             switch row {
             case .message(let message): return messageText(message, rawReply: rawReply)
             case .block(let block):
                 if let part = block.part, let message = block.message {
-                    return partText(part, message: message, rawReply: rawReply, omittingOutputs: omittingOutputs, toolInputs: toolInputs)
+                    return partText(part, message: message, rawReply: rawReply, omittingOutputs: omittingOutputs, toolInputs: toolInputs, fetchedInputs: fetchedInputs)
                 }
                 switch block.presentation {
                 case .body, .reply: return block.message.map { replyText($0, raw: rawReply) } ?? ""
@@ -105,7 +111,7 @@ enum ConversationContent {
                         [TranscriptMarkdown.renderedText(message.thinking ?? "", style: .reasoning, streaming: message.isStreaming)]
                             + (message.tools ?? []).map { tool in
                                 if let input = toolInputs[ToolOccurrence.key(message.id, tool.id)] { return input }
-                                let payload = toolPayload(tool)
+                                let payload = toolPayload(tool, fetched: fetchedInputs[ToolOccurrence.key(message.id, tool.id)])
                                 return omittingOutputs.contains(ToolOccurrence.key(message.id, tool.id)) ? payload.input : joined([payload.input, payload.output])
                             }
                     })
@@ -118,12 +124,12 @@ enum ConversationContent {
     private static func replyText(_ message: TranscriptMessage, raw: Bool) -> String {
         ReplySource.shows(message, raw: raw) ? message.text : TranscriptMarkdown.renderedText(message.text, streaming: message.isStreaming)
     }
-    private static func partText(_ part: ResponseTimeline.Segment, message: TranscriptMessage, rawReply: Bool, omittingOutputs: Set<String> = [], toolInputs: [String: String] = [:]) -> String {
+    private static func partText(_ part: ResponseTimeline.Segment, message: TranscriptMessage, rawReply: Bool, omittingOutputs: Set<String> = [], toolInputs: [String: String] = [:], fetchedInputs: [String: ToolInputDocument] = [:]) -> String {
         let row = TranscriptTimelinePart(part: part, message: message)
         if ["text", "refusal"].contains(part.part.kind) { return replyText(row.source, raw: rawReply) }
         if let call = part.part.callID, let tool = message.tools?.first(where: { $0.id == call }) {
             if let input = toolInputs[ToolOccurrence.key(message.id, call)] { return input }
-            let payload = toolPayload(tool)
+            let payload = toolPayload(tool, fetched: fetchedInputs[ToolOccurrence.key(message.id, call)])
             return omittingOutputs.contains(ToolOccurrence.key(message.id, call)) ? payload.input : joined([payload.input, payload.output])
         }
         if ["toolArguments", "status"].contains(part.part.kind) { return part.text }
@@ -152,13 +158,25 @@ enum ConversationContent {
     }
     /// Search the native card's payload, keeping its file/agent label. The
     /// argument envelope is not the command, diff or formatted JSON it draws.
-    static func toolText(_ tool: ToolView, inputOnly: Bool = false) -> String {
-        let payload = toolPayload(tool)
+    static func toolText(_ tool: ToolView, inputOnly: Bool = false, fetched: ToolInputDocument? = nil) -> String {
+        let payload = toolPayload(tool, fetched: fetched)
         return inputOnly ? payload.input : joined([payload.input, payload.output])
     }
-    private static func toolPayload(_ tool: ToolView) -> (input: String, output: String) {
-        switch TranscriptToolRow.card(of: tool, fetched: nil, model: TranscriptToolRow.model(of: tool), linked: false) {
-        case .io(_, let input, let output, _, _): return (input, output ?? "")
+    static func toolText(_ card: TranscriptToolRow.Card, heading: String? = nil) -> String {
+        let payload = toolPayload(card, heading: heading)
+        return joined([payload.input, payload.output])
+    }
+    private static func toolPayload(_ tool: ToolView, fetched: ToolInputDocument? = nil) -> (input: String, output: String) {
+        let model = TranscriptToolRow.model(of: tool)
+        // Conversation panes always enable the file opener. The I/O fallback
+        // draws its path header only when that opener has a file to link.
+        // Fetched arguments replace the body; the work line keeps this model.
+        let heading = [model.title, model.summary].filter { !$0.isEmpty }.joined(separator: " · ")
+        return toolPayload(TranscriptToolRow.card(of: tool, fetched: fetched, model: model, linked: model.file != nil), heading: heading)
+    }
+    private static func toolPayload(_ card: TranscriptToolRow.Card, heading: String? = nil) -> (input: String, output: String) {
+        switch card {
+        case .io(let path, let input, let output, _, _): return (joined([path ?? "", input]), output ?? "")
         case .terminal(let command, let output, _): return (command, output)
         case .read(let text, _, let path, _):
             let window = TranscriptReadCardText.window(of: text)
@@ -168,7 +186,7 @@ enum ConversationContent {
                 : request.rows.map(\.text).joined(separator: "\n")
             return (joined([path ?? "", text]), "")
         case .subagent(let value):
-            return (joined([value.title, TranscriptMarkdown.renderedText(value.task)]), joined([TranscriptMarkdown.renderedText(value.result), value.error ?? ""]))
+            return (joined([heading ?? value.title, TranscriptMarkdown.renderedText(value.task)]), joined([TranscriptMarkdown.renderedText(value.result), value.error ?? ""]))
         }
     }
     /// Case-insensitive occurrences of `query` in `text`, as the find bar

@@ -2205,3 +2205,528 @@ Retained-source Copy/search and helper behavior are unchanged. No production
 app, real conversation, preference, credential, capture or provider was used.
 Fixtures use temporary journals, MemoryVaultStorage and the test host. No
 owner decision is needed for this fix.
+
+## Round 7 — capture the renderer's inputs
+
+Reviewed against `16791d347fd92ca673149aa7b0f9291b59b39586` on
+`dev/a130-transcript`. Both review findings are **confirmed and fixed**.
+The implementation keeps source/export search separate from transcript Find.
+All new data is a value snapshot taken on the main actor; search does not fetch
+arguments, open a host, change disclosure, or touch the journal. Navigation alone
+opens matching folds, using the documents the conversation has already fetched.
+
+### Findings and failing-first evidence
+
+All logs below are text files in
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript/validation`.
+Tests are in `TranscriptBugRegressionTests`.
+
+| Finding | Regression / evidence before its fix | Resolution |
+| --- | --- | --- |
+| **R7-1: attributed first task outside the page** | `testUnloadedFirstAgentTaskMatchesItsNativeCard`: `"Check visible task."` versus `"Parent → Sub-agent 3 · First task label · turn 1\nTask\nCheck visible task."`; searches for task label, parent/number and turn returned `[]`. With an events envelope even the task prose was absent. | The legacy fallback now requires absent delivery metadata and a non-agent kind. Normalization uses a captured `AgentTranscriptPresentation`, the same implementation used by `SessionDisplay`, including child numbers. |
+| **R7-1 nearby entry helper** | `testManagedAttributedEntryKeepsItsNativeAgentCard`: rendered body alone differed from both the attributed card and the invalid-attribution notice. | Apply the same guard to the single-entry projection. Invalid attributed rows retain the card's unavailable-attribution notice. |
+| **R7-2: fetched full arguments omitted** | `testFetchedArgumentsMatchNativeCardsInEverySearchPath`: preview JSON containing `"preview" : "short"` differed from the native card's complete document; `fetched needle` returned `[]`. | Capture `TranscriptToolInputs` with the messages; pass the occurrence's exact `ToolInputDocument` through the normalized plan into `TranscriptToolRow.card`, including receipt-owned output selection. |
+| **Nearby: an arriving document leaves Find stale** | `testFindRefreshesWhenFetchedArgumentsArriveWithoutNavigation`: matches remained `[]` after the native card acquired the full document. | Refresh on changes to the captured documents, retaining the existing selection/focus policy. A newly found match does not create focus; explicit Next highlights it. |
+| **Nearby: a refresh cancels an earlier reader action** | `testFetchedRefreshKeepsNavigationAlreadyInFlight`: the held Next reveal returned `Task.isCancelled == true`. | Refresh cancels only the old search. A new query still cancels navigation; a same-query refresh preserves the reader's pending reveal and its identity checks. |
+| **Nearby: closed cards lose cached full arguments** | `testFetchedInputsKeepTheirOccurrenceWhenCardsAreClosed`: both `first` and `second` returned no hit despite separately cached documents for their reused call ID. After fixing capture, an end-to-end extension failed with `Visible match for fetched first`. | Capture cached documents for folded cards too; Find opens those cards with the same occurrence-scoped document. The reveal predicate now receives that document rather than inspecting the inline preview alone. |
+| **Nearby: fetched edit cannot expand to its match** | `testFindExpandsFetchedEditTextBeyondItsPreview`: search found the record but timed out with `Visible match for fetched middle change`. | Expansion reads the action row's actual stored card model, including its fetched document, before counting/rendering the middle lines. |
+| **Nearby: linked I/O fallback omits its file header** | `testFindKeepsTheFileHeaderOfAnIOFallbackCard`: JSON alone differed from `fallback.txt\n` followed by that same JSON. | Use the production conversation pane's file-opener policy when selecting the card; retain the I/O card's displayed path header. |
+| **Nearby: distant agent-tool input loses its number** | `testUnloadedAgentToolKeepsItsNumberAcrossDecodeRuns`: `Sub-agent · Task body` differed from `Sub-agent 3 · Task body`; the number query returned `[]`. | Apply the captured agent presentation before deriving an input-only projection from a distant receipt. |
+
+Failing-first runs (pass/fail/skip, each exit 65):
+
+- `round7-failing-first.log`: **0/4/0**, both findings, the entry-helper variant,
+  and document-arrival refresh, before any production change.
+- `round7-sweep-first.log`: **0/2/0**, closed cached documents and navigation
+  already in flight, before their fixes.
+- `round7-header-first.log`: **0/1/0**, I/O file header.
+- `round7-fetched-edit-first.log`: **0/1/0**, long fetched edit expansion.
+- `round7-agent-peer-first.log`: **1/2/0**. The distant-agent test failed on
+  missing attribution. The other failure was a test setup error in the new
+  native-row comparison: timeline cards keep their tool in `block.replies`, not
+  `block.tools`. The attributed-first-task test passed. The setup error is not
+  counted as product evidence; the original fetched-document failure above is.
+- `round7-closed-reveal-first.log`: **0/1/0**, Find's closed-card reveal.
+
+`round7-fixed-initial.log` passed the initial four tests. Two intermediate full
+runs are retained rather than discarded: `round7-fixed-all.log` was **75/1/0**
+(the older card oracle hard-coded `linked: false` for an empty-result read), and
+`round7-fixed-complete.log` was **76/1/0** (the page-split oracle removed an output
+by clearing the tool, accidentally changing a native read card into an I/O
+fallback and inventing another path occurrence). The oracle now enables the
+same file opener as the production pane and filters actual native output text
+units without changing the card's input/model/type. After those corrections,
+`round7-fixed-verified.log` passed **77/0/0**.
+
+### Renderer-input audit
+
+The searchable surface remains the conversation's content, including foldable
+bodies that Find opens, displayed source mode, and existing file/agent identities.
+Fixed button labels, status/metric chrome, line-number gutters and accounting
+controls are not additional message occurrences (the same boundary recorded in
+rounds 3–4). This audit distinguishes those inputs from content inputs; it does
+not claim that a text projection reproduces controls or geometry.
+
+| Shared renderer input | Rendered value and search value |
+| --- | --- |
+| `TranscriptRowInputs.item` | Both use `TaskTranscriptPlan.rows` over the same presented messages. Captured rows retain their exact `TranscriptMessage`/`ToolView` values; unloaded rows use `HistoryReader.displayedMessage`, receipt resolution, and the captured agent presentation before planning. Planner ledger/checkpoint suppression and call ownership are retained. |
+| `fresh`, `width`, `workListHeight`, `workListMeasured`, `foldInMotion` | Arrival/motion/measurement only; not inputs to content strings. Search builds no views or layout state. |
+| `actions`, `toggle` | Control handlers, not text. The content-affecting exception is file-opener availability: `ConversationPaneBridges.showTranscript` always provides `openFile` and sets `opensFiles = true`; the I/O fallback now follows that policy. |
+| `environment.colorScheme`, `increasedContrast`, `layoutDirection`, `locale` | Styling, wrapping, direction and metric/gutter formatting. Markdown content uses the same `MarkdownTextBuilder`; row width does not rewrite its content. These values are not substituted into message text. |
+| `environment.isEnabled`, `forks`, `managedChild`, `sessionID` | Enabled controls, fork/edit permissions and historical-agent controls/chrome. Managed-task/agent content uses the display's captured session ID and state via `AgentTranscriptPresentation`; the original journal and permission decisions stay unchanged. |
+| `disclosure.raw` | Captured `rawReplies`, interpreted through the same `ReplySource.shows` and the individual timeline segment's completion state. |
+| `disclosure.work`, `openTools`, `openReasoning`, `compaction`, `responseFolded`, `responseLine`, `foldedAway`, `turnFoldOpen` | Fold visibility. Find searches the body it will reveal, preserving the existing folded-body behavior; it does not add the fold/control labels as duplicate content. |
+| `disclosure.toolInputs` | Native rows and Find use the same `TranscriptToolInputs.snapshot`/`document` store. Documents remain keyed by reply plus call. Find captures closed cards' cached documents because opening those cards uses them too; ambiguous unscoped IDs never borrow a document. |
+| Planner `lifecycle`, turn completion/display mode | Adds task/response accounting lines and end-of-turn folds, not different body content. Search consumes normalized `rows` without those control/metric additions. The native corpus opens those folds before comparing body strings. |
+
+Every production row renderer selected by `TranscriptRowRenderer.content` was
+checked. Content fields are listed explicitly below; the shared inputs above
+also apply to each row.
+
+| Renderer | Content inputs / projection use | Non-content inputs checked |
+| --- | --- | --- |
+| `TranscriptNativeAgentRow` | Whole planner message: `nativeAgentDelivery`, `kind`, envelope/body `text`, `agentNumbers`; shared `AgentMessagePresentation` supplies event author/child/turn/task/kind/text, title, label, optional note and unavailable notice. | Event IDs/reply-to/source references select actions and stable view identities. |
+| `TranscriptNativeUserRow` | Literal `message.text`, already projected from display override, text blocks or image-only label. | Skills, versions, failed-end chip, truncation notice, accounting and hover/edit/copy controls do not change that text. |
+| `TranscriptNativeReplyRow` | Message text, role, tools/empty-body condition, streaming state and raw disclosure; shared `ReplySource` and Markdown builder. | Identity/headings configure copy/file links; quote/fold menus, early-end/truncation chips and waiting dots are chrome. |
+| `TranscriptNativeFailureRow` | `message.text`, optional `detail`, joined in reading order. | `failureCode`, ID, environment and actions select title/tint/Retry/Resume/limit controls. |
+| `TranscriptNativeNoticeRow` | Literal `message.text`. | Spinner, rules and status accessibility prefix. |
+| `TranscriptNativeBranchRow` | `message.detail ?? message.text`. | Edit marker and source actions. |
+| `TranscriptNativeStatusRow` | Literal `message.text`. | Status heading, failure/truncation chips, accounting and hover actions. |
+| `TranscriptNativeVersionBannerRow` | `message.text` and optional `detail`. | Version/back actions and decoration. |
+| `TranscriptNativeCompactionRow` | `message.text` with shared `.summary` Markdown style, including `TranscriptMessage.compactionText`'s displayed prefix. | Compaction title/detail counts, accounting and disclosure controls. |
+| `TranscriptNativeRequestInfoRow` | `message.detail` and `TranscriptActivity.earlyEnd(message.stopReason)`. | Request accounting and fold state. |
+| `TranscriptNativeToolResultRow` | Standalone receipt `message.text` through `.prose` Markdown; paired receipts instead own their native card output. | Receipt caption/disclosure control. |
+| `TranscriptNativeTurnSummaryRow`, `TranscriptNativeTurnFoldRow`, `TranscriptNativeResponseRow` | No separate message payload; the planner's source bodies are searched once. | Turn/task/response summary, model, status, timing/cost/token figures, fold state and actions. |
+| `TranscriptNativePartRow` / `TranscriptNativePartView` | Planner segment and normalized message, including individual completion state; prose/refusal, reasoning/opaque/correction Markdown, literal arguments/status, or the planner-selected tool. Tool document uses the same scoped key as the row. | Work title/state/summary, fold closures, warning/control labels, streaming dots. |
+| `TranscriptNativeExecutionRow` | `detail ?? text`, supported timeline segments, terminal state and the same missing-completion notice. Its part views have no tool-card override. | Compaction-style fold and execution icon. |
+| `TranscriptNativeLegacyRow` / reply work | Planner `block.activity` replies, thinking plus streaming state, ordered tools, scoped cached documents; body replies use the reply path above. | Work summaries, accounting, request timing and action buttons. |
+| `TranscriptNativeEmptyRow` | No text; production planners do not route content here. | Test-only reference renderer remains a test seam, not a production input. |
+
+| Card renderer / builder input | Exact source and use |
+| --- | --- |
+| All cards: `tool`, `fetched`, `model`, `linked` | The planner's captured/resolved `ToolView`; the exact stored `ToolInputDocument` (`input`, `truncated`, `bytes`; streaming documents are not cached by the existing store); `TranscriptToolRow.model(of: tool)` from the original tool, as in `TranscriptNativeActionRow`; production file-link availability for the I/O branch. Other card branches do not read `linked`. No tool type is inferred independently by search. |
+| `ToolView` fields used by card selection/content | ID/name/state/input/output, input-truncation flag/byte count, result truncation, path, added/removed counts, and native/live sub-agent metadata all travel with that same value. Durations and model state remain available for native row chrome; search never replaces captured tool state with a newer disk state. |
+| `TranscriptNativeIOCard` | Card `path`, formatted `input`, optional literal `output`; `failed` affects color and `note` is the existing bounded-input/result notice. Path now matches the native linked fallback header. |
+| `TranscriptNativeTerminalCard` | Decoded command from the fetched-or-inline document, literal tool output, failed state. The command is input; capped result text is output. Prompt and tint are chrome. |
+| `TranscriptNativeReadCard` | Exact output plus `TranscriptReadCardText.window` lines/note, fetched input's `firstLine`, original model's path and failed state. `firstLine` numbers the native gutter; search retains the body and path. |
+| `TranscriptNativeDiffCard` | The shared `EditRequest` built from fetched-or-inline arguments: mode, complete/bounded status, before/after, rows and too-large state; path/outcome/added/removed are the same builder values. Search uses rows or full before/after for a too-large diff; explicit navigation expands the native middle/source bodies. Receipt transport text is not invented as diff output. |
+| `TranscriptNativeSubagentCard` | Original work-line heading plus shared `SubagentToolView` from the same requested tool: task/result/error content, summary/number/effort/status/cost/delivery/held/original-availability/target metadata. Markdown task/result use the shared builder. Summary/accounting/status fields and historical controls retain their existing chrome boundary. |
+| Agent display overlay | A single `AgentTranscriptPresentation` captures session ID, managed-child/busy/family-waiting flags, child numbers/efforts/costs, original availability, coordination entries, child summaries and held-child IDs. Both `SessionDisplay` and unloaded/contextual search call its same presentation functions. |
+| Fetched outputs | Native cards have no independent full-output fetch/cache parameter. They receive `ToolView.output`, optionally resolved from retained receipts when constructing an unloaded page. Find receives that same value; full-argument capture never substitutes a journal output for a captured card. |
+| Native card update inputs | `link`, `environment`, actions and local expansion/scroll state affect controls, painting or what portion is open. Find's expansion predicate now reads the already-built card model (`action.searchText`), rather than rebuilding it without fetched arguments. |
+
+The fetched corpus covers **48 configurations**: eight tools (generic, terminal,
+edit, write, read, start/send/report), retained/live-unsaved/no-journal search,
+and timeline/legacy work rows. Each compares the projection with a real card and
+compares that card with the actual planner-selected row renderer using
+`TranscriptRowDisclosure.of`. The first-task corpus covers initial metadata with
+and without an events envelope, numbered/unnumbered attribution, loaded/paged-out
+rows, and a history caller without a live display snapshot. Invalid metadata,
+reused call IDs, closed/reopened cards and a middle-of-edit highlight are separate
+checks. Existing Markdown/raw, other-row, recovery and every-page-split corpora
+remain in the regression class.
+
+### Round-7 adversarial self-review
+
+Re-read the production branch diff from
+`141666ca479184d10a9791754d4c91df456599d8`, including copy source offsets,
+CR/CRLF handling, heading-control placement, complete/truncated edit parsing,
+shared Markdown strings, row normalization, SQLite peer indexing, search snapshot
+validation, raw disclosure, output ownership, Find reconciliation/navigation,
+and this round's capture/reveal/expansion changes.
+
+The input audit deliberately checked paths beyond the two reported examples:
+the single-entry managed fallback, numbered cold agent rows, distant receipts,
+legacy and timeline tools, unjournaled rows, same-ID calls in distinct replies,
+closed cached cards, input arrival during an outstanding reader navigation, and
+native content beyond a preview. The additional failures and fixes are recorded
+above. The shared agent value preserves the existing rendering function's body;
+it does not add a new agent policy or alter the immutable source receipt.
+
+Captured tools still win over a later journal state. Receipt ownership is joined
+against the active branch; standalone receipt presentation, superseded ledgers,
+abandoned branches and page boundaries retain the prior protections. Fetched
+arguments do not change the recorded outcome or grant a permission. Dictionary
+snapshots share immutable Swift values with the display and stay scoped to one
+conversation; no mutable AppKit view or layout object crosses the actor boundary.
+The search byte windows, cancellation checks and captured-prefix validation are
+unchanged.
+
+Navigation refresh keeps the newest occurrence identity and does not install
+focus after nil. It now also leaves an already-running reader reveal intact;
+new query, Next/Previous replacement, close, reader interruption and session
+retirement still cancel the old navigation through their existing paths. Native
+expansion uses the actual card model, and opening a closed cached card uses the
+same document lookup/key as the row disclosure.
+
+No helper package or wire protocol was changed, so helper and external
+wire/concurrent/acceptance suites are not required for this app-only revision.
+The affected app wire/decode tests are included below. No owner decision or
+unfinished production path was introduced. No files were added or removed, so
+no project regeneration was needed for this round.
+
+The last adversarial comparison found one further instance of the same input
+mismatch: a sub-agent's **work-line heading remains based on the original tool
+model**, while its open task body reads the fetched document. Search had used
+the fetched card's accessibility title as though it were that visible heading.
+`testFetchedAgentTaskKeepsTheDisplayedRowHeading` failed first in
+`round7-agent-heading-first.log` (**0/1/0**, exit 65):
+
+```text
+"Sub-agent · Fetched label\nFull task body"
+    != "Sub-agent · Inline label\nFull task body"
+Inline label: [] != ["reply"]
+Fetched label: ["reply"] != []
+```
+
+The projection now carries the original model's heading separately from the
+fetched body. The native expansion string takes the actual work line's heading
+and actual card model. The fetched corpus also reads the planner-selected
+native action row's `line.content`, so it can no longer hide this distinction by
+manufacturing a heading from the fetched card. This adds a tenth regression
+method to this round (**78 total**).
+
+A final coverage control, `testFetchedCardKeepsOutputOwnershipAcrossAPartialPage`,
+also compares a captured generic/write card against its unloaded receipt, using
+both native and wire-roundtripped page values. Fetched write arguments turn its
+I/O preview into a diff; the transport result must then stay absent, while a
+generic card keeps exactly one output occurrence. The control passed **1/0/0**
+in `round7-receipt-control.log` and required no further production change. This
+brings the round to **11 new regression methods, 79 total**.
+
+### Round-7 mutation checks
+
+Each mutation was applied alone, compiled, ran the named regression to an
+assertion failure (exit 65), and was restored in `finally`. All **14** checks
+failed as intended; no compilation failure is counted as mutation evidence.
+
+| Log / reversed behavior | Failing test | Passed | Failed | Skipped |
+| --- | --- | ---: | ---: | ---: |
+| `round7-mutation-agent-capture.log` | `testUnloadedFirstAgentTaskMatchesItsNativeCard` | 0 | 1 | 0 |
+| `round7-mutation-agent-heading.log` | `testFetchedAgentTaskKeepsTheDisplayedRowHeading` | 0 | 1 | 0 |
+| `round7-mutation-arrival-refresh.log` | `testFindRefreshesWhenFetchedArgumentsArriveWithoutNavigation` | 0 | 1 | 0 |
+| `round7-mutation-closed-inputs.log` | `testFetchedInputsKeepTheirOccurrenceWhenCardsAreClosed` | 0 | 1 | 0 |
+| `round7-mutation-distant-agent.log` | `testUnloadedAgentToolKeepsItsNumberAcrossDecodeRuns` | 0 | 1 | 0 |
+| `round7-mutation-entry-attribution.log` | `testManagedAttributedEntryKeepsItsNativeAgentCard` | 0 | 1 | 0 |
+| `round7-mutation-fetched-capture.log` | `testFetchedArgumentsMatchNativeCardsInEverySearchPath` | 0 | 1 | 0 |
+| `round7-mutation-fetched-card.log` | `testFetchedArgumentsMatchNativeCardsInEverySearchPath` | 0 | 1 | 0 |
+| `round7-mutation-fetched-expansion.log` | `testFindExpandsFetchedEditTextBeyondItsPreview` | 0 | 1 | 0 |
+| `round7-mutation-fetched-reveal.log` | `testFetchedInputsKeepTheirOccurrenceWhenCardsAreClosed` | 0 | 1 | 0 |
+| `round7-mutation-fetched-receipt.log` | `testFetchedCardKeepsOutputOwnershipAcrossAPartialPage` | 0 | 1 | 0 |
+| `round7-mutation-history-attribution.log` | `testUnloadedFirstAgentTaskMatchesItsNativeCard` | 0 | 1 | 0 |
+| `round7-mutation-io-header.log` | `testFindKeepsTheFileHeaderOfAnIOFallbackCard` | 0 | 1 | 0 |
+| `round7-mutation-reader-navigation.log` | `testFetchedRefreshKeepsNavigationAlreadyInFlight` | 0 | 1 | 0 |
+
+The corresponding reversals remove: the two attribution guards; the display
+agent snapshot; distant-tool normalization; fetched-document capture; the
+card builder's fetched parameter; closed-document capture; arrival refresh;
+navigation preservation; fetched expansion; fetched reveal; the I/O header;
+the original sub-agent heading; and the receipt card's fetched document. The
+last mutation produced `"fixture.txt\nfetched needle\noutputneedle"` instead of
+the native diff's `"fixture.txt\nfetched needle"`, and counted one output hit
+instead of zero, in both page representations. The restored 79-test regression
+class passed after this final mutation; the other final suites used the same
+production fix.
+
+Exact focused commands for these mutation runs (each under the shared lock):
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round7-mutation-agent-capture.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testUnloadedFirstAgentTaskMatchesItsNativeCard
+
+# round7-mutation-agent-heading.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedAgentTaskKeepsTheDisplayedRowHeading
+
+# round7-mutation-arrival-refresh.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindRefreshesWhenFetchedArgumentsArriveWithoutNavigation
+
+# round7-mutation-closed-inputs.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedInputsKeepTheirOccurrenceWhenCardsAreClosed
+
+# round7-mutation-distant-agent.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testUnloadedAgentToolKeepsItsNumberAcrossDecodeRuns
+
+# round7-mutation-entry-attribution.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testManagedAttributedEntryKeepsItsNativeAgentCard
+
+# round7-mutation-fetched-capture.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedArgumentsMatchNativeCardsInEverySearchPath
+
+# round7-mutation-fetched-card.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedArgumentsMatchNativeCardsInEverySearchPath
+
+# round7-mutation-fetched-expansion.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindExpandsFetchedEditTextBeyondItsPreview
+
+# round7-mutation-fetched-reveal.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedInputsKeepTheirOccurrenceWhenCardsAreClosed
+
+# round7-mutation-fetched-receipt.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedCardKeepsOutputOwnershipAcrossAPartialPage
+
+# round7-mutation-history-attribution.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testUnloadedFirstAgentTaskMatchesItsNativeCard
+
+# round7-mutation-io-header.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindKeepsTheFileHeaderOfAnIOFallbackCard
+
+# round7-mutation-reader-navigation.log
+scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedRefreshKeepsNavigationAlreadyInFlight
+```
+
+### Round-7 final validation
+
+The final runs cover **84 distinct classes: 916 passed, 0 failed, 8 skipped**.
+Counts below are test methods, not individual assertions. The restored regression
+run replaces the earlier 78-test final run in this total; focused controls and
+mutation runs are not double-counted. Every run used this worktree/build root and
+the shared full-lane lock; serial lanes ran alone.
+
+| Log | Suite | Passed | Failed | Skipped |
+| --- | --- | ---: | ---: | ---: |
+| `round7-regression-restored.log` | TranscriptBugRegressionTests | 79 | 0 | 0 |
+| `round7-affected-final.log` | 64 affected app classes (selectors below) | 617 | 0 | 7 |
+| `round7-timeline-final.log` | TranscriptNativeTimelineBehaviourTests | 30 | 0 | 0 |
+| `round7-agent-markdown-final.log` | SubagentMarkdownTests | 19 | 0 | 0 |
+| `round7-agent-reader-final.log` | SubagentReaderTests | 55 | 0 | 0 |
+| `round7-wire-page-final.log` | TranscriptWirePageTests | 4 | 0 | 0 |
+| `round7-history-edge-timing-final.log` | HistoryEdgeTimingTests | 2 | 0 | 0 |
+| `round7-history-edit-final.log` | HistoryEditTests | 3 | 0 | 0 |
+| `round7-inline-timing-final.log` | InlineSkillPillTimingTests | 1 | 0 | 0 |
+| `round7-streaming-serial-final.log` | TranscriptStreamingSerialTests | 1 | 0 | 1 |
+| `round7-agent-inputs-final.log` | 6 agent input/navigation classes | 47 | 0 | 0 |
+| `round7-agent-adjacent-final.log` | 4 family/metadata/panel/discovery classes | 55 | 0 | 0 |
+| `round7-gallery-final.log` | TranscriptBugGalleryTests | 3 | 0 | 0 |
+
+Seven affected-suite skips are explicit opt-ins: long-journal indexing/open
+measurements, skill-pill captures, Markdown line-pitch/token-cost measurements,
+Markdown sample capture, and the 70-turn wire performance measurement. The
+separate serial skip is
+`TranscriptStreamingSerialTests.testAReplyCountsAsReadOnlyOnceItsEndHasBeenOnScreen`:
+`A receipt needs this app's own key, unoccluded window; this desktop cannot provide one.`
+That desktop-dependent behavior is **unverified**, not a pass; the lead's merged
+gate must supply its window prerequisite. No test failure was discarded.
+
+Exact final commands (run from the worktree; the lock wrapper releases only its
+own lock in `finally`):
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round7-regression-restored.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round7-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests \
+  -only-testing:PiAppTests/NativeTranscriptDocumentTests \
+  -only-testing:PiAppTests/NativeTranscriptSafetyTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests \
+  -only-testing:PiAppTests/HistoryReaderStateTailTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/TranscriptNativeRowBehaviourTests \
+  -only-testing:PiAppTests/TranscriptNativeMessageKindBehaviourTests \
+  -only-testing:PiAppTests/ResponseChronologyTests \
+  -only-testing:PiAppTests/SendImmediacyTests \
+  -only-testing:PiAppTests/ToolCallSummaryTests \
+  -only-testing:PiAppTests/FullDisplayTests \
+  -only-testing:PiAppTests/TurnAccountingTests \
+  -only-testing:PiAppTests/InlineSkillPillTests \
+  -only-testing:PiAppTests/ChatFileLinkTests \
+  -only-testing:PiAppTests/TranscriptPagingTests \
+  -only-testing:PiAppTests/MessageDetailTests \
+  -only-testing:PiAppTests/SubagentTranscriptTests \
+  -only-testing:PiAppTests/SubagentSteeringPresentationTests \
+  -only-testing:PiAppTests/SideRowPresentationTests \
+  -only-testing:PiAppTests/AutomaticContextTests \
+  -only-testing:PiAppTests/ForkCloneReaderTests \
+  -only-testing:PiAppTests/FreshPresentationTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/JournalCommandAcceptanceTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/LongJournalHistoryTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/SubagentSteeringWorkspaceTests \
+  -only-testing:PiAppTests/TranscriptStreamingStressTests \
+  -only-testing:PiAppTests/WireContractTests \
+  -only-testing:PiAppTests/WorkspaceFailureTests \
+  -only-testing:PiAppTests/WorkspaceLoadingTests \
+  -only-testing:PiAppTests/TranscriptWidthChangeTests \
+  -only-testing:PiAppTests/HistoryReaderOpenPerformanceTests \
+  -only-testing:PiAppTests/MessageVersionTranscriptTests \
+  -only-testing:PiAppTests/ForkFromReplyTests \
+  -only-testing:PiAppTests/HistoryEdgeTests
+
+# round7-timeline-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptNativeTimelineBehaviourTests
+
+# round7-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentMarkdownTests
+
+# round7-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# round7-wire-page-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptWirePageTests
+
+# round7-history-edge-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEdgeTimingTests
+
+# round7-history-edit-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEditTests
+
+# round7-inline-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/InlineSkillPillTimingTests
+
+# round7-streaming-serial-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptStreamingSerialTests
+
+# round7-agent-inputs-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentNavigationTests \
+  -only-testing:PiAppTests/SubagentEffortTests \
+  -only-testing:PiAppTests/InheritedSubagentReaderTests \
+  -only-testing:PiAppTests/SubagentCostTests \
+  -only-testing:PiAppTests/SubagentDisplayTests \
+  -only-testing:PiAppTests/SubagentMetadataTests
+
+# round7-agent-adjacent-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ConversationFamilyTests \
+  -only-testing:PiAppTests/MetadataDurabilityTests \
+  -only-testing:PiAppTests/SubagentPanelTests \
+  -only-testing:PiAppTests/SubagentDiscoveryTests
+
+# round7-gallery-final.log
+TEST_RUNNER_PI_TRANSCRIPT_BUG_GALLERY="$PI_BUILD_ROOT/validation/gallery-round7" \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugGalleryTests
+```
+
+The gallery regenerated and I opened all nine images in
+`$PI_BUILD_ROOT/validation/gallery-round7`: `transcript-{light,dark,narrow}.png`,
+`rows-{light,dark,narrow}.png`, and `recovery-{light,dark,narrow}.png`. The
+360-point heading Copy control remains inside its row, the edit's literal marker
+and both changed tails are visible, and list/user/recovered-prose highlights
+remain aligned. Summary, agent and recovery content wraps as before; narrow
+metadata retains its existing ellipsis. No new clipping was found.
+
+Exact failing-first/intermediate/control commands are retained here alongside
+the earlier evidence, so the test setup corrections are reproducible too:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round7-failing-first.log: 0/4/0 pass/fail/skip, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testManagedAttributedEntryKeepsItsNativeAgentCard \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testUnloadedFirstAgentTaskMatchesItsNativeCard \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedArgumentsMatchNativeCardsInEverySearchPath \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindRefreshesWhenFetchedArgumentsArriveWithoutNavigation
+
+# round7-sweep-first.log: 0/2/0 pass/fail/skip, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedInputsKeepTheirOccurrenceWhenCardsAreClosed \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedRefreshKeepsNavigationAlreadyInFlight
+
+# round7-header-first.log: 0/1/0 pass/fail/skip, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindKeepsTheFileHeaderOfAnIOFallbackCard
+
+# round7-fetched-edit-first.log: 0/1/0 pass/fail/skip, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindExpandsFetchedEditTextBeyondItsPreview
+
+# round7-agent-peer-first.log: 1/2/0 pass/fail/skip, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testUnloadedAgentToolKeepsItsNumberAcrossDecodeRuns \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedArgumentsMatchNativeCardsInEverySearchPath \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testUnloadedFirstAgentTaskMatchesItsNativeCard
+
+# round7-closed-reveal-first.log: 0/1/0 pass/fail/skip, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedInputsKeepTheirOccurrenceWhenCardsAreClosed
+
+# round7-agent-heading-first.log: 0/1/0 pass/fail/skip, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedAgentTaskKeepsTheDisplayedRowHeading
+
+# round7-fixed-initial.log: 4/0/0 pass/fail/skip, exit 0
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testManagedAttributedEntryKeepsItsNativeAgentCard \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testUnloadedFirstAgentTaskMatchesItsNativeCard \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedArgumentsMatchNativeCardsInEverySearchPath \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindRefreshesWhenFetchedArgumentsArriveWithoutNavigation
+
+# round7-fixed-all.log: 75/1/0 pass/fail/skip, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round7-fixed-complete.log: 76/1/0 pass/fail/skip, exit 65
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round7-fixed-verified.log: 77/0/0 pass/fail/skip, exit 0
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round7-agent-heading-fixed.log: 2/0/0 pass/fail/skip, exit 0
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedAgentTaskKeepsTheDisplayedRowHeading \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedArgumentsMatchNativeCardsInEverySearchPath
+
+# round7-regression-final.log: 78/0/0 pass/fail/skip, exit 0
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round7-receipt-control.log: 1/0/0 pass/fail/skip, exit 0
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFetchedCardKeepsOutputOwnershipAcrossAPartialPage
+```
+
+`git diff --check` passes. All round-7 production mutations were restored before
+committing. No clone folders remain under this build root (15.76 GiB free at the
+last check); all locks owned by this workstream were released. The shared lock
+was subsequently held by another workstream and was left untouched. Evidence is
+text logs plus the generated gallery PNGs; no named result bundle was created.
+No helper/package/protocol change, live user data, installed app, real preference,
+Keychain, paid provider or live capture was involved. The only outstanding validation
+limit is the explicit desktop prerequisite above; there is no unresolved owner
+decision for these fixes.

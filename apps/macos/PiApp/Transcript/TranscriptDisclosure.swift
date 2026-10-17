@@ -159,11 +159,7 @@ struct TranscriptRowDisclosure: Equatable {
         }
         // Only the cards that are open can show a fetched document, so a
         // document landing for a closed card never re-measures this row.
-        if let inputs {
-            for id in value.openTools {
-                if let document = inputs.document(id) { value.toolInputs[id] = document }
-            }
-        }
+        value.toolInputs = inputs?.snapshot(value.openTools) ?? [:]
         return value
     }
 }

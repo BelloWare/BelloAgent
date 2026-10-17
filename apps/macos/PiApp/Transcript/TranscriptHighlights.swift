@@ -211,7 +211,7 @@ extension TranscriptNativeDocument {
             if let action = view as? TranscriptNativeActionRow, let tool = action.tool,
                focus.scopeCall.map({ $0 == tool.id }) ?? true,
                ([tool.output, tool.input].contains(where: { !transcriptRanges(of: focus.needle, in: $0 as NSString, flexible: focus.flexibleSpace).isEmpty }) ||
-                !transcriptRanges(of: focus.needle, in: ConversationContent.toolText(tool) as NSString, flexible: focus.flexibleSpace).isEmpty) {
+                !transcriptRanges(of: focus.needle, in: action.searchText as NSString, flexible: focus.flexibleSpace).isEmpty) {
                 var changed = false
                 func expand(_ view: NSView) {
                     expandProse(view)

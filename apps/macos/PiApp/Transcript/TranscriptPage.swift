@@ -806,9 +806,9 @@ struct ContentGeometry: Equatable {
             // must open a folded thought even when Markdown splits the source.
             return has(text) || has(TranscriptMarkdown.renderedText(text, streaming: streaming))
         }
-        func has(_ tool: ToolView) -> Bool {
+        func has(_ tool: ToolView, key: String) -> Bool {
             if has(tool.output) || has(tool.input) { return true }
-            return has(ConversationContent.toolText(tool))
+            return has(ConversationContent.toolText(tool, fetched: toolInputs?.document(key)))
         }
         // A result drawn as a row of its own (its call is not on the page)
         // opens under its own line.
@@ -818,13 +818,13 @@ struct ContentGeometry: Equatable {
         let call = scoped ?? message.toolCallID
         if blocks.isEmpty, let drawn = snapshot.messages.first(where: { $0.id == drawing }) {
             // A row of one message: its cards are keyed by call.
-            for tool in drawn.tools ?? [] where tool.id == call || has(tool) { open(.tool(tool.id)) }
+            for tool in drawn.tools ?? [] where tool.id == call || has(tool, key: tool.id) { open(.tool(tool.id)) }
             if hasProse(drawn.thinking, streaming: drawn.isStreaming) { open(.reasoning(drawn.id)) }
         }
         for block in blocks {
             for reply in block.replies {
                 // Cards are keyed as the row draws them (`TranscriptRowDisclosure`).
-                for tool in reply.tools ?? [] where tool.id == call || has(tool) {
+                for tool in reply.tools ?? [] where tool.id == call || has(tool, key: block.presentation == .work ? ToolOccurrence.key(reply.id, tool.id) : tool.id) {
                     open(.tool(block.presentation == .work ? ToolOccurrence.key(reply.id, tool.id) : tool.id))
                     if block.activity.contains(where: { $0.id == reply.id }) || block.presentation == .work { open(.work(block.key)) }
                 }

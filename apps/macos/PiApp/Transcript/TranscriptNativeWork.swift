@@ -396,6 +396,10 @@ import AppKit
     private var fetched: ToolInputDocument?
     private var environment = TranscriptRowEnvironment()
     private var cardModel: TranscriptToolRow.Card?
+    var searchText: String {
+        let heading = [line.content.title, line.content.summary].filter { !$0.isEmpty }.joined(separator: " · ")
+        return cardModel.map { ConversationContent.toolText($0, heading: heading) } ?? ""
+    }
     override var isFlipped: Bool { true }
 
     override init(frame: NSRect) {

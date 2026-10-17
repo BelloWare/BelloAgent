@@ -405,7 +405,7 @@ actor HistoryReader {
     /// the reader's captured plan; unloaded records use the same planner over
     /// this run, with paired tool receipts resolved as on a reopened page.
     private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle, renderedAgentProse: Bool, managedTask: String?,
-                          presented: ConversationContent.Presentation, rawReplies: Set<String>) throws -> [(ref: Ref, text: Result<String, Error>)] {
+                          presented: ConversationContent.Presentation, rawReplies: Set<String>, agentPresentation: AgentTranscriptPresentation?) throws -> [(ref: Ref, text: Result<String, Error>)] {
         var refs: [Ref] = [], records: [Result<Data, Error>?] = []
         refs.reserveCapacity(range.count); records.reserveCapacity(range.count)
         for position in range {
@@ -470,7 +470,8 @@ actor HistoryReader {
                     // rather than retaining every result of a wide tool round.
                     let resolved = TranscriptMessage.resolvingToolResults([message, peer], results: [peer.id: result.record])
                     let paired = ConversationContent.Presentation(resolved).rows[peer.id]?.isEmpty == true
-                    if let tool = resolved.first?.tools?.first(where: { $0.id == result.call }) {
+                    let source = resolved.first.map { agentPresentation?.presentAgentState($0) ?? $0 }
+                    if let tool = source?.tools?.first(where: { $0.id == result.call }) {
                         toolInputs[ToolOccurrence.key(message.id, tool.id)] = ConversationContent.toolText(tool, inputOnly: paired)
                     }
                 } else {
@@ -484,10 +485,12 @@ actor HistoryReader {
             }
             let positions = try Dictionary(context.map { ($0.id, try branch.index(of: $0.id) ?? 0) }, uniquingKeysWith: { _, last in last })
             context.sort { positions[$0.id, default: 0] < positions[$1.id, default: 0] }
-            let projection = ConversationContent.Presentation(TranscriptMessage.resolvingToolResults(context, results: receipts))
+            let normalized = TranscriptMessage.resolvingToolResults(context, results: receipts).map { agentPresentation?.present($0, firstTask: managedTask) ?? $0 }
+            let projection = ConversationContent.Presentation(normalized)
             contextual[message.id] = projection.text(message.id, rawReply: rawReplies.contains(message.id), toolInputs: toolInputs)
         }
-        let plan = ConversationContent.Presentation(TranscriptMessage.resolvingToolResults(messages, results: results))
+        let normalized = TranscriptMessage.resolvingToolResults(messages, results: results).map { agentPresentation?.present($0, firstTask: managedTask) ?? $0 }
+        let plan = ConversationContent.Presentation(normalized)
         var texts = [Result<String, Error>](repeating: .success(""), count: refs.count)
         let values = decoded, references = refs, overrides = contextual
         texts.withUnsafeMutableBufferPointer { buffer in
@@ -500,7 +503,8 @@ actor HistoryReader {
                 if case .failure(let error)? = values[index] { output[index] = .failure(error); return }
                 if renderedAgentProse {
                     if let text = overrides[ref.id] { output[index] = .success(text); return }
-                    if managedTask == ref.id, let message = sources[ref.id], message.role == "user" {
+                    if agentPresentation == nil, managedTask == ref.id, let message = sources[ref.id], message.role == "user",
+                       message.nativeAgentDelivery == nil, message.kind != "agent_message" {
                         output[index] = .success(TranscriptMarkdown.renderedText(message.text))
                     } else { output[index] = .success(plan.text(ref.id, rawReply: rawReplies.contains(ref.id))) }
                 } else if ref.type == "branch" { output[index] = .success("## Edit\n\n" + Self.branchText + "\n\n") }
@@ -546,8 +550,9 @@ actor HistoryReader {
     /// Tool output has one retained owner even when the captured page holds
     /// only the completed card or only its receipt. Join each call separately
     /// so a wide tool round does not retain all its unloaded outputs at once.
-    private func searchPresentation(_ current: [TranscriptMessage], branch: HistoryOffsetIndex, file: FileHandle) throws -> ConversationContent.Presentation {
-        var presentation = ConversationContent.Presentation(current)
+    private func searchPresentation(_ current: [TranscriptMessage], branch: HistoryOffsetIndex, file: FileHandle,
+                                    fetchedInputs: [String: ToolInputDocument], agentPresentation: AgentTranscriptPresentation?) throws -> ConversationContent.Presentation {
+        var presentation = ConversationContent.Presentation(current, fetchedInputs: fetchedInputs)
         let captured = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         let standalone = Set(current.filter {
             ($0.role == "tool" || $0.kind == "toolResult") && presentation.rows[$0.id]?.isEmpty == false
@@ -581,11 +586,11 @@ actor HistoryReader {
                 }
                 let positions = try Dictionary(context.map { ($0.id, try branch.index(of: $0.id) ?? 0) }, uniquingKeysWith: { _, last in last })
                 context.sort { positions[$0.id, default: 0] < positions[$1.id, default: 0] }
-                var resolved = TranscriptMessage.resolvingToolResults(context, results: receipts)
+                var resolved = TranscriptMessage.resolvingToolResults(context, results: receipts).map { agentPresentation?.presentAgentState($0) ?? $0 }
                 for index in resolved.indices {
                     if let value = captured[resolved[index].id] { resolved[index].tools = value.tools }
                 }
-                let paired = ConversationContent.Presentation(resolved)
+                let paired = ConversationContent.Presentation(resolved, fetchedInputs: fetchedInputs)
                 // A receipt drawn as its own row keeps that row's Markdown;
                 // a captured card keeps its state even if disk has advanced.
                 presentation.adoptToolOutputs(paired, receipts: Set(receipts.keys).subtracting(standalone))
@@ -594,7 +599,8 @@ actor HistoryReader {
         return presentation
     }
     func searchContent(path: String, query: String, start: Int, renderedAgentProse: Bool = false, managedChild: Bool = false,
-                       presented: [TranscriptMessage] = [], rawReplies: Set<String> = []) throws -> ContentSearch {
+                       presented: [TranscriptMessage] = [], rawReplies: Set<String> = [], fetchedInputs: [String: ToolInputDocument] = [:],
+                       agentPresentation: AgentTranscriptPresentation? = nil) throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file), branch: HistoryOffsetIndex, prefix: SHA256.Digest?
@@ -628,7 +634,7 @@ actor HistoryReader {
                 else if try branch.index(of: row.id) != nil { current.append(row) }
             }
         }
-        let presentation = try searchPresentation(current, branch: branch, file: file)
+        let presentation = try searchPresentation(current, branch: branch, file: file, fetchedInputs: fetchedInputs, agentPresentation: agentPresentation)
         let managedTask = managedChild ? try branch.firstUser() : nil
         let total = branch.count + unsaved.count
         // A query that matches nothing used to decode every record in the
@@ -655,7 +661,7 @@ actor HistoryReader {
                 bytes += length; end += 1
             }
             run = min(run * 2, 512)
-            let texts = try contents(cursor..<end, branch: branch, file: file, renderedAgentProse: renderedAgentProse, managedTask: managedTask, presented: presentation, rawReplies: rawReplies)
+            let texts = try contents(cursor..<end, branch: branch, file: file, renderedAgentProse: renderedAgentProse, managedTask: managedTask, presented: presentation, rawReplies: rawReplies, agentPresentation: agentPresentation)
             for (offset, decoded) in texts.enumerated() where hits.count < 100 {
                 let ref = decoded.ref, text = try decoded.text.get()
                 let position = cursor + offset
@@ -689,10 +695,10 @@ actor HistoryReader {
         return .init(hits: hits, total: total, next: cursor < total ? cursor : nil, revision: revision(identity))
     }
     /// An unsent side or a delegated-task placeholder has no journal yet.
-    func searchPresented(_ rows: [TranscriptMessage], query: String, start: Int, rawReplies: Set<String> = []) throws -> ContentSearch {
+    func searchPresented(_ rows: [TranscriptMessage], query: String, start: Int, rawReplies: Set<String> = [], fetchedInputs: [String: ToolInputDocument] = [:]) throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
         var hits: [ContentHit] = [], cursor = min(start, rows.count)
-        let presentation = ConversationContent.Presentation(rows)
+        let presentation = ConversationContent.Presentation(rows, fetchedInputs: fetchedInputs)
         while cursor < rows.count && hits.count < 100 {
             let row = rows[cursor], text = presentation.text(row.id, rawReply: rawReplies.contains(row.id))
             let count = ConversationContent.occurrences(of: query, in: text)
