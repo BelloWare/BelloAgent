@@ -1092,3 +1092,104 @@ private extension AgentSession {
         try append(row); return row.id
     }
 }
+
+/// Review round 7 (Codex) regressions: the family's pause is latched, and
+/// its sides' membership follows Resume, repair and deletion.
+extension FamilyLimitPauseTests {
+    /// A side pause issued at the limit still applies after the limit was
+    /// raised (only Resume undoes a pause); one issued before a Resume does not.
+    func testASidePauseIssuedBeforeARaiseStillPausesTheSide() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), tools = LimitHeldTools()
+        await owner.setCostLimit(0.5)
+        let side = try await side("side",parent:owner,root:root,client:LimitRunClient(mode:"side-tool"),tools:tools)
+        _ = try await side.submit(Submission(commandID:"command",turnID:"turn",text:"Work"),steer:false)
+        try await eventually { await tools.started }
+        await owner.setCostLimit(5)
+        let resumes = await owner.costResumeCount
+        let stops = await owner.sideBudgetStops
+        let notify = try XCTUnwrap(stops["side"])
+        await notify(AgentSession.costHoldError, resumes - 1)
+        var paused = await side.costPaused; XCTAssertFalse(paused, "A pause older than a Resume is retired")
+        await notify(AgentSession.costHoldError, resumes)
+        paused = await side.costPaused; XCTAssertTrue(paused, "The latched pause holds the side after a raise")
+        await tools.release()
+        try await eventually { !(await side.isRunning) }
+        let calls = await tools.starts; XCTAssertEqual(calls,1,"Its running tool finished; nothing new started")
+        await side.close(); await owner.close()
+    }
+
+    /// A side asks its root's latched pause before any request, as it shares
+    /// its spend: with the root paused (its limit since raised), the side's
+    /// new message sends nothing and the side waits for Resume.
+    func testASideStartsNothingWhileItsRootIsPausedAfterARaise() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), client = ScriptClient([answer("Side answer")])
+        await owner.setCostLimit(5)
+        let side = try await side("side",parent:owner,root:root,client:client)
+        await owner.fixtureCostPause()
+        _ = try await side.submit(Submission(commandID:"command",turnID:"turn",text:"Work"),steer:false)
+        try await eventually { !(await side.isRunning) }
+        let sent = await client.count, paused = await side.costPaused
+        XCTAssertEqual(sent,0,"No request while the family is paused"); XCTAssertTrue(paused)
+        await side.close(); await owner.close()
+    }
+
+    /// A side's durable pause repaired into a root that is running (after a
+    /// raise) pauses the root as the limit does: its request in flight is
+    /// cut and the pause has a new generation.
+    func testRepairingASidesPauseIntoARunningRootPausesItFully() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root)
+        await owner.setCostLimit(5)
+        let side = try await side("side",parent:owner,root:root)
+        await side.fixtureCostPause()
+        let before = await owner.costPauseCount
+        let held = try await start(owner,"held")
+        try await side.bindSideBudget(to:owner)
+        XCTAssertThrowsError(try held.1.check(),"The root's request in flight is cut")
+        let after = await owner.costPauseCount, paused = await owner.costPaused
+        XCTAssertEqual(after,before + 1); XCTAssertTrue(paused)
+        try await finish(held.0,"held",cost:0.01)
+        await side.close(); await owner.close()
+    }
+
+    /// The root's own Resume was accepted, its sides not yet resumed (the app
+    /// quit in between): the root still shows the family's pause and offers
+    /// Resume, which hands the sides out again.
+    func testARootWithSidesStillWaitingKeepsOfferingTheFamilysResume() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        // An ordinary chat (`DisabledTools` would make it a connection test).
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore())
+        await owner.setCostLimit(5)
+        let side = try await side("side",parent:owner,root:root)
+        await side.fixtureCostPause()
+        try await side.bindSideBudget(to:owner)
+        let first = try await owner.continueRun(commandID:"resume")
+        XCTAssertEqual(first["pausedMembers"].list.compactMap(\.text),["side"])
+        let snapshot = await owner.snapshot()
+        XCTAssertEqual(snapshot["costPaused"].flag,true); XCTAssertEqual(snapshot["cost"]["paused"].flag,true)
+        XCTAssertEqual(snapshot["state"].text,"paused"); XCTAssertEqual(snapshot["continuable"].flag,true)
+        let again = try await owner.continueRun(commandID:"resume-again")
+        XCTAssertEqual(again["pausedMembers"].list.compactMap(\.text),["side"],"Resume hands the waiting side out again")
+        let ownPause = await owner.costPaused; XCTAssertFalse(ownPause,"Nothing of the root's own is held")
+        await side.close(); await owner.close()
+    }
+
+    /// A listed side whose journal is gone (deleted while the root was not
+    /// loaded) is dropped when the root reopens, and a pause held only for it ends.
+    func testAReopenedRootDropsListedSidesThatNoLongerExist() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore())
+        await owner.notePausedMember("ghost")
+        let paused = await owner.costPaused; XCTAssertTrue(paused)
+        let saved = await owner.path, path = try XCTUnwrap(saved); await owner.close()
+        let reopened = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:path)
+        let members = await reopened.costPausedMembers, still = await reopened.costPaused
+        XCTAssertTrue(members.isEmpty); XCTAssertFalse(still)
+        await reopened.close()
+    }
+}

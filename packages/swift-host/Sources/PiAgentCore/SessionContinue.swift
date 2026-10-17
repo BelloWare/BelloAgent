@@ -33,7 +33,7 @@ extension AgentSession {
         // A family paused at its cost limit always has its Resume, and so do
         // tool calls or a compaction the pause cut, even with the pause
         // already ended (a helper that stopped before Resume's run did them).
-        if costPaused || !costPendingCalls.isEmpty || costPendingCompaction { return true }
+        if costPaused || membersPendingResume || !costPendingCalls.isEmpty || costPendingCompaction { return true }
         guard let tail = continuationTail else { return false }
         return Self.continues(from: tail) || hasPendingAgentEvents
     }
@@ -48,7 +48,7 @@ extension AgentSession {
     /// (`forgetPausedMember`), so a lost reply or failed fan-out can retry.
     func endCostPause() -> [String] {
         guard costPaused else { return costPausedMembers }
-        costPaused = false; budgetStopIssued = false
+        costPaused = false; budgetStopIssued = false; costResumeCount &+= 1
         if familyStopReason?.code == Self.costLimitCode { familyStopReason = nil }
         if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
         resumingCostPause = !isSubagent && agentCoordinator != nil
@@ -118,7 +118,9 @@ extension AgentSession {
             // A side that resumed no longer needs its root to name it.
             if committed, paused.paused, let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
         }
-        if costPaused { members = endCostPause() }
+        // A root whose own Resume was accepted before its sides were
+        // resumed (an app that quit in between) still hands them out.
+        if costPaused { members = endCostPause() } else if !isSubagent { members = costPausedMembers }
         // A manual compaction the pause cut runs first in the Resume's own run
         // (with its overrides), which then goes on with the rest of the work.
         // Also once the pause is over (a helper that ended before it ran).
@@ -129,7 +131,7 @@ extension AgentSession {
         // With nothing of its own cut off, the run waits for the resumed
         // family first, as its turn's end did; follow-ups go after it.
         guard !titleTask, !isConnectionTest, tailContinues || familyOnly else {
-            if paused.paused, queue.isEmpty, steering.isEmpty {
+            if paused.paused || !members.isEmpty, queue.isEmpty, steering.isEmpty {
                 // Nothing of its own waits: the pause is over once saved.
                 commandState(Submission(commandID: commandID, turnID: receiptKey, text: ""), "completed")
                 queuePaused = false
@@ -156,7 +158,7 @@ extension AgentSession {
             do { try resumeQueue() } catch { commands.removeAll { $0["turnId"].text == receiptKey }; restoreCostPause(paused); throw error }
             committed = true
             var reply: JSON = ["accepted": true, "continued": false, "resumedQueue": true]
-            if paused.paused { reply["resumedFamily"] = true; reply["pausedMembers"] = .array(members.map(JSON.string)) }
+            if paused.paused || !members.isEmpty { reply["resumedFamily"] = true; reply["pausedMembers"] = .array(members.map(JSON.string)) }
             return reply
         }
         var submission = Submission(commandID: commandID, turnID: receiptKey, text: "")
@@ -186,7 +188,7 @@ extension AgentSession {
         launch()
         var reply: JSON = ["accepted": true, "continued": true]
         if compactFirst { reply["compacting"] = true }
-        if paused.paused { reply["resumedFamily"] = true; reply["pausedMembers"] = .array(members.map(JSON.string)) }
+        if paused.paused || !members.isEmpty { reply["resumedFamily"] = true; reply["pausedMembers"] = .array(members.map(JSON.string)) }
         return reply
     }
 }

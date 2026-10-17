@@ -209,7 +209,10 @@ extension AgentSession {
         var value: JSON=["sessionId":JSON(id),"seq":JSON(sequence),"state":JSON(state.rawValue),"runStatus":JSON(runStatus.rawValue),"retry":retryInfo,"settingsPending":JSON(pendingConfiguration != nil),"preflightError":errorMessage.map { JSON($0) } ?? .null,"cost":costSnapshot,"side":parentInfo,"ephemeral":JSON(ephemeral),"keeping":false,"keepRequested":JSON(keepRequested),"keepError":.null,"queue":.array(queue.map { var v=$0.previewValue;v["kind"]="follow-up";return v }+steering.map { var v=$0.previewValue;v["kind"]="steering";v["text"]=JSON("[Steering] "+(v["text"].text ?? ""));return v }),"steering":.array(steering.map(\.previewValue)),"queueCount":JSON(queue.count+steering.count),"queuePaused":JSON(queuePaused),"continuable":JSON(canContinue),"queueEdit":queueEdit.map { $0.value } ?? .null,"queueEditRevision":JSON(queueEditRevision),"path":path.map { JSON($0) } ?? .null,"total":JSON(visible.count),"displayRevision":JSON(revision),"profileId":JSON(profile.id),"toolMode":JSON(readOnly ? "read-only" : "editing"),"context":contextInfo(),"turnMetrics":turnMetrics(),"assistantMessageCount":JSON(assistantMessageCount),"latestAssistantMessageId":latestAssistantMessageID.map { JSON($0) } ?? .null,"activity":activitySnapshot()]
         if subagents.origin != nil { value["subagentStatus"] = JSON((subagents.family?.latest(id)?.status ?? subagents.status ?? .interrupted).rawValue) }
         // Work here waits for the family's Resume after its cost limit.
-        if costPaused { value["costPaused"] = true }
+        // A root with sides still waiting for its accepted Resume shows the
+        // family's pause too, so its Resume reaches them.
+        if costPaused || membersPendingResume { value["costPaused"] = true }
+        if membersPendingResume, state == .idle { value["state"] = JSON(SessionState.paused.rawValue) }
         if let family = subagents.family {
             if let turn = family.latest(id) { value["subagentTurn"] = JSON(turn.turn); value["subagentDeliveryState"] = JSON(family.messages["result:" + turn.id]?.disposition ?? "pending") }
             value["familyWaiting"] = JSON(familyWaiting)

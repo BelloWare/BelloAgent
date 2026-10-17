@@ -149,7 +149,15 @@ final class CostPauseFamilyTests: XCTestCase {
                 XCTAssertEqual(stored?.first?.id, side.id)
                 second.chats.removeAll { $0.id == side.id }
                 XCTAssertNil(second.record(side.id))
-                second.resumeCostPausedFamily(from: rootRecord)
+                // Round 7: through the ordinary entry point. The root's own
+                // pause is over, yet it still shows the family's pause and
+                // offers Resume, which reaches the waiting side.
+                await second.select(parent.id)
+                let rootView = try XCTUnwrap(second.displays[parent.id])
+                await waitFor("The root never offered Resume for its waiting side") {
+                    rootView.runStateKnown && rootView.costPaused && rootView.offersResume
+                }
+                second.resumeRun(sessionID: parent.id)
             } else {
                 second.resumeCostPausedFamily(from: try XCTUnwrap(second.record(side.id)))
             }

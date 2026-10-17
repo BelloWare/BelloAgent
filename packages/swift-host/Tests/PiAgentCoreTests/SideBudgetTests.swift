@@ -359,6 +359,24 @@ final class SideBudgetTests: XCTestCase {
         await host.shutdown()
     }
 
+    /// Round 7: deleting an idle paused side takes it off its root's list of
+    /// sides waiting for Resume; a root paused only for it is not paused.
+    func testDeletingAPausedSideTakesItOffItsRootsPause() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let host = try await host(root), owner = try await open(host,"main", limit: 5)
+        _ = try await host.command("side.open",sessionID:"main",params:["sideSessionId":"side"])
+        let loaded = await host.loadedSession("side"), side = try XCTUnwrap(loaded)
+        _ = try await side.keep(whenFinished:false)
+        await side.roundSevenPause()
+        try await side.bindSideBudget(to:owner)
+        var members = await owner.costPausedMembers, paused = await owner.costPaused
+        XCTAssertEqual(members,["side"]); XCTAssertTrue(paused)
+        _ = try await host.command("session.forget",sessionID:"side",params:["descendantsDeleted":true,"ancestorsRepaired":true])
+        members = await owner.costPausedMembers; paused = await owner.costPaused
+        XCTAssertTrue(members.isEmpty, "A deleted side waits for no Resume"); XCTAssertFalse(paused, "Nothing else held the root")
+        await host.shutdown()
+    }
+
     func testDeletingMainWithLegacyReportedManagedSpendKeepsOrphanFamilyCountedOnce() async throws {
         for loadedSide in [false,true] {
             for loadedChild in [false,true] {
@@ -895,4 +913,8 @@ private actor SideBudgetHeldClient: ModelClient {
         await onObservation(observation)
         return answer("The admitted main request finished")
     }
+}
+
+private extension AgentSession {
+    func roundSevenPause() { costPaused = true; queuePaused = true; errorCode = AgentSession.costLimitCode }
 }

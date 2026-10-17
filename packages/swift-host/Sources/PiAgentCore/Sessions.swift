@@ -101,7 +101,12 @@ public actor AgentSession {
     var sideBudgetParents: [AgentSession] = []
     var sideBudgetIDs: [String] = []
     var sideBudgetMembers: [String: [String]] = [:]
-    var sideBudgetStops: [String: @Sendable () async -> Void] = [:]
+    /// Each side's pause callback: given the pause's reason and the Resume
+    /// count it was issued under (`costResumeCount`).
+    var sideBudgetStops: [String: @Sendable (AgentError, Int) async -> Void] = [:]
+    /// Advances with each accepted Resume of a pause: a side pause issued
+    /// before it is not applied after it.
+    var costResumeCount = 0
     weak var budgetOwner: AgentSession?
     var budgetOwnerGeneration = 0
     var requestPermits: [String: RequestPermit] = [:]
@@ -591,6 +596,7 @@ public actor AgentSession {
         toolHistory=ToolHistoryIndex(history)
         taskRootID=context.last(where: { $0.role == "user" })?.taskRootID
         boundary=context; state=runStatus == .failed ? .error : queuePaused ? .paused : .idle
+        dropMissingPausedMembers()
         spansScannedTo=opened.size
         // The metadata file follows the journal; it is only ever a shortcut.
         if let captured=replayed.captured { try? captured.write(for: url) }

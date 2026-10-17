@@ -178,6 +178,9 @@ extension AgentSession {
     /// after the limit is raised and before Resume.
     func enforceCostHold() async throws {
         if costPaused { throw Self.costHoldError }
+        // A side shares its family's pause as it shares its spend: the
+        // latched pause of any ancestor holds it, whatever the limit now says.
+        for parent in sideBudgetParents where await parent.costPaused { throw Self.costHoldError }
         // A child also waits for its coordinator to release the hold: the
         // owner's Resume first parks it, then resumes it under its execution.
         if isSubagent, let budgetOwner {
@@ -190,6 +193,10 @@ extension AgentSession {
     var holdsCostPausedWork: Bool {
         costPaused || costResumePending || !costPendingCalls.isEmpty || costPendingCompaction || hasParkedAgentTurns
     }
+    /// A root's own pause is over (its Resume accepted) but sides it names
+    /// still wait: the family's Resume is not done. Shown as the family's
+    /// pause, with Resume offered; it holds nothing of the root's own.
+    var membersPendingResume: Bool { !isSubagent && !costPaused && !costPausedMembers.isEmpty && runTask == nil }
     /// Whether a call that failed before it began failed because of the
     /// pause: the hold itself, or an admission the pause closed (delegation
     /// unavailable once the queue paused, a parent execution no longer
@@ -218,7 +225,7 @@ extension AgentSession {
         var value: JSON = ["limitUSD": costLimitUSD.map { JSON($0) } ?? .null, "spentUSD": JSON(spend.usd),
          "reportedRequests": JSON(spend.reported), "unreportedRequests": JSON(spend.unreported),
          "reached": JSON(costLimitReached), "accountingRevision":JSON(accounting.revision), "familyUsage":familyUsage]
-        if costPaused { value["paused"] = true }
+        if costPaused || membersPendingResume { value["paused"] = true }
         // Sides still waiting for the family's Resume, also after the root's own.
         if !costPausedMembers.isEmpty { value["pausedMembers"] = .array(costPausedMembers.map(JSON.string)) }
         return value
@@ -280,9 +287,13 @@ extension AgentSession {
             let member = id
             Task { await root.notePausedMember(member) }
         }
-        // Sides retain their ancestors, so callbacks hold only weak runtimes.
-        for notify in sideBudgetStops.values { Task { await notify() } }
+        notifySidesOfPause(reason)
         event("state")
+    }
+    /// Sides retain their ancestors, so callbacks hold only weak runtimes.
+    func notifySidesOfPause(_ reason: AgentError) {
+        let resumes = costResumeCount
+        for notify in sideBudgetStops.values { Task { await notify(reason, resumes) } }
     }
     /// The manual compaction under way is cut by this pause: it is pending,
     /// with its focus, in the same record as the pause, so no crash between
@@ -304,12 +315,21 @@ extension AgentSession {
         let first = !costPaused
         if !known { costPausedMembers.append(side) }
         if first {
-            costPaused = true; queuePaused = true
+            // The family's pause, as at the limit itself: saved, then every
+            // model request in flight cut, the children held and the other
+            // sides paused, under a new pause generation.
+            costPaused = true; queuePaused = true; costPauseCount &+= 1
+            budgetStopIssued = true; familyStopReason = Self.costHoldError
             errorCode = Self.costLimitCode; errorMessage = costPausedMessage
             markCutCompaction()
             if runTask == nil { state = .paused; runStatus = .cancelled }
         }
         do { try persistState(durable:true) } catch { failFamilyAccounting(error); return }
+        if first {
+            abortModelRequests()
+            if let coordinator = agentCoordinator { let generation = costPauseCount; Task { await coordinator.pause(owner:self,generation:generation) } }
+            notifySidesOfPause(Self.costHoldError)
+        }
         event("state")
     }
     /// The side resumed by itself: the root no longer needs to hand it out.
@@ -319,9 +339,28 @@ extension AgentSession {
         // Paused only for that side, with nothing of its own: no longer paused.
         if costPaused, runTask == nil, !hasWorkAfterCostPause {
             clearCostPauseWithoutWork()
-            event("state")
         }
         try? persistState(durable:true)
+        event("state")
+    }
+    /// Sides deleted (with their descendants): none of them waits for a
+    /// Resume any more, and a root paused only for them is not paused.
+    func forgetDeletedMembers(_ ids: Set<String>) {
+        for side in costPausedMembers where ids.contains(side) { forgetPausedMember(side) }
+    }
+    /// Listed sides whose journal is gone (deleted while this root was not
+    /// loaded, or an unkept side that ended with its runtime) are dropped
+    /// when the root reopens; a pause held only for them ends.
+    func dropMissingPausedMembers() {
+        guard !costPausedMembers.isEmpty else { return }
+        let kept = costPausedMembers.filter { side in ((try? SideBudgetRecovery.journalURL(side, directory: directory)) ?? nil) != nil }
+        guard kept != costPausedMembers else { return }
+        costPausedMembers = kept
+        if costPaused, runTask == nil, !hasWorkAfterCostPause {
+            costPaused = false; queuePaused = !queue.isEmpty || !steering.isEmpty
+            if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
+            if state == .paused { state = queuePaused ? .paused : .idle; runStatus = queuePaused ? .cancelled : .idle }
+        }
     }
     /// A kept side's journal starts with the spend its unkept runtime counted.
     func carriedSpendRecord() -> JSON {
