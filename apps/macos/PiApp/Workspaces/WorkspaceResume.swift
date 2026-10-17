@@ -72,11 +72,23 @@ extension WorkspaceModel {
             }
             var order = members.filter { $0 != root.id }
             if item.id != root.id, !order.contains(item.id) { order.append(item.id) }
+            // A paused side need not be in the loaded window (`loadChats`
+            // keeps the newest records): its record is read from the store.
+            await loadMissingRecords(order)
             for id in order {
                 guard let member = record(id), !member.isArchived, member.workspaceID == root.workspaceID else { continue }
                 _ = await performResume(member, view: displays[id], member: true)
             }
         }
+    }
+
+    /// Chats named by id that the loaded window left out, added from the
+    /// store (never one being deleted).
+    func loadMissingRecords(_ ids: [String]) async {
+        let missing = ids.filter { record($0) == nil }
+        guard !missing.isEmpty, let store, let loaded = try? await store.loadChats(ids: missing, profiles: profiles) else { return }
+        let added = loaded.filter { record($0.id) == nil && !deletingFamilies.contains($0.id) }
+        if !added.isEmpty { chats.append(contentsOf: added) }
     }
 
     /// A side's root after a relaunch need not have a display or a budget

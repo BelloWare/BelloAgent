@@ -185,6 +185,11 @@ extension AgentSession {
             if let agentCoordinator, await agentCoordinator.paused.contains(budgetOwner.id) { throw Self.costHoldError }
         }
     }
+    /// Work a cost-limit pause holds for Resume, which belongs to the run
+    /// as it stands: an edit cannot abandon it.
+    var holdsCostPausedWork: Bool {
+        costPaused || costResumePending || !costPendingCalls.isEmpty || costPendingCompaction || hasParkedAgentTurns
+    }
     /// Whether a call that failed before it began failed because of the
     /// pause: the hold itself, or an admission the pause closed (delegation
     /// unavailable once the queue paused, a parent execution no longer

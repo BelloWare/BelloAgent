@@ -67,7 +67,8 @@ final class CostPauseFamilyTests: XCTestCase {
         try await pauseRelaunchAndResume(fromSide: true)
     }
     /// The root accepted Resume but its reply (and the side requests) were
-    /// lost: a later family Resume still resumes the sides the root names.
+    /// lost: a later family Resume still resumes the sides the root names,
+    /// also one outside the loaded window of chat records.
     @MainActor func testSidesStillPausedAfterALostRootResumeAreRecovered() async throws {
         try await pauseRelaunchAndResume(fromSide: true, rootAlreadyResumed: true)
     }
@@ -142,6 +143,11 @@ final class CostPauseFamilyTests: XCTestCase {
                 try await Task.sleep(for: .milliseconds(300))
                 let members = try? await host.request("session.status", sessionID: parent.id, params: ["budgetOnly": .bool(true)]).object?["cost"]?.object?["pausedMembers"]?.array?.compactMap(\.string)
                 XCTAssertEqual(members, [side.id], "The resumed root still names its paused side")
+                // Round 6: the side is outside the loaded window (more than
+                // 10,000 newer records): its record is read from the store.
+                XCTAssertNotNil(try await second.store?.loadChats(ids: [side.id]).first)
+                second.chats.removeAll { $0.id == side.id }
+                XCTAssertNil(second.record(side.id))
                 second.resumeCostPausedFamily(from: rootRecord)
             } else {
                 second.resumeCostPausedFamily(from: try XCTUnwrap(second.record(side.id)))

@@ -1029,3 +1029,66 @@ extension FamilyLimitPauseTests {
         await side.close(); await owner.close()
     }
 }
+
+/// Review round 6 (Codex) regressions.
+extension FamilyLimitPauseTests {
+    /// The Resume fence belongs to one owner runtime. A later runtime at the
+    /// same address (a freed runtime's memory reused) still pauses.
+    func testAPauseFenceIsNotInheritedByARuntimeAtAReusedAddress() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let coordinator = AgentSteeringCoordinator()
+        var reused = false
+        for attempt in 0..<64 {
+            var first: AgentSession? = try await steeringOwner(root.appendingPathComponent("a\(attempt)"), client:ScriptClient([]), coordinator:coordinator)
+            let address = ObjectIdentifier(first!)
+            await first!.beginResumeFixture()
+            try await coordinator.resumeParked(owner:first!,generation:5)
+            await first!.close(); first = nil
+            let second = try await steeringOwner(root.appendingPathComponent("b\(attempt)"), client:ScriptClient([]), coordinator:coordinator)
+            if ObjectIdentifier(second) == address {
+                reused = true
+                await coordinator.pause(owner:second,generation:1)
+                let paused = await coordinator.paused.contains(second.id)
+                XCTAssertTrue(paused,"A new runtime's first pause applies")
+                await second.close(); break
+            }
+            await second.close()
+        }
+        try XCTSkipUnless(reused, "No address was reused in 64 attempts")
+    }
+
+    /// Editing an earlier message of a family whose turns the pause parked
+    /// is refused as it is while those turns run (session_busy): Resume never
+    /// restarts an abandoned branch's sub-agent work under the edit. So is it
+    /// for parked turns left once the pause flag is gone.
+    func testEditIsRefusedWhileThePauseHoldsParkedTurns() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = LimitRunClient(mode:"queued"), coordinator = AgentSteeringCoordinator()
+        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        let message = try await owner.fixtureUserMessage("Delegate the work")
+        _ = try await startChild(owner, coordinator, "parked")
+        try await eventually { await client.children.count == 1 }
+        await owner.fixtureCostPause()
+        await coordinator.pause(owner:owner,generation:1)
+        try await eventually(timeout:.seconds(5)) { await coordinator.jobs.isEmpty }
+        await owner.setCostLimit(50)
+        for phase in ["paused", "flag cleared"] {
+            if phase == "flag cleared" { await owner.fixtureEndPause() }
+            let idle = await owner.isIdle; XCTAssertTrue(idle, phase)
+            do {
+                _ = try await owner.edit(fromMessageID:message, input:Submission(commandID:UUID().uuidString,turnID:UUID().uuidString,text:"Something else"))
+                XCTFail("\(phase): an edit abandoned parked work")
+            } catch { XCTAssertEqual((error as? AgentError)?.code,"session_busy",phase) }
+        }
+        let parked = await owner.agentState().turns.values.filter { !$0.status.terminal }.count
+        XCTAssertEqual(parked,1,"The parked turn waits for Resume")
+        await client.releaseAll(); await coordinator.drain(); await owner.close()
+    }
+}
+
+private extension AgentSession {
+    func fixtureUserMessage(_ text: String) throws -> String {
+        var row = ChatMessage(role:"user",content:[textBlock(text)]); row.id = UUID().uuidString
+        try append(row); return row.id
+    }
+}

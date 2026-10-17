@@ -32,8 +32,10 @@ actor AgentSteeringCoordinator {
     var paused: Set<String> = []
     /// The owner Stop generation each Resume covers: a pause scheduled by an
     /// earlier Stop that arrives after the Resume is ignored.
-    /// Keyed by the owner runtime: a reopened chat counts its pauses afresh.
-    var resumedThrough: [ObjectIdentifier:Int] = [:]
+    /// Keyed by the owner runtime's own epoch, never reused (an object
+    /// address can be, once a runtime is gone): a reopened chat counts its
+    /// pauses afresh.
+    var resumedThrough: [String:Int] = [:]
     /// Runners whose turn the cost-limit gate or admission ended.
     var budgetStopped: Set<String> = []
     init(open: @escaping Open = { env, plan in try AgentSteeringCoordinator.makeChild(env,plan) }, settled: @escaping SubagentCoordinator.Settled = { await $0.close() }) {
@@ -281,12 +283,12 @@ actor AgentSteeringCoordinator {
     func pause(owner: AgentSession, generation: Int, halt: Bool = false) async {
         // An explicit Stop or close always halts; a late automatic pause
         // older than a Resume does nothing.
-        guard halt || generation > resumedThrough[ObjectIdentifier(owner), default: -1] else { return }
+        guard halt || generation > resumedThrough[owner.displayEpoch, default: -1] else { return }
         paused.insert(owner.id)
         for snapshot in Array(jobs.values) where snapshot.owner === owner {
             // The loop crosses awaits: a Resume since then ends it, and each
             // job is read again, so a stale snapshot acts on nothing.
-            if !halt, generation <= resumedThrough[ObjectIdentifier(owner), default: -1] { break }
+            if !halt, generation <= resumedThrough[owner.displayEpoch, default: -1] { break }
             guard let job = jobs[snapshot.turn.id], job.instance == snapshot.instance else { continue }
             if job.allocated {
                 if halt { jobs[job.turn.id]?.task?.cancel() }
@@ -303,7 +305,7 @@ actor AgentSteeringCoordinator {
     func resumeParked(owner parent: AgentSession, generation: Int) async throws {
         // The pause's own hold may not have arrived yet: apply it first, so
         // every running turn parks under the old execution.
-        let runtime = ObjectIdentifier(parent)
+        let runtime = parent.displayEpoch
         if !paused.contains(parent.id), jobs.values.contains(where: { $0.owner === parent }), generation > resumedThrough[runtime, default: -1] {
             await pause(owner:parent,generation:generation)
         }
