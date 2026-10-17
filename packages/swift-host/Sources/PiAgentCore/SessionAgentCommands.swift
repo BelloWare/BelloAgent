@@ -157,7 +157,48 @@ extension AgentSession {
         result.messageID = nil
         return result
     }
-    func saveAgentTerminal(_ turn: AgentChildTurn) throws { try appendAgentRecord(JournalRecordKind.agentTerminal,turn); agentTurnClosed = true }
+    /// The parked runner may already have closed its writer while its job
+    /// is still settling. Check and write in one actor turn; otherwise the
+    /// host resolves a retained reader or the closed journal.
+    func retireParkedAgentTurn(_ turn: AgentChildTurn) throws -> Bool {
+        guard !closed, journal != nil else { return false }
+        try saveAgentTerminal(turn); return true
+    }
+    func saveAgentTerminal(_ turn: AgentChildTurn) throws {
+        if let saved = subagents.family?.turns[turn.id], !saved.status.terminal {
+            var queued = turn; queued.status = .queued; queued.result = nil
+            for step in queued.mirrorSteps(from:saved) where step != saved { try appendAgentRecord(JournalRecordKind.agentTurnState,step) }
+        }
+        if subagents.family?.turns[turn.id] != turn { try appendAgentRecord(JournalRecordKind.agentTerminal,turn) }
+        guard subagents.family?.latest(id)?.id == turn.id else { return }
+        agentTurnClosed = true
+        try retireTerminalAgentPause()
+    }
+    /// A terminal turn is the durable authority to discard its Resume-only
+    /// state, including when a crash separated the terminal and state saves.
+    /// Pair never-started calls before retiring their IDs; never invoke them.
+    func retireTerminalAgentPause() throws {
+        guard isSubagent, subagents.family?.latest(id)?.status.terminal == true,
+              costPaused || !costPendingCalls.isEmpty || costPendingCompaction else { return }
+        let (held, attempts) = heldToolCalls(); currentAttemptIDs = attempts
+        for call in held { try recordTool(call,result:resultText("Not executed: the child turn was stopped.",error:true),started:nil,state:.cancelled) }
+        let paused = costPauseState, pending = costPendingCalls, compact = (costPendingCompaction,costPendingCompactionFocus)
+        let previous = (queue,steering,queuePaused,state,runStatus)
+        costPendingCalls = []; costPendingCompaction = false; costPendingCompactionFocus = nil
+        _ = endCostPause()
+        costResumePending = false; resumingCostPause = false; familyWaitResume = false; compactOnResume = false
+        queue.removeAll(); steering.removeAll(); queuePaused = false
+        if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
+        if state == .paused { state = .idle; runStatus = .idle }
+        do { try persistState(durable:true) }
+        catch {
+            restoreCostPause(paused); costPendingCalls = pending
+            (costPendingCompaction,costPendingCompactionFocus) = compact
+            (queue,steering,queuePaused,state,runStatus) = previous
+            throw error
+        }
+        event("state")
+    }
     func agentToolKey(_ call: ToolCall) throws -> SubagentCallKey {
         guard let assistant = toolHistory.owners[call.id] else { throw SubagentRecovery.damaged() }
         try journal?.synchronize()

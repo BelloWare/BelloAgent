@@ -69,6 +69,7 @@ extension AgentSteeringCoordinator {
         if let job = jobs[target.id], job.owner === parent, job.allocated, !job.parking {
             await stop(owner:parent.id,target:target,human:human)
         }
+        var retired: (SubagentPlan,AgentChildTurn,AgentSession?)?
         let lock = gate(parent.id); try await lock.acquire()
         do {
             let state = await parent.agentState()
@@ -88,8 +89,16 @@ extension AgentSteeringCoordinator {
                 try await seal(turn:turn,parent:parent,task:plan.origin.description,child:nil)
                 jobs[target.id]?.sealed = true
             } else { await stop(owner:parent.id,target:target,human:human) }
+            if human, jobs[target.id] == nil || jobs[target.id]?.parking == true, turn.status.terminal,
+               let plan = await parent.subagents.plans.values.first(where: { $0.origin.link.childSessionID == target.childID }) { retired = (plan,turn,jobs[target.id]?.child) }
             await lock.release()
         } catch { await lock.release(); throw error }
+        // The terminal is durable. Resolve the retained/cold writer outside
+        // the family gate: host reader opens/deletes use their runtime gate.
+        if let (plan,turn,child) = retired {
+            if let child, try await child.retireParkedAgentTurn(turn) { return }
+            try await retire(parent,plan,turn)
+        }
     }
 }
 

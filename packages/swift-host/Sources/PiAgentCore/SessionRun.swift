@@ -471,8 +471,7 @@ extension AgentSession {
             // The reply that crossed the limit was the run's last word:
             // nothing waits for Resume. The chat is simply at its limit, and
             // a new message is refused there as before.
-            clearCostPauseWithoutWork()
-            if state != .error { state = .idle; runStatus = .idle }
+            if clearCostPauseWithoutWork(), state != .error { state = .idle; runStatus = .idle }
         }
         if costPaused, state != .error {
             queuePaused=true; state = .paused; runStatus = .cancelled

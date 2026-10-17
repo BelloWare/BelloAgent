@@ -4,7 +4,9 @@ import Foundation
 /// with v2. Only runnable turns are retained here; journal state owns identity.
 actor AgentSteeringCoordinator {
     typealias Open = @Sendable (SubagentEnvironment, SubagentPlan) async throws -> AgentSession
+    typealias Retire = @Sendable (AgentSession, SubagentPlan, AgentChildTurn) async throws -> Void
     let open: Open
+    let retire: Retire
     let settled: SubagentCoordinator.Settled
     struct Job {
         let owner: AgentSession, environment: SubagentEnvironment, plan: SubagentPlan
@@ -38,8 +40,9 @@ actor AgentSteeringCoordinator {
     var resumedThrough: [String:Int] = [:]
     /// Runners whose turn the cost-limit gate or admission ended.
     var budgetStopped: Set<String> = []
-    init(open: @escaping Open = { env, plan in try AgentSteeringCoordinator.makeChild(env,plan) }, settled: @escaping SubagentCoordinator.Settled = { await $0.close() }) {
-        self.open = open; self.settled = settled
+    init(open: @escaping Open = { env, plan in try AgentSteeringCoordinator.makeChild(env,plan) }, settled: @escaping SubagentCoordinator.Settled = { await $0.close() },
+         retire: @escaping Retire = { parent, plan, turn in try AgentFamilyRecovery.mirrorTerminal(turn,plan:plan,directory:parent.directory) }) {
+        self.open = open; self.settled = settled; self.retire = retire
     }
     func gate(_ owner: String) -> AsyncGate {
         if let gate = gates[owner] { return gate }; let gate = AsyncGate(); gates[owner] = gate; return gate

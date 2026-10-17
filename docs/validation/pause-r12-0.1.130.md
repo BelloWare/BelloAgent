@@ -590,3 +590,216 @@ the final restored-source runs (diff fingerprint in
 `logs/round3-validated-diff.sha256`). The native runner released its shared lock;
 no result bundles or clone directories remain under this build root. No
 unresolved finding or owner decision remains.
+
+
+## Round 4 — transition audit (before implementation)
+
+Starting revision: `deb20a8d4d61d89ddce7166792d68282238d27f4`.
+The two review findings are confirmed. This inventory was written before the
+Round-4 production changes. “Terminal” below distinguishes a child turn's
+terminal result from an independent chat's Stop: the latter intentionally keeps
+its cost pause and pending work until explicit Resume. Deletion removes the
+journal; it must also retire surviving ancestors' membership. Capture mode does
+not own any of these fields.
+
+| State / owner | Every set, clear or transfer path | Durability and terminal audit at start of Round 4 |
+| --- | --- | --- |
+| `costPaused` (independent chat) | `pauseAtCostLimit`, `notePausedMember`; restore saved/inherited/pending fan-out; failed/premature Resume restores it. `endCostPause`, `clearCostPauseWithoutWork`, missing-member recovery clear it. | Pause saved before cancellation/fan-out. Resume receipt saves before launch; pending Resume still serializes as paused. **Violation:** automatic no-work cleanup schedules root forget/coordinator release before saving its cleared state. Stop/close intentionally preserve unfinished work. |
+| `costPausedMembers` (root, or unbound recovered side) | `notePausedMember` inserts; recovery promotes pending intents; `bindSideBudget` moves descendants to root. `forgetPausedMember`, deletion and missing-journal recovery remove. Resume retains the list until each side takes Resume. | **Violation:** transfer clears source after a swallowed destination save error; repair-known fast path provides no durable acknowledgment. Source removal on failed save also needs rollback. Recovery must keep intermediate descendants root-owned without inventing an intermediate's own pause. |
+| `costPendingSidePauses` (issuing ancestor) | `rememberSidePauses` records callbacks alongside pause; recovery validates saved work and promotes membership. Callback/binding acknowledgment, member retirement/deletion and accepted `endCostPause` remove. Refused Resume restores. | **Violation:** both bind and callback acknowledge after unconfirmed side/root saves. Failed acknowledgment removes the in-memory intent anyway. Accepted Resume deliberately retires callbacks that have not applied (existing contract/test); already applied pauses need durable membership. |
+| `costPauseCount`, `costResumeCount` | New pause/re-pause increments pause count; accepted end increments resume count; refusal restores resume count; fresh runtime starts at zero. | Runtime fences, not journal identities. Coordinator fence keys include runtime epoch. Callback acknowledgment checks issuer resume generation. No terminal persistence obligation for counters themselves. |
+| `costResumePending`, `resumingCostPause`, `familyWaitResume`, `compactOnResume` | Accepted Resume sets; run takes/clears them; failed admission restores all; early cancellation restores cost pause; run consumes compaction/family wait. | `savedState` writes pending Resume as `costPaused=true` until installation is durable. Stop/close routes pending Resume to halt. No model/tool starts solely from a recovered transient flag. |
+| `budgetStopIssued`, `familyStopReason`, `errorCode/errorMessage`, `state/runStatus` | Limit/side propagation latches; launch clears non-limit reason when allowed; Resume clears cost-limit reason/errors; failed accounting fails closed; no-work cleanup clears presentation. | Derived gates/presentation, saved with state where applicable. **Violation:** terminal child cleanup never clears the cost-limit presentation. Ordinary failure and independent Stop must retain their own presentation. |
+| Child `costPaused`, `queuePaused`, `agentTurnClosed`, `agentLease` | `parkAgentTurn` saves queued mirror then pause; same-turn Resume clears pause but retains held work; `prepareAgentTurn` pairs old held calls and clears old pause on new turn; terminal currently sets only `agentTurnClosed`. | **Violation:** parked Stop with no job skips child entirely; live terminal and terminal recovery leave child pause state. Must cover retained reader, cold viewer, missing mirror/continuation, failure between terminal and cleanup, and later follow-up. |
+| `costPendingCalls`, `heldBatchCalls` | Whole-batch gate, per-call gate and control admission hold calls; held IDs saved immediately/at batch end. Resume removes saved IDs before invocation; fresh child turn pairs cancelled calls before clearing. | Durable before-start evidence; clearing before invocation intentionally prevents replay after crash. **Violation:** stopped terminal child keeps pending calls until a follow-up. Terminal cleanup must pair them without invoking. Per-call failed save is conservative (recovery says unknown, never replays); batch/final save retries. |
+| `costPendingCompaction`, `costPendingCompactionFocus`, manual-compaction flags | Pause marks cut manual compaction with focus; restore retains; Resume selects then clears durably before invocation; successful manual compaction clears; transient in-flight flags end with run. | Independent Stop preserves it for explicit Resume. A terminal managed child must not retain any resume-only state; child manual compaction is not admitted independently. |
+| `queuePaused`, queue/steering/delivering, queue edit hold | Stop, pause, failed run and recovery hold; Resume/retry/release/branch/compaction/queue edit clear only through their admission checks; delivered IDs retire on recovery; pending input stays durable. | Ordinary Stop/quit intentionally holds input. Managed terminal turn must discard its accepted pending input and held pause, not future independent work (managed readers cannot submit independently). Queue edit is separate and barred while cost-paused. |
+| Coordinator `paused`, `resumedThrough`, `budgetStopped` | `pause` inserts hold and cuts requests; `resumeParked` removes under gate after draining, records generation; `releaseStaleHold` removes only without jobs; runner budget error marks/removes per-turn set. | In-memory projection of durable owner/turn state. Park/install/terminal writes share gate; live cancellation precedes gate; provider compaction is outside it. Stop holds unfinished family; terminal child alone must not release siblings. |
+| Coordinator jobs `cancelled`, `parking`, `sealed`, queues/active; `cancelledThrough` | Install/accept -> queued; pump -> active; pause -> park/remove; human/ordinary Stop -> cancelled, terminal -> sealed/remove; Resume reinstalls unsealed turns; cancellation generation fences old jobs. | Identity is instance-checked across awaits; snapshot/install serialized with Stop. Durable terminal precedes dropping runnable ownership. Parked Stop currently needs a child-writer route after job removal. |
+| Family `run.heldChildren`, `run.closed`, child turn status/result/continuations | Human Stop appends hold; accepted new execution creates new run (clears holds); run fence/recovery closes; park queues without result; Resume appends continuation; seal/recovery writes terminal/result. | Durable Stop beats cost parking on recovery. Hold intentionally survives parent's current execution and is cleared only in a new execution. Terminal is authority for child cleanup; never replay stopped work. |
+| `sideBudgetParents/IDs`, `sideBudgetMembers`, `sideBudgetStops` | Host binds validated ancestry and overwrites each ancestor callback for that side ID; weak runtime references expire on release; numeric family recovery reconstructs saved ancestry. | These identify authorization/accounting, not resumable work. They must not be removed when a pause clears. Weak callback references prevent lifetime retention. Only pause membership transfers. |
+| `familyWaiting`, `agentDeliveryHeld`, `pendingInputHeld` | Coordinator boundary sets waiting while work/input is held; the family fence and run error path clear it through `setFamilyWaiting`. Delivery/edit holds derive from closed/queuePaused/queueEdit. | Waiting is runtime presentation, not a durable Resume obligation; derived holds need no separate transfer. Existing family-boundary and queue-edit tests cover release/cancellation. |
+| `queueEdit` and its edit outcome/revision fields | `beginQueueEdit` saves the hold before replying, restores on failed save; resolution clears and saves an outcome, restores on failed save; restore removes a hold only for input already delivered. | Independent editing transaction, not cost membership. Stop preserves it; cost pause prevents new conflicting edits; deletion discards journal. Managed children cannot acquire an independent edit hold. |
+| `membersPendingResume`, `hasParkedAgentTurns`, `canContinue`, snapshot pause/hint | Computed from the above; no independent writes. | Regression assertions must use snapshots/Resume reply members and actual follow-up execution, not only internal flags. |
+
+Additional confirmed violations to fix with the two reported ones: live fan-out
+acknowledgment without durable side/root confirmation; failure rollback for
+membership/intents; automatic no-work retirement before its own durable save;
+and held-tool/pending-input retirement on child terminalization. Missing-member
+recovery is repeatable from the deleted journal, but its corrected projection
+should also be saved. The implementation/tests below will record the final
+outcome of each transition, including any further findings.
+
+### Round-4 implementation and terminal-path sweep
+
+`notePausedMember` now returns a durable acknowledgment, including for a member
+already known in memory. Failed appends/synchronizes cannot authorize removing
+another writer's copy. Binding confirms the side state first, transfers every
+member to the root, then saves the source removal. A failed source removal
+restores the current list, including members added across the root await.
+Live fan-out uses the same side/root confirmation before acknowledging an
+ancestor's intent. Failed intent/member removals roll back in memory so a later
+unrelated save cannot commit them accidentally. Automatic no-work retirement
+saves before releasing the coordinator or notifying its root. Recovery saves
+both newly inherited membership and removed/missing membership.
+
+Unkept sides have no journal by design: their live pause is carried by the root;
+Keep publishes the whole state. An ephemeral root cannot acknowledge a durable
+transfer. Closing/discarding an unkept side or deleting a kept side retires its
+membership; a publication crossing that close checks again and cannot resurrect
+it. A kept side merely closing retains its durable Resume obligation. An
+unreadable journal is not treated as proof of deletion.
+
+A parked Stop writes the authoritative owner terminal under the family gate,
+then reconciles the child outside that gate. A still-open parked writer is
+checked and updated in one actor turn. If it has closed, the host resolves the
+retained reader under its runtime gate or mirrors the terminal into the closed
+journal. This avoids a second writer and a family/runtime gate inversion. A
+late terminal for an older turn cannot clear a newer follow-up's state. A cold
+reader uses the terminal as authority to clear and save its pause before
+returning a snapshot. No model/tool is invoked for terminal reconciliation.
+
+The common child terminal cleanup pairs held tool calls as `not_executed`,
+retires their IDs, pending input, compaction and pause flags, and saves before
+reporting completion. It also runs during terminal recovery. A failed state
+save restores the pending state for retry; already-written tool results are
+not duplicated. The existing fresh-follow-up cleanup remains a defensive path
+for old journals whose owner terminal never reached the child mirror.
+
+The adversarial sweep found two issues in the first Round-4 implementation,
+both fixed before final validation: a failed terminal cleanup could clear its
+in-memory retry predicate (2 failing assertions), and passing a parked job's
+already-closed child writer to seal could prevent Stop acknowledgment (3
+failing assertions). It also tightened source rollback to retain memberships
+added while root acknowledgment was in flight. The broader existing pause class
+exposed the close/publication race described above. No permission, capture,
+tool grant, accounting ownership, vault or user-data boundary was relaxed.
+
+### Round-4 adversarial condition audit
+
+Compared the entire branch's production diff with the merge base of fetched
+`origin/dev/next` (`6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1`), then included the
+Round-4 working diff. The Round-3 condition audit above remains applicable;
+these are the final decisions after rechecking every changed condition and its
+opposite branch. Off/memory/persist are not predicates in any production fix.
+The stopped-child reader, cold-recovery and follow-up fixtures exercise all
+three modes with generated journals.
+
+| Changed condition/path | States taking the changed branch; opposite states checked |
+| --- | --- |
+| Recovery excludes `heldChildren` from cost parking | Queued/running/stopping unsealed turns with durable human Stop become terminal. Unstopped unsealed turns still park; existing terminal evidence still wins. No execution on open. |
+| Park sees cancelled job / terminal owner | Allocated cancelled jobs finish; queued cancelled jobs retain their existing finisher. A terminal owner mirrors terminal instead of writing queued. Uncancelled, unsealed jobs retain ordinary park behavior and instance checks. |
+| Resume snapshot/install takes family gate | Stop can precede or follow installation, never seal between a stale snapshot and queued write. Draining is outside the gate; cancelled Resume restores the owner pause and halts live work. |
+| Human Stop bypasses coordinator pause; allocated cancellation precedes gate | Live target requests/tools cancel promptly; siblings' compaction is independent. Queued/parking/absent jobs use gated terminal writes. Nonhuman cancellation still preserves cost parking. Unknown targets fail scope checks; stale old-turn Stops do not hold a newer turn. |
+| Parked/terminal Stop resolves writer after sealing | Live parked writer is updated atomically; a closed writer falls back to host/cold reconciliation. The host serializes retained-reader mutation with opens/deletes. Ordinary live runners still seal themselves. A newer child turn skips old-turn pause retirement. |
+| Delivery returns none/delivered/compact | Empty/held inbox remains unchanged; fitting input commits under gate; oversized single input may compact once outside gate and reselect. Multi-event batches still shrink; still-oversized input fails without delivery. Stop/cancellation and new sibling results during compaction are rechecked. |
+| Fresh child follow-up retires old pause/held calls | Terminal prior turn's held calls are paired without execution. Same-turn Resume keeps legitimate held work. Unpaused fresh turns have no extra work to retire. |
+| Terminal cleanup predicate | Only managed children with latest terminal and pause/held-call/compaction state retire it. Ordinary independent Stop, unfinished parked children, and newer follow-ups retain their state. Failed save rolls back; cold replay repairs terminal-before-cleanup crashes. |
+| Pending Resume included in owner halt | Stop/close between accepted receipt and resumed runner halts children. Ordinary unpaused cancellation is unchanged; already-paused owner remains held. |
+| Fan-out saved even without owner work | Idle ancestor with active descendants saves intents; truly empty family gains no invented own work. Recovery validates ancestry/journals; missing or idle sides are excluded. Idle intermediate carries descendants without becoming a paused member itself. Orphan becomes its own root. |
+| Accepted Resume clears pending intents; refusal restores | Already-applied side pauses stay in root members until side Resume. Callbacks not yet applied are retired by the accepted generation. Invalid override/limit refusal preserves the original generation and obligations. |
+| Root member acknowledgment / known repair | New member pauses the family; known repair confirms persistence without undoing an accepted root Resume. Closed/invalid owners cannot acknowledge. Append/sync failure retains source; a partial transfer may retain duplicates conservatively until retry. |
+| Source transfer/removal rollback | Successful root save precedes source removal. Failed root save keeps all source members; failed source save restores its current list, including concurrent additions. Live callbacks cannot acknowledge a failed side/root save. |
+| Automatic cleanup and member/intent removal | No-work pause clears durably before cross-actor release. Failed clear/removal keeps the obligation for retry; remaining own work or other members prevents clearing the aggregate pause. Deletion removes both membership and pending intents. |
+| Publication crosses close/delete | A closed side cannot begin publication; if close crosses root acknowledgment, an unkept/deleted side is retired again. Kept closed sides with journals keep their Resume membership. File read errors retain obligations conservatively. |
+| Restore persists changed projections | Newly inherited pause/membership and deletion/terminal cleanup are saved. Unchanged states need no new recovery save. Readers do not start work; authority remains in original journals, with no capture dependency. |
+
+No additional product decision was needed. Independent Stop/close intentionally
+continues to hold unfinished work for explicit Resume; clearing every pause on
+an independent Stop would violate the owner's contract.
+
+### Round-4 regression and mutation evidence
+
+Ten new `FamilyLimitPauseTests` cover root append/synchronize failure with an
+unopened leaf and restart; known-member acknowledgment retry; failed source
+removal with concurrent membership; live side/ancestor fan-out save failure;
+automatic retirement save failure; failed member/intent removal followed by an
+unrelated save and restart; both host Stop routes with retained and reopened
+readers in all capture modes; held-tool terminal recovery in all capture modes;
+terminal cleanup retry; Stop after the parked writer closed; and delayed
+publication after discard/delete. Assertions inspect snapshots, actual Resume
+reply members, tool-result rows and request/tool invocation counts. The prior
+Stop → Resume → follow-up and sibling-compaction acknowledgment tests remain in
+the full affected class.
+
+With the final ten tests and production sources restored to `deb20a8d`, the
+failing-first run produced **79 failed assertions, 0 unexpected errors** after
+a successful build (`logs/round4-red-final.log`). The test runner restores all
+production sources in `finally`. Initial fixture corrections were needed: host
+open uses `path`, and a kept side must be reopened to inject failures into its
+actual writer (Keep replaces the ephemeral writer). Failure probes now assert
+that the injected failure ran. These early fixture runs are not the final red
+evidence. One extra-mutation build caught a missing Swift `try` on the throwing
+Boolean expression in the deletion check; it was corrected and both extra
+mutations were rerun successfully.
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
+python3 "$B/check-round4-mutations.py"
+python3 "$B/check-round4-extra-mutations.py"
+```
+
+Each mutation successfully built, failed the intended regression, and had zero
+unexpected errors. Final sources were restored after every run.
+
+| Mutation | Failed assertions | Text log under `$B/logs` |
+| --- | ---: | --- |
+| Return success after failed root save | 6 | `round4-mutation-false-ack.log` |
+| Acknowledge known member without saving | 4 | `round4-mutation-known-member.log` |
+| Acknowledge fan-out despite failed publication | 2 | `round4-mutation-callback-ack.log` |
+| Roll back to the source list captured before the root await | 1 | `round4-mutation-stale-source.log` |
+| Release automatic pause before local durable save | 1 | `round4-mutation-early-retirement.log` |
+| Drop rollback for failed member/intent removals | 2 | `round4-mutation-removal-rollback.log` |
+| Skip live terminal pause cleanup | 8 | `round4-mutation-live-terminal.log` |
+| Skip cold terminal pause cleanup | 6 | `round4-mutation-cold-terminal.log` |
+| Clear terminal cleanup's retry state on failed save | 2 | `round4-mutation-terminal-rollback.log` |
+| Seal through the parked job's already-closed writer | 3 | `round4-mutation-closing-writer.log` |
+| Allow closed sides to publish membership | 2 | `round4-mutation-late-closed-publication.log` |
+
+### Round-4 final validation
+
+All commands below run from this worktree, using only its build root. No app UI
+code changed, so no galleries needed regeneration. The native runner takes and
+releases the shared full-lane lock for each command, runs LifecycleHelper alone,
+and removes only this build root's automatic result bundles.
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter 'FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|AgentSteering|Subagent|Compaction|HostServiceTests|HostDispatchTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/bundle/Helpers/pi-native-host"
+bash "$B/check-round4-native.sh"
+# The native runner executes these exact focused commands:
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/CostPausePresentationTests \
+  -only-testing:PiAppTests/CostLimitTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/CostPauseFamilyTests
+PI_BUILD_ROOT="$B" scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/LifecycleHelperTests
+```
+
+| Suite | Final result | Text log under `$B/logs` |
+| --- | --- | --- |
+| Affected helper tests, including all 60 FamilyLimitPauseTests | 387 passed, 0 failed | `round4-focused.log` |
+| Full helper suite | 1,034 passed, 7 skipped, 0 failed (1,041 total; 403.9 s) | `round4-helper-full.log` |
+| Release helper build | Passed | `round4-bundle.log` |
+| Native RunHold / CostPausePresentation / CostLimit | 37 passed (18 / 6 / 13), 0 failed | `round4-native-pause.log` |
+| Native CostPauseFamily, alone | 3 passed, 0 failed | `round4-native-family.log` |
+| Native LifecycleHelper, alone | 11 passed, 0 failed | `round4-native-lifecycle.log` |
+| Wire | 36 passed, 0 failed | `round4-wire.log` |
+| Concurrent | 4 passed, 0 failed | `round4-concurrent.log` |
+| Acceptance | 3 passed, 0 failed | `round4-acceptance.log` |
+
+In the final full helper run, `subagent.stop` acknowledged in **0.356 ms** and
+managed-child `turn.stop` in **0.473 ms**, with sibling compaction still held.
+The seven skips are the existing opt-in fixture/performance tests. No unrelated
+test failed. The code/test diff fingerprint remained unchanged throughout final
+validation (`round4-validated-diff.sha256`). All 51 native tests ran under the
+shared lock, which was released; no clone directories or result bundles remain
+under this build root. No unresolved finding or owner decision remains.

@@ -2043,3 +2043,346 @@ private extension AgentSession {
         return pending
     }
 }
+
+/// Round 4: a pause transfer needs a durable acknowledgment, and a terminal
+/// child must have no Resume-only state even when no follow-up ever arrives.
+extension FamilyLimitPauseTests {
+    func testRecoveredMembershipSurvivesFailedRootAcknowledgments() async throws {
+        for failure in ["append","sync","source"] {
+            let root = try temporaryDirectory(), crash = root.appendingPathComponent("crash")
+            defer { try? FileManager.default.removeItem(at:root) }
+            let fault = PauseWriteFault()
+            let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),
+                beforeJournalAppend:{ try fault.append($0,writer:"parent") },beforeJournalSynchronize:{ try fault.synchronize(writer:"parent") })
+            let side = try await faultSide(parent:owner,root:root,fault:fault)
+            let leaf = try await self.side("leaf",parent:side,root:root)
+            _ = try await leaf.keep(whenFinished:false)
+            await leaf.fixtureQueue(Submission(commandID:"held",turnID:"held",text:"Leaf work"))
+            try await leaf.fixtureSavedPauseMembers([])
+            try await side.fixturePauseLists(members:["leaf"],pending:[])
+            let parentPath = try XCTUnwrap(awaitValue: await owner.path)
+            let durableParent = try Data(contentsOf:URL(fileURLWithPath:parentPath))
+            fault.arm(failure == "source" ? "side" : "parent",sync:failure == "sync",emptyMembers:failure == "source")
+            for _ in 0..<2 {
+                do { try await side.bindSideBudget(to:owner) } catch { XCTAssertEqual((error as? AgentError)?.code,"fixture_pause_write") }
+                let snapshot = await side.snapshot()
+                XCTAssertEqual(snapshot["cost"]["pausedMembers"].list,["leaf"],"\(failure): source survives every unacknowledged transfer, including known-member retry")
+            }
+            try FileManager.default.createDirectory(at:crash,withIntermediateDirectories:true)
+            for file in try FileManager.default.contentsOfDirectory(at:root,includingPropertiesForKeys:nil) where file.pathExtension == "jsonl" {
+                try FileManager.default.copyItem(at:file,to:crash.appendingPathComponent(file.lastPathComponent))
+            }
+            // An unsuccessful synchronize provides no promise that its bytes
+            // survive. Simulate their loss, not an orderly close's later flush.
+            if failure == "sync" { try durableParent.write(to:crash.appendingPathComponent("parent.jsonl")) }
+            fault.disarm(); await leaf.close(); await side.close(); await owner.close()
+            func reopen(_ id: String) throws -> AgentSession {
+                let file = try XCTUnwrap(SideBudgetRecovery.journalURL(id,directory:crash))
+                return try AgentSession(id:id,profile:fixtureProfile(),apiKey:"fixture",cwd:crash,directory:crash,readOnly:true,
+                    resources:Resources(cwd:crash,home:crash),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:file.path)
+            }
+            let restored = try reopen("parent"), restoredSide = try reopen("side")
+            try await restoredSide.bindSideBudget(to:restored)
+            var reply: JSON = .null
+            do { reply = try await restored.continueRun(commandID:"resume-root") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"nothing_to_continue") }
+            XCTAssertTrue(reply["pausedMembers"].list.contains("leaf"),"The app must still receive the unopened descendant after \(failure)")
+            await restoredSide.close(); await restored.close()
+        }
+    }
+
+    func testFailedTransferRetainsMembershipAddedDuringRootAcknowledgment() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let fault = PauseWriteFault(), barrier = PauseWriteBarrier()
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),beforeJournalAppend:{ barrier.append($0) })
+        let side = try await faultSide(parent:owner,root:root,fault:fault)
+        try await owner.fixtureSavedPauseMembers([])
+        try await side.fixturePauseLists(members:["leaf"],pending:[])
+        barrier.arm()
+        let binding = Task { try await side.bindSideBudget(to:owner) }
+        do { try await eventually { barrier.waiting } }
+        catch { barrier.release(); _ = try? await binding.value; throw error }
+        // The root's save is in flight while the side learns another member.
+        // The source failure must restore both, not its pre-await snapshot.
+        try await side.fixturePauseLists(members:["leaf","later"],pending:[])
+        fault.arm("side"); barrier.release()
+        do { try await binding.value; XCTFail("Expected source save failure") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,"fixture_pause_write") }
+        let snapshot = await side.snapshot()
+        XCTAssertEqual(snapshot["cost"]["pausedMembers"].list,["leaf","later"])
+        fault.disarm(); await side.close(); await owner.close()
+    }
+
+    func testSideFanoutKeepsIntentUntilBothPauseAndRootMembershipAreDurable() async throws {
+        for failedWriter in ["parent","side"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let fault = PauseWriteFault()
+            let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),
+                beforeJournalAppend:{ try fault.append($0,writer:"parent") })
+            let intermediate = try await self.side("intermediate",parent:owner,root:root)
+            _ = try await intermediate.keep(whenFinished:false)
+            let side = try await faultSide(parent:intermediate,root:root,fault:fault)
+            await side.fixtureQueue(Submission(commandID:"held",turnID:"held",text:"Side work"))
+            try await side.fixturePauseLists(members:[],pending:[])
+            try await intermediate.fixturePauseLists(members:[],pending:["side"])
+            // Fail the new pause/member save, but let an erroneous removal
+            // succeed, so this distinguishes ordering from a blocked writer.
+            fault.arm(failedWriter,matchingPause:true)
+            try await intermediate.fixtureNotifySide("side")
+            let path = try XCTUnwrap(awaitValue: await intermediate.path)
+            let saved = try SideBudgetRecovery.pauseState(URL(fileURLWithPath:path),id:"intermediate").state
+            XCTAssertTrue(saved["costPendingSidePauses"].list.contains("side"),"\(failedWriter): failed replacement must keep the durable intent")
+            fault.disarm(); await intermediate.close(); await side.close(); await owner.close()
+        }
+    }
+
+    func testAutomaticPauseRetirementWaitsForItsDurableSave() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let fault = PauseWriteFault(), owner = try familyFixture(root:root)
+        let side = try await faultSide(parent:owner,root:root,fault:fault)
+        try await side.fixtureSavedPauseMembers([]); await owner.notePausedMember("side")
+        fault.arm("side",emptyMembers:true)
+        await side.clearCostPauseWithoutWork()
+        try await Task.sleep(for:.milliseconds(100))
+        let snapshot = await owner.snapshot()
+        XCTAssertEqual(snapshot["cost"]["pausedMembers"].list,["side"],"A failed local save must not retire the root's Resume obligation")
+        fault.disarm(); await side.close(); await owner.close()
+    }
+
+    func testFailedPauseRemovalsSurviveALaterStateSaveAndRestart() async throws {
+        for removal in ["member","intent"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let fault = PauseWriteFault()
+            let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),
+                beforeJournalAppend:{ try fault.append($0,writer:"parent") })
+            let side = try await self.side("side",parent:owner,root:root)
+            _ = try await side.keep(whenFinished:false)
+            await side.fixtureQueue(Submission(commandID:"held",turnID:"held",text:"Held work"))
+            try await side.fixtureSavePauseState()
+            if removal == "member" { try await owner.fixtureSavedPauseMembers(["side"]) }
+            else { try await owner.fixturePauseLists(members:[],pending:["side"]) }
+            fault.arm("parent",emptyMembers:true)
+            if removal == "member" { await owner.forgetPausedMember("side") }
+            else { await owner.acknowledgeSidePause("side") }
+            fault.disarm(); try await owner.fixtureSavePauseState()
+            let path = await owner.path; await side.close(); await owner.close()
+            let restored = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:path)
+            var reply: JSON = .null
+            do { reply = try await restored.continueRun(commandID:"resume") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"nothing_to_continue") }
+            XCTAssertEqual(reply["pausedMembers"].list,["side"],"\(removal): an unrelated save cannot commit a failed retirement")
+            await restored.close()
+        }
+    }
+
+    private func faultSide(parent: AgentSession, root: URL, fault: PauseWriteFault) async throws -> AgentSession {
+        let initial = try await side("side",parent:parent,root:root)
+        _ = try await initial.keep(whenFinished:false)
+        let path = await initial.path; await initial.close()
+        let side = try AgentSession(id:"side",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:path,
+            beforeJournalAppend:{ try fault.append($0,writer:"side") })
+        try await side.bindSideBudget(to:parent); return side
+    }
+
+    func testParkedStopClearsRetainedAndReopenedChildSnapshots() async throws {
+        for route in ["subagent.stop","turn.stop"] { for mode in ["off","memory","persist"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let host = NativeHostService(emit:{ _ in })
+            _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(root.path),"resources":["codexHome":JSON(root.appendingPathComponent("codex").path)]])
+            _ = try await host.command("session.open",sessionID:"parent",params:["profile":try fixtureProfile().raw,"apiKey":"fixture","toolMode":"read-only","captureMode":JSON(mode)])
+            let owner = try XCTUnwrap(awaitValue: await host.loadedSession("parent"))
+            let coordinator = try XCTUnwrap(awaitValue: await owner.agentCoordinator)
+            await coordinator.fixturePause("parent")
+            let id = try await startChild(owner,coordinator,"parked")
+            try await owner.fixtureAcceptedReceipt("parked")
+            try await owner.fixtureSavedPauseMembers([])
+            try await eventually { await coordinator.jobs.isEmpty }
+            // Open after the parked runner has been evicted: this retained
+            // reader is not the runtime the coordinator previously ran.
+            _ = try await host.command("session.open",sessionID:id,params:["profile":try fixtureProfile().raw,"apiKey":"fixture","toolMode":"read-only","path":JSON(root.appendingPathComponent(id + ".jsonl").path)])
+            let reader = try XCTUnwrap(awaitValue: await host.loadedSession(id))
+            let before = await reader.snapshot(); XCTAssertEqual(before["costPaused"].flag,true)
+            let reply = try await host.command(route,sessionID:route == "subagent.stop" ? "parent" : id,params:route == "subagent.stop" ? ["childId":JSON(id),"turn":1] : [:])
+            XCTAssertEqual(reply["accepted"].flag,true)
+            for snapshot in [await reader.snapshot(),try await host.command("session.snapshot",sessionID:id,params:[:])] {
+                XCTAssertNotEqual(snapshot["costPaused"].flag,true,"\(route)/\(mode): stopped reader must not promise parent Resume")
+                XCTAssertNotEqual(snapshot["cost"]["paused"].flag,true)
+            }
+            await host.shutdown()
+            let cold = try AgentSession(id:id,profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:root.appendingPathComponent(id + ".jsonl").path)
+            let snapshot = await cold.snapshot()
+            XCTAssertNotEqual(snapshot["costPaused"].flag,true,"Cold terminal reader cannot offer Resume")
+            XCTAssertNotEqual(snapshot["cost"]["paused"].flag,true)
+            await cold.close()
+        } }
+    }
+
+    func testParkedStopAfterChildWriterClosesStillRetiresItsPause() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let gate = OpenGate(), coordinator = AgentSteeringCoordinator(settled:{ child in await child.close(); await gate.wait() })
+        let owner = try await steeringOwner(root,client:ScriptClient([]),coordinator:coordinator)
+        await coordinator.fixturePause("parent")
+        let id = try await startChild(owner,coordinator,"closing")
+        try await owner.fixtureAcceptedReceipt("closing"); try await owner.fixtureSavedPauseMembers([])
+        try await eventually { await gate.waiting }
+        do { try await coordinator.stop(parent:owner,target:.init(childID:id,turn:1),human:true) }
+        catch { XCTFail("A closing parked writer cannot prevent Stop acknowledgment: \(error)") }
+        await gate.open(); try await eventually { await coordinator.jobs.isEmpty }
+        let listed = await coordinator.list(parent:owner,cursor:0,limit:10)["children"].list
+        XCTAssertEqual(listed.first?["status"].text,"not_executed")
+        let reader = try AgentSession(id:id,profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:root.appendingPathComponent(id + ".jsonl").path)
+        let snapshot = await reader.snapshot(); XCTAssertNotEqual(snapshot["costPaused"].flag,true)
+        await reader.close(); await owner.close()
+    }
+
+    func testLateSidePauseCannotResurrectClosedOrDeletedMembership() async throws {
+        for kept in [false,true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let gate = OpenGate(), owner = try familyFixture(root:root)
+            let side = try await self.side("side",parent:owner,root:root)
+            if kept { _ = try await side.keep(whenFinished:false) }
+            await side.fixtureQueue(Submission(commandID:"held",turnID:"held",text:"Held side input"))
+            await owner.fixtureDelaySidePauses(gate)
+            await owner.stopFamilyAtLimit(AgentSession.costHoldError)
+            try await eventually { await gate.waiting }
+            let path = await side.path; await side.close()
+            if let path { try FileManager.default.removeItem(atPath:path) }
+            await owner.forgetDeletedMembers(["side"])
+            await gate.open()
+            // Await the same callback directly too: all publications from
+            // the first callback either precede this one or see closed.
+            try await owner.fixtureNotifySide("side")
+            try await Task.sleep(for:.milliseconds(50))
+            let snapshot = await owner.snapshot()
+            XCTAssertTrue(snapshot["cost"]["pausedMembers"].list.isEmpty)
+            XCTAssertNotEqual(snapshot["costPaused"].flag,true)
+            await owner.close()
+        }
+    }
+
+    func testFailedTerminalPauseCleanupRetriesWithoutReplayingHeldTools() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = FollowUpAfterStopClient(heldTools:true), coordinator = AgentSteeringCoordinator()
+        let owner = try await steeringOwner(root,client:client,coordinator:coordinator)
+        await owner.setCostLimit(0.5)
+        let id = try await startChild(owner,coordinator,"held")
+        try await owner.fixtureAcceptedReceipt("held")
+        try await eventually { await coordinator.jobs.isEmpty }
+        var turn = try XCTUnwrap(awaitValue: await owner.agentState().latest(id))
+        let plan = try XCTUnwrap(awaitValue: await owner.subagents.plans.values.first { $0.origin.link.childSessionID == id })
+        turn.status = .interrupted
+        turn.result = SubagentToolResult(plan:plan,status:.interrupted,error:AgentError("subagent_stopped","Stopped"),began:true)
+        turn.normalizeResult()
+        let fault = PauseWriteFault(), tools = RecordingTools()
+        let reader = try AgentSession(id:id,profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:TraceStore(),resumePath:root.appendingPathComponent(id + ".jsonl").path,
+            beforeJournalAppend:{ try fault.append($0,writer:"child") })
+        fault.arm("child",emptyMembers:true)
+        do { try await reader.saveAgentTerminal(turn); XCTFail("Terminal cleanup did not confirm its state save") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,"fixture_pause_write") }
+        fault.disarm(); try await reader.saveAgentTerminal(turn)
+        let snapshot = await reader.snapshot()
+        XCTAssertNotEqual(snapshot["costPaused"].flag,true)
+        let saved = try SideBudgetRecovery.pauseState(root.appendingPathComponent(id + ".jsonl"),id:id).state
+        XCTAssertNotEqual(saved["costPaused"].flag,true)
+        XCTAssertTrue(saved["costPendingCalls"].list.isEmpty)
+        let history = await reader.history, calls = await tools.calls
+        XCTAssertEqual(history.filter { $0.role == "toolResult" && $0.toolCallId == "call-0" }.count,1)
+        XCTAssertTrue(calls.isEmpty)
+        await reader.close(); await owner.close()
+    }
+
+    func testTerminalRecoveryRetiresChildPauseAndHeldToolsBeforeAnyFollowUp() async throws {
+        for mode in ["off","memory","persist"] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let client = FollowUpAfterStopClient(heldTools:true), traces = TraceStore(), tools = RecordingTools()
+            _ = try await traces.command("debug.mode",session:"parent",params:["mode":JSON(mode)])
+            let coordinator = AgentSteeringCoordinator()
+            let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:traces)
+            await owner.enableFamilyBudget(); await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+            await owner.setCostLimit(0.5)
+            let id = try await startChild(owner,coordinator,"held")
+            try await owner.fixtureAcceptedReceipt("held")
+            try await eventually { await coordinator.jobs.isEmpty }
+            // Crash after durable Stop admission, before either terminal or
+            // pause cleanup. Parent recovery must retire the child too.
+            var run = try XCTUnwrap(awaitValue: await owner.agentState().run)
+            run.heldChildren.append(id); try await owner.appendAgentRecord(JournalRecordKind.familyRun,run)
+            let parentPath = await owner.path; await owner.close()
+            let restored = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:traces,resumePath:parentPath)
+            let cold = try AgentSession(id:id,profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:client,tools:tools,traces:traces,resumePath:root.appendingPathComponent(id + ".jsonl").path)
+            let snapshot = await cold.snapshot(), history = await cold.history
+            XCTAssertNotEqual(snapshot["costPaused"].flag,true)
+            XCTAssertNotEqual(snapshot["cost"]["paused"].flag,true)
+            let results = history.filter { $0.role == "toolResult" && $0.toolCallId == "call-0" }
+            XCTAssertEqual(results.count,1,"The terminal transcript pairs the held tool immediately")
+            XCTAssertEqual(results.first?.toolStats?["outcome"].text,"not_executed")
+            let calls = await tools.calls; XCTAssertTrue(calls.isEmpty)
+            let saved = try SideBudgetRecovery.pauseState(root.appendingPathComponent(id + ".jsonl"),id:id).state
+            XCTAssertNotEqual(saved["costPaused"].flag,true); XCTAssertTrue(saved["costPendingCalls"].list.isEmpty)
+            await cold.close(); await restored.close()
+        }
+    }
+}
+
+/// A synchronous journal hook holds one root write while another actor
+/// records a new membership. No provider or shared native lane is involved.
+private final class PauseWriteBarrier: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var armed = false, entered = false, released = false
+    var waiting: Bool { condition.lock(); defer { condition.unlock() }; return entered }
+    func arm() { condition.lock(); armed = true; condition.unlock() }
+    func release() { condition.lock(); released = true; condition.broadcast(); condition.unlock() }
+    func append(_ row: JSON) {
+        condition.lock(); defer { condition.unlock() }
+        guard armed, row["customType"].text == JournalRecordKind.state, row["data"]["costPausedMembers"].list.contains("leaf") else { return }
+        armed = false; entered = true
+        while !released { condition.wait() }
+    }
+}
+
+private final class PauseWriteFault: @unchecked Sendable {
+    private let lock = NSLock()
+    private var writer: String?, sync = false, emptyMembers = false, matchingPause = false, hits = 0
+    func arm(_ writer: String, sync: Bool = false, emptyMembers: Bool = false, matchingPause: Bool = false) {
+        lock.lock(); defer { lock.unlock() }
+        self.writer = writer; self.sync = sync; self.emptyMembers = emptyMembers; self.matchingPause = matchingPause
+    }
+    func disarm() { lock.lock(); let count = hits; writer = nil; lock.unlock(); XCTAssertGreaterThan(count,0,"The injected writer failure must actually run") }
+    func append(_ record: JSON, writer: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard self.writer == writer, !sync, record["customType"].text == JournalRecordKind.state else { return }
+        if emptyMembers, !record["data"]["costPausedMembers"].list.isEmpty { return }
+        if matchingPause, record["data"]["costPaused"].flag != true { return }
+        hits += 1; throw AgentError("fixture_pause_write","Injected \(writer) pause write failure")
+    }
+    func synchronize(writer: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        if self.writer == writer, sync { hits += 1; throw AgentError("fixture_pause_write","Injected \(writer) synchronize failure") }
+    }
+}
+
+private extension AgentSession {
+    func fixtureSavePauseState() throws { try persistState(durable:true) }
+    func fixturePauseLists(members: [String], pending: [String]) throws {
+        costPausedMembers = members; costPendingSidePauses = pending; try persistState(durable:true)
+    }
+    func fixtureNotifySide(_ side: String) async throws {
+        let notify = try XCTUnwrap(sideBudgetStops[side]); await notify(Self.costHoldError,costResumeCount)
+    }
+}
+
+private func XCTUnwrap<T>(awaitValue: T?, file: StaticString = #filePath, line: UInt = #line) throws -> T {
+    try XCTUnwrap(awaitValue,file:file,line:line)
+}

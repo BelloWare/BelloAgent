@@ -171,6 +171,29 @@ enum AgentFamilyRecovery {
         }
         if var run = state.family!.run, !run.closed { run.closed = true; try write(JournalRecordKind.familyRun,run) }
     }
+    /// A parked Stop has no live runner. The host calls this only when no
+    /// retained writer exists, under its runtime gate. A subsequent reader
+    /// retires pause/tool state from this terminal authority during restore.
+    static func mirrorTerminal(_ turn: AgentChildTurn, plan: SubagentPlan, directory: URL) throws {
+        let id = try identity(JSON(turn.childID)), url = directory.appendingPathComponent(id + ".jsonl")
+        guard FileManager.default.fileExists(atPath:url.path) else { return }
+        try SessionJournal.verifyManagedChild(url:url,id:id)
+        let journal = try SessionJournal(url:url,id:id,cwd:directory,binding:nil,create:false)
+        let reader = try JournalRecordReader(url)
+        var state = SubagentJournalState()
+        while let row = try reader.next() { try state.consume(row,sessionID:id) }
+        guard state.origin?.matchesAccepted(plan.origin) == true else { throw SubagentRecovery.damaged() }
+        try journal.promoteToSteering(managedChild:true)
+        func write(_ kind: String, _ value: AgentChildTurn) throws {
+            let row: JSON = ["type":"custom","customType":JSON(kind),"ownerID":JSON(plan.origin.link.budgetOwnerSessionID),"data":try subagentJSON(value)]
+            try state.consume(row,sessionID:id); try journal.append(row,flush:true)
+        }
+        if let saved = state.family?.turns[turn.id], !saved.status.terminal {
+            var queued = turn; queued.status = .queued; queued.result = nil
+            for step in queued.mirrorSteps(from:saved) where step != saved { try write(JournalRecordKind.agentTurnState,step) }
+        }
+        if state.family?.turns[turn.id] != turn { try write(JournalRecordKind.agentTerminal,turn) }
+    }
     static func deliveryDigest(_ delivery: AgentDelivery) -> String { sha256(Data(JSON.array([textBlock(delivery.payload.encoded())]).encoded().utf8)) }
 }
 

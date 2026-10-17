@@ -8,6 +8,7 @@
 - [x] Round-12 follow-up: recovered side Resume membership transfers to the root and clears after completion; child Stop and Resume installation share the family gate. [Validation](docs/validation/pause-r12-0.1.130.md#follow-up-review-of-68491378).
 - [x] Round-12 second follow-up: child Stop cancels live work before waiting for delivery compaction; recovering idle intermediate sides preserves an accepted family Resume. [Validation](docs/validation/pause-r12-0.1.130.md#round-2-review-of-3a1dfbda).
 - [x] Round-12 third follow-up: a stopped parked child accepts later follow-ups without retaining its old pause or held tools; Stop acknowledges while sibling or parent delivery compaction waits. Full branch condition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-3-review-of-5fb1b5dc).
+- [x] Round-12 fourth follow-up: pause membership transfers require durable acknowledgment; failed retirements remain retryable; stopped child readers clear their pause and held tools during terminalization/recovery. Transition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-4--transition-audit-before-implementation).
 
 ## 0.1.129
 

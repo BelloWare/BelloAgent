@@ -619,10 +619,13 @@ public actor AgentSession {
         toolHistory=ToolHistoryIndex(history)
         taskRootID=context.last(where: { $0.role == "user" })?.taskRootID
         boundary=context; state=runStatus == .failed ? .error : queuePaused ? .paused : .idle
+        try retireTerminalAgentPause(); boundary = context
         dropMissingPausedMembers()
         // An inherited pause is durable before binding acknowledges its
         // ancestor's callback intent, also before the next helper restart.
-        if costPaused, stateRecord?["costPaused"].flag != true { try persistState(durable:true) }
+        if costPaused != (stateRecord?["costPaused"].flag == true) ||
+            costPausedMembers != (stateRecord?["costPausedMembers"].list.compactMap(\.text) ?? []) ||
+            costPendingSidePauses != (stateRecord?["costPendingSidePauses"].list.compactMap(\.text) ?? []) { try persistState(durable:true) }
         spansScannedTo=opened.size
         // The metadata file follows the journal; it is only ever a shortcut.
         if let captured=replayed.captured { try? captured.write(for: url) }

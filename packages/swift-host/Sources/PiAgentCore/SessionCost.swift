@@ -254,12 +254,19 @@ extension AgentSession {
     }
     /// A pause with nothing left to resume ends by itself; the coordinator's
     /// hold (and its fence against the pause's late hold) is released too.
-    func clearCostPauseWithoutWork() {
+    @discardableResult func clearCostPauseWithoutWork() -> Bool {
+        let saved = costPauseState, previous = (queuePaused,state,runStatus)
         costPaused = false; queuePaused = false
         if errorCode == Self.costLimitCode { errorCode = nil; errorMessage = nil }
         if state != .error, runTask == nil || state == .paused { state = .idle; runStatus = .idle }
+        do { try persistState(durable:true) }
+        catch {
+            restoreCostPause(saved); (queuePaused,state,runStatus) = previous
+            failFamilyAccounting(error); return false
+        }
         if !isSubagent, let coordinator = agentCoordinator { let generation = costPauseCount; Task { try? await coordinator.resumeParked(owner:self,generation:generation) } }
         if let root = sideBudgetParents.last { let side = id; Task { await root.forgetPausedMember(side) } }
+        return true
     }
     /// The family reached its limit: pause at once, durably, before anything
     /// is cancelled. Called only through `stopFamilyAtLimit`. A chat with no
@@ -288,10 +295,7 @@ extension AgentSession {
             Task { await coordinator.pause(owner:self,generation:generation) }
         }
         if costPaused, runTask == nil { state = .paused; runStatus = .cancelled }
-        if pauses, let root = sideBudgetParents.last {
-            let member = id
-            Task { await root.notePausedMember(member) }
-        }
+        if pauses, !sideBudgetParents.isEmpty { Task { await self.publishSidePause() } }
         notifySidesOfPause(reason)
         event("state")
     }
@@ -309,8 +313,9 @@ extension AgentSession {
     func acknowledgeSidePause(_ side: String, resumes: Int? = nil) {
         if let resumes, resumes != costResumeCount { return }
         guard costPendingSidePauses.contains(side) else { return }
+        let pending = costPendingSidePauses
         costPendingSidePauses.removeAll { $0 == side }
-        do { try persistState(durable:true) } catch { failFamilyAccounting(error) }
+        do { try persistState(durable:true) } catch { costPendingSidePauses = pending; failFamilyAccounting(error) }
     }
     /// The manual compaction under way is cut by this pause: it is pending,
     /// with its focus, in the same record as the pause, so no crash between
@@ -325,11 +330,12 @@ extension AgentSession {
     /// missing membership: a side the root still lists is one its Resume
     /// already covers (the app resumes it next), so the root is not paused
     /// again.
-    func notePausedMember(_ side: String, repair: Bool = false) {
-        guard !closed, !isSubagent, side != id else { return }
+    @discardableResult func notePausedMember(_ side: String, repair: Bool = false) -> Bool {
+        guard !closed, ephemeral || journal != nil, !isSubagent, side != id else { return false }
         let known = costPausedMembers.contains(side)
-        if repair, known { return }
-        let first = !costPaused
+        // A known in-memory member may come from a failed save. Confirm it
+        // again before another writer retires its only durable copy.
+        let first = !costPaused && !(repair && known)
         if !known { costPausedMembers.append(side) }
         if first {
             // The family's pause, as at the limit itself: saved, then every
@@ -342,23 +348,27 @@ extension AgentSession {
             rememberSidePauses()
             if runTask == nil { state = .paused; runStatus = .cancelled }
         }
-        do { try persistState(durable:true) } catch { failFamilyAccounting(error); return }
+        do { try persistState(durable:true) } catch { failFamilyAccounting(error); return false }
         if first {
             abortModelRequests()
             if let coordinator = agentCoordinator { let generation = costPauseCount; Task { await coordinator.pause(owner:self,generation:generation) } }
             notifySidesOfPause(Self.costHoldError)
         }
-        event("state")
+        event("state"); return journal != nil
     }
     /// The side resumed by itself: the root no longer needs to hand it out.
     func forgetPausedMember(_ side: String) {
         guard costPausedMembers.contains(side) || costPendingSidePauses.contains(side) else { return }
+        let members = costPausedMembers, pending = costPendingSidePauses
         costPausedMembers.removeAll { $0 == side }; costPendingSidePauses.removeAll { $0 == side }
-        // Paused only for that side, with nothing of its own: no longer paused.
+        // The local retirement is durable before releasing an ancestor or
+        // coordinator hold. A failed removal stays available for retry.
         if costPaused, runTask == nil, !hasWorkAfterCostPause {
-            clearCostPauseWithoutWork()
+            if !clearCostPauseWithoutWork() { costPausedMembers = members; costPendingSidePauses = pending; return }
+        } else {
+            do { try persistState(durable:true) }
+            catch { costPausedMembers = members; costPendingSidePauses = pending; failFamilyAccounting(error); return }
         }
-        try? persistState(durable:true)
         event("state")
     }
     /// Sides deleted (with their descendants): none of them waits for a

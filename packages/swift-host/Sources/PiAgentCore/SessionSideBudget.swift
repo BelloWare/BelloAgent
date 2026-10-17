@@ -32,17 +32,21 @@ extension AgentSession {
         }
         // The root's list of paused sides follows each side's own durable
         // pause: a crash between the two saves is repaired here.
+        try persistState(durable:true)
         if let root = sideBudgetParents.last {
             // Cold recovery also serves orphaned sides. Once ancestry is
             // bound, move any recovered descendant membership to the root,
             // where each descendant's Resume will retire it.
             let members = costPausedMembers
-            for member in members { await root.notePausedMember(member, repair:true) }
+            for member in members { guard await root.notePausedMember(member, repair:true) else { return } }
             if !members.isEmpty {
+                let previous = costPausedMembers
                 costPausedMembers.removeAll { members.contains($0) }
-                try persistState(durable:true)
+                do { try persistState(durable:true) }
+                catch { costPausedMembers = previous; throw error }
             }
-            if costPaused { await root.notePausedMember(id, repair: true) } else { await root.forgetPausedMember(id) }
+            if costPaused { guard await publishSidePause(repair:true) else { return } }
+            else { await root.forgetPausedMember(id) }
         }
         for ancestor in sideBudgetParents { await ancestor.acknowledgeSidePause(id) }
     }
@@ -94,11 +98,27 @@ extension AgentSession {
             // was issued retires it.
             guard await self.costResumeCount == resumes else { return }
             await runtime.stopFamilyAtLimit(reason)
-            if await runtime.costPaused, let root = await runtime.sideBudgetParents.last {
-                await root.notePausedMember(side, repair:true)
-            }
+            guard await runtime.publishSidePause(repair:true) else { return }
             await self.acknowledgeSidePause(side,resumes:resumes)
         }
+    }
+
+    /// A failed pause save must not be acknowledged merely because its
+    /// in-memory flag is set. Also confirms idle/descendant-only fan-out.
+    func publishSidePause(repair: Bool = false) async -> Bool {
+        guard !closed, ephemeral || journal != nil else { return false }
+        do { try persistState(durable:true) }
+        catch { failFamilyAccounting(error); return false }
+        guard costPaused, let root = sideBudgetParents.last else { return true }
+        let confirmed = await root.notePausedMember(id,repair:repair)
+        // Closing an unkept side may have retired it while this publication
+        // crossed actors. Its late acknowledgment cannot resurrect the side.
+        if closed {
+            do {
+                if try ephemeral || SideBudgetRecovery.journalURL(id,directory:directory) == nil { await root.forgetPausedMember(id); return false }
+            } catch { return false }
+        }
+        return confirmed
     }
 
     func enforceSharedCostLimit() async throws {
