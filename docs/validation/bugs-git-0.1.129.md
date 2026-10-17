@@ -62,4 +62,4 @@ New, in `packages/bello-views/Tests/GitViewTests`:
 | Failing-first, the five new tests before the fixes | 5 of 5 failed | `red-all-five.log` |
 | New tests + all stash tests after the fixes | 22 passed | `green.log` |
 | Complete views package | 312 tests, 3 skipped, 0 failures | `package-all.log` |
-| `scripts/verify-release.sh` (shared lock) | GATE_RESULT | `verify.log` |
+| `scripts/verify-release.sh` on 6d4fad0f (shared lock), all passed in 60 min | serial lane 886 (42 skipped, 0 failures); parallel lane 2,628 passed, 0 failed, 38 skipped; views 312 (3 skipped, 0 failures); helper 961 (7 skipped, 0 failures); helper-cost 5; gallery 3 (230 screenshots, no UI changed); wire 36, concurrent 4, acceptance 3, python 86, all OK | `verify.log`, `../verify-logs/` |
