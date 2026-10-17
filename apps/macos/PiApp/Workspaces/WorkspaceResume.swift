@@ -53,6 +53,9 @@ extension WorkspaceModel {
             return
         }
         let root = budgetOwner(for: item)
+        // The family resumes from its root: an archived main chat is not
+        // restarted from one of its sides; it is restored first.
+        guard !root.isArchived else { displays[item.id]?.notice = Self.archivedNotice; return }
         latestVersion(sessionID: item.id)
         var views: [SessionDisplay] = []
         for view in [displays[root.id], displays[item.id]] { if let view, !views.contains(where: { $0 === view }) { views.append(view) } }

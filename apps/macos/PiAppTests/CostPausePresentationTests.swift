@@ -117,4 +117,24 @@ extension CostPausePresentationTests {
             XCTAssertTrue(model.hosts.isEmpty, "Nothing was started to learn it")
         }
     }
+
+    /// Round 10: Resume on a side never restarts its archived main chat: the
+    /// side says to restore the chat first, and nothing is started.
+    @MainActor func testASidesResumeRefusesAnArchivedMainChat() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let model = WorkspaceModel(stateRoot: root.appendingPathComponent("app"), vault: ConfigurationVault(storage: MemoryVaultStorage()))
+        registerWorkspaceFixtureTeardown(model, root: root)
+        var main = ChatRecord(id: "main", workspaceID: "workspace", title: "Main", path: root.appendingPathComponent("main.jsonl").path, profileID: "profile")
+        main.archivedAt = Date()
+        var side = ChatRecord(id: "side", workspaceID: "workspace", title: "Side", path: root.appendingPathComponent("side_side.jsonl").path, profileID: "profile")
+        side.parentSessionID = "main"
+        model.chats = [main, side]
+        let view = SessionDisplay(id: "side"); model.displays["side"] = view
+        XCTAssertEqual(model.budgetOwner(for: side).id, "main")
+        model.resumeCostPausedFamily(from: side)
+        XCTAssertEqual(view.notice, WorkspaceModel.archivedNotice)
+        XCTAssertFalse(view.resuming)
+        XCTAssertTrue(model.hosts.isEmpty, "Nothing was started")
+    }
 }
