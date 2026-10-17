@@ -164,12 +164,24 @@ public actor GitService {
         }
     }
 
-    private static let environment = ["PATH": "/usr/bin:/bin", "HOME": NSHomeDirectory(), "LANG": "en_US.UTF-8",
-                                      "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"]
+    /// Git's environment, given the app's. Only what git needs, never the
+    /// app's `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` or the like.
+    static func gitEnvironment(from app: [String: String], home: String = NSHomeDirectory()) -> [String: String] {
+        var environment = ["PATH": "/usr/bin:/bin", "HOME": home, "LANG": "en_US.UTF-8",
+                           "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"]
+        // Where the user moved git's global configuration (identity, ignores,
+        // signing), as FileFinder's git keeps it too.
+        if let config = app["XDG_CONFIG_HOME"], !config.isEmpty { environment["XDG_CONFIG_HOME"] = config }
+        return environment
+    }
+    /// The environment every git this service runs starts from.
+    private let environment: [String: String]
+    public init() { environment = Self.gitEnvironment(from: ProcessInfo.processInfo.environment) }
+    init(environment: [String: String]) { self.environment = environment }
 
     private nonisolated static func execute(_ executable: URL, _ arguments: [String], in root: String,
                                             timeout: TimeInterval, handle: RunningProcess,
-                                            environment extra: [String: String] = [:], input: Data? = nil, gitOptions: Bool = true) throws -> Output {
+                                            environment: [String: String], input: Data? = nil, gitOptions: Bool = true) throws -> Output {
         let process = Process()
         process.executableURL = executable
         // Every parsed patch, including show and no-index, uses the parser's
@@ -181,7 +193,7 @@ public actor GitService {
         guard all.count <= 4_000 else { throw GitFailure(message: "Too many paths for one git command.") }
         process.arguments = all
         process.currentDirectoryURL = URL(fileURLWithPath: root, isDirectory: true)
-        process.environment = environment.merging(extra) { $1 }
+        process.environment = environment
         let stdout = Pipe(), stderr = Pipe()
         process.standardOutput = stdout; process.standardError = stderr
         // A hook that reads its input (post-rewrite) is handed it on stdin;
@@ -279,13 +291,13 @@ public actor GitService {
     private func detached<T: Sendable>(_ arguments: [String], in root: String, timeout: TimeInterval,
                                        environment: [String: String] = [:], input: Data? = nil, executable override: URL? = nil,
                                        _ transform: @escaping @Sendable (Output) throws -> T) async throws -> T {
-        let executable = override ?? executable, gitOptions = override == nil, handle = RunningProcess()
+        let executable = override ?? executable, gitOptions = override == nil, handle = RunningProcess(), base = self.environment
         await acquireProcess()
         defer { releaseProcess() }
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, any Error>) in
                 Self.processQueue.async {
-                    do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle, environment: environment, input: input, gitOptions: gitOptions))) }
+                    do { continuation.resume(returning: try transform(try Self.execute(executable, arguments, in: root, timeout: timeout, handle: handle, environment: base.merging(environment) { $1 }, input: input, gitOptions: gitOptions))) }
                     catch { continuation.resume(throwing: error) }
                 }
             }
@@ -623,6 +635,20 @@ public actor GitService {
     /// only the index goes back, and the file saved there stays as it is.
     func discard(_ entries: [GitStatusEntry], in root: String, held: Set<String> = []) async throws {
         let rows = entries.filter { !$0.untracked }, untracked = entries.filter(\.untracked).map(\.path)
+        if !rows.isEmpty, try await headCommit(in: root) == nil {
+            guard try await isUnbornBranch(in: root) else { throw GitFailure(message: "HEAD could not be read. Nothing was discarded.") }
+            // Before the first commit every tracked row is an initial
+            // addition, and its baseline is no file at all: what `restore`
+            // does against HEAD for a path HEAD lacks. Only the chosen paths.
+            // An added submodule loses only its index entry, as `restore`
+            // leaves its folder: nothing inside it is removed.
+            let gitlinks = try await gitlinks(rows.map(\.path), in: root)
+            let files = rows.map(\.path).filter { !gitlinks.contains($0) }
+            if !gitlinks.isEmpty { try await runBatched(["rm", "--cached", "-f", "-q", "--ignore-unmatch", "--"], paths: gitlinks.sorted(), in: root, "Discarding changes") }
+            if !files.isEmpty { try await runBatched(["rm", "-f", "-q", "--ignore-unmatch", "--"], paths: files, in: root, "Discarding changes") }
+            if !untracked.isEmpty { try await runBatched(["clean", "-f", "--"], paths: untracked, in: root, "Removing untracked files") }
+            return
+        }
         let tracked = Self.paths(rows.map(\.path), renames: rows, for: .discard, held: held)
         let indexOnly = rows.compactMap { $0.isRename && $0.indexState == "R" ? $0.originalPath : nil }.filter(held.contains)
         if !indexOnly.isEmpty { try await runBatched(["restore", "--staged", "--"], paths: indexOnly, in: root, "Discarding changes") }
@@ -636,10 +662,7 @@ public actor GitService {
     func unstage(_ paths: [String], in root: String) async throws {
         guard !paths.isEmpty else { return }
         if try await headCommit(in: root) == nil {
-            let symbolic = try await run(["symbolic-ref", "--quiet", "HEAD"], in: root)
-            let branch = symbolic.text.trimmingCharacters(in: .newlines)
-            guard symbolic.status == 0, branch.hasPrefix("refs/heads/"),
-                  try await run(["show-ref", "--verify", "--quiet", branch], in: root).status == 1 else {
+            guard try await isUnbornBranch(in: root) else {
                 throw GitFailure(message: "HEAD could not be read. The index was left unchanged.")
             }
             // Before the first commit there is no tree to restore. Remove
@@ -712,6 +735,35 @@ public actor GitService {
         }
         _ = try require(committed, "Committing")
         return try require(await run(["rev-parse", "--short", "HEAD"], in: root), "Reading HEAD").text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// True only before the first commit: HEAD names a branch that git has in
+    /// no form at all. A branch that is there but broken (a damaged loose
+    /// ref, an unreadable packed-refs) is not unborn, and is never taken as
+    /// leave to remove what the first commit would have had.
+    func isUnbornBranch(in root: String) async throws -> Bool {
+        let symbolic = try await run(["symbolic-ref", "--quiet", "HEAD"], in: root)
+        let branch = symbolic.text.trimmingCharacters(in: .newlines)
+        guard symbolic.status == 0, branch.hasPrefix("refs/heads/"),
+              try await run(["rev-parse", "--verify", "--quiet", "HEAD"], in: root).status == 1 else { return false }
+        // `show-ref --verify` answers the same for a missing and a damaged
+        // ref; `for-each-ref` lists nothing for a missing one, warns about a
+        // damaged loose one and fails on damaged packed refs.
+        // Its pattern also matches refs below it (`topic/work` for `topic`),
+        // so only the exact name counts as the branch existing.
+        let listed = try await run(["for-each-ref", "--format=%(refname)", branch], in: root)
+        return listed.status == 0 && listed.stderr.isEmpty && !listed.text.split(separator: "\n").contains { $0 == branch }
+    }
+    /// Which of these paths the index holds as submodules (gitlinks).
+    private func gitlinks(_ paths: [String], in root: String) async throws -> Set<String> {
+        var found: Set<String> = []
+        for batch in Self.batches(of: Self.literal(paths), prefix: ["ls-files", "-s", "-z", "--"]) {
+            let output = try require(await run(["ls-files", "-s", "-z", "--"] + batch, in: root), "Reading the index")
+            for record in output.text.split(separator: "\0") where record.hasPrefix("160000 ") {
+                if let tab = record.firstIndex(of: "\t") { found.insert(String(record[record.index(after: tab)...])) }
+            }
+        }
+        return found
     }
 
     /// HEAD's full commit id, or nil before the first commit.

@@ -21,6 +21,35 @@ final class GitStashTests: XCTestCase {
         XCTAssertEqual(after.map(\.message), ["Arrived after review", "Saved 2", "Saved 1"])
         XCTAssertEqual(try f.snapshot(), before)
     }
+    /// Another writer saves a stash after the last identity check and before
+    /// Git's drop runs, so `stash@{n}` names the newcomer. The reviewed stash
+    /// stays; the newcomer Git removed is stored back, and the drop refuses.
+    func testStashSavedAfterFinalCheckIsNeverTheOneDropped() async throws {
+        for position in 0...1 {
+            let f = try BranchFixture(); defer { f.close() }
+            for number in 1...2 {
+                try f.write("f.txt", "saved \(number)\n")
+                _ = try await f.service.createStash(message: "Saved \(number)", includeUntracked: false, keepIndex: false, in: f.path)
+            }
+            let list = try await f.service.stashRecords(in: f.path), reviewed = list[position]
+            let service = f.service, root = f.path, file = f.root.appendingPathComponent("f.txt")
+            do {
+                try await service.dropReviewedStash(reviewed, in: root, afterVerification: {
+                    try Data("concurrent\n".utf8).write(to: file)
+                    _ = try await service.branchCommand(["stash", "push", "-m", "Concurrent unreviewed stash"], in: root)
+                })
+                XCTFail("A drop that removed another stash must refuse (position \(position))")
+            } catch { XCTAssertTrue(error.localizedDescription.contains("was kept"), error.localizedDescription) }
+            let after = try await service.stashRecords(in: root)
+            XCTAssertEqual(after.count, 3, "no stash may be lost (position \(position))")
+            XCTAssertEqual(Set(after.map(\.oid)).count, 3)
+            XCTAssertTrue(after.contains { $0.oid == reviewed.oid && $0.message == reviewed.message }, "the reviewed stash is kept")
+            for record in list { XCTAssertTrue(after.contains { $0.oid == record.oid && $0.message == record.message }) }
+            let newcomer = try XCTUnwrap(after.first { !list.map(\.oid).contains($0.oid) })
+            XCTAssertEqual(newcomer.message, "Concurrent unreviewed stash")
+            XCTAssertEqual(try f.git(["show", newcomer.oid + ":f.txt"]), "concurrent\n")
+        }
+    }
     func testChangedStashListWithSameSelectedOIDRequiresFreshReview() async throws {
         let f = try BranchFixture(); defer { f.close() }
         for number in 1...2 {

@@ -4,6 +4,7 @@
 
 ## 0.1.129
 
+- [x] Git review findings (2026-10-16): a stash pushed by another writer during Drop/Pop is never the one lost (Git's reported drop and the reflog are checked; a wrong entry is stored back and the drop refused); Discard works before the first commit, only on a genuinely unborn branch; Git keeps the app's `XDG_CONFIG_HOME` (no `GIT_DIR`-style inheritance); a staged deletion and its untracked recreation each show their own diff. [Validation](docs/validation/bugs-git-0.1.129.md).
 - [x] Intermittent tests: ten failures given causes and fixes:
   - a late reference definition moved the reading line (product);
   - a pending automatic count blanked a standing context reading (product);
