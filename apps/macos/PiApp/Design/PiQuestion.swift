@@ -15,6 +15,29 @@ struct ChatQuestion: Equatable, Sendable {
     let detail: String
     /// The label on the button that goes ahead.
     let action: String
+    /// Names listed under the detail, with notes beneath them. A question
+    /// with a list is asked on the app's own sheet, where the list scrolls.
+    var list: List? = nil
+
+    struct List: Equatable, Sendable {
+        struct Item: Equatable, Sendable {
+            var title: String
+            /// 1 for a direct child; deeper items are indented under it.
+            var depth = 1
+        }
+        var heading: String
+        var items: [Item]
+        /// Plain sentences, such as what is skipped and why.
+        var notes: [String] = []
+        /// The rows shown; the remainder is summarized as a count.
+        static let shownLimit = 200
+        /// A plain-text form for an alert with no window to host the sheet.
+        var plainText: String {
+            var lines = items.prefix(20).map { String(repeating: "  ", count: max(0, $0.depth - 1)) + "• " + $0.title }
+            if items.count > 20 { lines.append("and \(items.count - 20) more") }
+            return ([heading].filter { !$0.isEmpty && !items.isEmpty } + lines + notes).joined(separator: "\n")
+        }
+    }
 }
 
 /// The one way the app asks a question or offers a file chooser: on a sheet
@@ -177,7 +200,17 @@ struct ChatQuestion: Equatable, Sendable {
     func ask(_ question: ChatQuestion, about sessionID: String? = nil, destructive: Bool = false,
              answered: @escaping (Bool) -> Void) -> Bool {
         if let answer { answered(answer(question)); return true }
-        let alert = Self.alert(title: question.title, detail: question.detail, action: question.action,
+        if let list = question.list {
+            guard !asking else { return false }
+            if let window = Self.host(nil, showing: sessionID) {
+                return askSheet(over: window, make: { answer in
+                    ChatQuestionSheet(question: question, list: list, destructive: destructive,
+                                      parentSize: window.contentView?.bounds.size ?? window.frame.size, answer: answer)
+                }, answered: answered)
+            }
+        }
+        let detail = [question.detail, question.list?.plainText ?? ""].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let alert = Self.alert(title: question.title, detail: detail, action: question.action,
                                cancel: "Cancel", destructive: destructive, warn: false)
         return ask(alert, about: sessionID) { answered($0 == .alertFirstButtonReturn) }
     }

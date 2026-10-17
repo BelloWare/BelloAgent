@@ -53,7 +53,7 @@ final class SubagentCostTests: XCTestCase {
         XCTAssertTrue(model.accountingTasks.isEmpty); XCTAssertEqual(display.accountingRevision,revision)
     }
 
-    @MainActor func testDeletingAnOwnerDetachesAndReopensSurvivingSavedSides() async throws {
+    @MainActor func testDeletingAnOwnerDetachesAndDeletesItsLoadedSavedSides() async throws {
         let root = URL(fileURLWithPath:scratchBase()).appendingPathComponent("side-deletion-budget-" + UUID().uuidString)
         try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
         let workspace = WorkspaceRecord(id:"project",path:root.path,trusted:true)
@@ -81,15 +81,15 @@ final class SubagentCostTests: XCTestCase {
         model.familyFileRecycler = { urls in for url in urls { try FileManager.default.removeItem(at:url) } }
         try await model.deleteSubagentFamily(source)
         XCTAssertNil(model.record(parent.id)); XCTAssertFalse(model.opened.contains("side")); XCTAssertFalse(model.opened.contains("nested"))
-        let side = try XCTUnwrap(model.record("side")), nested = try XCTUnwrap(model.record("nested"))
-        XCTAssertNil(model.costReading(for:side.id).budgetOwnerID)
-        XCTAssertEqual(model.costReading(for:nested.id).budgetOwnerID,side.id)
-        _ = try await model.open(nested)
-        XCTAssertTrue(model.opened.contains(side.id)); XCTAssertTrue(model.opened.contains(nested.id))
-        XCTAssertFalse(FileManager.default.fileExists(atPath:path),"Reopening an orphan must not recreate the deleted parent")
-        let parents = await model.traces.savedSideBudgets
-        XCTAssertEqual(parents[workspace.id + "\u{0}side"],[])
-        XCTAssertEqual(parents[workspace.id + "\u{0}nested"],["side"])
+        // 0.1.129: the saved sides go with their chat, loaded or not.
+        for id in ["side","nested"] {
+            XCTAssertNil(model.record(id)); XCTAssertNil(model.displays[id])
+            let tombstone = try await model.store?.get(String.self,kind:"session-deleted",id:id)
+            XCTAssertEqual(tombstone,parent.id)
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath:path))
+        let intents = try await model.store?.pendingFamilyDeletions()
+        XCTAssertEqual(intents?.isEmpty,true)
     }
 
     @MainActor func testEditingReleasesAnIdleDependentAfterPresentationReleaseWasRejected() async throws {
