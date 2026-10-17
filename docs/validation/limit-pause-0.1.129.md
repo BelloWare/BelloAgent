@@ -257,10 +257,9 @@ Same-kind audit. Every path that puts a chat into the pause now goes through the
 transition: `pauseAtCostLimit`, a root's first member, a child's park, or a Resume that ended
 before taking its work. Every way a side learns of the pause is latched: the ancestor's
 callback, its admission check, and its own durable flag on reopen. Ways a member leaves the
-list: its own Resume (`forgetPausedMember`), automatic clear, deletion, and pruning on
-reopen. An unkept side that pauses and then ends with its runtime is pruned at the root's next
-reopen; while the root stays loaded it remains listed, and Resume skips it harmlessly (no
-record).
+list: its own Resume (`forgetPausedMember`), automatic clear, deletion, an unkept side's
+close (it ends with its runtime; `testClosingAnUnkeptPausedSideTakesItOffItsRootsPause`,
+`r7-unkept-close`), and pruning on reopen.
 
 ## Owner rule of 2026-10-17 — evidence
 
