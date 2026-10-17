@@ -215,6 +215,22 @@ waits. Paths that set a pause: a fresh `pauseAtCostLimit`, a child's `parkAgentT
 Resume that ended before taking its work (intended); the only repair path,
 `bindSideBudget`, is membership-only for a side already listed.
 
+## Review round 6 (Codex, 1 P1 + 2 P2) and the same kinds of case
+
+| Finding | Fix | Test (mutation detected) |
+| --- | --- | --- |
+| P1 after a raise, edit-and-resend of a paused family abandoned its parked turns, which the next Resume would restart under the edited conversation | Existing behaviour applied: an edit is refused (`session_busy`, "Edit requires an idle session with empty queues") while the family's turns run, since a parent's run lasts while they do. Work the pause holds (`holdsCostPausedWork`: the pause, an accepted Resume not yet taken, held calls, a cut compaction, parked turns) is that run's, so the edit is refused the same way, at each of its three idle checks | `FamilyLimitPauseTests.testEditIsRefusedWhileThePauseHoldsParkedTurns` (`r6-edit-held`, `r6-edit-parked`) |
+| P2 the Resume fence was keyed by an object address a later runtime can reuse | Keyed by the runtime's own `displayEpoch` (a UUID per runtime) | `testAPauseFenceIsNotInheritedByARuntimeAtAReusedAddress` (reuse found within its attempts; `r6-fence`) |
+| P2 a paused side outside `loadChats`' 10,000-record window was skipped by the family Resume | Missing member records are read from the store by id (`MetadataStore.loadChats(ids:)`, deleted ones left out) before the fan-out | native `CostPauseFamilyTests.testSidesStillPausedAfterALostRootResumeAreRecovered`, with the side dropped from the loaded window (`r6-window`) |
+
+Same-kind audit. Object-address keys: the fence was the only one in long-lived helper
+state; the app's `ObjectIdentifier` keys are view-local maps of live objects, pruned with
+them. Family members by the loaded window: managed sub-agent records are always loaded
+(`loadChats` keeps them outside the window); sides are reached only by the family Resume
+(fixed) and by ancestors, which `retainBudgetAncestors` loads. Other branching: a fork
+writes a fresh run state (no pause, no held work), so its copied unsealed turns are sealed
+by recovery (no pause) and never restarted; there is no delete-turn or rewind operation.
+
 ## Owner rule of 2026-10-17 — evidence
 
 | Requirement | Test | Mutation |
