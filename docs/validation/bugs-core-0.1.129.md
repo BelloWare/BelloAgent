@@ -82,12 +82,26 @@ What the evidence shows:
   every text field focused in turn).
 - No model, controller or catalog publication happens while the oracle lays out (instrumented).
 
-Not yet known: which row inside the oracle's Connection group gains or loses the point. The
-failing runs above had no per-row dump of the lazy oracle. The test now prints every view inside
-the Connection band for the native page and both oracle pages (with text field fonts and intrinsic
-heights) whenever the pages disagree (`SETTINGS-CONNECTION-ROWS`); the output path was checked by
-forcing it.
+Cause: the frozen SwiftUI 0.1.119 reference page (the test's oracle), not the product. The product
+page was 783 pt in every one of 170+ runs; the oracle sometimes lays out its Connection group a point
+taller or shorter, and keeps that value for the life of its hosting view. Which row inside the oracle
+moves is not identified. The comparison now prints a per-row dump when the pages disagree, so the next
+sighting will show it.
 
-Needs a decision: keep the strict oracle and use the next sighting's row dump, or treat the
-oracle's own ±1 pt as noise (the eager comparison already allows 1.01 pt), or re-measure the oracle
-on a mismatch.
+Decision (coordinator, 2026-10-17): re-measure the oracle when it disagrees; the native page stays
+strictly compared. The test now:
+- compares the native page with the oracle exactly as before: strict against the realized lazy stack,
+  1.01 pt on the supplemental eager copy, plus document height and thumb;
+- when they disagree, prints `SETTINGS-CONNECTION-ROWS` for all three pages and an `ORACLE-REMEASURED`
+  line naming each difference, then builds a fresh oracle (lazy and eager), up to two more times;
+- passes only if a fresh oracle matches the native page on every check, and logs `ORACLE-REMEASURED …
+  matched` when one does;
+- fails with every disagreement from all three oracles when none matches.
+
+`testAnOracleThatDisagreesIsMeasuredAgain` proves the path. A first oracle forced a point taller
+(Connection height, later positions, document height) is re-measured, and the second one matches. An
+oracle forced off every time fails, listing all three attempts. Mutations:
+- one attempt only: 3 failures;
+- loosening the strict oracle checks to 1.01: 1 failure.
+
+The class passed 3/3 after the change.
