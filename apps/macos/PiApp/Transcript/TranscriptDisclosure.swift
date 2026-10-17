@@ -76,6 +76,7 @@ enum ToolOccurrence {
     }
     var changedCount: Int { changed.count }
     var changedIDs: Set<String> { Set(changed.keys.map(\.id)) }
+    var rawReplies: Set<String> { Set(changed.compactMap { $0.key.kind == .source && $0.value ? $0.key.id : nil }) }
 }
 
 /// The disclosure values one row needs, as plain data. A row host compares this

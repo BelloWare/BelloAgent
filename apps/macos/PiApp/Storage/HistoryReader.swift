@@ -388,7 +388,7 @@ actor HistoryReader {
     /// order from the file, decoded concurrently. A record that cannot be
     /// read or decoded carries its error, thrown when the search reaches it.
     private func contents(_ range: Range<Int>, branch: HistoryOffsetIndex, file: FileHandle, renderedAgentProse: Bool, managedChild: Bool,
-                          streaming: [String: TranscriptMessage]) throws -> [(ref: Ref, text: Result<String, Error>)] {
+                          streaming: [String: TranscriptMessage], rawReplies: Set<String>) throws -> [(ref: Ref, text: Result<String, Error>)] {
         var refs: [Ref] = [], records: [Result<Data, Error>?] = []
         refs.reserveCapacity(range.count); records.reserveCapacity(range.count)
         for position in range {
@@ -409,7 +409,7 @@ actor HistoryReader {
             nonisolated(unsafe) let output = buffer
             DispatchQueue.concurrentPerform(iterations: read.count) { index in
                 if let current = streaming[references[index].id] {
-                    output[index] = .success(ConversationContent.transcriptText(current)); return
+                    output[index] = .success(ConversationContent.transcriptText(current, rawReply: rawReplies.contains(current.id))); return
                 }
                 switch read[index] {
                 case nil: output[index] = .success(edit)
@@ -417,7 +417,7 @@ actor HistoryReader {
                 case .success(let bytes)?:
                     output[index] = Result {
                         let record = try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]
-                        return renderedAgentProse ? ConversationContent.transcriptText(record, managedChild: managedChild) : ConversationContent.text(record)
+                        return renderedAgentProse ? ConversationContent.transcriptText(record, managedChild: managedChild, rawReply: rawReplies.contains(references[index].id)) : ConversationContent.text(record)
                     }
                 }
             }
@@ -459,7 +459,7 @@ actor HistoryReader {
         return try index.branch.ref(id)?.role
     }
     func searchContent(path: String, query: String, start: Int, renderedAgentProse: Bool = false, managedChild: Bool = false,
-                       presented: [TranscriptMessage] = []) throws -> ContentSearch {
+                       presented: [TranscriptMessage] = [], rawReplies: Set<String> = []) throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
         let file = try open(path); defer { try? file.close() }
         let identity = try stamp(file), branch: HistoryOffsetIndex, prefix: SHA256.Digest?
@@ -519,7 +519,7 @@ actor HistoryReader {
                 bytes += length; end += 1
             }
             run = min(run * 2, 512)
-            let texts = try contents(cursor..<end, branch: branch, file: file, renderedAgentProse: renderedAgentProse, managedChild: managedChild, streaming: streaming)
+            let texts = try contents(cursor..<end, branch: branch, file: file, renderedAgentProse: renderedAgentProse, managedChild: managedChild, streaming: streaming, rawReplies: rawReplies)
             for (offset, decoded) in texts.enumerated() where hits.count < 100 {
                 let ref = decoded.ref, text = try decoded.text.get()
                 let position = cursor + offset
@@ -536,7 +536,7 @@ actor HistoryReader {
         }
         while cursor >= branch.count && cursor < limit && hits.count < 100 {
             try Task.checkCancellation()
-            let row = unsaved[cursor - branch.count], text = ConversationContent.transcriptText(row)
+            let row = unsaved[cursor - branch.count], text = ConversationContent.transcriptText(row, rawReply: rawReplies.contains(row.id))
             let count = ConversationContent.occurrences(of: query, in: text)
             if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
             cursor += 1
@@ -552,11 +552,11 @@ actor HistoryReader {
         return .init(hits: hits, total: total, next: cursor < total ? cursor : nil, revision: revision(identity))
     }
     /// An unsent side or a delegated-task placeholder has no journal yet.
-    func searchPresented(_ rows: [TranscriptMessage], query: String, start: Int) throws -> ContentSearch {
+    func searchPresented(_ rows: [TranscriptMessage], query: String, start: Int, rawReplies: Set<String> = []) throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
         var hits: [ContentHit] = [], cursor = min(start, rows.count)
         while cursor < rows.count && hits.count < 100 {
-            let row = rows[cursor], text = ConversationContent.transcriptText(row)
+            let row = rows[cursor], text = ConversationContent.transcriptText(row, rawReply: rawReplies.contains(row.id))
             let count = ConversationContent.occurrences(of: query, in: text)
             if query.isEmpty || count > 0 { hits.append(.init(id: row.id, position: cursor + 1, preview: String(text.prefix(240)), count: count)) }
             cursor += 1

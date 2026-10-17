@@ -123,7 +123,7 @@ gives 9 passed / 2 failed, with both expected highlight timeouts. Every mutation
 restores its fixed source in `finally`. `regression-final.log` then passes all
 11 methods, including the background-color assertions.
 
-## Commands and results
+## Initial commands and results
 
 `xcodegen generate --quiet` regenerated the checked-in project for the new test
 files and passed the final regeneration check. `git diff --check` passed. These
@@ -215,7 +215,7 @@ runs above supersede those counts. There were no unrelated test failures.
 No named result bundle was supplied. One DerivedData root was used, and no clone
 directories were left by these serial focused runs.
 
-## Gallery and out-of-scope finding
+## Initial gallery and follow-up layout finding
 
 Viewed all three generated images in `validation/gallery-final/`:
 `transcript-light.png` and `transcript-dark.png` at 760×800 points, and
@@ -225,14 +225,14 @@ the Real heading action and the highlighted rendered “alpha beta” phrase.
 The first gallery fixture left Work closed; it was corrected to open the work
 row and assert a mounted diff card before taking the final images.
 
-**Unresolved, outside the assigned defects:** at 360 points, the heading Copy
+**Initially outside the assigned defects, now fixed in the follow-up below:** at 360 points, the heading Copy
 control is clipped on its right. `apps/macos/PiApp/Transcript/NativeMarkdownSurface.swift:981`
 adds 30 points beyond the available width when positioning that control
 (frame assignment at line 982). The formula is identical in the baseline and
-this branch; the final narrow capture shows the crop. This separate layout bug
-is recorded for the lead under the scope rule and is not changed here.
+initial branch; the initial narrow capture shows the crop. The owner explicitly
+assigned this layout bug in the follow-up review.
 
-## Review and limits
+## Initial review and limits
 
 All three assigned findings are confirmed and fixed; none were rejected.
 Nearby same-pattern fixes are itemized above. No product decision was needed
@@ -240,3 +240,216 @@ for these corrections, and permission, capture, tool, vault and data boundaries
 are unchanged. No helper or wire implementation changes are included, so their
 full suites are not required for this workstream. The lead owns the separate
 review, full merged gate and merge. This branch does not merge or release.
+
+## Follow-up review of 74ee5969 — 2026-10-18
+
+The two review findings and the newly assigned narrow-layout bug are confirmed
+and fixed. None was rejected. The following tests were added before production
+changes, against `74ee5969e608410fd84604617c51d9d0acfb0204`.
+`review-failing-first.log` records **13 passed, 7 failed**, with 18 assertion
+failures and exit 65. `review-fixed.log` then records **20 passed, 0 failed**.
+
+### REVIEW-1: Find follows View Raw — confirmed and fixed
+
+Find previously projected every ordinary reply as rendered Markdown regardless
+of `.source(replyID)`. It now snapshots the disclosure's raw reply IDs on the
+main actor and carries that plain set through saved-history, unsaved-row and
+journal-free search. Only the reply's text uses its raw source; reasoning and
+agent-card prose retain their rendered projection. A remembered raw choice is
+ignored while the reply streams, matching `ReplySource.shows`.
+
+`testFindMatchesViewRawInSavedReply` mounts a real pane over a generated journal,
+uses the row's source toggle, searches the visible `example.test` link destination,
+and checks one match, the native highlight and unchanged source. Before the fix:
+
+```text
+testFindMatchesViewRawInSavedReply : XCTAssertEqual failed: ("[]") is not equal to ("[\"reply\"]")
+```
+
+Nearby instances found and fixed:
+
+- Unsaved completed replies over a journal used the same rendered-only projection:
+  `testFindMatchesViewRawInUnsavedReply` failed with `[]` instead of `["unsaved-reply"]`.
+- Chats without a journal also lost raw-only text:
+  `testFindMatchesViewRawWithoutJournal` failed with `[]` instead of `["reply"]`.
+- Switching View Raw while Find was already open left the old search result:
+  `testViewRawRefreshesAnActiveFind` failed with `[]` instead of `["reply"]`.
+  A source-choice change now restarts the active query without requesting a
+  navigation jump. All four tests also switch back and require raw-only matches
+  to disappear. Ordinary disclosure changes do not restart Find.
+
+Passing controls before and after: `testRememberedViewRawKeepsStreamingFindRendered`
+and `testViewRawKeepsReasoningFindRendered`. Existing saved/live formatted prose,
+reasoning, timeline and agent-tool projection regressions still pass.
+
+### REVIEW-2: CR source offsets — confirmed and fixed
+
+The renderer's source-line table counted only LF bytes, although Foundation
+parses bare CR as a line break. The shared table now counts CR and LF and treats
+CRLF as one ending, keeping offsets in the original UTF-8 bytes.
+`testSectionCopyPreservesCRLFAndMixedLineEndings` checks the introduction and
+both exact section strings with CR, CRLF and LF, plus a multiline Setext title
+with mixed endings and preceding Unicode. Before the fix, the CR fixture copied:
+
+```text
+actual:   ["", "Intro 🌍\r\r# One\rbody\r\r# Two\rmore"]
+expected: ["Intro 🌍\r\r", "# One\rbody\r\r", "# Two\rmore"]
+```
+
+Nearby instance: `liveBlocksWithItems` uses the same table for block and list-item
+starts. `testLiveMarkdownOffsetsRespectCRLFAndMixedLineEndings` failed before the
+fix (for example, block offsets `[0, 12, 12, 12]` instead of `[0, 13, 31, 38]`).
+It now checks all exact offsets, including Unicode and mixed endings. The sweep
+found no second LF-only source-line table in the transcript; the code-copy line
+scanner already handles CR, LF and CRLF.
+
+### Heading Copy layout — confirmed and fixed
+
+`testHeadingCopyControlStaysInsideNarrowReplyRows` mounts real reply rows at
+320, 360, 620 and 760 points, hovers the heading, and checks that the complete
+control frame lies inside both the Markdown surface and the row. Before the fix:
+
+```text
+360.0-point surface: (326.0, 7.5, 64.0, 23.0) outside (0.0, 0.0, 360.0, 60.0)
+360.0-point row clips heading Copy
+```
+
+The 30-point gutter allowance now sits inside the width clamp. Wide rows retain
+their previous gutter position; narrow and uncapped surfaces stay within their
+bounds. The nearby table-action positioning already clamps to the available
+width, and no other instance of this added-after-clamp pattern was found.
+The gallery now asserts both surface and viewport containment before capture.
+
+### Follow-up mutation evidence
+
+Each mutation ran the complete `TranscriptBugRegressionTests` class in its own
+process, then restored the fixed file in `finally`. All four commands exited 65
+for the expected regression failures. No mutation was left in the final tree.
+
+| Log | Deliberately broken fix | Passed | Failed | Assertion failures |
+| --- | --- | ---: | ---: | ---: |
+| `review-mutation-raw-find.log` | Pass an empty raw-reply set from `WorkspaceContent` | 16 | 4 | 4 |
+| `review-mutation-source-refresh.log` | Remove active-query restart on source-choice change | 16 | 4 | 4 |
+| `review-mutation-cr.log` | Restore the LF-only source-offset loop | 18 | 2 | 8 |
+| `review-mutation-copy-frame.log` | Restore `+ 30` after the width clamp | 19 | 1 | 6 |
+
+The Find mutations break the four raw-view tests listed above. The CR mutation
+breaks section copying and live block/list offsets. The frame mutation breaks
+containment at 320, 360 and 620 points; 760 points remains a passing control.
+After restoring all fixes, `review-regression-final.log` records **20 passed,
+0 failed**, exit 0.
+
+### Follow-up validation commands and results
+
+Each command below ran from this worktree under the shared full-lane lock.
+The pasteboard/focus serial classes ran alone. The affected parallel-lane
+classes were grouped with parallel testing disabled. The failing-first, fixed
+and four mutation runs used the same first command below.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# review-regression-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# review-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests
+
+# review-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentMarkdownTests
+
+# review-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# review-gallery-final.log
+TEST_RUNNER_PI_TRANSCRIPT_BUG_GALLERY="$PI_BUILD_ROOT/validation/gallery-review" \
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugGalleryTests
+```
+
+| Final log | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `review-regression-final.log` | 20 | 0 | 0 |
+| `review-affected-final.log` | 253 | 0 | 4 |
+| `review-agent-markdown-final.log` | 19 | 0 | 0 |
+| `review-agent-reader-final.log` | 55 | 0 | 0 |
+| `review-gallery-final.log` | 1 | 0 | 0 |
+
+| Class | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `ContentSearchTests` | 7 | 0 | 0 |
+| `HardeningTests` | 12 | 0 | 0 |
+| `HistoryIndexFilesTests` | 3 | 0 | 1 |
+| `HistoryReaderCheckpointTests` | 7 | 0 | 0 |
+| `MarkdownSourceReconciliationTests` | 7 | 0 | 0 |
+| `MarkdownStreamingCorrectnessTests` | 9 | 0 | 0 |
+| `MarkdownStreamingTests` | 2 | 0 | 0 |
+| `MarkdownTextSurfaceTests` | 6 | 0 | 3 |
+| `NativeMarkdownSizingTests` | 4 | 0 | 0 |
+| `NativeMarkdownSurfaceStreamingTests` | 4 | 0 | 0 |
+| `NativeMarkdownViewportTests` | 4 | 0 | 0 |
+| `NativeTranscriptTests` | 5 | 0 | 0 |
+| `ReplySourceTests` | 12 | 0 | 0 |
+| `StableToolPresentationTests` | 10 | 0 | 0 |
+| `StorageTruthTests` | 11 | 0 | 0 |
+| `SubagentMarkdownTests` | 19 | 0 | 0 |
+| `SubagentReaderTests` | 55 | 0 | 0 |
+| `TranscriptActivityTests` | 11 | 0 | 0 |
+| `TranscriptBugGalleryTests` | 1 | 0 | 0 |
+| `TranscriptBugRegressionTests` | 20 | 0 | 0 |
+| `TranscriptDisclosureTests` | 15 | 0 | 0 |
+| `TranscriptFindTests` | 11 | 0 | 0 |
+| `TranscriptMarkdownTests` | 9 | 0 | 0 |
+| `TranscriptNativePaneBehaviourTests` | 16 | 0 | 0 |
+| `TranscriptNativeWorkBehaviourTests` | 21 | 0 | 0 |
+| `TranscriptPageStressTests` | 24 | 0 | 0 |
+| `TranscriptRevealTests` | 10 | 0 | 0 |
+| `TranscriptSwitchFirstFrameTests` | 1 | 0 | 0 |
+| `TranscriptWorkRowTests` | 15 | 0 | 0 |
+| `WorkspaceTests` | 17 | 0 | 0 |
+
+**Follow-up totals:** 347 focused behavior/storage/navigation tests passed,
+0 failed, 4 skipped; gallery: 1 passed, 0 failed, 3 PNGs. The skips are the
+optional history-index measurement and the three opt-in Markdown
+measurement/sample-capture tests. There were no unrelated failures.
+
+Inspected `validation/gallery-review/transcript-light.png`, `transcript-dark.png`
+(760×800 points), and `transcript-narrow.png` (360×800). The narrow image now
+shows the complete Copy icon and label beside Real, with space to the viewport
+edge. Both wide themes preserve the existing gutter placement. The literal
+marker diff, changed tails and formatted Find highlight remain visible.
+
+One existing build root was reused; no clone directories remained and no
+named result bundle was supplied. No helper or wire behavior changed, so
+helper/wire suites were not required. All assigned review issues are resolved;
+no owner decision is pending. The lead retains the separate review, merged
+full gate and merge.

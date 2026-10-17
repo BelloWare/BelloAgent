@@ -14,7 +14,7 @@ enum ConversationContent {
     /// Find's display projection is separate from retained-source search and
     /// Copy Conversation. Tool receipts keep their own record identity, even
     /// when the transcript draws their prose in the issuing call's card.
-    static func transcriptText(_ entry: [String: WireValue], managedChild: Bool = false) -> String {
+    static func transcriptText(_ entry: [String: WireValue], managedChild: Bool = false, rawReply: Bool = false) -> String {
         let message = entry["message"]?.object ?? [:]
         func prose(_ source: String) -> String { TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(source)) }
         if message["nativeAgentDelivery"]?.object != nil {
@@ -29,7 +29,7 @@ enum ConversationContent {
         }
         let blocks = message["content"]?.array ?? []
         guard blocks.contains(where: { $0.object?["type"]?.string == "toolCall" && SubagentToolView.isControl($0.object?["name"]?.string ?? "") }) else {
-            return text(entry, renderedAssistantProse: true)
+            return text(entry, renderedAssistantProse: true, rawReply: rawReply)
         }
         var plain = message
         // Preserve ordinary text/tools, but replace agent argument envelopes
@@ -38,7 +38,7 @@ enum ConversationContent {
         plain["content"] = .array(blocks.map { block in
             if var fields = block.object, let kind = fields["type"]?.string, ["text", "thinking"].contains(kind), message["role"]?.string == "assistant" {
                 let key = kind == "text" ? "text" : "thinking"
-                fields[key] = .string(prose(fields[key]?.string ?? ""))
+                if kind != "text" || !rawReply { fields[key] = .string(prose(fields[key]?.string ?? "")) }
                 return .object(fields)
             }
             guard let fields = block.object, fields["type"]?.string == "toolCall", let name = fields["name"]?.string, SubagentToolView.isControl(name) else { return block }
@@ -50,7 +50,7 @@ enum ConversationContent {
     }
     /// Current streaming text and rows that have not reached the journal yet.
     /// Called by the history actor, never by a layout or paint pass.
-    static func transcriptText(_ message: TranscriptMessage) -> String {
+    static func transcriptText(_ message: TranscriptMessage, rawReply: Bool = false) -> String {
         func prose(_ source: String) -> String { TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(source)) }
         if message.nativeAgentDelivery != nil {
             return AgentMessagePresentation(message).events.map {
@@ -62,8 +62,10 @@ enum ConversationContent {
             let value = SubagentToolView(tool)
             return [value.title, prose(value.task), prose(value.result), value.error ?? ""].joined(separator: "\n")
         }
-        let words = [message.text, message.thinking ?? ""]
-        return ((message.role == "assistant" ? words.map(prose) : words) + tools).joined(separator: "\n")
+        let rendered = message.role == "assistant"
+        let words = [rendered && !ReplySource.shows(message, raw: rawReply) ? prose(message.text) : message.text,
+                     rendered ? prose(message.thinking ?? "") : message.thinking ?? ""]
+        return (words + tools).joined(separator: "\n")
     }
     /// Case-insensitive occurrences of `query` in `text`, as the find bar
     /// and the content search count them.
@@ -115,18 +117,18 @@ enum ConversationContent {
             return true
         }
     }
-    static func text(_ entry: [String: WireValue], renderedAssistantProse: Bool = false) -> String {
+    static func text(_ entry: [String: WireValue], renderedAssistantProse: Bool = false, rawReply: Bool = false) -> String {
         if entry["type"]?.string == "compaction" { return "## Compaction\n\n\(entry["summary"]?.string ?? "")\n\n" }
         let message = entry["message"]?.object ?? [:], content = message["content"]
         let timeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }
-        func prose(_ source: String) -> String {
-            renderedAssistantProse && message["role"]?.string == "assistant"
+        func prose(_ source: String, raw: Bool = false) -> String {
+            renderedAssistantProse && !raw && message["role"]?.string == "assistant"
                 ? TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(source)) : source
         }
         if var timeline, timeline.supported {
             if renderedAssistantProse {
                 for index in timeline.segments.indices where ["text", "reasoningText", "reasoningSummary"].contains(timeline.segments[index].part.kind) {
-                    timeline.segments[index].text = prose(timeline.segments[index].text)
+                    timeline.segments[index].text = prose(timeline.segments[index].text, raw: rawReply && timeline.segments[index].part.kind == "text")
                 }
             }
             let title = message["nativeDetail"]?.string ?? message["role"]?.string ?? "Operation"
@@ -137,12 +139,12 @@ enum ConversationContent {
             var canonical = entry
             var plain = message; plain.removeValue(forKey: "nativeResponseTimeline")
             canonical["message"] = .object(plain)
-            return evidence + "## Full saved response\n\n" + text(canonical, renderedAssistantProse: renderedAssistantProse)
+            return evidence + "## Full saved response\n\n" + text(canonical, renderedAssistantProse: renderedAssistantProse, rawReply: rawReply)
         }
-        let body = content?.string.map(prose) ?? (content?.array ?? []).map { value -> String in
+        let body = content?.string.map { prose($0, raw: rawReply) } ?? (content?.array ?? []).map { value -> String in
             let block = value.object ?? [:]
             switch block["type"]?.string {
-            case "text": return prose(block["text"]?.string ?? "")
+            case "text": return prose(block["text"]?.string ?? "", raw: rawReply)
             case "thinking": return "\n[Exposed reasoning]\n\(prose(block["thinking"]?.string ?? ""))\n"
             case "toolCall": return "\n[Tool \(block["name"]?.string ?? "tool")]\n\(block["arguments"]?.pretty ?? "{}")\n"
             case "image": return "\n[Image attachment omitted]\n"

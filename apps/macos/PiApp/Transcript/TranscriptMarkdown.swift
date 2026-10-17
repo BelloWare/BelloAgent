@@ -207,7 +207,12 @@ enum TranscriptMarkdown {
             return (blocks, collectingItems ? blocks.map { _ in [] } : [])
         }
         var lineOffsets = [0]
-        for (offset, byte) in source.utf8.enumerated() where byte == 10 { lineOffsets.append(offset + 1) }
+        var carriageReturn = false
+        for (offset, byte) in source.utf8.enumerated() {
+            if byte == 10, carriageReturn { lineOffsets[lineOffsets.count - 1] = offset + 1 }
+            else if byte == 10 || byte == 13 { lineOffsets.append(offset + 1) }
+            carriageReturn = byte == 13
+        }
         var leaves: [Leaf] = []
         let characters = parsed.characters
         for run in parsed.runs {

@@ -5,9 +5,12 @@
 ## 0.1.130
 
 - [x] Heading Copy uses the renderer's top-level headings and exact source offsets, excluding nested/hidden headings and preserving multiline Setext titles. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Heading Copy preserves CR, CRLF and mixed source line endings. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Narrow transcript rows keep the heading Copy control fully inside their bounds. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Complete edit/write previews preserve literal truncation-marker text and every changed line; only explicitly truncated inputs interpret legacy markers. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Find matches visible phrases across Markdown formatting in ordinary live and saved assistant replies, including timeline prose and text beside tool calls. Source search/copy stays unchanged. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Find searches formatted exposed reasoning and opens its matching folded row, both live and after reopening. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find follows View Raw in saved and unsaved replies and refreshes when the reader switches views; reasoning and streaming text keep their rendered search. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
 ## 0.1.129
 

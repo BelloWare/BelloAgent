@@ -978,7 +978,7 @@ import AppKit
         headingAction = view
         view.update(target: target, environment: lastInputs?.environment ?? TranscriptRowEnvironment())
         let size = view.fittingSize
-        let trailing = min(bounds.width, lastInputs?.capsWidth == false ? bounds.width : TranscriptMetrics.proseWidth) + 30
+        let trailing = min(bounds.width, lastInputs?.capsWidth == false ? bounds.width : TranscriptMetrics.proseWidth + 30)
         view.frame = NSRect(x: trailing - size.width, y: box.midY - size.height / 2, width: size.width, height: size.height)
         if view.superview !== self { addSubview(view, positioned: .above, relativeTo: textView) }
     }

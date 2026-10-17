@@ -37,6 +37,9 @@ final class TranscriptBugGalleryTests: XCTestCase {
             let point = NSPoint(x: rect.midX, y: rect.midY + text.topInset)
             surface.mouseMoved(with: try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: surface.convert(point, to: nil),
                 modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)))
+            let action = try XCTUnwrap(surface.subviews.compactMap { $0 as? MarkdownHeadingActionView }.first)
+            XCTAssertTrue(surface.bounds.contains(action.frame), "Heading Copy fits the \(name) surface")
+            XCTAssertTrue(scroll.bounds.contains(surface.convert(action.frame, to: scroll)), "Heading Copy fits the \(name) viewport")
             scroll.layoutSubtreeIfNeeded(); scroll.displayIfNeeded()
             let bitmap = try XCTUnwrap(scroll.bitmapImageRepForCachingDisplay(in: scroll.bounds))
             scroll.cacheDisplay(in: scroll.bounds, to: bitmap)

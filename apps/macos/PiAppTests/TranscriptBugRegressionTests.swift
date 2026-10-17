@@ -43,6 +43,50 @@ final class TranscriptBugRegressionTests: XCTestCase {
         XCTAssertEqual(sections.map(\.text), ["First **line**\r\nsecond line\r\n===========\r\n\r\nbody\r\n\r\n", "# Peer\r\nlast"])
     }
 
+    func testSectionCopyPreservesCRLFAndMixedLineEndings() {
+        for ending in ["\r", "\r\n", "\n"] {
+            let intro = "Intro 🌍" + ending + ending
+            let one = "# One" + ending + "body" + ending + ending
+            let two = "# Two" + ending + "more"
+            let targets = TranscriptCopy.targets(in: intro + one + two)
+            XCTAssertEqual(targets.map(\.text), [intro, one, two], ending.debugDescription)
+        }
+        let intro = "Intro 🌍\r\n\r", one = "First **line**\nsecond line\r=======\r\nbody\r\r", two = "# Two\nmore"
+        XCTAssertEqual(TranscriptCopy.targets(in: intro + one + two).map(\.text), [intro, one, two])
+    }
+
+    func testLiveMarkdownOffsetsRespectCRLFAndMixedLineEndings() {
+        for ending in ["\r", "\r\n", "\n"] {
+            let intro = "Intro 🌍\r\n\r", first = "- first" + ending, second = "- second" + ending + ending, tail = "# Last" + ending + "body"
+            let parsed = TranscriptMarkdown.liveBlocksWithItems(intro + first + second + tail, style: .prose)
+            XCTAssertEqual(parsed.blocks.map(\.offset), [0, intro.utf8.count, (intro + first + second).utf8.count,
+                (intro + first + second + "# Last" + ending).utf8.count], ending.debugDescription)
+            XCTAssertEqual(parsed.items, [[], [intro.utf8.count, (intro + first).utf8.count], [], []], ending.debugDescription)
+        }
+    }
+
+    @MainActor func testHeadingCopyControlStaysInsideNarrowReplyRows() throws {
+        for width: CGFloat in [320, 360, 620, 760] {
+            let message = TranscriptMessage(id: "reply", role: "assistant", text: "# Real\n\nreal text.")
+            let row = TranscriptNativeReplyRow(inputs: .init(item: TranscriptNativePartView.wordsItem(message), fresh: false,
+                actions: .init(), width: width, environment: .init(), disclosure: .init(), toggle: { _ in }))
+            let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: width, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.contentView = row
+            defer { window.contentView = nil; window.close() }
+            row.layoutSubtreeIfNeeded()
+            let surface = try XCTUnwrap(ConversationPaneTests.views(NativeMarkdownContainer.self, in: row).first)
+            let text = surface.textView, manager = try XCTUnwrap(text.layoutManager), container = try XCTUnwrap(text.textContainer)
+            let range = (text.string as NSString).range(of: "Real")
+            let rect = manager.boundingRect(forGlyphRange: manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil), in: container)
+            let point = NSPoint(x: rect.midX, y: rect.midY + text.topInset)
+            surface.mouseMoved(with: try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: surface.convert(point, to: nil),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)))
+            let action = try XCTUnwrap(surface.subviews.compactMap { $0 as? MarkdownHeadingActionView }.first)
+            XCTAssertTrue(surface.bounds.contains(action.frame), "\(width)-point surface: \(action.frame) outside \(surface.bounds)")
+            XCTAssertTrue(row.bounds.contains(surface.convert(action.frame, to: row)), "\(width)-point row clips heading Copy")
+        }
+    }
+
     static func editTool(name: String = "edit", truncated: Bool? = false) throws -> ToolView {
         let values = name == "write" ? ["path": "fixture.txt", "content": after] : ["path": "fixture.txt", "oldText": before, "newText": after]
         return ToolView(id: "edit", name: name, state: "completed", input: String(decoding: try JSONEncoder().encode(values), as: UTF8.self),
@@ -73,12 +117,12 @@ final class TranscriptBugRegressionTests: XCTestCase {
         XCTAssertEqual(request.rows.last?.text, "…[truncated, 12 more bytes]\nnew tail")
     }
 
-    @MainActor private func findFixture(saved: Bool, reasoning: Bool = false) async throws -> (WorkspaceModel, NativeTranscriptPane, NSWindow) {
+    @MainActor private func findFixture(saved: Bool, reasoning: Bool = false, source: String = "**alpha** beta") async throws -> (WorkspaceModel, NativeTranscriptPane, NSWindow) {
         let root = scratchRoot("ordinary-markdown-find")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let answer: WireValue = saved && reasoning ? .array([
             .object(["type": .string("thinking"), "thinking": .string("**alpha** beta")]),
-            .object(["type": .string("text"), "text": .string("Done.")])]) : .string(saved ? "**alpha** beta" : "Earlier saved text")
+            .object(["type": .string("text"), "text": .string("Done.")])]) : .string(saved ? source : "Earlier saved text")
         let records: [WireValue] = [
             .object(["type": .string("session"), "version": .number(3), "id": .string("ordinary-find")]),
             .object(["type": .string("message"), "id": .string("question"), "parentId": .null,
@@ -95,7 +139,7 @@ final class TranscriptBugRegressionTests: XCTestCase {
         await model.select("ordinary-find")
         let session = try XCTUnwrap(model.selected)
         if !saved {
-            session.messages[1].text = reasoning ? "Done." : "**alpha** beta"; session.messages[1].state = "streaming"
+            session.messages[1].text = reasoning ? "Done." : source; session.messages[1].state = "streaming"
             if reasoning { session.messages[1].thinking = "**alpha** beta" }
         }
         let pane = NativeTranscriptPane()
@@ -105,8 +149,9 @@ final class TranscriptBugRegressionTests: XCTestCase {
         pane.showTranscript(model: model, session: session, state: saved ? "idle" : "running", canFork: false, canQuote: false, enabled: true)
         return (model, pane, window)
     }
-    @MainActor private func checkFind(saved: Bool, reasoning: Bool = false) async throws {
+    @MainActor private func checkFind(saved: Bool, reasoning: Bool = false, raw: Bool = false) async throws {
         let (model, pane, window) = try await findFixture(saved: saved, reasoning: reasoning)
+        if raw { model.selected?.disclosure.setOpen(true, .source("reply")); pane.refresh() }
         pane.showFind(); pane.find.setQuery("alpha beta")
         try await eventually("Ordinary reply search finished") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
         XCTAssertFalse(pane.find.failed)
@@ -130,6 +175,48 @@ final class TranscriptBugRegressionTests: XCTestCase {
     @MainActor func testFindMatchesFormattedOrdinaryReopenedReply() async throws { try await checkFind(saved: true) }
     @MainActor func testFindMatchesFormattedLiveReasoning() async throws { try await checkFind(saved: false, reasoning: true) }
     @MainActor func testFindMatchesFormattedReopenedReasoning() async throws { try await checkFind(saved: true, reasoning: true) }
+    @MainActor func testRememberedViewRawKeepsStreamingFindRendered() async throws { try await checkFind(saved: false, raw: true) }
+    @MainActor func testViewRawKeepsReasoningFindRendered() async throws { try await checkFind(saved: true, reasoning: true, raw: true) }
+
+    @MainActor private func checkRawFind(unsaved: Bool = false, noJournal: Bool = false, alreadySearching: Bool = false) async throws {
+        let source = "[site](https://example.test)"
+        let (model, pane, window) = try await findFixture(saved: true, source: source)
+        let session = try XCTUnwrap(model.selected)
+        let replyID = unsaved ? "unsaved-reply" : "reply"
+        if unsaved { session.messages[1] = TranscriptMessage(id: replyID, role: "assistant", text: source) }
+        if noJournal { model.chats[0].path = nil }
+        pane.refresh(); pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        if alreadySearching {
+            pane.showFind(); pane.find.setQuery("example.test")
+            try await eventually("Rendered link search finishes") { !pane.find.searching }
+            XCTAssertTrue(pane.find.matches.isEmpty, "The rendered link hides its destination")
+        }
+        let row = try XCTUnwrap(pane.document.retainedRows.first { ReplySource.replyID(of: $0.contentItem) == replyID })
+        row.toggleDisclosure(.source(replyID))
+        pane.refresh(); pane.document.finishDisclosureMotion(); pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        XCTAssertTrue(ConversationPaneTests.views(TranscriptPlainTextView.self, in: row).contains { $0.string == source && !$0.isHiddenOrHasHiddenAncestor })
+        if !alreadySearching { pane.showFind(); pane.find.setQuery("example.test") }
+        try await eventually("Raw reply search finishes") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+        XCTAssertFalse(pane.find.failed)
+        XCTAssertEqual(pane.find.matches.map(\.messageID), [replyID])
+        guard !pane.find.matches.isEmpty else { return }
+        if alreadySearching { pane.find.step(1) }
+        try await eventually("The visible raw destination is highlighted") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return !pane.document.focusPending && pane.document.focusText != nil
+        }
+        let text = try XCTUnwrap(pane.document.focusText), range = pane.document.focusRange
+        XCTAssertEqual((text.string as NSString).substring(with: range), "example.test")
+        XCTAssertNotNil(text.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: range.location, effectiveRange: nil))
+        row.toggleDisclosure(.source(replyID)); pane.refresh()
+        try await eventually("Switching back refreshes the active search") { !pane.find.searching }
+        XCTAssertTrue(pane.find.matches.isEmpty)
+        XCTAssertEqual(session.messages.last?.text, source)
+    }
+    @MainActor func testFindMatchesViewRawInSavedReply() async throws { try await checkRawFind() }
+    @MainActor func testFindMatchesViewRawInUnsavedReply() async throws { try await checkRawFind(unsaved: true) }
+    @MainActor func testFindMatchesViewRawWithoutJournal() async throws { try await checkRawFind(noJournal: true) }
+    @MainActor func testViewRawRefreshesAnActiveFind() async throws { try await checkRawFind(alreadySearching: true) }
 
     func testSavedFindProjectsAssistantTextAlongsideToolCalls() throws {
         let prose: WireValue = .object(["type": .string("text"), "text": .string("**alpha** beta")])
