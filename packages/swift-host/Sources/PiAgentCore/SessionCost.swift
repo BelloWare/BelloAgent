@@ -287,11 +287,17 @@ extension AgentSession {
         costPendingCompaction = true; costPendingCompactionFocus = manualCompactionInFlightFocus
     }
     /// A side of this root paused: the root now shows the family's pause and
-    /// its Resume returns this side for the app to resume too.
-    func notePausedMember(_ side: String) {
+    /// its Resume returns this side for the app to resume too. A `repair`
+    /// (the side binding again with its own durable pause) only restores a
+    /// missing membership: a side the root still lists is one its Resume
+    /// already covers (the app resumes it next), so the root is not paused
+    /// again.
+    func notePausedMember(_ side: String, repair: Bool = false) {
         guard !closed, !isSubagent, side != id else { return }
+        let known = costPausedMembers.contains(side)
+        if repair, known { return }
         let first = !costPaused
-        if !costPausedMembers.contains(side) { costPausedMembers.append(side) }
+        if !known { costPausedMembers.append(side) }
         if first {
             costPaused = true; queuePaused = true
             errorCode = Self.costLimitCode; errorMessage = costPausedMessage

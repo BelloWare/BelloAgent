@@ -972,3 +972,58 @@ extension FamilyLimitPauseTests {
         await coordinator.drain(); await owner.close()
     }
 }
+
+/// Review round 5 (Codex) regressions.
+extension FamilyLimitPauseTests {
+    /// A pause's parking loop holds a snapshot across awaits. A Resume that
+    /// reinstalled a turn under a new job meanwhile keeps that job: parking
+    /// the stale snapshot acts on nothing, and the family completes.
+    func testAStaleParkNeverRemovesAJobAResumeInstalled() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = LimitRunClient(mode:"queued"), coordinator = AgentSteeringCoordinator()
+        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        for n in 0..<17 { _ = try await startChild(owner, coordinator, "turn-\(n)", newTask: n == 0) }
+        try await eventually { await client.children.count == 16 }
+        let queued = await coordinator.jobs.values.first { !$0.allocated }
+        let stale = try XCTUnwrap(queued)
+        await owner.fixtureCostPause()
+        await coordinator.pause(owner:owner,generation:1)
+        try await eventually(timeout:.seconds(5)) { await coordinator.jobs.isEmpty }
+        await owner.fixtureEndPause(); await owner.beginResumeFixture()
+        try await coordinator.resumeParked(owner:owner,generation:1)
+        let reinstalled = await coordinator.jobs[stale.turn.id]
+        XCTAssertNotNil(reinstalled)
+        await coordinator.park(stale,child:nil)
+        let kept = await coordinator.jobs[stale.turn.id]
+        XCTAssertNotNil(kept,"The Resume's job for the turn is kept")
+        await client.releaseAll()
+        try await eventually(timeout:.seconds(10)) { await owner.agentState().turns.values.allSatisfy { $0.status == .completed } }
+        await coordinator.drain(); await owner.close()
+    }
+
+    /// After the root's Resume, reopening a side it still lists (the app
+    /// resumes it next) binds the side again: the root is not paused again,
+    /// and the side stays listed until it resumes itself.
+    func testRebindingASideTheRootsResumeCoversDoesNotPauseTheRootAgain() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root)
+        await owner.setCostLimit(5)
+        let side = try await self.side("side",parent:owner,root:root)
+        await side.fixtureCostPause()
+        try await side.bindSideBudget(to:owner)
+        var rootPaused = await owner.costPaused
+        XCTAssertTrue(rootPaused, "A missing membership is repaired with the pause")
+        let reply = try await owner.continueRun(commandID:"resume")
+        XCTAssertEqual(reply["pausedMembers"].list.compactMap(\.text),["side"])
+        rootPaused = await owner.costPaused; XCTAssertFalse(rootPaused)
+        try await side.bindSideBudget(to:owner)
+        rootPaused = await owner.costPaused
+        let members = await owner.costPausedMembers
+        XCTAssertFalse(rootPaused, "The root's Resume already covers the side")
+        XCTAssertEqual(members,["side"])
+        await side.fixtureEndPause()
+        try await side.bindSideBudget(to:owner)
+        let after = await owner.costPausedMembers; XCTAssertTrue(after.isEmpty)
+        await side.close(); await owner.close()
+    }
+}

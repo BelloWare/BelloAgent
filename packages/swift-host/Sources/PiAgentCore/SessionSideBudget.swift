@@ -28,7 +28,7 @@ extension AgentSession {
         // The root's list of paused sides follows each side's own durable
         // pause: a crash between the two saves is repaired here.
         if let root = sideBudgetParents.last {
-            if costPaused { await root.notePausedMember(id) } else { await root.forgetPausedMember(id) }
+            if costPaused { await root.notePausedMember(id, repair: true) } else { await root.forgetPausedMember(id) }
         }
     }
 

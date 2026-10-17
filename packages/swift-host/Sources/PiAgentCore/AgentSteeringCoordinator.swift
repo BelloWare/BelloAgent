@@ -14,6 +14,10 @@ actor AgentSteeringCoordinator {
         var cancelled = false, allocated = false, sealed = false
         /// Continues a turn parked at a cost-limit pause.
         var resuming = false
+        /// This job, not a later one for the same turn (a Resume reinstalls
+        /// parked turns under new jobs); and whether it is parking now.
+        let instance = UUID()
+        var parking = false
         let startedAt = nowMS()
         var progress: SubagentProgress?
     }
@@ -243,6 +247,11 @@ actor AgentSteeringCoordinator {
     /// journals, with no result and its pending parent messages kept. The
     /// runtime is released; Resume opens the child again from its journal.
     func park(_ job: Job, child: AgentSession?) async {
+        // Only the job still installed, once: a stale snapshot (a pause's
+        // loop across awaits) never parks a job a Resume installed since,
+        // and two parkers of one job do not both remove it.
+        guard let current = jobs[job.turn.id], current.instance == job.instance, !current.parking else { return }
+        jobs[job.turn.id]?.parking = true
         var turn = job.turn; turn.status = .queued; turn.result = nil
         let lock = gate(job.owner.id)
         do {
@@ -256,6 +265,7 @@ actor AgentSteeringCoordinator {
             } catch { await lock.release(); throw error }
         } catch { await job.owner.failFamilyAccounting(error) }
         if let child { await settled(child) }
+        guard jobs[turn.id]?.instance == job.instance else { return }
         jobs.removeValue(forKey:turn.id); queues[job.owner.id]?.removeAll { $0 == turn.id }
         if job.allocated { active[job.owner.id,default:0] -= 1 }
         pump(job.owner.id)
@@ -273,7 +283,11 @@ actor AgentSteeringCoordinator {
         // older than a Resume does nothing.
         guard halt || generation > resumedThrough[ObjectIdentifier(owner), default: -1] else { return }
         paused.insert(owner.id)
-        for job in Array(jobs.values) where job.owner === owner {
+        for snapshot in Array(jobs.values) where snapshot.owner === owner {
+            // The loop crosses awaits: a Resume since then ends it, and each
+            // job is read again, so a stale snapshot acts on nothing.
+            if !halt, generation <= resumedThrough[ObjectIdentifier(owner), default: -1] { break }
+            guard let job = jobs[snapshot.turn.id], job.instance == snapshot.instance else { continue }
             if job.allocated {
                 if halt { jobs[job.turn.id]?.task?.cancel() }
                 if let child = job.child { if halt { await child.stop() } else { await child.abortModelRequests() } }
@@ -300,7 +314,10 @@ actor AgentSteeringCoordinator {
         let wake = signal(parent.id)
         while jobs.values.contains(where: { $0.owner === parent }) {
             try Task.checkCancellation()
-            for job in Array(jobs.values) where job.owner === parent && !job.allocated && job.task == nil { await park(job,child:job.child) }
+            for snapshot in Array(jobs.values) where snapshot.owner === parent {
+                guard let job = jobs[snapshot.turn.id], job.instance == snapshot.instance, !job.allocated, job.task == nil else { continue }
+                await park(job,child:job.child)
+            }
             let revision = await wake.revision
             guard jobs.values.contains(where: { $0.owner === parent }) else { break }
             await wake.wait(after:revision)
