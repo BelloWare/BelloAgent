@@ -1295,3 +1295,26 @@ final class SubagentReaderTests: XCTestCase, SerialTestLane {
     }
 
 }
+
+extension SubagentReaderTests {
+    /// BUG-009 (review 2026-10-16): a side mounted beside its parent is not
+    /// in view while a File or Changes tab covers it. A run that fails there,
+    /// before any reply, keeps its unread-failure mark and sidebar dot; the
+    /// same failure on the side in view does not.
+    @MainActor func testASideCoveredByATabKeepsItsFailureMark() async throws {
+        let (model, _) = try fixture()
+        model.applicationIsActiveOverride = true
+        model.readStatesRestored = true
+        await model.openFamilySide("chat-side")
+        XCTAssertTrue(model.transcriptShows("chat-side"))
+        model.markRunFailed(sessionID: "chat-side")
+        XCTAssertFalse(model.unreadFailure(sessionID: "chat-side"), "The reader saw the failure where it happened")
+
+        _ = otherTab(model)
+        XCTAssertNotNil(model.sides["chat-parent"], "The side stays mounted under the tab")
+        XCTAssertFalse(model.transcriptShows("chat-side"))
+        model.markRunFailed(sessionID: "chat-side")
+        XCTAssertTrue(model.unreadFailure(sessionID: "chat-side"), "A covered side's failure is unread: the sidebar row's failure dot")
+        XCTAssertEqual(model.unreadOutputCount(sessionID: "chat-side"), 0, "It failed before any reply")
+    }
+}

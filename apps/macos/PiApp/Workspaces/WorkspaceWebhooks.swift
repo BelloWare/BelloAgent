@@ -64,17 +64,17 @@ extension WorkspaceModel {
         guard let display = displays[sessionID], let outcome = display.webhookTracker.observe(snapshot, baseline: baseline),
               let settings = activeWebhook, sendsWebhook(sessionID) else { return }
         let failure = outcome == "failed" ? (snapshot["preflightError"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? "Run failed." : ""
-        let finishedAt = Date(), key = UUID()
+        let finishedAt = Date(), key = UUID(), task = display.webhookTracker.finished
         webhookTasks[key] = Task { [weak self] in
-            await self?.sendFinishedWebhook(sessionID, settings: settings, outcome: outcome, error: failure, finishedAt: finishedAt)
+            await self?.sendFinishedWebhook(sessionID, settings: settings, outcome: outcome, error: failure, finishedAt: finishedAt, task: task)
             self?.webhookTasks[key] = nil
         }
     }
 
-    private func sendFinishedWebhook(_ id: String, settings: WebhookSettings, outcome: String, error failure: String, finishedAt: Date) async {
+    private func sendFinishedWebhook(_ id: String, settings: WebhookSettings, outcome: String, error failure: String, finishedAt: Date, task: WebhookTask?) async {
         let title = chatRecord(id)?.title ?? "chat"
         do {
-            let prepared = try await prepareWebhook(for: id, settings: settings, status: outcome, error: failure, finishedAt: finishedAt)
+            let prepared = try await prepareWebhook(for: id, settings: settings, status: outcome, error: failure, finishedAt: finishedAt, task: task)
             try Task.checkCancellation()
             _ = try await deliverWebhook(prepared.request, retrying: true)
             // Said in the chat's footer only: the webhook went out.
@@ -87,8 +87,10 @@ extension WorkspaceModel {
     }
 
     /// The webhook the chat sends, with the mini model's parameters. With no
-    /// status given it describes the chat as it is now: the preview.
-    func prepareWebhook(for id: String, settings: WebhookSettings, status: String? = nil, error failure: String? = nil, finishedAt: Date = Date()) async throws -> WebhookPreparation {
+    /// status given it describes the chat as it is now: the preview. `task`
+    /// is the finished task a completion describes.
+    func prepareWebhook(for id: String, settings: WebhookSettings, status: String? = nil, error failure: String? = nil, finishedAt: Date = Date(),
+                        task: WebhookTask? = nil) async throws -> WebhookPreparation {
         guard let item = chatRecord(id) else { throw HostError.failure("This chat is no longer available.") }
         let profile = profiles.first { $0.id == item.profileID }
         let display = displays[id]
@@ -99,10 +101,19 @@ extension WorkspaceModel {
         context.error = failure ?? (context.status == "failed" ? display?.failureMessage ?? "Run failed." : "")
         context.model = item.model ?? profile?.modelId ?? ""
         context.finishedAt = ISO8601DateFormatter().string(from: finishedAt)
+        // The rows on screen need not be the chat's latest: a chat left
+        // mid-stream keeps them as the reader left them (a background chat's
+        // refresh carries none), and the reader may have an older page up.
+        // Its history is read instead, bounded to the finished task, as a
+        // next turn may already have started. A chat not yet saved has only
+        // the rows on screen.
         var messages = display?.messages ?? []
-        if !messages.contains(where: { $0.role == "user" && $0.kind == nil }), let path = item.path,
-           let page = try? await history.read(path: path) { messages = page.messages }
-        (context.lastRequest, context.lastReply) = WebhookContext.exchange(in: messages)
+        if let path = item.path, let page = try? await history.read(path: path) {
+            messages = page.messages
+            if let task, !WebhookContext.holds(task, in: messages), let last = task.lastSourceID,
+               let around = try? await history.read(path: path, around: last) { messages = around.messages }
+        }
+        (context.lastRequest, context.lastReply) = WebhookContext.exchange(in: messages, task: task)
         let parameters = try settings.parameterList()
         var values = context.values
         var preparation = WebhookPreparation(request: try WebhookRequest.render(settings, values: values), context: context)

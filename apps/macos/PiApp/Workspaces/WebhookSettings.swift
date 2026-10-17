@@ -138,6 +138,9 @@ enum OrderedJSONStrings {
 /// user stopped are not that moment. Opening a chat sets a silent baseline,
 /// so a restored chat never sends for a run that ended earlier.
 struct WebhookFinishTracker {
+    /// The task the last outcome `observe` returned is for, when the
+    /// helper's task fence named it: what the webhook describes.
+    private(set) var finished: WebhookTask?
     private var epoch: String?
     private var states: [String: String]?
     private var finishedTasks: Set<String>?
@@ -148,7 +151,9 @@ struct WebhookFinishTracker {
     private var taskTimeline: String?
     private var managedChild = false
     /// A run ended since the chat last waited: "completed" or "failed".
-    private var pending: String?
+    private var pending: String? { didSet { if pending == nil { pendingTask = nil } } }
+    /// The task `pending` is for.
+    private var pendingTask: WebhookTask?
 
     mutating func observe(_ snapshot: [String: WireValue], baseline: Bool = false) -> String? {
         let nextEpoch = snapshot["monitoring"]?.object?["epoch"]?.string
@@ -198,6 +203,8 @@ struct WebhookFinishTracker {
                 // An edit may advance it before any active snapshot arrives.
                 if !reset, let completionRevision, revision > completionRevision {
                     pending = Self.outcome(completion["outcome"]?.string)
+                    // The fence advances as the task is added to `recent`.
+                    if pending != nil { pendingTask = WebhookTask(recent.last) }
                 }
                 completionRevision = revision
                 finishedCommandTurns.removeAll()
@@ -213,7 +220,7 @@ struct WebhookFinishTracker {
                 next.insert(key)
                 if completionRevision == nil, !reset, finishedTasks?.contains(key) != true,
                    activeTaskKey == key || (active == nil && finishedCommandTurns.contains(root)) {
-                    if pending != "failed" { pending = Self.outcome(outcome) }
+                    if pending != "failed" { pending = Self.outcome(outcome); if pending != nil { pendingTask = WebhookTask(value) } }
                     finishedCommandTurns.remove(root)
                 }
             }
@@ -233,6 +240,7 @@ struct WebhookFinishTracker {
         if taskActive || snapshot["familyWaiting"]?.bool == true || (state != .error && (snapshot["agentInboxPending"]?.number ?? 0) > 0) { return nil }
         guard let outcome = pending else { return nil }
         if state != .error, (snapshot["queueCount"]?.number ?? 0) > 0 { return nil }
+        finished = pendingTask
         pending = nil
         return state == .error || snapshot["runStatus"]?.string == "failed" ? "failed" : outcome
     }
@@ -245,6 +253,19 @@ struct WebhookFinishTracker {
     }
 }
 
+/// The finished task a completion webhook describes, from the helper's task
+/// fence: its root (the turn that started it) and the last row it wrote.
+struct WebhookTask: Sendable, Equatable {
+    var rootID: String
+    var lastSourceID: String?
+    init(rootID: String, lastSourceID: String?) { self.rootID = rootID; self.lastSourceID = lastSourceID }
+    /// A task presentation record's identity, when it has one.
+    init?(_ record: WireValue?) {
+        guard let record = record?.object, let root = record["rootID"]?.string, !root.isEmpty else { return nil }
+        rootID = root; lastSourceID = record["lastSourceID"]?.string
+    }
+}
+
 /// What the app knows about the finished chat, and fills in itself.
 struct WebhookContext: Sendable, Equatable {
     var chatID = "", chatTitle = "", project = "", status = "completed", error = ""
@@ -254,6 +275,20 @@ struct WebhookContext: Sendable, Equatable {
          "last_request": lastRequest, "last_reply": lastReply, "model": model, "finished_at": finishedAt]
     }
     /// The last request and the assistant's reply to it, from a chat's rows.
+    /// The finished task's request and reply: its own rows, up to the last
+    /// one it wrote, so neither a later turn nor an earlier one is read.
+    /// Rows from before task roots were recorded are bounded by the last row.
+    static func exchange(in messages: [TranscriptMessage], task: WebhookTask?) -> (request: String, reply: String) {
+        guard let task else { return exchange(in: messages) }
+        var rows = messages
+        if let last = task.lastSourceID, let end = rows.lastIndex(where: { $0.id == last }) { rows = Array(rows[...end]) }
+        let own = rows.filter { $0.taskRootID == task.rootID }
+        return exchange(in: own.contains { $0.role == "user" } ? own : rows)
+    }
+    /// Whether `messages` hold the task's rows.
+    static func holds(_ task: WebhookTask, in messages: [TranscriptMessage]) -> Bool {
+        messages.contains { $0.taskRootID == task.rootID || $0.id == task.lastSourceID }
+    }
     static func exchange(in messages: [TranscriptMessage]) -> (request: String, reply: String) {
         let visible = messages.filter { $0.kind == nil && !$0.isStreaming }
         guard let last = visible.lastIndex(where: { $0.role == "user" }) else {

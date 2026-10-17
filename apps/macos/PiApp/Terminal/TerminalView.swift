@@ -503,6 +503,13 @@ import CoreText
         if event.isARepeat { guard event.keyCode == heldKeyCode else { return } } else { heldKeyCode = event.keyCode }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) { super.keyDown(with: event); return }
+        // While an input method composes, Return, the arrows, Backspace,
+        // Escape and control keys accept or edit the composition: it sees
+        // them first. A key it does not take comes back as `doCommand(by:)`.
+        if !markedText.isEmpty {
+            if let interpretKeys { interpretKeys([event]) } else { interpretKeyEvents([event]) }
+            return
+        }
         let shift = flags.contains(.shift), control = flags.contains(.control), option = flags.contains(.option)
         if let key = TerminalKeyEncoder.key(forKeyCode: event.keyCode, shift: shift) {
             send(TerminalKeyEncoder.encode(key, applicationCursor: emulator.applicationCursorKeys, shift: shift, control: control, option: option))
