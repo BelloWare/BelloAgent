@@ -42,9 +42,10 @@ extension AgentSession {
         var retries=0
         while true {
             try validateCompaction(revision,profile:originalProfile)
-            // A summary request is a model request of this chat: at its
-            // cost limit none is sent, first attempt or retry.
-            if costPaused { throw Self.costHoldError }
+            // A summary request is a model request of this chat: while its
+            // family is paused (its own pause, an ancestor's or its owner's
+            // hold) none is sent, first attempt or retry.
+            try await enforceCostHold()
             try enforceCostLimit()
             guard used<limit else { throw AgentError("compact_budget", "A summary request reached its \(limit)-attempt limit, including retries. Original context is retained.") }
             compactionPhysicalAttempts += 1; used += 1

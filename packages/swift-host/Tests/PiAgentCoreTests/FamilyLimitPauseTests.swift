@@ -1210,3 +1210,28 @@ extension FamilyLimitPauseTests {
         await reopened.close()
     }
 }
+
+/// Review round 8 (Codex) regressions.
+extension FamilyLimitPauseTests {
+    /// A side's summary request asks the family's latched pause as its turn
+    /// requests do: with its root paused (the limit since raised) none goes.
+    func testASidesSummaryRequestWaitsForTheFamilysResume() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try familyFixture(root:root), client = ScriptClient([answer("Summary")])
+        await owner.setCostLimit(5)
+        let side = try await side("side",parent:owner,root:root,client:client)
+        await owner.fixtureCostPause()
+        do { try await side.fixtureSummaryRequest(); XCTFail("A summary request went while the family was paused") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,AgentSession.costLimitCode) }
+        let sent = await client.count; XCTAssertEqual(sent,0)
+        await side.close(); await owner.close()
+    }
+}
+
+private extension AgentSession {
+    func fixtureSummaryRequest() async throws {
+        var used = 0
+        _ = try await summaryReply([],instructions:"",tools:[],profile:turnProfile,originalProfile:turnProfile,revision:contextMutation,limit:1,
+                                   retry:.init(enabled:false,maxRetries:0,baseDelayMs:0),used:&used)
+    }
+}

@@ -75,11 +75,26 @@ extension WorkspaceModel {
             // A paused side need not be in the loaded window (`loadChats`
             // keeps the newest records): its record is read from the store.
             await loadMissingRecords(order)
+            // Ancestors first: a nested side resumed before its paused parent
+            // would meet that parent's pause and pause the family again.
+            try? await retainBudgetAncestors()
+            order = Self.ancestorsFirst(order) { id in record(id).flatMap { sideBudgetParent($0) } }
             for id in order {
                 guard let member = record(id), !member.isArchived, member.workspaceID == root.workspaceID else { continue }
                 _ = await performResume(member, view: displays[id], member: true)
             }
         }
+    }
+
+    /// `ids` ordered by how many of their side ancestors are known (fewest
+    /// first), keeping the given order among equals.
+    static func ancestorsFirst(_ ids: [String], parent: (String) -> String?) -> [String] {
+        func depth(_ id: String) -> Int {
+            var count = 0, seen: Set<String> = [id], next = parent(id)
+            while let current = next, seen.insert(current).inserted { count += 1; next = parent(current) }
+            return count
+        }
+        return ids.enumerated().map { (depth($0.element), $0.offset, $0.element) }.sorted { ($0.0, $0.1) < ($1.0, $1.1) }.map(\.2)
     }
 
     /// Chats named by id that the loaded window left out, added from the
