@@ -160,7 +160,12 @@ extension AgentSession {
     func run(compactOnly: Bool) async {
         do {
             try Task.checkCancellation(); state = .running; runStatus = .running; try persistState(active:true); event("state")
-            if compactOnly { try await compactContext(); costPendingCompaction=false; if let activeSubmission { commandState(activeSubmission,"completed") } }
+            if compactOnly {
+                manualCompactionInFlight = true; manualCompactionInFlightFocus = compactionFocus
+                try await compactContext()
+                manualCompactionInFlight = false; manualCompactionInFlightFocus = nil
+                costPendingCompaction=false; costPendingCompactionFocus=nil
+                if let activeSubmission { commandState(activeSubmission,"completed") } }
             else {
                 // Deliver the next eligible input before sizing the pending request.
                 var startedFollowUp=false
@@ -187,7 +192,7 @@ extension AgentSession {
                         // Stopped (or closed) while the pause's children were
                         // still settling: the family stays paused for the next
                         // Resume, and their runs are halted, not waited for.
-                        costPaused = true; costPauseCount &+= 1; try? persistState(active:true)
+                        costPaused = true; costPauseCount &+= 1; try? persistState(active:true,durable:true)
                         if let coordinator = agentCoordinator { let count = costPauseCount; Task { await coordinator.pause(owner:self,generation:count,halt:true) } }
                         throw error
                     }
@@ -199,7 +204,7 @@ extension AgentSession {
                     // Durable before any effect: after a crash these calls may
                     // have begun, so recovery gives them unknown outcomes and
                     // nothing replays them.
-                    costPendingCalls = []; try persistState(active:true)
+                    costPendingCalls = []; try persistState(active:true,durable:true)
                     if !calls.isEmpty {
                         currentAttemptIDs = attempts
                         try await runToolBatch(calls)
@@ -212,9 +217,13 @@ extension AgentSession {
                     // work is released and held calls have run (a failure here
                     // cannot strand the family).
                     compactOnResume=false
+                    // With the focus it was given, also after a reopen.
+                    compactionFocus = costPendingCompactionFocus
+                    manualCompactionInFlight = true; manualCompactionInFlightFocus = costPendingCompactionFocus
                     // Nothing left to summarize is not a reason to strand the rest.
                     do { try await compactContext() } catch let error as AgentError where error.code == "compact_unavailable" {}
-                    costPendingCompaction=false; try persistState(active:true)
+                    manualCompactionInFlight = false; manualCompactionInFlightFocus = nil
+                    costPendingCompaction=false; costPendingCompactionFocus=nil; try persistState(active:true,durable:true)
                 }
                 // Nothing of the parent's own was cut off: wait for the resumed
                 // family as the turn's end would, and ask the model only once
@@ -411,8 +420,10 @@ extension AgentSession {
             // Paused, not failed: Resume goes on from here once the limit is
             // raised. A managed child's turn is parked by its coordinator.
             let pausedAtLimit = costPaused || isSubagent && budgetError != nil
-            // A manual compaction the pause cut is done again on Resume.
-            if compactOnly, costPaused { costPendingCompaction = true }
+            // A manual compaction the pause cut is done again on Resume
+            // (already saved with the pause; `markCutCompaction`).
+            if costPaused { markCutCompaction() }
+            manualCompactionInFlight = false; manualCompactionInFlightFocus = nil
             queuePaused=true; runStatus=pausedAtLimit || familyStopReason == nil && cancelled ? .cancelled : .failed; state=runStatus == .cancelled ? .paused : .error
             errorMessage=pausedAtLimit ? (isSubagent ? "Paused at the shared cost limit." : costPausedMessage) : (error as? AgentError)?.message ?? (runStatus == .cancelled ? "Run cancelled. Pending messages are paused; inspect tool effects before retrying." : "Run failed.")
             errorCode=pausedAtLimit ? Self.costLimitCode : runStatus == .failed ? (error as? AgentError)?.code : nil

@@ -259,6 +259,7 @@ actor AgentSteeringCoordinator {
         jobs.removeValue(forKey:turn.id); queues[job.owner.id]?.removeAll { $0 == turn.id }
         if job.allocated { active[job.owner.id,default:0] -= 1 }
         pump(job.owner.id)
+        await publishParked(job)
         await signal(job.owner.id).pulse()
     }
     /// The owner paused at its family's cost limit: queued turns park now;

@@ -57,7 +57,7 @@ extension AgentSteeringCoordinator {
         return ["revision":JSON(state.revision),"total":JSON(plans.count),"active":JSON(active[parent.id,default:0]),"cursor":end < plans.count ? JSON(end) : .null,"children":.array(page.compactMap { plan in
             guard let turn = state.latest(plan.origin.link.childSessionID) else { return try? subagentJSON(SubagentSummary(link:plan.origin.link,description:plan.origin.description,model:plan.origin.model.model,status:saved.outcomes?[plan.origin.link.delegationID] ?? .interrupted,revision:state.revision,effort:plan.origin.model.thinkingLevel)) }
             return try? subagentJSON(SubagentSummary(link:plan.origin.link,description:plan.origin.description,model:plan.origin.model.model,status:turn.status,revision:state.revision,tools:plan.origin.tools,progress:turn.status.terminal ? nil : jobs[turn.id]?.progress,turn:turn.turn,executionID:turn.executionID,deliveryState:state.messages["result:" + turn.id]?.disposition ?? "pending",pendingMessages:state.messages.values.filter { $0.childID == turn.childID && $0.disposition == "pending" }.count,followUpsRemaining:max(0,8-state.turns.values.filter { $0.childID == turn.childID && $0.epoch == state.run?.epoch && $0.turn > 1 }.count),parentWaiting:waiting,progressEpoch:turn.status.terminal ? nil : progressEpoch,effort:turn.effort ?? plan.origin.model.thinkingLevel,
-                costPaused:paused && !turn.status.terminal && jobs[turn.id] == nil ? true : nil))
+                costPaused:Self.listsPaused(owner:paused,status:turn.status,running:jobs[turn.id] != nil) ? true : nil))
         })]
     }
 }
@@ -75,6 +75,21 @@ extension AgentSteeringCoordinator {
 }
 
 extension AgentSteeringCoordinator {
+    /// A turn of a paused owner shows its pause once its saved state says it
+    /// is queued (a parked turn's record is written before its job goes), or
+    /// once it has no job: never a queued row without the flag.
+    static func listsPaused(owner paused: Bool, status: SubagentStatus, running: Bool) -> Bool {
+        paused && !status.terminal && (!running || status == .queued)
+    }
+    /// A parked turn's job is gone: its card and the family's discovery
+    /// revision change now, so no reader keeps the queued row it read while
+    /// the turn was parking.
+    func publishParked(_ job: Job) async {
+        let state = await job.owner.agentState()
+        guard let latest = state.latest(job.turn.childID), latest.id == job.turn.id, !latest.status.terminal else { return }
+        let paused = await job.owner.costPaused
+        await job.owner.subagentChanged(SubagentSummary(link:job.plan.origin.link,description:job.plan.origin.description,model:job.plan.origin.model.model,status:latest.status,revision:state.revision,tools:job.plan.origin.tools,turn:latest.turn,executionID:latest.executionID,progressEpoch:await job.owner.displayEpoch,effort:latest.effort ?? job.plan.origin.model.thinkingLevel,costPaused:Self.listsPaused(owner:paused,status:latest.status,running:false) ? true : nil))
+    }
     func progress(_ target: AgentTurnTarget) async {
         guard let job = jobs[target.id], !job.sealed, let child = job.child else { return }
         let progress = await child.subagentProgress(elapsed:nowMS()-job.startedAt)

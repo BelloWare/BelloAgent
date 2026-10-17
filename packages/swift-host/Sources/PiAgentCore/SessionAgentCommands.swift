@@ -92,7 +92,7 @@ extension AgentSession {
         // input this Resume releases, never a second submission of it.
         queue.removeAll { $0.turnID != turn.inputID }; steering.removeAll(); queuePaused = false
         managedCancellation = { Task { await coordinator.stop(owner:owner.id,target:turn.target,human:false) } }
-        if costPaused { costPaused = false; errorCode = nil; errorMessage = nil; try persistState() }
+        if costPaused { costPaused = false; errorCode = nil; errorMessage = nil; try persistState(durable:true) }
     }
     enum AgentTurnStart { case fresh, accepted, delivered }
     /// How far a resumed turn's task got, from durable evidence (its command
@@ -127,7 +127,7 @@ extension AgentSession {
         costPaused = true; queuePaused = true
         if state != .error { state = .paused; runStatus = .cancelled }
         errorCode = Self.costLimitCode; errorMessage = "Paused at the shared cost limit. It goes on when the main chat resumes."
-        try persistState(); event("state")
+        try persistState(durable:true); event("state")
     }
     func startAgentTurn(_ turn: AgentChildTurn) throws {
         guard agentLease?.executionID == turn.executionID, !closed else { throw SubagentRecovery.damaged() }

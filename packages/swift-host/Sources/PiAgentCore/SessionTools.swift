@@ -213,7 +213,7 @@ extension AgentSession {
         catch let error as AgentError where error.code == Self.costLimitCode {
             // Paused at the cost limit before any of these started: they stay
             // pending, durably, and run first on Resume (no new reply first).
-            costPendingCalls = calls.map(\.id); try persistState(active:true)
+            costPendingCalls = calls.map(\.id); try persistState(active:true,durable:true)
             throw error
         }
         catch {
@@ -241,7 +241,7 @@ extension AgentSession {
                 } catch {
                     if let accepted = await acceptedAgentToolResult(call,stopped:true) { agentPreparedResults[call.id] = accepted; continue }
                     // Not accepted, and the pause closed the gate: held for Resume.
-                    if (error as? AgentError)?.code == Self.costLimitCode { heldBatchCalls.insert(call.id); continue }
+                    if await failedByCostPause(error) { heldBatchCalls.insert(call.id); continue }
                     let failure = (error as? AgentError) ?? AgentError("subagent_interrupted", "Agent control interrupted")
                     let envelope: JSON = ["version":3,"accepted":false,"error":["code":JSON(failure.code),"message":JSON(failure.message)]]
                     agentPreparedResults[call.id] = resultText(envelope.encoded(),error:true)
@@ -261,6 +261,10 @@ extension AgentSession {
                 // The assistant's calls are already durable. Settle every one
                 // before ending the turn, so Resume never needs reopen repair.
                 preflightCancelled = true
+            } catch {
+                // The pause closed delegation before these began: held for Resume.
+                guard await failedByCostPause(error) else { throw error }
+                for call in calls where call.name == "subagent" && sideDelegationRefusal(call) == nil { heldBatchCalls.insert(call.id) }
             }
         }
         let began=nowMS()
@@ -299,7 +303,7 @@ extension AgentSession {
             // Calls the pause stopped at their own gate wait for Resume, as
             // a batch held before it began does; the others kept their results.
             costPendingCalls = Array(Set(costPendingCalls).union(held)).sorted { a, b in (calls.firstIndex { $0.id == a } ?? 0) < (calls.firstIndex { $0.id == b } ?? 0) }
-            try persistState(active:true)
+            try persistState(active:true,durable:true)
             throw Self.costHoldError
         }
     }
@@ -309,7 +313,7 @@ extension AgentSession {
         let start=nowMS()
         func heldOutcome() -> ToolOutcome {
             // Saved now: a quit or crash while other calls run keeps it held.
-            if !costPendingCalls.contains(call.id) { costPendingCalls.append(call.id); try? persistState(active:true) }
+            if !costPendingCalls.contains(call.id) { costPendingCalls.append(call.id); try? persistState(active:true,durable:true) }
             if var card=toolStates[call.id] { card["state"]="queued"; setToolState(call.id,card); recordDisplayChange(toolStateOwners[call.id],at:displayClock()); event("tool_execution_end") }
             var outcome = ToolOutcome(index:index,message:ChatMessage(role:"toolResult",content:[]),observedAt:displayClock(),cancelled:false); outcome.held = true
             return outcome
@@ -357,7 +361,7 @@ extension AgentSession {
             // A call stopped before its tool was entered never ran.
             let entered=toolInvocationsBegan.contains(call.id)
             // The pause closed its own gate before it began: held for Resume.
-            if !entered, !cancelled, (error as? AgentError)?.code == Self.costLimitCode { return heldOutcome() }
+            if !entered, !cancelled, await failedByCostPause(error) { return heldOutcome() }
             let text=cancelled ? (entered ? "Tool interrupted. Effects may already have occurred; inspect before retrying. No automatic replay." : "Not executed: cancelled before invocation") : (error as? AgentError)?.message ?? "Tool failed; inspect its effects before retrying."
             // Only an editing tool that had begun, and failed other than by
             // rejecting the call outright, may have left effects: its outcome

@@ -14,7 +14,7 @@ private actor BillingClient: ModelClient {
     private(set) var holding = false
     private var turnCount = 0, held: Int?
     /// While set, a summary request waits (until cancelled or released).
-    private(set) var holdingSummary = false, summaryCancelled = 0, summaryThinking: [String?] = []
+    private(set) var holdingSummary = false, summaryCancelled = 0, summaryThinking: [String?] = [], summaryTexts: [String] = []
     private var summaryHold = false
     func holdSummaries(_ on: Bool) { summaryHold = on }
     init(turns: [Step], summaries: [Step] = [], hold: Set<Int> = []) { self.turns = turns; self.summaries = summaries; self.holds = hold }
@@ -30,7 +30,7 @@ private actor BillingClient: ModelClient {
         purposes.append(purpose)
         let step: Step
         if purpose == "compaction" {
-            summaryThinking.append(profile.raw["thinkingLevel"].text)
+            summaryThinking.append(profile.raw["thinkingLevel"].text); summaryTexts.append(messages.map(\.text).joined(separator: "\n"))
             do { while summaryHold { holdingSummary = true; try await Task.sleep(nanoseconds: 2_000_000) } }
             catch { holdingSummary = false; summaryCancelled += 1; throw error }
             holdingSummary = false
@@ -128,12 +128,41 @@ private actor EvidenceTools: ToolExecuting {
     func invoke(_ call: ToolCall, readOnly: Bool) -> JSON { count += 1; return resultText("APPENDED ONCE\n" + String(repeating: "observed evidence ", count: 1500)) }
 }
 
+/// Watches a chat's run-state records and journal syncs: what a crash or
+/// power loss at each point would leave.
+private final class StateProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var states: [JSON] = []
+    /// Once armed: whether the first state record that no longer holds the
+    /// calls was written, and whether a sync followed it yet.
+    private(set) var releaseWritten = false, releaseSynced = false
+    private var armed = false
+    /// Once set: the journal is copied at the first sync after a record of
+    /// an accepted Resume (active, no pause, calls still held).
+    private var copy: (from: URL, to: URL)?, acceptedPending = false
+    func arm() { lock.lock(); armed = true; lock.unlock() }
+    func copyAtAcceptedResume(from: URL, to: URL) { lock.lock(); copy = (from, to); lock.unlock() }
+    func beforeAppend(_ record: JSON) {
+        guard record["customType"].text == JournalRecordKind.state else { return }
+        lock.lock(); defer { lock.unlock() }
+        let data = record["data"]; states.append(data)
+        if armed, !releaseWritten, data["costPendingCalls"].isNull { releaseWritten = true }
+        acceptedPending = copy != nil && data["active"].flag == true && data["costPaused"].isNull && !data["costPendingCalls"].isNull
+    }
+    func beforeSynchronize() {
+        lock.lock(); defer { lock.unlock() }
+        if releaseWritten { releaseSynced = true }
+        if acceptedPending, let copy { try? FileManager.default.copyItem(at: copy.from, to: copy.to); self.copy = nil; acceptedPending = false }
+    }
+}
+
 final class CostLimitTests: XCTestCase {
     /// A one-token recent tail, so any history is something to summarize.
     private static let smallTail: CompactionPolicy = { var policy = CompactionPolicy(); policy.keepRecentTokens = 1; return policy }()
-    private func session(_ root: URL, id: String = UUID().uuidString, client: any ModelClient, tools: any ToolExecuting = RecordingTools(), limit: Double?, resume: String? = nil, policy: CompactionPolicy = CompactionPolicy()) async throws -> AgentSession {
+    private func session(_ root: URL, id: String = UUID().uuidString, client: any ModelClient, tools: any ToolExecuting = RecordingTools(), limit: Double?, resume: String? = nil, policy: CompactionPolicy = CompactionPolicy(), probe: StateProbe? = nil) async throws -> AgentSession {
         let session = try AgentSession(id: id, profile: fixtureProfile(), apiKey: "synthetic", cwd: root, directory: root.appendingPathComponent("state"), readOnly: false,
-                                       resources: Resources(cwd: root, home: root), client: client, tools: tools, traces: TraceStore(), resumePath: resume, compactionPolicy: policy)
+                                       resources: Resources(cwd: root, home: root), client: client, tools: tools, traces: TraceStore(), resumePath: resume, compactionPolicy: policy,
+                                       beforeJournalAppend: { probe?.beforeAppend($0) }, beforeJournalSynchronize: { probe?.beforeSynchronize() })
         await session.setCostLimit(limit)
         return session
     }
@@ -330,6 +359,99 @@ final class CostLimitTests: XCTestCase {
         await tools.release()
         _ = try await settled(s)
         await s.close()
+    }
+
+    /// Round 4 (P1): the record that the held calls are no longer held is
+    /// forced to disk before any of them begins. A power loss during the
+    /// tool then leaves an unknown outcome, never a held call to run again.
+    func testHeldCallReleaseIsSyncedBeforeTheToolBegins() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.06), .reply(answer("Done"), cost: 0.01)])
+        let tools = SlowTools(), probe = StateProbe()
+        let s = try await session(root, client: client, tools: tools, limit: 0.05, probe: probe)
+        try await send(s, "Work")
+        _ = try await settled(s)
+        await s.setCostLimit(1)
+        probe.arm()
+        _ = try await s.continueRun(commandID: "resume")
+        try await eventually { await tools.started == 1 }
+        XCTAssertTrue(probe.releaseWritten)
+        XCTAssertTrue(probe.releaseSynced, "The release is on stable storage before the tool begins")
+        await tools.release()
+        _ = try await settled(s)
+        await s.close()
+    }
+
+    /// Round 4: the helper ends after a Resume was accepted (the pause is
+    /// over on disk) but before its run took the held calls. The reopened
+    /// chat still offers Resume, a message sent meanwhile waits behind the
+    /// calls, and Resume runs them first, before any model request.
+    func testHeldCallsLeftByAnAcceptedResumeKeepResumeAndGoBeforeASend() async throws {
+        let root = try temporaryDirectory(), copyRoot = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root); try? FileManager.default.removeItem(at: copyRoot) }
+        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.06), .reply(answer("Done"), cost: 0.01)])
+        let probe = StateProbe()
+        let s = try await session(root, id: "held", client: client, tools: RecordingTools(), limit: 0.05, probe: probe)
+        try await send(s, "Work")
+        _ = try await settled(s)
+        await s.setCostLimit(1)
+        let saved = await s.path, path = try XCTUnwrap(saved)
+        try FileManager.default.createDirectory(at: copyRoot.appendingPathComponent("state"), withIntermediateDirectories: true)
+        let crash = copyRoot.appendingPathComponent("state").appendingPathComponent(URL(fileURLWithPath: path).lastPathComponent)
+        probe.copyAtAcceptedResume(from: URL(fileURLWithPath: path), to: crash)
+        _ = try await s.continueRun(commandID: "resume")
+        _ = try await settled(s); await s.close()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: crash.path), "The accepted Resume's record was copied")
+        let after = BillingClient(turns: [.reply(answer("Done"), cost: 0.01), .reply(answer("Later done"), cost: 0.01)])
+        let tools = RequestCountingTools(client: after)
+        let reopened = try await session(copyRoot, id: "held", client: after, tools: tools, limit: 1, resume: crash.path)
+        var state = await reopened.snapshot()
+        XCTAssertNotEqual(state["costPaused"].flag, true, "The pause was over on disk")
+        XCTAssertEqual(state["continuable"].flag, true, "Held calls keep their Resume")
+        let sent = try await reopened.submit(Submission(commandID: "later", turnID: "later", text: "Later"), steer: false)
+        XCTAssertEqual(sent["delivery"].text, "after-resume", "A message waits behind the held calls")
+        var ran = await tools.calls, requests = await after.turnRequests
+        XCTAssertTrue(ran.isEmpty); XCTAssertEqual(requests, 0)
+        _ = try await reopened.continueRun(commandID: "resume-again")
+        state = try await settled(reopened)
+        ran = await tools.calls; requests = await after.turnRequests
+        XCTAssertEqual(ran.map(\.name), ["first"]); XCTAssertEqual(ran.first?.requests, 0, "Ran before any model request")
+        let users = await reopened.history.filter { $0.role == "user" }.map(\.text)
+        XCTAssertEqual(users.last, "Later"); XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
+        await reopened.close()
+    }
+
+    /// Round 4: the manual compaction a pause cuts is pending in the same
+    /// record as the pause, so no crash between them can lose it; its
+    /// `/compact <instructions>` focus is kept with it, also across a
+    /// reopen, and the redone summary request carries it.
+    func testACutCompactionIsSavedWithThePauseAndKeepsItsFocusAcrossAReopen() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = BillingClient(turns: [.reply(toolReply(["write"]), cost: 0.02), .reply(answer("Done"), cost: 0.01)],
+                                   summaries: [.reply(answer("Summary of the retained history."), cost: 0.005)])
+        let probe = StateProbe()
+        let s = try await session(root, id: "focus", client: client, tools: EvidenceTools(), limit: 1, policy: Self.smallTail, probe: probe)
+        try await send(s, "Append once")
+        _ = try await settled(s)
+        await client.holdSummaries(true)
+        try await s.compact(focus: "KEEP-THE-API-NOTES")
+        try await eventually { await client.holdingSummary }
+        await s.setCostLimit(0.01)
+        _ = try await settled(s)
+        let pause = try XCTUnwrap(probe.states.first { $0["costPaused"].flag == true })
+        XCTAssertEqual(pause["costPendingCompaction"].flag, true, "Pending in the pause's own record")
+        XCTAssertEqual(pause["costPendingCompactionFocus"].text, "KEEP-THE-API-NOTES")
+        let saved = await s.path, path = try XCTUnwrap(saved); await s.close()
+        await client.holdSummaries(false)
+        let reopened = try await session(root, id: "focus", client: client, tools: EvidenceTools(), limit: 1, resume: path, policy: Self.smallTail)
+        let reply = try await reopened.continueRun(commandID: "resume")
+        XCTAssertEqual(reply["compacting"].flag, true)
+        let state = try await settled(reopened)
+        let texts = await client.summaryTexts
+        XCTAssertEqual(texts.count, 2)
+        XCTAssertTrue(texts.last?.contains("KEEP-THE-API-NOTES") == true, "The redone summary keeps the focus")
+        XCTAssertEqual(state["compaction"]["phase"].text, "completed"); XCTAssertEqual(state["state"].text, "idle", state["preflightError"].encoded())
+        await reopened.close()
     }
 
     /// Round 2: the limit is crossed after the batch's gate, while a call is

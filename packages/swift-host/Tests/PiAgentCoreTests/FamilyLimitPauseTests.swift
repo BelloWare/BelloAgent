@@ -916,3 +916,59 @@ extension FamilyLimitPauseTests {
 private extension AgentSession {
     func fixtureEndPause() { costPaused = false; queuePaused = false; errorCode = nil; errorMessage = nil }
 }
+
+/// Review round 4 (Codex) regressions.
+extension FamilyLimitPauseTests {
+    /// The pause arrives while an agent-control call waits for its
+    /// admission: the closed admission (delegation unavailable once paused)
+    /// holds the call for Resume instead of giving it a permanent failure.
+    func testAPauseDuringAgentControlAdmissionHoldsTheCall() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let coordinator = AgentSteeringCoordinator()
+        let client = ScriptClient([agentCallReply("start-0","subagent_start",["task":"Worker","mode":"background"]), answer("Done")])
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,
+            readOnly:true,resources:Resources(cwd:root,home:root),client:client,tools:RecordingTools(),traces:TraceStore())
+        await owner.enableSubagents(SubagentCoordinator()); await owner.enableAgentSteering(coordinator)
+        let lock = await coordinator.gate("parent"); try await lock.acquire()
+        _ = try await owner.submit(Submission(commandID:"command",turnID:"turn",text:"Delegate"),steer:false)
+        try await eventually { await owner.runStatus == .waitingTool }
+        try await Task.sleep(for:.milliseconds(50))
+        await owner.pauseAtCostLimit(AgentError(AgentSession.costLimitCode,"Fixture limit"))
+        await lock.release()
+        try await eventually { !(await owner.isRunning) }
+        let results = await owner.history.filter { $0.role == "toolResult" }
+        XCTAssertTrue(results.isEmpty, "Held, not failed: \(results.map(\.text))")
+        let pending = await owner.costPendingCalls, paused = await owner.costPaused
+        XCTAssertEqual(pending,["start-0"]); XCTAssertTrue(paused)
+        await coordinator.drain(); await owner.close()
+    }
+
+    /// A turn parking at the pause lists as paused as soon as its queued
+    /// state is saved, before its job goes; when the job goes, the family's
+    /// discovery revision changes, so no reader keeps a stale queued row.
+    func testAParkingTurnListsItsPauseAndItsJobsEndIsPublished() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let gate = OpenGate(), opened = OpenedChildren(), client = LimitRunClient(mode:"queued")
+        let coordinator = AgentSteeringCoordinator(open:{ env, plan in
+            let child = try AgentSteeringCoordinator.makeChild(env,plan); await opened.add(child); return child
+        }, settled:{ _ in await gate.wait() })
+        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        let id = try await startChild(owner, coordinator, "parking")
+        try await eventually { await client.children.count == 1 }
+        let target = AgentTurnTarget(childID:id,turn:1)
+        await owner.fixtureCostPause()
+        await coordinator.pause(owner:owner,generation:1)
+        try await eventually { await gate.waiting }
+        let status = await owner.agentState().turns[target.id]?.status
+        XCTAssertEqual(status,.queued)
+        let page = await coordinator.list(parent:owner,cursor:0,limit:10)
+        XCTAssertEqual(page["children"].list.first?["costPaused"].flag,true,"Listed as paused while still parking")
+        let before = await owner.snapshot()["subagentsRevision"]
+        await gate.open()
+        try await eventually { await coordinator.jobs.isEmpty }
+        let after = await owner.snapshot()["subagentsRevision"]
+        XCTAssertNotEqual(after,before,"The job's end is published")
+        for child in await opened.children { await child.close() }
+        await coordinator.drain(); await owner.close()
+    }
+}

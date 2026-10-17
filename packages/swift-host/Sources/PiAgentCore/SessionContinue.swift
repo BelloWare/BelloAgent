@@ -30,8 +30,10 @@ extension AgentSession {
     var hasPendingAgentEvents: Bool { !(subagents.family?.pending(author:"subagent").isEmpty ?? true) }
     var canContinue: Bool {
         guard !isSubagent, runTask == nil, !closed, queueEdit == nil, !titleTask, !isConnectionTest else { return false }
-        // A family paused at its cost limit always has its Resume.
-        if costPaused { return true }
+        // A family paused at its cost limit always has its Resume, and so do
+        // tool calls the pause held, even with the pause already ended (a
+        // helper that stopped between Resume's acceptance and its run).
+        if costPaused || !costPendingCalls.isEmpty { return true }
         guard let tail = continuationTail else { return false }
         return Self.continues(from: tail) || hasPendingAgentEvents
     }
@@ -131,7 +133,7 @@ extension AgentSession {
                 commandState(Submission(commandID: commandID, turnID: receiptKey, text: ""), "completed")
                 queuePaused = false
                 if state != .error { state = .idle; runStatus = .idle }
-                do { try persistState() } catch {
+                do { try persistState(durable:true) } catch {
                     commands.removeAll { $0["turnId"].text == receiptKey }; restoreCostPause(paused); queuePaused = true; throw error
                 }
                 event("state")
@@ -171,7 +173,7 @@ extension AgentSession {
         // Saved as a run under way, with its receipt: a helper that dies
         // before the run's own first record leaves the chat interrupted, so
         // it offers Resume again after the restart, never idle.
-        do { try persistState(active: true) } catch {
+        do { try persistState(active: true, durable: true) } catch {
             commands.removeAll { $0["turnId"].text == receiptKey }
             activeSubmission = nil; continuing = false
             currentTurnID = previous.turn; queuePaused = previous.paused; errorMessage = previous.message; errorCode = previous.code

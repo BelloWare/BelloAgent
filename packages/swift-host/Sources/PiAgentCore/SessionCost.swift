@@ -185,6 +185,18 @@ extension AgentSession {
             if let agentCoordinator, await agentCoordinator.paused.contains(budgetOwner.id) { throw Self.costHoldError }
         }
     }
+    /// Whether a call that failed before it began failed because of the
+    /// pause: the hold itself, or an admission the pause closed (delegation
+    /// unavailable once the queue paused, a parent execution no longer
+    /// accepting agent commands). Such a call is held for Resume, never
+    /// given a permanent failure; one that is really unavailable fails then.
+    static let pauseClosedAdmissionCodes: Set<String> = ["tool_unavailable", "subagent_closed"]
+    func failedByCostPause(_ error: Error) async -> Bool {
+        guard let code = (error as? AgentError)?.code else { return false }
+        if code == Self.costLimitCode { return true }
+        guard Self.pauseClosedAdmissionCodes.contains(code) else { return false }
+        do { try await enforceCostHold(); return false } catch { return true }
+    }
     static var costHoldError: AgentError { AgentError(costLimitCode, "Paused at the cost limit; Resume goes on from here.") }
     /// Whether the next model request may go: never once the spend the
     /// gateway reported reaches the limit. Unreported attempts are unknown,
@@ -246,7 +258,8 @@ extension AgentSession {
         if pauses {
             costPaused = true; queuePaused = true; costPauseCount &+= 1
             errorCode = Self.costLimitCode; errorMessage = costPausedMessage
-            do { try persistState() } catch { failFamilyAccounting(error); return }
+            markCutCompaction()
+            do { try persistState(durable:true) } catch { failFamilyAccounting(error); return }
         }
         // Owner, 2026-10-17: only model requests are cut, as Stop cuts them
         // (an aborted reply is never replayed). Running tools finish with
@@ -266,6 +279,13 @@ extension AgentSession {
         for notify in sideBudgetStops.values { Task { await notify() } }
         event("state")
     }
+    /// The manual compaction under way is cut by this pause: it is pending,
+    /// with its focus, in the same record as the pause, so no crash between
+    /// the two can lose it.
+    func markCutCompaction() {
+        guard manualCompactionInFlight, !costPendingCompaction else { return }
+        costPendingCompaction = true; costPendingCompactionFocus = manualCompactionInFlightFocus
+    }
     /// A side of this root paused: the root now shows the family's pause and
     /// its Resume returns this side for the app to resume too.
     func notePausedMember(_ side: String) {
@@ -275,9 +295,10 @@ extension AgentSession {
         if first {
             costPaused = true; queuePaused = true
             errorCode = Self.costLimitCode; errorMessage = costPausedMessage
+            markCutCompaction()
             if runTask == nil { state = .paused; runStatus = .cancelled }
         }
-        do { try persistState() } catch { failFamilyAccounting(error); return }
+        do { try persistState(durable:true) } catch { failFamilyAccounting(error); return }
         event("state")
     }
     /// The side resumed by itself: the root no longer needs to hand it out.
@@ -289,7 +310,7 @@ extension AgentSession {
             clearCostPauseWithoutWork()
             event("state")
         }
-        try? persistState()
+        try? persistState(durable:true)
     }
     /// A kept side's journal starts with the spend its unkept runtime counted.
     func carriedSpendRecord() -> JSON {

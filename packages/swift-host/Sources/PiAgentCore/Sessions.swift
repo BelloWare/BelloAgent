@@ -124,8 +124,15 @@ public actor AgentSession {
     /// Tool calls of a completed reply the pause held before any started:
     /// they run first on Resume, before another model request. Durable.
     var costPendingCalls: [String] = []
-    /// A manual compaction the pause cut: Resume runs it again.
+    /// A manual compaction the pause cut: Resume runs it again, with the
+    /// focus (`/compact <instructions>`) it was given. Both durable, and
+    /// saved with the pause itself (`markCutCompaction`).
     var costPendingCompaction = false
+    var costPendingCompactionFocus: String?
+    /// The manual compaction this run is doing, and its focus: what a pause
+    /// arriving now records as pending.
+    var manualCompactionInFlight = false
+    var manualCompactionInFlightFocus: String?
     var compactOnResume = false
     /// Cancels the model request (or retry back-off) under way, if any.
     var modelRequestAbort: (@Sendable () -> Void)?
@@ -505,6 +512,9 @@ public actor AgentSession {
             costPausedMembers = saved["costPausedMembers"].list.compactMap(\.text)
             costPendingCalls = saved["costPendingCalls"].list.compactMap(\.text)
             costPendingCompaction = saved["costPendingCompaction"].flag == true
+            costPendingCompactionFocus = costPendingCompaction ? saved["costPendingCompactionFocus"].text : nil
+            // Held calls go first: nothing queued is sent past them.
+            if !costPendingCalls.isEmpty { queuePaused = true }
             if costPaused {
                 // Paused at the family's limit, also when the helper ended
                 // mid-pause: the pause, not an interruption, is what waits.
