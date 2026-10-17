@@ -2243,6 +2243,77 @@ extension FamilyLimitPauseTests {
         await reader.close(); await owner.close()
     }
 
+    func testColdParkedStopKeepsOtherChatsResponsiveAndRuntimeGated() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let host = NativeHostService(emit:{ _ in }), profile = try fixtureProfile()
+        _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(root.path),"resources":["codexHome":JSON(root.appendingPathComponent("codex").path)]])
+        for id in ["parent","other"] {
+            _ = try await host.command("session.open",sessionID:id,params:["profile":profile.raw,"apiKey":"fixture","toolMode":"read-only","captureMode":"off"])
+        }
+        let owner = try XCTUnwrap(awaitValue: await host.loadedSession("parent"))
+        let coordinator = try XCTUnwrap(awaitValue: await owner.agentCoordinator)
+        await coordinator.fixturePause("parent")
+        let id = try await startChild(owner,coordinator,"cold")
+        try await owner.fixtureAcceptedReceipt("cold"); try await owner.fixtureSavedPauseMembers([])
+        try await eventually { await coordinator.jobs.isEmpty }
+        let loaded = await host.loadedSession(id); XCTAssertNil(loaded,"Exercise the evicted writer")
+        let path = root.appendingPathComponent(id + ".jsonl")
+        try appendLongParkedHistory(path,id:id,root:root)
+
+        let gate = ColdTerminalMirrorGate(), began = expectation(description:"Cold terminal mirror entered")
+        defer { gate.open() }
+        await host.holdTerminalMirror { began.fulfill(); gate.wait() }
+        let ack = StopReply()
+        let stopping = Task {
+            let start = ContinuousClock.now
+            let reply = try await host.command("subagent.stop",sessionID:"parent",params:["childId":JSON(id),"turn":1])
+            await ack.receive(reply,elapsed:start.duration(to:.now)); return reply
+        }
+        await fulfillment(of:[began],timeout:5)
+        let snapshotServed = expectation(description:"Other snapshot while cold mirror is held")
+        let stopServed = expectation(description:"Other Stop while cold mirror is held")
+        let snapshot = Task { let reply = try await host.command("session.snapshot",sessionID:"other",params:["includeMessages":false]); snapshotServed.fulfill(); return reply }
+        let stop = Task { let reply = try await host.command("turn.stop",sessionID:"other",params:[:]); stopServed.fulfill(); return reply }
+        let opened = StopReply()
+        let opening = Task {
+            let reply = try await host.command("session.open",sessionID:id,params:["profile":profile.raw,"apiKey":"fixture","path":JSON(path.path)])
+            await opened.receive(reply,elapsed:.zero); return reply
+        }
+        await fulfillment(of:[snapshotServed,stopServed],timeout:1)
+        let premature = await opened.reply; XCTAssertNil(premature,"A reader must wait for the cold writer's runtime gate")
+        let replayStart = nowMS(); gate.open()
+        var worst = 0.0, served = 0
+        while await ack.reply == nil {
+            let start = nowMS()
+            _ = try await host.command("session.snapshot",sessionID:"other",params:["includeMessages":false])
+            let reply = try await host.command("turn.stop",sessionID:"other",params:[:])
+            XCTAssertEqual(reply["accepted"].flag,true)
+            worst = max(worst,nowMS()-start)
+            if await ack.reply == nil { served += 1 }
+            try await Task.sleep(for:.milliseconds(2))
+        }
+        let replayMS = nowMS()-replayStart
+        let stopped = try await stopping.value, otherSnapshot = try await snapshot.value, otherStop = try await stop.value
+        XCTAssertEqual(stopped["accepted"].flag,true); XCTAssertEqual(otherStop["accepted"].flag,true)
+        XCTAssertEqual(otherSnapshot["sessionId"].text,"other")
+        XCTAssertGreaterThan(served,0,"Other chat commands also complete during the real 12,000-row replay")
+        XCTAssertLessThan(worst,max(100,replayMS/3),"Cold journal replay must not monopolize the host actor")
+        print("PERF cold-terminal-mirror messages=12000 replayMs=\(Int(replayMS)) otherChatWorstMs=\(Int(worst)) served=\(served)")
+        let child = try await opening.value
+        XCTAssertEqual(child["total"].int,12_000)
+        XCTAssertNotEqual(child["costPaused"].flag,true,"The reader opens only after the terminal mirror is durable")
+        await host.shutdown()
+    }
+
+    private func appendLongParkedHistory(_ path: URL, id: String, root: URL) throws {
+        let journal = try SessionJournal(url:path,id:id,cwd:root,binding:nil,create:false)
+        for index in 0..<12_000 {
+            let message = ChatMessage(role:index.isMultiple(of:2) ? "user" : "assistant",content:[textBlock("Message \(index) " + String(repeating:"x",count:200))])
+            try journal.append(["type":"message","message":message.pi],id:"long-\(index)",flush:false)
+        }
+        try journal.synchronize()
+    }
+
     func testLateSidePauseCannotResurrectClosedOrDeletedMembership() async throws {
         for kept in [false,true] {
             let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
@@ -2334,6 +2405,16 @@ extension FamilyLimitPauseTests {
             await cold.close(); await restored.close()
         }
     }
+}
+
+private final class ColdTerminalMirrorGate: @unchecked Sendable {
+    private let release = DispatchSemaphore(value:0)
+    func wait() { _ = release.wait(timeout:.now() + 10) }
+    func open() { release.signal() }
+}
+
+private extension NativeHostService {
+    func holdTerminalMirror(_ action: @escaping @Sendable () -> Void) { beforeChildTerminalMirror = action }
 }
 
 /// A synchronous journal hook holds one root write while another actor

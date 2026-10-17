@@ -76,6 +76,7 @@ public actor NativeHostService {
     var beforeSubmissionPreflight: (@Sendable () async -> Void)?
     /// Test seam for a slow disk mirror while unrelated commands arrive.
     var beforeChildCostMirror: (@Sendable () -> Void)?
+    var beforeChildTerminalMirror: (@Sendable () -> Void)?
     public init(output: @escaping @Sendable (HostOutput)->Void) {
         self.output=output
         let delivery = CaptureDelivery(epoch: epoch, emit: { output(.frame($0)) })
@@ -306,7 +307,15 @@ public actor NativeHostService {
             if let child = sessions[turn.childID] {
                 guard await child.subagents.origin?.matchesAccepted(plan.origin) == true else { throw SubagentRecovery.damaged() }
                 try await child.saveAgentTerminal(turn)
-            } else { try AgentFamilyRecovery.mirrorTerminal(turn,plan:plan,directory:parent.directory) }
+            } else {
+                let directory = parent.directory, beforeMirror = beforeChildTerminalMirror
+                // Cold reconciliation scans the whole journal. Keep its writer
+                // gated while other chats' commands continue on this actor.
+                try await Task.detached(priority:.userInitiated) {
+                    beforeMirror?()
+                    try AgentFamilyRecovery.mirrorTerminal(turn,plan:plan,directory:directory)
+                }.value
+            }
         }
     }
     private func releaseSubagent(_ child: AgentSession) async {

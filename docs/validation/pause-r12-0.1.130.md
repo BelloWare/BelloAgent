@@ -803,3 +803,131 @@ test failed. The code/test diff fingerprint remained unchanged throughout final
 validation (`round4-validated-diff.sha256`). All 51 native tests ran under the
 shared lock, which was released; no clone directories or result bundles remain
 under this build root. No unresolved finding or owner decision remains.
+
+## Round 5 — cold terminal mirror responsiveness
+
+Confirmed against `6d9cf5b0`: when a parked child's runtime had been evicted,
+`NativeHostService.retireAgentChild` called `AgentFamilyRecovery.mirrorTerminal`
+synchronously on the host actor. Managed-marker validation, the journal's chain
+scan and the full family replay prevented unrelated commands from entering the
+host. The writer gate was correct; the executor was not.
+
+The entire cold reconciliation now runs in an awaited
+`Task.detached(priority: .userInitiated)`. The runtime gate remains held through
+completion or error, and the worker captures only the accepted plan/turn,
+directory and optional test hook. Loaded readers still use their existing
+session actor and original journal writer. No pause, membership, capture,
+permission, tool, vault or accounting rule changed.
+
+### Round-5 regression and mutation evidence
+
+`FamilyLimitPauseTests.testColdParkedStopKeepsOtherChatsResponsiveAndRuntimeGated`
+creates a real parked/evicted child, appends 12,000 generated messages, and
+issues `subagent.stop` through the host. A synchronous disk-work barrier makes
+the overlap deterministic: another chat's snapshot and Stop must both reply
+within one second while a concurrent child open must remain gated. After
+releasing the barrier, the test measures repeated snapshot/Stop pairs during
+the actual journal replay. It checks the replies, the complete reopened
+transcript, and the child's cleared pause in the returned snapshot.
+
+The failing-first run added only the regression and a nil-by-default test seam
+to the original production path. It built and failed **3 assertions, 0
+unexpected errors**: neither unrelated command replied during the held mirror;
+no snapshot/Stop pair completed during real replay; and a pair took **402 ms**
+of the **405 ms** replay (`logs/round5-red.log`). With the fix, that same test
+passed: **104** pairs completed during **421 ms** of replay, with worst combined
+latency below **1 ms** (`logs/round5-green.log`). The child open waited for the
+writer and returned all 12,000 messages without a cost pause.
+
+Both effective mutations built and failed with zero unexpected errors. The
+runner restores production source in `finally`.
+
+| Mutation | Failed assertions | Real replay / worst other-chat pair | Log under `$B/logs` |
+| --- | ---: | --- | --- |
+| Put the entire worker back inline on the host actor | 3 | 426 / 422 ms; 0 pairs served during replay | `round5-mutation-inline-replay.log` |
+| Keep only the barrier detached; replay the journal on the host actor | 2 | 406 / 402 ms; 0 pairs served during replay | `round5-mutation-replay-outside-worker.log` |
+
+An initial `Task.detached` → `Task` mutation passed: this value-only closure did
+not reproduce the blocked host on this Swift toolchain. It is not counted as
+regression evidence (`round5-mutation-inherited-actor.log`). The explicit inline
+mutations above verify the actual failure, including replay after the barrier.
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter FamilyLimitPauseTests/testColdParkedStopKeepsOtherChatsResponsiveAndRuntimeGated
+python3 "$B/check-round5-mutations.py"
+```
+
+### Round-5 sweep and adversarial self-review
+
+Fetched `origin/dev/next` (`6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1`) and
+reviewed the full branch production diff plus this round's working diff. Grepped
+every added journal/replay/recovery call and traced its caller's executor:
+
+| Added disk work | Execution context / result |
+| --- | --- |
+| `mirrorTerminal` from the host's `retireSteering` callback | The confirmed finding; now entirely in the detached worker under the runtime gate. |
+| Default coordinator `retire` callbacks | Async non-host closures; the host always supplies its explicit gated callback. No host-actor replay introduced. |
+| `pauseState` / `inheritsPendingPause` and terminal cleanup during session restoration | Session construction runs inside the existing detached `makeSession` / `openAgentChild` workers; no host-actor replay introduced. |
+| Side publication's `journalURL` existence check | Runs on the side session actor; no full journal replay. |
+
+Rechecked the Round-3/4 condition and transition tables against all branch
+changes. This round adds no state predicate. The retained-child path, missing
+child path, scope/accepted-origin checks and terminal authority are unchanged.
+The detached worker creates no runtime and holds no host/session mutable state.
+Errors propagate through `withRuntimeGate`, which releases on success and
+failure. The waiter does not abandon its worker on cancellation, so the writer
+remains gated until completion. Host shutdown may close loaded sessions, but
+cannot create a competing writer; the owner terminal was durable before cold
+mirroring starts. A crash still recovers from that terminal. Streaming and idle
+unrelated chats can enter the host during the await; cold opens and deletion
+still wait for the gate. Existing Off/memory/persist reader and terminal-recovery
+tests remain in the affected class. No additional in-scope defect or owner
+decision was found.
+
+Pre-existing, outside this branch: `HostService.swift`'s
+`session.portable.preview` / `session.import.inspect` dispatch calls `portable`
+synchronously (dispatch line 544, replay line 1029), and `session.recover` calls
+`recoverCopy` synchronously (dispatch line 545, scan line 977). Large journals on
+those paths can similarly hold unrelated host commands. They were not added by
+this branch and are recorded for a separate workstream; they are not changed
+here.
+
+### Round-5 final validation
+
+All runs use this worktree and its existing build root. The affected filter
+includes the complete pause and child-cost-publication classes, the host classes,
+and the family/recovery/compaction coverage from the prior round. No app UI was
+changed and no gallery or native lane was run in this round.
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter 'FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|AgentSteering|Subagent|Compaction|HostServiceTests|HostDispatchTests|ChildCostPublicationTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/bundle/Helpers/pi-native-host"
+```
+
+| Suite | Final result | Text log under `$B/logs` |
+| --- | --- | --- |
+| Affected helper tests, including all 61 FamilyLimitPauseTests | 394 passed, 0 failed | `round5-focused.log` |
+| Full helper suite | 1,035 passed, 7 skipped, 0 failed (1,042 total; 394.6 s) | `round5-helper-full.log` |
+| Release helper build | Passed | `round5-bundle.log` |
+| Wire | 36 passed, 0 failed | `round5-wire.log` |
+| Concurrent | 4 passed, 0 failed | `round5-concurrent.log` |
+| Acceptance | 3 passed, 0 failed | `round5-acceptance.log` |
+
+In the full helper run, the cold-mirror regression served **104** snapshot/Stop
+pairs during **419 ms** of real replay, with worst combined latency below
+**1 ms**. The prior sibling-compaction tests acknowledged `subagent.stop` in
+**0.387 ms** and managed-child `turn.stop` in **0.547 ms** while compaction was
+still held. The seven skips are the existing opt-in fixture/performance tests.
+No unrelated test failed. The code/test diff fingerprint remained unchanged
+through final validation (`logs/round5-validated-diff.sha256`). No clone
+directories or result bundles remain under this build root. The in-scope fix
+has no unresolved finding or owner decision; the older preview/recovery paths
+are recorded above for separate work.
