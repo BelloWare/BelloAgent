@@ -120,6 +120,63 @@ final class InspectorRequestModelTests: XCTestCase {
         XCTAssertLessThanOrEqual(request.growingBytes ?? 0, request.responseBytes)
     }
 
+    /// Archive absence can stay unchanged after the helper loses a memory body.
+    @MainActor func testLosingHelperMemoryRetiresAResponseWithUnchangedArchiveMetadata() async throws {
+        let root = scratchRoot("inspector-memory-loss"); defer { try? FileManager.default.removeItem(at: root) }
+        let request = model(root), bytes = Self.stream(2)
+        var available = true
+        let metadata: [String: WireValue] = ["outcome": .string("completed"),
+                                            "response": .object(["state": .string("not-retained"), "retainedBytes": .number(0)])]
+        request.metadataOverride = { _ in metadata }
+        request.sourceOverride = { _, kind in kind == "response" && available ? Self.source({ bytes }, state: { "partial" }) : nil }
+        request.tab = .response; request.open(row("memory-loss"), predecessor: nil, previousLabel: nil)
+        request.setActive(true); defer { request.setActive(false) }
+        try await wait("the readable memory response") { request.response.value != nil && request.growingBytes == bytes.count }
+        available = false; request.refresh()
+        try await wait("the lost memory source") { request.growingBytes == 0 }
+        XCTAssertEqual(request.metadata, metadata, "Restart need not change the durable descriptor")
+        XCTAssertNil(request.response.value, "A body lost with the helper must retire even if its archive metadata did not change")
+        XCTAssertEqual(request.responseBytes, 0)
+    }
+
+    /// A delayed source check belongs to its physical request, even after navigation.
+    @MainActor func testCancelledAvailabilityProbeCannotRetireASiblingResponse() async throws {
+        let root = scratchRoot("inspector-availability-sibling"); defer { try? FileManager.default.removeItem(at: root) }
+        let request = model(root), bytes = Self.stream(20)
+        var loseFirst = false, delivered = false, release: CheckedContinuation<Void, Never>?
+        var first = row("first"), sibling = row("sibling")
+        first.sessionID = "child-a"; sibling.sessionID = "child-b"
+        request.metadataOverride = { row in
+            ["outcome": .string("completed"), "response": .object(["state": .string(row.id == "first" && loseFirst ? "not-retained" : "partial"),
+                                                                    "retainedBytes": .number(Double(bytes.count))])]
+        }
+        request.sourceOverride = { row, kind in
+            guard kind == "response" else { return nil }
+            if row.id == "first", loseFirst {
+                return CapturedBodySource(metadata: {
+                    await withCheckedContinuation { release = $0 }
+                    delivered = true
+                    return CapturedBodyMetadata(body: ["state": .string("purged"), "retainedBytes": .number(0)], hash: nil)
+                }, page: { _ in XCTFail("No body read is needed for availability"); return (Data(), 0) })
+            }
+            return Self.source({ bytes }, state: { "partial" })
+        }
+        request.tab = .response; request.open(first, predecessor: nil, previousLabel: nil); request.setActive(true)
+        defer { request.setActive(false); release?.resume() }
+        try await wait("the first response") { request.response.value != nil && request.metadataLoaded }
+        loseFirst = true; request.refresh()
+        try await wait("the pending availability probe") { release != nil }
+        request.open(sibling, predecessor: nil, previousLabel: nil)
+        try await wait("the sibling response") { request.response.value != nil && request.metadataLoaded }
+        let revisions = request.captureRevisions
+        release?.resume(); release = nil
+        try await wait("the cancelled probe to return") { delivered }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(request.sessionID, "child-b")
+        XCTAssertNotNil(request.response.value); XCTAssertEqual(request.responseBytes, bytes.count)
+        XCTAssertEqual(request.captureRevisions, revisions, "A late loss belongs to the request that was left")
+    }
+
     /// A partial request parsed before capture finishes must not stay cached.
     @MainActor func testAPartialRequestCaptureRefreshesWhenItsCompletedBodyArrives() async throws {
         let root=scratchRoot("inspector-request-arriving"); defer { try? FileManager.default.removeItem(at:root) }

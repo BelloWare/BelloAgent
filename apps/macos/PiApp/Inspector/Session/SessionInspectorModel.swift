@@ -318,6 +318,7 @@ import AppKit
     /// Reads the index again now, whatever its signature says.
     func refresh() {
         signature = nil
+        request.refresh()
         guard visible else { return }
         read(force: true)
         usage.refresh()

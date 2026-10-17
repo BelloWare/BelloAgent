@@ -194,7 +194,7 @@ struct DashboardQueryEngine {
     let db: CaptureDatabase
     func dashboard(_ filter: DashboardFilter, offset: Int = 0) throws -> DashboardSnapshot {
         try filter.validated()
-        guard (0...100_000).contains(offset) else { throw CaptureFailure.unavailable }
+        guard offset >= 0 else { throw CaptureFailure.unavailable }
         let scope = dashboardPredicate(filter, status: false)
         let selected = dashboardPredicate(filter, status: true)
         let baseCounts = try db.rows("SELECT COUNT(dispatch) AS dispatched,SUM(dispatch IS NULL) AS unobserved FROM attempts WHERE \(scope.sql)", scope.values).first ?? [:]
@@ -251,7 +251,7 @@ struct DashboardQueryEngine {
 
     func requestPage(_ filter: DashboardFilter, offset: Int = 0) throws -> DashboardRequestPage {
         try filter.validated()
-        guard (0...100_000).contains(offset) else { throw CaptureFailure.unavailable }
+        guard offset >= 0 else { throw CaptureFailure.unavailable }
         let selected = dashboardPredicate(filter, status: true)
         let total = Int(try db.rows("SELECT COUNT(*) AS n FROM attempts WHERE \(selected.sql) AND dispatch IS NOT NULL", selected.values).first?["n"]?.number ?? 0)
         return DashboardRequestPage(filter: filter, selectedRequests: total, requests: try requestRows(selected, offset: offset), offset: offset)
@@ -323,7 +323,7 @@ struct DashboardQueryEngine {
     /// Latency medians are nearest-rank per session, never averaged.
     func sessionSummaries(_ filter: DashboardFilter, offset: Int = 0) throws -> DashboardSessionPage {
         try filter.validated()
-        guard (0...100_000).contains(offset) else { throw CaptureFailure.unavailable }
+        guard offset >= 0 else { throw CaptureFailure.unavailable }
         let selected = dashboardPredicate(filter, status: true)
         // One physical attempt, charged to one chat. A selected child keeps
         // its own identity; an unfiltered report groups children with the owner.

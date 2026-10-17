@@ -24,6 +24,21 @@
 - [x] Git path sweep: reword detects active operation markers under newline-containing paths.
 - [x] Git path sweep: reword runs post-rewrite hooks in configured directories ending in a newline. [Validation](docs/validation/a130-gitfiles-0.1.130.md).
 - [x] File-only panes yield to the main composer's minimum; side conversations clamp the original proportional split only as needed to fit both control minima, keeping the original split when both cannot fit and the original drag scale. [Validation](docs/validation/a130-gitfiles-0.1.130.md#proportional-split-review-correction).
+- [x] Inspector invalidates only the body that became unreadable, preserving Off-stream Links pages and readable partial responses with credential-omitted input. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Inspector detects lost helper-memory bodies even when archive metadata is unchanged, including bodies read before metadata arrives. [Validation](docs/validation/a130-inspector-0.1.130.md).
+
+- [x] Completing Session memory requests preserves Inspector Raw state and partial Response documents, with Load latest using the readable memory source. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Raw search shrinks and part tabs become a menu when needed, keeping Copy and capture actions visible at the minimum Inspector width. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] The report notice describes configured metric retention instead of the obsolete 100,000-record limit. [Validation](docs/validation/a130-inspector-0.1.130.md).
+
+- [x] Tiny reported costs and subnormal values produce finite chart domains and ticks without trapping. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Clearing captures and refreshing an open Inspector retires parsed/Raw bodies and pending copies, then reloads purged metadata. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Report request paging reaches retained rows beyond 100,000 with the existing 128-row page size. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Refreshing a report on a request page beyond 100,000 keeps that page available. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Report chat paging also removes the obsolete 100,000-offset ceiling, retaining 64-row pages. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Menu and Inspector usage model pages reach every retained route, keeping 24-row aligned pages. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Raw → Headers Copy includes both displayed, masked header sections. [Validation](docs/validation/a130-inspector-0.1.130.md).
+- [x] Empty Raw Headers and Links no longer enable Copy just because request metadata exists. [Validation](docs/validation/a130-inspector-0.1.130.md).
 
 ## 0.1.129
 
