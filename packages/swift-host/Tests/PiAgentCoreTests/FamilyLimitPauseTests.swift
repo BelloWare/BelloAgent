@@ -1256,3 +1256,23 @@ extension FamilyLimitPauseTests {
         await owner.close()
     }
 }
+
+/// Review round 10 (Codex) regressions.
+extension FamilyLimitPauseTests {
+    /// A child stopped by the reader and still settling when the pause lands
+    /// is sealed as stopped, not parked for Resume to restart.
+    func testAChildStoppedBeforeThePauseIsNotParked() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let client = LimitRunClient(mode:"queued"), coordinator = AgentSteeringCoordinator()
+        let owner = try await steeringOwner(root, client:client, coordinator:coordinator)
+        let id = try await startChild(owner, coordinator, "stopped")
+        try await eventually { await client.children.count == 1 }
+        let target = AgentTurnTarget(childID:id,turn:1)
+        await coordinator.stop(owner:"parent",target:target,human:true)
+        await coordinator.fixturePause("parent")
+        try await eventually(timeout:.seconds(5)) { await coordinator.jobs.isEmpty }
+        let state = await owner.agentState(), status = try XCTUnwrap(state.turns[target.id]?.status)
+        XCTAssertTrue(status.terminal, "Sealed, not kept for Resume: \(status)")
+        await client.releaseAll(); await coordinator.drain(); await owner.close()
+    }
+}

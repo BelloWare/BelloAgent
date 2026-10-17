@@ -240,6 +240,9 @@ actor AgentSteeringCoordinator {
     /// still be on its way). A turn that completed is sealed as usual.
     func parks(_ job: Job, child: AgentSession?) async -> Bool {
         guard jobs[job.turn.id]?.sealed != true, job.turn.status != .completed, job.turn.status != .outputLimited else { return false }
+        // Stopped explicitly before the pause landed: sealed as stopped,
+        // never kept for Resume to restart.
+        if jobs[job.turn.id]?.cancelled == true { return false }
         if paused.contains(job.owner.id) || budgetStopped.contains(job.turn.id) { return true }
         if await job.owner.costPaused { return true }
         if let child, await child.errorCode == AgentSession.costLimitCode { await job.owner.stopFamilyAtLimit(); return true }
