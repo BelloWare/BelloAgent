@@ -63,3 +63,19 @@ New, in `packages/bello-views/Tests/GitViewTests`:
 | New tests + all stash tests after the fixes | 22 passed | `green.log` |
 | Complete views package | 312 tests, 3 skipped, 0 failures | `package-all.log` |
 | `scripts/verify-release.sh` on 6d4fad0f (shared lock), all passed in 60 min | serial lane 886 (42 skipped, 0 failures); parallel lane 2,628 passed, 0 failed, 38 skipped; views 312 (3 skipped, 0 failures); helper 961 (7 skipped, 0 failures); helper-cost 5; gallery 3 (230 screenshots, no UI changed); wire 36, concurrent 4, acceptance 3, python 86, all OK | `verify.log`, `../verify-logs/` |
+
+## Codex review round 1
+
+Two P2 findings, both agreed and fixed (failing-first log `r1-red.log`, 6 failures across the two new tests):
+
+- **An added submodule, discarded before the first commit.** `git rm -f` on a gitlink could also edit and stage `.gitmodules` and remove files inside the submodule. Gitlinks (mode 160000 in `ls-files -s`) among the chosen rows now get `git rm --cached` only: the index entry goes, `.gitmodules` stays staged byte-for-byte, and the submodule folder with its dirty files stays, as the `restore` path leaves it after the first commit. Test `testDiscardBeforeTheFirstCommitLeavesAnAddedSubmodulesContentsAndGitmodules`; mutation (gitlinks treated as files): 4 failures (`mutation-r1-gitlink.log`).
+- **Exact branch name in the unborn check.** `for-each-ref refs/heads/topic` also lists `refs/heads/topic/work`, so an orphan `topic` beside `topic/work` was refused and unstage regressed against the old exact `show-ref`. The branch now counts as existing only when the exact ref name is listed; any diagnostics or a nonzero status still mean damaged. Test `testOrphanBranchBesideANamespacedBranchIsUnborn` (unstage and discard on that orphan); mutation (any listed ref counts): 2 failures (`mutation-r1-exact.log`).
+
+| Check | Result | Log |
+| --- | --- | --- |
+| `GitReviewFindingsTests` after the fixes | 6 passed | `r1-green.log` |
+| Complete views package | 314 tests, 3 skipped, 0 failures | `r1-package-all.log` |
+| App Git classes, parallel-lane set (shared lock) | 16 classes: 118 tests, 2 skipped, 0 failures | `r1-app-parallel.log` |
+| App Git classes, serial-lane set, alone (shared lock) | 5 classes: 64 tests, 0 failures | `r1-app-serial.log` |
+
+Only `GitService.swift` (discard's unborn branch and `isUnbornBranch`) and the test file changed, so the full gate was not rerun.
