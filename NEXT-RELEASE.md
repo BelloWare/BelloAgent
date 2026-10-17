@@ -10,6 +10,7 @@
 - [x] Round-12 third follow-up: a stopped parked child accepts later follow-ups without retaining its old pause or held tools; Stop acknowledges while sibling or parent delivery compaction waits. Full branch condition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-3-review-of-5fb1b5dc).
 - [x] Round-12 fourth follow-up: pause membership transfers require durable acknowledgment; failed retirements remain retryable; stopped child readers clear their pause and held tools during terminalization/recovery. Transition audit and validation in the [record](docs/validation/pause-r12-0.1.130.md#round-4--transition-audit-before-implementation).
 - [x] Round-12 fifth follow-up: cold parked-child Stop mirrors its journal off the host actor, keeping other chats' snapshots and Stop responsive while the runtime gate protects the writer. [Validation](docs/validation/pause-r12-0.1.130.md#round-5--cold-terminal-mirror-responsiveness).
+- [x] Round-12 sixth follow-up: Stop retries, parking and recovery complete partial child seals without duplicate results or lost undelivered-message notices. Record-boundary failure matrices and transaction audit in the [record](docs/validation/pause-r12-0.1.130.md#round-6--repairing-partial-seals).
 
 ## 0.1.129
 

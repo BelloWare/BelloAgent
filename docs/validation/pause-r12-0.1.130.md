@@ -931,3 +931,184 @@ through final validation (`logs/round5-validated-diff.sha256`). No clone
 directories or result bundles remain under this build root. The in-scope fix
 has no unresolved finding or owner decision; the older preview/recovery paths
 are recorded above for separate work.
+
+## Round 6 — repairing partial seals
+
+Confirmed against `16333a41`: parked Stop wrote the parent terminal before the
+result message and steering cleanup. If a later append failed, retry skipped
+the entire seal because the turn was terminal. It could acknowledge after
+mirroring the child while the parent still lacked its result and retained
+undeliverable steering. A second gap existed after saving a steering message's
+`not_delivered_interrupted` disposition but before its notice: both live sealing
+and recovery selected only pending messages, so that notice was lost.
+
+Sealing now reconciles each component independently. The accepted terminal is
+preserved; an equal terminal is not appended again. Stable `result:<turn>` and
+`undelivered:<message>` identities repair missing reports without replacing or
+re-delivering existing reports. Both pending and already-retired parent inputs
+participate; only pending dispositions need another write. A parked Stop retry
+runs this repair even for a terminal turn, then reconciles the retained/cold
+child before acknowledgment. Conflicting terminal evidence still fails the
+existing validation rather than overwriting authority.
+
+The sweep found another instance in this branch: parking a turn whose owner
+was already terminal repaired only the child mirror. It now uses the same full
+seal repair. Recovery also checks the **message's turn**, rather than the latest
+turn of that child: a paused follow-up keeps its own pending steering without
+preventing an older terminal turn's notice repair. No provider or tool executes
+as part of these repairs.
+
+### Round-6 failure matrices and observable assertions
+
+Seven new tests in `FamilyLimitPauseTests` use generated journals and the
+existing append-failure seam. Faults reject the next record after the selected
+durable prefix; repeated rejection stays armed until the test explicitly
+permits retry. A crash case copies the journals before retry or orderly close.
+An actual write/synchronize failure still poisons the journal writer and refuses
+live acknowledgment until recovery; it is not treated as a successful append.
+Reopening reconciles whichever complete prefix survived. The existing journal
+and Round-4 synchronization-failure tests cover that separate writer contract.
+
+| Test | Boundaries / observable result |
+| --- | --- |
+| `testParkedStopRepairsEveryPartialSealBeforeAcknowledgingRetry` | Both host routes, `subagent.stop` and managed `turn.stop`. Measure and assert nine writes: held-child admission, parent terminal, result, two input-disposition/notice pairs, child terminal, cleared child state. Fail before each write, then retry twice. The child snapshot is unpaused; the list is terminal; the parent snapshot receives one result and both notices; the real family fence closes. Journal counts confirm one terminal per journal and one record per report. |
+| `testRecoveryRepairsEveryPartialSealAndInterruptedNotice` | Crash after each of the eight incomplete nonempty Stop prefixes. For each prefix, also fail before every measured parent recovery write, then reopen again. The same snapshot, delivery, fence and physical-record assertions hold. |
+| `testSealingRepairsEverySubsetWithoutRedeliveringExistingReports` | All 16 subsets of parent terminal / result / notices / child terminal, with pending or retired input dispositions, with and without restart: 64 cases. Existing notice text intentionally differs from newly generated text. Repeated repair preserves it and the delivered reports; another boundary delivers nothing. |
+| `testParkingATerminalTurnRepairsItsPartialSeal` | Park after Stop prefixes 2, 4 and 6: terminal-only, or either disposition saved without its notice. Assert the repaired parent snapshot, child snapshot and family fence, not just the turn status. |
+| `testPauseTransferRepairsEveryPartialWriteBeforeSourceRetirement` | Fail at each of four writes while transferring two members: source confirmation, either root member, source retirement. Retry binding, reopen, and check the app's Resume reply contains both leaves exactly once. |
+| `testSidePauseFanoutRepairsEveryPartialWriteBeforeAcknowledgment` | Measure the complete side-pause/publication/ack transaction and fail before every write. Retry notification, check the side snapshot and durable intent acknowledgment, reopen, and check Resume returns that side exactly once. |
+| `testRecoveryRepairsOldTurnNoticesWhileTheFollowUpStaysParked` | Crash with one retired-but-unreported old input, another old pending input, and a held follow-up with its own input. Recovery delivers the old result and both notices, while the child snapshot stays paused and the list reports only the follow-up input pending. |
+
+The first failing-first run, with the two original regressions and unchanged
+production code, built and failed **50 assertions, 0 unexpected errors**
+(`logs/round6-red.log`). Representative failures after prefix 2:
+
+```text
+subagent.stop/2: one result reaches the parent — 0 != 1
+subagent.stop/2: every undelivered input is reported — [] != [steer-1, steer-2]
+subagent.stop/2: no stranded steering blocks completion — false
+```
+
+After the Stop/recovery fix, the parking sweep failed **8 assertions, 0
+unexpected errors** (`round6-sweep-red.log`), including the same missing-result
+and blocked-fence assertions. With that fix applied, the first six regressions
+passed (`round6-regressions.log`); the old-turn regression and expanded subset
+matrix also passed (`round6-old-turn.log`, `round6-subsets.log`). Replacing all
+four changed production files with `16333a41` and running all seven new tests
+produced **174 assertion failures, 0 unexpected errors**
+(`round6-expanded-red.log`). The runner restores source in `finally`.
+
+Each mutation below built and failed the selected regression with zero
+unexpected errors. The mutation runner restores all production files between
+cases and on exit.
+
+| Mutation | Failed assertions | Log under `$B/logs` |
+| --- | ---: | --- |
+| Skip seal repair when Stop finds a terminal turn | 22 | `round6-mutation-terminal-retry-skip.log` |
+| Live sealing scans only pending inputs | 6 | `round6-mutation-seal-pending-only.log` |
+| Append equal parent terminals again | 58 | `round6-mutation-duplicate-terminal.log` |
+| Append existing notices again | 168 | `round6-mutation-duplicate-notice.log` |
+| Recovery scans only pending inputs | 22 | `round6-mutation-recovery-pending-only.log` |
+| Recovery uses the latest turn's hold for older messages | 2 | `round6-mutation-recovery-latest-hold.log` |
+| Parking repairs only the child mirror | 8 | `round6-mutation-park-mirror-only.log` |
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter 'FamilyLimitPauseTests/testParkedStopRepairsEveryPartialSealBeforeAcknowledgingRetry|FamilyLimitPauseTests/testRecoveryRepairsEveryPartialSealAndInterruptedNotice'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter 'FamilyLimitPauseTests/testSealingRepairsEverySubsetWithoutRedeliveringExistingReports|FamilyLimitPauseTests/testParkingATerminalTurnRepairsItsPartialSeal'
+python3 "$B/check-round6-mutations.py"
+```
+
+Initial test-only compile errors (an awaited actor ID and a `Set<JSON>` assertion)
+were corrected before collecting failing-first or mutation evidence. Only
+successful builds with expected assertions count as failures above.
+
+### Round-6 multi-record transition audit
+
+Rechecked every multi-record path added or changed by this branch against the
+Round-4 field inventory. An in-memory flag is never proof of a completed seal.
+For cross-journal membership, the source is retained until the destination
+confirms a durable save. The two new membership matrices pass without further
+production changes. Intentional accounting/persistence failures still block
+execution admission until reopen; the tests do not clear that safety latch to
+make Resume pass.
+
+| Transaction / state fields | Durable order, partial-write repair and terminal handling |
+| --- | --- |
+| Reader Stop: `heldChildren`, parent turn/result, steering dispositions/notices, child mirror | Admission survives before terminalization. Every remaining component is reconciled on retry or recovery; terminal presence alone no longer skips the rest. Stop acknowledges only after parent repair and child reconciliation. |
+| Runner seal: child terminal/cleanup, parent terminal/report, notices, job `sealed` | Each component has its own identity/predicate. `sealed` is set only after complete parent repair. A failed append does not mark it complete; recovery repairs the durable prefix. Existing delivered report state is preserved. |
+| Recovery: turn terminal, result, input disposition, notice | Parent and child terminal authority remain validated. Missing result and notices are repaired independently; retired inputs stay eligible for notice repair. An unsealed held turn retains its own pending inputs. Repeated recovery does not duplicate records. |
+| Park: owner queued state, child queued mirror and pause, job removal | Unsealed work keeps the existing queue/pause path and recovery from the owner's durable hold. A terminal owner now repairs the entire seal before settling, rather than treating its terminal as proof that reports exist. Cancelled/terminal work is never queued again. Existing crash-before-park/Resume tests remain in the affected class. |
+| Child terminal/continuations, `costPaused`, `costPendingCalls`, compaction and queue state | Catch up continuations before terminal; pair held calls before clearing IDs; save cleared state last. Already paired calls are filtered by their result evidence. Failed cleanup restores its retry predicates; terminal recovery repeats it before returning a snapshot. An old terminal cannot clear a newer follow-up. Existing Round-4 append/sync, held-tool and capture-mode tests remain. |
+| Fresh child follow-up | Old held calls are paired before clearing the old pause and installing the new turn. Failure aborts preparation; the runner seals/recovery reconciles the accepted turn rather than starting past the failed write. Same-turn Resume retains its separate held-work path. |
+| Initial fan-out: `costPaused` + `costPendingSidePauses` | Both are saved in one state record before callbacks. Recovery validates saved descendants and promotes remaining work to membership; idle intermediates carry descendants without inventing their own pause. |
+| Callback/binding acknowledgment | Persist side state, confirm root membership when needed, then save issuer intent removal. Failure keeps or restores the source intent. Known in-memory membership still requires a durable confirmation. Old-generation callbacks/acks remain fenced. |
+| Non-root membership transfer | Persist source state, confirm every root member, then persist source removal. Destination failure retains the source; source-save failure restores its current list, including concurrent additions. Root Resume owns the final members. |
+| No-work retirement, side Resume, deletion | Save local retirement before releasing a coordinator/ancestor hold. Failed member/intent removal rolls back; restart can repeat missing-journal retirement. Kept sides retain obligations; deleted/unkept closed sides cannot be resurrected by late publication. |
+| Resume receipt, continuation records, job installation | Pending Resume stays serialized as paused until taken. Snapshot/install remains gated with Stop, and each continuation is durable before its job is installed. Stop during pending Resume still halts; recovery never schedules by itself. |
+| Inbox delivery intent, context row, owner/recipient acknowledgment | Existing stable delivery/row identities repair a missing acknowledgment from its durable context digest. Compaction stays outside the family gate; selection and commit are rechecked under the gate afterward. This round does not change delivery records. |
+
+### Round-6 adversarial self-review
+
+Reviewed the full branch production diff against `origin/dev/next`
+(`6fc551e1941a7e53a71d5e6e04408ba1ae7d49c1`) and this round's diff. The earlier
+condition/transition tables still apply, with these refinements:
+
+| Changed condition | States taking the changed branch; opposite states checked |
+| --- | --- |
+| Human Stop no longer excludes terminal parked turns | Absent/parking jobs repair existing terminal reports. Unsealed turns still get their conservative stopped outcome; terminal turns retain the existing result. Live nonparking jobs still cancel/finish normally. Stale old-turn Stop does not hold a newer turn. |
+| Equal parent terminal is skipped | A retry avoids duplicate terminal records. A missing terminal is appended; a different terminal still hits the existing conflict validation. The child mirror and report repair run regardless. |
+| Pending **or retired** parent inputs are selected | Pending inputs get one disposition update and any missing notice. Retired inputs get only a missing notice. Delivered inputs, other children and other turns are left alone. Existing notices preserve text, sequence and delivery state. |
+| Recovery hold is per message turn | A paused unsealed follow-up keeps its steering. An older terminal's pending input and already-retired notices are repaired even if that follow-up is held. Ordinary nonpaused recovery still retires interrupted inputs. |
+| Park finds an owner terminal | Full seal repair runs instead of only child mirroring. Unsealed park behavior, instance checks, cancellation routing, live-tool draining and gate order remain unchanged. |
+
+Checked streaming and idle runners, queued/parked turns, retained and cold
+readers, restart, cancellation during Resume, and concurrent sibling work.
+Capture Off/memory/persist do not change these predicates. No new synchronous
+journal replay was added to the host actor; cold terminal mirroring remains in
+the Round-5 detached worker under the runtime gate. No permission, tool, vault,
+capture or data boundary changed. The additional findings were the incomplete
+terminal-park repair and the recovery notice/old-turn selection gaps described
+above; no new product decision was required.
+
+### Round-6 final validation
+
+All runs use this worktree and its existing build root. No app/UI code changed,
+no files were added or removed, and no gallery or native lane was needed for
+this round. The prior Round-4 51-test native evidence remains above.
+
+```sh
+B=/Users/admin/Library/Caches/BelloSwiftWork/build-pause-r12
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests" \
+  --filter 'FamilyLimitPauseTests|AgentFamilyRecoveryTests|CostLimitTests|SideBudgetTests|SideBudgetCrashMatrixTests|SideBudgetCorrectionTests|SideBudgetReplayTests|AgentSteering|Subagent|Compaction|HostServiceTests|HostDispatchTests|ChildCostPublicationTests'
+swift test --package-path packages/swift-host --scratch-path "$B/swift-tests"
+PI_BUILD_ROOT="$B" python3 scripts/build-bundle.py
+python3 scripts/test-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-concurrent-native-host.py "$B/bundle/Helpers/pi-native-host"
+python3 scripts/test-native-acceptance.py "$B/bundle/Helpers/pi-native-host"
+```
+
+| Suite | Final result | Text log under `$B/logs` |
+| --- | --- | --- |
+| Affected helper tests, including all 68 FamilyLimitPauseTests | 401 passed, 0 failed | `round6-focused.log` |
+| Full helper suite | 1,042 passed, 7 skipped, 0 failed (1,049 total; 418.6 s) | `round6-helper-full.log` |
+| Release helper build | Passed | `round6-bundle.log` |
+| Wire | 36 passed, 0 failed | `round6-wire.log` |
+| Concurrent | 4 passed, 0 failed | `round6-concurrent.log` |
+| Acceptance | 3 passed, 0 failed | `round6-acceptance.log` |
+
+In the full run, `subagent.stop` acknowledged in **0.334 ms** and managed-child
+`turn.stop` in **0.451 ms** while sibling compaction remained held. Cold terminal
+mirroring served **119** other-chat snapshot/Stop pairs during **423 ms** of real
+replay, with worst combined latency below **1 ms**. The seven skips remain the
+existing opt-in fixture/performance tests; no unrelated test failed. Release
+build warning texts match Round 5 (the existing Swift 6 migration/unused-await
+warnings); none was added by this round.
+
+The code/test diff fingerprint remained unchanged through final validation
+(`logs/round6-validated-diff.sha256`). No clone directories or result bundles
+remain under this build root. No unresolved in-scope finding or owner decision
+remains; the older host-actor preview/recovery findings remain recorded in
+Round 5 for separate work.

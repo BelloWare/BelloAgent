@@ -154,8 +154,12 @@ enum AgentFamilyRecovery {
                 }
             }
             // Steering for a held turn stays pending; it is delivered after Resume.
-            for var message in state.family!.pending(author:"parent") where message.childID == childID && !(costPaused && state.family!.latest(childID)?.status.terminal == false) {
-                message.disposition = "not_delivered_interrupted"; try write(JournalRecordKind.agentMessage,message)
+            for var message in state.family!.messages.values.sorted(by: { $0.sequence < $1.sequence }) where message.author == "parent" && message.childID == childID &&
+                (message.disposition == "pending" || message.disposition == "not_delivered_interrupted") {
+                if message.disposition == "pending" {
+                    if costPaused, state.family!.turns[AgentTurnTarget(childID:childID,turn:message.turn).id]?.status.terminal == false { continue }
+                    message.disposition = "not_delivered_interrupted"; try write(JournalRecordKind.agentMessage,message)
+                }
                 let notice = AgentFamilyMessage(id:"undelivered:" + message.id,sequence:state.family!.sequence + 1,childID:childID,turn:message.turn,author:"subagent",kind:"not_delivered_interrupted",text:"Parent message \(message.id) is retained but was not delivered before interruption.",task:message.task,epoch:message.epoch,replyTo:message.id)
                 if state.family!.messages[notice.id] == nil { try write(JournalRecordKind.agentMessage,notice) }
             }

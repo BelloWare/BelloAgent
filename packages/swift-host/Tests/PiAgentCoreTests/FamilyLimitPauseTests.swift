@@ -2467,3 +2467,349 @@ private extension AgentSession {
 private func XCTUnwrap<T>(awaitValue: T?, file: StaticString = #filePath, line: UInt = #line) throws -> T {
     try XCTUnwrap(awaitValue,file:file,line:line)
 }
+
+/// Round 6: every durable prefix must be repairable without duplicate reports.
+extension FamilyLimitPauseTests {
+    func testParkedStopRepairsEveryPartialSealBeforeAcknowledgingRetry() async throws {
+        for route in ["subagent.stop","turn.stop"] {
+            var recordCount = 0
+            // First measure the whole transaction, then fail before each append.
+            for cut in [-1] + Array(0..<10) {
+                if cut >= 0 && cut >= recordCount { break }
+                let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+                let fault = SealWriteFault()
+                let (host, owner, coordinator, id) = try await partialSealHost(root,fault:fault)
+                let session = route == "subagent.stop" ? "parent" : id
+                let params: JSON = route == "subagent.stop" ? ["childId":JSON(id),"turn":1] : [:]
+                fault.arm(after:cut < 0 ? nil : cut)
+                do {
+                    let reply = try await host.command(route,sessionID:session,params:params)
+                    XCTAssertEqual(reply["accepted"].flag,true)
+                    if cut >= 0 { XCTFail("\(route)/\(cut): expected injected append failure") }
+                } catch { XCTAssertEqual((error as? AgentError)?.code,"fixture_seal_write","\(route)/\(cut)") }
+                let writes = fault.disarm()
+                if cut < 0 { recordCount = writes; XCTAssertEqual(writes,9,"Update the boundary matrix if the transaction changes") }
+                else { XCTAssertEqual(writes,cut); XCTAssertTrue(fault.failed) }
+                for _ in 0..<2 {
+                    let reply = try await host.command(route,sessionID:session,params:params)
+                    XCTAssertEqual(reply["accepted"].flag,true,"\(route)/\(cut): retry acknowledgment")
+                }
+                try await assertSealedReports(host,owner:owner,coordinator:coordinator,childID:id,root:root,label:"\(route)/\(cut)")
+                await host.shutdown()
+            }
+        }
+    }
+
+    func testRecoveryRepairsEveryPartialSealAndInterruptedNotice() async throws {
+        // Copy each durable prefix before retry/close can modify it. Recovery
+        // itself then fails after each of its parent writes and is retried.
+        for cut in 1..<9 {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let fault = SealWriteFault(), crash = root.appendingPathComponent("crash")
+            let (host, _, _, id) = try await partialSealHost(root,fault:fault)
+            fault.arm(after:cut)
+            do { _ = try await host.command("subagent.stop",sessionID:"parent",params:["childId":JSON(id),"turn":1]); XCTFail("Expected partial seal") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"fixture_seal_write") }
+            XCTAssertEqual(fault.disarm(),cut); XCTAssertTrue(fault.failed)
+            try copySealJournals(root,to:crash)
+            await host.shutdown()
+            let profile = try fixtureProfile()
+            // A full recovery gives the number of writes whose prefixes we
+            // must preserve. Each failure run gets a fresh copy of the crash.
+            var recoveryWrites = 0
+            for recoveryCut in [-1] + Array(0..<10) {
+                if recoveryCut >= 0 && recoveryCut >= recoveryWrites { break }
+                let attempt = root.appendingPathComponent("repair-\(recoveryCut)")
+                try copySealJournals(crash,to:attempt)
+                let recoveryFault = SealWriteFault(); recoveryFault.arm(after:recoveryCut < 0 ? nil : recoveryCut)
+                do {
+                    let session = try AgentSession(id:"parent",profile:profile,apiKey:"fixture",cwd:attempt,directory:attempt,readOnly:true,
+                        resources:Resources(cwd:attempt,home:attempt),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:attempt.appendingPathComponent("parent.jsonl").path,
+                        beforeJournalAppend:{ try recoveryFault.append($0) })
+                    if recoveryCut >= 0 { XCTFail("Expected recovery append failure") }
+                    recoveryWrites = recoveryFault.disarm()
+                    XCTAssertLessThanOrEqual(recoveryWrites,10,"Extend the recovery boundary matrix if its transaction changes")
+                    await session.close()
+                } catch {
+                    XCTAssertEqual((error as? AgentError)?.code,"fixture_seal_write")
+                    XCTAssertEqual(recoveryFault.disarm(),recoveryCut); XCTAssertTrue(recoveryFault.failed)
+                }
+                let restored = NativeHostService(emit:{ _ in })
+                try await openSealWorkspace(restored,root:attempt)
+                _ = try await restored.command("session.open",sessionID:"parent",params:["profile":profile.raw,"apiKey":"fixture","path":JSON(attempt.appendingPathComponent("parent.jsonl").path)])
+                _ = try await restored.command("session.open",sessionID:id,params:["profile":profile.raw,"apiKey":"fixture","path":JSON(attempt.appendingPathComponent(id + ".jsonl").path)])
+                let owner = try XCTUnwrap(awaitValue: await restored.loadedSession("parent"))
+                let coordinator = try XCTUnwrap(awaitValue: await owner.agentCoordinator)
+                try await assertSealedReports(restored,owner:owner,coordinator:coordinator,childID:id,root:attempt,label:"crash=\(cut)/repair=\(recoveryCut)")
+                await restored.shutdown()
+            }
+        }
+    }
+
+    func testSealingRepairsEverySubsetWithoutRedeliveringExistingReports() async throws {
+        for recovery in [false,true] { for mask in 0..<16 { for retired in [false,true] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            var (host, owner, coordinator, id) = try await partialSealHost(root,fault:SealWriteFault())
+            var child = try XCTUnwrap(awaitValue: await host.loadedSession(id))
+            var turn = try XCTUnwrap(awaitValue: await owner.agentState().latest(id))
+            let plan = try XCTUnwrap(awaitValue: await owner.subagents.plans.values.first)
+            var run = try XCTUnwrap(awaitValue: await owner.agentState().run)
+            run.heldChildren = [id]; try await owner.appendAgentRecord(JournalRecordKind.familyRun,run)
+            turn.status = .notExecuted; turn.result = SubagentToolResult(plan:plan,status:.notExecuted); turn.normalizeResult()
+            if mask & 1 != 0 { try await owner.appendAgentRecord(JournalRecordKind.agentTerminal,turn) }
+            if mask & 2 != 0 {
+                let state = await owner.agentState()
+                try await owner.appendAgentRecord(JournalRecordKind.agentMessage,AgentFamilyMessage.resultEvent(turn,task:plan.origin.description,sequence:state.sequence + 1))
+            }
+            for var message in await owner.agentState().pending(author:"parent") {
+                if retired { message.disposition = "not_delivered_interrupted"; try await owner.appendAgentRecord(JournalRecordKind.agentMessage,message) }
+                if mask & 4 != 0 {
+                    let state = await owner.agentState()
+                    let notice = AgentFamilyMessage(id:"undelivered:" + message.id,sequence:state.sequence + 1,childID:id,turn:1,author:"subagent",kind:"not_delivered_interrupted",text:"Existing notice",task:message.task,epoch:message.epoch,replyTo:message.id)
+                    try await owner.appendAgentRecord(JournalRecordKind.agentMessage,notice)
+                }
+            }
+            if mask & 8 != 0 { try await child.saveAgentTerminal(turn) }
+            var directory = root
+            if recovery {
+                directory = root.appendingPathComponent("crash")
+                try copySealJournals(root,to:directory); await host.shutdown()
+                host = NativeHostService(emit:{ _ in }); try await openSealWorkspace(host,root:directory)
+                let profile = try fixtureProfile()
+                _ = try await host.command("session.open",sessionID:"parent",params:["profile":profile.raw,"apiKey":"fixture","path":JSON(directory.appendingPathComponent("parent.jsonl").path)])
+                _ = try await host.command("session.open",sessionID:id,params:["profile":profile.raw,"apiKey":"fixture","path":JSON(directory.appendingPathComponent(id + ".jsonl").path)])
+                owner = try XCTUnwrap(awaitValue: await host.loadedSession("parent"))
+                child = try XCTUnwrap(awaitValue: await host.loadedSession(id))
+                coordinator = try XCTUnwrap(awaitValue: await owner.agentCoordinator)
+                turn = try XCTUnwrap(awaitValue: await owner.agentState().latest(id))
+            }
+            let label = "recovery=\(recovery)/subset=\(mask)/retired=\(retired)"
+            for _ in 0..<2 {
+                do { try await coordinator.fixtureSeal(turn,owner:owner,child:child,task:plan.origin.description) }
+                catch { XCTFail(label + ": sealing must repair existing records: \(error)") }
+            }
+            try await assertSealedReports(host,owner:owner,coordinator:coordinator,childID:id,root:directory,label:label)
+            do { try await coordinator.fixtureSeal(turn,owner:owner,child:child,task:plan.origin.description) }
+            catch { XCTFail(label + ": delivered reports must remain idempotent: \(error)") }
+            let deliveredAgain = try await coordinator.boundary(owner,final:false)
+            XCTAssertFalse(deliveredAgain,"A repeated seal must preserve already-delivered reports")
+            await host.shutdown()
+        } } }
+    }
+
+    func testParkingATerminalTurnRepairsItsPartialSeal() async throws {
+        for cut in [2,4,6] {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let fault = SealWriteFault()
+            let (host, owner, coordinator, id) = try await partialSealHost(root,fault:fault)
+            let child = try XCTUnwrap(awaitValue: await host.loadedSession(id))
+            fault.arm(after:cut)
+            do { _ = try await host.command("subagent.stop",sessionID:"parent",params:["childId":JSON(id),"turn":1]); XCTFail("Expected partial seal") }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"fixture_seal_write") }
+            XCTAssertEqual(fault.disarm(),cut)
+            await owner.fixtureEndPause()
+            try await coordinator.fixtureParkTerminal(owner:owner,child:child)
+            try await assertSealedReports(host,owner:owner,coordinator:coordinator,childID:id,root:root,label:"park-after-\(cut)")
+            await host.shutdown()
+        }
+    }
+
+    func testPauseTransferRepairsEveryPartialWriteBeforeSourceRetirement() async throws {
+        for cut in 0..<4 {
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let fault = SealWriteFault(), owner = try familyFixture(root:root)
+            let side = try await self.side("side",parent:owner,root:root)
+            _ = try await side.keep(whenFinished:false)
+            var leaves: [AgentSession] = []
+            for id in ["leaf","later"] {
+                let leaf = try await self.side(id,parent:side,root:root)
+                _ = try await leaf.keep(whenFinished:false)
+                await leaf.fixtureQueue(Submission(commandID:id,turnID:id,text:"Held work"))
+                try await leaf.fixtureSavedPauseMembers([]); leaves.append(leaf)
+            }
+            try await owner.fixtureSavedPauseMembers([])
+            try await side.fixturePauseLists(members:["leaf","later"],pending:[])
+            try await owner.fixtureSealWriter(fault); try await side.fixtureSealWriter(fault)
+            fault.arm(after:cut)
+            do { try await side.bindSideBudget(to:owner) }
+            catch { XCTAssertEqual((error as? AgentError)?.code,"fixture_seal_write") }
+            XCTAssertEqual(fault.disarm(),cut); XCTAssertTrue(fault.failed)
+            for _ in 0..<2 { try await side.bindSideBudget(to:owner) }
+            let snapshot = await side.snapshot()
+            XCTAssertTrue(snapshot["cost"]["pausedMembers"].list.isEmpty,"Source retires only after both replacements")
+            let parentPath = await owner.path
+            for leaf in leaves { await leaf.close() }; await side.close(); await owner.close()
+            let restored = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:parentPath)
+            let reply = try await restored.continueRun(commandID:"resume")
+            XCTAssertEqual(Set(reply["pausedMembers"].list.compactMap(\.text)),Set(["leaf","later"]),"\(cut): the app receives every transferred member once")
+            XCTAssertEqual(reply["pausedMembers"].list.count,2)
+            await restored.close()
+        }
+    }
+
+    func testSidePauseFanoutRepairsEveryPartialWriteBeforeAcknowledgment() async throws {
+        var recordCount = 0
+        for cut in [-1] + Array(0..<10) {
+            if cut >= 0 && cut >= recordCount { break }
+            let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+            let fault = SealWriteFault(), owner = try familyFixture(root:root)
+            let side = try await self.side("side",parent:owner,root:root)
+            _ = try await side.keep(whenFinished:false)
+            await side.fixtureQueue(Submission(commandID:"work",turnID:"work",text:"Held side work"))
+            try await side.fixtureSavePauseState()
+            try await owner.fixtureSavedPauseMembers([])
+            try await owner.fixturePauseLists(members:[],pending:["side"])
+            try await owner.fixtureSealWriter(fault); try await side.fixtureSealWriter(fault)
+            fault.arm(after:cut < 0 ? nil : cut)
+            try await owner.fixtureNotifySide("side")
+            // Drain the additional publication scheduled by the side's first
+            // pause before inspecting the durable fan-out prefix.
+            _ = await side.publishSidePause(repair:true)
+            try await Task.sleep(for:.milliseconds(10))
+            let writes = fault.disarm()
+            if cut < 0 { recordCount = writes; XCTAssertGreaterThan(writes,0); XCTAssertLessThanOrEqual(writes,10) }
+            else { XCTAssertEqual(writes,cut); XCTAssertTrue(fault.failed) }
+            for _ in 0..<2 { try await owner.fixtureNotifySide("side") }
+            let sideSnapshot = await side.snapshot(); XCTAssertEqual(sideSnapshot["costPaused"].flag,true)
+            let saved = try SideBudgetRecovery.pauseState(root.appendingPathComponent("parent.jsonl"),id:"parent").state
+            XCTAssertTrue(saved["costPendingSidePauses"].list.isEmpty,"Only the repaired fan-out can acknowledge its intent")
+            let parentPath = await owner.path; await side.close(); await owner.close()
+            let restored = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+                resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:DisabledTools(),traces:TraceStore(),resumePath:parentPath)
+            let reply = try await restored.continueRun(commandID:"resume")
+            XCTAssertEqual(reply["pausedMembers"].list,["side"],"\(cut): the app receives the paused side exactly once")
+            await restored.close()
+        }
+    }
+
+    func testRecoveryRepairsOldTurnNoticesWhileTheFollowUpStaysParked() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let fault = SealWriteFault(), crash = root.appendingPathComponent("crash")
+        let (host, owner, _, id) = try await partialSealHost(root,fault:fault)
+        fault.arm(after:4)
+        do { _ = try await host.command("subagent.stop",sessionID:"parent",params:["childId":JSON(id),"turn":1]); XCTFail("Expected partial seal") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,"fixture_seal_write") }
+        XCTAssertEqual(fault.disarm(),4)
+        let child = try XCTUnwrap(awaitValue: await host.loadedSession(id))
+        let first = try XCTUnwrap(awaitValue: await owner.agentState().latest(id))
+        try await child.saveAgentTerminal(first)
+        let key = SubagentCallKey(parentSessionID:"parent",assistantMessageID:"follow-up",toolCallID:"next")
+        let next = AgentChildTurn(childID:id,turn:2,executionID:"second",parentExecutionID:"next-execution",generation:0,runtimeID:"next-runtime",epoch:"next-execution",inputID:"next-input",task:"Follow-up",call:key)
+        try await owner.appendAgentRecord(JournalRecordKind.agentOperation,AgentOperation(key:key,digest:"fixture",receipt:["accepted":true],turn:next,epoch:"next-execution"))
+        try await child.appendAgentRecord(JournalRecordKind.agentTurn,next); try await child.parkAgentTurn(next)
+        let state = await owner.agentState()
+        try await owner.appendAgentRecord(JournalRecordKind.agentMessage,AgentFamilyMessage(id:"next-steer",sequence:state.sequence + 1,childID:id,turn:2,author:"parent",kind:"steer",text:"Input for the held follow-up",task:"Follow-up",epoch:"next-execution"))
+        try copySealJournals(root,to:crash); await host.shutdown()
+        let restored = NativeHostService(emit:{ _ in }), profile = try fixtureProfile()
+        try await openSealWorkspace(restored,root:crash)
+        _ = try await restored.command("session.open",sessionID:"parent",params:["profile":profile.raw,"apiKey":"fixture","path":JSON(crash.appendingPathComponent("parent.jsonl").path)])
+        let reader = try await restored.command("session.open",sessionID:id,params:["profile":profile.raw,"apiKey":"fixture","path":JSON(crash.appendingPathComponent(id + ".jsonl").path)])
+        XCTAssertEqual(reader["costPaused"].flag,true,"The new unsealed turn remains paused")
+        let parent = try XCTUnwrap(awaitValue: await restored.loadedSession("parent"))
+        let coordinator = try XCTUnwrap(awaitValue: await parent.agentCoordinator)
+        await parent.fixtureEndPause(); _ = try await coordinator.boundary(parent,final:false)
+        let snapshot = try await restored.command("session.snapshot",sessionID:"parent",params:[:])
+        let events = snapshot["messages"].list.flatMap { $0["nativeAgentDelivery"]["events"].list }
+        XCTAssertEqual(events.filter { $0["kind"].text == "result" }.count,1)
+        XCTAssertEqual(Set(events.filter { $0["kind"].text == "not_delivered_interrupted" }.compactMap { $0["reply_to"].text }),Set(["steer-1","steer-2"]))
+        let page = try await restored.command("subagent.list",sessionID:"parent",params:[:])
+        XCTAssertEqual(page["children"].list.first?["turn"].int,2)
+        XCTAssertEqual(page["children"].list.first?["pendingMessages"].int,1,"Only the new turn's steering remains pending")
+        await restored.shutdown()
+    }
+
+    private func openSealWorkspace(_ host: NativeHostService, root: URL) async throws {
+        _ = try await host.command("workspace.open",sessionID:nil,params:["cwd":JSON(root.path),"directory":JSON(root.path),"resources":["codexHome":JSON(root.appendingPathComponent("codex").path)]])
+    }
+
+    private func partialSealHost(_ root: URL, fault: SealWriteFault) async throws -> (NativeHostService,AgentSession,AgentSteeringCoordinator,String) {
+        let host = NativeHostService(emit:{ _ in }), profile = try fixtureProfile()
+        try await openSealWorkspace(host,root:root)
+        _ = try await host.command("session.open",sessionID:"parent",params:["profile":profile.raw,"apiKey":"fixture","toolMode":"read-only","captureMode":"off"])
+        let owner = try XCTUnwrap(awaitValue: await host.loadedSession("parent"))
+        let coordinator = try XCTUnwrap(awaitValue: await owner.agentCoordinator)
+        await coordinator.fixturePause("parent")
+        let id = try await startChild(owner,coordinator,"partial")
+        try await owner.fixtureAcceptedReceipt("partial"); try await owner.fixtureSavedPauseMembers([])
+        try await eventually { await coordinator.jobs.isEmpty }
+        for index in 1...2 {
+            let state = await owner.agentState()
+            let message = AgentFamilyMessage(id:"steer-\(index)",sequence:state.sequence + 1,childID:id,turn:1,author:"parent",kind:"steer",text:"Pending steering \(index)",task:"Worker partial",epoch:state.run!.epoch)
+            try await owner.appendAgentRecord(JournalRecordKind.agentMessage,message)
+        }
+        _ = try await host.command("session.open",sessionID:id,params:["profile":profile.raw,"apiKey":"fixture","path":JSON(root.appendingPathComponent(id + ".jsonl").path)])
+        let child = try XCTUnwrap(awaitValue: await host.loadedSession(id))
+        try await owner.fixtureSealWriter(fault); try await child.fixtureSealWriter(fault)
+        return (host,owner,coordinator,id)
+    }
+
+    private func assertSealedReports(_ host: NativeHostService, owner: AgentSession, coordinator: AgentSteeringCoordinator, childID: String, root: URL, label: String) async throws {
+        let child = try await host.command("session.snapshot",sessionID:childID,params:[:])
+        XCTAssertNotEqual(child["costPaused"].flag,true,label)
+        let listed = try await host.command("subagent.list",sessionID:"parent",params:[:])
+        XCTAssertEqual(listed["children"].list.first?["status"].text,"not_executed",label)
+        await owner.fixtureEndPause()
+        _ = try await coordinator.boundary(owner,final:false)
+        let snapshot = try await host.command("session.snapshot",sessionID:"parent",params:[:])
+        let events = snapshot["messages"].list.flatMap { $0["nativeAgentDelivery"]["events"].list }
+        XCTAssertEqual(events.filter { $0["kind"].text == "result" }.count,1,label + ": one result reaches the parent")
+        XCTAssertEqual(Set(events.filter { $0["kind"].text == "not_delivered_interrupted" }.compactMap { $0["reply_to"].text }),Set(["steer-1","steer-2"]),label + ": every undelivered input is reported")
+        let fenced = try await owner.closeAgentFamilyFence(); XCTAssertTrue(fenced,label + ": no stranded steering blocks completion")
+        for id in ["parent",childID] {
+            let rows = try Data(contentsOf:root.appendingPathComponent(id + ".jsonl")).split(separator:10).map { try JSON.parse(Data($0)) }
+            XCTAssertEqual(rows.filter { $0["customType"].text == JournalRecordKind.agentTerminal }.count,1,label + "/" + id + ": terminal appended once")
+            if id == "parent" {
+                for kind in ["result","not_delivered_interrupted"] {
+                    let messages = rows.filter { $0["customType"].text == JournalRecordKind.agentMessage && $0["data"]["kind"].text == kind }
+                    XCTAssertEqual(messages.count,kind == "result" ? 1 : 2,label + ": no duplicate \(kind) records")
+                }
+            }
+        }
+    }
+
+    private func copySealJournals(_ source: URL, to destination: URL) throws {
+        try FileManager.default.createDirectory(at:destination,withIntermediateDirectories:true)
+        for file in try FileManager.default.contentsOfDirectory(at:source,includingPropertiesForKeys:nil) where file.pathExtension == "jsonl" {
+            try FileManager.default.copyItem(at:file,to:destination.appendingPathComponent(file.lastPathComponent))
+        }
+    }
+}
+
+private final class SealWriteFault: @unchecked Sendable {
+    private let lock = NSLock()
+    private var active = false, limit: Int?, writes = 0, hit = false
+    var failed: Bool { lock.lock(); defer { lock.unlock() }; return hit }
+    func arm(after: Int?) { lock.lock(); active = true; limit = after; writes = 0; hit = false; lock.unlock() }
+    @discardableResult func disarm() -> Int { lock.lock(); defer { lock.unlock() }; active = false; return writes }
+    func append(_ row: JSON) throws {
+        lock.lock(); defer { lock.unlock() }
+        guard active else { return }
+        if writes == limit { hit = true; throw AgentError("fixture_seal_write","Injected failure after \(writes) records") }
+        writes += 1
+    }
+}
+
+private extension AgentSession {
+    func fixtureSealWriter(_ fault: SealWriteFault) throws {
+        let url = try XCTUnwrap(journal?.url)
+        try journal?.synchronize(); journal = nil
+        journal = try SessionJournal(url:url,id:id,cwd:cwd,binding:nil,create:false,beforeAppend:{ try fault.append($0) })
+    }
+}
+
+private extension AgentSteeringCoordinator {
+    func fixtureSeal(_ turn: AgentChildTurn, owner: AgentSession, child: AgentSession, task: String) async throws {
+        let ownerID = await owner.id, lock = gate(ownerID); try await lock.acquire()
+        do { try await seal(turn:turn,parent:owner,task:task,child:child); await lock.release() }
+        catch { await lock.release(); throw error }
+    }
+    func fixtureParkTerminal(owner: AgentSession, child: AgentSession) async throws {
+        let env = try await owner.delegationEnvironment()
+        let plan = try XCTUnwrap(awaitValue: await owner.subagents.plans.values.first)
+        var turn = try XCTUnwrap(awaitValue: await owner.agentState().latest(child.id))
+        turn.status = .queued; turn.result = nil
+        let job = Job(owner:owner,environment:env,plan:plan,turn:turn)
+        jobs[turn.id] = job; await park(job,child:child)
+    }
+}

@@ -96,19 +96,22 @@ extension AgentSteeringCoordinator {
     /// the same path; recovery catches up a closed child's mirror.
     func seal(turn: AgentChildTurn, parent: AgentSession, task: String, child: AgentSession?) async throws {
         if let child { await child.endSubagentProgress(); try await child.saveAgentTerminal(turn) }
-        try await parent.appendAgentRecord(JournalRecordKind.agentTerminal,turn)
+        if await parent.agentState().turns[turn.id] != turn { try await parent.appendAgentRecord(JournalRecordKind.agentTerminal,turn) }
         let state = await parent.agentState()
         let id = "result:" + turn.id
         if state.messages[id] == nil {
             let message = AgentFamilyMessage.resultEvent(turn,task:task,sequence:state.sequence + 1)
             try await parent.appendAgentRecord(JournalRecordKind.agentMessage,message)
         }
-        for var pending in state.pending(author:"parent") where pending.childID == turn.childID && pending.turn == turn.turn {
-            pending.disposition = "not_delivered_interrupted"
-            try await parent.appendAgentRecord(JournalRecordKind.agentMessage,pending)
+        for var pending in state.messages.values.sorted(by: { $0.sequence < $1.sequence }) where pending.author == "parent" && pending.childID == turn.childID && pending.turn == turn.turn &&
+            (pending.disposition == "pending" || pending.disposition == "not_delivered_interrupted") {
+            if pending.disposition == "pending" {
+                pending.disposition = "not_delivered_interrupted"
+                try await parent.appendAgentRecord(JournalRecordKind.agentMessage,pending)
+            }
             let current = await parent.agentState()
             let notice = AgentFamilyMessage(id:"undelivered:" + pending.id,sequence:current.sequence + 1,childID:pending.childID,turn:pending.turn,author:"subagent",kind:"not_delivered_interrupted",text:"Parent message \(pending.id) was retained but not delivered before the child stopped.",task:pending.task,epoch:pending.epoch,replyTo:pending.id)
-            try await parent.appendAgentRecord(JournalRecordKind.agentMessage,notice)
+            if current.messages[notice.id] == nil { try await parent.appendAgentRecord(JournalRecordKind.agentMessage,notice) }
         }
         await signal(parent.id).pulse()
     }

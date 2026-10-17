@@ -270,7 +270,7 @@ actor AgentSteeringCoordinator {
             try await lock.acquire()
             do {
                 if let saved = await job.owner.agentState().turns[turn.id], saved.status.terminal {
-                    if let child { try await child.saveAgentTerminal(saved) }
+                    try await seal(turn:saved,parent:job.owner,task:job.plan.origin.description,child:child)
                 } else {
                     if let saved = await job.owner.agentState().turns[turn.id], saved.status != .queued {
                         try await job.owner.appendAgentRecord(JournalRecordKind.agentTurnState,turn)

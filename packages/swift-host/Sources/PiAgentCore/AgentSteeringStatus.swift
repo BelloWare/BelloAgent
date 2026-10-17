@@ -80,12 +80,16 @@ extension AgentSteeringCoordinator {
             }
             // Parking and Stop share the gate. A command in flight before
             // the pause may arrive after the runner went; it still seals.
-            if human, !turn.status.terminal, jobs[target.id] == nil || jobs[target.id]?.parking == true {
+            if human, jobs[target.id] == nil || jobs[target.id]?.parking == true {
                 guard let plan = await parent.subagents.plans.values.first(where: { $0.origin.link.childSessionID == target.childID }) else { throw SubagentRecovery.damaged() }
-                let began = await parent.accounting.attempts.values.contains { $0.admission?["sourceSessionId"].text == target.childID && $0.admission?["scope"]["childTurn"].int == target.turn && $0.admission?["state"].text == "dispatched" }
-                turn.status = began || turn.status == .running || turn.status == .stopping ? .interrupted : .notExecuted
-                turn.result = SubagentToolResult(plan:plan,status:turn.status,error:AgentError("subagent_stopped", "Stopped by the reader. Accepted work was not restarted."),accountingRevision:await parent.accounting.revision,began:began)
-                turn.normalizeResult()
+                if !turn.status.terminal {
+                    let began = await parent.accounting.attempts.values.contains { $0.admission?["sourceSessionId"].text == target.childID && $0.admission?["scope"]["childTurn"].int == target.turn && $0.admission?["state"].text == "dispatched" }
+                    turn.status = began || turn.status == .running || turn.status == .stopping ? .interrupted : .notExecuted
+                    turn.result = SubagentToolResult(plan:plan,status:turn.status,error:AgentError("subagent_stopped", "Stopped by the reader. Accepted work was not restarted."),accountingRevision:await parent.accounting.revision,began:began)
+                    turn.normalizeResult()
+                }
+                // A terminal may be only the first durable part of a seal.
+                // Retry repairs its report and every undelivered notice too.
                 try await seal(turn:turn,parent:parent,task:plan.origin.description,child:nil)
                 jobs[target.id]?.sealed = true
             } else { await stop(owner:parent.id,target:target,human:human) }
