@@ -212,36 +212,43 @@ extension WorkspaceModel {
         guard displays[id]?.hasWork != true, displays[id]?.loading != true else { error = "Stop work and remove queued submissions before deleting this chat"; return }
         Task {
             do {
-                var managed = Set(subagentChildren(of: item.id).map(\.id))
-                if !item.imported {
-                    let directory = try subagentDirectory(item.workspaceID)
-                    let path = item.path ?? directory.appendingPathComponent(item.id + ".jsonl").path
-                    if FileManager.default.fileExists(atPath: path) {
-                        guard URL(fileURLWithPath: path).resolvingSymlinksInPath().deletingLastPathComponent().path == directory.path else { throw StoreError.invalidRecord }
-                        let plans = try await history.subagentPlans(path: URL(fileURLWithPath: path), ownerID: item.id)
-                        managed.formUnion(plans.map { $0.header.link.childSessionID })
-                    }
-                }
+                // Discovery reads metadata and member journals off the main
+                // actor; it never needs the project folder or its helper.
+                let preview = try await familyDeletionPreview(item)
                 guard record(item.id) != nil else { return }
-                let count = managed.count
-                let question = ChatQuestion(title: item.isArchived ? "Delete the archived chat “\(item.title)”?" : "Delete this chat?",
-                    detail: (item.imported ? "Remove its app index and draft. The imported original stays in place." : "Move its managed conversation files to Trash and remove its draft and retained trace bodies.")
-                        + (count > 0 ? " Includes \(count) managed sub-agent\(count == 1 ? "" : "s")." : "")
-                        + (sides[id]?.pending == true ? " Its unsent side draft is also removed." : ""), action: "Delete Chat")
+                let count = preview.managedCount, family = preview.sides
+                let isSide = deletionNeedsAncestorRepair(item)
+                let title = item.isArchived ? "Delete the archived chat “\(item.title)”?"
+                    : family.isEmpty ? (isSide ? "Delete this side?" : "Delete this chat?")
+                    : (isSide ? "Delete this side and its sides?" : "Delete this chat and its sides?")
+                var detail = item.imported ? "Remove its app index and draft. The imported original stays in place."
+                    : "Move its managed conversation files to Trash and remove its draft and retained trace bodies."
+                if !family.isEmpty { detail += family.count == 1 ? " Its saved side goes with it, with its sub-agents." : " All \(family.count) of its saved sides go with it, with their sub-agents." }
+                if count > 0 { detail += " Includes \(count) managed sub-agent\(count == 1 ? "" : "s")." }
+                if isSide { detail += " Its spend stays counted in “\(budgetOwner(for: item).title)”." }
+                if ([item.id] + family.map(\.chat.id)).contains(where: { self.sides[$0]?.pending == true }) { detail += " Its unsent side draft is also removed." }
+                var question = ChatQuestion(title: title, detail: detail, action: isSide ? "Delete Side" : "Delete Chat")
+                question.list = .init(heading: family.isEmpty ? "" : "Saved sides deleted with it (\(family.count))",
+                                      items: family.map { .init(title: $0.chat.title, depth: $0.depth) }, notes: preview.skipped)
                 if !questions.ask(question, about: item.id, destructive: true, answered: { [weak self] confirmed in
                     guard let self, confirmed, self.record(item.id) != nil else { return }
-                    self.performDelete(item, store: store)
+                    self.performDelete(item, store: store, announced: preview.skipped)
                 }) { error = PiQuestion.busyNotice }
             } catch { self.error = "Chat deletion could not be prepared. " + error.localizedDescription }
         }
     }
 
-    private func performDelete(_ item: ChatRecord, store: MetadataStore) {
+    private func performDelete(_ item: ChatRecord, store: MetadataStore, announced: [String] = []) {
         Task { do {
             // The confirmation's count is only a preview: a running reply
             // may accept its first delegation while the sheet is open.
             // Every owned journal takes the same unload-and-rescan barrier.
-            if !item.imported { try await deleteSubagentFamily(item); return }
+            if !item.imported {
+                let skipped = try await deleteSubagentFamily(item)
+                // Name anything the confirmation could not have announced.
+                if !Set(skipped).isSubset(of: announced) { error = "“\(item.title)” was deleted. " + skipped.joined(separator: " ") }
+                return
+            }
             if let host = hosts[item.workspaceID] {
                 if host.isReady { _ = try await host.request("session.forget", sessionID: item.id) }
                 else { try await host.settleCaptureIfStopping() }

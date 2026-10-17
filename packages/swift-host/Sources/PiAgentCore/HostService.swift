@@ -560,15 +560,20 @@ public actor NativeHostService {
         case "session.forget":
             try await withRuntimeGate {
                 let family = try await loadedBudgetFamily(id,directory:directory)
-                // Preflight the whole family before detaching any writer. The
-                // surviving saved sides reopen as independent orphaned chats.
+                // Preflight the whole family before detaching any writer.
                 for (value, _) in family {
                     guard await value.canUnload else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
                 }
+                // The app deletes a chat with every saved side below it. Its
+                // descendants are not survivors, so nothing is mirrored down
+                // into them; a member forgotten after its deleted root's
+                // repair has no surviving ancestor left to repair either.
+                let descendantsDeleted = params["descendantsDeleted"].flag == true
+                let ancestorsRepaired = params["ancestorsRepaired"].flag == true
                 // Deleting a side can remove the only priced/token evidence
                 // after its ancestor's append failed. Repair surviving owners
                 // before downward mirrors, detachment, capture clearing or Trash.
-                let ancestors = try await Task.detached { try SideBudgetRecovery.ancestors(of:id,directory:directory) }.value
+                let ancestors = ancestorsRepaired ? [] : try await Task.detached { try SideBudgetRecovery.ancestors(of:id,directory:directory) }.value
                 for ancestor in ancestors.reversed() {
                     let records = try await Task.detached { try SideBudgetRecovery.deletionRecords(side:id,ancestor:ancestor,directory:directory) }.value
                     let committed: [JSON]
@@ -583,10 +588,13 @@ public actor NativeHostService {
                     }
                     try await mirrorFamilyCharges(committed,owner:ancestor,directory:directory)
                 }
-                let costs: [JSON]
-                if let owner = sessions[id] { costs = await owner.committedSideCharges() }
-                else { costs = try await Task.detached { try SideBudgetRecovery.committedSideCharges(owner:id,directory:directory) }.value }
-                try await mirrorFamilyCharges(costs,owner:id,directory:directory)
+                if !descendantsDeleted {
+                    // Older callers: surviving saved sides reopen as independent chats.
+                    let costs: [JSON]
+                    if let owner = sessions[id] { costs = await owner.committedSideCharges() }
+                    else { costs = try await Task.detached { try SideBudgetRecovery.committedSideCharges(owner:id,directory:directory) }.value }
+                    try await mirrorFamilyCharges(costs,owner:id,directory:directory)
+                }
                 for (value, _) in family.sorted(by: { $0.1 > $1.1 }) {
                     guard await value.unloadIfIdle() else { throw AgentError("session_busy","Stop work and close/keep side chats before forgetting") }
                     await didUnloadBudgetMember(value)

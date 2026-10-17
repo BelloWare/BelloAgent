@@ -69,8 +69,7 @@ extension AgentSession {
         let paused = pausedWithPending
         if steer { steering.append(input) } else { queue.append(input) }; commandState(input,"queued")
         do { try persistState() } catch { if steer { steering.removeLast() } else { queue.removeLast() }; commands.removeAll{$0["turnId"].text == input.turnID}; throw error }
-        event(steer ? "steering.queued" : "queue.changed")
-        if steer, let coordinator = agentCoordinator { let owner = id; Task { await coordinator.wake(owner) } }
+        if steer { steeringAdmitted() } else { event("queue.changed") }
         let held = queueEdit != nil
         let queued=runTask != nil || paused || held
         if runTask == nil, !paused, !held { queuePaused=false; launch() }
@@ -123,7 +122,14 @@ extension AgentSession {
         guard queueEdit == nil else { throw Self.editHeldError }
         let item=queue[index], oldQ=queue, oldS=steering
         queue.remove(at:index); steering.append(item)
-        do { try persistState() } catch { queue=oldQ; steering=oldS; throw error }; event("steering.queued")
+        do { try persistState() } catch { queue=oldQ; steering=oldS; throw error }; steeringAdmitted()
+    }
+    /// A message persisted in the steering lane, by sending or by promotion:
+    /// shown, and a parent asleep in a family or explicit wait woken to take
+    /// it at the boundary it already reached.
+    private func steeringAdmitted() {
+        event("steering.queued")
+        if let coordinator = agentCoordinator { let owner = id; Task { await coordinator.wake(owner) } }
     }
     /// How many pending messages one boundary consumes: one at a time, or all
     /// of them. Steering and follow-ups are configured independently.

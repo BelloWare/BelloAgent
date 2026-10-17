@@ -64,17 +64,17 @@ extension WorkspaceModel {
         guard let display = displays[sessionID], let outcome = display.webhookTracker.observe(snapshot, baseline: baseline),
               let settings = activeWebhook, sendsWebhook(sessionID) else { return }
         let failure = outcome == "failed" ? (snapshot["preflightError"]?.string?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 } ?? "Run failed." : ""
-        let finishedAt = Date(), key = UUID()
+        let finishedAt = Date(), key = UUID(), task = display.webhookTracker.finished
         webhookTasks[key] = Task { [weak self] in
-            await self?.sendFinishedWebhook(sessionID, settings: settings, outcome: outcome, error: failure, finishedAt: finishedAt)
+            await self?.sendFinishedWebhook(sessionID, settings: settings, outcome: outcome, error: failure, finishedAt: finishedAt, task: task)
             self?.webhookTasks[key] = nil
         }
     }
 
-    private func sendFinishedWebhook(_ id: String, settings: WebhookSettings, outcome: String, error failure: String, finishedAt: Date) async {
+    private func sendFinishedWebhook(_ id: String, settings: WebhookSettings, outcome: String, error failure: String, finishedAt: Date, task: WebhookTask?) async {
         let title = chatRecord(id)?.title ?? "chat"
         do {
-            let prepared = try await prepareWebhook(for: id, settings: settings, status: outcome, error: failure, finishedAt: finishedAt)
+            let prepared = try await prepareWebhook(for: id, settings: settings, status: outcome, error: failure, finishedAt: finishedAt, task: task)
             try Task.checkCancellation()
             _ = try await deliverWebhook(prepared.request, retrying: true)
             // Said in the chat's footer only: the webhook went out.
@@ -87,8 +87,10 @@ extension WorkspaceModel {
     }
 
     /// The webhook the chat sends, with the mini model's parameters. With no
-    /// status given it describes the chat as it is now: the preview.
-    func prepareWebhook(for id: String, settings: WebhookSettings, status: String? = nil, error failure: String? = nil, finishedAt: Date = Date()) async throws -> WebhookPreparation {
+    /// status given it describes the chat as it is now: the preview. `task`
+    /// is the finished task a completion describes.
+    func prepareWebhook(for id: String, settings: WebhookSettings, status: String? = nil, error failure: String? = nil, finishedAt: Date = Date(),
+                        task: WebhookTask? = nil) async throws -> WebhookPreparation {
         guard let item = chatRecord(id) else { throw HostError.failure("This chat is no longer available.") }
         let profile = profiles.first { $0.id == item.profileID }
         let display = displays[id]
@@ -99,10 +101,22 @@ extension WorkspaceModel {
         context.error = failure ?? (context.status == "failed" ? display?.failureMessage ?? "Run failed." : "")
         context.model = item.model ?? profile?.modelId ?? ""
         context.finishedAt = ISO8601DateFormatter().string(from: finishedAt)
+        // The rows on screen need not be the chat's latest: a chat left
+        // mid-stream keeps them as the reader left them (a background chat's
+        // refresh carries none), and the reader may have an older page up.
+        // Its history is read instead, bounded to the finished task, as a
+        // next turn may already have started. A chat not yet saved has only
+        // the rows on screen.
         var messages = display?.messages ?? []
-        if !messages.contains(where: { $0.role == "user" && $0.kind == nil }), let path = item.path,
-           let page = try? await history.read(path: path) { messages = page.messages }
-        (context.lastRequest, context.lastReply) = WebhookContext.exchange(in: messages)
+        if let path = item.path, let read = await completedExchange(path: path, task: task) {
+            messages = read
+        } else if let task, item.path != nil, !WebhookContext.holds(task, in: messages) {
+            // The task's rows are in no history this chat can reach (an edit
+            // replaced its branch) nor on screen: its request and reply go
+            // out empty rather than another branch's.
+            messages = []
+        }
+        (context.lastRequest, context.lastReply) = WebhookContext.exchange(in: messages, task: task)
         let parameters = try settings.parameterList()
         var values = context.values
         var preparation = WebhookPreparation(request: try WebhookRequest.render(settings, values: values), context: context)
@@ -123,6 +137,30 @@ extension WorkspaceModel {
         }
         preparation.request = try WebhookRequest.render(settings, values: values)
         return preparation
+    }
+
+    /// The rows a finished task's exchange is read from: the chat's latest
+    /// page, or the page ending at the task's last row when a later turn has
+    /// moved past it, then older pages until they reach the request the
+    /// exchange answers. A task can be longer than one page (60 rows or
+    /// 256 KiB). Nil when the history cannot be read, or no longer holds the
+    /// task's last row: an edit or resend replaced its branch meanwhile.
+    private func completedExchange(path: String, task: WebhookTask?) async -> [TranscriptMessage]? {
+        guard var page = try? await history.read(path: path) else { return nil }
+        if let task, let last = task.lastSourceID, !page.messages.contains(where: { $0.id == last }) {
+            // The page that ends at the task's last row: the page before the row after it.
+            guard let around = try? await history.read(path: path, around: last),
+                  let index = around.messages.firstIndex(where: { $0.id == last }) else { return nil }
+            if index + 1 < around.messages.count, let after = try? await history.read(path: path, before: around.messages[index + 1].id) {
+                page = after
+            } else { page = around }
+        }
+        var rows = page.messages
+        while !WebhookContext.reachesRequest(rows, task: task), let older = page.older?.entry,
+              let next = try? await history.read(path: path, before: older), !next.messages.isEmpty {
+            page = next; rows = next.messages + rows
+        }
+        return rows
     }
 
     /// The connection's mini model writes the parameters, from the chat's

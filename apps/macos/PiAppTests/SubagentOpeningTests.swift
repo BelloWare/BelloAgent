@@ -147,6 +147,25 @@ final class SubagentOpeningTests: XCTestCase, SerialTestLane {
         XCTAssertEqual(model.subagentSummaries[target.sessionID]?.status, .interrupted)
     }
 
+    /// With capture on, a killed helper reports `.failed` at once but its
+    /// `.exited` (which clears the connection) waits for capture finalization.
+    /// A live list registration already past its reply must not restore
+    /// `running` over the interruption inside that window.
+    @MainActor func testLiveRegistrationFinishingAfterHelperLossCannotRestoreRunning() async throws {
+        let (_, model, host, parent, target) = try await fixture()
+        let connection = try XCTUnwrap(host.connectionID)
+        try await model.refreshSubagentGroups(parent: try XCTUnwrap(model.record(parent.id)), host: host, connection: connection)
+        var live = try XCTUnwrap(model.subagentSummaries[target.sessionID])
+        XCTAssertEqual(live.status, .running)
+        live.revision += 1
+        host.receive(.failed("Runtime interrupted (9). No request was replayed."), connectionID: connection)
+        XCTAssertEqual(host.connectionID, connection, "The fixture models the window before .exited")
+        XCTAssertEqual(model.subagentSummaries[target.sessionID]?.status, .interrupted)
+        do { try await model.registerListedSubagent(live, parent: try XCTUnwrap(model.record(parent.id)), task: "", connection: connection) }
+        catch is CancellationError { }
+        XCTAssertEqual(model.subagentSummaries[target.sessionID]?.status, .interrupted, "A lost connection's reply is not authoritative")
+    }
+
     @MainActor func testEverySelectionAndInspectorEntryAttachesAnAlreadyRegisteredLiveChild() async throws {
         for route in ["selection", "reveal", "reselect reveal", "family Inspector", "child Inspector", "search", "launch", "cold launch"] {
             let (setup, model, host, parent, target) = try await fixture()

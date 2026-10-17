@@ -122,7 +122,8 @@ extension WorkspaceModel {
     /// sidebar shows it, without bouncing the Dock or counting in its badge.
     func markRunFailed(sessionID: String) {
         guard let item = record(sessionID), !item.isSubagent, item.connectionTest != true, !item.isArchived else { return }
-        guard !(page == .chats && (sessionID == selectedID || sides[selectedID ?? ""]?.id == sessionID) && NSApp.isActive) else { return }
+        // In view: the chat selected, or its side when no File or Changes tab covers it.
+        guard !(transcriptShows(sessionID) && applicationIsActive) else { return }
         var next = unreadStates[sessionID] ?? SessionReadState(id: sessionID, observedAssistantCount: 0, latestAssistantID: nil)
         guard next.unreadFailure != true else { return }
         next.unreadFailure = true
