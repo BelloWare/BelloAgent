@@ -109,22 +109,22 @@ The new pause tests depend on new API, so mutations demonstrate them:
 
 `FamilyLimitPauseTests` passed 12 consecutive repetitions after the final race fix.
 
-### Full gate (after review round 1, the owner rule of 2026-10-17 and the dev/next merge)
+### Full gate (after review round 2 and the compaction rule)
 
 `PI_BUILD_ROOT=…/build-limit-pause scripts/verify-release.sh` under the shared lane lock
-(`verify-2.out`, logs in `verify-logs/`):
+(`verify-3.out`, logs in `verify-logs/`): **all passed in 55 min 52 s.**
 
 | Suite | Result |
 | --- | --- |
-| Native serial lane | 889 tests, 43 skipped, 0 failures |
-| Native parallel lane (8 clones) | 2,631 passed, 1 failed, 38 skipped: `CostLimitTests.testThePauseNoticeAppearsAndResumeRunsTheHeldCallAfterARaise` asserted the held card before the spend reading had arrived under load (product behaviour is correct: unknown spend offers Resume and the helper refuses at the limit). The test now waits for the reading; the same wait was added to `CostPauseFamilyTests`. Alone it passed 3/3 before the change; both classes passed after it (`logs/pause-notice-*.log`, `logs/r3-native.log`). |
-| Helper | 971 tests, 7 skipped, 0 failures; streaming cost 5/5 |
+| Native serial lane | 890 tests, 43 skipped, 0 failures |
+| Native parallel lane (8 clones) | 2,632 passed, 0 failed, 38 skipped |
+| Helper | 978 tests, 7 skipped, 0 failures; streaming cost 5/5 |
 | Wire / concurrent / acceptance / Python | 36 / 4 / 3 / 86, all OK |
-| Gallery | 3 tests, 0 failures (230 screenshots); `testRenderRedesignGallery` did not recur |
+| Gallery | 3 tests, 0 failures (230 screenshots) |
 
-Earlier runs: `verify-1.out` (first submission) is superseded. `FamilyLimitPauseTests`,
-`CostLimitTests` and `AgentSteeringBoundaryTests` passed 8 consecutive repetitions
-(`logs/rep-r2-*.log`). `scripts/test-subagent-cache.py`: no prefix breaks (tools unchanged).
+Earlier gates (`verify-1.out`, `verify-2.out`) are superseded; their failures (the wire
+side test, a load race in a native cost test) were fixed as recorded above.
+`scripts/test-subagent-cache.py`: no prefix breaks (tools unchanged).
 
 ## Review round 1 (Codex, 9 findings) — all fixed
 
