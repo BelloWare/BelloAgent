@@ -65,6 +65,9 @@ enum WorkspacePage: String, Sendable { case chats, report, background }
     var heldUnread: [String: HeldUnread] = [:]
     /// Test seam: whether the app is in front. Nil in the app, which asks NSApp.
     var applicationIsActiveOverride: Bool?
+    /// Test seam: how long a reply in the chat being read waits for the
+    /// page. Nil in the app, which uses `visibleReplyGrace`.
+    var visibleReplyGraceOverride: Duration?
     var dirtyReadStates: Set<String> = []
     var readStateWrites: [String: Task<Void, Never>] = [:]
     @Published var profiles: [ProfileRecord] = [] { didSet { subagentFamilies.removeAll(); noteActivityChanged() } }

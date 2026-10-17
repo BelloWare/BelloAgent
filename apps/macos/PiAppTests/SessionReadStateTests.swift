@@ -335,9 +335,16 @@ extension SessionReadStateTests {
     /// chat in front, the reply lands, and the page reads it three frames
     /// later. No frame in between shows it unread or counts it on the Dock. A
     /// reply the page does not read within the grace becomes unread then.
+    ///
+    /// The frames run under a grace far longer than the app's: with the app's
+    /// 600 ms, a main-thread stall in a loaded parallel lane outlasted it
+    /// before the page's read (0.1.129 gate, 6.0 s run), and the grace did
+    /// what it is for. The unread phase keeps the app's grace and waits for
+    /// the result rather than sleeping a fixed time.
     @MainActor func testAReplyInTheChatBeingReadWaitsForThePagesReadCheck() async throws {
         let (model, root, view) = try await makeModel()
         model.applicationIsActiveOverride = true
+        model.visibleReplyGraceOverride = .seconds(120)
         view.scrollAnchor = .init(id: "a1", offset: 0, followsBottom: true)
         model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(1, "a1"))
         model.updateDockBadge()
@@ -350,14 +357,19 @@ extension SessionReadStateTests {
             try await Task.sleep(for: .milliseconds(16))
         }
         XCTAssertEqual(unreadFrames, 0, "The reply the reader is looking at never shows as unread")
-        try await Task.sleep(for: WorkspaceModel.visibleReplyGrace + .milliseconds(150))
+        XCTAssertNil(model.heldUnread["chat"], "The page's read ends the wait")
         XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0, "Read within the grace, it stays read")
         XCTAssertEqual(model.unreadStates["chat"]?.observedAssistantCount, 2)
-        // A reply the page cannot read (a sheet is up, say) is unread once the grace is over.
+        // A reply the page cannot read (a sheet is up, say) is unread once the app's grace is over.
+        model.visibleReplyGraceOverride = nil
         view.messages.append(.init(id: "a3", role: "assistant", text: "Another answer"))
+        let landed = ContinuousClock.now
         model.observeAssistantOutputs(sessionID: "chat", snapshot: snapshot(3, "a3"))
         XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 0)
-        try await Task.sleep(for: WorkspaceModel.visibleReplyGrace + .milliseconds(150))
+        while model.unreadOutputCount(sessionID: "chat") == 0, ContinuousClock.now - landed < .seconds(10) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertGreaterThanOrEqual(ContinuousClock.now - landed, WorkspaceModel.visibleReplyGrace, "Not before the grace is over")
         XCTAssertEqual(model.unreadOutputCount(sessionID: "chat"), 1, "Unread once the page has had its chance")
         XCTAssertEqual(model.unreadStates["chat"]?.unreadTargetID, "a3")
         model.acknowledgeVisibleReply(sessionID: "chat", messageID: "a3")
