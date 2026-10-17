@@ -136,6 +136,15 @@ extension AgentSession {
         for call in message.content where call["type"].text == "toolCall" {
             guard let id = call["id"].text else { continue }
             if toolStateOwners[id] == message.id, let live = toolStates[id] { states[id] = live; continue }
+            // A call the pause held before it began has no result yet: it
+            // shows as held (it runs first on Resume), never as running or run.
+            let answered = results.map { $0[id] != nil } ?? (toolHistory.results[message.id]?[id] != nil)
+            if !answered, costPendingCalls.contains(id) {
+                let fields = toolInputFields(call["arguments"])
+                states[id] = merging(["id": JSON(id), "name": call["name"], "state": JSON(Self.heldToolState), "output": "", "durationMs": .null,
+                                      "truncated": JSON(fields.first(where: { $0.0 == "inputTruncated" })?.1.flag ?? false)], fields)
+                continue
+            }
             let result: ChatMessage
             if let results { guard let found = results[id] else { continue }; result = found }
             else { guard let index = toolHistory.results[message.id]?[id], history.indices.contains(index) else { continue }; result = history[index] }

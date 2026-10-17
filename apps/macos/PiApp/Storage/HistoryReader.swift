@@ -60,6 +60,9 @@ struct RetainedRun: Equatable, Sendable {
     /// Tool calls in the conversation's context with no result: their outcome
     /// is unknown when the run that issued them never finished.
     var unansweredCalls: Set<String>
+    /// Calls a cost-limit pause held before they began (`costPendingCalls`):
+    /// shown held, never as run or as unknown.
+    var heldCalls: Set<String> = []
     /// Paused at the family's shared cost limit: Resume, not an
     /// interruption, is what waits, also when the helper ended mid-pause.
     var costPaused = false
@@ -134,6 +137,9 @@ actor HistoryReader {
             var costPaused: Bool?
             /// Sides still waiting for the family's Resume (`costPausedMembers`).
             var costPausedMembers: [String]?
+            /// Tool calls the pause held before they began (`costPendingCalls`):
+            /// they run on Resume, so they are not unresolved.
+            var costPendingCalls: [String]?
             /// Paused at the family's limit, or (a root whose own Resume was
             /// accepted before its sides were resumed) still handing sides
             /// out: the helper's `membersPendingResume`, shown as the pause.
@@ -174,7 +180,7 @@ actor HistoryReader {
                 }
                 let rows = (steering ?? []).compactMap { row($0, steering: true) } + (queue ?? []).compactMap { row($0, steering: false) }
                 return RetainedRun(active: active, runStatus: runStatus, queuePaused: queuePaused == true || !rows.isEmpty || active || pausedForResume,
-                                   queue: rows, unansweredCalls: active ? unanswered : [], costPaused: pausedForResume)
+                                   queue: rows, unansweredCalls: self.active == true ? unanswered.subtracting(costPendingCalls ?? []) : [], heldCalls: Set(costPendingCalls ?? []), costPaused: pausedForResume)
             }
         }
         struct MessageRole: Decodable {
@@ -1032,6 +1038,14 @@ actor HistoryReader {
         guard try stamp(file) == identity else { indexes.removeValue(forKey: path); throw StoreError.unreadableRecord }
         guard range.isEmpty || !messages.isEmpty else { throw HostError.failure("This history record exceeds the display envelope. Its retained source is unchanged.") }
         messages = TranscriptMessage.resolvingToolResults(messages, results: toolResults)
+        if let held = retainedRun?.heldCalls, !held.isEmpty {
+            // A call the pause held before it began runs first on Resume.
+            for index in messages.indices where messages[index].tools?.contains(where: { held.contains($0.id) && $0.state == "recorded" }) == true {
+                messages[index].tools = messages[index].tools?.map { tool in
+                    var card = tool; if held.contains(tool.id) && tool.state == "recorded" { card.state = ToolState.held }; return card
+                }
+            }
+        }
         if let unanswered = retainedRun?.unansweredCalls, !unanswered.isEmpty {
             // A call the stopped run issued and never answered did not
             // finish: it reads "unknown", as the helper will record it, not "Ran".

@@ -314,7 +314,7 @@ extension AgentSession {
         func heldOutcome() -> ToolOutcome {
             // Saved now: a quit or crash while other calls run keeps it held.
             if !costPendingCalls.contains(call.id) { costPendingCalls.append(call.id); try? persistState(active:true,durable:true) }
-            if var card=toolStates[call.id] { card["state"]="queued"; setToolState(call.id,card); recordDisplayChange(toolStateOwners[call.id],at:displayClock()); event("tool_execution_end") }
+            if var card=toolStates[call.id] { card["state"]=JSON(Self.heldToolState); setToolState(call.id,card); recordDisplayChange(toolStateOwners[call.id],at:displayClock()); event("tool_execution_end") }
             var outcome = ToolOutcome(index:index,message:ChatMessage(role:"toolResult",content:[]),observedAt:displayClock(),cancelled:false); outcome.held = true
             return outcome
         }

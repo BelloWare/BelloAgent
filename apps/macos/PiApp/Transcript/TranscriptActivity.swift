@@ -27,7 +27,9 @@ struct ActionDescription: Equatable, Sendable {
 /// Where a call stands, as the transcript reads it. `unknown` is a call that
 /// began and never reported — stopped while it ran, or cut off by a crash —
 /// so it may have had effects: it is not done, not failed and not skipped.
-enum ActionOutcome: String, Sendable { case running, done, failed, cancelled, unknown }
+/// `held`: a call a cost-limit pause held before it began; it runs first on
+/// Resume, and nothing about it claims it ran.
+enum ActionOutcome: String, Sendable { case running, done, failed, cancelled, unknown, held }
 
 enum ActivityState: String, Sendable { case running, failed, completed }
 
@@ -41,7 +43,9 @@ enum ToolState {
     static let producing: Set<String> = ["preparing", "running"]
     /// Its card does not carry the call's result: the call is not finished,
     /// or the card was read back holding only the request ("recorded").
-    static let withoutResult: Set<String> = ["preparing", "prepared", "running", "recorded"]
+    static let withoutResult: Set<String> = ["preparing", "prepared", "running", "recorded", "queued"]
+    /// Held by a cost-limit pause before it began: it runs first on Resume.
+    static let held = "queued"
 }
 
 struct DiffRow: Equatable, Sendable {
@@ -243,6 +247,7 @@ enum TranscriptActivity {
         // Sent only to an app that says it reads it (the hello's
         // `unknownToolOutcomes`); an older app sees "cancelled" or "failed".
         if tool.state == "unknown" { return .unknown }
+        if tool.state == ToolState.held { return .held }
         return .done
     }
     /// What a reply that ended before its natural end says under itself, from
@@ -273,6 +278,7 @@ enum TranscriptActivity {
         case .failed: return "Failed " + doing
         case .cancelled: return "Skipped " + doing
         case .unknown: return "Stopped " + doing
+        case .held: return "Paused before " + doing
         case .done: return done
         }
     }

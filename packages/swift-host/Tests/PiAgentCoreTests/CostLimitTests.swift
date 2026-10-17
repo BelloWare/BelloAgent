@@ -307,6 +307,22 @@ final class CostLimitTests: XCTestCase {
         await reopened.close()
     }
 
+    /// Round 9: a held call's card says it is held (`queued`), live and after
+    /// a reopen, never running or run.
+    func testAHeldCallsCardShowsItHeldAcrossAReopen() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at: root) }
+        let client = BillingClient(turns: [.reply(toolReply(["first"]), cost: 0.06)])
+        let s = try await session(root, id: "card", client: client, tools: RecordingTools(), limit: 0.05)
+        try await send(s, "Work")
+        _ = try await settled(s)
+        let saved = await s.path, path = try XCTUnwrap(saved); await s.close()
+        let reopened = try await session(root, id: "card", client: client, tools: RecordingTools(), limit: 0.05, resume: path)
+        let last = await reopened.history.last { $0.role == "assistant" }, reply = try XCTUnwrap(last)
+        let row = await reopened.displayMessage(reply)
+        XCTAssertEqual(row["tools"].list.first?["state"].text, "queued")
+        await reopened.close()
+    }
+
     /// Owner, 2026-10-17 (round 2): a compaction summary in flight is a model
     /// request too. The pause cuts it; it is not recorded as a failure of the
     /// context; Resume compacts again and completes.

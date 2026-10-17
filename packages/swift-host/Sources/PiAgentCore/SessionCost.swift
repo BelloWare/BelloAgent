@@ -209,6 +209,8 @@ extension AgentSession {
         guard Self.pauseClosedAdmissionCodes.contains(code) else { return false }
         do { try await enforceCostHold(); return false } catch { return true }
     }
+    /// A tool card's state for a call the pause held before it began.
+    static let heldToolState = "queued"
     static var costHoldError: AgentError { AgentError(costLimitCode, "Paused at the cost limit; Resume goes on from here.") }
     /// Whether the next model request may go: never once the spend the
     /// gateway reported reaches the limit. Unreported attempts are unknown,
