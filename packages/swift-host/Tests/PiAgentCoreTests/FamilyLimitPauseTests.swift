@@ -1235,3 +1235,24 @@ private extension AgentSession {
                                    retry:.init(enabled:false,maxRetries:0,baseDelayMs:0),used:&used)
     }
 }
+
+/// Review round 9 (Codex) regressions.
+extension FamilyLimitPauseTests {
+    /// A Resume refused after the pause was ended in memory (here, an
+    /// invalid override) restores the Resume count too: a side pause issued
+    /// before it still applies.
+    func testARefusedResumeKeepsPendingSidePausesValid() async throws {
+        let root = try temporaryDirectory(); defer { try? FileManager.default.removeItem(at:root) }
+        let owner = try AgentSession(id:"parent",profile:fixtureProfile(),apiKey:"fixture",cwd:root,directory:root,readOnly:true,
+            resources:Resources(cwd:root,home:root),client:ScriptClient([]),tools:RecordingTools(),traces:TraceStore())
+        await owner.setCostLimit(5)
+        _ = try await owner.fixtureUserMessage("Go on")
+        await owner.fixtureCostPause()
+        let before = await owner.costResumeCount
+        do { _ = try await owner.continueRun(commandID:"resume",overrides:["thinkingLevel":"nonsense"]); XCTFail("An invalid override was accepted") }
+        catch { XCTAssertEqual((error as? AgentError)?.code,"invalid_params") }
+        let after = await owner.costResumeCount, paused = await owner.costPaused
+        XCTAssertEqual(after,before,"Nothing was resumed"); XCTAssertTrue(paused)
+        await owner.close()
+    }
+}

@@ -54,11 +54,13 @@ extension AgentSession {
         resumingCostPause = !isSubagent && agentCoordinator != nil
         return costPausedMembers
     }
-    struct CostPauseState { var paused: Bool, members: [String], reason: AgentError?, issued: Bool, code: String?, message: String? }
-    var costPauseState: CostPauseState { .init(paused:costPaused,members:costPausedMembers,reason:familyStopReason,issued:budgetStopIssued,code:errorCode,message:errorMessage) }
+    struct CostPauseState { var paused: Bool, members: [String], reason: AgentError?, issued: Bool, code: String?, message: String?, resumes: Int }
+    var costPauseState: CostPauseState { .init(paused:costPaused,members:costPausedMembers,reason:familyStopReason,issued:budgetStopIssued,code:errorCode,message:errorMessage,resumes:costResumeCount) }
     func restoreCostPause(_ saved: CostPauseState) {
         costPaused = saved.paused; costPausedMembers = saved.members; familyStopReason = saved.reason
         budgetStopIssued = saved.issued; errorCode = saved.code; errorMessage = saved.message
+        // A refused Resume ended nothing: side pauses issued before it still apply.
+        costResumeCount = saved.resumes
         resumingCostPause = false; familyWaitResume = false; compactOnResume = false; costResumePending = false
     }
     /// The whole family's limit, checked before a Resume of a paused chat:
