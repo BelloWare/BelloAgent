@@ -2,11 +2,20 @@ import AppKit
 import Combine
 import PDFKit
 import ImageIO
+import Darwin
 
 @MainActor final class FilePreview: ObservableObject {
     private final class PDF: @unchecked Sendable { let document: PDFDocument; init(_ document: PDFDocument) { self.document = document } }
     private final class Bitmap: @unchecked Sendable { let image: CGImage; init(_ image: CGImage) { self.image = image } }
-    private struct Fingerprint: Equatable, Sendable { let modified: Date?; let size: UInt64; let inode: UInt64 }
+    private struct Fingerprint: Equatable, Sendable {
+        let device: Int64, inode: UInt64, size: Int64
+        let modified: Int64, modifiedNanoseconds: Int, changed: Int64, changedNanoseconds: Int
+        init(_ value: stat) {
+            device = Int64(value.st_dev); inode = UInt64(value.st_ino); size = Int64(value.st_size)
+            modified = Int64(value.st_mtimespec.tv_sec); modifiedNanoseconds = value.st_mtimespec.tv_nsec
+            changed = Int64(value.st_ctimespec.tv_sec); changedNanoseconds = value.st_ctimespec.tv_nsec
+        }
+    }
     private enum Content: Sendable { case pdf(PDF), image(Bitmap), failed(String), unchanged, cancelled }
     private struct Reading: Sendable { let fingerprint: Fingerprint?; let content: Content }
     let url: URL
@@ -16,6 +25,7 @@ import ImageIO
     @Published private(set) var loading = false
     var changed: (() -> Void)?
     private var task: Task<Void, Never>?
+    private var loadAgain = false
     var readingTask: Task<Void, Never>? { task }
     private var fingerprint: Fingerprint?
     private var token = 0
@@ -44,9 +54,12 @@ import ImageIO
     }
     func load() {
         guard !suspended else { return }
+        // Folder activity must not retire a decode that is still running.
+        // Check again after publication so a save during it is followed too.
+        guard task == nil else { loadAgain = true; return }
+        loadAgain = false
         token &+= 1
         let token = token, url = url, previous = error == nil ? fingerprint : nil
-        task?.cancel()
         loading = image == nil && pdf == nil
         let before = beforeDecode
         task = Task { [weak self] in
@@ -56,9 +69,8 @@ import ImageIO
                 guard url.resolvingSymlinksInPath().path == url.path else {
                     return Reading(fingerprint: nil, content: .failed("The file's path changed. Open it again to check its location."))
                 }
-                let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-                let fingerprint = attributes.map { Fingerprint(modified: $0[.modificationDate] as? Date,
-                    size: ($0[.size] as? NSNumber)?.uint64Value ?? 0, inode: ($0[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0) }
+                var attributes = stat()
+                let fingerprint = stat(url.path, &attributes) == 0 ? Fingerprint(attributes) : nil
                 if let fingerprint, fingerprint == previous { return Reading(fingerprint: fingerprint, content: .unchanged) }
                 guard !Task.isCancelled else { return Reading(fingerprint: nil, content: .cancelled) }
                 await self?.noteDecodeStart()
@@ -78,6 +90,7 @@ import ImageIO
             let reading = await withTaskCancellationHandler { await worker.value } onCancel: { worker.cancel() }
             guard let self, !Task.isCancelled, self.token == token else { return }
             self.loading = false; self.task = nil
+            defer { if self.loadAgain { self.load() } }
             switch reading.content {
             case .pdf(let loaded):
                 let index = self.madePDFView.flatMap { view in view.currentPage.flatMap { view.document?.index(for: $0) } } ?? self.savedPage
@@ -103,7 +116,7 @@ import ImageIO
     }
     private func noteDecodeStart() { decodeStarts += 1 }
     func suspend() {
-        suspended = true; token &+= 1; task?.cancel(); task = nil; loading = false
+        suspended = true; token &+= 1; task?.cancel(); task = nil; loadAgain = false; loading = false
         savedPage = madePDFView.flatMap { view in view.currentPage.flatMap { view.document?.index(for: $0) } } ?? savedPage
         image = nil; pdf = nil; madePDFView?.document = nil; fingerprint = nil
     }

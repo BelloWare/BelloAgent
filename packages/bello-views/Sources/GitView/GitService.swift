@@ -127,6 +127,12 @@ public actor GitService {
 
     struct Output: Sendable { let stdout: Data; let stderr: String; let status: Int32
         var text: String { String(decoding: stdout, as: UTF8.self) }
+        var path: String { GitService.removingOutputNewline(text) }
+    }
+    /// Git terminates a path with LF; any other whitespace belongs to it.
+    static func removingOutputNewline(_ text: String) -> String {
+        guard text.utf8.last == 10 else { return text }
+        return String(decoding: text.utf8.dropLast(), as: UTF8.self)
     }
 
     static let ordinaryOutputLimit = 4 * 1024 * 1024
@@ -357,7 +363,7 @@ public actor GitService {
     /// The repository's top level, or nil when the folder is not inside one.
     public func repositoryRoot(of folder: String) async -> String? {
         guard let output = try? await run(["rev-parse", "--show-toplevel"], in: folder), output.status == 0 else { return nil }
-        let top = output.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let top = output.path
         return top.isEmpty ? nil : top
     }
 
@@ -992,10 +998,10 @@ public actor GitService {
     private func refuseDuringOperation(in root: String) async throws {
         let states = [("MERGE_HEAD", "a merge"), ("CHERRY_PICK_HEAD", "a cherry-pick"), ("REVERT_HEAD", "a revert"),
                       ("rebase-merge", "a rebase"), ("rebase-apply", "a rebase"), ("sequencer", "a cherry-pick or revert sequence")]
-        let paths = try require(await run(["rev-parse", "--path-format=absolute"] + states.flatMap { ["--git-path", $0.0] }, in: root), "Reading the repository").text
-            .split(separator: "\n").map(String.init)
-        for (path, state) in zip(paths, states) where FileManager.default.fileExists(atPath: path) {
-            throw GitFailure(message: "Finish or abort \(state.1) before rewording the last commit.")
+        // One path per output: a directory name can itself contain LF.
+        for (name, state) in states {
+            let path = try require(await run(["rev-parse", "--path-format=absolute", "--git-path", name], in: root), "Reading the repository").path
+            if FileManager.default.fileExists(atPath: path) { throw GitFailure(message: "Finish or abort \(state) before rewording the last commit.") }
         }
         let unmerged = try require(await run(["ls-files", "-u"], in: root), "Reading the index").text
         guard unmerged.isEmpty else { throw GitFailure(message: "Resolve the conflicts before rewording the last commit.") }
@@ -1007,7 +1013,7 @@ public actor GitService {
     private func runPostRewrite(in root: String, old: String, new: String) async throws {
         let configured = try await run(["config", "--path", "--get", "core.hooksPath"], in: root)
         var folder: String
-        if configured.status == 0, case let value = configured.text.trimmingCharacters(in: .newlines), !value.isEmpty {
+        if configured.status == 0, case let value = configured.path, !value.isEmpty {
             folder = value.hasPrefix("/") ? value : (root as NSString).appendingPathComponent(value)
         } else {
             folder = try require(await run(["rev-parse", "--path-format=absolute", "--git-path", "hooks"], in: root), "Reading the repository").text.trimmingCharacters(in: .newlines)

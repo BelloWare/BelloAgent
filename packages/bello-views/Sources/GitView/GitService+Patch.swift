@@ -26,7 +26,7 @@ extension GitService {
     }
 
     public func patchReview(in root: String, path: String, staged: Bool) async throws -> GitPatchReview {
-        let top = try await patchCommand(["rev-parse", "--show-toplevel"], in: root).text.trimmingCharacters(in: .newlines)
+        let top = try await patchCommand(["rev-parse", "--show-toplevel"], in: root).path
         guard URL(fileURLWithPath: top).resolvingSymlinksInPath() == URL(fileURLWithPath: root).resolvingSymlinksInPath() else { throw GitFailure(message: "The repository changed. Refresh and review it again.") }
         let location = try await patchIndexPath(in: root)
         let snapshot = try GitIndexSnapshot.read(at: location)

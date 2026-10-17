@@ -157,7 +157,7 @@ import AppKit
             if model.showChanges()?.container?.isPane == true { self?.revealWorkspace() }
         }
         command(view, title: { [model] in model.terminalVisible ? "Hide Terminal" : "Show Terminal" }, key: "`", modifiers: .control,
-                enabled: { [weak self, model] in model.selectedID != nil && self?.workspaceIsCovered == false }, action: model.toggleTerminal)
+                enabled: { [weak self, model] in model.page == .chats && model.selectedID != nil && self?.workspaceIsCovered == false }, action: model.toggleTerminal)
         view.addItem(.separator())
         command(view, "Next Chat", key: String(UnicodeScalar(NSDownArrowFunctionKey)!), modifiers: [.command, .option]) { [model] in model.selectAdjacentChat(1) }
         command(view, "Previous Chat", key: String(UnicodeScalar(NSUpArrowFunctionKey)!), modifiers: [.command, .option]) { [model] in model.selectAdjacentChat(-1) }

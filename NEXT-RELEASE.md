@@ -12,6 +12,15 @@
 - [x] APP-WORKSPACE-2: Delete refuses pending first sends (including sides); removed placeholders abort materialization. [Validation](docs/validation/a130-workspace-0.1.130.md).
 - [x] APP-WORKSPACE-3: Archive retires send/edit/Resume/compaction preparation before dispatch and preserves unsent drafts, including across Restore. [Validation](docs/validation/a130-workspace-0.1.130.md).
 - [x] APP-WORKSPACE-4: Reply forks and whole-chat forks finish saving without overriding subsequent page navigation. [Validation](docs/validation/a130-workspace-0.1.130.md).
+- [x] GIT-FILES-1: Git preserves project-path whitespace, so Discard cannot target a trimmed sibling repository. [Validation](docs/validation/a130-gitfiles-0.1.130.md).
+- [x] GIT-FILES-2: Image/PDF previews finish active reads during sibling-folder activity, then recheck queued changes.
+- [x] GIT-FILES-3: Identical normal and inverse terminal glyphs keep distinct cached foreground colours.
+- [x] GIT-FILES-4: Preview identities include device and nanosecond change time, detecting same-size, timestamp-preserving overwrites.
+- [x] APP-UI-1: Show Terminal requires Chats; deferred focus respects page/visibility/enabled state, and covered terminals restore focus on return. Needs owner decision: keep the command disabled on Reports/Background rather than navigate to Chats.
+- [x] Git path sweep: hunk review accepts repository roots ending in a newline.
+- [x] Git path sweep: watchers preserve whitespace in external Git/common-directory paths, including embedded newlines.
+- [x] Git path sweep: reword detects active operation markers under newline-containing paths.
+- [x] Git path sweep: reword runs post-rewrite hooks in configured directories ending in a newline. [Validation](docs/validation/a130-gitfiles-0.1.130.md).
 
 ## 0.1.129
 
