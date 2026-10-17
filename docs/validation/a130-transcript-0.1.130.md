@@ -1850,3 +1850,358 @@ root; its full-lane lock was released after every run. No installed app, real
 preferences, chats, credentials or Keychain were used. No assigned product issue
 or owner decision remains unresolved; the one desktop prerequisite skip is
 recorded above for the lead's full gate.
+
+
+## Round 6: captured tool ownership at page boundaries (2026-10-18)
+
+Base: `95978a21d61843b45836f265b40748a0772052a7`. The review finding is
+**confirmed and fixed**. A captured completed call formerly owned its output
+while the unloaded receipt independently owned the same output. Search now
+joins indexed peers on the active branch and adopts the planner's output
+ownership, preserving the captured card's payload and state. Each call is
+joined separately; unrelated captured rows retain their actual presentation.
+The retained receipt remains the stable Find identity. A drawing hint lets Find
+open/highlight its already-loaded card without fetching the off-page receipt.
+
+### Failing first and corrected native oracle
+
+`testCapturedCallDoesNotDuplicateItsUnloadedReceipt` first failed on unchanged
+base production (`round6-failing-first.log`):
+
+```text
+XCTAssertEqual failed: (["reply", "result"]) is not equal to (["result"])
+XCTAssertEqual failed: ("2") is not equal to ("1")
+```
+
+The final corpus was rerun against all three restored base production files
+(`round6-verified-first.log`): **1 passed, 3 failed, 91 failing assertions**.
+The primary case failed 4 assertions, the reused-call corpus 27, and the
+saved/live corpus 60. The standalone-receipt control passed. Files were restored
+in `finally`; no base source or mutation remains in the change.
+
+```text
+custom_fixture, live=false, raw=false, page=0..<1, query=outputneedle: 2 != 1
+custom_fixture, live=false, raw=false, page=0..<1, query=sharedneedle: 4 != 3
+page=0..<1, query=firstoutput: ["first-reply", "first-result"] != ["first-result"]
+```
+
+The initial corpus assumed the full group's presentation on every partial
+page. That was wrong for an uncaptured streaming reply and for a receipt drawn
+as a standalone Markdown row. Consequently, the 149 initial assertions, 112
+in the first corpus rerun, and 51 in the first adversarial run are **not all
+product failures**. Receipt-only searches must retain that visible row's
+rendered Markdown, including hidden link destinations. The final independent
+oracle mounts native planner rows for the captured page, uses retained state
+for uncaptured rows, and gives explicitly paired payloads one owner. It also
+preserves a visible old receipt instead of assuming all old receipts are hidden.
+
+That corrected oracle caught a flaw in the first implementation before commit:
+it had overwritten captured standalone-receipt text with off-page card text.
+`round6-captured-view-first.log` reports **0 passed, 3 failed**; for example,
+`testCapturedStandaloneReceiptKeepsItsRenderedText` found 0 versus 1 for
+`alpha beta`, and 1 versus 0 for `receipt.test`. A captured recorded card also
+lost `capturedliteral` when resolving disk receipts advanced its state. The
+final join preserves standalone rows and restores captured tool states after
+resolving unloaded peers. `round6-captured-view-fixed.log`: **66 passed, 0 failed**.
+
+### Coverage and same-pattern sweep
+
+- `testFindCountsEveryCallReceiptReplyPageSplitSavedAndLive` covers all ten
+  contiguous slices of call/receipt/reply, including every empty placement,
+  call-only, receipt-only, prefixes, suffixes and the full group. Generic, bash,
+  read, edit and subagent cards run with saved/live helper-wire rows and both
+  rendered/raw replies: **200 page cases, 1,800 native occurrence comparisons**.
+  Nine queries cover input/output/reply, repeated text, literal markup, visible
+  phrases and links, and transport text absent from special cards.
+- `testEveryPageSplitKeepsReusedCallsAndLatestReceiptsSeparate`: two groups
+  reuse a call ID; the first includes an older receipt. All 36 contiguous
+  slices preserve output identity and the actual standalone-row presentation:
+  **180 comparisons**.
+- `testEveryLegacyPageSplitKeepsBothDisplayedOutputRows`: an unsupported
+  timeline intentionally displays both a legacy card and a standalone result.
+  All ten slices preserve both occurrences: **40 comparisons**.
+- `testCompletedWireCardOwnsOneOutputAcrossThePageByteLimit`: generated output
+  makes a completed helper-wire call fit the 256 KiB envelope while call plus
+  receipt exceed it. The partial overlay still produces one receipt-owned hit.
+- `testCapturedCardKeepsItsDisplayedOutputWhenReceiptIsUnloaded`: captured
+  output wins over different disk output, once, under the retained receipt ID.
+- `testCapturedOutputWithoutARetainedReceiptStaysOnItsCall`: a live completed
+  card with no receipt keeps its own output, with and without a journal.
+- `testCapturedStandaloneReceiptKeepsItsRenderedText`: 12 additional native
+  comparisons cover receipt-only, recorded-call/receipt and recorded-call
+  carrying a captured output. This is a control for existing behavior and a
+  regression for the first implementation's error above.
+
+Totals: **246 page cases and 2,020 native occurrence comparisons**, plus those
+12 standalone comparisons and the branch's prior 363 exact-text comparisons.
+
+The navigation sweep also confirmed that merely transferring identity could
+send Find to the unloaded receipt instead of the loaded card.
+`testFindRevealsCapturedOutputWithoutLoadingItsReceipt` failed first
+(`round6-navigation-first.log`, **0 passed, 1 failed**, three assertions):
+
+```text
+focus.messageID: Optional("result") != Optional("reply")
+focus.scopeCall: nil != Optional("call")
+The output is already loaded; revealing its receipt can replace literal card text with standalone Markdown
+```
+
+It now checks the sole receipt-owned match, loaded-card focus and call scope,
+no page read, and a visible highlight on the card's literal `receipt.test`.
+`round6-navigation-fixed.log`: **2 passed, 0 failed**, including the original
+native pane test with Next/Previous. Drawing metadata does not change match
+identity and survives count reconciliation; it is used only while that card
+is still loaded. Refresh still creates no navigation focus.
+
+Intermediate harness errors are retained in the evidence: a hardcoded expected
+`reply` ID caused the only failure in `round6-regression-fixed.log` (64 passed,
+1 failed; its highlight checks passed). The assertion helper now accepts an
+expected record ID. A first edit changed the wrong assertion and failed to
+compile (`round6-pane-fixed.log`, no tests executed); the scoped correction
+passed (`round6-pane-fixed-valid.log`, 1 passed).
+
+### R6 navigation reconciliation: shared input/output query
+
+The native navigation sweep found another instance of duplicate ownership:
+`testFindKeepsCallInputAndReceiptOutputSeparateWhenReconciling` searches a word
+shared by call input, output and the following reply, then steps from input to
+output with partial and complete pages. Its failing-first run
+(`round6-input-output-first.log`, **0 passed, 1 failed**) reported:
+
+```text
+["reply", "reply", "result", "answer"] != ["reply", "result", "answer"]
+focus.record: Optional("reply") != Optional("result")
+```
+
+The search count was correct, but native reconciliation counted the card's
+receipt-owned output again under its call. The projection now carries the
+omitted-output call IDs into native counting. Input hits count their input and
+prose; receipt hits retain their scoped output. Cards without a displayed
+output, including edit diffs, require no omission. Reconciliation preserves the
+match's ownership metadata without changing its identity or navigation serial.
+
+### Mutation checks and final validation
+
+All **12 valid mutations were caught**: 13 failing test invocations, zero passing tests. Each source was restored in `finally`. The first recorded-card mutation left an unused `var` and failed compilation (`round6-verified-mutation-recorded-card.log`, 0 tests); changing that mutated binding to `let` produced the valid assertion failure below. The earlier seven mutations also failed, but the final results use the corrected native oracle.
+
+| Reversal (`round6-verified-mutation-*.log`) | Passed | Failed | Mutation |
+| --- | ---: | ---: | --- |
+| `joined-plan` | 0 | 2 | Skip the active-branch join |
+| `output-owner` | 0 | 1 | Keep output on the captured call |
+| `receipt-payload` | 0 | 1 | Remove adopted receipt payload |
+| `unloaded-receipt` | 0 | 1 | Leave the receipt outside the overlay |
+| `captured-state` | 0 | 1 | Ignore captured card values |
+| `receipt-order` | 0 | 1 | Reverse peer ordering |
+| `legacy-row` | 0 | 1 | Hide the independently displayed legacy result |
+| `standalone-row` | 0 | 1 | Replace captured standalone receipt presentation |
+| `recorded-card-valid` | 0 | 1 | Advance a captured recorded card from its disk receipt |
+| `drawing-owner` | 0 | 1 | Drop the loaded-card drawing hint |
+| `omitted-owner` | 0 | 1 | Drop receipt-owned output exclusions |
+| `native-omission` | 0 | 1 | Count excluded output again during native reconciliation |
+
+Each mutation used the command recorded in its matching `.json` and text log:
+
+```sh
+# joined-plan
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testCapturedCallDoesNotDuplicateItsUnloadedReceipt -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindCountsEveryCallReceiptReplyPageSplitSavedAndLive
+# output-owner
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testCapturedCallDoesNotDuplicateItsUnloadedReceipt
+# receipt-payload
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testCapturedCallDoesNotDuplicateItsUnloadedReceipt
+# unloaded-receipt
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testCapturedCardKeepsItsDisplayedOutputWhenReceiptIsUnloaded
+# captured-state
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testCapturedCardKeepsItsDisplayedOutputWhenReceiptIsUnloaded
+# receipt-order
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testEveryPageSplitKeepsReusedCallsAndLatestReceiptsSeparate
+# legacy-row
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testEveryLegacyPageSplitKeepsBothDisplayedOutputRows
+# standalone-row
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testCapturedStandaloneReceiptKeepsItsRenderedText
+# recorded-card-valid
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testCapturedStandaloneReceiptKeepsItsRenderedText
+# drawing-owner
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindRevealsCapturedOutputWithoutLoadingItsReceipt
+# omitted-owner
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindKeepsCallInputAndReceiptOutputSeparateWhenReconciling
+# native-omission
+PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript scripts/test-macos.sh -parallel-testing-enabled NO -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindKeepsCallInputAndReceiptOutputSeparateWhenReconciling
+```
+
+The final regression and affected-class runs were repeated after the native input/output reconciliation fix. Their earlier green runs (67 and 617 passes) remain as `round6-regression-before-reconciliation.log` and `round6-affected-before-reconciliation.log`. `round6-input-output-fixed.log` passed all three selected native checks before the last two mutations.
+
+After restoring every mutation: **803 passed, 0 failed, 8 skipped** across 74 focused classes. Serial classes ran alone.
+
+| Final text log | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `round6-regression-final.log` | 68 | 0 | 0 |
+| `round6-affected-final.log` | 617 | 0 | 7 |
+| `round6-timeline-final.log` | 30 | 0 | 0 |
+| `round6-agent-markdown-final.log` | 19 | 0 | 0 |
+| `round6-agent-reader-final.log` | 55 | 0 | 0 |
+| `round6-wire-page-final.log` | 4 | 0 | 0 |
+| `round6-history-edge-timing-final.log` | 2 | 0 | 0 |
+| `round6-history-edit-final.log` | 3 | 0 | 0 |
+| `round6-inline-timing-final.log` | 1 | 0 | 0 |
+| `round6-streaming-serial-final.log` | 1 | 0 | 1 |
+| `round6-gallery-final.log` | 3 | 0 | 0 |
+
+Seven skips are the opt-in history index/open measurements, skill-pill captures,
+Markdown line-pitch/token-cost measurements and sample capture, and the 70-turn
+wire performance probe. The remaining skip is
+`TranscriptStreamingSerialTests.testAReplyCountsAsReadOnlyOnceItsEndHasBeenOnScreen`:
+“A receipt needs this app's own key, unoccluded window; this desktop cannot
+provide one.” That desktop-dependent check remains unverified and is recorded
+for the lead's merged gate; it is not counted as passing.
+
+Exact final commands, each run under the shared full-lane lock:
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round6-regression-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round6-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests \
+  -only-testing:PiAppTests/NativeTranscriptDocumentTests \
+  -only-testing:PiAppTests/NativeTranscriptSafetyTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests \
+  -only-testing:PiAppTests/HistoryReaderStateTailTests \
+  -only-testing:PiAppTests/HistoryExtentTests \
+  -only-testing:PiAppTests/TranscriptNativeRowBehaviourTests \
+  -only-testing:PiAppTests/TranscriptNativeMessageKindBehaviourTests \
+  -only-testing:PiAppTests/ResponseChronologyTests \
+  -only-testing:PiAppTests/SendImmediacyTests \
+  -only-testing:PiAppTests/ToolCallSummaryTests \
+  -only-testing:PiAppTests/FullDisplayTests \
+  -only-testing:PiAppTests/TurnAccountingTests \
+  -only-testing:PiAppTests/InlineSkillPillTests \
+  -only-testing:PiAppTests/ChatFileLinkTests \
+  -only-testing:PiAppTests/TranscriptPagingTests \
+  -only-testing:PiAppTests/MessageDetailTests \
+  -only-testing:PiAppTests/SubagentTranscriptTests \
+  -only-testing:PiAppTests/SubagentSteeringPresentationTests \
+  -only-testing:PiAppTests/SideRowPresentationTests \
+  -only-testing:PiAppTests/AutomaticContextTests \
+  -only-testing:PiAppTests/ForkCloneReaderTests \
+  -only-testing:PiAppTests/FreshPresentationTests \
+  -only-testing:PiAppTests/HistoricalEditingTests \
+  -only-testing:PiAppTests/JournalCommandAcceptanceTests \
+  -only-testing:PiAppTests/LaunchSelectionTests \
+  -only-testing:PiAppTests/LongJournalHistoryTests \
+  -only-testing:PiAppTests/RunHoldTests \
+  -only-testing:PiAppTests/SubagentSteeringWorkspaceTests \
+  -only-testing:PiAppTests/TranscriptStreamingStressTests \
+  -only-testing:PiAppTests/WireContractTests \
+  -only-testing:PiAppTests/WorkspaceFailureTests \
+  -only-testing:PiAppTests/WorkspaceLoadingTests \
+  -only-testing:PiAppTests/TranscriptWidthChangeTests \
+  -only-testing:PiAppTests/HistoryReaderOpenPerformanceTests \
+  -only-testing:PiAppTests/MessageVersionTranscriptTests \
+  -only-testing:PiAppTests/ForkFromReplyTests \
+  -only-testing:PiAppTests/HistoryEdgeTests
+
+# round6-timeline-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptNativeTimelineBehaviourTests
+
+# round6-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentMarkdownTests
+
+# round6-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# round6-wire-page-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptWirePageTests
+
+# round6-history-edge-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEdgeTimingTests
+
+# round6-history-edit-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/HistoryEditTests
+
+# round6-inline-timing-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/InlineSkillPillTimingTests
+
+# round6-streaming-serial-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptStreamingSerialTests
+
+# round6-gallery-final.log
+TEST_RUNNER_PI_TRANSCRIPT_BUG_GALLERY="$PI_BUILD_ROOT/validation/gallery-round6" \
+  scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugGalleryTests
+```
+
+The gallery regenerated nine PNGs in `$PI_BUILD_ROOT/validation/gallery-round6`:
+`transcript-{light,dark,narrow}.png`, `rows-{light,dark,narrow}.png`, and
+`recovery-{light,dark,narrow}.png`. All nine were opened and visually inspected.
+The 360-point heading Copy control remains inside the row; both edit tails,
+ordered-list highlight, user highlight, summary/agent content, recovered
+reasoning, formatted phrase highlight and unfinished-operation notice remain
+visible. Narrow metadata uses its existing ellipsis; no new clipping was found.
+
+No helper or wire behavior changed, so the full helper and Python wire,
+concurrent and acceptance suites were not rerun. Focused app wire tests passed
+above. `git diff --check` passes. No clone folders remain under this build root,
+and every owned full-lane lock was released. The lead still runs the merged full
+gate. No assigned product issue or owner decision remains unresolved beyond the
+explicit desktop prerequisite skip above.
+
+All evidence is text under
+`/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript/validation`.
+The shared full-lane lock is held for each native run and released in `finally`.
+
+### Adversarial self-review
+
+Reviewed the whole production branch diff against
+`141666ca479184d10a9791754d4c91df456599d8`, including exact heading source
+ranges/CR handling, literal truncation markers, shared Markdown construction,
+raw/streaming segment states, generic/special tools, user/system/agent rows,
+planner recovery normalization, active-branch dependency joins, snapshot-prefix
+validation, and refresh/reconciliation focus preservation. This round's review
+specifically challenged every page edge, reused calls, old receipts, captured
+versus retained state, legacy duplicate rows, and the loaded-card navigation
+case. The concrete issues found during implementation are tested and fixed
+above. Ordinary prose causes no new peer reads; search cancellation, bounded
+source runs, 100-hit pagination, and branch validation remain in place.
+
+Retained-source Copy/search and helper behavior are unchanged. No production
+app, real conversation, preference, credential, capture or provider was used.
+Fixtures use temporary journals, MemoryVaultStorage and the test host. No
+owner decision is needed for this fix.

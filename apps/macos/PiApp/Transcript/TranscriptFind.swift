@@ -96,7 +96,13 @@ struct TranscriptFindCommand: Equatable {
 /// link's address or a heading the source has and the page does not draw
 /// is never stepped to.
 @MainActor final class TranscriptFindController {
-    struct Match: Equatable { var messageID: String; var occurrence: Int }
+    struct Match: Equatable {
+        var messageID: String; var occurrence: Int
+        var drawing: ContentHit.Drawing? = nil
+        var omittedOutputs: Set<String> = []
+        // A page can change where a receipt is drawn without changing the hit.
+        static func == (lhs: Self, rhs: Self) -> Bool { lhs.messageID == rhs.messageID && lhs.occurrence == rhs.occurrence }
+    }
     weak var pane: NativeTranscriptPane?
     private(set) var query = ""
     private(set) var matches: [Match] = []
@@ -149,7 +155,7 @@ struct TranscriptFindCommand: Equatable {
                 guard !Task.isCancelled, let self, self.query == text else { return }
                 for hit in found.hits {
                     for occurrence in 0..<max(1, hit.count ?? 1) {
-                        let match = Match(messageID: hit.id, occurrence: occurrence)
+                        let match = Match(messageID: hit.id, occurrence: occurrence, drawing: hit.drawing, omittedOutputs: hit.omittedOutputs ?? [])
                         if refreshing { refreshed.append(match) } else { self.matches.append(match) }
                     }
                 }
@@ -200,7 +206,10 @@ struct TranscriptFindCommand: Equatable {
         guard end - first != rendered else { return }
         let wasCurrent = current.map { $0 >= first && $0 < end } ?? false
         let occurrence = current.map { $0 - first } ?? 0
-        matches.replaceSubrange(first..<end, with: (0..<rendered).map { Match(messageID: id, occurrence: $0) })
+        let original = matches[first]
+        matches.replaceSubrange(first..<end, with: (0..<rendered).map { occurrence in
+            var match = original; match.occurrence = occurrence; return match
+        })
         if let index = current, index >= end { current = index - (end - first) + rendered }
         if wasCurrent {
             current = first + min(occurrence, rendered - 1); publish(focus: false, adoptingOccurrence: true)
@@ -217,13 +226,16 @@ struct TranscriptFindCommand: Equatable {
             if focus { serial += 1 }
             // The search names the record; the page may draw it in another
             // message's row (a tool's result in its call's card).
-            let drawing = pane.page.drawingMessageID(for: match.messageID)
+            let captured = match.drawing.flatMap { owner in
+                pane.session?.presentedMessages.contains { $0.id == owner.messageID && $0.tools?.contains { $0.id == owner.toolCallID } == true } == true ? owner : nil
+            }
+            let drawing = captured?.messageID ?? pane.page.drawingMessageID(for: match.messageID)
             // Drawn in another message's row, the occurrence is the record's
             // own: only the text of its call's card is counted.
-            let scope = drawing == match.messageID ? nil : pane.session?.messages.first { $0.id == match.messageID }?.toolCallID
+            let scope = captured?.toolCallID ?? (drawing == match.messageID ? nil : pane.session?.messages.first { $0.id == match.messageID }?.toolCallID)
             if focus {
                 highlights.focus = .init(messageID: drawing, needle: query, occurrence: match.occurrence,
-                                         serial: serial, fromFind: true, scopeCall: scope, record: match.messageID)
+                                         serial: serial, fromFind: true, scopeCall: scope, record: match.messageID, omittedOutputs: match.omittedOutputs)
             } else if var previous = pane.document.highlights.focus, previous.fromFind, previous.needle == query,
                       previous.record == match.messageID, previous.occurrence == match.occurrence || adoptingOccurrence {
                 // Results and counts can change without a navigation request.
@@ -233,13 +245,14 @@ struct TranscriptFindCommand: Equatable {
             }
             if focus, navigate, let session = pane.session {
                 stopNavigation()
-                _ = pane.page.revealContent(of: match.messageID, needle: query)
+                let target = captured?.messageID ?? match.messageID
+                _ = pane.page.revealContent(of: target, needle: query, call: scope)
                 // A match whose rows are not on screen is landed on first; one
                 // the page draws now is brought into view in place.
                 if !pane.page.visibleMessageIDs().contains(drawing), let reveal {
                     let id = session.id
                     navigation = Task { [weak self] in
-                        let landed = await reveal(id, match.messageID)
+                        let landed = await reveal(id, target)
                         guard !Task.isCancelled, let self, let current = self.current,
                               self.matches.indices.contains(current), self.matches[current] == match else { return }
                         guard landed else {
@@ -248,7 +261,7 @@ struct TranscriptFindCommand: Equatable {
                         }
                         // Read in: the page can now say which row draws it,
                         // open what hides it, and bring it into view.
-                        _ = self.pane?.page.revealContent(of: match.messageID, needle: self.query)
+                        _ = self.pane?.page.revealContent(of: target, needle: self.query, call: scope)
                         self.publish(focus: true, navigate: false)
                     }
                 }

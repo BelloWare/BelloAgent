@@ -5,6 +5,10 @@ struct ContentHit: Codable, Sendable, Identifiable {
     /// How many times the query occurs in the record's text (nil from a
     /// source that does not count; read as one).
     var count: Int? = nil
+    /// A receipt outside the captured page can already be drawn in a card.
+    struct Drawing: Codable, Sendable { var messageID: String; var toolCallID: String }
+    var drawing: Drawing? = nil
+    var omittedOutputs: Set<String>? = nil
 }
 struct ContentSearch: Codable, Sendable { var hits: [ContentHit]; var total: Int; var next: Int?; var revision: String }
 struct ContentCursor: Codable, Sendable { var index: Int; var offset: Int }
@@ -17,6 +21,7 @@ enum ConversationContent {
     struct Presentation {
         var rows: [String: [TranscriptItem]] = [:]
         private var results: [String: ToolView] = [:]
+        private(set) var drawings: [String: ContentHit.Drawing] = [:]
         private var outputCalls: Set<String> = []
         init(_ messages: [TranscriptMessage]) {
             self.init(TaskTranscriptPlan.rows(messages, lifecycle: nil), messages: messages)
@@ -42,13 +47,32 @@ enum ConversationContent {
                 guard message.role == "tool" || message.kind == "toolResult", rows[message.id]?.isEmpty == true,
                       let call = message.toolCallID, let (source, tool) = issuers[call] else { continue }
                 let key = ToolOccurrence.key(source, call)
-                if let earlier = receipts[key] { results.removeValue(forKey: earlier) }
+                if let earlier = receipts[key] { results.removeValue(forKey: earlier); drawings.removeValue(forKey: earlier) }
                 receipts[key] = message.id; results[message.id] = tool; outputCalls.insert(key)
+                drawings[message.id] = .init(messageID: source, toolCallID: call)
+            }
+        }
+        /// A captured page can cut between a card and its retained receipt.
+        /// Adopt only their output ownership from the joined plan; unrelated
+        /// captured rows keep the presentation the reader actually saw.
+        mutating func adoptToolOutputs(_ context: Presentation, receipts: Set<String>) {
+            outputCalls.formUnion(context.outputCalls)
+            for id in receipts {
+                rows[id] = context.rows[id] ?? []
+                results[id] = context.results[id]
+                drawings[id] = context.drawings[id]
             }
         }
         func text(_ id: String, rawReply: Bool = false, toolInputs: [String: String] = [:]) -> String {
             if let tool = results[id] { return toolPayload(tool).output }
             return transcriptText(rows[id] ?? [], rawReply: rawReply, omittingOutputs: outputCalls, toolInputs: toolInputs)
+        }
+        func omittedOutputs(_ id: String) -> Set<String>? {
+            let calls = Set(drawings.compactMap { receipt, owner -> String? in
+                guard owner.messageID == id, let tool = results[receipt], !toolPayload(tool).output.isEmpty else { return nil }
+                return owner.toolCallID
+            })
+            return calls.isEmpty ? nil : calls
         }
     }
     /// Find is separate from retained-source search and Copy Conversation.

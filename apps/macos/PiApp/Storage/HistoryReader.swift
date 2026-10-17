@@ -543,6 +543,56 @@ actor HistoryReader {
         guard page.notice == nil, let index = indexes[path] else { return nil }
         return try index.branch.ref(id)?.role
     }
+    /// Tool output has one retained owner even when the captured page holds
+    /// only the completed card or only its receipt. Join each call separately
+    /// so a wide tool round does not retain all its unloaded outputs at once.
+    private func searchPresentation(_ current: [TranscriptMessage], branch: HistoryOffsetIndex, file: FileHandle) throws -> ConversationContent.Presentation {
+        var presentation = ConversationContent.Presentation(current)
+        let captured = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+        let standalone = Set(current.filter {
+            ($0.role == "tool" || $0.kind == "toolResult") && presentation.rows[$0.id]?.isEmpty == false
+        }.map(\.id))
+        for row in current {
+            let resultCall = row.role == "tool" || row.kind == "toolResult" ? row.toolCallID : nil
+            let calls = resultCall.map { [$0] } ?? (row.tools ?? []).map(\.id)
+            for call in Set(calls) {
+                try Task.checkCancellation()
+                guard let source = try branch.ref(row.id), try branch.index(of: row.id) != nil else { continue }
+                let related = try branch.related(to: row.id, calls: resultCall == nil ? [call] : [], result: resultCall, operation: nil)
+                guard !related.isEmpty else { continue }
+                var context: [TranscriptMessage] = [], receipts: [String: ToolResultRecord] = [:]
+                for ref in [source] + related {
+                    try Task.checkCancellation()
+                    if let value = captured[ref.id], ref.resultCall == nil {
+                        // A superseded ledger has no card in this snapshot.
+                        if presentation.rows[ref.id]?.isEmpty != true { context.append(value) }
+                        continue
+                    }
+                    try file.seek(toOffset: ref.offset)
+                    guard let bytes = try file.read(upToCount: ref.length), bytes.count == ref.length else { throw StoreError.unreadableRecord }
+                    decodedRecords += 1
+                    let record = try JSONDecoder().decode(WireValue.self, from: bytes).object ?? [:]
+                    let message = captured[ref.id] ?? Self.displayedMessage(record, ref: ref)
+                    context.append(message)
+                    if let result = ToolResultRecord.of(record["message"]?.object ?? [:]) { receipts[ref.id] = result.record }
+                    if captured[ref.id] == nil, let accepted = message.presentationSourceID, try branch.index(of: accepted) != nil {
+                        context.append(.init(id: accepted, role: "system", text: ""))
+                    }
+                }
+                let positions = try Dictionary(context.map { ($0.id, try branch.index(of: $0.id) ?? 0) }, uniquingKeysWith: { _, last in last })
+                context.sort { positions[$0.id, default: 0] < positions[$1.id, default: 0] }
+                var resolved = TranscriptMessage.resolvingToolResults(context, results: receipts)
+                for index in resolved.indices {
+                    if let value = captured[resolved[index].id] { resolved[index].tools = value.tools }
+                }
+                let paired = ConversationContent.Presentation(resolved)
+                // A receipt drawn as its own row keeps that row's Markdown;
+                // a captured card keeps its state even if disk has advanced.
+                presentation.adoptToolOutputs(paired, receipts: Set(receipts.keys).subtracting(standalone))
+            }
+        }
+        return presentation
+    }
     func searchContent(path: String, query: String, start: Int, renderedAgentProse: Bool = false, managedChild: Bool = false,
                        presented: [TranscriptMessage] = [], rawReplies: Set<String> = []) throws -> ContentSearch {
         guard query.count <= 256, start >= 0 else { throw StoreError.unreadableRecord }
@@ -578,7 +628,7 @@ actor HistoryReader {
                 else if try branch.index(of: row.id) != nil { current.append(row) }
             }
         }
-        let presentation = ConversationContent.Presentation(current)
+        let presentation = try searchPresentation(current, branch: branch, file: file)
         let managedTask = managedChild ? try branch.firstUser() : nil
         let total = branch.count + unsaved.count
         // A query that matches nothing used to decode every record in the
@@ -614,7 +664,8 @@ actor HistoryReader {
                 else if let range = text.range(of: query, options: [.caseInsensitive]) {
                     let from = text.index(range.lowerBound, offsetBy: -60, limitedBy: text.startIndex) ?? text.startIndex
                     hits.append(.init(id: ref.id, position: position + 1, preview: String(text[from...].prefix(240)),
-                                      count: ConversationContent.occurrences(of: query, in: text)))
+                                      count: ConversationContent.occurrences(of: query, in: text), drawing: presentation.drawings[ref.id],
+                                      omittedOutputs: presentation.omittedOutputs(ref.id)))
                 }
                 if hits.count == 100 { cursor = position + 1; break }
                 if offset == texts.count - 1 { cursor = end }

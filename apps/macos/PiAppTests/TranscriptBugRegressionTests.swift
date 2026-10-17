@@ -221,11 +221,11 @@ final class TranscriptBugRegressionTests: XCTestCase {
     @MainActor func testFindMatchesViewRawWithoutJournal() async throws { try await checkRawFind(noJournal: true) }
     @MainActor func testViewRawRefreshesAnActiveFind() async throws { try await checkRawFind(alreadySearching: true) }
 
-    @MainActor private func assertFind(_ query: String, in pane: NativeTranscriptPane, window: NSWindow) async throws {
+    @MainActor private func assertFind(_ query: String, in pane: NativeTranscriptPane, window: NSWindow, record: String = "reply") async throws {
         pane.showFind(); pane.find.setQuery(query)
         try await eventually("Search finishes for \(query)") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
         XCTAssertFalse(pane.find.failed)
-        XCTAssertEqual(pane.find.matches.map(\.messageID), ["reply"])
+        XCTAssertEqual(pane.find.matches.map(\.messageID), [record])
         guard !pane.find.matches.isEmpty else { return }
         try await eventually("Visible match for \(query)") {
             pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
@@ -810,6 +810,222 @@ final class TranscriptBugRegressionTests: XCTestCase {
                 XCTAssertEqual(saved.hits.filter { ["reply", "result"].contains($0.id) }.map(\.preview).filter { !$0.isEmpty }.joined(separator: "\n"), shown, "Saved paired \(name), presented=\(!presented.isEmpty), separated=\(separated)")
             }
         } }
+    }
+
+    private func pageBoundaryEntries(_ name: String = "custom_fixture", arguments: WireValue = .object(["message": .string("inputneedle sharedneedle")]),
+                                     output: String = "**outputneedle** sharedneedle [site](https://receipt.test)") -> [WireValue] {
+        let call = toolEntry(name, arguments: arguments)
+        return [.object(["type": .string("message"), "id": .string("reply"), "parentId": .null, "message": call["message"]!]),
+            .object(["type": .string("message"), "id": .string("result"), "parentId": .string("reply"), "message": .object([
+                "role": .string("toolResult"), "toolName": .string(name), "toolCallId": .string("call"), "content": .string(output),
+                "nativeToolStats": .object(["outcome": .string("succeeded")])])]),
+            .object(["type": .string("message"), "id": .string("answer"), "parentId": .string("result"), "message": .object([
+                "role": .string("assistant"), "content": .string("**replyneedle** sharedneedle [reply](https://reply.test)")])])]
+    }
+    @MainActor private func nativePageSearchText(_ full: [TranscriptMessage], page: [TranscriptMessage], pairs: [(String, String)], raw: Bool = false) -> String {
+        var rows = full
+        for message in page { if let index = rows.firstIndex(where: { $0.id == message.id }) { rows[index] = message } }
+        let complete = plannedPayload(rows, raw: raw), captured = plannedPayload(page, raw: raw)
+        // A visible standalone receipt keeps its own native Markdown. Its
+        // payload replaces the off-page card output, not the card's input.
+        // Pair identities are explicit fixture data, independent of search.
+        for (call, receipt) in pairs where captured[receipt] != nil && complete[receipt] == nil {
+            if let index = rows.firstIndex(where: { $0.id == call }) { rows[index].tools?[0].output = "" }
+        }
+        let standalone = page.filter { $0.role == "tool" && complete[$0.id] == nil }.compactMap { captured[$0.id] }
+        return (Array(plannedPayload(rows, raw: raw).values) + standalone).joined(separator: "\n")
+    }
+    @MainActor func testCapturedCallDoesNotDuplicateItsUnloadedReceipt() async throws {
+        let (model, pane, window) = try await findFixture(saved: true, entries: pageBoundaryEntries())
+        let rows = try XCTUnwrap(model.selected).presentedMessages, call = try XCTUnwrap(rows.first)
+        XCTAssertEqual(call.tools?.first?.state, "completed")
+        XCTAssertEqual(ConversationContent.occurrences(of: "outputneedle", in: plannedPayload([call])[call.id] ?? ""), 1)
+        let found = try await model.history.searchContent(path: try XCTUnwrap(model.chats[0].path), query: "outputneedle", start: 0,
+            renderedAgentProse: true, presented: [call])
+        XCTAssertEqual(found.hits.map(\.id), ["result"], "The retained receipt owns the card output even outside the captured page")
+        XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, 1)
+        model.selected?.messages = [call]; pane.refresh()
+        try await assertFind("outputneedle", in: pane, window: window, record: "result")
+        pane.find.step(1); pane.find.step(-1)
+        XCTAssertEqual(pane.find.current, 0); XCTAssertEqual(pane.find.matches.map(\.messageID), ["result"])
+    }
+    @MainActor func testFindCountsEveryCallReceiptReplyPageSplitSavedAndLive() async throws {
+        let output = "**outputneedle** sharedneedle [site](https://receipt.test)"
+        let cases: [(String, WireValue, String)] = [
+            ("custom_fixture", .object(["message": .string("inputneedle sharedneedle")]), output),
+            ("bash", .object(["command": .string("printf 'inputneedle sharedneedle'")]), output),
+            ("read", .object(["path": .string("inputneedle-sharedneedle.txt")]), output),
+            ("edit", .object(["path": .string("fixture.txt"), "oldText": .string("old inputneedle sharedneedle"), "newText": .string("new editneedle")]), "transportneedle"),
+            ("subagent_start", .object(["task": .string("inputneedle sharedneedle")]), #"{"text":"**outputneedle** sharedneedle [site](https://receipt.test)"}"#)]
+        let queries = ["inputneedle", "outputneedle", "replyneedle", "sharedneedle", "**outputneedle**", "receipt.test", "transportneedle", "reply.test", "outputneedle sharedneedle"]
+        for (name, arguments, output) in cases {
+            let (model, _, _) = try await findFixture(saved: true, entries: pageBoundaryEntries(name, arguments: arguments, output: output))
+            let saved = try XCTUnwrap(model.selected).presentedMessages, path = try XCTUnwrap(model.chats[0].path)
+            XCTAssertEqual(saved.map(\.id), ["reply", "result", "answer"])
+            for live in [false, true] { for raw in [false, true] {
+                var rows = saved
+                if live {
+                    rows[2].state = "streaming"
+                    rows = try TranscriptMessage.page(JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(rows)))
+                }
+                // Every contiguous page: both edges can fall before, between
+                // or after the call, receipt and following reply, including an
+                // empty overlay, the receipt alone and the complete group.
+                for lower in 0...rows.count { for upper in lower...rows.count {
+                    let page = Array(rows[lower..<upper])
+                    let shown = nativePageSearchText(saved, page: page, pairs: [("reply", "result")], raw: raw)
+                    for query in queries {
+                        let found = try await model.history.searchContent(path: path, query: query, start: 0,
+                            renderedAgentProse: true, presented: page, rawReplies: raw ? ["reply", "answer"] : [])
+                        let expected = ConversationContent.occurrences(of: query, in: shown)
+                        XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, expected,
+                            "\(name), live=\(live), raw=\(raw), page=\(lower)..<\(upper), query=\(query)")
+                    }
+                } }
+            } }
+        }
+    }
+
+    @MainActor func testFindRevealsCapturedOutputWithoutLoadingItsReceipt() async throws {
+        let (model, pane, window) = try await findFixture(saved: true, entries: pageBoundaryEntries())
+        let call = try XCTUnwrap(model.selected?.presentedMessages.first)
+        model.selected?.messages = [call]; pane.refresh()
+        var reads: [String] = []
+        pane.find.reveal = { _, id in reads.append(id); return false }
+        pane.showFind(); pane.find.setQuery("receipt.test")
+        try await eventually("Captured output search finishes") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+        XCTAssertEqual(pane.find.matches.map(\.messageID), ["result"])
+        XCTAssertEqual(pane.document.highlights.focus?.messageID, "reply", "The loaded card draws the receipt's output")
+        XCTAssertEqual(pane.document.highlights.focus?.scopeCall, "call")
+        XCTAssertTrue(reads.isEmpty, "The output is already loaded; revealing its receipt can replace literal card text with standalone Markdown")
+        guard pane.document.highlights.focus?.messageID == "reply" else { return }
+        try await assertFind("receipt.test", in: pane, window: window, record: "result")
+    }
+
+    @MainActor func testFindKeepsCallInputAndReceiptOutputSeparateWhenReconciling() async throws {
+        let (model, pane, window) = try await findFixture(saved: true, entries: pageBoundaryEntries())
+        let rows = try XCTUnwrap(model.selected).presentedMessages
+        for page in [[rows[0]], rows] {
+            pane.closeFind(focusing: false); model.selected?.messages = page; pane.refresh()
+            pane.showFind(); pane.find.setQuery("sharedneedle")
+            try await eventually("Shared input/output search finishes") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+            if pane.find.current != 0 { pane.find.step(-(pane.find.current ?? 0)) }
+            try await eventually("Shared input/output focus resolves") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.document.focusPending && pane.document.focusText != nil }
+            XCTAssertEqual(pane.find.matches.map(\.messageID), ["reply", "result", "answer"], "Reconciling the call must not count its receipt-owned output again")
+            XCTAssertTrue(pane.document.focusText?.string.contains("inputneedle") == true)
+            pane.find.step(1)
+            try await eventually("The receipt occurrence resolves") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.document.focusPending && pane.document.focusText != nil }
+            XCTAssertEqual(pane.document.highlights.focus?.record, "result")
+            XCTAssertTrue(pane.document.focusText?.string.contains("outputneedle") == true)
+        }
+    }
+
+    @MainActor func testCompletedWireCardOwnsOneOutputAcrossThePageByteLimit() async throws {
+        let output = String(repeating: "padding ", count: 24_000) + "outputneedle"
+        let entries = pageBoundaryEntries(output: output)
+        let (model, _, _) = try await findFixture(saved: true, entries: entries)
+        var call = TranscriptMessage.project(id: "reply", message: try XCTUnwrap(entries[0].object?["message"]?.object))
+        call.tools?[0].state = "completed"; call.tools?[0].output = output
+        let result = TranscriptMessage.project(id: "result", message: try XCTUnwrap(entries[1].object?["message"]?.object))
+        let bytes = try JSONEncoder().encode([call])
+        XCTAssertLessThan(bytes.count + HistoryWindowPolicy.metadataAllowance, HistoryWindowPolicy.envelopeBytes)
+        XCTAssertGreaterThan(try JSONEncoder().encode([call, result]).count, HistoryWindowPolicy.envelopeBytes)
+        let captured = try TranscriptMessage.page(JSONDecoder().decode(WireValue.self, from: bytes))
+        let found = try await model.history.searchContent(path: try XCTUnwrap(model.chats[0].path), query: "outputneedle", start: 0,
+            renderedAgentProse: true, presented: captured)
+        XCTAssertEqual(found.hits.map(\.id), ["result"])
+        XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, 1)
+    }
+    @MainActor func testEveryPageSplitKeepsReusedCallsAndLatestReceiptsSeparate() async throws {
+        var entries: [WireValue] = [], parent: String?
+        for prefix in ["first", "second"] {
+            for (index, item) in pageBoundaryEntries(output: "**\(prefix)output** sharedneedle").enumerated() {
+                if prefix == "first", index == 1 {
+                    var stale = try XCTUnwrap(item.object), fields = try XCTUnwrap(stale["message"]?.object)
+                    stale["id"] = .string("stale-result"); stale["parentId"] = parent.map(WireValue.string) ?? .null
+                    fields["content"] = .string("staleoutput"); stale["message"] = .object(fields)
+                    entries.append(.object(stale)); parent = "stale-result"
+                }
+                var value = try XCTUnwrap(item.object)
+                let id = prefix + "-" + (try XCTUnwrap(value["id"]?.string))
+                value["id"] = .string(id); value["parentId"] = parent.map(WireValue.string) ?? .null
+                entries.append(.object(value)); parent = id
+            }
+        }
+        let (model, _, _) = try await findFixture(saved: true, entries: entries)
+        let rows = try XCTUnwrap(model.selected).presentedMessages, path = try XCTUnwrap(model.chats[0].path)
+        XCTAssertEqual(rows.count, 7); XCTAssertFalse(plannedPayload(rows).values.contains { $0.contains("staleoutput") })
+        for lower in 0...rows.count { for upper in lower...rows.count {
+            let shown = nativePageSearchText(rows, page: Array(rows[lower..<upper]), pairs: [("first-reply", "first-result"), ("second-reply", "second-result")])
+            for query in ["firstoutput", "secondoutput", "staleoutput", "sharedneedle", "**firstoutput**"] {
+                let found = try await model.history.searchContent(path: path, query: query, start: 0,
+                    renderedAgentProse: true, presented: Array(rows[lower..<upper]))
+                XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, ConversationContent.occurrences(of: query, in: shown),
+                    "page=\(lower)..<\(upper), query=\(query)")
+                if query == "firstoutput" || query == "secondoutput" {
+                    XCTAssertEqual(found.hits.map(\.id), [query == "firstoutput" ? "first-result" : "second-result"])
+                }
+            }
+        } }
+    }
+    @MainActor func testEveryLegacyPageSplitKeepsBothDisplayedOutputRows() async throws {
+        var entries = pageBoundaryEntries()
+        var value = try XCTUnwrap(entries[0].object), fields = try XCTUnwrap(value["message"]?.object)
+        var future = try XCTUnwrap(JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(ResponseTimeline())).object)
+        future["version"] = .number(999); fields["nativeResponseTimeline"] = .object(future)
+        value["message"] = .object(fields); entries[0] = .object(value)
+        let (model, _, _) = try await findFixture(saved: true, entries: entries)
+        let rows = try XCTUnwrap(model.selected).presentedMessages, path = try XCTUnwrap(model.chats[0].path)
+        let shown = plannedPayload(rows).values.joined(separator: "\n")
+        XCTAssertEqual(ConversationContent.occurrences(of: "outputneedle", in: shown), 2)
+        for lower in 0...rows.count { for upper in lower...rows.count {
+            for query in ["outputneedle", "**outputneedle**", "receipt.test", "sharedneedle"] {
+                let found = try await model.history.searchContent(path: path, query: query, start: 0,
+                    renderedAgentProse: true, presented: Array(rows[lower..<upper]))
+                XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, ConversationContent.occurrences(of: query, in: shown),
+                    "page=\(lower)..<\(upper), query=\(query)")
+            }
+        } }
+    }
+    @MainActor func testCapturedStandaloneReceiptKeepsItsRenderedText() async throws {
+        let entries = pageBoundaryEntries(output: "**alpha** beta and [site](https://receipt.test)")
+        let (model, _, _) = try await findFixture(saved: true, entries: entries)
+        let rows = try XCTUnwrap(model.selected).presentedMessages, receipt = rows[1]
+        let recorded = TranscriptMessage.project(id: "reply", message: try XCTUnwrap(entries[0].object?["message"]?.object))
+        var carrying = recorded; carrying.tools?[0].output = "capturedliteral"
+        for page in [[receipt], [recorded, receipt], [carrying, receipt]] {
+            let shown = plannedPayload(page).values.joined(separator: "\n")
+            XCTAssertTrue(shown.contains("alpha beta and site"))
+            for query in ["alpha beta", "receipt.test", "**alpha** beta", "capturedliteral"] {
+                let found = try await model.history.searchContent(path: try XCTUnwrap(model.chats[0].path), query: query, start: 0,
+                    renderedAgentProse: true, presented: page)
+                XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, ConversationContent.occurrences(of: query, in: shown),
+                    "page=\(page.map(\.id)), query=\(query)")
+            }
+        }
+    }
+    @MainActor func testCapturedCardKeepsItsDisplayedOutputWhenReceiptIsUnloaded() async throws {
+        let (model, _, _) = try await findFixture(saved: true, entries: pageBoundaryEntries(output: "retainedoutput"))
+        var call = try XCTUnwrap(model.selected?.presentedMessages.first)
+        call.tools?[0].output = "displayedoutput"
+        XCTAssertTrue(plannedPayload([call])[call.id]?.contains("displayedoutput") == true)
+        for query in ["retainedoutput", "displayedoutput"] {
+            let found = try await model.history.searchContent(path: try XCTUnwrap(model.chats[0].path), query: query, start: 0,
+                renderedAgentProse: true, presented: [call])
+            XCTAssertEqual(found.hits.map(\.id), query == "displayedoutput" ? ["result"] : [])
+            XCTAssertEqual(found.hits.reduce(0) { $0 + ($1.count ?? 1) }, query == "displayedoutput" ? 1 : 0)
+        }
+    }
+    @MainActor func testCapturedOutputWithoutARetainedReceiptStaysOnItsCall() async throws {
+        let entries = pageBoundaryEntries()
+        let (model, _, _) = try await findFixture(saved: true, entries: [entries[0]])
+        var call = try XCTUnwrap(model.selected?.presentedMessages.first)
+        call.tools?[0].state = "completed"; call.tools?[0].output = "outputneedle"
+        let path = try XCTUnwrap(model.chats[0].path)
+        let saved = try await model.history.searchContent(path: path, query: "outputneedle", start: 0, renderedAgentProse: true, presented: [call])
+        let live = try await model.history.searchPresented([call], query: "outputneedle", start: 0)
+        XCTAssertEqual(saved.hits.map(\.id), ["reply"]); XCTAssertEqual(live.hits.map(\.id), ["reply"])
+        XCTAssertEqual(saved.hits.first?.count, 1); XCTAssertEqual(live.hits.first?.count, 1)
     }
 
     @MainActor func testColdPlannerContextCrossesDecodeRuns() async throws {

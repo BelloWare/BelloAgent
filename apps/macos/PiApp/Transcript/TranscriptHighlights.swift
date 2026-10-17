@@ -67,6 +67,8 @@ struct TranscriptHighlights: Equatable {
         /// The record the place was asked for when its row is another
         /// message's (a tool's result): whose count a find reconciles.
         var record: String? = nil
+        /// These outputs belong to separate receipt hits, even outside the page.
+        var omittedOutputs: Set<String> = []
         /// Counts only the message's own prose, not its cards: a mark placed
         /// by its text (`TranscriptReveal.Mark`) counts as the text does.
         var proseOnly = false
@@ -303,6 +305,7 @@ extension TranscriptNativeDocument {
                 // they hold whether or not each line is built now.
                 var ranges: [(text: NSTextView?, range: NSRange, lines: TranscriptCardLines?, line: Int, source: String)] = []
                 for unit in Self.textUnits(in: row) {
+                    if let call = Self.card(holding: unit)?.tool?.id, focus.omittedOutputs.contains(call), !Self.isToolInput(unit) { continue }
                     // A call's input is drawn in more than one way (a command,
                     // a section, a diff): an input place counts the whole card.
                     if let call = focus.scopeCall, Self.card(holding: unit)?.tool?.id != call || (!focus.scopeInput && Self.isToolInput(unit)) { continue }
