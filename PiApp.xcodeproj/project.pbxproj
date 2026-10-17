@@ -55,7 +55,6 @@
 		08CFE30CAC4D8DE4DD37D9E3 /* SkillRefreshTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6354EC572C36E36F7603ABF8 /* SkillRefreshTests.swift */; };
 		092751B695187AE3031BDDFD /* ComposerSkillTokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21919BFCBBC3B70C12F9AD4D /* ComposerSkillTokens.swift */; };
 		09B73296D632FFCD0CB84E1C /* ComposerSubmissionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97F28C73B410E2075C3A1ACE /* ComposerSubmissionTests.swift */; };
-		09FBA541F6FD80E425C9041A /* WebhookSettings.swift.mutbak in Resources */ = {isa = PBXBuildFile; fileRef = 4C6DBEA38349A361D083DCD3 /* WebhookSettings.swift.mutbak */; };
 		0A596DA463E57C9F3451D7E6 /* SkillSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 955E7C3A9B2196B0A5D3B5E4 /* SkillSelection.swift */; };
 		0A815EAEFAEBD843DCDFA0DA /* HostInboxTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DD0D4364A3FD94E0FC868BB /* HostInboxTests.swift */; };
 		0A81B516E817AAFBA1F65AD1 /* FileTabViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79E31444AF2770BC64713CE2 /* FileTabViews.swift */; };
@@ -803,7 +802,6 @@
 		9A9B1A08D4B1C68EA51210D0 /* WorkspaceShutdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = 806C2D046DB31980056A4B30 /* WorkspaceShutdown.swift */; };
 		9ACE2D19E172190031431664 /* SubagentTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C04C0B8F1FAF3A6120D7E0E /* SubagentTab.swift */; };
 		9B290972C53177A59B78DEF2 /* WorkspaceSubagents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D9270F67B22F8A445548E6B /* WorkspaceSubagents.swift */; };
-		9B3A62BF4D8371E161410443 /* ChatSearchIndex.swift.mutbak in Resources */ = {isa = PBXBuildFile; fileRef = A806781BAD90657B6B325630 /* ChatSearchIndex.swift.mutbak */; };
 		9B654565973E1555F7AFE5A7 /* GitDiffTableTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E154D32D179373DD711AC3EA /* GitDiffTableTests.swift */; };
 		9BEFEB792D49F554039F69D5 /* GitHistoryFilterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 61B24102E168AAA19180DA95 /* GitHistoryFilterTests.swift */; };
 		9BF3AEC782A7F9B081E8CF18 /* LiveActivityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A95C20D941AB5283002FA94A /* LiveActivityStore.swift */; };
@@ -884,7 +882,6 @@
 		A8B2614FE6F2AE02680CA56B /* TerminalPanelAuditTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BF5F1265A90148AF8BFA94D /* TerminalPanelAuditTests.swift */; };
 		A914C31A1189A9651B3AEABB /* TranscriptNativeMarkdownIslands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B162FD5C22E6A09BA9C373C /* TranscriptNativeMarkdownIslands.swift */; };
 		A9550EDB99087824E7571809 /* InspectorOverviewDocumentGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6456DFBDA0045AEFD30BEB11 /* InspectorOverviewDocumentGeometryTests.swift */; };
-		A982FD8C74654FD0B6FEC4AE /* WebhookSettings.swift.mutbak in Resources */ = {isa = PBXBuildFile; fileRef = 4C6DBEA38349A361D083DCD3 /* WebhookSettings.swift.mutbak */; };
 		A9DACA05BF9739E35989BC2F /* QueuePanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 706D8AF51D4E589697E6C606 /* QueuePanelView.swift */; };
 		A9EAAAF3E679CF03A55FECCF /* GitPanelNarrowParityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27C5579E5F8EED897D51B53E /* GitPanelNarrowParityTests.swift */; };
 		AA4A4B618297C07FD455C4F3 /* DashboardWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2186842A13CBCABC200E1FB3 /* DashboardWindow.swift */; };
@@ -1001,7 +998,6 @@
 		C24FD45DA252D3F272AD85A7 /* BelloGitView in Frameworks */ = {isa = PBXBuildFile; productRef = 4E66E0F0C47568F08520309F /* BelloGitView */; };
 		C26CCFE189FCECCAE16526D0 /* ConversationQueueTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C5E407465698AA37E364897 /* ConversationQueueTests.swift */; };
 		C27C23549879FA37742B07DA /* WorkspaceSideKeepRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB997108240717DC68468A2F /* WorkspaceSideKeepRecovery.swift */; };
-		C2864C0C5AC7CB40AAE7D24C /* ChatSearchIndex.swift.mutbak in Resources */ = {isa = PBXBuildFile; fileRef = A806781BAD90657B6B325630 /* ChatSearchIndex.swift.mutbak */; };
 		C28FC6BF9C983EBE22290223 /* AppKitTabBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54E705F39F07145D7CE4F93E /* AppKitTabBridge.swift */; };
 		C2A5B547431A77A19303E074 /* WorkspaceVersions.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB4B344476320BCCC9E9DA72 /* WorkspaceVersions.swift */; };
 		C2CCF2610A50968DD78E825A /* bello-agent.models.json in Resources */ = {isa = PBXBuildFile; fileRef = 3FAE287244C70AC61D5F4EC2 /* bello-agent.models.json */; };
@@ -1637,7 +1633,6 @@
 		4BF60A9F167C40CF02A6B053 /* TerminalSoftWrapTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalSoftWrapTests.swift; sourceTree = "<group>"; };
 		4C1BFEEEE75FEC2B2F2880C7 /* AutomaticContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutomaticContextTests.swift; sourceTree = "<group>"; };
 		4C5DE44471B409F1EEA6225E /* GitPanelAuditTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitPanelAuditTests.swift; sourceTree = "<group>"; };
-		4C6DBEA38349A361D083DCD3 /* WebhookSettings.swift.mutbak */ = {isa = PBXFileReference; path = WebhookSettings.swift.mutbak; sourceTree = "<group>"; };
 		4D1F9B7DEDD94B5EDE64F5C4 /* NativeCodeText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCodeText.swift; sourceTree = "<group>"; };
 		4D2C713F35FEAFE0E5F62BA3 /* TranscriptRealAppStreamingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptRealAppStreamingTests.swift; sourceTree = "<group>"; };
 		4D301C9F9215E33033E8021F /* WebhookPreviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebhookPreviewSheet.swift; sourceTree = "<group>"; };
@@ -1967,7 +1962,6 @@
 		A75E0DE5208BF0A91E71370E /* HistoryEdgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryEdgeTests.swift; sourceTree = "<group>"; };
 		A7A156F6BD638FD9E0B65310 /* PiPopover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiPopover.swift; sourceTree = "<group>"; };
 		A7E9AB8E20FCCA78D49C9D2D /* TranscriptNativeParts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptNativeParts.swift; sourceTree = "<group>"; };
-		A806781BAD90657B6B325630 /* ChatSearchIndex.swift.mutbak */ = {isa = PBXFileReference; path = ChatSearchIndex.swift.mutbak; sourceTree = "<group>"; };
 		A8647B3FE9F0358A7828C18B /* DesignContrastTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignContrastTests.swift; sourceTree = "<group>"; };
 		A8B1A1FFBFCA58D4F3B08845 /* GitBranchesGalleryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitBranchesGalleryTests.swift; sourceTree = "<group>"; };
 		A8C4CB92D02391C74645C043 /* LaunchFixtureVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchFixtureVault.swift; sourceTree = "<group>"; };
@@ -2657,7 +2651,6 @@
 				CBF2556EE54A3D7742472E2B /* TranscriptReveal.swift */,
 				4D301C9F9215E33033E8021F /* WebhookPreviewSheet.swift */,
 				543655195DE7FDEEDC94B96E /* WebhookSettings.swift */,
-				4C6DBEA38349A361D083DCD3 /* WebhookSettings.swift.mutbak */,
 				E018B770E1651D2990CD36E3 /* WebhookSettingsGroup.swift */,
 				43B83A67E972E79B16294038 /* WorkspaceAccounting.swift */,
 				B2934B82FB7C759FA05F03C0 /* WorkspaceActivityOrder.swift */,
@@ -2929,7 +2922,6 @@
 				18F607F531FBC60AF9DBA923 /* AgentCoordination.swift */,
 				437818BBE8E530F2BDCCCDF8 /* ChatRecordMerge.swift */,
 				93EC6B9EC5FC7FA33D4367DD /* ChatSearchIndex.swift */,
-				A806781BAD90657B6B325630 /* ChatSearchIndex.swift.mutbak */,
 				C26668D410107C283A6D4A51 /* ConfigurationVault.swift */,
 				7D8250AD01F222EC3396D4D2 /* ConversationContent.swift */,
 				96EEB57726BC2CA1F241364D /* HistoryIndexFiles.swift */,
@@ -3596,9 +3588,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				9EB46C1F18BFAF3BE22D5DB0 /* Assets.xcassets in Resources */,
-				C2864C0C5AC7CB40AAE7D24C /* ChatSearchIndex.swift.mutbak in Resources */,
 				D475782767D271C4ED23CA14 /* ThirdPartyNotices.txt in Resources */,
-				09FBA541F6FD80E425C9041A /* WebhookSettings.swift.mutbak in Resources */,
 				C2CCF2610A50968DD78E825A /* bello-agent.models.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -3616,9 +3606,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				1C3578C655168408804F490B /* Assets.xcassets in Resources */,
-				9B3A62BF4D8371E161410443 /* ChatSearchIndex.swift.mutbak in Resources */,
 				50347C29D9B22093F94FAB82 /* ThirdPartyNotices.txt in Resources */,
-				A982FD8C74654FD0B6FEC4AE /* WebhookSettings.swift.mutbak in Resources */,
 				76A2971DDAD3C975B699E851 /* bello-agent.models.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
