@@ -453,3 +453,271 @@ named result bundle was supplied. No helper or wire behavior changed, so
 helper/wire suites were not required. All assigned review issues are resolved;
 no owner decision is pending. The lead retains the separate review, merged
 full gate and merge.
+
+## Round 2: Find display projection and refresh (2026-10-18)
+
+Reviewed base: `fa0d63566a64f18481f153f68652520edb66cd2f`. All three findings
+are confirmed and fixed. The first run added six tests before any production
+change: `round2-failing-first.log` records **20 passed, 6 failed**, 94 assertion
+failures, exit 65. Two sweep tests were then added and run against the same
+unfixed code: `round2-nearby-first.log` records **0 passed, 2 failed**, five
+assertion failures, exit 65. Logs remain under the build root's `validation/`.
+
+### R2-1: refreshing Find moves the reader — confirmed and fixed
+
+`testSourceRefreshKeepsTheReaderAwayFromTheCurrentFindHit` mounts a real pane,
+searches a reply, scrolls to another loaded reply without the query, and changes
+that reply to View Raw. Before the fix:
+
+```text
+XCTAssertEqual failed: ("nil") is not equal to ("Optional(0)") - Keep the selected match while refreshing
+XCTAssertEqualWithAccuracy failed: ("0.0") is not equal to ("750.0") +/- ("1.0") - Refreshing cannot scroll back to the old hit
+```
+
+A refresh now buffers replacement results while retaining the selected match
+and existing highlights. It cancels pending navigation and never constructs a
+new focus. If the selected occurrence still exists, it remains selected after
+the refresh. Only an explicit Find step creates navigation focus. The final
+regression chooses the second of two hits before leaving it behind, so restoring
+the first match cannot accidentally pass. `testViewRawRefreshesAnActiveFind`
+also asserts that a refresh gaining its first result has no focus/pending reveal
+before an explicit step. Restoring the old Find controller kills both tests
+(`round2-mutation-navigation.log`: 26 passed, 2 failed, exit 65).
+
+### R2-2: raw completed timeline segments — confirmed and fixed
+
+`testFindUsesRawCompletedSegmentWhileAnotherSegmentStreams` mounts two arrival
+segments under a streaming parent: the completed link is shown raw and the
+later formatted segment remains rendered. Searching `example.test` failed first:
+
+```text
+XCTAssertEqual failed: ("[]") is not equal to ("["reply"]")
+```
+
+The shared saved/live projection now visits the same arrival-ordered segments
+as the transcript and obtains each segment's state from
+`TranscriptTimelinePart.source`. `ReplySource.shows` makes the raw/rendered
+choice for text and refusal rows; reasoning and other prose keep their rendered
+presentation. The passing pane test requires a visible highlight on the URL.
+Replacing the segment state with the parent's state kills this test and the
+timeline equality corpus (`round2-mutation-segment.log`: 26 passed, 2 failed,
+exit 65).
+
+### R2-3: visible list numbers missing from Find — confirmed and fixed
+
+`testFindIncludesVisibleOrderedMarkersInSavedReply` and
+`testFindIncludesVisibleOrderedMarkersInLiveReply` mount `1. alpha\n2. beta`
+and search `2.`. Both failed first with `[] != ["reply"]`. Both now require
+one matching reply and a native text highlight on the number.
+
+`TranscriptMarkdown.renderedText` uses `MarkdownTextBuilder.paragraphs`, the
+same builder as the native surface, and the assembler's paragraph separator.
+It preserves actual displayed list numbering, tabs, headings, code/newlines,
+link labels, table cells and bounded-table preview notices. Streaming text
+uses the renderer's streaming preview parse. Completed projections are cached
+with bounded `NSCache` storage. Each background search owns a separate local
+builder; no view, mutable text, or layout-manager instance crosses actors.
+The existing font cache remains locked. Source search, export/copy and helper
+boundaries are unchanged.
+
+Replacing this function with the former marker-free block projection kills
+six tests: the saved/live list searches, both equality corpora, the agent
+preview predicate and timeline prose reveal (`round2-mutation-rendered-text.log`:
+22 passed, 6 failed, exit 65).
+
+### Shared-renderer corpus and nearby instances
+
+`testFindProjectionEqualsNativeReplyTextAcrossMarkdownCorpus` compares the
+projection to the actual selectable `NSTextView.string` in mounted reply rows.
+Its 14 sources cover inline formatting, ATX/Setext headings, ordered/nested
+lists and renderer-renumbered items, list-opening fences, quotes, empty and
+multiline code fences, links/reference links, images, hidden HTML, empty table
+cells, a 45-row preview, and incomplete emphasis/link/list input. Each is checked
+complete and streaming, rendered and raw, plus both saved complete modes:
+**84 exact-string comparisons**.
+
+`testTimelineProjectionEqualsEachNativeSegmentInBothModes` builds text, refusal,
+reasoning text/summary, opaque and a final streaming text segment. It compares
+the actual segment views against the live and saved projection in both modes:
+**six additional exact-string comparisons**, for **90 total**. Canonical message
+text intentionally differs from its timeline, proving that the displayed
+arrival-ordered rows determine Find's text. These corpora failed before the fix
+on lost markers, extra export/newline text, timeline selection, table text and
+unfinished streaming markup.
+
+Two same-pattern instances were separately reproduced and fixed:
+
+- `TranscriptAgentMarkdown.swift`, `AgentMarkdownReading.make`: its search
+  predicate still used marker-free text. `testAgentMarkdownSearchIncludesItsNativeListMarkers`
+  mounts `7. first\n29. second`, verifies that the renderer shows `8.`, and failed
+  first because `contains("8.")` returned false. Search now uses the shared
+  rendered projection; the existing character budget for incremental adoption
+  is unchanged.
+- `TranscriptPage.swift`, `revealContent`: the fold-opening predicate also
+  discarded rendered markers, and only considered rendered text for two
+  reasoning kinds. `testFindOpensTimelineProseForItsRenderedListMarker` covers
+  reasoning text, reasoning summary, opaque and correction parts; each must
+  open and highlight its renderer-generated `8.`. The before-fix run missed
+  all four. The predicate now uses the shared streaming-aware projection for
+  every prose kind the part view renders, preserving literal tool/status rows.
+
+The sweep also removes the assistant display path's export-only headings and
+retained-event metadata by sharing the live message projection with saved
+messages. The export function retains its source representation. Existing
+reasoning, raw/streaming controls, agent tool receipts, ordinary tool arguments,
+and source-evidence tests remain in the regression class.
+
+### Round-2 mutation evidence
+
+Each mutation ran all 28 regression tests in a fresh test process. Every run
+failed only its expected methods, exited 65, and restored the fixed file in
+`finally`. The final regression run after restoration passed all 28 tests.
+
+| Log | Deliberately broken fix | Passed | Failed | Assertion failures |
+| --- | --- | ---: | ---: | ---: |
+| `round2-mutation-navigation.log` | Restore the pre-review Find controller | 26 | 2 | 6 |
+| `round2-mutation-segment.log` | Use parent state for timeline text/refusal | 26 | 2 | 2 |
+| `round2-mutation-rendered-text.log` | Use marker-free block text instead of the native builder | 22 | 6 | 41 |
+| `round2-mutation-prose-disclosure.log` | Limit rendered fold matching to reasoning kinds | 27 | 1 | 2 |
+| `round2-mutation-agent-markers.log` | Restore marker-free agent preview search | 27 | 1 | 1 |
+
+The disclosure mutation prevents opaque/correction matches from receiving a
+visible highlight; the agent mutation makes the native `8.` unsearchable in
+the preview predicate. Together with the failing-first runs, these isolate the
+nearby fixes from the common projection change.
+
+### Round-2 validation commands and results
+
+All commands ran from this worktree with the shared full-lane lock held only
+for each run and released in `finally`. Serial-lane classes ran alone. Tests
+used generated journals, an in-memory vault and isolated test-host windows.
+No installed app, live provider, real preferences, chats or Keychain was used.
+
+```sh
+export PI_BUILD_ROOT=/Users/admin/Library/Caches/BelloSwiftWork/build-a130-transcript
+
+# round2-failing-first.log, round2-fixed.log, round2-fixed-final.log,
+# all five round2-mutation-*.log files, and round2-regression-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests
+
+# round2-nearby-first.log (before any production change)
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testFindOpensTimelineProseForItsRenderedListMarker \
+  -only-testing:PiAppTests/TranscriptBugRegressionTests/testAgentMarkdownSearchIncludesItsNativeListMarkers
+
+# round2-affected-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/ContentSearchTests \
+  -only-testing:PiAppTests/HardeningTests \
+  -only-testing:PiAppTests/HistoryIndexFilesTests \
+  -only-testing:PiAppTests/HistoryReaderCheckpointTests \
+  -only-testing:PiAppTests/MarkdownTextSurfaceTests \
+  -only-testing:PiAppTests/NativeMarkdownSizingTests \
+  -only-testing:PiAppTests/NativeMarkdownSurfaceStreamingTests \
+  -only-testing:PiAppTests/StableToolPresentationTests \
+  -only-testing:PiAppTests/StorageTruthTests \
+  -only-testing:PiAppTests/TranscriptActivityTests \
+  -only-testing:PiAppTests/TranscriptDisclosureTests \
+  -only-testing:PiAppTests/TranscriptFindTests \
+  -only-testing:PiAppTests/TranscriptMarkdownTests \
+  -only-testing:PiAppTests/TranscriptNativeWorkBehaviourTests \
+  -only-testing:PiAppTests/TranscriptPageStressTests \
+  -only-testing:PiAppTests/TranscriptRevealTests \
+  -only-testing:PiAppTests/TranscriptWorkRowTests \
+  -only-testing:PiAppTests/WorkspaceTests \
+  -only-testing:PiAppTests/ReplySourceTests \
+  -only-testing:PiAppTests/MarkdownSourceReconciliationTests \
+  -only-testing:PiAppTests/TranscriptNativePaneBehaviourTests \
+  -only-testing:PiAppTests/TranscriptSwitchFirstFrameTests \
+  -only-testing:PiAppTests/NativeTranscriptTests \
+  -only-testing:PiAppTests/MarkdownStreamingCorrectnessTests \
+  -only-testing:PiAppTests/MarkdownStreamingTests \
+  -only-testing:PiAppTests/NativeMarkdownViewportTests \
+  -only-testing:PiAppTests/NativeTranscriptDocumentTests \
+  -only-testing:PiAppTests/NativeTranscriptSafetyTests \
+  -only-testing:PiAppTests/ResponseTimelinePresentationTests \
+  -only-testing:PiAppTests/TimelineStreamingFastPathTests
+
+# round2-timeline-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptNativeTimelineBehaviourTests
+
+# round2-agent-markdown-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentMarkdownTests
+
+# round2-agent-reader-final.log
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/SubagentReaderTests
+
+# round2-gallery-final.log
+TEST_RUNNER_PI_TRANSCRIPT_BUG_GALLERY="$PI_BUILD_ROOT/validation/gallery-round2" \
+scripts/test-macos.sh -parallel-testing-enabled NO \
+  -only-testing:PiAppTests/TranscriptBugGalleryTests
+```
+
+| Final log | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `round2-regression-final.log` | 28 | 0 | 0 |
+| `round2-affected-final.log` | 283 | 0 | 4 |
+| `round2-timeline-final.log` | 30 | 0 | 0 |
+| `round2-agent-markdown-final.log` | 19 | 0 | 0 |
+| `round2-agent-reader-final.log` | 55 | 0 | 0 |
+| `round2-gallery-final.log` | 1 | 0 | 0 |
+
+| Class | Passed | Failed | Skipped |
+| --- | ---: | ---: | ---: |
+| `ContentSearchTests` | 7 | 0 | 0 |
+| `HardeningTests` | 12 | 0 | 0 |
+| `HistoryIndexFilesTests` | 3 | 0 | 1 |
+| `HistoryReaderCheckpointTests` | 7 | 0 | 0 |
+| `MarkdownSourceReconciliationTests` | 7 | 0 | 0 |
+| `MarkdownStreamingCorrectnessTests` | 9 | 0 | 0 |
+| `MarkdownStreamingTests` | 2 | 0 | 0 |
+| `MarkdownTextSurfaceTests` | 6 | 0 | 3 |
+| `NativeMarkdownSizingTests` | 4 | 0 | 0 |
+| `NativeMarkdownSurfaceStreamingTests` | 4 | 0 | 0 |
+| `NativeMarkdownViewportTests` | 4 | 0 | 0 |
+| `NativeTranscriptDocumentTests` | 10 | 0 | 0 |
+| `NativeTranscriptSafetyTests` | 5 | 0 | 0 |
+| `NativeTranscriptTests` | 5 | 0 | 0 |
+| `ReplySourceTests` | 12 | 0 | 0 |
+| `ResponseTimelinePresentationTests` | 13 | 0 | 0 |
+| `StableToolPresentationTests` | 10 | 0 | 0 |
+| `StorageTruthTests` | 11 | 0 | 0 |
+| `SubagentMarkdownTests` | 19 | 0 | 0 |
+| `SubagentReaderTests` | 55 | 0 | 0 |
+| `TimelineStreamingFastPathTests` | 2 | 0 | 0 |
+| `TranscriptActivityTests` | 11 | 0 | 0 |
+| `TranscriptBugGalleryTests` | 1 | 0 | 0 |
+| `TranscriptBugRegressionTests` | 28 | 0 | 0 |
+| `TranscriptDisclosureTests` | 15 | 0 | 0 |
+| `TranscriptFindTests` | 11 | 0 | 0 |
+| `TranscriptMarkdownTests` | 9 | 0 | 0 |
+| `TranscriptNativePaneBehaviourTests` | 16 | 0 | 0 |
+| `TranscriptNativeTimelineBehaviourTests` | 30 | 0 | 0 |
+| `TranscriptNativeWorkBehaviourTests` | 21 | 0 | 0 |
+| `TranscriptPageStressTests` | 24 | 0 | 0 |
+| `TranscriptRevealTests` | 10 | 0 | 0 |
+| `TranscriptSwitchFirstFrameTests` | 1 | 0 | 0 |
+| `TranscriptWorkRowTests` | 15 | 0 | 0 |
+| `WorkspaceTests` | 17 | 0 | 0 |
+
+**Round-2 totals:** 415 focused behavior/storage/navigation tests passed,
+0 failed, 4 skipped; gallery: 1 passed, 0 failed, 3 PNGs. Every final command
+exited 0. The four skips are the optional history-index measurement and three
+opt-in Markdown measurements/sample captures. There were no unrelated failures.
+
+Regenerated and visually inspected all three images under
+`validation/gallery-round2/`: `transcript-light.png`, `transcript-dark.png`
+(760×800 points) and `transcript-narrow.png` (360×800). The visible ordered-list
+marker `2.` is highlighted in every image. Real's heading Copy control remains
+fully inside the narrow viewport, and the literal marker diff retains both
+changed tails. No new layout defect was observed in these scenes.
+
+The existing build root was reused; no clone directories remained, no named
+result bundle was requested, and the owned lane lock was released. No helper
+or wire behavior changed, so helper/wire suites were not required.
+`git diff --check` passed. No assigned issue or owner decision remains unresolved. The
+lead retains separate review, the merged full gate and merge.

@@ -200,7 +200,11 @@ final class TranscriptBugRegressionTests: XCTestCase {
         XCTAssertFalse(pane.find.failed)
         XCTAssertEqual(pane.find.matches.map(\.messageID), [replyID])
         guard !pane.find.matches.isEmpty else { return }
-        if alreadySearching { pane.find.step(1) }
+        if alreadySearching {
+            XCTAssertNil(pane.document.highlights.focus, "A refresh that gains its first match creates no navigation focus")
+            XCTAssertFalse(pane.document.focusPending)
+            pane.find.step(1)
+        }
         try await eventually("The visible raw destination is highlighted") {
             pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             return !pane.document.focusPending && pane.document.focusText != nil
@@ -217,6 +221,153 @@ final class TranscriptBugRegressionTests: XCTestCase {
     @MainActor func testFindMatchesViewRawInUnsavedReply() async throws { try await checkRawFind(unsaved: true) }
     @MainActor func testFindMatchesViewRawWithoutJournal() async throws { try await checkRawFind(noJournal: true) }
     @MainActor func testViewRawRefreshesAnActiveFind() async throws { try await checkRawFind(alreadySearching: true) }
+
+    @MainActor private func assertFind(_ query: String, in pane: NativeTranscriptPane, window: NSWindow) async throws {
+        pane.showFind(); pane.find.setQuery(query)
+        try await eventually("Search finishes for \(query)") { pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.find.searching }
+        XCTAssertFalse(pane.find.failed)
+        XCTAssertEqual(pane.find.matches.map(\.messageID), ["reply"])
+        guard !pane.find.matches.isEmpty else { return }
+        try await eventually("Visible match for \(query)") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return !pane.document.focusPending && pane.document.focusText != nil
+        }
+        let text = try XCTUnwrap(pane.document.focusText), range = pane.document.focusRange
+        XCTAssertEqual((text.string as NSString).substring(with: range), query)
+        XCTAssertNotNil(text.layoutManager?.temporaryAttribute(.backgroundColor, atCharacterIndex: range.location, effectiveRange: nil))
+    }
+    @MainActor func testFindIncludesVisibleOrderedMarkersInSavedReply() async throws {
+        let (_, pane, window) = try await findFixture(saved: true, source: "1. alpha\n2. beta")
+        try await assertFind("2.", in: pane, window: window)
+    }
+    @MainActor func testFindIncludesVisibleOrderedMarkersInLiveReply() async throws {
+        let (_, pane, window) = try await findFixture(saved: false, source: "1. alpha\n2. beta")
+        try await assertFind("2.", in: pane, window: window)
+    }
+
+    @MainActor func testFindUsesRawCompletedSegmentWhileAnotherSegmentStreams() async throws {
+        let source = "[site](https://example.test)", later = "**later** text"
+        let (model, pane, window) = try await findFixture(saved: false, source: source + later)
+        let session = try XCTUnwrap(model.selected)
+        var timeline = ResponseTimeline()
+        timeline.consume(.init(attemptID: "fixture", ordinal: 0, itemID: "first", kind: "text", update: "replace", text: source))
+        timeline.consume(.init(attemptID: "fixture", ordinal: 1, itemID: "later", kind: "text", update: "append", text: later))
+        session.messages[1].responseTimeline = timeline
+        pane.refresh(); pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let row = try XCTUnwrap(pane.document.retainedRows.first {
+            if case .block(let block) = $0.contentItem { return block.part?.id == timeline.segments[0].id }; return false
+        })
+        row.toggleDisclosure(.source("reply")); pane.refresh(); pane.document.finishDisclosureMotion()
+        pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        XCTAssertTrue(TranscriptNativeDocument.textViews(in: row).contains { $0.string == source })
+        XCTAssertTrue(ConversationPaneTests.views(NativeMarkdownContainer.self, in: pane.document).contains { !$0.isParked && $0.textView.string == "later text" })
+        try await assertFind("example.test", in: pane, window: window)
+    }
+
+    @MainActor func testSourceRefreshKeepsTheReaderAwayFromTheCurrentFindHit() async throws {
+        let (model, pane, window) = try await findFixture(saved: true, source: "needle here and needle again")
+        let session = try XCTUnwrap(model.selected)
+        session.messages += [.init(id: "other-question", role: "user", text: "Read something else"),
+                             .init(id: "other-reply", role: "assistant", text: String(repeating: "Other plain paragraph.\n\n", count: 100))]
+        pane.refresh(); pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        pane.showFind(); pane.find.setQuery("needle")
+        try await eventually("The initial search lands") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return !pane.find.searching && !pane.document.focusPending && pane.document.focusText != nil
+        }
+        XCTAssertEqual(pane.find.matches.count, 2)
+        pane.find.step(1)
+        try await eventually("The reader chooses the second hit") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded(); return !pane.document.focusPending
+        }
+        XCTAssertEqual(pane.find.current, 1)
+        let focus = try XCTUnwrap(pane.document.highlights.focus), current = pane.find.current
+        let clip = pane.scrollView.contentView
+        pane.page.readerWillNavigate(upward: false)
+        clip.setBoundsOrigin(NSPoint(x: 0, y: 750)); pane.scrollView.reflectScrolledClipView(clip)
+        NotificationCenter.default.post(name: NSScrollView.didLiveScrollNotification, object: pane.scrollView)
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: pane.scrollView)
+        pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let row = try XCTUnwrap(pane.document.retainedRows.first { ReplySource.replyID(of: $0.contentItem) == "other-reply" })
+        row.toggleDisclosure(.source("other-reply")); pane.refresh(); pane.document.finishDisclosureMotion()
+        pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+        let origin = clip.bounds.origin
+        XCTAssertGreaterThan(origin.y, 500, "The reader has left the hit behind")
+        XCTAssertEqual(pane.document.highlights.focus, focus, "Refreshing never clears and reinstalls navigation focus")
+        XCTAssertEqual(pane.find.current, current, "Keep the selected match while refreshing")
+        try await eventually("Refreshed results finish without a reveal") {
+            pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            return !pane.find.searching && !pane.document.focusPending
+        }
+        for _ in 0..<5 { await Task.yield(); pane.layoutSubtreeIfNeeded(); window.displayIfNeeded() }
+        XCTAssertEqual(clip.bounds.origin.y, origin.y, accuracy: 1, "Refreshing cannot scroll back to the old hit")
+        XCTAssertEqual(pane.document.highlights.focus, focus)
+        XCTAssertEqual(pane.find.current, current)
+    }
+
+    @MainActor func testFindProjectionEqualsNativeReplyTextAcrossMarkdownCorpus() throws {
+        let corpus = ["**alpha** beta and _italic_ ~~gone~~ `code`", "# Heading\n\nBody\n\nSetext\n------",
+                      "1. alpha\n2. beta", "7. seven\n29. eight\n   - nested\n\n     > quote",
+                      "- ```swift\n  let x = 1\n  ```\n- next", "> # Quote\n>\n> body\n>\n> 1. one\n> 2. two",
+                      "```text\nfirst\n\nlast\n```\n\n~~~\n~~~", "[site](https://example.test) and [reference][id]\n\n[id]: https://reference.test",
+                      "![alt](https://image.test/a.png)\n\n<!-- hidden -->\n\nvisible", "| A | B |\n|---|---|\n| one | |\n| two | three |",
+                      "| A | B |\n|---|---|\n" + (0..<45).map { "| row \($0) | value |" }.joined(separator: "\n"),
+                      "Before **unfinished", "[unfinished](https://example.test", "1. first\n2."]
+        for (index, source) in corpus.enumerated() {
+            for streaming in [false, true] { for raw in [false, true] {
+                let message = TranscriptMessage(id: "corpus", role: "assistant", text: source, state: streaming ? "streaming" : "complete")
+                let row = TranscriptNativeReplyRow(inputs: .init(item: TranscriptNativePartView.wordsItem(message), fresh: false,
+                    actions: .init(), width: 620, environment: .init(), disclosure: .init(raw: raw), toggle: { _ in }))
+                let shown = TranscriptNativeDocument.textViews(in: row).filter(\.isSelectable).map(\.string).joined(separator: "\n")
+                XCTAssertEqual(ConversationContent.transcriptText(message, rawReply: raw), shown, "Corpus \(index), streaming=\(streaming), raw=\(raw)")
+                if !streaming {
+                    let entry: [String: WireValue] = ["id": .string("corpus"), "message": .object(["role": .string("assistant"), "content": .string(source)])]
+                    XCTAssertEqual(ConversationContent.transcriptText(entry, rawReply: raw), shown, "Saved corpus \(index), raw=\(raw)")
+                }
+            } }
+        }
+    }
+
+    @MainActor func testTimelineProjectionEqualsEachNativeSegmentInBothModes() throws {
+        var timeline = ResponseTimeline()
+        for (index, kind) in ["text", "refusal", "reasoningText", "reasoningSummary", "opaque", "text"].enumerated() {
+            timeline.consume(.init(attemptID: "fixture", ordinal: index, itemID: "part-\(index)", kind: kind,
+                update: index == 5 ? "append" : "replace", text: "\(index + 1). [site](https://part\(index).test)\n\n**alpha** beta"))
+        }
+        for streaming in [false, true] { for raw in [false, true] {
+            let message = TranscriptMessage(id: "reply", role: "assistant", text: "Canonical text is not the arrival-ordered rows",
+                                           state: streaming ? "streaming" : "complete", responseTimeline: timeline)
+            let shown = timeline.segments.map { part -> String in
+                let view = TranscriptNativePartView(frame: CGRect(x: 0, y: 0, width: 620, height: 300))
+                view.update(.init(part: part, message: message, actions: .init(), open: true, toggle: {}, raw: raw, toggleRow: { _ in }, environment: .init()))
+                return TranscriptNativeDocument.textViews(in: view).filter(\.isSelectable).map(\.string).joined(separator: "\n")
+            }.joined(separator: "\n")
+            XCTAssertEqual(ConversationContent.transcriptText(message, rawReply: raw), shown, "streaming=\(streaming), raw=\(raw)")
+            if !streaming {
+                let entry: [String: WireValue] = ["id": .string("reply"), "message": .object(["role": .string("assistant"), "content": .string(message.text),
+                    "nativeResponseTimeline": try JSONDecoder().decode(WireValue.self, from: JSONEncoder().encode(timeline))])]
+                XCTAssertEqual(ConversationContent.transcriptText(entry, rawReply: raw), shown, "saved raw=\(raw)")
+            }
+        } }
+    }
+
+    @MainActor func testFindOpensTimelineProseForItsRenderedListMarker() async throws {
+        for kind in ["reasoningText", "reasoningSummary", "opaque", "correction"] {
+            let (model, pane, window) = try await findFixture(saved: false)
+            var timeline = ResponseTimeline()
+            timeline.consume(.init(attemptID: "fixture", ordinal: 0, itemID: "part", kind: kind, update: "replace", text: "7. first\n29. second"))
+            model.selected?.messages[1].responseTimeline = timeline
+            pane.refresh(); pane.layoutSubtreeIfNeeded(); window.displayIfNeeded()
+            try await assertFind("8.", in: pane, window: window)
+        }
+    }
+
+    @MainActor func testAgentMarkdownSearchIncludesItsNativeListMarkers() {
+        let view = TranscriptAgentMarkdown(label: "Task", identity: "list-marker")
+        view.update("7. first\n29. second", environment: .init())
+        XCTAssertTrue(view.markdown.textView.string.contains("8."))
+        XCTAssertTrue(view.contains("8.", flexible: false), "The agent preview uses the same searchable text as its native surface")
+    }
 
     func testSavedFindProjectsAssistantTextAlongsideToolCalls() throws {
         let prose: WireValue = .object(["type": .string("text"), "text": .string("**alpha** beta")])

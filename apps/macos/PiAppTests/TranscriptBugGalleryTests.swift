@@ -9,7 +9,7 @@ final class TranscriptBugGalleryTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         for (name, appearance, width) in [("light", NSAppearance.Name.aqua, CGFloat(760)), ("dark", .darkAqua, 760), ("narrow", .aqua, 360)] {
             let session = SessionDisplay(id: "transcript-bug-gallery")
-            let reply = TranscriptMessage(id: "reply", role: "assistant", text: TranscriptBugRegressionTests.nestedHeading + "\n\n**alpha** beta",
+            let reply = TranscriptMessage(id: "reply", role: "assistant", text: TranscriptBugRegressionTests.nestedHeading + "\n\n**alpha** beta\n\n1. first\n2. second",
                 tools: [try TranscriptBugRegressionTests.editTool()], at: 2, turn: "question")
             session.messages = [.init(id: "question", role: "user", text: "Review the heading, edit and formatted phrase.", at: 1), reply]
             let page = TranscriptPage(); page.state = "idle"; page.bind(session)
@@ -28,7 +28,7 @@ final class TranscriptBugGalleryTests: XCTestCase {
             document.layoutRows(width: scroll.contentSize.width); document.finishDisclosureMotion()
             for row in document.retainedRows { row.prepareToDraw(); row.layoutForViewport() }
             XCTAssertEqual(ConversationPaneTests.views(TranscriptNativeDiffCard.self, in: document).count, 1)
-            document.highlights = TranscriptHighlights(query: "alpha beta")
+            document.highlights = TranscriptHighlights(query: "2.")
             scroll.layoutSubtreeIfNeeded(); window.displayIfNeeded()
             let surface = try XCTUnwrap(ConversationPaneTests.views(NativeMarkdownContainer.self, in: document).first { $0.textView.string.contains("Real") })
             let text = surface.textView, manager = try XCTUnwrap(text.layoutManager), container = try XCTUnwrap(text.textContainer)

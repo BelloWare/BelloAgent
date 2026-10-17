@@ -124,9 +124,13 @@ struct TranscriptFindCommand: Equatable {
     }
     func setQuery(_ text: String, restarting: Bool = false) {
         guard text != query || restarting else { return }
+        let refreshing = restarting && text == query
+        let selected = refreshing ? current.flatMap { matches.indices.contains($0) ? matches[$0] : nil } : nil
         needsResume = false
         query = text
-        task?.cancel(); stopNavigation(); matches = []; current = nil; failed = false
+        task?.cancel(); stopNavigation(); failed = false
+        if refreshing { pane?.document.focusPending = false }
+        else { matches = []; current = nil }
         guard !text.isEmpty, let session = pane?.session, let search else { searching = false; publish(focus: false); return }
         searching = true; publish(focus: false)
         let id = session.id
@@ -134,6 +138,7 @@ struct TranscriptFindCommand: Equatable {
             // Typing settles before the chat is searched.
             try? await Task.sleep(for: .milliseconds(150))
             var start = 0
+            var refreshed: [Match] = []
             while !Task.isCancelled {
                 let found: ContentSearch
                 do { found = try await search(id, text, start) }
@@ -144,16 +149,24 @@ struct TranscriptFindCommand: Equatable {
                 }
                 guard !Task.isCancelled, let self, self.query == text else { return }
                 for hit in found.hits {
-                    for occurrence in 0..<max(1, hit.count ?? 1) { self.matches.append(Match(messageID: hit.id, occurrence: occurrence)) }
+                    for occurrence in 0..<max(1, hit.count ?? 1) {
+                        let match = Match(messageID: hit.id, occurrence: occurrence)
+                        if refreshing { refreshed.append(match) } else { self.matches.append(match) }
+                    }
                 }
                 guard let next = found.next else { break }
-                if self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: !restarting) }
+                if !refreshing, self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: true) }
                 else { self.publish(focus: false) }
                 start = next
             }
             guard let self, !Task.isCancelled, self.query == text else { return }
             self.searching = false
-            if self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: !restarting) }
+            if refreshing {
+                self.matches = refreshed
+                self.current = selected.flatMap { refreshed.firstIndex(of: $0) } ?? (refreshed.isEmpty ? nil : self.firstNearReader())
+                self.publish(focus: false)
+            }
+            else if self.current == nil, !self.matches.isEmpty { self.current = self.firstNearReader(); self.publish(focus: true) }
             else { self.publish(focus: false) }
         }
     }
@@ -208,9 +221,15 @@ struct TranscriptFindCommand: Equatable {
             // Drawn in another message's row, the occurrence is the record's
             // own: only the text of its call's card is counted.
             let scope = drawing == match.messageID ? nil : pane.session?.messages.first { $0.id == match.messageID }?.toolCallID
-            highlights.focus = .init(messageID: drawing, needle: query, occurrence: match.occurrence,
-                                     serial: focus ? serial : (pane.document.highlights.focus?.serial ?? serial), fromFind: true, scopeCall: scope,
-                                     record: match.messageID)
+            if focus {
+                highlights.focus = .init(messageID: drawing, needle: query, occurrence: match.occurrence,
+                                         serial: serial, fromFind: true, scopeCall: scope, record: match.messageID)
+            } else if let previous = pane.document.highlights.focus, previous.fromFind, previous.needle == query,
+                      previous.record == match.messageID, previous.occurrence == match.occurrence {
+                // Results and counts can change without a navigation request.
+                // Never install a focus after nil: the document would reveal it.
+                highlights.focus = previous
+            }
             if focus, navigate, let session = pane.session {
                 stopNavigation()
                 _ = pane.page.revealContent(of: match.messageID, needle: query)

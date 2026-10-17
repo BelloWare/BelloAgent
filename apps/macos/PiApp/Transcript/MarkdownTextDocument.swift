@@ -186,7 +186,16 @@ enum MarkdownTextLayout {
 /// Builds one block's paragraphs. A code block's colouring is kept per block
 /// and resumed where the scanner last stood in a neutral state, so a token
 /// on a long fence colours what it adds, not the whole fence again.
-@MainActor final class MarkdownTextBuilder {
+// A view owns its incremental builder on the main actor. Search makes a
+// separate builder locally; no mutable text or layout state crosses actors.
+final class MarkdownTextBuilder {
+    static func string(_ blocks: [MarkdownBlock], style: MarkdownStyle) -> String {
+        let builder = MarkdownTextBuilder(), context = MarkdownTextContext(style: style, capsWidth: true)
+        return blocks.enumerated().flatMap { index, block in
+            builder.paragraphs(block, identity: .init(generation: 0, sourceOffset: index), context: context, gap: 0, headingIndex: nil)
+        }.map { $0.text.string }.joined(separator: MarkdownTextAssembler.paragraphBreak)
+    }
+
     struct CodeReading {
         var code: String
         var language: String?
@@ -512,6 +521,7 @@ enum MarkdownTextLayout {
 /// preceded by the line break that ends the one before it; the break carries
 /// the marks of the paragraph it ends, so a panel runs to its last line.
 @MainActor enum MarkdownTextAssembler {
+    nonisolated static let paragraphBreak = "\n"
     /// How far below the previous paragraph's text a paragraph's text begins,
     /// less the line spacing TextKit already leaves below that paragraph.
     static func spacing(_ paragraph: MarkdownTextParagraph, after tail: MarkdownTextTail) -> CGFloat {
@@ -556,7 +566,7 @@ enum MarkdownTextLayout {
                 // The break ends the paragraph before: it takes that paragraph's dress.
                 var attributes = breakAttributes
                 attributes[.piBlockBreak] = copy
-                result.append(NSAttributedString(string: "\n", attributes: attributes))
+                result.append(NSAttributedString(string: paragraphBreak, attributes: attributes))
             }
             // A copy: the builder keeps some texts (a fence's reading) to extend.
             let text = NSMutableAttributedString(attributedString: paragraph.text)

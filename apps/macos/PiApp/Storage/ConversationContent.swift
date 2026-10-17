@@ -16,9 +16,9 @@ enum ConversationContent {
     /// when the transcript draws their prose in the issuing call's card.
     static func transcriptText(_ entry: [String: WireValue], managedChild: Bool = false, rawReply: Bool = false) -> String {
         let message = entry["message"]?.object ?? [:]
-        func prose(_ source: String) -> String { TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(source)) }
-        if message["nativeAgentDelivery"]?.object != nil {
-            return transcriptText(.project(id: entry["id"]?.string ?? "", message: message))
+        func prose(_ source: String) -> String { TranscriptMarkdown.renderedText(source) }
+        if message["role"]?.string == "assistant" || message["nativeAgentDelivery"]?.object != nil {
+            return transcriptText(.project(id: entry["id"]?.string ?? "", message: message), rawReply: rawReply)
         }
         if managedChild, message["role"]?.string == "user" {
             return prose(TranscriptMessage.project(id: "", message: message).text)
@@ -27,45 +27,41 @@ enum ConversationContent {
             let value = SubagentToolView(ToolView(id: result.call, name: name, state: result.record.cardState, input: "", output: result.record.output, durationMs: nil, truncated: false))
             return [prose(value.result), value.error ?? ""].joined(separator: "\n")
         }
-        let blocks = message["content"]?.array ?? []
-        guard blocks.contains(where: { $0.object?["type"]?.string == "toolCall" && SubagentToolView.isControl($0.object?["name"]?.string ?? "") }) else {
-            return text(entry, renderedAssistantProse: true, rawReply: rawReply)
-        }
-        var plain = message
-        // Preserve ordinary text/tools, but replace agent argument envelopes
-        // with exactly the Task/Message prose drawn by the native card.
-        plain.removeValue(forKey: "nativeResponseTimeline")
-        plain["content"] = .array(blocks.map { block in
-            if var fields = block.object, let kind = fields["type"]?.string, ["text", "thinking"].contains(kind), message["role"]?.string == "assistant" {
-                let key = kind == "text" ? "text" : "thinking"
-                if kind != "text" || !rawReply { fields[key] = .string(prose(fields[key]?.string ?? "")) }
-                return .object(fields)
-            }
-            guard let fields = block.object, fields["type"]?.string == "toolCall", let name = fields["name"]?.string, SubagentToolView.isControl(name) else { return block }
-            let value = SubagentToolView(ToolView(id: fields["id"]?.string ?? "", name: name, state: "recorded", input: ToolInputDisplay.encoded(fields["arguments"] ?? .null), output: "", durationMs: nil, truncated: false))
-            return .object(["type": .string("text"), "text": .string("\n" + value.title + "\n" + prose(value.task) + "\n")])
-        })
-        var projected = entry; projected["message"] = .object(plain)
-        return text(projected)
+        return text(entry)
     }
     /// Current streaming text and rows that have not reached the journal yet.
     /// Called by the history actor, never by a layout or paint pass.
     static func transcriptText(_ message: TranscriptMessage, rawReply: Bool = false) -> String {
-        func prose(_ source: String) -> String { TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(source)) }
+        func prose(_ source: String, streaming: Bool = false) -> String { TranscriptMarkdown.renderedText(source, streaming: streaming) }
+        func joined(_ parts: [String]) -> String { parts.filter { !$0.isEmpty }.joined(separator: "\n") }
         if message.nativeAgentDelivery != nil {
             return AgentMessagePresentation(message).events.map {
                 [$0.title, $0.label, prose($0.text), $0.note ?? ""].joined(separator: "\n")
             }.joined(separator: "\n\n")
         }
-        let tools = (message.tools ?? []).map { tool in
+        func toolText(_ tool: ToolView) -> String {
             guard SubagentToolView.isControl(tool.name) else { return [tool.input, tool.output].joined(separator: "\n") }
             let value = SubagentToolView(tool)
-            return [value.title, prose(value.task), prose(value.result), value.error ?? ""].joined(separator: "\n")
+            return joined([value.title, prose(value.task), prose(value.result), value.error ?? ""])
+        }
+        func replyText(_ source: TranscriptMessage) -> String {
+            ReplySource.shows(source, raw: rawReply) ? source.text : prose(source.text, streaming: source.isStreaming)
+        }
+        if message.role == "assistant", let timeline = message.responseTimeline, timeline.supported, !timeline.segments.isEmpty {
+            return joined(timeline.segments.map { part in
+                if let call = part.part.callID, let tool = message.tools?.first(where: { $0.id == call }) { return toolText(tool) }
+                let row = TranscriptTimelinePart(part: part, message: message)
+                switch part.part.kind {
+                case "text", "refusal": return replyText(row.source)
+                case "toolArguments", "status": return part.text
+                default: return prose(part.text, streaming: row.source.isStreaming)
+                }
+            })
         }
         let rendered = message.role == "assistant"
-        let words = [rendered && !ReplySource.shows(message, raw: rawReply) ? prose(message.text) : message.text,
-                     rendered ? prose(message.thinking ?? "") : message.thinking ?? ""]
-        return (words + tools).joined(separator: "\n")
+        let words = [rendered ? replyText(message) : message.text,
+                     rendered ? prose(message.thinking ?? "", streaming: message.isStreaming) : message.thinking ?? ""]
+        return joined(words + (message.tools ?? []).map(toolText))
     }
     /// Case-insensitive occurrences of `query` in `text`, as the find bar
     /// and the content search count them.
@@ -117,20 +113,11 @@ enum ConversationContent {
             return true
         }
     }
-    static func text(_ entry: [String: WireValue], renderedAssistantProse: Bool = false, rawReply: Bool = false) -> String {
+    static func text(_ entry: [String: WireValue]) -> String {
         if entry["type"]?.string == "compaction" { return "## Compaction\n\n\(entry["summary"]?.string ?? "")\n\n" }
         let message = entry["message"]?.object ?? [:], content = message["content"]
         let timeline = message["nativeResponseTimeline"].flatMap { try? JSONDecoder().decode(ResponseTimeline.self, from: JSONEncoder().encode($0)) }
-        func prose(_ source: String, raw: Bool = false) -> String {
-            renderedAssistantProse && !raw && message["role"]?.string == "assistant"
-                ? TranscriptMarkdown.plainText(TranscriptMarkdown.blocks(source)) : source
-        }
-        if var timeline, timeline.supported {
-            if renderedAssistantProse {
-                for index in timeline.segments.indices where ["text", "reasoningText", "reasoningSummary"].contains(timeline.segments[index].part.kind) {
-                    timeline.segments[index].text = prose(timeline.segments[index].text, raw: rawReply && timeline.segments[index].part.kind == "text")
-                }
-            }
+        if let timeline, timeline.supported {
             let title = message["nativeDetail"]?.string ?? message["role"]?.string ?? "Operation"
             let evidence = "## \(title)\n\n" + timeline.retainedText + "\n\n"
             // If a source exceeds retained event bounds, preserve the original
@@ -139,13 +126,13 @@ enum ConversationContent {
             var canonical = entry
             var plain = message; plain.removeValue(forKey: "nativeResponseTimeline")
             canonical["message"] = .object(plain)
-            return evidence + "## Full saved response\n\n" + text(canonical, renderedAssistantProse: renderedAssistantProse, rawReply: rawReply)
+            return evidence + "## Full saved response\n\n" + text(canonical)
         }
-        let body = content?.string.map { prose($0, raw: rawReply) } ?? (content?.array ?? []).map { value -> String in
+        let body = content?.string ?? (content?.array ?? []).map { value -> String in
             let block = value.object ?? [:]
             switch block["type"]?.string {
-            case "text": return prose(block["text"]?.string ?? "", raw: rawReply)
-            case "thinking": return "\n[Exposed reasoning]\n\(prose(block["thinking"]?.string ?? ""))\n"
+            case "text": return block["text"]?.string ?? ""
+            case "thinking": return "\n[Exposed reasoning]\n\(block["thinking"]?.string ?? "")\n"
             case "toolCall": return "\n[Tool \(block["name"]?.string ?? "tool")]\n\(block["arguments"]?.pretty ?? "{}")\n"
             case "image": return "\n[Image attachment omitted]\n"
             default: return ""

@@ -9,8 +9,10 @@
 - [x] Narrow transcript rows keep the heading Copy control fully inside their bounds. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Complete edit/write previews preserve literal truncation-marker text and every changed line; only explicitly truncated inputs interpret legacy markers. [Validation](docs/validation/a130-transcript-0.1.130.md).
 - [x] Find matches visible phrases across Markdown formatting in ordinary live and saved assistant replies, including timeline prose and text beside tool calls. Source search/copy stays unchanged. [Validation](docs/validation/a130-transcript-0.1.130.md).
-- [x] Find searches formatted exposed reasoning and opens its matching folded row, both live and after reopening. [Validation](docs/validation/a130-transcript-0.1.130.md).
-- [x] Find follows View Raw in saved and unsaved replies and refreshes when the reader switches views; reasoning and streaming text keep their rendered search. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find searches formatted exposed reasoning and opens matching folded timeline prose, including opaque/correction parts, both live and after reopening. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find follows View Raw in saved and unsaved replies and in completed timeline segments while later segments stream; arriving segments keep their rendered search. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Refreshing Find after a source-view change preserves the selected match without creating navigation focus or moving the reader. [Validation](docs/validation/a130-transcript-0.1.130.md).
+- [x] Find shares the native Markdown text builder, preserving visible list numbers, headings, code, links and table previews in saved/live replies and agent prose. [Validation](docs/validation/a130-transcript-0.1.130.md).
 
 ## 0.1.129
 
